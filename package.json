@@ -25,15 +25,16 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "tsc --build",
+    "dev": "tsc --build --watch",
+    "clean": "tsc --build --clean",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --build --noEmit",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
