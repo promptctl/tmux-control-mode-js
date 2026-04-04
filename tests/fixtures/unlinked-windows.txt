@@ -1,0 +1,8 @@
+%unlinked-window-add @5
+%unlinked-window-renamed @5 scratch
+%unlinked-window-add @6
+%unlinked-window-renamed @6 logs
+%unlinked-window-close @5
+%unlinked-window-close @6
+%unlinked-window-add @7
+%unlinked-window-renamed @7 background-task

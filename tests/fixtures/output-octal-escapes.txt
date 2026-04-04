@@ -1,0 +1,12 @@
+%output %1 hello\012
+%output %1 world\015\012
+%output %1 \033[1;32mgreen bold\033[0m\012
+%output %1 \134backslash\134test\012
+%output %1 \000null byte\012
+%output %2 \377high byte\012
+%output %1 \007bell\012
+%output %1 mixed plain and \033[31mred\033[0m and \134slash\012
+%output %1 \001\002\003\004\005\006\007\010\011\012
+%output %1 tab\011here\012
+%output %1 cr\015lf\012
+%output %3 \033[?2004h\033[H\033[2J\012

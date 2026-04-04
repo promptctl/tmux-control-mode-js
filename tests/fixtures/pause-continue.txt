@@ -1,0 +1,11 @@
+%output %1 first chunk\012
+%output %1 second chunk\012
+%output %1 third chunk\012
+%pause %1
+%output %1 output after pause from another pane source\012
+%continue %1
+%output %1 resumed output\012
+%output %2 pane two not paused\012
+%pause %2
+%continue %2
+%output %2 pane two resumed\012

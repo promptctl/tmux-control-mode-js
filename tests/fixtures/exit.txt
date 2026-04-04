@@ -1,0 +1,4 @@
+%begin 1699900030 10 0
+0: bash* (1 panes) [220x50] [layout 4b5a,220x50,0,0,%1] @1 (active)
+%end 1699900030 10 0
+%exit

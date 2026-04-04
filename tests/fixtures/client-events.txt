@@ -1,0 +1,6 @@
+%client-session-changed /dev/pts/0 $1 main
+%client-session-changed /dev/pts/1 $2 other
+%client-session-changed /dev/pts/0 $2 other
+%client-detached /dev/pts/1
+%client-session-changed /dev/pts/0 $1 main
+%client-detached /dev/pts/0

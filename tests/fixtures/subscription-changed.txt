@@ -1,0 +1,6 @@
+%subscription-changed my-sub $1 @1 0 %1 : pane-value
+%subscription-changed window-sub $1 @1 0 - : window-title
+%subscription-changed session-sub $1 - - - : session-name
+%subscription-changed global-sub - - - - : global-value
+%subscription-changed multi-sub $2 @3 1 %5 : complex value with spaces
+%subscription-changed pane-mode-sub $1 @1 0 %2 : copy

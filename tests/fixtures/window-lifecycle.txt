@@ -1,0 +1,19 @@
+%window-add @1
+%window-pane-changed @1 %1
+%layout-change @1 4b5a,220x50,0,0,%1 4b5a,220x50,0,0,%1 *
+%window-renamed @1 bash
+%window-add @2
+%window-pane-changed @2 %2
+%layout-change @2 6b23,220x50,0,0,%2 6b23,220x50,0,0,%2 -
+%layout-change @1 4b5a,220x50,0,0,%1 4b5a,220x50,0,0,%1 *
+%window-renamed @2 vim
+%window-pane-changed @1 %1
+%layout-change @2 6b23,220x50,0,0,%2 6b23,220x50,0,0,%2 -
+%layout-change @1 4b5a,220x50,0,0,%1 4b5a,220x50,0,0,%1 *
+%window-close @2
+%layout-change @1 4b5a,220x50,0,0,%1 4b5a,220x50,0,0,%1 *
+%window-add @3
+%window-pane-changed @3 %3
+%layout-change @3 7c34,220x50,0,0,%3 7c34,220x50,0,0,%3 -
+%window-renamed @3 zsh
+%window-close @3

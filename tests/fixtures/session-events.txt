@@ -1,0 +1,12 @@
+%session-changed $1 main
+%sessions-changed
+%session-window-changed $1 @1
+%session-renamed $1 work
+%sessions-changed
+%session-changed $1 work
+%sessions-changed
+%session-window-changed $1 @2
+%session-changed $2 other
+%sessions-changed
+%session-window-changed $2 @3
+%session-window-changed $1 @1

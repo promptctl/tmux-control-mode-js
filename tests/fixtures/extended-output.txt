@@ -1,0 +1,5 @@
+%extended-output %1 1000 : hello\012
+%extended-output %2 2500 : \033[1mbold text\033[0m\012
+%extended-output %1 0 : plain output no escapes\012
+%extended-output %3 999999 : \134backslash in extended\012
+%extended-output %1 500 : \000\377binary data\012

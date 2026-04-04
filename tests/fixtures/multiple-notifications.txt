@@ -1,0 +1,12 @@
+%begin 1699900020 5 0
+0: bash* (1 panes) [220x50] [layout 4b5a,220x50,0,0,%1] @1 (active)
+%window-renamed @1 zsh
+1: vim- (1 panes) [220x50] [layout 6b23,220x50,0,0,%2] @2
+%end 1699900020 5 0
+%window-add @3
+%begin 1699900021 6 0
+%window-pane-changed @1 %1
+2: zsh (1 panes) [220x50] [layout 7c34,220x50,0,0,%3] @3
+%session-changed $1 main
+%end 1699900021 6 0
+%layout-change @1 4b5a,220x50,0,0,%1 4b5a,220x50,0,0,%1 *

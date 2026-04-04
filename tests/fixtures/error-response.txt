@@ -1,0 +1,9 @@
+%begin 1699900010 4 0
+unknown command: bad-command
+%error 1699900010 4 0
+%begin 1699900011 5 0
+no server running on /tmp/tmux-1000/default
+%error 1699900011 5 0
+%begin 1699900012 6 0
+can't find window: @99
+%error 1699900012 6 0

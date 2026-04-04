@@ -1,0 +1,7 @@
+%paste-buffer-changed buffer0
+%paste-buffer-changed default
+%paste-buffer-changed buffer1
+%paste-buffer-deleted buffer0
+%paste-buffer-changed default
+%paste-buffer-deleted buffer1
+%paste-buffer-deleted default

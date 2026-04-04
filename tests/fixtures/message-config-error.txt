@@ -1,0 +1,8 @@
+%config-error Unknown option: foo
+%config-error Invalid value for option bar: baz
+%message Window @1 created
+%message Session has been renamed to work
+%message Detached
+%pane-mode-changed %1
+%pane-mode-changed %2
+%pane-mode-changed %1
