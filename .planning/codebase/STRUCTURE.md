@@ -1,0 +1,229 @@
+# Codebase Structure
+
+**Analysis Date:** 2026-04-05
+
+## Directory Layout
+
+```
+tmux-control-mode-js/
+├── src/                        # Source code (TypeScript)
+│   ├── index.ts               # Public API surface (all exports)
+│   ├── client.ts              # High-level TmuxClient class
+│   ├── emitter.ts             # Minimal typed event emitter
+│   ├── protocol/              # Wire format parser, encoder, types
+│   │   ├── index.ts           # Barrel export (re-exports only)
+│   │   ├── types.ts           # 28 message types + CommandResponse
+│   │   ├── parser.ts          # Streaming line-oriented parser
+│   │   ├── decoder.ts         # Octal escape decoder (Uint8Array)
+│   │   └── encoder.ts         # Command formatters + escaper
+│   └── transport/             # Process spawning and I/O abstraction
+│       ├── index.ts           # Barrel export (re-exports only)
+│       ├── types.ts           # TmuxTransport interface + SpawnOptions
+│       └── spawn.ts           # child_process.spawn implementation
+│
+├── tests/                      # Test suite
+│   ├── unit/                  # Unit tests (protocol layer only)
+│   │   ├── parser.test.ts     # TmuxParser fixture-driven tests
+│   │   ├── decoder.test.ts    # Octal decoder unit tests
+│   │   └── encoder.test.ts    # Command encoder unit tests
+│   ├── integration/           # Integration tests (require tmux)
+│   │   └── client.test.ts     # Real tmux process tests (gated by TMUX_INTEGRATION)
+│   └── fixtures/              # Protocol replay files
+│       ├── startup.txt        # Basic connect/handshake
+│       ├── basic-command-response.txt
+│       ├── session-events.txt
+│       ├── window-lifecycle.txt
+│       ├── layout-change.txt
+│       ├── output-octal-escapes.txt
+│       └── (15 total)
+│
+├── dist/                       # Compiled output (generated)
+│   ├── index.js
+│   ├── index.d.ts
+│   ├── protocol/
+│   │   ├── index.js
+│   │   ├── index.d.ts
+│   │   └── (all .ts files compiled)
+│   └── transport/
+│       ├── index.js
+│       ├── index.d.ts
+│       └── (all .ts files compiled)
+│
+├── .planning/                  # Planning and analysis artifacts
+│   └── codebase/              # Auto-generated codebase documentation
+│
+├── package.json               # npm project manifest
+├── tsconfig.json              # Root TypeScript project references
+├── tsconfig.base.json         # Shared compiler options
+├── eslint.config.ts           # ESLint configuration (flat config)
+├── .prettierrc                 # Prettier formatter options
+├── vitest.config.ts           # Vitest test runner config
+├── README.md
+└── SPEC.md                    # Protocol specification
+```
+
+## Directory Purposes
+
+**`src/`:**
+- Purpose: All source TypeScript code, organized in layers by dependency direction
+- Contains: Client library (TmuxClient), protocol layer, transport layer
+- Key invariant: Protocol and Transport layers have no dependencies outside themselves; Client depends on both
+
+**`src/protocol/`:**
+- Purpose: Pure TypeScript protocol parsing, encoding, and type definitions
+- Contains: 28 message type definitions, streaming parser, octal decoder, command encoder
+- Key invariant: **Zero Node.js dependencies** — works in browser, Deno, Bun, Node
+- Exported subpath: `tmux-control-mode-js/protocol`
+- Key files:
+  - `types.ts` — Discriminated union `TmuxMessage`, individual message interfaces, `CommandResponse`, `PaneAction` enum
+  - `parser.ts` — `TmuxParser` class (streaming, line-buffered, push-based)
+  - `decoder.ts` — Octal escape sequence decoder (returns `Uint8Array`)
+  - `encoder.ts` — Command builders and argument escaper (`tmuxEscape`)
+
+**`src/transport/`:**
+- Purpose: Abstract transport interface and Node.js implementation
+- Contains: `TmuxTransport` interface (runtime-agnostic), `spawnTmux` (Node.js specific)
+- Key invariant: Interface (`types.ts`) is runtime-agnostic; only `spawn.ts` requires Node.js `child_process`
+- Callback-based, not EventEmitter (intentionally minimal for portability)
+- Key files:
+  - `types.ts` — `TmuxTransport` interface, `SpawnOptions` for process spawning
+  - `spawn.ts` — Concrete implementation using `child_process.spawn`
+
+**`tests/`:**
+- Purpose: Full test suite split by testing strategy
+- `unit/` — Fast, protocol-layer only tests (no tmux process required)
+- `integration/` — Real tmux process tests (opt-in via `TMUX_INTEGRATION=1`)
+- `fixtures/` — 17 protocol replay files (captured tmux output) used by parser tests
+
+**`dist/`:**
+- Purpose: Compiled JavaScript and type definitions (generated by `npm run build`)
+- Contains: All .js and .d.ts outputs, preserving source structure
+- Committed: No (gitignored)
+- Populated by: TypeScript compiler with project references (`tsconfig.json`)
+
+## Key File Locations
+
+**Entry Points:**
+
+- `src/index.ts` — Public API surface; exports `TmuxClient`, `spawnTmux`, types
+- `src/client.ts` — Main class; command correlation state machine
+- `src/protocol/parser.ts` — Streaming parser; message emission
+- `src/transport/spawn.ts` — Process spawning; Node.js only
+
+**Configuration:**
+
+- `package.json` — npm manifest, exports (subpaths), build scripts, dependencies
+- `tsconfig.json` — Root project references (protocol → transport → root)
+- `tsconfig.base.json` — Shared compiler options (ES2022, strict mode, declaration maps)
+- `eslint.config.ts` — ESLint flat config (TypeScript, Prettier integration)
+- `.prettierrc` — Prettier formatting (default)
+- `vitest.config.ts` — Vitest runner configuration
+
+**Core Logic:**
+
+- `src/client.ts` — Command correlation (FIFO pending queue + inflight slot)
+- `src/protocol/parser.ts` — Wire format parsing (dispatch table, response block state machine)
+- `src/protocol/encoder.ts` — Command formatting and argument escaping
+- `src/protocol/decoder.ts` — Octal escape decoding (performance-optimized)
+- `src/emitter.ts` — Minimal typed event emitter (not Node.js EventEmitter)
+
+**Testing:**
+
+- `tests/unit/parser.test.ts` — Fixture-driven parser tests (17 fixtures)
+- `tests/unit/decoder.test.ts` — Octal decoder unit tests
+- `tests/unit/encoder.test.ts` — Command encoder unit tests
+- `tests/integration/client.test.ts` — Full TmuxClient tests (requires real tmux)
+- `tests/fixtures/*.txt` — Protocol replay data (captured tmux output)
+
+## Naming Conventions
+
+**Files:**
+
+- `*.ts` — TypeScript source (compiled to .js + .d.ts)
+- Barrel files: `index.ts` in each layer (protocol/, transport/); re-export only, no logic
+- Test files: `*.test.ts` (Vitest convention)
+- Fixtures: Plain text `.txt` files in `tests/fixtures/`
+
+**Directories:**
+
+- `src/<layer>/` — Each layer as a flat directory with sibling index.ts
+- `tests/<category>/` — Split by unit vs. integration vs. fixtures
+- `dist/` — Mirrors src/ structure exactly
+
+**Functions and Types:**
+
+- Type names: PascalCase, suffixed with category (e.g., `WindowAddMessage`, `TmuxClient`)
+- Function names: camelCase (e.g., `parsePaneId`, `buildCommand`, `tmuxEscape`)
+- Enums: PascalCase (e.g., `PaneAction`)
+- Constants: UPPER_SNAKE_CASE (e.g., `PARSERS` map)
+- Private members: prefixed with `#` (modern TypeScript private fields) or `private` keyword
+- Readonly properties: marked `readonly` (enforced at compile time)
+
+**Discriminated Union Types:**
+
+- Each message type: `<Concept>Message` (e.g., `WindowAddMessage`, `OutputMessage`)
+- Union type: `TmuxMessage` (single source of truth)
+- Event map: `TmuxEventMap` (mirrors union but keyed by `type` string)
+
+## Where to Add New Code
+
+**New Feature (Command/API):**
+
+1. **If it's a tmux command wrapper:**
+   - Add method to `TmuxClient` (e.g., `listPanes()`, `sendKeys()`) in `src/client.ts`
+   - Use existing encoder functions or add new one to `src/protocol/encoder.ts`
+   - All methods go through `this.execute(command)` (single point of control)
+
+2. **If it's a new message type (tmux protocol change):**
+   - Add interface to `src/protocol/types.ts` (e.g., `SomeNewMessage`)
+   - Add to `TmuxMessage` union in `src/protocol/types.ts` (line 230+)
+   - Add parser function and dispatch entry to `src/protocol/parser.ts` (PARSERS map, line 234+)
+   - Add to `TmuxEventMap` in `src/emitter.ts` (line 45+)
+   - Update exports in `src/protocol/index.ts`
+
+3. **If it's event handling (subscriber wants to react to messages):**
+   - Use `client.on(eventType, handler)` — event type is autocompleted if message type exists
+   - Use `client.on("*", handler)` to consume all events
+
+**New Test:**
+
+- Protocol-only: Add to `tests/unit/parser.test.ts` with fixture file or synthetic data
+- Full integration: Add to `tests/integration/client.test.ts` (gated by `RUN_INTEGRATION`)
+- New fixture: Add `.txt` file to `tests/fixtures/` with captured tmux output
+
+**New Transport Implementation:**
+
+- Implement `TmuxTransport` interface from `src/transport/types.ts` (4 methods)
+- Export alongside `spawnTmux` or in separate module
+- No changes to core protocol or client code needed
+
+**New Utilities:**
+
+- Shared helpers: `src/protocol/` (if protocol-adjacent) or new `src/util/` (if general)
+- Transport-adjacent: `src/transport/`
+- Do NOT export from library root unless consumer-facing; use `/protocol` subpath if useful to protocol consumers
+
+## Special Directories
+
+**`dist/`:**
+- Purpose: Compiled output (JavaScript + types)
+- Generated: Yes (by `npm run build`)
+- Committed: No (in .gitignore)
+- Regenerated on: TypeScript source changes; clean build via `npm run clean`
+
+**`tests/fixtures/`:**
+- Purpose: Captured tmux protocol output for replay testing
+- Format: Plain text, line-oriented (one message per line)
+- Generated: No (hand-maintained)
+- Committed: Yes (test data)
+- When to add: When testing parser against new message types or edge cases
+
+**`.planning/codebase/`:**
+- Purpose: Auto-generated codebase documentation (architecture, structure, conventions, testing patterns)
+- Generated: Yes (by GSD agents)
+- Committed: Yes (reference for developers and agents)
+- Contents: ARCHITECTURE.md, STRUCTURE.md, CONVENTIONS.md, TESTING.md, CONCERNS.md (as applicable)
+
+---
+
+*Structure analysis: 2026-04-05*
