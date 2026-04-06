@@ -1,36 +1,27 @@
+import { observer } from "mobx-react-lite";
 import { Tabs, Badge, Group, Text } from "@mantine/core";
-import type { WindowInfo } from "../state.ts";
-import type { BridgeClient } from "../ws-client.ts";
+import type { DemoStore } from "../store.ts";
 
 interface Props {
-  readonly windows: readonly WindowInfo[];
-  readonly activeId: number | null;
-  readonly onSelect: (id: number) => void;
-  readonly sessionName: string;
-  readonly client: BridgeClient;
+  readonly store: DemoStore;
 }
 
-export function WindowTabs({ windows, activeId, onSelect, sessionName, client }: Props) {
-  if (windows.length === 0) {
+export const WindowTabs = observer(function WindowTabs({ store }: Props) {
+  const session = store.currentSession;
+  if (session === null) return null;
+  if (session.windows.length === 0) {
     return <Text c="dimmed">No windows in this session</Text>;
   }
   return (
     <Tabs
-      value={activeId === null ? undefined : String(activeId)}
+      value={store.activeWindowId === null ? undefined : String(store.activeWindowId)}
       onChange={(v) => {
         if (v === null) return;
-        const id = parseInt(v, 10);
-        onSelect(id);
-        // Make tmux switch the active window too so the view matches the
-        // user's actual session state.
-        const w = windows.find((x) => x.id === id);
-        if (w !== undefined) {
-          void client.execute(`select-window -t ${sessionName}:${w.index}`);
-        }
+        store.selectWindow(parseInt(v, 10));
       }}
     >
       <Tabs.List>
-        {windows.map((w) => (
+        {session.windows.map((w) => (
           <Tabs.Tab key={w.id} value={String(w.id)}>
             <Group gap="xs">
               <Text size="sm">
@@ -45,4 +36,4 @@ export function WindowTabs({ windows, activeId, onSelect, sessionName, client }:
       </Tabs.List>
     </Tabs>
   );
-}
+});

@@ -1,46 +1,40 @@
 import { useEffect, useRef } from "react";
+import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper, Text, Group, Badge } from "@mantine/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { WindowInfo, PaneInfo } from "../state.ts";
-import type { BridgeClient } from "../ws-client.ts";
+import type { DemoStore, PaneInfo } from "../store.ts";
 import { decodeBase64 } from "../ws-client.ts";
 import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
 
 interface Props {
-  readonly window: WindowInfo;
-  readonly sessionName: string;
-  readonly client: BridgeClient;
+  readonly store: DemoStore;
 }
 
-export function PaneView({ window: win, sessionName, client }: Props) {
-  // One grid cell per pane, each hosting an xterm.js Terminal.
+export const PaneView = observer(function PaneView({ store }: Props) {
+  const win = store.currentWindow;
+  if (win === null) return null;
   const cols = Math.min(win.panes.length, 2);
   return (
-    <SimpleGrid cols={cols > 0 ? cols : 1} spacing="xs" style={{ flex: 1, minHeight: 0 }}>
+    <SimpleGrid
+      cols={cols > 0 ? cols : 1}
+      spacing="xs"
+      style={{ flex: 1, minHeight: 0 }}
+    >
       {win.panes.map((p) => (
-        <PaneCell
-          key={p.id}
-          pane={p}
-          sessionName={sessionName}
-          windowIndex={win.index}
-          client={client}
-        />
+        <PaneCell key={p.id} pane={p} store={store} />
       ))}
     </SimpleGrid>
   );
-}
+});
 
 interface CellProps {
   readonly pane: PaneInfo;
-  readonly sessionName: string;
-  readonly windowIndex: number;
-  readonly client: BridgeClient;
+  readonly store: DemoStore;
 }
 
-function PaneCell({ pane, sessionName, windowIndex, client }: CellProps) {
+function PaneCell({ pane, store }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     if (containerRef.current === null) return;
@@ -57,23 +51,19 @@ function PaneCell({ pane, sessionName, windowIndex, client }: CellProps) {
     try {
       fit.fit();
     } catch {
-      // FitAddon throws if the container has no size yet; ignore.
+      /* container not sized yet */
     }
-    termRef.current = term;
 
-    // Forward pane output bytes into xterm for THIS pane id.
-    const unsubEvent = client.onEvent((ev: SerializedTmuxMessage) => {
-      if (ev.type === "output" && ev.paneId === pane.id) {
-        term.write(decodeBase64(ev.dataBase64));
-      } else if (ev.type === "extended-output" && ev.paneId === pane.id) {
+    const unsubEvent = store.client.onEvent((ev: SerializedTmuxMessage) => {
+      if (
+        (ev.type === "output" || ev.type === "extended-output") &&
+        ev.paneId === pane.id
+      ) {
         term.write(decodeBase64(ev.dataBase64));
       }
     });
 
-    // Forward local keystrokes to this pane via send-keys.
-    const disp = term.onData((data) => {
-      void client.sendKeys(`%${pane.id}`, data);
-    });
+    const disp = term.onData((data) => store.sendKeysToPane(pane.id, data));
 
     const ro = new ResizeObserver(() => {
       try {
@@ -89,9 +79,8 @@ function PaneCell({ pane, sessionName, windowIndex, client }: CellProps) {
       unsubEvent();
       disp.dispose();
       term.dispose();
-      termRef.current = null;
     };
-  }, [client, pane.id]);
+  }, [pane.id, store]);
 
   return (
     <Paper
@@ -103,11 +92,7 @@ function PaneCell({ pane, sessionName, windowIndex, client }: CellProps) {
         minHeight: 240,
         borderColor: pane.active ? "var(--mantine-color-teal-6)" : undefined,
       }}
-      onClick={() => {
-        void client.execute(
-          `select-pane -t ${sessionName}:${windowIndex}.${pane.index}`,
-        );
-      }}
+      onClick={() => store.selectPane(pane)}
     >
       <Group gap="xs" justify="space-between" pb={4}>
         <Text size="xs" c="dimmed">
