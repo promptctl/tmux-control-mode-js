@@ -30,6 +30,18 @@ export class BridgeClient {
   private state: "connecting" | "open" | "ready" | "closed" = "connecting";
 
   connect(url: string): void {
+    // [LAW:single-enforcer] Only one live WebSocket per client. React
+    // StrictMode double-invokes effects in dev; without this guard a
+    // second connect() would open a second socket and every event would
+    // be delivered twice to the same handlers.
+    if (
+      this.ws !== null &&
+      (this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
     this.setState("connecting");
     const ws = new WebSocket(url);
     this.ws = ws;
@@ -42,6 +54,20 @@ export class BridgeClient {
     ws.addEventListener("message", (ev) => {
       this.handleFrame(ev.data as string);
     });
+  }
+
+  disconnect(): void {
+    if (this.ws !== null) {
+      const ws = this.ws;
+      this.ws = null;
+      if (
+        ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING
+      ) {
+        ws.close();
+      }
+    }
+    this.pending.clear();
   }
 
   private handleFrame(raw: string): void {
