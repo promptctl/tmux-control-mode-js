@@ -84,7 +84,14 @@ export const App = observer(function App() {
         <NavbarResizer uiStore={uiStore} />
       </AppShell.Navbar>
 
-      <AppShell.Main>
+      <AppShell.Main
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          height: "100vh",
+          paddingTop: "calc(56px + var(--mantine-spacing-md))",
+        }}
+      >
         {currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
@@ -94,7 +101,7 @@ export const App = observer(function App() {
               : `Connecting to bridge (${connState})…`}
           </Text>
         ) : (
-          <Stack gap="sm" h="100%">
+          <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>
             <WindowTabs store={demoStore} />
             {currentWindow !== null && <PaneView store={demoStore} />}
           </Stack>
