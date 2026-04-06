@@ -275,6 +275,23 @@ export class DemoStore {
     return this.currentSession?.windows.find((w) => w.id === this.activeWindowId) ?? null;
   }
 
+  /**
+   * Map of pane id → human-readable label like "cc-dump:1.0". Computed from
+   * the current snapshot; used by the debug panel so pane events show a
+   * meaningful identifier instead of `%77`.
+   */
+  get paneLabels(): Map<number, string> {
+    const m = new Map<number, string>();
+    for (const s of this.sessions) {
+      for (const w of s.windows) {
+        for (const p of w.panes) {
+          m.set(p.id, `${s.name}:${w.index}.${p.index}`);
+        }
+      }
+    }
+    return m;
+  }
+
   get statusColor(): string {
     return this.connState === "ready"
       ? "teal"

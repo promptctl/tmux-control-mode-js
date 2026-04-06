@@ -1,34 +1,54 @@
 // examples/web-multiplexer/web/App.tsx
-// Top-level component — all UI state lives in a MobX DemoStore. Components
-// use `observer()` and read store fields directly.
+// Top-level component. Two MobX stores:
+//   - DemoStore: tmux model (sessions, windows, panes, events)
+//   - UiStore:   UI preferences (navbar width, aside collapsed, filters)
+// UiStore auto-persists to sessionStorage.
 
 import { useEffect, useMemo } from "react";
 import { observer } from "mobx-react-lite";
-import { AppShell, Group, Title, Badge, Text, Stack, Tabs } from "@mantine/core";
+import {
+  AppShell,
+  Group,
+  Title,
+  Badge,
+  Text,
+  Stack,
+  Tabs,
+  ActionIcon,
+  Tooltip,
+} from "@mantine/core";
 import { BridgeClient } from "./ws-client.ts";
 import { DemoStore } from "./store.ts";
+import { UiStore } from "./ui-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { WindowTabs } from "./components/WindowTabs.tsx";
 import { PaneView } from "./components/PaneView.tsx";
 import { DebugPanel } from "./components/DebugPanel.tsx";
 import { ErrorPanel } from "./components/ErrorPanel.tsx";
+import { NavbarResizer } from "./components/NavbarResizer.tsx";
 
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
 export const App = observer(function App() {
-  const store = useMemo(() => new DemoStore(new BridgeClient()), []);
+  const demoStore = useMemo(() => new DemoStore(new BridgeClient()), []);
+  const uiStore = useMemo(() => new UiStore(), []);
 
   useEffect(() => {
-    store.connect(WS_URL);
-  }, [store]);
+    demoStore.connect(WS_URL);
+  }, [demoStore]);
 
-  const { currentSession, currentWindow, connState, sessions, events, errors } = store;
+  const { currentSession, currentWindow, connState, sessions, events, errors } =
+    demoStore;
 
   return (
     <AppShell
       header={{ height: 56 }}
-      navbar={{ width: 260, breakpoint: 0 }}
-      aside={{ width: 380, breakpoint: 0 }}
+      navbar={{ width: uiStore.navbarWidth, breakpoint: 0 }}
+      aside={{
+        width: 420,
+        breakpoint: 0,
+        collapsed: { desktop: uiStore.asideCollapsed, mobile: uiStore.asideCollapsed },
+      }}
       padding="md"
     >
       <AppShell.Header p="sm">
@@ -43,15 +63,25 @@ export const App = observer(function App() {
             <Text size="xs" c="dimmed">
               {sessions.length} sessions
             </Text>
-            <Badge color={store.statusColor} variant="light">
+            <Badge color={demoStore.statusColor} variant="light">
               bridge: {connState}
             </Badge>
+            <Tooltip label={uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"}>
+              <ActionIcon
+                variant="subtle"
+                onClick={() => uiStore.toggleAside()}
+                aria-label="toggle debug panel"
+              >
+                {uiStore.asideCollapsed ? "◀" : "▶"}
+              </ActionIcon>
+            </Tooltip>
           </Group>
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar p="sm">
-        <SessionList store={store} />
+      <AppShell.Navbar p="sm" style={{ position: "relative" }}>
+        <SessionList store={demoStore} />
+        <NavbarResizer uiStore={uiStore} />
       </AppShell.Navbar>
 
       <AppShell.Main>
@@ -65,14 +95,17 @@ export const App = observer(function App() {
           </Text>
         ) : (
           <Stack gap="sm" h="100%">
-            <WindowTabs store={store} />
-            {currentWindow !== null && <PaneView store={store} />}
+            <WindowTabs store={demoStore} />
+            {currentWindow !== null && <PaneView store={demoStore} />}
           </Stack>
         )}
       </AppShell.Main>
 
       <AppShell.Aside p="sm">
-        <Tabs defaultValue="debug">
+        <Tabs
+          value={uiStore.activeAsideTab}
+          onChange={(v) => v !== null && uiStore.setActiveAsideTab(v)}
+        >
           <Tabs.List>
             <Tabs.Tab value="debug">Debug ({events.length})</Tabs.Tab>
             <Tabs.Tab value="errors" color={errors.length > 0 ? "red" : undefined}>
@@ -80,7 +113,7 @@ export const App = observer(function App() {
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="debug" pt="xs">
-            <DebugPanel events={events} />
+            <DebugPanel demoStore={demoStore} uiStore={uiStore} />
           </Tabs.Panel>
           <Tabs.Panel value="errors" pt="xs">
             <ErrorPanel errors={errors} />
