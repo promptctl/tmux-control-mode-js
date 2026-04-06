@@ -1,0 +1,33 @@
+{
+  "name": "tmux-control-mode-js-demo-web-multiplexer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference web multiplexer demo for tmux-control-mode-js. Not published.",
+  "scripts": {
+    "dev": "concurrently -n bridge,web -c blue,green \"npm run dev:bridge\" \"npm run dev:web\"",
+    "dev:bridge": "tsx watch server/bridge.ts",
+    "dev:web": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@mantine/core": "^7.14.0",
+    "@mantine/hooks": "^7.14.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.3",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.11"
+  }
+}

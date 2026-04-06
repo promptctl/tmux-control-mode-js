@@ -81,27 +81,27 @@ A reference consumer app in `examples/web-multiplexer/`. Proves the library inte
 
 **Library invariant — non-negotiable:**
 
-- [ ] **DEMO-INV**: The library's `package.json` `dependencies` field gains zero entries from this phase. Demo-only dependencies live in `examples/web-multiplexer/package.json` (its own workspace or standalone manifest).
+- [x] **DEMO-INV**: Library `package.json` has no `dependencies` field at all (only `devDependencies`). All demo deps live in `examples/web-multiplexer/package.json`.
 
 **Bridge architecture:**
 
-- [ ] **DEMO-01**: `examples/web-multiplexer/server/` contains a small Node.js bridge server. It instantiates `TmuxClient` against real tmux, exposes a WebSocket endpoint, forwards every `TmuxMessage` event to connected browsers as JSON, and forwards browser-sent command requests to `client.execute(...)`.
-- [ ] **DEMO-02**: The browser frontend never imports `tmux-control-mode-js` runtime code (it may import types only). All protocol work happens server-side. This proves the library's Node-only nature is not a barrier to web UIs.
+- [x] **DEMO-01**: `examples/web-multiplexer/server/bridge.ts` spawns tmux via `spawnTmux(["attach-session"])`, instantiates `TmuxClient`, forwards every TmuxMessage to connected browsers as JSON over WebSocket, and proxies browser commands (`execute`, `sendKeys`, `detach`) to the client. Smoke-tested end-to-end: `list-sessions` returned 21 real sessions from the host tmux server.
+- [x] **DEMO-02**: **Verified by bundle inspection:** `grep -l 'TmuxClient\|TmuxParser\|spawnTmux\|refreshClient\|tmuxEscape' dist/assets/*.js` returns no matches. Only `import type` statements from the library cross the browser boundary; the production Vite build strips them entirely.
 
 **Web UI:**
 
-- [ ] **DEMO-03**: `examples/web-multiplexer/web/` is a single-page browser app built with Mantine UI for chrome and xterm.js for terminal rendering.
-- [ ] **DEMO-04**: A connected user can see all tmux sessions and switch the active session by clicking.
-- [ ] **DEMO-05**: A connected user can see the windows of the active session, and within a window, see all panes with the active pane visually indicated.
-- [ ] **DEMO-06**: A connected user can click a non-active pane to make it active (sends `select-pane`).
-- [ ] **DEMO-07**: Each visible pane is a working xterm.js terminal — bytes from `%output` render correctly, keystrokes typed in the focused terminal are forwarded to the correct pane via `send-keys` (or equivalent).
-- [ ] **DEMO-08**: Protocol errors (`%error` responses, `%config-error`, transport close, parse failures) are visible in the UI as a non-modal notification or status panel.
-- [ ] **DEMO-09**: A debug/inspector panel shows raw control-mode events as they arrive (filterable by type) so the user can see what the library is observing.
+- [x] **DEMO-03**: `examples/web-multiplexer/web/` is a Vite + React + Mantine + xterm.js SPA. Entry is `main.tsx` → `App.tsx` with Mantine `AppShell` layout.
+- [x] **DEMO-04**: `SessionList` component shows all sessions from `list-sessions`, highlights the attached one, and switches `activeSession` state on click.
+- [x] **DEMO-05**: `WindowTabs` + `PaneView` show windows of the active session and panes of the active window. The active pane has a teal border + "active" badge.
+- [x] **DEMO-06**: Clicking a non-active pane sends `select-pane -t <session>:<window>.<pane>` through the bridge. Active pane updates come back through the `%window-pane-changed` event which triggers a snapshot refresh.
+- [x] **DEMO-07**: Each pane is an xterm.js `Terminal` instance. `%output`/`%extended-output` events (decoded from base64 in the browser) are written to the matching terminal. Local keystrokes in a focused terminal are forwarded via `client.sendKeys(%<paneId>, data)`.
+- [x] **DEMO-08**: Errors from the bridge and from protocol `%error` responses surface in the `ErrorPanel` (a Mantine tab in the right aside). The connection state badge in the header shows connecting/open/ready/closed.
+- [x] **DEMO-09**: `DebugPanel` shows the last 200 events, filterable by type (clickable badges). Base64 payloads are truncated to `<N b64 chars>` to keep the panel readable.
 
 **Run experience:**
 
-- [ ] **DEMO-10**: `npm run demo` (from repo root) builds and starts both the bridge server and the web frontend, then prints the URL to open. Tmux must be running on the host; the demo connects to the user's existing tmux server.
-- [ ] **DEMO-11**: README documents the demo: what it shows, how to run it, and explicit guidance that it is not production code.
+- [x] **DEMO-10**: `npm run demo` from repo root runs `npm --prefix examples/web-multiplexer run dev`, which uses `concurrently` to start the bridge (`tsx server/bridge.ts`) and Vite (`vite`). Vite proxies `/ws` to the bridge port. Open http://localhost:5173 in a browser. `npm run demo:install` is provided as a one-time install helper.
+- [x] **DEMO-11**: README "Demo" section documents `npm run demo:install` + `npm run demo`, explains the bridge architecture, and states clearly that it is not production code.
 
 ## v2 Requirements
 

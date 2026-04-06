@@ -32,6 +32,8 @@
     "test:watch": "vitest",
     "test:integration": "TMUX_INTEGRATION=1 vitest run tests/integration/",
     "test:all": "TMUX_INTEGRATION=1 vitest run",
+    "demo": "npm --prefix examples/web-multiplexer run dev",
+    "demo:install": "npm --prefix examples/web-multiplexer install",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",

@@ -1,0 +1,142 @@
+// examples/web-multiplexer/web/ws-client.ts
+// Browser-side WebSocket client with request/response correlation.
+//
+// [LAW:single-enforcer] All outbound requests and inbound event routing
+// flow through this client. Components subscribe via addEventListener;
+// they do not touch the WebSocket directly.
+
+import type {
+  ClientToServer,
+  ServerToClient,
+  SerializedTmuxMessage,
+} from "../shared/protocol.ts";
+import type { CommandResponse } from "../../../src/protocol/types.js";
+
+type EventHandler = (event: SerializedTmuxMessage) => void;
+type ErrorHandler = (message: string, id?: string) => void;
+type StateHandler = (state: "connecting" | "open" | "ready" | "closed") => void;
+
+interface Pending {
+  readonly resolve: (r: CommandResponse) => void;
+}
+
+export class BridgeClient {
+  private ws: WebSocket | null = null;
+  private readonly pending = new Map<string, Pending>();
+  private readonly eventHandlers = new Set<EventHandler>();
+  private readonly errorHandlers = new Set<ErrorHandler>();
+  private readonly stateHandlers = new Set<StateHandler>();
+  private nextId = 0;
+  private state: "connecting" | "open" | "ready" | "closed" = "connecting";
+
+  connect(url: string): void {
+    this.setState("connecting");
+    const ws = new WebSocket(url);
+    this.ws = ws;
+
+    ws.addEventListener("open", () => this.setState("open"));
+    ws.addEventListener("close", () => this.setState("closed"));
+    ws.addEventListener("error", () => {
+      this.emitError("WebSocket error");
+    });
+    ws.addEventListener("message", (ev) => {
+      this.handleFrame(ev.data as string);
+    });
+  }
+
+  private handleFrame(raw: string): void {
+    let frame: ServerToClient;
+    try {
+      frame = JSON.parse(raw) as ServerToClient;
+    } catch {
+      this.emitError("invalid JSON frame from bridge");
+      return;
+    }
+
+    if (frame.kind === "ready") {
+      this.setState("ready");
+      return;
+    }
+    if (frame.kind === "event") {
+      this.eventHandlers.forEach((h) => h(frame.event));
+      return;
+    }
+    if (frame.kind === "response") {
+      const entry = this.pending.get(frame.id);
+      if (entry !== undefined) {
+        this.pending.delete(frame.id);
+        entry.resolve(frame.response);
+      }
+      return;
+    }
+    if (frame.kind === "error") {
+      this.emitError(frame.message, frame.id);
+    }
+  }
+
+  execute(command: string): Promise<CommandResponse> {
+    return this.send({ kind: "execute", id: this.id(), command });
+  }
+
+  sendKeys(target: string, keys: string): Promise<CommandResponse> {
+    return this.send({ kind: "sendKeys", id: this.id(), target, keys });
+  }
+
+  detach(): void {
+    this.sendRaw({ kind: "detach", id: this.id() });
+  }
+
+  private send(msg: ClientToServer): Promise<CommandResponse> {
+    return new Promise((resolve) => {
+      if (msg.kind !== "detach") {
+        this.pending.set(msg.id, { resolve });
+      }
+      this.sendRaw(msg);
+    });
+  }
+
+  private sendRaw(msg: ClientToServer): void {
+    if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) {
+      this.emitError("cannot send: bridge connection is not open");
+      return;
+    }
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  private id(): string {
+    this.nextId += 1;
+    return `r${this.nextId}`;
+  }
+
+  private setState(s: "connecting" | "open" | "ready" | "closed"): void {
+    this.state = s;
+    this.stateHandlers.forEach((h) => h(s));
+  }
+
+  private emitError(message: string, id?: string): void {
+    this.errorHandlers.forEach((h) => h(message, id));
+  }
+
+  onEvent(h: EventHandler): () => void {
+    this.eventHandlers.add(h);
+    return () => this.eventHandlers.delete(h);
+  }
+
+  onError(h: ErrorHandler): () => void {
+    this.errorHandlers.add(h);
+    return () => this.errorHandlers.delete(h);
+  }
+
+  onState(h: StateHandler): () => void {
+    this.stateHandlers.add(h);
+    h(this.state);
+    return () => this.stateHandlers.delete(h);
+  }
+}
+
+export function decodeBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
