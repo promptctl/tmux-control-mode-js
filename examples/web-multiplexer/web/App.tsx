@@ -88,8 +88,7 @@ export const App = observer(function App() {
         style={{
           display: "flex",
           flexDirection: "column",
-          height: "100vh",
-          paddingTop: "calc(56px + var(--mantine-spacing-md))",
+          height: "100%",
         }}
       >
         {currentSession === null ? (
