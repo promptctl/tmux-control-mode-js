@@ -47,19 +47,18 @@ export class BridgeClient {
       drainOutbox: action,
     });
 
-    // [LAW:dataflow-not-control-flow] The data dependency "we drain the
-    // outbox when the socket is open and the outbox has items" is declared
-    // once, here. There is no imperative wiring from `ws.onopen` to a flush
-    // call. Adding a message to the outbox while the socket is open will
-    // drain it on the next microtask; opening the socket while the outbox
-    // has items will drain it then. Same reaction covers both cases.
+    // [LAW:dataflow-not-control-flow] The data dependency "drain the
+    // outbox whenever the socket is usable and the outbox has items" is
+    // declared once, here. "Usable" means `open` OR `ready` — both map to
+    // a WebSocket in OPEN readyState; `ready` just adds "tmux handshake
+    // done" on top.
     reaction(
       () => ({
-        drainable: this.state === "open" && this.outbox.length > 0,
+        usable: this.state === "open" || this.state === "ready",
         size: this.outbox.length,
       }),
       (curr) => {
-        if (curr.drainable) this.drainOutbox();
+        if (curr.usable && curr.size > 0) this.drainOutbox();
       },
       { fireImmediately: true },
     );
