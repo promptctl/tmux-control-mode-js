@@ -1,10 +1,13 @@
 // examples/web-multiplexer/web/ws-client.ts
 // Browser-side WebSocket client with request/response correlation.
 //
-// [LAW:single-enforcer] All outbound requests and inbound event routing
-// flow through this client. Components subscribe via addEventListener;
-// they do not touch the WebSocket directly.
+// State is MobX-observable. The outbox + socket-ready relationship is
+// expressed as a reaction: whenever the socket is open and the outbox is
+// non-empty, drain the outbox. No imperative "on open, flush" glue —
+// sends queue at any time and the reaction moves them to the wire when
+// the socket is ready.
 
+import { makeObservable, observable, action, reaction, runInAction } from "mobx";
 import type {
   ClientToServer,
   ServerToClient,
@@ -27,13 +30,40 @@ export class BridgeClient {
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private nextId = 0;
-  private state: "connecting" | "open" | "ready" | "closed" = "connecting";
 
-  // [LAW:single-enforcer] All sends flow through sendRaw, which queues into
-  // outbox if the socket isn't OPEN yet. The outbox is flushed when the
-  // socket opens. This means callers can fire-and-correlate commands at any
-  // time during startup without needing to gate on connection state.
-  private readonly outbox: ClientToServer[] = [];
+  // Observable state — connection state and the outbox size drive the
+  // auto-drain reaction below. `state` and `outbox` are the only pieces
+  // of MobX-observed state on this class; everything else is either a
+  // static subscriber list (events/errors) or imperative bookkeeping.
+  state: "connecting" | "open" | "ready" | "closed" = "connecting";
+  outbox: ClientToServer[] = [];
+
+  constructor() {
+    makeObservable(this, {
+      state: observable,
+      outbox: observable.shallow, // we don't observe mutations to the messages themselves
+      setState: action,
+      enqueue: action,
+      drainOutbox: action,
+    });
+
+    // [LAW:dataflow-not-control-flow] The data dependency "we drain the
+    // outbox when the socket is open and the outbox has items" is declared
+    // once, here. There is no imperative wiring from `ws.onopen` to a flush
+    // call. Adding a message to the outbox while the socket is open will
+    // drain it on the next microtask; opening the socket while the outbox
+    // has items will drain it then. Same reaction covers both cases.
+    reaction(
+      () => ({
+        drainable: this.state === "open" && this.outbox.length > 0,
+        size: this.outbox.length,
+      }),
+      (curr) => {
+        if (curr.drainable) this.drainOutbox();
+      },
+      { fireImmediately: true },
+    );
+  }
 
   connect(url: string): void {
     // [LAW:single-enforcer] Only one live WebSocket per client. React
@@ -52,22 +82,22 @@ export class BridgeClient {
     const ws = new WebSocket(url);
     this.ws = ws;
 
-    ws.addEventListener("open", () => {
-      this.setState("open");
-      this.flushOutbox();
-    });
-    ws.addEventListener("close", () => {
-      this.setState("closed");
-      // Fail any outbox entries that never made it out. Pending
-      // correlations (if any) will hang until the caller times out or
-      // reconnects — that's a caller concern, not ours.
-      if (this.outbox.length > 0) {
-        this.emitError(
-          `bridge closed with ${this.outbox.length} undelivered message(s)`,
-        );
-        this.outbox.length = 0;
-      }
-    });
+    // Each listener just pokes an observable — the reaction above handles
+    // the "what should we do about it" part. No imperative flush call
+    // lives here; the drain reaction watches state + outbox and fires
+    // automatically when the combination is drainable.
+    ws.addEventListener("open", () => this.setState("open"));
+    ws.addEventListener("close", () =>
+      runInAction(() => {
+        this.setState("closed");
+        if (this.outbox.length > 0) {
+          this.emitError(
+            `bridge closed with ${this.outbox.length} undelivered message(s)`,
+          );
+          this.outbox.splice(0, this.outbox.length);
+        }
+      }),
+    );
     ws.addEventListener("error", () => {
       this.emitError("WebSocket error");
     });
@@ -141,23 +171,28 @@ export class BridgeClient {
     });
   }
 
+  /**
+   * Single send path. Messages are always enqueued; the MobX drain
+   * reaction decides when they go to the wire based on socket state.
+   *
+   * [LAW:dataflow-not-control-flow] No branching on socket state here.
+   * The reaction is the sole effect that moves messages outward.
+   */
   private sendRaw(msg: ClientToServer): void {
-    // [LAW:dataflow-not-control-flow] Every send follows the same path.
-    // Whether it goes to the wire now or sits in outbox is a function of
-    // socket state (a value), not a skipped operation.
-    if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
-      return;
-    }
+    this.enqueue(msg);
+  }
+
+  enqueue(msg: ClientToServer): void {
     this.outbox.push(msg);
   }
 
-  private flushOutbox(): void {
+  drainOutbox(): void {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
+    const ws = this.ws;
     while (this.outbox.length > 0) {
       const msg = this.outbox.shift();
       if (msg === undefined) break;
-      this.ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(msg));
     }
   }
 
@@ -166,7 +201,7 @@ export class BridgeClient {
     return `r${this.nextId}`;
   }
 
-  private setState(s: "connecting" | "open" | "ready" | "closed"): void {
+  setState(s: "connecting" | "open" | "ready" | "closed"): void {
     this.state = s;
     this.stateHandlers.forEach((h) => h(s));
   }
