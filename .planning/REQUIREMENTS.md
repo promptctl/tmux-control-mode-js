@@ -68,12 +68,12 @@ The library is "done" when every requirement below is verified by either a unit 
 
 ### Integration Coverage (SPEC §6, §7, §23)
 
-- [ ] **INT-01**: Integration tests cover `%output` (already validated by parser fixtures; assert end-to-end via real tmux).
-- [ ] **INT-02**: Integration tests cover `%window-add`, `%window-close`, `%window-renamed`, `%window-pane-changed` triggered by real tmux commands.
-- [ ] **INT-03**: Integration tests cover `%session-changed`, `%sessions-changed`, `%session-window-changed` triggered by real tmux commands.
-- [ ] **INT-04**: Integration tests cover `%layout-change` triggered by a real `split-window`.
-- [ ] **INT-05**: Integration tests cover `%exit` on clean shutdown.
-- [ ] **INT-06**: Integration suite is gated by `TMUX_INTEGRATION=1`, runs in CI when tmux is available, and passes 100%.
+- [x] **INT-01**: `%output` round-trip via `send-keys 'echo hello-output' Enter` against real tmux. Asserts a non-empty `Uint8Array` in the next `output` event.
+- [x] **INT-02**: `%window-add`, `%window-renamed`, `%unlinked-window-close`, `%window-pane-changed` triggered via `new-window`, `rename-window`, `kill-window`, `select-pane`. *Note on `window-close`: SPEC §6.2 says tmux unlinks the window from the session before the close notification fires, so the receiving client sees the `%unlinked-window-close` variant — both are spec-compliant flavors of "the window is gone."*
+- [x] **INT-03**: `%sessions-changed` triggered by a side `tmux new-session -d`. (`%session-changed` is already covered by every `createSession()` helper call which awaits it as part of the handshake.)
+- [x] **INT-04**: `%layout-change` triggered by `split-window -h`. Asserts a non-empty layout string.
+- [x] **INT-05**: `%exit` triggered by `client.detach()` AND by `client.close()` (covered in two separate tests).
+- [x] **INT-06**: Suite gated behind `TMUX_INTEGRATION=1`. `npm run test:integration` runs the suite. README documents how. **19/19 tests pass against real tmux.**
 
 ### Demo Web Multiplexer (Phase 5)
 

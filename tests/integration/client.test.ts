@@ -300,3 +300,161 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
     15000,
   );
 });
+
+// ---------------------------------------------------------------------------
+// 3. Notification coverage (Phase 4 — every notification in SPEC §23 that we
+// can trigger end-to-end without flaky timing assumptions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wait for the next message of the given type from a client. Returns the
+ * full event object. Times out via vitest's per-test timeout.
+ */
+function nextMessage<K extends keyof import("../../src/emitter.js").TmuxEventMap>(
+  client: TmuxClient,
+  type: K,
+): Promise<import("../../src/emitter.js").TmuxEventMap[K]> {
+  return new Promise((resolve) => {
+    const handler = (ev: import("../../src/emitter.js").TmuxEventMap[K]) => {
+      client.off(type, handler);
+      resolve(ev);
+    };
+    client.on(type, handler);
+  });
+}
+
+describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
+  let sessionName: string;
+  let client: TmuxClient | null = null;
+
+  afterEach(() => {
+    client?.close();
+    client = null;
+    killSession(sessionName);
+  });
+
+  it(
+    "INT-01: receives %output bytes from a real pane",
+    async () => {
+      sessionName = uniqueSession("int-output");
+      const c = await createSession(sessionName);
+      client = c;
+      const outputPromise = nextMessage(c, "output");
+      // No target = active pane in active window of attached session.
+      await c.execute("send-keys 'echo hello-output' Enter");
+      const out = await outputPromise;
+      expect(typeof out.paneId).toBe("number");
+      expect(out.data.length).toBeGreaterThan(0);
+    },
+    15000,
+  );
+
+  it(
+    "INT-02a: %window-add fires when a new window is created",
+    async () => {
+      sessionName = uniqueSession("int-winadd");
+      const c = await createSession(sessionName);
+      client = c;
+      const evt = nextMessage(c, "window-add");
+      await c.execute("new-window");
+      const ev = await evt;
+      expect(typeof ev.windowId).toBe("number");
+    },
+    15000,
+  );
+
+  it(
+    "INT-02b: %window-renamed fires when a window is renamed",
+    async () => {
+      sessionName = uniqueSession("int-winren");
+      const c = await createSession(sessionName);
+      client = c;
+      const evt = nextMessage(c, "window-renamed");
+      await c.execute("rename-window renamed-target");
+      const ev = await evt;
+      expect(ev.name).toBe("renamed-target");
+    },
+    15000,
+  );
+
+  it(
+    "INT-02c: %unlinked-window-close fires when a window is closed",
+    async () => {
+      sessionName = uniqueSession("int-winclose");
+      const c = await createSession(sessionName);
+      client = c;
+      // Create a uniquely-named window we can target by name.
+      await c.execute("new-window -d -n closeme");
+      // Per SPEC §6.2: tmux's kill-window unlinks the window from the
+      // session BEFORE the close notification fires, so the receiving
+      // client (us) sees %unlinked-window-close, not %window-close.
+      // Both are valid spec-compliant variants of "window-close".
+      const evt = nextMessage(c, "unlinked-window-close");
+      await c.execute("kill-window -t closeme");
+      const ev = await evt;
+      expect(typeof ev.windowId).toBe("number");
+    },
+    15000,
+  );
+
+  it(
+    "INT-02d: %window-pane-changed fires when the active pane changes",
+    async () => {
+      sessionName = uniqueSession("int-paneact");
+      const c = await createSession(sessionName);
+      client = c;
+      await c.execute("split-window -h");
+      const evt = nextMessage(c, "window-pane-changed");
+      await c.execute("select-pane -t :.+");
+      const ev = await evt;
+      expect(typeof ev.windowId).toBe("number");
+      expect(typeof ev.paneId).toBe("number");
+    },
+    15000,
+  );
+
+  it(
+    "INT-03a: %sessions-changed fires when a new session is created",
+    async () => {
+      sessionName = uniqueSession("int-sescre");
+      const c = await createSession(sessionName);
+      client = c;
+      const evt = nextMessage(c, "sessions-changed");
+      const otherName = uniqueSession("int-other");
+      execSync(`tmux new-session -d -s ${otherName}`, { stdio: "ignore" });
+      await evt;
+      killSession(otherName);
+    },
+    15000,
+  );
+
+  it(
+    "INT-04: %layout-change fires after split-window",
+    async () => {
+      sessionName = uniqueSession("int-layout");
+      const c = await createSession(sessionName);
+      client = c;
+      const evt = nextMessage(c, "layout-change");
+      await c.execute("split-window -h");
+      const ev = await evt;
+      expect(typeof ev.windowId).toBe("number");
+      expect(typeof ev.windowLayout).toBe("string");
+      expect(ev.windowLayout.length).toBeGreaterThan(0);
+    },
+    15000,
+  );
+
+  it(
+    "INT-05: %exit fires on detach",
+    async () => {
+      sessionName = uniqueSession("int-exit");
+      const c = await createSession(sessionName);
+      client = c;
+      const evt = nextMessage(c, "exit");
+      c.detach();
+      await evt;
+      client = null;
+    },
+    15000,
+  );
+});

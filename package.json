@@ -30,6 +30,8 @@
     "clean": "tsc --build --clean",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
+    "test:integration": "TMUX_INTEGRATION=1 vitest run tests/integration/",
+    "test:all": "TMUX_INTEGRATION=1 vitest run",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
