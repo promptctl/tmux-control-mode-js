@@ -88,7 +88,12 @@ export const App = observer(function App() {
         style={{
           display: "flex",
           flexDirection: "column",
-          height: "100%",
+          // 100vh because Mantine AppShell's grid cell uses `min-height`,
+          // so `height: 100%` on Main never resolves. Mantine automatically
+          // adds `padding-top: var(--app-shell-header-offset)` to Main, so
+          // the content area (box minus padding-top) is viewport minus the
+          // header — which is exactly what we want.
+          height: "100vh",
         }}
       >
         {currentSession === null ? (
