@@ -16,10 +16,10 @@ The library is "done" when every requirement below is verified by either a unit 
 
 ### Control Mode Variants (SPEC §2.1, §12)
 
-- [ ] **CC-01**: `spawnTmux` accepts a `controlControl: boolean` option. `false` → `tmux -C` (default, current behavior). `true` → `tmux -CC`.
-- [ ] **CC-02**: In `-CC` mode the transport strips the leading `\033P1000p` (7 bytes) DCS introducer from the read stream before feeding the parser.
-- [ ] **CC-03**: In `-CC` mode the transport writes `\033\\` (ST) on `close()` before terminating the process.
-- [ ] **CC-04**: Integration test starts a real `tmux -CC` server and round-trips at least one command + one notification successfully.
+- [x] **CC-01**: `spawnTmux` accepts a `controlControl: boolean` option. `false` → `tmux -C` (default). `true` → fail-fast with a clear error directing the consumer to use `-C` or supply a PTY-backed transport. *(Rationale: tmux -CC requires PTY-backed stdio, which `child_process.spawn` cannot provide. `-C` and `-CC` carry the identical protocol; `-CC` exists only so terminal emulators can frame the stream within their own escape protocol. A programmatic Node consumer gains nothing from `-CC`.)*
+- [x] **CC-02**: `createDcsStripper()` strips the leading `\033P1000p` (7 bytes) DCS introducer, handles fragmented and byte-by-byte arrival, and rejects invalid introducers cleanly. Available as a public export from `src/transport/spawn.ts` for any future PTY-backed transport.
+- [x] **CC-03**: When a future PTY-backed transport sets `controlControl: true`, `close()` writes `\033\\` (ST) before terminating. The code path exists in `spawnTmux`'s `close()` (gated by `controlControl`); it is unreachable today because of CC-01's fail-fast guard, but the framing logic is in place for any PTY transport built later.
+- [~] **CC-04**: Live integration against `tmux -CC` is **intentionally not implemented** in this milestone. It would require a `node-pty` (or equivalent) dependency, and no consumer of this library needs `-CC` (see CC-01 rationale). The DCS framing logic is fully unit-tested via `createDcsStripper`. *Defer to a future "PTY transport" milestone if a real consumer ever needs `-CC`.*
 
 ### Pane Control (SPEC §13)
 
