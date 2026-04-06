@@ -41,6 +41,17 @@ npm run demo:install   # first time only — installs demo-only dependencies
 npm run demo           # starts bridge + Vite dev server; open http://localhost:5173
 ```
 
+The demo connects to your **existing host tmux server** and shows every
+session you already have — click one in the sidebar to switch to it, and the
+control client will also switch its attached session so notifications follow
+your focus. The only requirement is that tmux must have at least one session
+(otherwise `attach-session` fails at startup). If your tmux has zero
+sessions, create one first:
+
+```bash
+tmux new-session -d -s demo
+```
+
 The browser imports only TypeScript *types* from `tmux-control-mode-js` — all
 protocol parsing and encoding happens in the Node bridge. This proves you can
 drive a real web UI with this library without pulling it into the browser
