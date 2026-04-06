@@ -131,10 +131,10 @@ export const App = observer(function App() {
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="debug" pt="xs">
-            <DebugPanel demoStore={demoStore} uiStore={uiStore} />
+            <DebugPanel demoStore={demoStore} uiStore={uiStore} key="debug" />
           </Tabs.Panel>
           <Tabs.Panel value="errors" pt="xs">
-            <ErrorPanel errors={errors} />
+            <ErrorPanel demoStore={demoStore} />
           </Tabs.Panel>
         </Tabs>
       </AppShell.Aside>

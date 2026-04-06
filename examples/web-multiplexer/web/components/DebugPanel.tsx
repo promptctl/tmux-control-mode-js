@@ -5,7 +5,7 @@
 
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
@@ -18,6 +18,7 @@ interface Props {
 export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: Props) {
   const events = demoStore.events;
   const paneLabels = demoStore.paneLabels;
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
   const types = useMemo(() => {
     const s = new Set<string>();
@@ -27,8 +28,55 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
 
   const shown = events.filter((e) => !uiStore.isHidden(e.type));
 
+  async function copyToClipboard(): Promise<void> {
+    // Render the visible events to plain text using the same one-line
+    // summarizer the panel uses on screen, then write to the clipboard.
+    // Reverse so the copied output is chronological (oldest → newest)
+    // since we display newest-first on screen.
+    const text = [...shown]
+      .reverse()
+      .map((ev) => `%${ev.type} ${summarize(ev, paneLabels)}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1500);
+    } catch {
+      setCopyState("error");
+      setTimeout(() => setCopyState("idle"), 1500);
+    }
+  }
+
   return (
     <Stack gap="xs">
+      <Group gap="xs" justify="space-between">
+        <Text size="xs" c="dimmed">
+          {shown.length} of {events.length} shown
+        </Text>
+        <Group gap={4}>
+          <Button
+            size="compact-xs"
+            variant="default"
+            onClick={() => void copyToClipboard()}
+            disabled={shown.length === 0}
+          >
+            {copyState === "copied"
+              ? "copied!"
+              : copyState === "error"
+              ? "copy failed"
+              : "copy"}
+          </Button>
+          <Button
+            size="compact-xs"
+            variant="default"
+            color="red"
+            onClick={() => demoStore.clearEvents()}
+            disabled={events.length === 0}
+          >
+            clear
+          </Button>
+        </Group>
+      </Group>
       <Group gap={4} wrap="wrap">
         {types.map((t) => {
           const hidden = uiStore.isHidden(t);

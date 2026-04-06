@@ -291,6 +291,14 @@ export class DemoStore {
     this.errors = [`${stamp} — ${m}`, ...this.errors].slice(0, 50);
   }
 
+  clearEvents(): void {
+    this.events = [];
+  }
+
+  clearErrors(): void {
+    this.errors = [];
+  }
+
   // -------------------------------------------------------------------------
   // UI actions
   // -------------------------------------------------------------------------
