@@ -8,9 +8,12 @@
 import { TmuxParser } from "./protocol/parser.js";
 import {
   buildCommand,
+  refreshClientSize,
+  refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
-  tmuxEscape,
+  sendKeys as encodeSendKeys,
+  splitWindow as encodeSplitWindow,
 } from "./protocol/encoder.js";
 import type { CommandResponse, PaneAction, TmuxMessage } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
@@ -21,10 +24,9 @@ import type { TmuxTransport } from "./transport/types.js";
 // Supporting types
 // ---------------------------------------------------------------------------
 
-export interface SplitOptions {
-  readonly vertical?: boolean;
-  readonly target?: string;
-}
+// [LAW:one-source-of-truth] SplitOptions shape lives in encoder.ts; re-exported here
+// to keep TmuxClient's public API surface unchanged for consumers.
+export type { SplitOptions } from "./protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Internal correlation state
@@ -94,14 +96,22 @@ export class TmuxClient {
   // ---------------------------------------------------------------------------
 
   execute(command: string): Promise<CommandResponse> {
+    return this.sendRaw(buildCommand(command));
+  }
+
+  // [LAW:single-enforcer] Pending queue is the single correlation path for both
+  // execute() and sendRaw(). Encoder-produced wire strings (with LF) come in here;
+  // raw user commands flow through execute() which wraps them in buildCommand first.
+  private sendRaw(wire: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
       this.pending.push({ resolve, reject });
-      this.transport.send(buildCommand(command));
+      this.transport.send(wire);
     });
   }
 
   // ---------------------------------------------------------------------------
-  // Convenience methods
+  // Convenience methods — every wire string comes from src/protocol/encoder.ts
+  // [LAW:one-source-of-truth] Zero command-string formatting in this file.
   // ---------------------------------------------------------------------------
 
   listWindows(): Promise<CommandResponse> {
@@ -113,15 +123,11 @@ export class TmuxClient {
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
-    return this.execute(`send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`);
+    return this.sendRaw(encodeSendKeys(target, keys));
   }
 
-  splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {
-    // [LAW:dataflow-not-control-flow] Build flag and target strings unconditionally;
-    // variability lives in the values, not in whether the pieces are assembled.
-    const dirFlag = options.vertical === true ? "-v" : "-h";
-    const targetPart = options.target !== undefined ? ` -t ${tmuxEscape(options.target)}` : "";
-    return this.execute(`split-window ${dirFlag}${targetPart}`);
+  splitWindow(options: import("./protocol/encoder.js").SplitOptions = {}): Promise<CommandResponse> {
+    return this.sendRaw(encodeSplitWindow(options));
   }
 
   // ---------------------------------------------------------------------------
@@ -129,12 +135,11 @@ export class TmuxClient {
   // ---------------------------------------------------------------------------
 
   setSize(width: number, height: number): Promise<CommandResponse> {
-    return this.execute(`refresh-client -C ${width}x${height}`);
+    return this.sendRaw(refreshClientSize(width, height));
   }
 
   setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {
-    // [LAW:one-source-of-truth] Format mirrors encoder.ts refreshClientPaneAction body.
-    return this.execute(`refresh-client -A %${paneId}:${action}`);
+    return this.sendRaw(refreshClientPaneAction(paneId, action));
   }
 
   // ---------------------------------------------------------------------------
