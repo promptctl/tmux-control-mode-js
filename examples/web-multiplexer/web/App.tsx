@@ -79,9 +79,16 @@ export const App = observer(function App() {
         </Group>
       </AppShell.Header>
 
-      <AppShell.Navbar p="sm" style={{ position: "relative" }}>
-        <SessionList store={demoStore} />
-        <NavbarResizer uiStore={uiStore} />
+      <AppShell.Navbar p="sm">
+        {/* Wrap the navbar content in a relative-positioned full-size box
+            so the absolutely-positioned resizer handle anchors to it.
+            DO NOT set position: relative on AppShell.Navbar itself —
+            that overrides Mantine's intended fixed positioning and
+            collapses the entire AppShell layout. */}
+        <div style={{ position: "relative", height: "100%", width: "100%" }}>
+          <SessionList store={demoStore} />
+          <NavbarResizer uiStore={uiStore} />
+        </div>
       </AppShell.Navbar>
 
       <AppShell.Main
