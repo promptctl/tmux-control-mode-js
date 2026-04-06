@@ -28,17 +28,21 @@ export const SessionList = observer(function SessionList({ store }: Props) {
               key={s.id}
               active={s.id === activeSessionId}
               onClick={() => store.selectSession(s.id)}
+              py={4}
               label={
-                <Group gap="xs" justify="space-between">
-                  <Text size="sm">{s.name}</Text>
-                  {s.attached && (
-                    <Badge size="xs" color="teal" variant="light">
-                      attached
-                    </Badge>
-                  )}
+                <Group gap={6} wrap="nowrap" justify="space-between">
+                  <Text size="xs" truncate="end" style={{ flex: 1, minWidth: 0 }}>
+                    {s.name}
+                  </Text>
+                  <Badge
+                    size="xs"
+                    variant={s.attached ? "filled" : "light"}
+                    color={s.attached ? "teal" : "gray"}
+                  >
+                    {s.windows.length}
+                  </Badge>
                 </Group>
               }
-              description={`${s.windows.length} window${s.windows.length === 1 ? "" : "s"}`}
             />
           ))}
         </Stack>
