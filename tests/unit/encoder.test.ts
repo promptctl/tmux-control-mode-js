@@ -10,6 +10,11 @@ import {
   refreshClientUnsubscribe,
   sendKeys,
   splitWindow,
+  refreshClientSetFlags,
+  refreshClientClearFlags,
+  refreshClientReport,
+  refreshClientQueryClipboard,
+  detachClient,
 } from "../../src/protocol/encoder.js";
 import { PaneAction } from "../../src/protocol/types.js";
 
@@ -80,27 +85,29 @@ describe("refreshClientSize", () => {
 });
 
 describe("refreshClientPaneAction", () => {
-  it("pane 1, PaneAction.On → refresh-client -A %1:on\\n", () => {
+  // tmux's command parser splits unquoted arguments on ':', so the
+  // pane:action token must be quoted as a single argument.
+  it("pane 1, PaneAction.On — quoted pane:action token", () => {
     expect(refreshClientPaneAction(1, PaneAction.On)).toBe(
-      "refresh-client -A %1:on\n"
+      "refresh-client -A '%1:on'\n"
     );
   });
 
-  it("pane 5, PaneAction.Pause → refresh-client -A %5:pause\\n", () => {
+  it("pane 5, PaneAction.Pause", () => {
     expect(refreshClientPaneAction(5, PaneAction.Pause)).toBe(
-      "refresh-client -A %5:pause\n"
+      "refresh-client -A '%5:pause'\n"
     );
   });
 
   it("pane 3, PaneAction.Off", () => {
     expect(refreshClientPaneAction(3, PaneAction.Off)).toBe(
-      "refresh-client -A %3:off\n"
+      "refresh-client -A '%3:off'\n"
     );
   });
 
   it("pane 2, PaneAction.Continue", () => {
     expect(refreshClientPaneAction(2, PaneAction.Continue)).toBe(
-      "refresh-client -A %2:continue\n"
+      "refresh-client -A '%2:continue'\n"
     );
   });
 });
@@ -210,5 +217,93 @@ describe("splitWindow", () => {
     const result = splitWindow({ vertical: true, target: "x" });
     expect(result.endsWith("\n")).toBe(true);
     expect(result.split("\n").length).toBe(2);
+  });
+});
+
+describe("refreshClientSetFlags", () => {
+  it("single flag", () => {
+    expect(refreshClientSetFlags(["pause-after"])).toBe(
+      "refresh-client -f pause-after\n"
+    );
+  });
+
+  it("flag with value", () => {
+    expect(refreshClientSetFlags(["pause-after=2"])).toBe(
+      "refresh-client -f pause-after=2\n"
+    );
+  });
+
+  it("multiple flags comma-separated", () => {
+    expect(refreshClientSetFlags(["pause-after=2", "no-output"])).toBe(
+      "refresh-client -f pause-after=2,no-output\n"
+    );
+  });
+
+  it("disable form (! prefix passes through)", () => {
+    expect(refreshClientSetFlags(["!pause-after"])).toBe(
+      "refresh-client -f !pause-after\n"
+    );
+  });
+
+  it("ends with exactly one newline", () => {
+    const r = refreshClientSetFlags(["a"]);
+    expect(r.endsWith("\n")).toBe(true);
+    expect(r.split("\n").length).toBe(2);
+  });
+});
+
+describe("refreshClientClearFlags", () => {
+  it("single flag → !flag", () => {
+    expect(refreshClientClearFlags(["pause-after"])).toBe(
+      "refresh-client -f !pause-after\n"
+    );
+  });
+
+  it("multiple flags → !a,!b,!c", () => {
+    expect(refreshClientClearFlags(["pause-after", "no-output", "read-only"])).toBe(
+      "refresh-client -f !pause-after,!no-output,!read-only\n"
+    );
+  });
+});
+
+describe("refreshClientReport", () => {
+  // The whole `pane-id:report` token is quoted as a single argument so tmux
+  // doesn't split on the colon (same fix as -A).
+  it("simple OSC 10 color report", () => {
+    const osc = "\u001b]10;rgb:1818/1818/1818\u001b\\";
+    expect(refreshClientReport(0, osc)).toBe(
+      `refresh-client -r '%0:${osc}'\n`
+    );
+  });
+
+  it("pane id is rendered with % prefix", () => {
+    expect(refreshClientReport(5, "x")).toBe("refresh-client -r '%5:x'\n");
+  });
+
+  it("report containing single quote is properly escaped", () => {
+    expect(refreshClientReport(1, "it's")).toBe(
+      "refresh-client -r '%1:it'\\''s'\n"
+    );
+  });
+
+  it("ends with exactly one newline", () => {
+    const r = refreshClientReport(0, "a");
+    expect(r.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("refreshClientQueryClipboard", () => {
+  it("produces exact wire string", () => {
+    expect(refreshClientQueryClipboard()).toBe("refresh-client -l\n");
+  });
+});
+
+describe("detachClient", () => {
+  it("returns a single LF", () => {
+    expect(detachClient()).toBe("\n");
+  });
+
+  it("is exactly one byte", () => {
+    expect(detachClient().length).toBe(1);
   });
 });

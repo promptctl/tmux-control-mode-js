@@ -146,6 +146,129 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 1c. refresh-client surface (Phase 3 — SPEC §11, §13, §14, §15, §19)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
+  let sessionName: string;
+  let client: TmuxClient | null = null;
+
+  afterEach(() => {
+    client?.close();
+    client = null;
+    killSession(sessionName);
+  });
+
+  it(
+    "setSize accepts a non-default size",
+    async () => {
+      sessionName = uniqueSession("test-size");
+      client = await createSession(sessionName);
+      const r = await client.setSize(120, 40);
+      expect(r.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "setPaneAction(paneId, 'on') succeeds",
+    async () => {
+      sessionName = uniqueSession("test-pane");
+      client = await createSession(sessionName);
+      // Default `list-panes` output starts with the pane index; use the
+      // session-relative target form instead. Translate to a numeric pane id
+      // by parsing the first %N occurrence in default list-panes output.
+      const list = await client.execute("list-panes");
+      expect(list.success).toBe(true);
+      const match = list.output.join("\n").match(/%(\d+)/);
+      expect(match).not.toBeNull();
+      const paneId = parseInt(match![1], 10);
+      const { PaneAction } = await import("../../src/protocol/types.js");
+      const r = await client.setPaneAction(paneId, PaneAction.On);
+      expect(r.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "subscribe and unsubscribe each resolve with success",
+    async () => {
+      sessionName = uniqueSession("test-sub");
+      client = await createSession(sessionName);
+      const sub = await client.subscribe(
+        "test-sub-1",
+        "",
+        "#{pane_current_command}",
+      );
+      expect(sub.success).toBe(true);
+      const unsub = await client.unsubscribe("test-sub-1");
+      expect(unsub.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "setFlags(['pause-after=2']) and clearFlags(['pause-after']) both succeed",
+    async () => {
+      sessionName = uniqueSession("test-flag");
+      client = await createSession(sessionName);
+      const setR = await client.setFlags(["pause-after=2"]);
+      expect(setR.success).toBe(true);
+      const clearR = await client.clearFlags(["pause-after"]);
+      expect(clearR.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "queryClipboard returns a successful response",
+    async () => {
+      sessionName = uniqueSession("test-clip");
+      client = await createSession(sessionName);
+      const r = await client.queryClipboard();
+      // Note: contents may be empty in a CI/headless environment; success is
+      // about the protocol round-trip, not the clipboard payload.
+      expect(r.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "requestReport succeeds against an existing pane",
+    async () => {
+      sessionName = uniqueSession("test-rep");
+      client = await createSession(sessionName);
+      const list = await client.execute("list-panes");
+      const match = list.output.join("\n").match(/%(\d+)/);
+      expect(match).not.toBeNull();
+      const paneId = parseInt(match![1], 10);
+      const r = await client.requestReport(
+        paneId,
+        "\u001b]11;rgb:1818/1818/1818\u001b\\",
+      );
+      expect(r.success).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "detach() causes tmux to send %exit and the transport to close",
+    async () => {
+      sessionName = uniqueSession("test-det");
+      const c = await createSession(sessionName);
+      client = c;
+      const exitPromise = new Promise<void>((resolve) => {
+        c.on("exit", () => resolve());
+      });
+      c.detach();
+      await exitPromise;
+      client = null;
+    },
+    15000,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 2. Lifecycle events
 // ---------------------------------------------------------------------------
 

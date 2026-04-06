@@ -12,6 +12,11 @@ import {
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
+  refreshClientSetFlags,
+  refreshClientClearFlags,
+  refreshClientReport,
+  refreshClientQueryClipboard,
+  detachClient,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
 } from "./protocol/encoder.js";
@@ -143,15 +148,86 @@ export class TmuxClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Fire-and-forget subscriptions
+  // Subscriptions (SPEC §14)
+  //
+  // These now go through the correlation queue like every other command.
+  // Each call resolves with the %end confirmation from tmux. Use the typed
+  // event subscribers (client.on("subscription-changed", ...)) to receive
+  // value updates over time — those are notifications and arrive
+  // independently of the subscribe/unsubscribe acknowledgement.
   // ---------------------------------------------------------------------------
 
-  subscribe(name: string, what: string, format: string): void {
-    this.transport.send(refreshClientSubscribe(name, what, format));
+  subscribe(name: string, what: string, format: string): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientSubscribe(name, what, format));
   }
 
-  unsubscribe(name: string): void {
-    this.transport.send(refreshClientUnsubscribe(name));
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientUnsubscribe(name));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Client flags (SPEC §9)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Set client flags. Each entry is a flag name as documented in SPEC §9
+   * (e.g., `"pause-after"`, `"pause-after=2"`, `"no-output"`, `"read-only"`).
+   * Prefix with `!` to disable, or use `clearFlags()` for that case.
+   */
+  setFlags(flags: readonly string[]): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientSetFlags(flags));
+  }
+
+  /**
+   * Clear client flags. Convenience for `setFlags(flags.map(f => "!" + f))`.
+   */
+  clearFlags(flags: readonly string[]): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientClearFlags(flags));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reports (SPEC §15)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Provide a terminal report (typically OSC 10/11 color responses) to tmux
+   * on behalf of a pane. The `report` string is the raw escape-sequence
+   * payload (e.g., `"\u001b]10;rgb:1818/1818/1818\u001b\\"`).
+   */
+  requestReport(paneId: number, report: string): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientReport(paneId, report));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Clipboard query (SPEC §19)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ask tmux to query the terminal's clipboard via OSC 52. Resolves with the
+   * `%end` acknowledgement; clipboard contents arrive separately through the
+   * terminal's response channel and are not delivered through this Promise.
+   */
+  queryClipboard(): Promise<CommandResponse> {
+    return this.sendRaw(refreshClientQueryClipboard());
+  }
+
+  // ---------------------------------------------------------------------------
+  // Detach (SPEC §4.1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Politely detach the client by sending a single LF on stdin (the SPEC §4.1
+   * detach trigger). tmux responds by sending `%exit` and disconnecting.
+   *
+   * Distinct from `close()`: `detach()` asks tmux to disconnect cleanly,
+   * while `close()` kills the underlying transport. Prefer `detach()` for
+   * graceful shutdown; use `close()` if you need to terminate immediately.
+   *
+   * Fire-and-forget: tmux does not produce a `%begin`/`%end` pair for the
+   * empty-line detach signal, so this method does not return a Promise.
+   */
+  detach(): void {
+    this.transport.send(detachClient());
   }
 
   // ---------------------------------------------------------------------------
