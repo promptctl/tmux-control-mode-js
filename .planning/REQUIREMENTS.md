@@ -75,19 +75,42 @@ The library is "done" when every requirement below is verified by either a unit 
 - [ ] **INT-05**: Integration tests cover `%exit` on clean shutdown.
 - [ ] **INT-06**: Integration suite is gated by `TMUX_INTEGRATION=1`, runs in CI when tmux is available, and passes 100%.
 
+### Demo Web Multiplexer (Phase 5)
+
+A reference consumer app in `examples/web-multiplexer/`. Proves the library integrates cleanly with a UI without forcing UI dependencies into the library.
+
+**Library invariant — non-negotiable:**
+
+- [ ] **DEMO-INV**: The library's `package.json` `dependencies` field gains zero entries from this phase. Demo-only dependencies live in `examples/web-multiplexer/package.json` (its own workspace or standalone manifest).
+
+**Bridge architecture:**
+
+- [ ] **DEMO-01**: `examples/web-multiplexer/server/` contains a small Node.js bridge server. It instantiates `TmuxClient` against real tmux, exposes a WebSocket endpoint, forwards every `TmuxMessage` event to connected browsers as JSON, and forwards browser-sent command requests to `client.execute(...)`.
+- [ ] **DEMO-02**: The browser frontend never imports `tmux-control-mode-js` runtime code (it may import types only). All protocol work happens server-side. This proves the library's Node-only nature is not a barrier to web UIs.
+
+**Web UI:**
+
+- [ ] **DEMO-03**: `examples/web-multiplexer/web/` is a single-page browser app built with Mantine UI for chrome and xterm.js for terminal rendering.
+- [ ] **DEMO-04**: A connected user can see all tmux sessions and switch the active session by clicking.
+- [ ] **DEMO-05**: A connected user can see the windows of the active session, and within a window, see all panes with the active pane visually indicated.
+- [ ] **DEMO-06**: A connected user can click a non-active pane to make it active (sends `select-pane`).
+- [ ] **DEMO-07**: Each visible pane is a working xterm.js terminal — bytes from `%output` render correctly, keystrokes typed in the focused terminal are forwarded to the correct pane via `send-keys` (or equivalent).
+- [ ] **DEMO-08**: Protocol errors (`%error` responses, `%config-error`, transport close, parse failures) are visible in the UI as a non-modal notification or status panel.
+- [ ] **DEMO-09**: A debug/inspector panel shows raw control-mode events as they arrive (filterable by type) so the user can see what the library is observing.
+
+**Run experience:**
+
+- [ ] **DEMO-10**: `npm run demo` (from repo root) builds and starts both the bridge server and the web frontend, then prints the URL to open. Tmux must be running on the host; the demo connects to the user's existing tmux server.
+- [ ] **DEMO-11**: README documents the demo: what it shows, how to run it, and explicit guidance that it is not production code.
+
 ## v2 Requirements
 
 Deferred — not in scope for this milestone.
 
-### Terminal Integration
+### Library Terminal Integration
 
-- **TERM-01**: `TerminalEmulator` interface for routing pane output to a terminal emulator (xterm.js, etc.)
-- **TERM-02**: `PaneManager` for multiplexing multiple panes
-- **TERM-03**: Reference Electron + xterm.js example app
-
-### Browser Transport
-
-- **WS-01**: WebSocket transport for browser environments
+- **TERM-01**: `TerminalEmulator` interface in the library proper (currently the demo proves the pattern lives outside the library)
+- **TERM-02**: Generic browser/WebSocket transport in `src/transport/`
 
 ## Out of Scope
 
@@ -137,10 +160,22 @@ Deferred — not in scope for this milestone.
 | INT-04 | Phase 4 | Pending |
 | INT-05 | Phase 4 | Pending |
 | INT-06 | Phase 4 | Pending |
+| DEMO-INV | Phase 5 | Pending |
+| DEMO-01 | Phase 5 | Pending |
+| DEMO-02 | Phase 5 | Pending |
+| DEMO-03 | Phase 5 | Pending |
+| DEMO-04 | Phase 5 | Pending |
+| DEMO-05 | Phase 5 | Pending |
+| DEMO-06 | Phase 5 | Pending |
+| DEMO-07 | Phase 5 | Pending |
+| DEMO-08 | Phase 5 | Pending |
+| DEMO-09 | Phase 5 | Pending |
+| DEMO-10 | Phase 5 | Pending |
+| DEMO-11 | Phase 5 | Pending |
 
 **Coverage:**
-- v1 requirements: 35 total
-- Mapped to phases: 35
+- v1 requirements: 47 total
+- Mapped to phases: 47
 - Unmapped: 0 ✓
 
 ---

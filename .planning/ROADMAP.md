@@ -1,19 +1,20 @@
 # Roadmap: tmux-control-mode-js
 
 **Created:** 2026-04-05
-**Granularity:** Coarse (4 phases)
-**Goal:** Achieve full `SPEC.md` compliance — every protocol behavior implemented and machine-verified.
+**Granularity:** Coarse (5 phases)
+**Goal:** Achieve full `SPEC.md` compliance and ship a reference web-multiplexer demo that proves the integration pattern — without dragging UI dependencies into the library.
 
 ## Phase Overview
 
 | # | Phase | Goal | Requirements | Plans (est.) |
 |---|-------|------|--------------|--------------|
-| 1 | Encoder Consolidation | Single source of truth for all client→server commands | ENC-01..04 | 1-2 |
-| 2 | `-CC` DCS Mode | Support `tmux -CC` variant with DCS framing | CC-01..04 | 1-2 |
-| 3 | refresh-client Surface | Complete pane control, subscriptions, size, flags, reports, clipboard, detach | PANE-01..03, SUB-01..04, SIZE-01..02, FLAG-01..03, REP-01..02, CLIP-01..02, FLOW-01..02, DET-01..03 | 2-3 |
-| 4 | Integration Test Pass | Verify every notification + command against real tmux | INT-01..06 | 1-2 |
+| 1 | Encoder Consolidation | Single source of truth for all client→server commands | ENC-01..04 (4) | 1-2 |
+| 2 | `-CC` DCS Mode | Support `tmux -CC` variant with DCS framing | CC-01..04 (4) | 1-2 |
+| 3 | refresh-client Surface | Complete pane control, subscriptions, size, flags, reports, clipboard, detach | 16 reqs | 2-3 |
+| 4 | Integration Test Pass | Verify every notification + command against real tmux | INT-01..06 (6) | 1-2 |
+| 5 | Demo Web Multiplexer | Reference consumer: Node bridge + xterm.js + Mantine web UI | DEMO-INV, DEMO-01..11 (12) | 2-3 |
 
-**Total v1 requirements:** 35
+**Total v1 requirements:** 47
 **Coverage:** 100% — every requirement maps to exactly one phase ✓
 
 ---
@@ -97,25 +98,75 @@
 
 ---
 
+## Phase 5: Demo Web Multiplexer
+
+**Goal:** Ship a reference consumer app at `examples/web-multiplexer/` that proves the library integrates with a real web UI. Bridge server (Node.js) consumes `TmuxClient` and exposes it over WebSocket; browser frontend (Mantine + xterm.js) renders sessions/windows/panes and forwards keystrokes back. The library's `package.json` `dependencies` gains nothing.
+
+**Why last:** A demo that exercises a half-finished library produces noisy bug reports. With Phases 1–4 complete, every issue surfaced by the demo is unambiguously a demo issue, not a library issue. The demo is also the final smoke test — if a real UI can be built on top of the library without contortion, the API is good.
+
+**Requirements:** DEMO-INV, DEMO-01..11 (12 total)
+
+**Architecture:**
+
+```
+┌─────────────────────────┐                    ┌─────────────────────────┐
+│ Browser (web/)          │                    │ Bridge server (server/) │
+│ - Mantine chrome        │  ◄── WebSocket ──► │ - Node.js               │
+│ - xterm.js terminals    │  JSON frames       │ - Imports TmuxClient    │
+│ - No library import     │                    │ - Manages real tmux     │
+└─────────────────────────┘                    └─────────────┬───────────┘
+                                                             │
+                                                             ▼
+                                                     ┌───────────────┐
+                                                     │ tmux server   │
+                                                     │ (host's own)  │
+                                                     └───────────────┘
+```
+
+**Success criteria (observable):**
+1. `git diff main package.json` shows zero new entries under `dependencies` (devDependencies are fine for repo tooling). All demo-only deps live under `examples/web-multiplexer/`.
+2. `npm run demo` from the repo root starts both the bridge server and the web frontend, prints a URL, and connecting to that URL in a browser shows the multiplexer UI within ~2 seconds.
+3. Manual smoke check (the only one in this whole milestone — unavoidable for a UI demo):
+   - Can see ≥1 tmux session and switch between them if multiple exist
+   - Can see windows of active session
+   - Can see panes of active window with active pane visually marked
+   - Clicking a different pane changes the active pane (verified via tmux echoing the change)
+   - Typing into a focused xterm.js pane shows up in tmux (verified by `cat` or `read` in the pane)
+   - Triggering an error (e.g., sending an invalid command via a debug input) shows up in the UI error panel
+   - Debug/inspector panel shows live `%output`, `%window-*`, `%session-*` events
+4. The browser bundle imports zero runtime code from `tmux-control-mode-js` (types-only imports allowed). Verifiable via bundler analysis.
+5. README has a "Demo" section documenting how to run it and what to expect.
+
+**Touches:** `examples/web-multiplexer/server/` (new), `examples/web-multiplexer/web/` (new), `examples/web-multiplexer/package.json` (new), root `package.json` (workspace + `demo` script), `README.md`
+
+**Splits naturally into 2-3 plans:**
+- Plan 5a: Bridge server — WebSocket protocol, message forwarding, command handling, error surfacing
+- Plan 5b: Web UI — Mantine layout, session/window/pane navigation, xterm.js wiring, error panel, debug inspector
+- Plan 5c: Glue — root `npm run demo` script, README, smoke check, polish
+
+---
+
 ## Dependencies
 
 ```
-Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4
-   (encoder)    (DCS)      (surface)    (verify)
+Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Phase 5
+ (encoder)    (DCS)     (surface)    (verify)     (demo)
 ```
 
-Phase 1 must precede Phase 3 (encoder consolidation). Phase 2 is technically independent of Phase 1 but is sequenced before Phase 3 so that the integration tests added in Phase 3 can target either mode.
+Phase 1 must precede Phase 3 (encoder consolidation). Phase 2 is sequenced before Phase 3 so Phase 3's integration tests can target either mode. Phase 5 follows Phase 4 so the demo exercises a known-good library.
 
 ---
 
 ## Definition of Done (Milestone)
 
-When all 4 phases are complete:
+When all 5 phases are complete:
 
-- ✓ Every server→client message in SPEC §23 is parsed correctly (already validated by unit tests; re-verified by integration tests in Phase 4)
+- ✓ Every server→client message in SPEC §23 is parsed correctly (validated by unit tests + integration tests in Phase 4)
 - ✓ Every client→server command described in SPEC §13–§15, §19 has an encoder function and a client method
 - ✓ Both `-C` and `-CC` mode variants work end-to-end
 - ✓ Integration suite passes 100% against real tmux
+- ✓ Library's runtime `dependencies` are unchanged from project start (no Electron, no xterm.js, no UI framework)
+- ✓ Reference web multiplexer at `examples/web-multiplexer/` demonstrates integration via Node bridge + browser frontend, runnable via `npm run demo`
 - ✓ A consumer can `npm install tmux-control-mode-js` and use it without reading tmux source
 
 ---

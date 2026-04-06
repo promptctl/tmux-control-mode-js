@@ -37,12 +37,15 @@ These are the gaps between the current codebase and full `SPEC.md` compliance. E
 - [ ] **`pause-after` flow control wired through client** (SPEC §16). Setting `pause-after=N` and reacting to `%pause`/`%continue` events with a usable client API.
 - [ ] **Empty-line detach** (SPEC §4.1). `client.detach()` distinct from `client.close()` — sends `\n` to trigger `CLIENT_EXIT`.
 - [ ] **Integration test pass against real tmux** for every notification type in SPEC §23 and every client→server command exposed by the library. Gated by `TMUX_INTEGRATION=1`. This is the machine-verifiable definition of "done."
+- [ ] **Demo web multiplexer** — an example web app in `examples/web-multiplexer/` that proves the library integrates cleanly with a real UI: xterm.js terminals, Mantine UI chrome, a small Node.js bridge server consuming `TmuxClient` and forwarding messages to the browser via WebSocket. The library itself remains Node-only with zero UI/Electron dependencies; the demo is a pure consumer.
 
 ### Out of Scope
 
-- **Terminal emulation / xterm.js / Electron example** — `IMPL.md` describes a future terminal-integration layer; not part of protocol-compliance milestone. — *not required by SPEC.md*
+- **Library-level Electron, xterm.js, or UI dependencies** — the library must remain a pure Node.js protocol library. The demo app is a consumer in `examples/`, not part of the library's runtime deps. — *non-negotiable: a UI-agnostic library is the whole point*
+- **Generic WebSocket transport in the library itself** — the demo's bridge is specific to the demo. A general-purpose browser transport may come later if a real consumer needs it. — *avoid speculative abstraction*
+- **Terminal emulation layer in the library** (`IMPL.md`'s `terminal/` directory, `PaneManager`, `TerminalEmulator` interface) — the demo proves the integration pattern without baking it into the library. — *consumers integrate however they want; the library stays minimal*
+- **Production deployment of the demo** — the demo is a functional example, not a deployable product. No auth, no multi-user, no hardening. — *its job is to verify the API, not to be shipped*
 - **High-level convenience methods unrelated to control mode** (e.g., wrappers for arbitrary tmux commands beyond what the spec covers). Consumers can call `client.execute("any-tmux-command")`. — *scope is the protocol, not the tmux command surface*
-- **Browser/WebSocket transport** — protocol layer is already runtime-agnostic; concrete browser transport deferred. — *no consumer driving it yet*
 - **Backwards-compat with older tmux versions** — SPEC.md targets `next-3.7` (commit `5c30b145`); behavior outside that is out of scope. — *spec is the contract*
 
 ## Context

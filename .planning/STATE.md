@@ -22,6 +22,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-05)
 | 2 | `-CC` DCS Mode | ○ Pending |
 | 3 | refresh-client Surface | ○ Pending |
 | 4 | Integration Test Pass | ○ Pending |
+| 5 | Demo Web Multiplexer | ○ Pending |
 
 ## Workflow Config
 
