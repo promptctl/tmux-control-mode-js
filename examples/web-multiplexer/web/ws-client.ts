@@ -29,6 +29,12 @@ export class BridgeClient {
   private nextId = 0;
   private state: "connecting" | "open" | "ready" | "closed" = "connecting";
 
+  // [LAW:single-enforcer] All sends flow through sendRaw, which queues into
+  // outbox if the socket isn't OPEN yet. The outbox is flushed when the
+  // socket opens. This means callers can fire-and-correlate commands at any
+  // time during startup without needing to gate on connection state.
+  private readonly outbox: ClientToServer[] = [];
+
   connect(url: string): void {
     // [LAW:single-enforcer] Only one live WebSocket per client. React
     // StrictMode double-invokes effects in dev; without this guard a
@@ -46,8 +52,22 @@ export class BridgeClient {
     const ws = new WebSocket(url);
     this.ws = ws;
 
-    ws.addEventListener("open", () => this.setState("open"));
-    ws.addEventListener("close", () => this.setState("closed"));
+    ws.addEventListener("open", () => {
+      this.setState("open");
+      this.flushOutbox();
+    });
+    ws.addEventListener("close", () => {
+      this.setState("closed");
+      // Fail any outbox entries that never made it out. Pending
+      // correlations (if any) will hang until the caller times out or
+      // reconnects — that's a caller concern, not ours.
+      if (this.outbox.length > 0) {
+        this.emitError(
+          `bridge closed with ${this.outbox.length} undelivered message(s)`,
+        );
+        this.outbox.length = 0;
+      }
+    });
     ws.addEventListener("error", () => {
       this.emitError("WebSocket error");
     });
@@ -122,11 +142,23 @@ export class BridgeClient {
   }
 
   private sendRaw(msg: ClientToServer): void {
-    if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) {
-      this.emitError("cannot send: bridge connection is not open");
+    // [LAW:dataflow-not-control-flow] Every send follows the same path.
+    // Whether it goes to the wire now or sits in outbox is a function of
+    // socket state (a value), not a skipped operation.
+    if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
       return;
     }
-    this.ws.send(JSON.stringify(msg));
+    this.outbox.push(msg);
+  }
+
+  private flushOutbox(): void {
+    if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
+    while (this.outbox.length > 0) {
+      const msg = this.outbox.shift();
+      if (msg === undefined) break;
+      this.ws.send(JSON.stringify(msg));
+    }
   }
 
   private id(): string {
