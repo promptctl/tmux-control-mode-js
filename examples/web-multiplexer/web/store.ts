@@ -1,9 +1,27 @@
 // examples/web-multiplexer/web/store.ts
-// MobX store for the demo. One store, observable, consumes a BridgeClient
-// and exposes the session/window/pane model + UI selection state.
 //
-// Components are `observer()` wrapped; they read store fields directly and
-// re-render automatically when MobX observes the mutation.
+// DemoStore — reactive tmux model driven entirely by tmux subscriptions
+// (SPEC §14: refresh-client -B). No polling. No explicit refresh calls.
+//
+// Design:
+//   - On bridge ready, we install three format subscriptions:
+//       "sessions" → one record per session
+//       "windows"  → one record per (session × window)
+//       "panes"    → one record per (session × window × pane)
+//     Each uses tmux's nested loop syntax (`#{S:...}`, `#{W:...}`, `#{P:...}`)
+//     so a single subscription emits the full collection of that entity.
+//
+//   - tmux pushes %subscription-changed events whenever the data changes,
+//     rate-limited to once per second per subscription. The store handles
+//     each event by re-parsing the delivered value and replacing the
+//     corresponding observable collection. MobX observers re-render.
+//
+//   - Pane output (%output, %extended-output) is unrelated to subscriptions;
+//     the PaneView component subscribes to those events directly.
+//
+// This is the canonical reactive pattern for a tmux control-mode consumer:
+// zero polling, zero explicit queries after startup, the UI is a pure
+// function of tmux's pushed state.
 
 import { makeAutoObservable, runInAction } from "mobx";
 import { BridgeClient } from "./ws-client.ts";
@@ -33,26 +51,43 @@ export interface SessionInfo {
 
 type ConnState = "connecting" | "open" | "ready" | "closed";
 
-const STRUCTURAL_EVENTS = new Set<string>([
-  "window-add",
-  "window-close",
-  "window-renamed",
-  "window-pane-changed",
-  "unlinked-window-add",
-  "unlinked-window-close",
-  "unlinked-window-renamed",
-  "session-changed",
-  "session-renamed",
-  "sessions-changed",
-  "session-window-changed",
-  "layout-change",
-]);
+// ---------------------------------------------------------------------------
+// Subscription format strings
+//
+// Record separator: literal 2-char `\n` (tmux preserves my backslash-n as-is
+// in the delivered value, so I split on the 2-char sequence in JS).
+// Field separator: `|`.
+//
+// Known limitation: if a session/window/pane name contains the literal
+// 2-char sequence `\n` OR the character `|`, parsing will be wrong for that
+// record. For a canonical demo against a reasonable tmux server this is
+// fine; production consumers should pick unambiguous separators or use
+// length-prefixed encoding.
+// ---------------------------------------------------------------------------
 
-function parseLines(
-  output: readonly string[],
+const SESSIONS_FORMAT =
+  "'#{S:#{session_id}|#{session_name}|#{session_attached}\\n}'";
+
+const WINDOWS_FORMAT =
+  "'#{S:#{W:#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}\\n}}'";
+
+const PANES_FORMAT =
+  "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_title}\\n}}}'";
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+function stripPrefix(raw: string): number {
+  return parseInt(raw.replace(/^[$@%]/, ""), 10);
+}
+
+function parseRecords(
+  value: string,
   keys: readonly string[],
 ): Array<Record<string, string>> {
-  return output
+  return value
+    .split("\\n") // literal 2-char backslash-n (tmux preserves it)
     .filter((l) => l.length > 0)
     .map((line) => {
       const parts = line.split("|");
@@ -64,14 +99,10 @@ function parseLines(
     });
 }
 
-function stripPrefix(raw: string): number {
-  return parseInt(raw.replace(/^[$@%]/, ""), 10);
-}
+// ---------------------------------------------------------------------------
+// DemoStore
+// ---------------------------------------------------------------------------
 
-/**
- * Single observable store for the whole demo. Components read from this
- * store via `observer()` and never subscribe to the BridgeClient directly.
- */
 export class DemoStore {
   connState: ConnState = "connecting";
   sessions: SessionInfo[] = [];
@@ -82,30 +113,172 @@ export class DemoStore {
 
   readonly client: BridgeClient;
 
+  // Raw latest subscription values, kept as observable fields so the
+  // assembled `sessions` collection can be rebuilt lazily in one place.
+  private latestSessions: string | null = null;
+  private latestWindows: string | null = null;
+  private latestPanes: string | null = null;
+
   constructor(client: BridgeClient) {
     this.client = client;
     makeAutoObservable(this, { client: false });
   }
 
-  /** Wire the store to the BridgeClient and open the connection. */
   connect(url: string): void {
     this.client.onState((s) => runInAction(() => this.onStateChange(s)));
     this.client.onError((m) => runInAction(() => this.pushError(m)));
-    this.client.onEvent((ev) => {
-      runInAction(() => this.pushEvent(ev));
-      // Structural events trigger a snapshot refresh. Don't put this inside
-      // runInAction because refresh is async.
-      if (STRUCTURAL_EVENTS.has(ev.type)) {
-        void this.refresh();
-      }
-    });
+    this.client.onEvent((ev) => runInAction(() => this.handleEvent(ev)));
     this.client.connect(url);
   }
+
+  // -------------------------------------------------------------------------
+  // Connection lifecycle
+  // -------------------------------------------------------------------------
 
   private onStateChange(s: ConnState): void {
     this.connState = s;
     if (s === "ready") {
-      void this.refresh();
+      this.installSubscriptions();
+    }
+  }
+
+  /**
+   * Install the three tmux subscriptions that drive the entire model.
+   * tmux pushes `%subscription-changed` events whenever the data changes,
+   * so there is no need to ever poll after this.
+   */
+  private async installSubscriptions(): Promise<void> {
+    try {
+      await Promise.all([
+        this.client.execute(`refresh-client -B sessions::${SESSIONS_FORMAT}`),
+        this.client.execute(`refresh-client -B windows::${WINDOWS_FORMAT}`),
+        this.client.execute(`refresh-client -B panes::${PANES_FORMAT}`),
+      ]);
+    } catch (err) {
+      runInAction(() =>
+        this.pushError(
+          `subscribe failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Event handling
+  // -------------------------------------------------------------------------
+
+  private handleEvent(ev: SerializedTmuxMessage): void {
+    this.pushEvent(ev);
+    if (ev.type === "subscription-changed") {
+      this.applySubscription(ev.name, ev.value);
+    }
+    // All other events (%window-*, %session-*, %output, etc.) are purely
+    // informational here — the subscriptions already drive the model.
+    // The debug panel still shows them for visibility.
+  }
+
+  private applySubscription(name: string, value: string): void {
+    if (name === "sessions") {
+      this.latestSessions = value;
+    } else if (name === "windows") {
+      this.latestWindows = value;
+    } else if (name === "panes") {
+      this.latestPanes = value;
+    } else {
+      return; // unknown subscription name — ignore
+    }
+    this.rebuildModel();
+  }
+
+  /**
+   * Rebuild the session/window/pane tree from the latest three subscription
+   * values. Called whenever any of them changes. This is a pure function of
+   * the three strings; the UI updates automatically via MobX.
+   */
+  private rebuildModel(): void {
+    // If any subscription hasn't arrived yet, leave the model empty.
+    if (
+      this.latestSessions === null ||
+      this.latestWindows === null ||
+      this.latestPanes === null
+    ) {
+      return;
+    }
+
+    const sessionRows = parseRecords(this.latestSessions, ["sid", "name", "attached"]);
+    const windowRows = parseRecords(this.latestWindows, [
+      "sid",
+      "wid",
+      "idx",
+      "name",
+      "active",
+    ]);
+    const paneRows = parseRecords(this.latestPanes, [
+      "wid",
+      "pid",
+      "idx",
+      "active",
+      "title",
+    ]);
+
+    const panesByWindow = new Map<string, PaneInfo[]>();
+    for (const p of paneRows) {
+      const list = panesByWindow.get(p.wid) ?? [];
+      list.push({
+        id: stripPrefix(p.pid),
+        index: parseInt(p.idx, 10),
+        active: p.active === "1",
+        title: p.title,
+      });
+      panesByWindow.set(p.wid, list);
+    }
+
+    const windowsBySession = new Map<string, WindowInfo[]>();
+    for (const w of windowRows) {
+      const list = windowsBySession.get(w.sid) ?? [];
+      list.push({
+        id: stripPrefix(w.wid),
+        index: parseInt(w.idx, 10),
+        name: w.name,
+        active: w.active === "1",
+        panes: panesByWindow.get(w.wid) ?? [],
+      });
+      windowsBySession.set(w.sid, list);
+    }
+
+    const built: SessionInfo[] = sessionRows.map((s) => ({
+      id: stripPrefix(s.sid),
+      name: s.name,
+      attached: s.attached !== "0" && s.attached !== "",
+      windows: (windowsBySession.get(s.sid) ?? []).sort(
+        (a, b) => a.index - b.index,
+      ),
+    }));
+
+    this.sessions = built;
+
+    // Reconcile UI focus with the new model.
+    const stillExists =
+      this.activeSessionId !== null &&
+      built.some((s) => s.id === this.activeSessionId);
+    if (!stillExists) {
+      const attached = built.find((s) => s.attached) ?? built[0];
+      this.activeSessionId = attached?.id ?? null;
+    }
+
+    const currentSession = built.find((s) => s.id === this.activeSessionId);
+    if (currentSession !== undefined) {
+      const stillExistsW =
+        this.activeWindowId !== null &&
+        currentSession.windows.some((w) => w.id === this.activeWindowId);
+      if (!stillExistsW) {
+        this.activeWindowId =
+          currentSession.windows.find((w) => w.active)?.id ??
+          currentSession.windows[0]?.id ??
+          null;
+      }
+    } else {
+      this.activeWindowId = null;
     }
   }
 
@@ -118,129 +291,15 @@ export class DemoStore {
     this.errors = [`${stamp} — ${m}`, ...this.errors].slice(0, 50);
   }
 
-  /** Re-query tmux state and rebuild the session/window/pane model. */
-  async refresh(): Promise<void> {
-    try {
-      const [sessionsR, windowsR, panesR] = await Promise.all([
-        this.client.execute(
-          "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
-        ),
-        this.client.execute(
-          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}'",
-        ),
-        this.client.execute(
-          "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_title}'",
-        ),
-      ]);
-
-      console.log("[snapshot] sessions:", sessionsR.success, sessionsR.output.length);
-      console.log("[snapshot] windows:", windowsR.success, windowsR.output.length);
-      console.log("[snapshot] panes:", panesR.success, panesR.output.length);
-
-      if (!sessionsR.success || !windowsR.success || !panesR.success) {
-        const first = [sessionsR, windowsR, panesR].find((r) => !r.success);
-        throw new Error(
-          `tmux query failed: ${first?.output.join(" ") ?? "(no detail)"}`,
-        );
-      }
-
-      const sessionRows = parseLines(sessionsR.output, ["sid", "name", "attached"]);
-      const windowRows = parseLines(windowsR.output, [
-        "sid",
-        "wid",
-        "idx",
-        "name",
-        "active",
-      ]);
-      const paneRows = parseLines(panesR.output, [
-        "wid",
-        "pid",
-        "idx",
-        "active",
-        "title",
-      ]);
-
-      const panesByWindow = new Map<string, PaneInfo[]>();
-      for (const p of paneRows) {
-        const list = panesByWindow.get(p.wid) ?? [];
-        list.push({
-          id: stripPrefix(p.pid),
-          index: parseInt(p.idx, 10),
-          active: p.active === "1",
-          title: p.title,
-        });
-        panesByWindow.set(p.wid, list);
-      }
-
-      const windowsBySession = new Map<string, WindowInfo[]>();
-      for (const w of windowRows) {
-        const list = windowsBySession.get(w.sid) ?? [];
-        list.push({
-          id: stripPrefix(w.wid),
-          index: parseInt(w.idx, 10),
-          name: w.name,
-          active: w.active === "1",
-          panes: panesByWindow.get(w.wid) ?? [],
-        });
-        windowsBySession.set(w.sid, list);
-      }
-
-      const built: SessionInfo[] = sessionRows.map((s) => ({
-        id: stripPrefix(s.sid),
-        name: s.name,
-        attached: s.attached !== "0" && s.attached !== "",
-        windows: (windowsBySession.get(s.sid) ?? []).sort(
-          (a, b) => a.index - b.index,
-        ),
-      }));
-
-      console.log("[snapshot] built", built.length, "sessions");
-
-      runInAction(() => {
-        this.sessions = built;
-
-        // Keep or initialize activeSessionId
-        const stillExists =
-          this.activeSessionId !== null &&
-          built.some((s) => s.id === this.activeSessionId);
-        if (!stillExists) {
-          const attached = built.find((s) => s.attached) ?? built[0];
-          this.activeSessionId = attached?.id ?? null;
-        }
-
-        // Keep or initialize activeWindowId
-        const currentSession = built.find(
-          (s) => s.id === this.activeSessionId,
-        );
-        if (currentSession !== undefined) {
-          const stillExistsW =
-            this.activeWindowId !== null &&
-            currentSession.windows.some((w) => w.id === this.activeWindowId);
-          if (!stillExistsW) {
-            this.activeWindowId =
-              currentSession.windows.find((w) => w.active)?.id ??
-              currentSession.windows[0]?.id ??
-              null;
-          }
-        } else {
-          this.activeWindowId = null;
-        }
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("[snapshot] failed:", err);
-      runInAction(() => this.pushError(`snapshot failed: ${msg}`));
-    }
-  }
-
   // -------------------------------------------------------------------------
   // UI actions
   // -------------------------------------------------------------------------
 
   selectSession(id: number): void {
     this.activeSessionId = id;
-    // Tell the control client to follow the UI's focus so notifications
-    // arrive for the session the user is looking at.
+    // Tell the control client to follow the UI's focus so session-scoped
+    // notifications arrive for the session the user is looking at.
+    // Session id `$N` is accepted directly by `switch-client -t`.
     void this.client.execute(`switch-client -t \\$${id}`);
   }
 
@@ -267,18 +326,24 @@ export class DemoStore {
     void this.client.sendKeys(`%${paneId}`, data);
   }
 
+  // -------------------------------------------------------------------------
+  // Derived state
+  // -------------------------------------------------------------------------
+
   get currentSession(): SessionInfo | null {
     return this.sessions.find((s) => s.id === this.activeSessionId) ?? null;
   }
 
   get currentWindow(): WindowInfo | null {
-    return this.currentSession?.windows.find((w) => w.id === this.activeWindowId) ?? null;
+    return (
+      this.currentSession?.windows.find((w) => w.id === this.activeWindowId) ??
+      null
+    );
   }
 
   /**
    * Map of pane id → human-readable label like "cc-dump:1.0". Computed from
-   * the current snapshot; used by the debug panel so pane events show a
-   * meaningful identifier instead of `%77`.
+   * the current model; used by the debug panel to render pane events.
    */
   get paneLabels(): Map<number, string> {
     const m = new Map<number, string>();

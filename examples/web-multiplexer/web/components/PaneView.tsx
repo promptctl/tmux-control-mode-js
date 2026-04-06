@@ -37,7 +37,16 @@ function PaneCell({ pane, store }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (containerRef.current === null) return;
+    const container = containerRef.current;
+    if (container === null) return;
+
+    // `disposed` guards every operation on the terminal so late-arriving
+    // events (base64 writes, resize-observer fires, animation-frame
+    // callbacks) don't touch the terminal after cleanup. React StrictMode
+    // double-invokes effects in dev — without this guard, the first
+    // terminal's disposed state gets hit by a stray write and xterm
+    // throws `_renderer.value.dimensions` is undefined.
+    let disposed = false;
     const term = new Terminal({
       convertEol: false,
       cursorBlink: true,
@@ -47,34 +56,51 @@ function PaneCell({ pane, store }: CellProps) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(containerRef.current);
-    try {
-      fit.fit();
-    } catch {
-      /* container not sized yet */
-    }
+    term.open(container);
+
+    // Defer initial fit until the next animation frame — at mount time the
+    // container may not have been laid out yet and fit() would throw.
+    const rafId = requestAnimationFrame(() => {
+      if (disposed) return;
+      try {
+        fit.fit();
+      } catch {
+        /* container still not sized; ignore */
+      }
+    });
 
     const unsubEvent = store.client.onEvent((ev: SerializedTmuxMessage) => {
+      if (disposed) return;
       if (
         (ev.type === "output" || ev.type === "extended-output") &&
         ev.paneId === pane.id
       ) {
-        term.write(decodeBase64(ev.dataBase64));
+        try {
+          term.write(decodeBase64(ev.dataBase64));
+        } catch {
+          /* write-on-disposed; swallow */
+        }
       }
     });
 
-    const disp = term.onData((data) => store.sendKeysToPane(pane.id, data));
+    const disp = term.onData((data) => {
+      if (disposed) return;
+      store.sendKeysToPane(pane.id, data);
+    });
 
     const ro = new ResizeObserver(() => {
+      if (disposed) return;
       try {
         fit.fit();
       } catch {
         /* no-op */
       }
     });
-    ro.observe(containerRef.current);
+    ro.observe(container);
 
     return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
       ro.disconnect();
       unsubEvent();
       disp.dispose();
