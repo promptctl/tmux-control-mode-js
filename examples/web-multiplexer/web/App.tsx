@@ -137,7 +137,13 @@ export function App() {
         <SessionList
           sessions={sessions}
           activeId={activeSession}
-          onSelect={setActiveSession}
+          onSelect={(id) => {
+            setActiveSession(id);
+            // Tell the control client to switch its attached session so that
+            // session-scoped notifications (e.g. %layout-change) follow the
+            // UI's focus. By-id target works because tmux accepts "$<n>".
+            void client.execute(`switch-client -t \\$${id}`);
+          }}
         />
       </AppShell.Navbar>
 
