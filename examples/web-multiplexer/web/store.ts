@@ -122,12 +122,20 @@ export class DemoStore {
   constructor(client: BridgeClient) {
     this.client = client;
     makeAutoObservable(this, { client: false });
-  }
 
-  connect(url: string): void {
+    // [LAW:single-enforcer] Wire BridgeClient subscribers EXACTLY ONCE in
+    // the constructor (which only runs once via React's useMemo). Wiring
+    // them in connect() would register a fresh handler each time React
+    // StrictMode invokes the connect-effect, causing every event to fire
+    // every duplicate handler — ie every event would be processed N times.
     this.client.onState((s) => runInAction(() => this.onStateChange(s)));
     this.client.onError((m) => runInAction(() => this.pushError(m)));
     this.client.onEvent((ev) => runInAction(() => this.handleEvent(ev)));
+  }
+
+  connect(url: string): void {
+    // BridgeClient.connect() is itself idempotent — a second call while
+    // an existing socket is OPEN/CONNECTING is a no-op.
     this.client.connect(url);
   }
 
