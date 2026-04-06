@@ -8,6 +8,8 @@ import {
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
+  sendKeys,
+  splitWindow,
 } from "../../src/protocol/encoder.js";
 import { PaneAction } from "../../src/protocol/types.js";
 
@@ -142,5 +144,71 @@ describe("refreshClientUnsubscribe", () => {
   it("always appends exactly one newline", () => {
     const result = refreshClientUnsubscribe("x");
     expect(result.endsWith("\n")).toBe(true);
+  });
+});
+
+describe("sendKeys", () => {
+  it("simple target and keys → exact wire string", () => {
+    expect(sendKeys("%1", "hello")).toBe("send-keys -t '%1' -l 'hello'\n");
+  });
+
+  it("target with single quote is properly escaped", () => {
+    expect(sendKeys("it's", "x")).toBe("send-keys -t 'it'\\''s' -l 'x'\n");
+  });
+
+  it("keys containing $(cmd) pass through inert in single quotes", () => {
+    expect(sendKeys("%2", "$(rm -rf /)")).toBe(
+      "send-keys -t '%2' -l '$(rm -rf /)'\n"
+    );
+  });
+
+  it("keys with single quote are properly escaped", () => {
+    expect(sendKeys("%0", "a'b")).toBe("send-keys -t '%0' -l 'a'\\''b'\n");
+  });
+
+  it("always ends with exactly one newline", () => {
+    const result = sendKeys("%1", "x");
+    expect(result.endsWith("\n")).toBe(true);
+    expect(result.split("\n").length).toBe(2);
+  });
+});
+
+describe("splitWindow", () => {
+  it("default options → horizontal split", () => {
+    expect(splitWindow()).toBe("split-window -h\n");
+  });
+
+  it("explicit empty options → horizontal split", () => {
+    expect(splitWindow({})).toBe("split-window -h\n");
+  });
+
+  it("vertical: true → -v", () => {
+    expect(splitWindow({ vertical: true })).toBe("split-window -v\n");
+  });
+
+  it("vertical: false → -h (explicit)", () => {
+    expect(splitWindow({ vertical: false })).toBe("split-window -h\n");
+  });
+
+  it("target only", () => {
+    expect(splitWindow({ target: "%2" })).toBe("split-window -h -t '%2'\n");
+  });
+
+  it("vertical and target", () => {
+    expect(splitWindow({ vertical: true, target: "main" })).toBe(
+      "split-window -v -t 'main'\n"
+    );
+  });
+
+  it("target with single quote is properly escaped", () => {
+    expect(splitWindow({ target: "it's" })).toBe(
+      "split-window -h -t 'it'\\''s'\n"
+    );
+  });
+
+  it("always ends with exactly one newline", () => {
+    const result = splitWindow({ vertical: true, target: "x" });
+    expect(result.endsWith("\n")).toBe(true);
+    expect(result.split("\n").length).toBe(2);
   });
 });
