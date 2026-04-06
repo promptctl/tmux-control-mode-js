@@ -1,5 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { NavLink, Stack, Text, Badge, Group } from "@mantine/core";
+import { NavLink, Stack, Text, Badge, Group, ScrollArea } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
 
 interface Props {
@@ -17,28 +17,32 @@ export const SessionList = observer(function SessionList({ store }: Props) {
     );
   }
   return (
-    <Stack gap={2}>
+    <Stack gap={0} h="100%" style={{ minHeight: 0 }}>
       <Text fw={600} size="xs" c="dimmed" tt="uppercase" pb="xs">
         Sessions ({sessions.length})
       </Text>
-      {sessions.map((s) => (
-        <NavLink
-          key={s.id}
-          active={s.id === activeSessionId}
-          onClick={() => store.selectSession(s.id)}
-          label={
-            <Group gap="xs" justify="space-between">
-              <Text size="sm">{s.name}</Text>
-              {s.attached && (
-                <Badge size="xs" color="teal" variant="light">
-                  attached
-                </Badge>
-              )}
-            </Group>
-          }
-          description={`${s.windows.length} window${s.windows.length === 1 ? "" : "s"}`}
-        />
-      ))}
+      <ScrollArea style={{ flex: 1, minHeight: 0 }} type="auto" offsetScrollbars>
+        <Stack gap={2}>
+          {sessions.map((s) => (
+            <NavLink
+              key={s.id}
+              active={s.id === activeSessionId}
+              onClick={() => store.selectSession(s.id)}
+              label={
+                <Group gap="xs" justify="space-between">
+                  <Text size="sm">{s.name}</Text>
+                  {s.attached && (
+                    <Badge size="xs" color="teal" variant="light">
+                      attached
+                    </Badge>
+                  )}
+                </Group>
+              }
+              description={`${s.windows.length} window${s.windows.length === 1 ? "" : "s"}`}
+            />
+          ))}
+        </Stack>
+      </ScrollArea>
     </Stack>
   );
 });
