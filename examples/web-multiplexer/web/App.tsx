@@ -114,7 +114,9 @@ export const App = observer(function App() {
         ) : (
           <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>
             <WindowTabs store={demoStore} />
-            {currentWindow !== null && <PaneView store={demoStore} />}
+            {currentWindow !== null && (
+              <PaneView store={demoStore} uiStore={uiStore} />
+            )}
           </Stack>
         )}
       </AppShell.Main>

@@ -9,14 +9,16 @@ import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper } from "@mantine/core";
 import type { DemoStore, PaneInfo } from "../store.ts";
+import type { UiStore } from "../ui-store.ts";
 import { PaneTerminal } from "../pane-terminal.ts";
 import { PaneToolbar } from "./PaneToolbar.tsx";
 
 interface Props {
   readonly store: DemoStore;
+  readonly uiStore: UiStore;
 }
 
-export const PaneView = observer(function PaneView({ store }: Props) {
+export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   const win = store.currentWindow;
   if (win === null) return null;
   const cols = Math.min(win.panes.length, 2);
@@ -27,7 +29,7 @@ export const PaneView = observer(function PaneView({ store }: Props) {
       style={{ flex: 1, minHeight: 0 }}
     >
       {win.panes.map((p) => (
-        <PaneCell key={p.id} pane={p} store={store} />
+        <PaneCell key={p.id} pane={p} store={store} uiStore={uiStore} />
       ))}
     </SimpleGrid>
   );
@@ -36,31 +38,29 @@ export const PaneView = observer(function PaneView({ store }: Props) {
 interface CellProps {
   readonly pane: PaneInfo;
   readonly store: DemoStore;
+  readonly uiStore: UiStore;
 }
 
-const PaneCell = observer(function PaneCell({ pane, store }: CellProps) {
+const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // PaneTerminal lifecycle is tied to the mount effect, NOT to useMemo.
   // React StrictMode double-invokes effects in dev (mount → cleanup →
-  // mount). If we used useMemo the same PaneTerminal instance would be
-  // disposed and then re-mounted, which a disposed instance refuses →
-  // silent dead terminal. Creating a fresh instance on each effect run
-  // makes StrictMode re-mounting safe, and costs one extra capture-pane
-  // round-trip in dev mode only.
+  // mount). Creating a fresh instance on each effect run makes StrictMode
+  // safe at the cost of one extra capture-pane in dev only.
   const [terminal, setTerminal] = useState<PaneTerminal | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
-    const t = new PaneTerminal(pane.id, store);
+    const t = new PaneTerminal(pane.id, store, uiStore);
     t.mount(container);
     setTerminal(t);
     return () => {
       t.dispose();
       setTerminal(null);
     };
-  }, [pane.id, store]);
+  }, [pane.id, store, uiStore]);
 
   return (
     <Paper
@@ -74,14 +74,12 @@ const PaneCell = observer(function PaneCell({ pane, store }: CellProps) {
       }}
       onClick={() => store.selectPane(pane)}
     >
-      <PaneToolbar pane={pane} store={store} terminal={terminal} />
+      <PaneToolbar pane={pane} uiStore={uiStore} terminal={terminal} />
       <div
         ref={containerRef}
         style={{
           flex: 1,
           minHeight: 0,
-          // Horizontal scrolling is forbidden per the plan; vertical is
-          // xterm-internal. The container clips anything stray.
           overflow: "hidden",
         }}
       />

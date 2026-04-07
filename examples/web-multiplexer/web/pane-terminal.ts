@@ -42,6 +42,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { decodeBase64, BridgeClient } from "./ws-client.ts";
 import type { DemoStore, PaneInfo } from "./store.ts";
+import type { UiStore } from "./ui-store.ts";
 import type { SerializedTmuxMessage } from "../shared/protocol.ts";
 
 type LifeState = "idle" | "seeding" | "live" | "disposed";
@@ -176,6 +177,7 @@ export function dimensionsForContainer(
 export class PaneTerminal {
   readonly paneId: number;
   private readonly store: DemoStore;
+  private readonly uiStore: UiStore;
   private readonly client: BridgeClient;
 
   // Observable container box, set by a ResizeObserver inside `mount()`.
@@ -200,9 +202,10 @@ export class PaneTerminal {
   private state: LifeState = "idle";
   private buffer: Uint8Array[] = [];
 
-  constructor(paneId: number, store: DemoStore) {
+  constructor(paneId: number, store: DemoStore, uiStore: UiStore) {
     this.paneId = paneId;
     this.store = store;
+    this.uiStore = uiStore;
     this.client = store.client;
   }
 
@@ -270,12 +273,12 @@ export class PaneTerminal {
     this.ro.observe(container);
 
     // THE sizing reaction. Declared once; fires whenever pane dims OR
-    // container dims change.
+    // the user's chosen font size change.
     //
-    // [LAW:dataflow-not-control-flow] Derived state: font size and term
-    // cols/rows are a pure function of (tmux pane w/h, container w/h).
-    // The reaction declares that dependency and runs applySizing as the
-    // effect. Nowhere else in the codebase does xterm get resized.
+    // [LAW:dataflow-not-control-flow] Derived state: xterm cols/rows
+    // come from tmux, font size comes from UiStore. Both are observable.
+    // Reaction declares the dependency and runs applySizing as the effect.
+    // Nowhere else in the codebase does xterm get resized.
     this.disposers.push(
       reaction(
         () => {
@@ -283,13 +286,12 @@ export class PaneTerminal {
           return {
             cols: p?.width ?? 0,
             rows: p?.height ?? 0,
-            cw: this.containerBox.w,
-            ch: this.containerBox.h,
+            font: this.uiStore.terminalFontSize,
           };
         },
-        ({ cols, rows, cw, ch }) => {
-          if (cols <= 0 || rows <= 0 || cw <= 0 || ch <= 0) return;
-          this.applySizing(cols, rows, cw, ch);
+        ({ cols, rows, font }) => {
+          if (cols <= 0 || rows <= 0) return;
+          this.applySizing(cols, rows, font);
         },
         { fireImmediately: true },
       ),
@@ -373,46 +375,20 @@ export class PaneTerminal {
   }
 
   /**
-   * Compute font size and apply it. Also calls `term.resize(cols, rows)`
-   * so absolute cursor positioning in apps like Claude Code lands on the
-   * right cells.
+   * Apply the user's chosen font size and the tmux pane's cols × rows.
+   * The container clips overflow if needed; the user chooses the font
+   * size manually via the toolbar +/- buttons (no auto-fit math).
    */
-  private applySizing(
-    cols: number,
-    rows: number,
-    containerW: number,
-    containerH: number,
-  ): void {
-    if (this.term === null || this.fit === null) return;
+  private applySizing(cols: number, rows: number, font: number): void {
+    if (this.term === null) return;
     const term = this.term;
-
-    const font = fitFontSize(cols, rows, containerW, containerH);
     term.options.fontSize = font;
-    // xterm recalculates cell metrics when fontSize changes, then we
-    // force the cols/rows to match tmux exactly.
     term.resize(cols, rows);
-
-    // FitAddon would normally choose cols/rows from font+container. We
-    // don't want that — cols/rows come from tmux. But fit.fit() also
-    // reflows the rendered cell pixel sizes to match the new font, which
-    // we DO want. Call it and then re-assert our cols/rows if it drifted.
-    try {
-      this.fit.fit();
-      if (term.cols !== cols || term.rows !== rows) {
-        term.resize(cols, rows);
-      }
-    } catch {
-      /* container not yet laid out; harmless */
-    }
-
     runInAction(() => {
       this.status.currentFontSize = font;
       this.status.appliedCols = cols;
       this.status.appliedRows = rows;
-      // "Oversized" = the tmux pane is too big to fit at a comfortable
-      // (≥ 10 px) font size. That's the signal to highlight the toolbar
-      // resize button.
-      this.status.oversized = font < 10;
+      this.status.oversized = false;
     });
   }
 

@@ -1,47 +1,28 @@
 // examples/web-multiplexer/web/components/PaneToolbar.tsx
 //
-// Per-pane toolbar shown above each xterm. Displays the current tmux pane
-// dimensions and exposes a single "Resize" button that does the obvious
-// right thing in either direction:
-//
-//   - If the tmux pane is too big to fit at a readable font, the button
-//     SHRINKS the pane until it fills the browser cell at the maximum
-//     readable font size (16 px).
-//   - If the tmux pane is small (rendering at 16 px in a much larger
-//     cell), the button GROWS the pane until it fills the browser cell
-//     at 16 px.
-//
-// Both directions converge on the same target: tmux pane = max cols × rows
-// that fits the cell at 16 px. The button is "do what I want" — one click,
-// always correct.
+// Per-pane toolbar shown above each xterm. Displays current pane dimensions
+// + font size, and exposes manual font-size controls (− / + buttons) that
+// affect ALL pane terminals simultaneously via the UiStore. Font size is
+// persisted across reloads.
 
 import { observer } from "mobx-react-lite";
-import { Group, Text, Button, Badge, Tooltip } from "@mantine/core";
-import type { DemoStore, PaneInfo } from "../store.ts";
+import { Group, Text, Badge, ActionIcon, Tooltip } from "@mantine/core";
+import type { PaneInfo } from "../store.ts";
+import type { UiStore } from "../ui-store.ts";
 import type { PaneTerminal } from "../pane-terminal.ts";
-import { dimensionsForContainer } from "../pane-terminal.ts";
 
 interface Props {
   readonly pane: PaneInfo;
-  readonly store: DemoStore;
+  readonly uiStore: UiStore;
   readonly terminal: PaneTerminal | null;
 }
 
 export const PaneToolbar = observer(function PaneToolbar({
   pane,
-  store,
+  uiStore,
   terminal,
 }: Props) {
-  const font = terminal?.status.currentFontSize ?? null;
-  const oversized = terminal?.status.oversized === true;
-
-  function handleResize(): void {
-    if (terminal === null) return;
-    const { w, h } = terminal.containerDimensions;
-    if (w <= 0 || h <= 0) return;
-    const { cols, rows } = dimensionsForContainer(w, h);
-    store.resizePane(pane.id, cols, rows);
-  }
+  const font = terminal?.status.currentFontSize ?? uiStore.terminalFontSize;
 
   return (
     <Group gap="xs" justify="space-between" pb={4} wrap="nowrap">
@@ -55,20 +36,40 @@ export const PaneToolbar = observer(function PaneToolbar({
           </Badge>
         )}
       </Group>
-      <Group gap="xs" wrap="nowrap">
+      <Group gap={4} wrap="nowrap">
         <Text size="xs" c="dimmed" style={{ fontFamily: "monospace" }}>
           {pane.width}×{pane.height}
-          {font !== null && ` · ${font}px`}
         </Text>
-        <Tooltip label="Resize tmux pane to fit this cell at the maximum readable font size">
-          <Button
-            size="compact-xs"
-            variant={oversized ? "filled" : "default"}
-            color={oversized ? "teal" : undefined}
-            onClick={handleResize}
+        <Tooltip label="Smaller font">
+          <ActionIcon
+            size="xs"
+            variant="default"
+            onClick={(e) => {
+              e.stopPropagation();
+              uiStore.decreaseTerminalFontSize();
+            }}
           >
-            Resize
-          </Button>
+            −
+          </ActionIcon>
+        </Tooltip>
+        <Text
+          size="xs"
+          c="dimmed"
+          style={{ fontFamily: "monospace", minWidth: 30, textAlign: "center" }}
+        >
+          {font}px
+        </Text>
+        <Tooltip label="Larger font">
+          <ActionIcon
+            size="xs"
+            variant="default"
+            onClick={(e) => {
+              e.stopPropagation();
+              uiStore.increaseTerminalFontSize();
+            }}
+          >
+            +
+          </ActionIcon>
         </Tooltip>
       </Group>
     </Group>

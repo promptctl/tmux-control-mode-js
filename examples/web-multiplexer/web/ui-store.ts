@@ -14,13 +14,18 @@ interface PersistedShape {
   asideCollapsed: boolean;
   hiddenEventTypes: string[];
   activeAsideTab: string;
+  terminalFontSize: number;
 }
+
+const TERMINAL_FONT_MIN = 6;
+const TERMINAL_FONT_MAX = 24;
 
 const DEFAULTS: PersistedShape = {
   navbarWidth: 260,
   asideCollapsed: false,
   hiddenEventTypes: [],
   activeAsideTab: "debug",
+  terminalFontSize: 13,
 };
 
 function loadFromStorage(): PersistedShape {
@@ -46,6 +51,12 @@ function loadFromStorage(): PersistedShape {
         typeof parsed.activeAsideTab === "string"
           ? parsed.activeAsideTab
           : DEFAULTS.activeAsideTab,
+      terminalFontSize:
+        typeof parsed.terminalFontSize === "number" &&
+        parsed.terminalFontSize >= TERMINAL_FONT_MIN &&
+        parsed.terminalFontSize <= TERMINAL_FONT_MAX
+          ? parsed.terminalFontSize
+          : DEFAULTS.terminalFontSize,
     };
   } catch {
     return DEFAULTS;
@@ -58,12 +69,14 @@ export class UiStore {
   // Use a plain object instead of a Set for MobX observability ease + JSON.
   hiddenEventTypes: Record<string, true> = {};
   activeAsideTab: string;
+  terminalFontSize: number;
 
   constructor() {
     const initial = loadFromStorage();
     this.navbarWidth = initial.navbarWidth;
     this.asideCollapsed = initial.asideCollapsed;
     this.activeAsideTab = initial.activeAsideTab;
+    this.terminalFontSize = initial.terminalFontSize;
     for (const t of initial.hiddenEventTypes) this.hiddenEventTypes[t] = true;
 
     makeAutoObservable(this);
@@ -75,6 +88,7 @@ export class UiStore {
         asideCollapsed: this.asideCollapsed,
         hiddenEventTypes: Object.keys(this.hiddenEventTypes).sort(),
         activeAsideTab: this.activeAsideTab,
+        terminalFontSize: this.terminalFontSize,
       }),
       (snapshot) => {
         try {
@@ -85,6 +99,18 @@ export class UiStore {
       },
       { delay: 100 },
     );
+  }
+
+  increaseTerminalFontSize(): void {
+    this.terminalFontSize = Math.min(TERMINAL_FONT_MAX, this.terminalFontSize + 1);
+  }
+
+  decreaseTerminalFontSize(): void {
+    this.terminalFontSize = Math.max(TERMINAL_FONT_MIN, this.terminalFontSize - 1);
+  }
+
+  resetTerminalFontSize(): void {
+    this.terminalFontSize = DEFAULTS.terminalFontSize;
   }
 
   setNavbarWidth(w: number): void {
