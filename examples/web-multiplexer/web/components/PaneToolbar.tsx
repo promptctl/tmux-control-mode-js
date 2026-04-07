@@ -1,17 +1,25 @@
 // examples/web-multiplexer/web/components/PaneToolbar.tsx
 //
 // Per-pane toolbar shown above each xterm. Displays the current tmux pane
-// dimensions and exposes a "Resize pane to fit browser" button that uses
-// the library to drive tmux (not just observe it). When the pane is
-// oversized for its container — meaning the rendered font had to drop
-// below 10 px to avoid horizontal clipping — the button is highlighted
-// with a teal pulse to invite the user to resize.
+// dimensions and exposes a single "Resize" button that does the obvious
+// right thing in either direction:
+//
+//   - If the tmux pane is too big to fit at a readable font, the button
+//     SHRINKS the pane until it fills the browser cell at the maximum
+//     readable font size (16 px).
+//   - If the tmux pane is small (rendering at 16 px in a much larger
+//     cell), the button GROWS the pane until it fills the browser cell
+//     at 16 px.
+//
+// Both directions converge on the same target: tmux pane = max cols × rows
+// that fits the cell at 16 px. The button is "do what I want" — one click,
+// always correct.
 
 import { observer } from "mobx-react-lite";
 import { Group, Text, Button, Badge, Tooltip } from "@mantine/core";
 import type { DemoStore, PaneInfo } from "../store.ts";
 import type { PaneTerminal } from "../pane-terminal.ts";
-import { comfortableDimensionsForContainer } from "../pane-terminal.ts";
+import { dimensionsForContainer } from "../pane-terminal.ts";
 
 interface Props {
   readonly pane: PaneInfo;
@@ -31,7 +39,7 @@ export const PaneToolbar = observer(function PaneToolbar({
     if (terminal === null) return;
     const { w, h } = terminal.containerDimensions;
     if (w <= 0 || h <= 0) return;
-    const { cols, rows } = comfortableDimensionsForContainer(w, h);
+    const { cols, rows } = dimensionsForContainer(w, h);
     store.resizePane(pane.id, cols, rows);
   }
 
@@ -52,13 +60,7 @@ export const PaneToolbar = observer(function PaneToolbar({
           {pane.width}×{pane.height}
           {font !== null && ` · ${font}px`}
         </Text>
-        <Tooltip
-          label={
-            oversized
-              ? "Pane is too big for this cell — click to ask tmux to resize"
-              : "Resize tmux pane to match this cell at a comfortable font size"
-          }
-        >
+        <Tooltip label="Resize tmux pane to fit this cell at the maximum readable font size">
           <Button
             size="compact-xs"
             variant={oversized ? "filled" : "default"}

@@ -121,8 +121,7 @@ if (typeof document !== "undefined" && "fonts" in document) {
 // ---------------------------------------------------------------------------
 
 const FONT_MIN = 6;
-const FONT_MAX = 20;
-const FONT_COMFORTABLE = 13;
+const FONT_MAX = 16;
 
 /**
  * Largest integer font size in [FONT_MIN, FONT_MAX] such that cols × rows
@@ -147,16 +146,24 @@ function fitFontSize(
 }
 
 /**
- * Given container pixel size, compute the comfortable (cols, rows) that
- * would fit at FONT_COMFORTABLE (13 px). Used by the "Resize pane to fit
- * browser" button.
+ * Inverse of `fitFontSize`: given a target font size and container, return
+ * the (cols, rows) that exactly fill the container at that font size.
+ *
+ * Used by the "Resize" toolbar button — clicking it computes the cols/rows
+ * that would fill the container at FONT_MAX (16 px), then sends
+ * `resize-pane` to tmux with those values. After tmux resizes, the
+ * `applySizing` reaction picks the largest font in [FONT_MIN, FONT_MAX]
+ * that fits — which will be FONT_MAX, by construction.
+ *
+ * Result: clicking Resize gives you the maximum reasonable font size with
+ * the tmux pane filling the entire browser cell. No wasted pixels.
  */
-export function comfortableDimensionsForContainer(
+export function dimensionsForContainer(
   containerW: number,
   containerH: number,
 ): { cols: number; rows: number } {
   const { charW, charH } = getBaseMetrics();
-  const scale = FONT_COMFORTABLE / 12;
+  const scale = FONT_MAX / 12;
   const cols = Math.max(1, Math.floor(containerW / (charW * scale)));
   const rows = Math.max(1, Math.floor(containerH / (charH * scale)));
   return { cols, rows };
@@ -179,7 +186,7 @@ export class PaneTerminal {
   // toolbar can highlight the resize button.
   readonly status = observable({
     oversized: false,
-    currentFontSize: FONT_COMFORTABLE,
+    currentFontSize: FONT_MAX,
     appliedCols: 0,
     appliedRows: 0,
   });
@@ -215,7 +222,7 @@ export class PaneTerminal {
       convertEol: false,
       cursorBlink: true,
       fontFamily: FONT_FAMILY,
-      fontSize: FONT_COMFORTABLE,
+      fontSize: FONT_MAX,
       scrollback: 10000,
       theme: { background: "#0b1120" },
       // We drive cols/rows manually from tmux; xterm's initial 80×24
