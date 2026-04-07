@@ -1,0 +1,27 @@
+/* examples/web-multiplexer/web/fonts.css
+ *
+ * JetBrains Mono Nerd Font — "Mono" variant (all glyphs forced to single-
+ * cell width, required for terminal column alignment). Bundled as a
+ * static asset under web/fonts/ so the demo works offline and does not
+ * depend on the user having a powerline-patched font installed system-
+ * wide.
+ *
+ * Source: https://github.com/ryanoasis/nerd-fonts (patched-fonts/
+ * JetBrainsMono/NerdFontMono/)
+ */
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url("./fonts/JetBrainsMonoNerdFontMono-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "JetBrainsMono Nerd Font Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url("./fonts/JetBrainsMonoNerdFontMono-Bold.ttf") format("truetype");
+}

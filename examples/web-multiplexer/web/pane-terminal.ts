@@ -55,6 +55,13 @@ type LifeState = "idle" | "seeding" | "live" | "disposed";
 // time.
 // ---------------------------------------------------------------------------
 
+// [LAW:one-source-of-truth] One font family string used everywhere —
+// xterm's Terminal constructor, the measurement probe, and fallback
+// consumers. "JetBrainsMono Nerd Font Mono" is bundled locally under
+// web/fonts/ and loaded via web/fonts.css.
+const FONT_FAMILY =
+  '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
+
 interface BaseMetrics {
   readonly charW: number; // pixels per column at fontSize=12
   readonly charH: number; // pixels per row at fontSize=12
@@ -62,24 +69,51 @@ interface BaseMetrics {
 
 let baseMetricsCache: BaseMetrics | null = null;
 
-function getBaseMetrics(): BaseMetrics {
-  if (baseMetricsCache !== null) return baseMetricsCache;
+function measureOnce(): BaseMetrics {
   const probe = document.createElement("div");
   probe.style.position = "absolute";
   probe.style.visibility = "hidden";
-  probe.style.fontFamily = 'Menlo, "DejaVu Sans Mono", monospace';
+  probe.style.fontFamily = FONT_FAMILY;
   probe.style.fontSize = "12px";
   probe.style.lineHeight = "1.2";
   probe.style.whiteSpace = "pre";
-  // 100 monospace M's so we can average out subpixel rounding.
+  // 100 monospace M's so we average out subpixel rounding.
   probe.textContent = "M".repeat(100);
   document.body.appendChild(probe);
   const rect = probe.getBoundingClientRect();
   const charW = rect.width / 100;
   const charH = rect.height;
   document.body.removeChild(probe);
-  baseMetricsCache = { charW, charH };
+  return { charW, charH };
+}
+
+function getBaseMetrics(): BaseMetrics {
+  if (baseMetricsCache !== null) return baseMetricsCache;
+  baseMetricsCache = measureOnce();
   return baseMetricsCache;
+}
+
+/**
+ * Force a re-measure (called after the custom font file has finished
+ * loading — before that, `getBaseMetrics` would measure the fallback font
+ * and produce stale numbers).
+ */
+function refreshBaseMetrics(): void {
+  baseMetricsCache = measureOnce();
+}
+
+// Kick off font-loading on module import. When the JetBrains Mono Nerd
+// Font file finishes loading, refresh the cached metrics so every
+// subsequent sizing calculation uses the correct per-character pixel
+// width. Panes that were sized before the font loaded will re-size on
+// their next reaction fire (e.g. container resize or pane dim change).
+if (typeof document !== "undefined" && "fonts" in document) {
+  void document.fonts
+    .load(`12px "JetBrainsMono Nerd Font Mono"`)
+    .then(() => refreshBaseMetrics())
+    .catch(() => {
+      /* font unavailable; stick with fallback metrics */
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +214,7 @@ export class PaneTerminal {
     const term = new Terminal({
       convertEol: false,
       cursorBlink: true,
-      fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
+      fontFamily: FONT_FAMILY,
       fontSize: FONT_COMFORTABLE,
       scrollback: 10000,
       theme: { background: "#0b1120" },
@@ -262,32 +296,62 @@ export class PaneTerminal {
   }
 
   /**
-   * Run capture-pane to get the full scrollback + visible screen, write
-   * it to xterm, drain the event buffer, and switch to live mode.
-   * Synchronous section (after await) ensures atomic buffer drain.
+   * Seed xterm with tmux's current pane state:
+   *   1. capture-pane -e -p -S -   → full scrollback + visible screen
+   *   2. display-message -p '...'  → the pane's current cursor (x, y)
+   *
+   * After writing the capture, emit an ANSI cursor-positioning escape so
+   * xterm's cursor lands where tmux says it actually is — not at the
+   * bottom of the captured buffer. Without this, typing after load
+   * appears to happen on the last row instead of at the shell prompt.
+   *
+   * Then drain the buffered live events and flip to live mode. Everything
+   * after the `await` is synchronous so no event can interleave.
    */
   private async seed(): Promise<void> {
     try {
-      // -e: include escapes; -p: print to stdout; -S -: from start of history
-      // to visible screen bottom. This gives us the complete scrollback
-      // plus the current visible rows in one command.
-      const resp = await this.client.execute(
-        `capture-pane -e -p -S - -t %${this.paneId}`,
-      );
+      const [captureResp, cursorResp] = await Promise.all([
+        // -e: include escapes; -p: print to stdout; -S -: from start of
+        // history to visible screen bottom. Complete scrollback + current
+        // visible rows in one command.
+        this.client.execute(`capture-pane -e -p -S - -t %${this.paneId}`),
+        // Query cursor position directly from tmux. Format vars cursor_x
+        // and cursor_y are 0-indexed from the top-left of the visible
+        // pane screen; we'll convert to 1-indexed for the ANSI CUP escape.
+        this.client.execute(
+          `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y}'`,
+        ),
+      ]);
       if (this.state === "disposed") return;
       if (this.term === null) return;
       const term = this.term;
 
-      // capture-pane -e returns colour-escaped lines. tmux strips the
-      // trailing newline from each line; we rejoin with CR/LF so xterm's
-      // line ending handling treats them as proper row breaks.
-      const captured = resp.output.join("\r\n");
+      // Join captured lines with CR/LF so xterm treats them as real row
+      // breaks. tmux strips the trailing newline from each captured line.
+      const captured = captureResp.output.join("\r\n");
+
+      // Parse "<x>;<y>" from the cursor response. Guard against an empty
+      // or malformed reply by defaulting to the bottom-right of the
+      // visible area (which matches where the capture ends anyway, so
+      // the cursor move becomes a no-op in that case).
+      const cursorLine = cursorResp.output[0] ?? "";
+      const match = cursorLine.match(/^(\d+);(\d+)$/);
+      const cursorX = match !== null ? parseInt(match[1], 10) : -1;
+      const cursorY = match !== null ? parseInt(match[2], 10) : -1;
 
       // [LAW:single-enforcer] The whole transition from "seeding" to
-      // "live" lives here. Synchronous: no await between the reset and
-      // the mode flip, so no event can interleave and see stale state.
+      // "live" lives here. Synchronous: no await between the first
+      // write and the mode flip, so no event can interleave.
       term.write(captured);
-      // Drain any events that arrived while capture-pane was in flight.
+
+      if (cursorX >= 0 && cursorY >= 0) {
+        // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`. 1-indexed.
+        // tmux's cursor_y/cursor_x are 0-indexed within the visible
+        // screen; add 1 for the ANSI conversion.
+        term.write(`\x1b[${cursorY + 1};${cursorX + 1}H`);
+      }
+
+      // Drain any events that arrived while we were awaiting the seed.
       for (const bytes of this.buffer) {
         term.write(bytes);
       }
