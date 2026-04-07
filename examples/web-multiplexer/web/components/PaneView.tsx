@@ -5,7 +5,7 @@
 // container div. All xterm / capture-pane / seeding logic lives inside
 // PaneTerminal — this file only does React wiring.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper } from "@mantine/core";
 import type { DemoStore, PaneInfo } from "../store.ts";
@@ -41,31 +41,26 @@ interface CellProps {
 const PaneCell = observer(function PaneCell({ pane, store }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // One PaneTerminal per pane.id for this cell's lifetime. `useMemo` keyed
-  // on pane.id + store identity — neither changes during a normal session,
-  // so this runs once per pane mount. When the user navigates to a
-  // different window (different panes), React unmounts the old cells and
-  // mounts new ones, each with a fresh PaneTerminal instance.
-  const terminal = useMemo(
-    () => new PaneTerminal(pane.id, store),
-    [pane.id, store],
-  );
-
-  // React uses this purely to cause re-renders of the toolbar after the
-  // terminal instance is ready (the toolbar reads `terminal.status.*`).
-  // Without this, the first paint would pass `terminal=null` even though
-  // we just created it above; this is a no-op after the first render.
-  const [, forceRender] = useState({});
+  // PaneTerminal lifecycle is tied to the mount effect, NOT to useMemo.
+  // React StrictMode double-invokes effects in dev (mount → cleanup →
+  // mount). If we used useMemo the same PaneTerminal instance would be
+  // disposed and then re-mounted, which a disposed instance refuses →
+  // silent dead terminal. Creating a fresh instance on each effect run
+  // makes StrictMode re-mounting safe, and costs one extra capture-pane
+  // round-trip in dev mode only.
+  const [terminal, setTerminal] = useState<PaneTerminal | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
-    terminal.mount(container);
-    forceRender({});
+    const t = new PaneTerminal(pane.id, store);
+    t.mount(container);
+    setTerminal(t);
     return () => {
-      terminal.dispose();
+      t.dispose();
+      setTerminal(null);
     };
-  }, [terminal]);
+  }, [pane.id, store]);
 
   return (
     <Paper
