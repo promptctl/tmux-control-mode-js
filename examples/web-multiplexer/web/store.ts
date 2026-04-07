@@ -32,6 +32,8 @@ export interface PaneInfo {
   index: number;
   active: boolean;
   title: string;
+  width: number;
+  height: number;
 }
 
 export interface WindowInfo {
@@ -72,7 +74,7 @@ const WINDOWS_FORMAT =
   "'#{S:#{W:#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}\\n}}'";
 
 const PANES_FORMAT =
-  "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_title}\\n}}}'";
+  "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}\\n}}}'";
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -179,10 +181,53 @@ export class DemoStore {
     this.pushEvent(ev);
     if (ev.type === "subscription-changed") {
       this.applySubscription(ev.name, ev.value);
+      return;
     }
-    // All other events (%window-*, %session-*, %output, etc.) are purely
-    // informational here — the subscriptions already drive the model.
-    // The debug panel still shows them for visibility.
+    if (ev.type === "layout-change") {
+      // [LAW:dataflow-not-control-flow] The subscriptions drive the
+      // steady-state model, but subscription delivery is rate-limited to
+      // ~1 Hz. Pane geometry (width/height) must feel instant when a user
+      // resizes their terminal, so we fast-path on %layout-change by
+      // running a targeted list-panes for just that window and updating
+      // dimensions in place. This is O(panes-in-one-window) and completes
+      // in a few milliseconds.
+      this.refreshWindowDimensions(ev.windowId);
+      return;
+    }
+  }
+
+  private async refreshWindowDimensions(windowId: number): Promise<void> {
+    try {
+      const resp = await this.client.execute(
+        `list-panes -t @${windowId} -F '#{pane_id}|#{pane_width}|#{pane_height}'`,
+      );
+      if (!resp.success) return;
+      runInAction(() => {
+        for (const line of resp.output) {
+          if (line.length === 0) continue;
+          const [pidRaw, wRaw, hRaw] = line.split("|");
+          const pid = parseInt(pidRaw.replace(/^%/, ""), 10);
+          const w = parseInt(wRaw, 10);
+          const h = parseInt(hRaw, 10);
+          if (!Number.isFinite(pid) || !Number.isFinite(w) || !Number.isFinite(h)) {
+            continue;
+          }
+          // Find the pane across all sessions/windows and mutate in place.
+          // MobX observers on pane.width/height pick up the change.
+          for (const s of this.sessions) {
+            for (const win of s.windows) {
+              const p = win.panes.find((x) => x.id === pid);
+              if (p !== undefined) {
+                p.width = w;
+                p.height = h;
+              }
+            }
+          }
+        }
+      });
+    } catch {
+      // Non-fatal; the subscription's 1 Hz cadence will correct any miss.
+    }
   }
 
   private applySubscription(name: string, value: string): void {
@@ -226,6 +271,8 @@ export class DemoStore {
       "pid",
       "idx",
       "active",
+      "width",
+      "height",
       "title",
     ]);
 
@@ -236,6 +283,8 @@ export class DemoStore {
         id: stripPrefix(p.pid),
         index: parseInt(p.idx, 10),
         active: p.active === "1",
+        width: parseInt(p.width, 10) || 80,
+        height: parseInt(p.height, 10) || 24,
         title: p.title,
       });
       panesByWindow.set(p.wid, list);
@@ -310,6 +359,21 @@ export class DemoStore {
   // -------------------------------------------------------------------------
   // UI actions
   // -------------------------------------------------------------------------
+
+  /**
+   * Resize a tmux pane to the requested cell dimensions. This is the
+   * showcase of bidirectional library use: the browser tells tmux to do
+   * something, tmux performs the change, and %layout-change flows back
+   * to update the store, which in turn drives PaneTerminal's reactive
+   * sizing to reflow the xterm.
+   *
+   * Uses `resize-pane -t %<id> -x <cols> -y <rows>`.
+   */
+  resizePane(paneId: number, cols: number, rows: number): void {
+    void this.client.execute(
+      `resize-pane -t %${paneId} -x ${cols} -y ${rows}`,
+    );
+  }
 
   selectSession(id: number): void {
     this.activeSessionId = id;

@@ -1,11 +1,16 @@
-import { useEffect, useRef } from "react";
+// examples/web-multiplexer/web/components/PaneView.tsx
+//
+// Thin view layer over PaneTerminal. The grid lays out one cell per pane
+// in the active window; each cell mounts a PaneTerminal instance in its
+// container div. All xterm / capture-pane / seeding logic lives inside
+// PaneTerminal — this file only does React wiring.
+
+import { useEffect, useMemo, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
-import { SimpleGrid, Paper, Text, Group, Badge } from "@mantine/core";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import { SimpleGrid, Paper } from "@mantine/core";
 import type { DemoStore, PaneInfo } from "../store.ts";
-import { decodeBase64 } from "../ws-client.ts";
-import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
+import { PaneTerminal } from "../pane-terminal.ts";
+import { PaneToolbar } from "./PaneToolbar.tsx";
 
 interface Props {
   readonly store: DemoStore;
@@ -33,80 +38,34 @@ interface CellProps {
   readonly store: DemoStore;
 }
 
-function PaneCell({ pane, store }: CellProps) {
+const PaneCell = observer(function PaneCell({ pane, store }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // One PaneTerminal per pane.id for this cell's lifetime. `useMemo` keyed
+  // on pane.id + store identity — neither changes during a normal session,
+  // so this runs once per pane mount. When the user navigates to a
+  // different window (different panes), React unmounts the old cells and
+  // mounts new ones, each with a fresh PaneTerminal instance.
+  const terminal = useMemo(
+    () => new PaneTerminal(pane.id, store),
+    [pane.id, store],
+  );
+
+  // React uses this purely to cause re-renders of the toolbar after the
+  // terminal instance is ready (the toolbar reads `terminal.status.*`).
+  // Without this, the first paint would pass `terminal=null` even though
+  // we just created it above; this is a no-op after the first render.
+  const [, forceRender] = useState({});
 
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return;
-
-    // `disposed` guards every operation on the terminal so late-arriving
-    // events (base64 writes, resize-observer fires, animation-frame
-    // callbacks) don't touch the terminal after cleanup. React StrictMode
-    // double-invokes effects in dev — without this guard, the first
-    // terminal's disposed state gets hit by a stray write and xterm
-    // throws `_renderer.value.dimensions` is undefined.
-    let disposed = false;
-    const term = new Terminal({
-      convertEol: false,
-      cursorBlink: true,
-      fontFamily: 'Menlo, "DejaVu Sans Mono", monospace',
-      fontSize: 12,
-      theme: { background: "#0b1120" },
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(container);
-
-    // Defer initial fit until the next animation frame — at mount time the
-    // container may not have been laid out yet and fit() would throw.
-    const rafId = requestAnimationFrame(() => {
-      if (disposed) return;
-      try {
-        fit.fit();
-      } catch {
-        /* container still not sized; ignore */
-      }
-    });
-
-    const unsubEvent = store.client.onEvent((ev: SerializedTmuxMessage) => {
-      if (disposed) return;
-      if (
-        (ev.type === "output" || ev.type === "extended-output") &&
-        ev.paneId === pane.id
-      ) {
-        try {
-          term.write(decodeBase64(ev.dataBase64));
-        } catch {
-          /* write-on-disposed; swallow */
-        }
-      }
-    });
-
-    const disp = term.onData((data) => {
-      if (disposed) return;
-      store.sendKeysToPane(pane.id, data);
-    });
-
-    const ro = new ResizeObserver(() => {
-      if (disposed) return;
-      try {
-        fit.fit();
-      } catch {
-        /* no-op */
-      }
-    });
-    ro.observe(container);
-
+    terminal.mount(container);
+    forceRender({});
     return () => {
-      disposed = true;
-      cancelAnimationFrame(rafId);
-      ro.disconnect();
-      unsubEvent();
-      disp.dispose();
-      term.dispose();
+      terminal.dispose();
     };
-  }, [pane.id, store]);
+  }, [terminal]);
 
   return (
     <Paper
@@ -115,22 +74,22 @@ function PaneCell({ pane, store }: CellProps) {
       style={{
         display: "flex",
         flexDirection: "column",
-        minHeight: 240,
+        minHeight: 0,
         borderColor: pane.active ? "var(--mantine-color-teal-6)" : undefined,
       }}
       onClick={() => store.selectPane(pane)}
     >
-      <Group gap="xs" justify="space-between" pb={4}>
-        <Text size="xs" c="dimmed">
-          %{pane.id} ({pane.index}) {pane.title}
-        </Text>
-        {pane.active && (
-          <Badge size="xs" color="teal" variant="light">
-            active
-          </Badge>
-        )}
-      </Group>
-      <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
+      <PaneToolbar pane={pane} store={store} terminal={terminal} />
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          // Horizontal scrolling is forbidden per the plan; vertical is
+          // xterm-internal. The container clips anything stray.
+          overflow: "hidden",
+        }}
+      />
     </Paper>
   );
-}
+});
