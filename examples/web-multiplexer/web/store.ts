@@ -202,28 +202,39 @@ export class DemoStore {
         `list-panes -t @${windowId} -F '#{pane_id}|#{pane_width}|#{pane_height}'`,
       );
       if (!resp.success) return;
-      runInAction(() => {
-        for (const line of resp.output) {
-          if (line.length === 0) continue;
-          const [pidRaw, wRaw, hRaw] = line.split("|");
-          const pid = parseInt(pidRaw.replace(/^%/, ""), 10);
-          const w = parseInt(wRaw, 10);
-          const h = parseInt(hRaw, 10);
-          if (!Number.isFinite(pid) || !Number.isFinite(w) || !Number.isFinite(h)) {
-            continue;
-          }
-          // Find the pane across all sessions/windows and mutate in place.
-          // MobX observers on pane.width/height pick up the change.
-          for (const s of this.sessions) {
-            for (const win of s.windows) {
-              const p = win.panes.find((x) => x.id === pid);
-              if (p !== undefined) {
-                p.width = w;
-                p.height = h;
-              }
-            }
-          }
+      const updates = new Map<number, { w: number; h: number }>();
+      for (const line of resp.output) {
+        if (line.length === 0) continue;
+        const [pidRaw, wRaw, hRaw] = line.split("|");
+        const pid = parseInt(pidRaw.replace(/^%/, ""), 10);
+        const w = parseInt(wRaw, 10);
+        const h = parseInt(hRaw, 10);
+        if (Number.isFinite(pid) && Number.isFinite(w) && Number.isFinite(h)) {
+          updates.set(pid, { w, h });
         }
+      }
+      if (updates.size === 0) return;
+
+      // [LAW:dataflow-not-control-flow] Reassign `this.sessions` to a new
+      // array with new pane objects for any updated pane. PaneInfo is a
+      // plain object — mutating its fields in place does NOT trigger MobX
+      // observers because the field reads in PaneTerminal's reaction
+      // depend on `store.sessions` (the observable), not on per-object
+      // field accesses. The immutable rebuild guarantees the reaction
+      // re-runs and sees the new dimensions.
+      runInAction(() => {
+        this.sessions = this.sessions.map((s) => ({
+          ...s,
+          windows: s.windows.map((win) => ({
+            ...win,
+            panes: win.panes.map((p) => {
+              const u = updates.get(p.id);
+              return u !== undefined
+                ? { ...p, width: u.w, height: u.h }
+                : p;
+            }),
+          })),
+        }));
       });
     } catch {
       // Non-fatal; the subscription's 1 Hz cadence will correct any miss.
