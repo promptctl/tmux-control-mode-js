@@ -39,7 +39,8 @@
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
     "typecheck": "tsc --build --noEmit",
-    "prepublishOnly": "npm run build"
+    "check:deps": "node scripts/check-no-deps.mjs",
+    "prepublishOnly": "npm run check:deps && npm run build"
   },
   "keywords": [
     "tmux",
