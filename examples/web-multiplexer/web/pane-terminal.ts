@@ -39,7 +39,6 @@
 
 import { reaction, observable, runInAction, type IReactionDisposer } from "mobx";
 import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
 import { decodeBase64, BridgeClient } from "./ws-client.ts";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
@@ -194,7 +193,6 @@ export class PaneTerminal {
   });
 
   private term: Terminal | null = null;
-  private fit: FitAddon | null = null;
   private containerEl: HTMLElement | null = null;
   private ro: ResizeObserver | null = null;
   private unsubEvent: (() => void) | null = null;
@@ -231,11 +229,14 @@ export class PaneTerminal {
       // We drive cols/rows manually from tmux; xterm's initial 80×24
       // will be overwritten by the first sizing reaction.
     });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
+    // [LAW:no-mode-explosion] No FitAddon: we drive cols/rows from tmux
+    // directly via `term.resize()`, and the user picks font size via the
+    // toolbar. FitAddon subscribes to onResize and dereferences the core
+    // renderer's `dimensions` before its first render tick — causing a
+    // crash on the very first synchronous sizing call. Deleting it both
+    // removes dead code and fixes that crash.
     term.open(container);
     this.term = term;
-    this.fit = fit;
 
     // Keystrokes → tmux send-keys on this pane.
     term.onData((data) => {
@@ -293,9 +294,24 @@ export class PaneTerminal {
           if (cols <= 0 || rows <= 0) return;
           this.applySizing(cols, rows, font);
         },
-        { fireImmediately: true },
       ),
     );
+
+    // [LAW:single-enforcer] The steady-state reaction above owns all
+    // subsequent resizes. The ONE exception is the very first sizing
+    // call: xterm's Viewport subscribes to onResize inside `term.open()`
+    // and calls `syncScrollArea` which dereferences the core renderer's
+    // `dimensions`. That renderer is instantiated on the first render
+    // tick, not inside `open()`, so calling `term.resize()` synchronously
+    // here throws "Cannot read properties of undefined (reading
+    // 'dimensions')". Defer the initial sizing by one animation frame so
+    // the renderer has booted.
+    requestAnimationFrame(() => {
+      if (this.state === "disposed") return;
+      const p = this.findPane();
+      if (p === null || p.width <= 0 || p.height <= 0) return;
+      this.applySizing(p.width, p.height, this.uiStore.terminalFontSize);
+    });
 
     // Begin the seed. This is async; events that arrive during it are
     // buffered by the onEvent listener above, then drained inside
@@ -429,7 +445,6 @@ export class PaneTerminal {
       /* already gone */
     }
     this.term = null;
-    this.fit = null;
     this.containerEl = null;
     this.buffer = [];
   }
