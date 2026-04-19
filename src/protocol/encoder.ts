@@ -31,12 +31,18 @@ function refreshClientPaneAction(paneId: number, action: PaneAction): string {
   // [LAW:single-enforcer] tmux's command parser splits unquoted arguments on
   // ':' and rejects `%N:action`. Quote the entire pane:action token as one
   // argument so it reaches refresh-client intact.
-  return buildCommand(`refresh-client -A ${tmuxEscape(`%${paneId}:${action}`)}`);
+  return buildCommand(
+    `refresh-client -A ${tmuxEscape(`%${paneId}:${action}`)}`,
+  );
 }
 
-function refreshClientSubscribe(name: string, what: string, format: string): string {
+function refreshClientSubscribe(
+  name: string,
+  what: string,
+  format: string,
+): string {
   return buildCommand(
-    `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`
+    `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`,
   );
 }
 
@@ -46,7 +52,9 @@ function refreshClientUnsubscribe(name: string): string {
 
 // [LAW:one-source-of-truth] send-keys wire format lives here only.
 function sendKeys(target: string, keys: string): string {
-  return buildCommand(`send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`);
+  return buildCommand(
+    `send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`,
+  );
 }
 
 // [LAW:one-source-of-truth] split-window wire format lives here only.
@@ -54,7 +62,8 @@ function sendKeys(target: string, keys: string): string {
 // the build operation runs unconditionally.
 function splitWindow(options: SplitOptions = {}): string {
   const dirFlag = options.vertical === true ? "-v" : "-h";
-  const targetPart = options.target !== undefined ? ` -t ${tmuxEscape(options.target)}` : "";
+  const targetPart =
+    options.target !== undefined ? ` -t ${tmuxEscape(options.target)}` : "";
   return buildCommand(`split-window ${dirFlag}${targetPart}`);
 }
 
@@ -113,7 +122,9 @@ function refreshClientClearFlags(flags: readonly string[]): string {
 // The whole `pane-id:report` string must be a single quoted argument so
 // tmux's parser doesn't split on the colon.
 function refreshClientReport(paneId: number, report: string): string {
-  return buildCommand(`refresh-client -r ${tmuxEscape(`%${paneId}:${report}`)}`);
+  return buildCommand(
+    `refresh-client -r ${tmuxEscape(`%${paneId}:${report}`)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------

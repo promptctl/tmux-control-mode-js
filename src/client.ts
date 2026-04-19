@@ -21,7 +21,11 @@ import {
   splitWindow as encodeSplitWindow,
 } from "./protocol/encoder.js";
 import type { SplitOptions } from "./protocol/encoder.js";
-import type { CommandResponse, PaneAction, TmuxMessage } from "./protocol/types.js";
+import type {
+  CommandResponse,
+  PaneAction,
+  TmuxMessage,
+} from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { TmuxEventMap } from "./emitter.js";
 import type { TmuxTransport } from "./transport/types.js";
@@ -85,13 +89,19 @@ export class TmuxClient {
   // Event delegation — preserve overloads for type safety
   // ---------------------------------------------------------------------------
 
-  on<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  on<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   on(event: "*", handler: (ev: TmuxMessage) => void): void;
   on(event: string, handler: (ev: never) => void): void {
     this.emitter.on(event as "*", handler as (ev: TmuxMessage) => void);
   }
 
-  off<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  off<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   off(event: "*", handler: (ev: TmuxMessage) => void): void;
   off(event: string, handler: (ev: never) => void): void {
     this.emitter.off(event as "*", handler as (ev: TmuxMessage) => void);
@@ -158,7 +168,11 @@ export class TmuxClient {
   // independently of the subscribe/unsubscribe acknowledgement.
   // ---------------------------------------------------------------------------
 
-  subscribe(name: string, what: string, format: string): Promise<CommandResponse> {
+  subscribe(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
     return this.sendRaw(refreshClientSubscribe(name, what, format));
   }
 

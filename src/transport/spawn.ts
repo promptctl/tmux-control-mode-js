@@ -64,13 +64,18 @@ export function createDcsStripper(): (chunk: string) => DcsStripperResult {
 }
 
 // [LAW:one-source-of-truth] Single function builds the full argv for the tmux process.
-function buildArgv(controlControl: boolean, socketPath: string | undefined, userArgs: readonly string[]): string[] {
+function buildArgv(
+  controlControl: boolean,
+  socketPath: string | undefined,
+  userArgs: readonly string[],
+): string[] {
   const flag = controlControl ? "-CC" : "-C";
-  const socketArgs: readonly string[] = socketPath === undefined
-    ? []
-    : socketPath.includes("/")
-      ? ["-S", socketPath]
-      : ["-L", socketPath];
+  const socketArgs: readonly string[] =
+    socketPath === undefined
+      ? []
+      : socketPath.includes("/")
+        ? ["-S", socketPath]
+        : ["-L", socketPath];
   return [flag, ...socketArgs, ...userArgs];
 }
 
@@ -115,7 +120,11 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // [LAW:no-defensive-null-guards] Typing the options triggers the spawn overload
   // that returns ChildProcessByStdio<Writable, Readable, null> — stdin/stdout are
   // non-null by construction, not by runtime assertion.
-  const spawnOptions: SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> = {
+  const spawnOptions: SpawnOptionsWithStdioTuple<
+    StdioPipe,
+    StdioPipe,
+    StdioNull
+  > = {
     stdio: ["pipe", "pipe", "ignore"],
     env: options?.env as NodeJS.ProcessEnv | undefined,
   };
@@ -146,7 +155,8 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   let closed = false;
   child.on("close", (code, signal) => {
     closed = true;
-    const reason = signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined);
+    const reason =
+      signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined);
     closeCallbacks.forEach((cb) => cb(reason));
   });
 

@@ -44,7 +44,10 @@ function parseOptionalInt(raw: string): number {
 
 type LineParseFn = (args: string) => TmuxMessage | null;
 
-function parseGuard(type: "begin" | "end" | "error", args: string): TmuxMessage | null {
+function parseGuard(
+  type: "begin" | "end" | "error",
+  args: string,
+): TmuxMessage | null {
   const parts = args.split(" ");
   if (parts.length < 3) return null;
   return {
@@ -83,7 +86,9 @@ function parseExtendedOutput(args: string): TmuxMessage | null {
   };
 }
 
-function parsePaneIdOnly(type: "pause" | "continue" | "pane-mode-changed"): LineParseFn {
+function parsePaneIdOnly(
+  type: "pause" | "continue" | "pane-mode-changed",
+): LineParseFn {
   return (args: string): TmuxMessage | null => {
     const paneRaw = args.split(" ")[0];
     if (!paneRaw) return null;
@@ -92,7 +97,11 @@ function parsePaneIdOnly(type: "pause" | "continue" | "pane-mode-changed"): Line
 }
 
 function parseWindowIdOnly(
-  type: "window-add" | "window-close" | "unlinked-window-add" | "unlinked-window-close",
+  type:
+    | "window-add"
+    | "window-close"
+    | "unlinked-window-add"
+    | "unlinked-window-close",
 ): LineParseFn {
   return (args: string): TmuxMessage | null => {
     const winRaw = args.split(" ")[0];
@@ -137,7 +146,9 @@ function parseLayoutChange(args: string): TmuxMessage | null {
   };
 }
 
-function parseSessionWithName(type: "session-changed" | "session-renamed"): LineParseFn {
+function parseSessionWithName(
+  type: "session-changed" | "session-renamed",
+): LineParseFn {
   return (args: string): TmuxMessage | null => {
     const spaceIdx = args.indexOf(" ");
     if (spaceIdx === -1) return null;
@@ -183,7 +194,9 @@ function parseClientDetached(args: string): TmuxMessage | null {
   return { type: "client-detached", clientName };
 }
 
-function parseNameOnly(type: "paste-buffer-changed" | "paste-buffer-deleted"): LineParseFn {
+function parseNameOnly(
+  type: "paste-buffer-changed" | "paste-buffer-deleted",
+): LineParseFn {
   return (args: string): TmuxMessage | null => {
     const name = args.split(" ")[0];
     if (!name) return null;
