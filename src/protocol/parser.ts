@@ -281,8 +281,8 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
 export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
   private readonly emit: (msg: TmuxMessage) => void;
-  private buffer: string = "";
-  private activeCommandNumber: number = -1;
+  private buffer = "";
+  private activeCommandNumber = -1;
 
   /**
    * Optional callback for command output lines (lines between %begin and

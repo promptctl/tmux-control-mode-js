@@ -2,7 +2,7 @@
 // Command string builders for tmux control mode.
 // No runtime dependencies. Works in browser, Deno, Bun, Node.
 
-import { PaneAction } from "./types.js";
+import type { PaneAction } from "./types.js";
 
 // [LAW:one-source-of-truth] Encoder owns the SplitOptions shape; client.ts re-exports
 // for API compatibility. Two definitions would drift.

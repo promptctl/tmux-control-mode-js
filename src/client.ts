@@ -20,6 +20,7 @@ import {
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
 } from "./protocol/encoder.js";
+import type { SplitOptions } from "./protocol/encoder.js";
 import type { CommandResponse, PaneAction, TmuxMessage } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { TmuxEventMap } from "./emitter.js";
@@ -131,7 +132,7 @@ export class TmuxClient {
     return this.sendRaw(encodeSendKeys(target, keys));
   }
 
-  splitWindow(options: import("./protocol/encoder.js").SplitOptions = {}): Promise<CommandResponse> {
+  splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {
     return this.sendRaw(encodeSplitWindow(options));
   }
 

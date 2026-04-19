@@ -2,7 +2,12 @@
 // Spawn-based transport for tmux control mode.
 // Wraps child_process.spawn behind the TmuxTransport interface.
 
-import { spawn } from "node:child_process";
+import {
+  spawn,
+  type SpawnOptionsWithStdioTuple,
+  type StdioNull,
+  type StdioPipe,
+} from "node:child_process";
 import type { TmuxTransport, SpawnOptions } from "./types.js";
 
 // [LAW:one-source-of-truth] DCS frame bytes live here only (SPEC §12).
@@ -104,13 +109,17 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
 
   const argv = buildArgv(controlControl, options?.socketPath, args);
 
-  const dataCallbacks: Array<(chunk: string) => void> = [];
-  const closeCallbacks: Array<(reason?: string) => void> = [];
+  const dataCallbacks: ((chunk: string) => void)[] = [];
+  const closeCallbacks: ((reason?: string) => void)[] = [];
 
-  const child = spawn(tmuxPath, argv, {
+  // [LAW:no-defensive-null-guards] Typing the options triggers the spawn overload
+  // that returns ChildProcessByStdio<Writable, Readable, null> — stdin/stdout are
+  // non-null by construction, not by runtime assertion.
+  const spawnOptions: SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> = {
     stdio: ["pipe", "pipe", "ignore"],
     env: options?.env as NodeJS.ProcessEnv | undefined,
-  });
+  };
+  const child = spawn(tmuxPath, argv, spawnOptions);
 
   // [LAW:dataflow-not-control-flow] The data pipeline runs on every chunk.
   // In -C mode the stripper is null and the chunk forwards unchanged. In -CC
@@ -118,8 +127,8 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // identical; only the values differ.
   const stripper = controlControl ? createDcsStripper() : null;
 
-  child.stdout!.setEncoding("utf8");
-  child.stdout!.on("data", (chunk: string) => {
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
     if (stripper === null) {
       dataCallbacks.forEach((cb) => cb(chunk));
       return;
@@ -151,7 +160,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     send(command: string): void {
       if (closed) return;
       const terminated = command.endsWith("\n") ? command : command + "\n";
-      child.stdin!.write(terminated);
+      child.stdin.write(terminated);
     },
 
     onData(callback: (chunk: string) => void): void {
@@ -165,7 +174,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     close(): void {
       // [LAW:dataflow-not-control-flow] DCS terminator is conditional on mode (a value),
       // not on whether close runs.
-      if (controlControl && !closed && child.stdin?.writable === true) {
+      if (controlControl && !closed && child.stdin.writable) {
         child.stdin.write(DCS_TERMINATOR);
       }
       child.kill();
