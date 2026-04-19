@@ -13,6 +13,31 @@ npm install tmux-control-mode-js
 - Node.js >= 20
 - tmux >= 3.2
 
+## Compatibility
+
+Supports **tmux 3.2 and later**. The 3.2 floor is load-bearing: the library
+depends on features introduced in that release and cannot function on older
+tmux:
+
+- Format subscriptions — `refresh-client -B name:what:format` and the
+  corresponding `%subscription-changed` notification (tmux 3.2: *"Add a way for
+  control mode clients to subscribe to a format and be notified of changes
+  rather than having to poll."*)
+- Pane flow control — `refresh-client -A <pane>:<action>`, the `pause-after`
+  client flag, and the `%pause` / `%continue` / `%extended-output` notifications
+  (tmux 3.2: *"Add support for pausing a pane when the output buffered for a
+  control mode client gets too far behind."*)
+- `%client-detached` notification (tmux 3.2)
+
+Two features are also exposed by the API but require a newer tmux when
+actually called:
+
+- `client.requestReport(...)` — needs tmux **3.3+** (`refresh-client -r`)
+- `%config-error` notification — only emitted by tmux **3.4+**
+
+No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
+from).
+
 ## Testing
 
 ```bash
