@@ -46,7 +46,7 @@ These are the gaps between the current codebase and full `SPEC.md` compliance. E
 - **Terminal emulation layer in the library** (`IMPL.md`'s `terminal/` directory, `PaneManager`, `TerminalEmulator` interface) — the demo proves the integration pattern without baking it into the library. — *consumers integrate however they want; the library stays minimal*
 - **Production deployment of the demo** — the demo is a functional example, not a deployable product. No auth, no multi-user, no hardening. — *its job is to verify the API, not to be shipped*
 - **High-level convenience methods unrelated to control mode** (e.g., wrappers for arbitrary tmux commands beyond what the spec covers). Consumers can call `client.execute("any-tmux-command")`. — *scope is the protocol, not the tmux command surface*
-- **Backwards-compat with older tmux versions** — SPEC.md targets `next-3.7` (commit `5c30b145`); behavior outside that is out of scope. — *spec is the contract*
+- **Compatibility with tmux older than 3.2** — the library's minimum supported tmux is **3.2** (load-bearing features: subscriptions, pane flow control, `%client-detached`; see README Compatibility section). SPEC.md is derived from `next-3.7` (commit `5c30b145`) but no known breaking changes exist between 3.2 and 3.7 for the wire surface this library uses. Pre-3.2 protocol quirks are out of scope. — *spec is the contract*
 
 ## Context
 

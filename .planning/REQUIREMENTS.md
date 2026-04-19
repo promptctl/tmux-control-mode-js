@@ -118,8 +118,8 @@ Deferred — not in scope for this milestone.
 |---------|--------|
 | xterm.js / Electron example | Not part of protocol compliance; pulls in large UI surface |
 | Convenience wrappers for arbitrary tmux commands | `client.execute()` already covers this; spec is about control mode, not the tmux command surface |
-| Older tmux version compatibility | SPEC.md targets `next-3.7` (commit `5c30b145`) |
-| Pre-3.0 protocol quirks | Spec is single-version |
+| Compatibility with tmux < 3.2 | Library requires 3.2+ features (subscriptions, pane flow control, `%client-detached`). SPEC.md is derived from `next-3.7`; no known breaking changes in the 3.2–3.7 range for the surface this library uses |
+| Pre-3.2 protocol quirks | Below the supported floor |
 
 ## Traceability
 
