@@ -9,12 +9,15 @@ import { makeAutoObservable, reaction } from "mobx";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 
+export type AppMode = "multiplexer" | "inspector" | "heatmap";
+
 interface PersistedShape {
   navbarWidth: number;
   asideCollapsed: boolean;
   hiddenEventTypes: string[];
   activeAsideTab: string;
   terminalFontSize: number;
+  appMode: AppMode;
 }
 
 const TERMINAL_FONT_MIN = 6;
@@ -26,6 +29,7 @@ const DEFAULTS: PersistedShape = {
   hiddenEventTypes: [],
   activeAsideTab: "debug",
   terminalFontSize: 13,
+  appMode: "multiplexer",
 };
 
 function loadFromStorage(): PersistedShape {
@@ -57,6 +61,12 @@ function loadFromStorage(): PersistedShape {
         parsed.terminalFontSize <= TERMINAL_FONT_MAX
           ? parsed.terminalFontSize
           : DEFAULTS.terminalFontSize,
+      appMode:
+        parsed.appMode === "multiplexer" ||
+        parsed.appMode === "inspector" ||
+        parsed.appMode === "heatmap"
+          ? parsed.appMode
+          : DEFAULTS.appMode,
     };
   } catch {
     return DEFAULTS;
@@ -70,6 +80,7 @@ export class UiStore {
   hiddenEventTypes: Record<string, true> = {};
   activeAsideTab: string;
   terminalFontSize: number;
+  appMode: AppMode;
 
   constructor() {
     const initial = loadFromStorage();
@@ -77,6 +88,7 @@ export class UiStore {
     this.asideCollapsed = initial.asideCollapsed;
     this.activeAsideTab = initial.activeAsideTab;
     this.terminalFontSize = initial.terminalFontSize;
+    this.appMode = initial.appMode;
     for (const t of initial.hiddenEventTypes) this.hiddenEventTypes[t] = true;
 
     makeAutoObservable(this);
@@ -89,6 +101,7 @@ export class UiStore {
         hiddenEventTypes: Object.keys(this.hiddenEventTypes).sort(),
         activeAsideTab: this.activeAsideTab,
         terminalFontSize: this.terminalFontSize,
+        appMode: this.appMode,
       }),
       (snapshot) => {
         try {
@@ -135,6 +148,10 @@ export class UiStore {
 
   setActiveAsideTab(tab: string): void {
     this.activeAsideTab = tab;
+  }
+
+  setAppMode(mode: AppMode): void {
+    this.appMode = mode;
   }
 
   isHidden(type: string): boolean {

@@ -20,18 +20,34 @@ import {
 import { BridgeClient } from "./ws-client.ts";
 import { DemoStore } from "./store.ts";
 import { UiStore } from "./ui-store.ts";
+import { InspectorStore } from "./inspector-store.ts";
+import { HeatmapStore } from "./heatmap-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { WindowTabs } from "./components/WindowTabs.tsx";
 import { PaneView } from "./components/PaneView.tsx";
 import { DebugPanel } from "./components/DebugPanel.tsx";
 import { ErrorPanel } from "./components/ErrorPanel.tsx";
 import { NavbarResizer } from "./components/NavbarResizer.tsx";
+import { InspectorView } from "./components/InspectorView.tsx";
+import { HeatmapView } from "./components/HeatmapView.tsx";
+import { SegmentedControl } from "@mantine/core";
 
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
 export const App = observer(function App() {
   const demoStore = useMemo(() => new DemoStore(new BridgeClient()), []);
   const uiStore = useMemo(() => new UiStore(), []);
+  // [LAW:one-source-of-truth] InspectorStore subscribes to the SAME
+  // BridgeClient as DemoStore. Both stores are pure projections of the
+  // wire — InspectorStore sees everything, DemoStore sees only events.
+  const inspectorStore = useMemo(
+    () => new InspectorStore(demoStore.client),
+    [demoStore],
+  );
+  const heatmapStore = useMemo(
+    () => new HeatmapStore(demoStore.client),
+    [demoStore],
+  );
 
   useEffect(() => {
     demoStore.connect(WS_URL);
@@ -58,6 +74,24 @@ export const App = observer(function App() {
             <Text c="dimmed" size="sm">
               Web Multiplexer Demo
             </Text>
+            <SegmentedControl
+              size="xs"
+              value={uiStore.appMode}
+              onChange={(v) =>
+                uiStore.setAppMode(
+                  v === "inspector"
+                    ? "inspector"
+                    : v === "heatmap"
+                    ? "heatmap"
+                    : "multiplexer",
+                )
+              }
+              data={[
+                { label: "Multiplexer", value: "multiplexer" },
+                { label: "Protocol Inspector", value: "inspector" },
+                { label: "Activity Heatmap", value: "heatmap" },
+              ]}
+            />
           </Group>
           <Group gap="xs">
             <Text size="xs" c="dimmed">
@@ -103,7 +137,15 @@ export const App = observer(function App() {
           height: "100vh",
         }}
       >
-        {currentSession === null ? (
+        {uiStore.appMode === "inspector" ? (
+          <InspectorView store={inspectorStore} demoStore={demoStore} />
+        ) : uiStore.appMode === "heatmap" ? (
+          <HeatmapView
+            demoStore={demoStore}
+            heatmapStore={heatmapStore}
+            uiStore={uiStore}
+          />
+        ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
               ? sessions.length === 0
