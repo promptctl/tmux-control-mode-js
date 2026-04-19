@@ -83,3 +83,17 @@ drive a real web UI with this library without pulling it into the browser
 bundle. The demo is not production code (no auth, no multi-user, no
 hardening); it exists to validate the library's API and provide an
 integration pattern you can copy.
+
+The header toggles between three views, all driven from the same `BridgeClient`:
+
+- **Multiplexer** — the full xterm.js experience: every session, window, and
+  pane live, with keystroke forwarding and resize handling. Exercises the
+  round-trip input path and pane output rendering.
+- **Protocol Inspector** — Wireshark for tmux control mode. Every frame that
+  crosses the WebSocket lands in a ring buffer with timing, direction, and
+  request/response correlation. Filter by direction, message type, or
+  substring; click any row to see decoded payload and jump to its response.
+- **Activity Heatmap** — a live grid of every pane in every session, each cell
+  glowing in proportion to its current output byte-rate. A decay tick keeps
+  quiet panes visible next to loud ones. Click a cell to jump to that pane in
+  the multiplexer.
