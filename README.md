@@ -60,10 +60,9 @@ spawns your local tmux) plus a browser frontend (React + Mantine + xterm.js)
 that talks to the bridge over WebSocket.
 
 ```bash
-npm run demo:install   # first time only — installs demo-only dependencies
-                       # under examples/web-multiplexer (zero runtime deps
-                       # are added to this library's package.json)
-npm run demo           # starts bridge + Vite dev server; open http://localhost:5173
+npm install   # once at the repo root — workspaces install demo deps too,
+              # still zero runtime deps on this library's package.json
+npm run demo  # starts bridge + Vite dev server; open http://localhost:5173
 ```
 
 The demo connects to your **existing host tmux server** and shows every
