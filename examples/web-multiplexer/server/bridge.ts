@@ -17,10 +17,7 @@ import type {
   ServerToClient,
   SerializedTmuxMessage,
 } from "../shared/protocol.js";
-
-// [LAW:one-source-of-truth] Bridge port lives in exactly one place.
-// Change it here AND in vite.config.ts if you need a different port.
-const BRIDGE_PORT = 5174;
+import { BRIDGE_PORT } from "../shared/config.js";
 
 // ---------------------------------------------------------------------------
 // Serialization

@@ -1,9 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-
-// [LAW:one-source-of-truth] Bridge port lives in exactly one place.
-// Change it here AND in server/bridge.ts if you need a different port.
-const BRIDGE_PORT = 5174;
+import { BRIDGE_PORT } from "./shared/config";
 
 export default defineConfig({
   plugins: [react()],

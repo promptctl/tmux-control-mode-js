@@ -1,0 +1,7 @@
+* text=auto eol=lf
+
+# Fonts are binary assets; keep git from line-ending-normalizing them.
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
