@@ -16,6 +16,25 @@ import type { CommandResponse } from "../../src/protocol/types.js";
 // regardless of whether tmux is installed in the environment.
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
+// [LAW:verifiable-goals] Some refresh-client flags are newer than the
+// library's 3.2 minimum: `-r` (requestReport) is rejected by tmux <3.5 as
+// an unknown flag. Skip the feature test rather than asserting a contract
+// the running tmux cannot honor — README Compatibility documents the floor.
+const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
+  if (!RUN_INTEGRATION) return false;
+  try {
+    const out = execSync("tmux -V", { encoding: "utf8" }).trim();
+    const m = out.match(/tmux\s+(\d+)\.(\d+)/);
+    if (!m) return false;
+    const [, majStr, minStr] = m;
+    const major = parseInt(majStr, 10);
+    const minor = parseInt(minStr, 10);
+    return major > 3 || (major === 3 && minor >= 5);
+  } catch {
+    return false;
+  }
+})();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -233,9 +252,9 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     15000,
   );
 
-  it(
+  it.skipIf(!TMUX_SUPPORTS_REQUEST_REPORT)(
     "requestReport succeeds against an existing pane",
-    async (ctx) => {
+    async () => {
       sessionName = uniqueSession("test-rep");
       client = await createSession(sessionName);
       const list = await client.execute("list-panes");
@@ -246,14 +265,6 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
         paneId,
         "\u001b]11;rgb:1818/1818/1818\u001b\\",
       );
-      // [LAW:dataflow-not-control-flow] refresh-client -r is newer than the
-      // 3.2 floor this library supports; tmux <3.5 rejects the flag entirely.
-      // Treat that response as a skip signal so the test asserts reality on
-      // any version where the feature is actually available.
-      if (!r.success && r.output.some((l) => l.includes("unknown flag -r"))) {
-        ctx.skip();
-        return;
-      }
       expect(r.success).toBe(true);
     },
     15000,
