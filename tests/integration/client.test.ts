@@ -252,6 +252,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
       // any version where the feature is actually available.
       if (!r.success && r.output.some((l) => l.includes("unknown flag -r"))) {
         ctx.skip();
+        return;
       }
       expect(r.success).toBe(true);
     },
