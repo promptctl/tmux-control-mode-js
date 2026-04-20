@@ -132,18 +132,18 @@
 - Exports: `TmuxClient`, `spawnTmux`, public types (`CommandResponse`, `TmuxMessage`, etc.)
 - Purpose: Single, curated public API surface (LAW:one-source-of-truth)
 - Non-exported but available via subpath:
-  - `tmux-control-mode-js/protocol` → parser, encoder, types
-  - `tmux-control-mode-js/terminal` → planned future terminal layer (not yet implemented)
+  - `@promptctl/tmux-control-mode-js/protocol` → parser, encoder, types
+  - `@promptctl/tmux-control-mode-js/terminal` → planned future terminal layer (not yet implemented)
 
 **Application Entry Points:**
-- User code: `import { TmuxClient, spawnTmux } from "tmux-control-mode-js"`
+- User code: `import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js"`
 - Create transport: `const transport = spawnTmux(["attach-session", "-t", sessionName])`
 - Create client: `const client = new TmuxClient(transport)`
 - Commands: `await client.execute("list-windows")`
 - Events: `client.on("window-add", handler)`
 
 **Protocol-Only Entry:**
-- Users who manage transport themselves: `import { TmuxParser } from "tmux-control-mode-js/protocol"`
+- Users who manage transport themselves: `import { TmuxParser } from "@promptctl/tmux-control-mode-js/protocol"`
 - Manual parser: `const parser = new TmuxParser((msg) => console.log(msg))`
 
 ## Error Handling

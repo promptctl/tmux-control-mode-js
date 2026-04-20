@@ -5,7 +5,7 @@ Node.js client for the tmux control mode protocol. Provides streaming access to 
 ## Install
 
 ```bash
-npm install tmux-control-mode-js
+npm install @promptctl/tmux-control-mode-js
 ```
 
 ## Requirements
@@ -76,7 +76,7 @@ sessions, create one first:
 tmux new-session -d -s demo
 ```
 
-The browser imports only TypeScript *types* from `tmux-control-mode-js` — all
+The browser imports only TypeScript *types* from `@promptctl/tmux-control-mode-js` — all
 protocol parsing and encoding happens in the Node bridge. This proves you can
 drive a real web UI with this library without pulling it into the browser
 bundle. The demo is not production code (no auth, no multi-user, no

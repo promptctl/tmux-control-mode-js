@@ -97,13 +97,13 @@ Consumers pick what they need:
 
 ```ts
 // Electron main process — full client with spawn transport
-import { TmuxClient, spawnTmux } from "tmux-control-mode-js";
+import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 
 // Renderer process — terminal integration (PaneManager + interface)
-import { PaneManager } from "tmux-control-mode-js/terminal";
+import { PaneManager } from "@promptctl/tmux-control-mode-js/terminal";
 
 // Browser or anywhere — protocol only
-import { TmuxParser, decode } from "tmux-control-mode-js/protocol";
+import { TmuxParser, decode } from "@promptctl/tmux-control-mode-js/protocol";
 ```
 
 ### Why One Package, Not Two
@@ -341,7 +341,7 @@ IPC bridge sends parsed events to the renderer:
 
 ```ts
 // Main process
-import { TmuxClient, spawnTmux } from "tmux-control-mode-js";
+import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 import { ipcMain } from "electron";
 
 const client = new TmuxClient(spawnTmux(["new-session"]));
@@ -349,7 +349,7 @@ client.on("*", (event) => mainWindow.webContents.send("tmux-event", event));
 ipcMain.handle("tmux-command", (_, cmd) => client.execute(cmd));
 
 // Renderer process (preload-safe)
-import { TmuxParser } from "tmux-control-mode-js/protocol";
+import { TmuxParser } from "@promptctl/tmux-control-mode-js/protocol";
 const { ipcRenderer } = require("electron");
 
 ipcRenderer.on("tmux-event", (_, event) => { /* handle parsed event */ });
