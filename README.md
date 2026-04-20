@@ -32,7 +32,7 @@ tmux:
 Two features are also exposed by the API but require a newer tmux when
 actually called:
 
-- `client.requestReport(...)` — needs tmux **3.3+** (`refresh-client -r`)
+- `client.requestReport(...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown)
 - `%config-error` notification — only emitted by tmux **3.4+**
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived

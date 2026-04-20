@@ -235,7 +235,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
   it(
     "requestReport succeeds against an existing pane",
-    async () => {
+    async (ctx) => {
       sessionName = uniqueSession("test-rep");
       client = await createSession(sessionName);
       const list = await client.execute("list-panes");
@@ -246,6 +246,13 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
         paneId,
         "\u001b]11;rgb:1818/1818/1818\u001b\\",
       );
+      // [LAW:dataflow-not-control-flow] refresh-client -r is newer than the
+      // 3.2 floor this library supports; tmux <3.5 rejects the flag entirely.
+      // Treat that response as a skip signal so the test asserts reality on
+      // any version where the feature is actually available.
+      if (!r.success && r.output.some((l) => l.includes("unknown flag -r"))) {
+        ctx.skip();
+      }
       expect(r.success).toBe(true);
     },
     15000,
