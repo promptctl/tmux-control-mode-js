@@ -238,7 +238,30 @@ export class PaneTerminal {
     term.open(container);
     this.term = term;
 
-    // Keystrokes → tmux send-keys on this pane.
+    // Keymap interception. Runs BEFORE xterm's own key handling, so if the
+    // keymap engine consumes the event (prefix transition or bound chord),
+    // xterm never sees it and no bytes reach onData → sendKeysToPane.
+    //
+    // [LAW:single-enforcer] The store owns the keymap binding; every pane
+    // reads from the same state machine so a C-b in one pane stays coherent
+    // across panes.
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+      if (this.state === "disposed") return true;
+      const consumed = this.store.keymap.handleKey({
+        key: ev.key,
+        ctrl: ev.ctrlKey,
+        alt: ev.altKey,
+        shift: ev.shiftKey,
+        meta: ev.metaKey,
+      });
+      // Return false to tell xterm "do not process this key" — the keymap
+      // has already dispatched the tmux command itself.
+      return !consumed;
+    });
+
+    // Keystrokes → tmux send-keys on this pane. Reached only when the
+    // keymap handler above returned true (key not consumed).
     term.onData((data) => {
       if (this.state === "disposed") return;
       this.store.sendKeysToPane(this.paneId, data);

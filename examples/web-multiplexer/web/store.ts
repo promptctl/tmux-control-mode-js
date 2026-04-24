@@ -26,6 +26,11 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import { BridgeClient } from "./ws-client.ts";
 import type { SerializedTmuxMessage } from "../shared/protocol.ts";
+import {
+  bindKeymap,
+  defaultTmuxKeymap,
+  type KeymapBinding,
+} from "../../../src/keymap/index.js";
 
 export interface PaneInfo {
   id: number;
@@ -119,6 +124,12 @@ export class DemoStore {
 
   readonly client: BridgeClient;
 
+  // [LAW:one-source-of-truth] The keymap binding lives on the store so every
+  // PaneTerminal routes keys through the same state machine — a single C-b
+  // press in one pane shouldn't leave OTHER panes in prefix mode, and vice
+  // versa. One engine per client session is the right scope.
+  readonly keymap: KeymapBinding;
+
   // Raw latest subscription values, kept as observable fields so the
   // assembled `sessions` collection can be rebuilt lazily in one place.
   private latestSessions: string | null = null;
@@ -127,7 +138,10 @@ export class DemoStore {
 
   constructor(client: BridgeClient) {
     this.client = client;
-    makeAutoObservable(this, { client: false });
+    // BridgeClient already exposes execute()+detach() — it satisfies
+    // TmuxCommander structurally. No adapter needed.
+    this.keymap = bindKeymap(client, defaultTmuxKeymap());
+    makeAutoObservable(this, { client: false, keymap: false });
 
     // [LAW:single-enforcer] Wire BridgeClient subscribers EXACTLY ONCE in
     // the constructor (which only runs once via React's useMemo). Wiring
