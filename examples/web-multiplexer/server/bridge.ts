@@ -111,6 +111,15 @@ function handleConnection(ws: WebSocket): void {
   };
   client.on("session-changed", onSessionChanged);
 
+  // [LAW:single-enforcer] When the underlying tmux client exits (user ran
+  // detach-client, tmux server died, etc.), tear down the WebSocket so the
+  // browser's connState transitions to "closed". Without this the browser
+  // would keep thinking the bridge is alive and the clickable reconnect
+  // Badge would never appear.
+  client.on("exit", () => {
+    closeConnection(connection);
+  });
+
   // Forward browser commands to the TmuxClient and correlate responses.
   ws.on("message", async (raw: Buffer) => {
     let msg: ClientToServer;
