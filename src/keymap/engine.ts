@@ -60,11 +60,31 @@ export const INITIAL_STATE: KeymapState = { mode: "root" };
  * branch to do less work than another; control flow is the same shape per
  * call and the returned *value* encodes the outcome.
  */
+// [LAW:one-source-of-truth] Bare modifier key names per KeyboardEvent.key.
+// A keydown whose `key` IS one of these is a user pressing a modifier in
+// preparation for a chord — never a chord on its own. Treating it like any
+// other key would wreck prefix mode: pressing Shift to type `%` after `C-b`
+// would be seen as "unbound chord in prefix" and drop the prefix.
+const BARE_MODIFIER_KEYS: ReadonlySet<string> = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "Meta",
+]);
+
 export function handleKey(
   event: KeyEvent,
   state: KeymapState,
   keymap: Keymap,
 ): HandleResult {
+  // [LAW:dataflow-not-control-flow] Bare-modifier keydowns produce a
+  // deterministic pass-through result: state unchanged, no actions, not
+  // handled. The caller still gets a HandleResult with the same shape —
+  // we're not skipping the function, we're returning early-out data.
+  if (BARE_MODIFIER_KEYS.has(event.key)) {
+    return { state, actions: [], handled: false };
+  }
+
   const isPrefix = keysEqual(event, keymap.prefix);
   const matched = findBinding(event, keymap.bindings);
   const inPrefixMode = state.mode === "prefix";

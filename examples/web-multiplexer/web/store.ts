@@ -51,6 +51,12 @@ export interface WindowInfo {
   index: number;
   name: string;
   active: boolean;
+  /**
+   * True when a pane in this window has been zoomed via `resize-pane -Z`
+   * (C-b z in the keymap). While zoomed, the UI renders only the active
+   * pane at full size; other panes are hidden but still exist server-side.
+   */
+  zoomed: boolean;
   panes: PaneInfo[];
 }
 
@@ -81,7 +87,7 @@ const SESSIONS_FORMAT =
   "'#{S:#{session_id}|#{session_name}|#{session_attached}\\n}'";
 
 const WINDOWS_FORMAT =
-  "'#{S:#{W:#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}\\n}}'";
+  "'#{S:#{W:#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}\\n}}'";
 
 const PANES_FORMAT =
   "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}\\n}}}'";
@@ -115,6 +121,46 @@ function encodeSnapshotLines(lines: readonly string[]): string {
   return lines.join("\\n");
 }
 
+/**
+ * Replace all rows for a given session_id in an encoded snapshot string
+ * with fresh ones. Used by the fast-path refresh to swap in the current
+ * state of one session without discarding the others.
+ *
+ * [LAW:single-enforcer] The snapshot-string format (`\n`-separated
+ * `|`-delimited rows) is defined by the SESSIONS/WINDOWS/PANES_FORMAT
+ * constants above. Anything that manipulates these strings must follow
+ * that format exactly.
+ */
+function mergeSessionRows(
+  existing: string,
+  sessionId: number,
+  freshRows: readonly string[],
+  sidFieldIndex: number,
+): string {
+  const sidValue = `$${sessionId}`;
+  const oldRows = existing
+    .split("\\n")
+    .filter((l) => l.length > 0 && l.split("|")[sidFieldIndex] !== sidValue);
+  const combined = [...oldRows, ...freshRows];
+  return encodeSnapshotLines(combined);
+}
+
+/**
+ * Replace all pane rows whose window_id is in the given set with fresh
+ * ones. Used alongside mergeSessionRows — panes don't carry session_id in
+ * our format, so we match by window.
+ */
+function mergePaneRowsByWindow(
+  existing: string,
+  freshWindowIds: ReadonlySet<string>,
+  freshRows: readonly string[],
+): string {
+  const oldRows = existing
+    .split("\\n")
+    .filter((l) => l.length > 0 && !freshWindowIds.has(l.split("|")[0]));
+  return encodeSnapshotLines([...oldRows, ...freshRows]);
+}
+
 // ---------------------------------------------------------------------------
 // DemoStore
 // ---------------------------------------------------------------------------
@@ -122,6 +168,16 @@ function encodeSnapshotLines(lines: readonly string[]): string {
 export interface PendingConfirm {
   readonly action: Action;
   readonly prompt: string;
+}
+
+/**
+ * Hooks the demo wires in so certain keymap actions don't dispatch to
+ * tmux but instead drive the demo's own UI. Library stays out of this:
+ * the library emits the semantic Action, the demo decides the policy.
+ */
+export interface DemoStoreHooks {
+  /** Called when the keymap emits `choose-session` (C-b s). */
+  readonly onChooseSession?: () => void;
 }
 
 export class DemoStore {
@@ -153,6 +209,7 @@ export class DemoStore {
   // and tunnel the prefix-active signal into the UI.
   private readonly keymapConfig: Keymap = defaultTmuxKeymap();
   private engineState: KeymapState = INITIAL_STATE;
+  private readonly hooks: DemoStoreHooks;
 
   // Raw latest subscription values, kept as observable fields so the
   // assembled `sessions` collection can be rebuilt lazily in one place.
@@ -160,10 +217,12 @@ export class DemoStore {
   private latestWindows: string | null = null;
   private latestPanes: string | null = null;
 
-  constructor(client: BridgeClient) {
+  constructor(client: BridgeClient, hooks: DemoStoreHooks = {}) {
     this.client = client;
+    this.hooks = hooks;
     makeAutoObservable(this, {
       client: false,
+      hooks: false,
       // engineState is a non-observable plumbing detail — the UI observes
       // `prefixActive` instead, which is set whenever the engine transitions.
       // [LAW:no-shared-mutable-globals] Even though MobX technically supports
@@ -223,7 +282,7 @@ export class DemoStore {
           "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
         ),
         this.client.execute(
-          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}'",
+          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'",
         ),
         this.client.execute(
           "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'",
@@ -280,6 +339,15 @@ export class DemoStore {
       // update our pointer if it's the session the UI is currently viewing.
       if (ev.sessionId === this.activeSessionId) {
         this.activeWindowId = ev.windowId;
+        // Fast-path for `C-b c`: tmux fires session-window-changed almost
+        // immediately after creating a window, but the windows subscription
+        // rebuilds at ~1 Hz. If the new window isn't in our model yet,
+        // `currentWindow` resolves to null and PaneView shows nothing. Do a
+        // targeted list-windows / list-panes for the active session so the
+        // new window appears without waiting on the next subscription tick.
+        const session = this.sessions.find((s) => s.id === ev.sessionId);
+        const known = session?.windows.some((w) => w.id === ev.windowId) ?? false;
+        if (!known) void this.refreshSession(ev.sessionId);
       }
       return;
     }
@@ -350,6 +418,13 @@ export class DemoStore {
       };
       return;
     }
+    // [LAW:dataflow-not-control-flow] The demo's policy for choose-session
+    // is "open the sidebar" rather than tmux's choose-tree. Intercept the
+    // action, invoke the hook, swallow the dispatch.
+    if (action.type === "choose-session") {
+      this.hooks.onChooseSession?.();
+      return;
+    }
     dispatchAction(this.client, action);
   }
 
@@ -361,6 +436,64 @@ export class DemoStore {
 
   cancelPendingAction(): void {
     this.pendingConfirm = null;
+  }
+
+  /**
+   * Targeted fast-path: re-run list-windows and list-panes for a single
+   * session and merge the results into the model right away. Used after
+   * session-window-changed fires for a window the subscription hasn't
+   * delivered yet — otherwise the UI would be blank for up to a second
+   * while waiting for the next subscription tick.
+   *
+   * [LAW:single-enforcer] The subscription pipeline remains the
+   * steady-state model builder. This is a fast-path nudge, not a parallel
+   * source of truth — its output is fed through the same parseRecords +
+   * rebuildModel path, so the model shape stays consistent.
+   */
+  private async refreshSession(sessionId: number): Promise<void> {
+    try {
+      const [windowsResp, panesResp] = await Promise.all([
+        this.client.execute(
+          `list-windows -t $${sessionId} -F '$${sessionId}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'`,
+        ),
+        this.client.execute(
+          `list-panes -s -t $${sessionId} -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'`,
+        ),
+      ]);
+      if (!windowsResp.success || !panesResp.success) return;
+
+      // Merge by replacing the rows for this session in the latest snapshot
+      // strings. Simpler and more correct than trying to patch `sessions`
+      // directly: rebuildModel is a pure function of the three snapshots, so
+      // producing a new one for just this session and re-running the rebuild
+      // keeps everything consistent.
+      if (this.latestWindows !== null) {
+        this.latestWindows = mergeSessionRows(
+          this.latestWindows,
+          sessionId,
+          windowsResp.output,
+          /* sidFieldIndex */ 0,
+        );
+      }
+      if (this.latestPanes !== null) {
+        // Pane rows from the fast-path don't carry session_id, but all
+        // panes returned here belong to `sessionId`'s windows. We replace
+        // rows whose window_id appears in the fresh windowsResp output.
+        const freshWindowIds = new Set(
+          windowsResp.output
+            .map((line) => line.split("|")[1])
+            .filter((s) => s.length > 0),
+        );
+        this.latestPanes = mergePaneRowsByWindow(
+          this.latestPanes,
+          freshWindowIds,
+          panesResp.output,
+        );
+      }
+      runInAction(() => this.rebuildModel());
+    } catch {
+      // Non-fatal: subscriptions will catch up.
+    }
   }
 
   private async refreshWindowDimensions(windowId: number): Promise<void> {
@@ -443,6 +576,7 @@ export class DemoStore {
       "idx",
       "name",
       "active",
+      "zoomed",
     ]);
     const paneRows = parseRecords(this.latestPanes, [
       "wid",
@@ -476,6 +610,7 @@ export class DemoStore {
         index: parseInt(w.idx, 10),
         name: w.name,
         active: w.active === "1",
+        zoomed: w.zoomed === "1",
         panes: panesByWindow.get(w.wid) ?? [],
       });
       windowsBySession.set(w.sid, list);
