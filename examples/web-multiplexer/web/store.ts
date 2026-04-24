@@ -101,6 +101,10 @@ function parseRecords(
     });
 }
 
+function encodeSnapshotLines(lines: readonly string[]): string {
+  return lines.join("\\n");
+}
+
 // ---------------------------------------------------------------------------
 // DemoStore
 // ---------------------------------------------------------------------------
@@ -141,6 +145,10 @@ export class DemoStore {
     this.client.connect(url);
   }
 
+  disconnect(): void {
+    this.client.disconnect();
+  }
+
   // -------------------------------------------------------------------------
   // Connection lifecycle
   // -------------------------------------------------------------------------
@@ -164,6 +172,31 @@ export class DemoStore {
         this.client.execute(`refresh-client -B windows::${WINDOWS_FORMAT}`),
         this.client.execute(`refresh-client -B panes::${PANES_FORMAT}`),
       ]);
+
+      // [LAW:one-source-of-truth] The live model remains driven by the
+      // subscription strings. Initial list-* snapshots are encoded into that
+      // same string shape and fed through the existing rebuild pipeline.
+      const [sessionsResp, windowsResp, panesResp] = await Promise.all([
+        this.client.execute(
+          "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
+        ),
+        this.client.execute(
+          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}'",
+        ),
+        this.client.execute(
+          "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'",
+        ),
+      ]);
+
+      if (sessionsResp.success) {
+        this.applySubscription("sessions", encodeSnapshotLines(sessionsResp.output));
+      }
+      if (windowsResp.success) {
+        this.applySubscription("windows", encodeSnapshotLines(windowsResp.output));
+      }
+      if (panesResp.success) {
+        this.applySubscription("panes", encodeSnapshotLines(panesResp.output));
+      }
     } catch (err) {
       runInAction(() =>
         this.pushError(

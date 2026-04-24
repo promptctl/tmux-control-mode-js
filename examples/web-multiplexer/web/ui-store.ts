@@ -13,6 +13,7 @@ export type AppMode = "multiplexer" | "inspector" | "heatmap";
 
 interface PersistedShape {
   navbarWidth: number;
+  navbarCollapsed: boolean;
   asideCollapsed: boolean;
   hiddenEventTypes: string[];
   activeAsideTab: string;
@@ -25,6 +26,7 @@ const TERMINAL_FONT_MAX = 24;
 
 const DEFAULTS: PersistedShape = {
   navbarWidth: 260,
+  navbarCollapsed: false,
   asideCollapsed: false,
   hiddenEventTypes: [],
   activeAsideTab: "debug",
@@ -44,6 +46,10 @@ function loadFromStorage(): PersistedShape {
         parsed.navbarWidth < 800
           ? parsed.navbarWidth
           : DEFAULTS.navbarWidth,
+      navbarCollapsed:
+        typeof parsed.navbarCollapsed === "boolean"
+          ? parsed.navbarCollapsed
+          : DEFAULTS.navbarCollapsed,
       asideCollapsed:
         typeof parsed.asideCollapsed === "boolean"
           ? parsed.asideCollapsed
@@ -75,6 +81,7 @@ function loadFromStorage(): PersistedShape {
 
 export class UiStore {
   navbarWidth: number;
+  navbarCollapsed: boolean;
   asideCollapsed: boolean;
   // Use a plain object instead of a Set for MobX observability ease + JSON.
   hiddenEventTypes: Record<string, true> = {};
@@ -85,6 +92,7 @@ export class UiStore {
   constructor() {
     const initial = loadFromStorage();
     this.navbarWidth = initial.navbarWidth;
+    this.navbarCollapsed = initial.navbarCollapsed;
     this.asideCollapsed = initial.asideCollapsed;
     this.activeAsideTab = initial.activeAsideTab;
     this.terminalFontSize = initial.terminalFontSize;
@@ -97,6 +105,7 @@ export class UiStore {
     reaction(
       () => ({
         navbarWidth: this.navbarWidth,
+        navbarCollapsed: this.navbarCollapsed,
         asideCollapsed: this.asideCollapsed,
         hiddenEventTypes: Object.keys(this.hiddenEventTypes).sort(),
         activeAsideTab: this.activeAsideTab,
@@ -128,6 +137,10 @@ export class UiStore {
 
   setNavbarWidth(w: number): void {
     this.navbarWidth = Math.max(160, Math.min(800, Math.round(w)));
+  }
+
+  toggleNavbar(): void {
+    this.navbarCollapsed = !this.navbarCollapsed;
   }
 
   toggleAside(): void {

@@ -1,4 +1,3 @@
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
@@ -11,10 +10,11 @@ const theme = createTheme({
   defaultRadius: "sm",
 });
 
+// [LAW:single-enforcer] Demo connection lifecycle is owned by App. React
+// StrictMode's intentional double-mount injects synthetic connect/disconnect
+// churn that is unrelated to the bridge behavior this example validates.
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <MantineProvider theme={theme} defaultColorScheme="dark">
-      <App />
-    </MantineProvider>
-  </StrictMode>,
+  <MantineProvider theme={theme} defaultColorScheme="dark">
+    <App />
+  </MantineProvider>,
 );
