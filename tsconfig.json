@@ -2,7 +2,8 @@
   "references": [
     { "path": "src/protocol" },
     { "path": "src/transport" },
-    { "path": "src" }
+    { "path": "src" },
+    { "path": "src/keymap" }
   ],
   "files": []
 }
