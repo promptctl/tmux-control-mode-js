@@ -238,30 +238,17 @@ export class PaneTerminal {
     term.open(container);
     this.term = term;
 
-    // Keymap interception. Runs BEFORE xterm's own key handling, so if the
-    // keymap engine consumes the event (prefix transition or bound chord),
-    // xterm never sees it and no bytes reach onData → sendKeysToPane.
-    //
-    // [LAW:single-enforcer] The store owns the keymap engine; every pane
-    // feeds the same state machine so a C-b in one pane stays coherent
-    // across panes and the prefix-active indicator updates once.
-    term.attachCustomKeyEventHandler((ev) => {
-      if (ev.type !== "keydown") return true;
-      if (this.state === "disposed") return true;
-      const consumed = this.store.handleKeyEvent({
-        key: ev.key,
-        ctrl: ev.ctrlKey,
-        alt: ev.altKey,
-        shift: ev.shiftKey,
-        meta: ev.metaKey,
-      });
-      // Return false to tell xterm "do not process this key" — the keymap
-      // has already dispatched the tmux command itself.
-      return !consumed;
-    });
+    // Keymap interception is NOT attached here. A per-xterm key handler
+    // only fires while that specific xterm has focus, which is the wrong
+    // scope for tmux-style shortcuts — pressing `C-b n` moves to the next
+    // window and unmounts this xterm, so the FOLLOWING chord would fire on
+    // a fresh (unfocused) xterm and do nothing. The demo attaches a
+    // single document-level capture-phase keydown listener in App.tsx
+    // instead; see store.handleKeyEvent for routing.
 
-    // Keystrokes → tmux send-keys on this pane. Reached only when the
-    // keymap handler above returned true (key not consumed).
+    // Keystrokes → tmux send-keys on this pane. The document-level
+    // listener prevents default on consumed chords before they reach this
+    // callback, so xterm's onData only fires for keys the keymap ignored.
     term.onData((data) => {
       if (this.state === "disposed") return;
       this.store.sendKeysToPane(this.paneId, data);
@@ -451,6 +438,17 @@ export class PaneTerminal {
    */
   get containerDimensions(): { w: number; h: number } {
     return { w: this.containerBox.w, h: this.containerBox.h };
+  }
+
+  /**
+   * Focus the underlying xterm. Called by PaneCell whenever the owning
+   * pane becomes the active pane — which happens on window switch, pane
+   * click, or any keymap-driven focus change. Guard against the idle /
+   * disposed states: focus() on a disposed term throws.
+   */
+  focus(): void {
+    if (this.state === "disposed" || this.term === null) return;
+    this.term.focus();
   }
 
   dispose(): void {

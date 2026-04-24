@@ -60,6 +60,53 @@ export const App = observer(function App() {
     };
   }, [demoStore, heatmapStore, inspectorStore]);
 
+  // Document-level keymap routing.
+  //
+  // Why this lives at window scope (and not on xterm's attachCustomKey-
+  // EventHandler): tmux-style shortcuts should keep working even when the
+  // focus drifts off the terminal — e.g. after C-b n unmounts the old
+  // xterm and the new one hasn't grabbed focus yet, or when the user
+  // clicked a UI control. Attaching per-xterm would make the keymap deaf
+  // in exactly those moments.
+  //
+  // Capture phase (useCapture: true) runs this listener BEFORE xterm's
+  // own keydown handler on its textarea, so consumed chords can be
+  // preventDefault'd before xterm translates them into pane bytes.
+  //
+  // Text-input exclusion: when the user is typing into a real form
+  // input (filter boxes, inspector search) we must NOT interpret those
+  // keystrokes as tmux commands. The xterm helper textarea is an
+  // exception — that's where the keymap SHOULD fire.
+  useEffect(() => {
+    function isRegularTextInput(el: Element | null): boolean {
+      if (el === null) return false;
+      // xterm's invisible textarea is how xterm captures input. Treat it
+      // as "not a text input" so the keymap handles C-b there.
+      if (el.classList.contains("xterm-helper-textarea")) return false;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return true;
+      if ((el as HTMLElement).isContentEditable) return true;
+      return false;
+    }
+    function onKeyDown(ev: KeyboardEvent): void {
+      if (isRegularTextInput(document.activeElement)) return;
+      const consumed = demoStore.handleKeyEvent({
+        key: ev.key,
+        ctrl: ev.ctrlKey,
+        alt: ev.altKey,
+        shift: ev.shiftKey,
+        meta: ev.metaKey,
+      });
+      if (consumed) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [demoStore]);
+
   const { currentSession, currentWindow, connState, sessions, events, errors } =
     demoStore;
 
