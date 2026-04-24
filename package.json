@@ -22,6 +22,30 @@
     "./keymap": {
       "types": "./dist/keymap/index.d.ts",
       "default": "./dist/keymap/index.js"
+    },
+    "./electron/main": {
+      "types": "./dist/connectors/electron/main.d.ts",
+      "default": "./dist/connectors/electron/main.js"
+    },
+    "./electron/renderer": {
+      "types": "./dist/connectors/electron/renderer.d.ts",
+      "default": "./dist/connectors/electron/renderer.js"
+    },
+    "./websocket": {
+      "types": "./dist/connectors/websocket/index.d.ts",
+      "default": "./dist/connectors/websocket/index.js"
+    },
+    "./websocket/server": {
+      "types": "./dist/connectors/websocket/server.d.ts",
+      "default": "./dist/connectors/websocket/server.js"
+    },
+    "./websocket/client": {
+      "types": "./dist/connectors/websocket/client.d.ts",
+      "default": "./dist/connectors/websocket/client.js"
+    },
+    "./websocket/protocol": {
+      "types": "./dist/connectors/websocket/protocol.d.ts",
+      "default": "./dist/connectors/websocket/protocol.js"
     }
   },
   "sideEffects": false,
@@ -29,7 +53,8 @@
     "dist"
   ],
   "workspaces": [
-    "examples/web-multiplexer"
+    "examples/web-multiplexer",
+    "examples/xterm-electron"
   ],
   "engines": {
     "node": ">=20"

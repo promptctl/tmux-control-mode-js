@@ -11,10 +11,11 @@ import { INITIAL_STATE, handleKey } from "./engine.js";
 // [LAW:locality-or-seam] Minimal interface the dispatcher needs. Keeps the
 // keymap module from depending on the full TmuxClient type (and its
 // transport transitive deps), and makes the dispatcher trivially testable
-// with a fake. TmuxClient satisfies this structurally.
+// with a fake. TmuxClient and any thin WebSocket bridge client satisfy
+// this structurally — just `execute` for every named tmux command and
+// `detach` for the LF-on-stdin signal.
 export interface TmuxCommander {
   execute(command: string): unknown;
-  splitWindow(options: { vertical?: boolean }): unknown;
   detach(): void;
 }
 
@@ -86,7 +87,12 @@ function dispatch(client: TmuxCommander, action: Action): void {
       void client.execute("kill-window");
       return;
     case "split":
-      void client.splitWindow({ vertical: action.orientation === "vertical" });
+      // tmux: `-v` stacks top/bottom, `-h` splits left/right. The command
+      // takes no user-supplied arguments, so raw execute is safe — no
+      // escaping required.
+      void client.execute(
+        `split-window -${action.orientation === "vertical" ? "v" : "h"}`,
+      );
       return;
     case "select-pane":
       void client.execute(`select-pane -${DIRECTION_FLAG[action.direction]}`);

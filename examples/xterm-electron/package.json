@@ -1,0 +1,25 @@
+{
+  "name": "tmux-control-mode-js-demo-xterm-electron",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reference Electron + xterm.js demo for tmux-control-mode-js. Exercises the Electron IPC bridge (src/connectors/electron). Not published.",
+  "type": "module",
+  "main": "dist/main.mjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "npm run build && playwright test"
+  },
+  "dependencies": {
+    "@promptctl/tmux-control-mode-js": "file:../..",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^22.0.0",
+    "electron": "^31.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.9.3"
+  }
+}
