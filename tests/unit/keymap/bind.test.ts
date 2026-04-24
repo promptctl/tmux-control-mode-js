@@ -12,25 +12,18 @@ import {
 function fakeClient(): {
   client: TmuxCommander;
   commands: string[];
-  splits: Array<{ vertical?: boolean }>;
   detaches: number;
 } {
   const commands: string[] = [];
-  const splits: Array<{ vertical?: boolean }> = [];
   let detaches = 0;
   return {
     commands,
-    splits,
     get detaches() {
       return detaches;
     },
     client: {
       execute(cmd) {
         commands.push(cmd);
-        return undefined;
-      },
-      splitWindow(opts) {
-        splits.push(opts);
         return undefined;
       },
       detach() {
@@ -50,20 +43,20 @@ describe("bindKeymap dispatch", () => {
     expect(f.commands).toEqual(["new-window"]);
   });
 
-  it("C-b % dispatches split with vertical=false", () => {
+  it("C-b % dispatches split-window -h", () => {
     const f = fakeClient();
     const b = bindKeymap(f.client, defaultTmuxKeymap());
     b.handleKey(parseChord("C-b"));
     b.handleKey(parseChord("%"));
-    expect(f.splits).toEqual([{ vertical: false }]);
+    expect(f.commands).toEqual(["split-window -h"]);
   });
 
-  it("C-b \" dispatches split with vertical=true", () => {
+  it("C-b \" dispatches split-window -v", () => {
     const f = fakeClient();
     const b = bindKeymap(f.client, defaultTmuxKeymap());
     b.handleKey(parseChord("C-b"));
     b.handleKey(parseChord('"'));
-    expect(f.splits).toEqual([{ vertical: true }]);
+    expect(f.commands).toEqual(["split-window -v"]);
   });
 
   it("C-b 5 dispatches select-window -t :5", () => {
@@ -104,7 +97,6 @@ describe("bindKeymap dispatch", () => {
     const b = bindKeymap(f.client, defaultTmuxKeymap());
     expect(b.handleKey(parseChord("a"))).toBe(false);
     expect(f.commands).toEqual([]);
-    expect(f.splits).toEqual([]);
   });
 
   it("unbound key in prefix mode is swallowed (handled=true, no dispatch)", () => {

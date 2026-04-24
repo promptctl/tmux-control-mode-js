@@ -3,7 +3,8 @@
     { "path": "src/protocol" },
     { "path": "src/transport" },
     { "path": "src" },
-    { "path": "src/keymap" }
+    { "path": "src/keymap" },
+    { "path": "src/connectors" }
   ],
   "files": []
 }
