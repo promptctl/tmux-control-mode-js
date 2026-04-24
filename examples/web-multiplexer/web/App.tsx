@@ -37,8 +37,18 @@ import { SegmentedControl } from "@mantine/core";
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 
 export const App = observer(function App() {
-  const demoStore = useMemo(() => new DemoStore(new BridgeClient()), []);
   const uiStore = useMemo(() => new UiStore(), []);
+  // Demo-side policy hooks: the library's keymap emits `choose-session`
+  // for C-b s, but the demo handles it by popping the sidebar open rather
+  // than firing tmux's `choose-tree` (which renders inside a pane and
+  // doesn't translate well to the browser UX).
+  const demoStore = useMemo(
+    () =>
+      new DemoStore(new BridgeClient(), {
+        onChooseSession: () => uiStore.expandNavbar(),
+      }),
+    [uiStore],
+  );
   // [LAW:one-source-of-truth] InspectorStore subscribes to the SAME
   // BridgeClient as DemoStore. Both stores are pure projections of the
   // wire — InspectorStore sees everything, DemoStore sees only events.
@@ -89,6 +99,10 @@ export const App = observer(function App() {
     }
     function onKeyDown(ev: KeyboardEvent): void {
       if (isRegularTextInput(document.activeElement)) return;
+      // When a confirm/action modal is open, let it handle keys itself.
+      // Otherwise our capture-phase listener would swallow Enter/Escape
+      // before the Modal's button could react.
+      if (demoStore.pendingConfirm !== null) return;
       const consumed = demoStore.handleKeyEvent({
         key: ev.key,
         ctrl: ev.ctrlKey,
@@ -174,9 +188,31 @@ export const App = observer(function App() {
             <Text size="xs" c="dimmed">
               {sessions.length} sessions
             </Text>
-            <Badge color={demoStore.statusColor} variant="light">
-              bridge: {connState}
-            </Badge>
+            {/* Click to reconnect when the bridge is closed — e.g. after
+                C-b d (detach) or a dropped connection. Mantine Badge has
+                no onClick prop; wrap in a Tooltip + ActionIcon-like box
+                by using the `component="button"` escape hatch. */}
+            <Tooltip
+              label={
+                connState === "closed"
+                  ? "Click to reconnect"
+                  : `Bridge is ${connState}`
+              }
+            >
+              <Badge
+                color={demoStore.statusColor}
+                variant="light"
+                style={{
+                  cursor: connState === "closed" ? "pointer" : "default",
+                  userSelect: "none",
+                }}
+                onClick={() => {
+                  if (connState === "closed") demoStore.connect(WS_URL);
+                }}
+              >
+                bridge: {connState}
+              </Badge>
+            </Tooltip>
             <Tooltip label={uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"}>
               <ActionIcon
                 variant="subtle"
@@ -284,7 +320,11 @@ export const App = observer(function App() {
             <Button
               color="red"
               onClick={() => demoStore.confirmPendingAction()}
-              autoFocus
+              // Mantine's focus trap uses `data-autofocus` — React's
+              // `autoFocus` prop is ignored by the trap because Modal runs
+              // its own focus management after mount. Wrap the attr in a
+              // truthy value so Mantine picks this as the initial target.
+              data-autofocus
             >
               Kill
             </Button>

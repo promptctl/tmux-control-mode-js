@@ -16,14 +16,31 @@ export interface KeyEvent {
 // [LAW:one-source-of-truth] Chord equality lives here only. Every bindings
 // lookup routes through this predicate — if we allowed callers to compare
 // modifiers ad-hoc, two chord "keys" could disagree on casing or shift.
+//
+// Implicit shift: when the `key` is a single character that is NOT a
+// lowercase letter and NOT a digit — uppercase letters, `%`, `!`, `{`, `|`
+// and friends — the shift flag is treated as "don't care". Rationale: the
+// browser's KeyboardEvent.key already encodes shift INTO the character
+// (Shift+5 produces key="%" with shift:true; Shift+a produces key="A").
+// Requiring callers to write `S-%` for `%` would be noise. For lowercase
+// letters (`a` vs `A`) and digits (`1` vs `!`) shift meaningfully changes
+// what you'd see, so we keep the strict comparison.
 export function keysEqual(a: KeyEvent, b: KeyEvent): boolean {
+  const shiftImplicit = shiftIsImplicit(a.key) || shiftIsImplicit(b.key);
   return (
     a.key === b.key &&
     a.ctrl === b.ctrl &&
     a.alt === b.alt &&
-    a.shift === b.shift &&
+    (shiftImplicit || a.shift === b.shift) &&
     a.meta === b.meta
   );
+}
+
+// [LAW:single-enforcer] This predicate is the sole definition of "shift is
+// baked into the character". Changing what counts as implicit-shift means
+// editing exactly one place.
+function shiftIsImplicit(key: string): boolean {
+  return key.length === 1 && !/[a-z0-9]/.test(key);
 }
 
 // [LAW:dataflow-not-control-flow] parseChord produces a value; it never

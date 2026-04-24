@@ -143,6 +143,16 @@ export class UiStore {
     this.navbarCollapsed = !this.navbarCollapsed;
   }
 
+  /**
+   * Force the session sidebar visible. Used by the keymap's
+   * `choose-session` handler (C-b s) so that the demo's native session
+   * picker takes over the role tmux's `choose-tree` would play in a
+   * standalone terminal.
+   */
+  expandNavbar(): void {
+    this.navbarCollapsed = false;
+  }
+
   toggleAside(): void {
     this.asideCollapsed = !this.asideCollapsed;
   }

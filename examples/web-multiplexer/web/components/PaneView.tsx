@@ -21,19 +21,51 @@ interface Props {
 export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   const win = store.currentWindow;
   if (win === null) return null;
-  const cols = Math.min(win.panes.length, 2);
+
+  // When tmux has a pane zoomed (C-b z), render only the active pane at
+  // full size. The other panes still exist server-side — they're just
+  // hidden from view, matching tmux's own zoom UX.
+  const visible = win.zoomed
+    ? win.panes.filter((p) => p.active)
+    : win.panes;
+
+  // Derive layout orientation from pane geometry. tmux sends us the actual
+  // width/height per pane; from that we can tell whether the split is
+  // side-by-side (`-h`, same height / different widths) or top/bottom
+  // (`-v`, same width / different heights). For >2 panes we fall back to
+  // a single stack — tmux's layout algebra (tiled, main-horizontal, …)
+  // beyond 2 panes is out of scope for this demo.
+  const cols = visible.length <= 1
+    ? 1
+    : isSideBySide(visible)
+    ? visible.length
+    : 1;
+
   return (
-    <SimpleGrid
-      cols={cols > 0 ? cols : 1}
-      spacing="xs"
-      style={{ flex: 1, minHeight: 0 }}
-    >
-      {win.panes.map((p) => (
+    <SimpleGrid cols={cols} spacing="xs" style={{ flex: 1, minHeight: 0 }}>
+      {visible.map((p) => (
         <PaneCell key={p.id} pane={p} store={store} uiStore={uiStore} />
       ))}
     </SimpleGrid>
   );
 });
+
+// [LAW:single-enforcer] Orientation detection lives in exactly one place.
+// Rule: if the panes' heights are all equal but widths differ, they are
+// side-by-side (horizontal split from tmux's perspective — `split-window -h`).
+// Otherwise treat them as stacked (vertical split, `split-window -v`).
+function isSideBySide(panes: readonly PaneInfo[]): boolean {
+  if (panes.length < 2) return false;
+  const firstHeight = panes[0].height;
+  const firstWidth = panes[0].width;
+  const allSameHeight = panes.every((p) => p.height === firstHeight);
+  const allSameWidth = panes.every((p) => p.width === firstWidth);
+  if (allSameHeight && !allSameWidth) return true;
+  if (allSameWidth && !allSameHeight) return false;
+  // Ambiguous (all same or all different) — fall back to single-column
+  // stack, which is always readable.
+  return false;
+}
 
 interface CellProps {
   readonly pane: PaneInfo;

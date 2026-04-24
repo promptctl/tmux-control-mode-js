@@ -558,6 +558,18 @@ The engine state is per-binding. If you instantiate multiple `KeymapBinding`s, e
 
 The demo solves this by putting one binding on the `DemoStore`, shared across all `PaneTerminal` instances. Do the same in your app.
 
+### Bare modifier keydowns are ignored
+
+Browsers fire a keydown for `Shift`/`Control`/`Alt`/`Meta` *before* the shifted character arrives. The engine short-circuits on these — it returns the state unchanged and `handled: false`. Without this, pressing `Shift` to type `%` after `C-b` would be seen as "unbound chord in prefix mode" and silently cancel the prefix.
+
+### Implicit shift on shifted characters
+
+The browser's `KeyboardEvent.key` already encodes Shift into the character: `Shift+5` arrives as `{ key: "%", shift: true }`; `Shift+a` as `{ key: "A", shift: true }`. Requiring binding authors to write `S-%` for `%` would be noise, so `keysEqual` treats `shift` as "don't care" when the `key` is a single non-alphanumeric-lowercase character (symbols and uppercase letters).
+
+Lowercase letters (`a` vs `A`) and digits (`1` vs `!`) keep strict shift comparison — there, shift genuinely changes what the user typed.
+
+Consequence: `parseChord("%")` and `parseChord("A")` match the events browsers actually produce. You don't need to think about shift when writing a keymap.
+
 ### Meta keys in browsers
 
 `KeyboardEvent.metaKey` is the `⌘` key on macOS and the Win/Super key on other platforms. `KeyboardEvent.altKey` is `⌥` / Alt. If you want consistent bindings across platforms, prefer `ctrl` chords (like tmux itself does — the default prefix is `C-b` precisely because it's the most portable).

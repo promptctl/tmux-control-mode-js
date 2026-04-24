@@ -86,6 +86,52 @@ describe("handleKey — prefix mode", () => {
   });
 });
 
+describe("bare modifier keydowns are ignored", () => {
+  const PREFIX: ReturnType<typeof handleKey>["state"] = { mode: "prefix" };
+
+  it("pressing Shift in prefix mode keeps state=prefix, no actions, not handled", () => {
+    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const r = handleKey(shift, PREFIX, keymap);
+    expect(r.state).toEqual({ mode: "prefix" });
+    expect(r.actions).toEqual([]);
+    expect(r.handled).toBe(false);
+  });
+
+  it("Control / Alt / Meta alone don't disturb prefix mode", () => {
+    for (const key of ["Control", "Alt", "Meta"]) {
+      const ev = { key, ctrl: false, alt: false, shift: false, meta: false };
+      const r = handleKey(ev, PREFIX, keymap);
+      expect(r.state).toEqual({ mode: "prefix" });
+      expect(r.handled).toBe(false);
+    }
+  });
+
+  it("bare modifier in root mode is also a no-op pass-through", () => {
+    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const r = handleKey(shift, INITIAL_STATE, keymap);
+    expect(r.state).toEqual({ mode: "root" });
+    expect(r.actions).toEqual([]);
+    expect(r.handled).toBe(false);
+  });
+
+  it("full sequence: C-b → Shift → % fires the split action", () => {
+    // Simulate a real browser key sequence on US keyboard for `C-b %`:
+    //   keydown C-b, keydown Shift (shift:true bare), keydown % (shift:true key="%")
+    const cb = { key: "b", ctrl: true, alt: false, shift: false, meta: false };
+    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const pct = { key: "%", ctrl: false, alt: false, shift: true, meta: false };
+
+    let state: ReturnType<typeof handleKey>["state"] = INITIAL_STATE;
+    state = handleKey(cb, state, keymap).state;
+    expect(state).toEqual({ mode: "prefix" });
+    state = handleKey(shift, state, keymap).state;
+    expect(state).toEqual({ mode: "prefix" }); // must survive the Shift keydown
+    const r = handleKey(pct, state, keymap);
+    expect(r.actions).toEqual([{ type: "split", orientation: "horizontal" }]);
+    expect(r.state).toEqual({ mode: "root" });
+  });
+});
+
 describe("full prefix sequence", () => {
   it("C-b then c ends with new-window action and root state", () => {
     const step1 = handleKey(ev("C-b"), INITIAL_STATE, keymap);
