@@ -16,6 +16,8 @@ import {
   Tabs,
   ActionIcon,
   Tooltip,
+  Modal,
+  Button,
 } from "@mantine/core";
 import { BridgeClient } from "./ws-client.ts";
 import { DemoStore } from "./store.ts";
@@ -114,6 +116,14 @@ export const App = observer(function App() {
             />
           </Group>
           <Group gap="xs" wrap="nowrap">
+            {/* Prefix-active indicator. Only rendered when the keymap
+                engine is in prefix mode; occupies no space otherwise so
+                the header layout doesn't jitter. */}
+            {demoStore.prefixActive && (
+              <Badge color="yellow" variant="filled">
+                prefix: C-b
+              </Badge>
+            )}
             <Text size="xs" c="dimmed">
               {sessions.length} sessions
             </Text>
@@ -202,6 +212,38 @@ export const App = observer(function App() {
           </Tabs.Panel>
         </Tabs>
       </AppShell.Aside>
+
+      {/* Confirm modal for destructive keymap actions (C-b x, C-b &).
+          The demo intercepts kill-pane / kill-window in DemoStore and
+          shows this prompt before dispatching — matching tmux's own
+          `confirm-before` UX without forcing that policy into the
+          library layer. */}
+      <Modal
+        opened={demoStore.pendingConfirm !== null}
+        onClose={() => demoStore.cancelPendingAction()}
+        title="Confirm"
+        centered
+        size="sm"
+      >
+        <Stack gap="md">
+          <Text>{demoStore.pendingConfirm?.prompt ?? ""}</Text>
+          <Group justify="flex-end" gap="xs">
+            <Button
+              variant="default"
+              onClick={() => demoStore.cancelPendingAction()}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              onClick={() => demoStore.confirmPendingAction()}
+              autoFocus
+            >
+              Kill
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </AppShell>
   );
 });

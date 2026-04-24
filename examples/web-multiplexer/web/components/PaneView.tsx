@@ -62,6 +62,21 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
     };
   }, [pane.id, store, uiStore]);
 
+  // Visual signal for the keymap prefix state: when the user has pressed
+  // C-b, the focused pane's border switches to a warning color so the next
+  // keystroke is understood to be a tmux command. Non-active panes stay
+  // quiet even when the prefix is armed — only one pane has "focus" at a
+  // time, and that's where the user's typing is going.
+  //
+  // [LAW:dataflow-not-control-flow] The border color is a pure projection
+  // of (pane.active, store.prefixActive). No imperative setAttribute;
+  // MobX invalidates the observer on either change and the value is
+  // recomputed.
+  const borderColor = pane.active
+    ? store.prefixActive
+      ? "var(--mantine-color-yellow-5)"
+      : "var(--mantine-color-teal-6)"
+    : undefined;
   return (
     <Paper
       withBorder
@@ -70,7 +85,9 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
-        borderColor: pane.active ? "var(--mantine-color-teal-6)" : undefined,
+        borderColor,
+        borderWidth: pane.active && store.prefixActive ? 2 : undefined,
+        transition: "border-color 80ms ease-out, border-width 80ms ease-out",
       }}
       onClick={() => store.selectPane(pane)}
     >

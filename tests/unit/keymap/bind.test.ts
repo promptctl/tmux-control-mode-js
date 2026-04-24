@@ -5,7 +5,9 @@ import { describe, it, expect } from "vitest";
 import {
   bindKeymap,
   defaultTmuxKeymap,
+  dispatchAction,
   parseChord,
+  type KeymapState,
   type TmuxCommander,
 } from "../../../src/keymap/index.js";
 
@@ -105,5 +107,79 @@ describe("bindKeymap dispatch", () => {
     b.handleKey(parseChord("C-b"));
     expect(b.handleKey(parseChord("Z"))).toBe(true);
     expect(f.commands).toEqual([]);
+  });
+});
+
+describe("KeymapBinding state observation", () => {
+  it("state reflects root, then prefix, then root again", () => {
+    const f = fakeClient();
+    const b = bindKeymap(f.client, defaultTmuxKeymap());
+    expect(b.state).toEqual({ mode: "root" });
+    b.handleKey(parseChord("C-b"));
+    expect(b.state).toEqual({ mode: "prefix" });
+    b.handleKey(parseChord("c"));
+    expect(b.state).toEqual({ mode: "root" });
+  });
+
+  it("onStateChange fires on transitions only, not on every keystroke", () => {
+    const f = fakeClient();
+    const b = bindKeymap(f.client, defaultTmuxKeymap());
+    const states: KeymapState[] = [];
+    b.onStateChange((s) => states.push(s));
+
+    b.handleKey(parseChord("a")); // root → root, no notify
+    b.handleKey(parseChord("C-b")); // root → prefix, notify
+    b.handleKey(parseChord("c")); // prefix → root, notify
+    b.handleKey(parseChord("b")); // root → root, no notify
+
+    expect(states).toEqual([{ mode: "prefix" }, { mode: "root" }]);
+  });
+
+  it("onStateChange unsubscribe stops delivery", () => {
+    const f = fakeClient();
+    const b = bindKeymap(f.client, defaultTmuxKeymap());
+    const received: KeymapState[] = [];
+    const off = b.onStateChange((s) => received.push(s));
+    b.handleKey(parseChord("C-b"));
+    off();
+    b.handleKey(parseChord("c"));
+    expect(received).toEqual([{ mode: "prefix" }]);
+  });
+});
+
+describe("dispatchAction exported", () => {
+  it("maps Action → tmux command identically to bindKeymap's internal dispatch", () => {
+    const f = fakeClient();
+    dispatchAction(f.client, { type: "new-window" });
+    dispatchAction(f.client, { type: "select-window", index: 3 });
+    dispatchAction(f.client, { type: "split", orientation: "vertical" });
+    dispatchAction(f.client, { type: "resize-pane", direction: "left", amount: 5 });
+    expect(f.commands).toEqual([
+      "new-window",
+      "select-window -t :3",
+      "split-window -v",
+      "resize-pane -L 5",
+    ]);
+  });
+
+  it("lets a consumer override some actions and delegate the rest", () => {
+    const f = fakeClient();
+    const killed: unknown[] = [];
+
+    // Composed dispatcher: intercept kill-pane, delegate everything else.
+    function composedDispatch(action: Parameters<typeof dispatchAction>[1]): void {
+      if (action.type === "kill-pane") {
+        killed.push(action);
+        return;
+      }
+      dispatchAction(f.client, action);
+    }
+
+    composedDispatch({ type: "new-window" });
+    composedDispatch({ type: "kill-pane" });
+    composedDispatch({ type: "next-window" });
+
+    expect(f.commands).toEqual(["new-window", "next-window"]);
+    expect(killed).toEqual([{ type: "kill-pane" }]);
   });
 });

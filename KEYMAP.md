@@ -177,10 +177,22 @@ The convenience layer. Creates a closure with the state machine and an `Action` 
 ```ts
 interface KeymapBinding {
   handleKey(event: KeyEvent): boolean;
+  readonly state: KeymapState;
+  onStateChange(listener: (state: KeymapState) => void): () => void;
 }
 ```
 
 `handleKey` returns the same `handled` flag as the pure engine, so the calling code has one branch to take.
+
+`state` is a read-only snapshot of the current engine state. Most UIs won't read this directly — they subscribe to `onStateChange` instead, so they can re-render whenever the engine moves between `root` and `prefix`. The typical use is a "prefix active" indicator so users get immediate feedback that the next keystroke will be interpreted as a tmux command:
+
+```ts
+bound.onStateChange((state) => {
+  prefixActive.value = state.mode === "prefix";
+});
+```
+
+`onStateChange` fires only on *transitions*, not on every keystroke. Pressing a non-prefix key in root mode does not notify. Returning to root after a bound chord does notify. Unsubscribe by calling the returned function.
 
 ### `TmuxCommander`
 
@@ -389,13 +401,15 @@ const minimal: Keymap = {
 
 ## Custom dispatchers
 
-If the built-in dispatcher's assumptions don't fit (e.g., you want to target a specific pane explicitly, or log every action, or route some actions through a UI widget instead of tmux), skip `bindKeymap` and drive the engine yourself:
+If the built-in dispatcher's assumptions don't fit (e.g., you want to confirm destructive actions before dispatching, target a specific pane explicitly, log every action, or route some actions through a UI widget instead of tmux), skip `bindKeymap` and drive the engine yourself. The library exports everything you need: `handleKey` for the pure engine, `INITIAL_STATE` for the starting state, and `dispatchAction` — the canonical `Action → tmux command` table — so you can delegate unchanged actions instead of reimplementing the switch.
 
 ```ts
 import {
   handleKey,
   INITIAL_STATE,
+  dispatchAction,
   defaultTmuxKeymap,
+  type Action,
   type KeymapState,
 } from "tmux-control-mode-js/keymap";
 
@@ -409,6 +423,7 @@ function onKey(ev: KeyboardEvent): boolean {
     keymap,
   );
   state = result.state;
+  // UI can read state.mode here to render a "prefix active" indicator.
 
   for (const action of result.actions) {
     dispatch(action);
@@ -418,6 +433,11 @@ function onKey(ev: KeyboardEvent): boolean {
 
 function dispatch(action: Action): void {
   switch (action.type) {
+    case "kill-pane":
+    case "kill-window":
+      // Override: show our own confirm dialog first, then dispatch on yes.
+      showConfirmDialog(action);
+      return;
     case "choose-session":
       // Override: show our own session picker instead of tmux's choose-tree.
       openOurSessionPicker();
@@ -427,13 +447,13 @@ function dispatch(action: Action): void {
       openCommandPalette();
       return;
     default:
-      // Everything else: delegate to the built-in translation.
-      defaultDispatch(client, action);
+      // Everything else: delegate to the canonical dispatch table.
+      dispatchAction(client, action);
   }
 }
 ```
 
-This is how you build a first-class UI around tmux: keep the chord-recognition engine, override the actions you care about.
+This is how you build a first-class UI around tmux: keep the chord-recognition engine, override the actions you care about, and delegate the rest. The demo under `examples/web-multiplexer/` uses exactly this pattern to intercept `kill-pane` and `kill-window` for a confirm modal while forwarding everything else to `dispatchAction`.
 
 ### Targeting a specific pane
 
@@ -575,6 +595,8 @@ interface TmuxCommander {
 
 interface KeymapBinding {
   handleKey(event: KeyEvent): boolean;
+  readonly state: KeymapState;
+  onStateChange(listener: (state: KeymapState) => void): () => void;
 }
 ```
 
@@ -593,6 +615,11 @@ function handleKey(
 function defaultTmuxKeymap(): Keymap;
 
 function bindKeymap(client: TmuxCommander, keymap: Keymap): KeymapBinding;
+
+// Canonical Action → tmux-command mapping. Exported so consumers who drive
+// the pure engine themselves can delegate the unchanged actions here
+// instead of reimplementing the switch.
+function dispatchAction(client: TmuxCommander, action: Action): void;
 ```
 
 ### Constants

@@ -242,13 +242,13 @@ export class PaneTerminal {
     // keymap engine consumes the event (prefix transition or bound chord),
     // xterm never sees it and no bytes reach onData → sendKeysToPane.
     //
-    // [LAW:single-enforcer] The store owns the keymap binding; every pane
-    // reads from the same state machine so a C-b in one pane stays coherent
-    // across panes.
+    // [LAW:single-enforcer] The store owns the keymap engine; every pane
+    // feeds the same state machine so a C-b in one pane stays coherent
+    // across panes and the prefix-active indicator updates once.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
       if (this.state === "disposed") return true;
-      const consumed = this.store.keymap.handleKey({
+      const consumed = this.store.handleKeyEvent({
         key: ev.key,
         ctrl: ev.ctrlKey,
         alt: ev.altKey,
