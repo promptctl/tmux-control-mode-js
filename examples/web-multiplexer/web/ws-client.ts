@@ -122,9 +122,14 @@ export class BridgeClient {
     // the "what should we do about it" part. No imperative flush call
     // lives here; the drain reaction watches state + outbox and fires
     // automatically when the combination is drainable.
-    ws.addEventListener("open", () => this.setState("open"));
+    ws.addEventListener("open", () => {
+      if (this.ws !== ws) return;
+      this.setState("open");
+    });
     ws.addEventListener("close", () =>
       runInAction(() => {
+        if (this.ws !== ws) return;
+        this.ws = null;
         this.setState("closed");
         if (this.outbox.length > 0) {
           this.emitError(
@@ -135,9 +140,11 @@ export class BridgeClient {
       }),
     );
     ws.addEventListener("error", () => {
+      if (this.ws !== ws) return;
       this.emitError("WebSocket error");
     });
     ws.addEventListener("message", (ev) => {
+      if (this.ws !== ws) return;
       this.handleFrame(ev.data as string);
     });
   }
@@ -154,6 +161,7 @@ export class BridgeClient {
       }
     }
     this.pending.clear();
+    this.setState("closed");
   }
 
   private handleFrame(raw: string): void {

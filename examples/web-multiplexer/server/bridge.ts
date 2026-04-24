@@ -17,7 +17,7 @@ import type {
   ServerToClient,
   SerializedTmuxMessage,
 } from "../shared/protocol.js";
-import { BRIDGE_PORT } from "../shared/config.js";
+import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 
 // ---------------------------------------------------------------------------
 // Serialization
@@ -62,6 +62,28 @@ function serialize(msg: TmuxMessage): SerializedTmuxMessage {
  * Each WebSocket connection gets its own TmuxClient. This keeps one browser
  * session independent from another (no shared state, no cross-talk).
  */
+interface ConnectionState {
+  readonly ws: WebSocket;
+  readonly client: TmuxClient;
+}
+
+const connections = new Set<ConnectionState>();
+
+function removeConnection(connection: ConnectionState): void {
+  connections.delete(connection);
+}
+
+function closeConnection(connection: ConnectionState): void {
+  removeConnection(connection);
+  connection.client.close();
+  if (
+    connection.ws.readyState === connection.ws.OPEN ||
+    connection.ws.readyState === connection.ws.CONNECTING
+  ) {
+    connection.ws.terminate();
+  }
+}
+
 function handleConnection(ws: WebSocket): void {
   const send = (frame: ServerToClient): void => {
     if (ws.readyState === ws.OPEN) {
@@ -73,6 +95,8 @@ function handleConnection(ws: WebSocket): void {
   // No explicit socket path — use the default server the user already has.
   const transport = spawnTmux(["attach-session"]);
   const client = new TmuxClient(transport);
+  const connection = { ws, client };
+  connections.add(connection);
 
   // [LAW:dataflow-not-control-flow] Forward every message through the same
   // pipeline. The `*` wildcard is the single enforcement point.
@@ -126,7 +150,7 @@ function handleConnection(ws: WebSocket): void {
   });
 
   ws.on("close", () => {
-    client.close();
+    closeConnection(connection);
   });
 }
 
@@ -152,5 +176,27 @@ wss.on("connection", (ws) => {
 
 httpServer.listen(BRIDGE_PORT, () => {
   console.log(`[bridge] listening on http://localhost:${BRIDGE_PORT} (WS at /ws)`);
-  console.log(`[bridge] open the Vite dev server (default http://localhost:5173)`);
+  console.log(`[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`);
 });
+
+let shuttingDown = false;
+
+function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  // [LAW:single-enforcer] Bridge teardown is centralized here so Ctrl+C and
+  // watcher restarts close sockets and tmux clients through one path.
+  for (const connection of [...connections]) {
+    closeConnection(connection);
+  }
+
+  wss.close();
+  httpServer.close();
+  setImmediate(() => {
+    process.exit(0);
+  });
+}
+
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);

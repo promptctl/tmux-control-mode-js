@@ -62,7 +62,7 @@ that talks to the bridge over WebSocket.
 ```bash
 npm install   # once at the repo root — workspaces install demo deps too,
               # still zero runtime deps on this library's package.json
-npm run demo  # starts bridge + Vite dev server; open http://localhost:5173
+just demo     # starts bridge + Vite dev server; open http://localhost:44173
 ```
 
 The demo connects to your **existing host tmux server** and shows every

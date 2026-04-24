@@ -51,7 +51,12 @@ export const App = observer(function App() {
 
   useEffect(() => {
     demoStore.connect(WS_URL);
-  }, [demoStore]);
+    return () => {
+      heatmapStore.dispose();
+      inspectorStore.dispose();
+      demoStore.disconnect();
+    };
+  }, [demoStore, heatmapStore, inspectorStore]);
 
   const { currentSession, currentWindow, connState, sessions, events, errors } =
     demoStore;
@@ -59,7 +64,11 @@ export const App = observer(function App() {
   return (
     <AppShell
       header={{ height: 56 }}
-      navbar={{ width: uiStore.navbarWidth, breakpoint: 0 }}
+      navbar={{
+        width: uiStore.navbarWidth,
+        breakpoint: 0,
+        collapsed: { desktop: uiStore.navbarCollapsed, mobile: uiStore.navbarCollapsed },
+      }}
       aside={{
         width: 420,
         breakpoint: 0,
@@ -68,10 +77,21 @@ export const App = observer(function App() {
       padding="md"
     >
       <AppShell.Header p="sm">
-        <Group justify="space-between" h="100%">
-          <Group gap="sm">
+        <Group justify="space-between" h="100%" wrap="nowrap">
+          <Group gap="sm" wrap="nowrap" style={{ minWidth: 0, overflow: "hidden" }}>
+            <Tooltip
+              label={uiStore.navbarCollapsed ? "Show session sidebar" : "Hide session sidebar"}
+            >
+              <ActionIcon
+                variant="subtle"
+                onClick={() => uiStore.toggleNavbar()}
+                aria-label="toggle session sidebar"
+              >
+                {uiStore.navbarCollapsed ? "▶" : "◀"}
+              </ActionIcon>
+            </Tooltip>
             <Title order={4}>tmux-control-mode-js</Title>
-            <Text c="dimmed" size="sm">
+            <Text c="dimmed" size="sm" truncate="end">
               Web Multiplexer Demo
             </Text>
             <SegmentedControl
@@ -93,7 +113,7 @@ export const App = observer(function App() {
               ]}
             />
           </Group>
-          <Group gap="xs">
+          <Group gap="xs" wrap="nowrap">
             <Text size="xs" c="dimmed">
               {sessions.length} sessions
             </Text>

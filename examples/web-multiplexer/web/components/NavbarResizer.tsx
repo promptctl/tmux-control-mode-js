@@ -10,6 +10,10 @@ interface Props {
 }
 
 export function NavbarResizer({ uiStore }: Props) {
+  if (uiStore.navbarCollapsed) {
+    return null;
+  }
+
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWRef = useRef(0);
