@@ -62,6 +62,19 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
     };
   }, [pane.id, store, uiStore]);
 
+  // When this pane becomes the active pane (window switch, keymap
+  // select-pane, click), pull keyboard focus into its xterm. Without
+  // this, C-b n would move tmux to the next window but focus would land
+  // on <body> since the previous xterm was unmounted, and the follow-up
+  // C-b chord would never reach a keymap handler.
+  //
+  // [LAW:dataflow-not-control-flow] Derived effect: "the focused pane's
+  // xterm must have DOM focus" is a property of (pane.active, terminal).
+  // React re-runs the effect whenever either changes.
+  useEffect(() => {
+    if (pane.active && terminal !== null) terminal.focus();
+  }, [pane.active, terminal]);
+
   // Visual signal for the keymap prefix state: when the user has pressed
   // C-b, the focused pane's border switches to a warning color so the next
   // keystroke is understood to be a tmux command. Non-active panes stay

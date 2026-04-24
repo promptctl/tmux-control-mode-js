@@ -229,39 +229,73 @@ bound.handleKey(parseChord("c"));
 
 ### Browser (xterm.js)
 
-The `attachCustomKeyEventHandler` hook on xterm runs *before* xterm decides what bytes to send via `onData`. Return `false` and the key is swallowed — perfect for us:
+You have two choices for where to hook the listener. They have meaningfully different semantics — pick deliberately.
+
+**Option A: `term.attachCustomKeyEventHandler` (per-terminal)**
 
 ```ts
-import { Terminal } from "@xterm/xterm";
-import { bindKeymap, defaultTmuxKeymap } from "tmux-control-mode-js/keymap";
-
-// client must expose execute(cmd: string) and detach() —
-// a thin WebSocket bridge usually already does.
-const bound = bindKeymap(client, defaultTmuxKeymap());
-const term = new Terminal();
-term.open(containerEl);
-
 term.attachCustomKeyEventHandler((ev) => {
   if (ev.type !== "keydown") return true;
   const consumed = bound.handleKey({
-    key: ev.key,
-    ctrl: ev.ctrlKey,
-    alt: ev.altKey,
-    shift: ev.shiftKey,
-    meta: ev.metaKey,
+    key: ev.key, ctrl: ev.ctrlKey, alt: ev.altKey,
+    shift: ev.shiftKey, meta: ev.metaKey,
   });
-  // `false` = xterm must NOT process this key. The keymap engine has
-  // already dispatched any resulting tmux command.
   return !consumed;
-});
-
-term.onData((data) => {
-  // Reached only when the keymap handler returned true (key not consumed).
-  client.sendKeys(`%${paneId}`, data);
 });
 ```
 
-This is the exact pattern used in `examples/web-multiplexer/web/pane-terminal.ts`.
+Simple, scoped. But: **the handler only fires while that specific xterm has focus.** If your UI tears down and rebuilds xterm instances when tmux switches windows (a common pattern), the new xterm is unfocused for one tick and the user's follow-up chord goes nowhere. Same if the user clicks a non-terminal UI element — focus leaves the terminal and tmux shortcuts stop working.
+
+Fine for a single-pane app. Awkward for anything that juggles multiple panes or has significant non-terminal UI.
+
+**Option B: document-level capture listener (recommended for multi-pane apps)**
+
+```ts
+window.addEventListener(
+  "keydown",
+  (ev) => {
+    // Don't hijack real form inputs, but DO fire when focus is on xterm's
+    // hidden textarea (that's where xterm captures input).
+    const el = document.activeElement;
+    const isXterm = el?.classList.contains("xterm-helper-textarea");
+    const isInput =
+      el !== null &&
+      !isXterm &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        (el as HTMLElement).isContentEditable);
+    if (isInput) return;
+
+    const consumed = bound.handleKey({
+      key: ev.key, ctrl: ev.ctrlKey, alt: ev.altKey,
+      shift: ev.shiftKey, meta: ev.metaKey,
+    });
+    if (consumed) {
+      ev.preventDefault();
+      ev.stopPropagation();
+    }
+  },
+  true, // capture phase: run BEFORE xterm's own textarea handler
+);
+```
+
+The capture-phase flag is critical — without it, xterm's textarea handler runs first and translates `C-b` into a byte on the wire before you get a chance to intercept.
+
+With this setup:
+- `C-b n` works whether the terminal is focused or not.
+- Switching tabs doesn't break shortcuts.
+- Real form inputs (a search box, a settings dialog) keep their normal keystroke behavior.
+
+The trade-off: you're now responsible for the "is this a form input?" check, and for focusing the right xterm when panes change so typed text still lands somewhere sensible. The demo does both — see `examples/web-multiplexer/web/App.tsx` (the document listener + input filter) and `examples/web-multiplexer/web/components/PaneView.tsx` (the `useEffect` that calls `terminal.focus()` whenever `pane.active` flips true).
+
+Either way, xterm's `onData` fires after the keymap handler decides:
+
+```ts
+term.onData((data) => {
+  // Reached only for keys the keymap did NOT consume.
+  client.sendKeys(`%${paneId}`, data);
+});
+```
 
 ### Plain DOM / React (no xterm)
 
