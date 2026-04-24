@@ -183,10 +183,20 @@ export interface DemoStoreHooks {
 export class DemoStore {
   connState: ConnState = "connecting";
   sessions: SessionInfo[] = [];
-  activeSessionId: number | null = null;
-  activeWindowId: number | null = null;
   events: SerializedTmuxMessage[] = [];
   errors: string[] = [];
+
+  // [LAW:one-source-of-truth] This is the ONE piece of per-client state
+  // tmux subscriptions cannot give us: "which session is THIS -CC control
+  // client currently attached to". `session.attached` from the subscription
+  // just means "some client is attached", so with multiple attached clients
+  // it can't identify our own. tmux broadcasts this via
+  // `%client-session-changed` — we capture that and nothing else writes it.
+  //
+  // `activeWindowId` / `activePaneId` stay fully computed from the tree:
+  // `window.active` and `pane.active` ARE the truth and DO come through the
+  // subscription.
+  private clientSessionId: number | null = null;
 
   // [LAW:one-source-of-truth] `prefixActive` is the demo's UI-facing
   // projection of the keymap engine's state. The engine is the source of
@@ -298,6 +308,22 @@ export class DemoStore {
       if (panesResp.success) {
         this.applySubscription("panes", encodeSnapshotLines(panesResp.output));
       }
+
+      // Bootstrap the "which session is OUR client attached to" field. In
+      // practice tmux fires %client-session-changed on attach, but there's
+      // no guarantee about timing relative to our subscriptions. Ask
+      // explicitly so the UI has correct state from frame zero.
+      const sessionResp = await this.client.execute(
+        "display-message -p '#{session_id}'",
+      );
+      if (sessionResp.success && sessionResp.output[0] !== undefined) {
+        const parsed = parseInt(sessionResp.output[0].replace(/^\$/, ""), 10);
+        if (Number.isFinite(parsed)) {
+          runInAction(() => {
+            this.clientSessionId = parsed;
+          });
+        }
+      }
     } catch (err) {
       runInAction(() =>
         this.pushError(
@@ -328,48 +354,35 @@ export class DemoStore {
       this.refreshWindowDimensions(ev.windowId);
       return;
     }
-    // [LAW:one-source-of-truth] When tmux changes the active window or
-    // session (because the user ran `C-b c`, `C-b n`, etc. via the keymap,
-    // or any other tmux client did), the demo must follow. Subscriptions
-    // deliver the `window_active` / `pane_active` flags, but only every ~1
-    // second — too laggy for direct UI feedback. These event hooks keep the
-    // UI-side pointers in sync immediately.
-    if (ev.type === "session-window-changed") {
-      // tmux fires this with the session whose active window changed. Only
-      // update our pointer if it's the session the UI is currently viewing.
-      if (ev.sessionId === this.activeSessionId) {
-        this.activeWindowId = ev.windowId;
-        // Fast-path for `C-b c`: tmux fires session-window-changed almost
-        // immediately after creating a window, but the windows subscription
-        // rebuilds at ~1 Hz. If the new window isn't in our model yet,
-        // `currentWindow` resolves to null and PaneView shows nothing. Do a
-        // targeted list-windows / list-panes for the active session so the
-        // new window appears without waiting on the next subscription tick.
-        const session = this.sessions.find((s) => s.id === ev.sessionId);
-        const known = session?.windows.some((w) => w.id === ev.windowId) ?? false;
-        if (!known) void this.refreshSession(ev.sessionId);
-      }
-      return;
-    }
+    // [LAW:one-source-of-truth] Events like session-window-changed,
+    // client-session-changed, window-pane-changed are intentionally NOT
+    // handled here. The subscription-fed `sessions` tree already carries
+    // `session.attached`, `window.active`, `pane.active` — those flags ARE
+    // the truth, and `activeSessionId`/`activeWindowId` are computed from
+    // them. Subscriptions are rate-limited to ~1 Hz, so for sub-second
+    // feedback after a user action we call `refreshSession` from the
+    // dispatch path (see `dispatchWithConfirm` and the `select*` methods).
+    // Attempting to patch these events would create parallel state.
+    //
+    // Structural fast-path (window created/destroyed): triggered off the
+    // keymap-dispatched action too, not off this event — see
+    // dispatchAndRefresh below.
     if (ev.type === "client-session-changed") {
-      this.activeSessionId = ev.sessionId;
+      // The ONLY local state write triggered by an event. This tracks which
+      // session OUR control client is attached to — tmux doesn't express
+      // this via subscriptions.
+      this.clientSessionId = ev.sessionId;
+      void this.refreshSession(ev.sessionId);
       return;
     }
-    if (ev.type === "window-pane-changed") {
-      // Fast-path the pane-active flag so a keymap arrow-select doesn't wait
-      // for the next subscription tick to repaint the teal border. Rebuild
-      // the affected window's panes with `active` flipped to the new pane.
-      this.sessions = this.sessions.map((s) => ({
-        ...s,
-        windows: s.windows.map((w) =>
-          w.id === ev.windowId
-            ? {
-                ...w,
-                panes: w.panes.map((p) => ({ ...p, active: p.id === ev.paneId })),
-              }
-            : w,
-        ),
-      }));
+    if (ev.type === "session-window-changed" || ev.type === "window-pane-changed") {
+      // No local writes — just kick the refresh so the subscription-fed
+      // tree picks up the new active flags in a few ms instead of ~1 s.
+      const sid =
+        ev.type === "session-window-changed"
+          ? ev.sessionId
+          : this.clientSessionId;
+      if (sid !== null) void this.refreshSession(sid);
       return;
     }
   }
@@ -425,13 +438,29 @@ export class DemoStore {
       this.hooks.onChooseSession?.();
       return;
     }
+    this.dispatchAndRefresh(action);
+  }
+
+  /**
+   * Dispatch an action to tmux and then fast-path a targeted refresh of
+   * the current session's windows/panes. Subscriptions will catch up
+   * within ~1s on their own; this just makes the UI feel snappy after a
+   * user keystroke.
+   *
+   * [LAW:single-enforcer] This is the ONE place that pairs an action
+   * dispatch with a refresh. Event handlers don't write active state; the
+   * refresh call here is what pulls the post-action truth from tmux.
+   */
+  private dispatchAndRefresh(action: Action): void {
     dispatchAction(this.client, action);
+    const sid = this.activeSessionId;
+    if (sid !== null) void this.refreshSession(sid);
   }
 
   confirmPendingAction(): void {
     const pending = this.pendingConfirm;
     this.pendingConfirm = null;
-    if (pending !== null) dispatchAction(this.client, pending.action);
+    if (pending !== null) this.dispatchAndRefresh(pending.action);
   }
 
   cancelPendingAction(): void {
@@ -626,30 +655,9 @@ export class DemoStore {
     }));
 
     this.sessions = built;
-
-    // Reconcile UI focus with the new model.
-    const stillExists =
-      this.activeSessionId !== null &&
-      built.some((s) => s.id === this.activeSessionId);
-    if (!stillExists) {
-      const attached = built.find((s) => s.attached) ?? built[0];
-      this.activeSessionId = attached?.id ?? null;
-    }
-
-    const currentSession = built.find((s) => s.id === this.activeSessionId);
-    if (currentSession !== undefined) {
-      const stillExistsW =
-        this.activeWindowId !== null &&
-        currentSession.windows.some((w) => w.id === this.activeWindowId);
-      if (!stillExistsW) {
-        this.activeWindowId =
-          currentSession.windows.find((w) => w.active)?.id ??
-          currentSession.windows[0]?.id ??
-          null;
-      }
-    } else {
-      this.activeWindowId = null;
-    }
+    // [LAW:one-source-of-truth] No active-id reconciliation here. Active
+    // pointers are computed from `session.attached` / `window.active` on
+    // each access — they can never be out of sync with the tree.
   }
 
   private pushEvent(ev: SerializedTmuxMessage): void {
@@ -688,20 +696,27 @@ export class DemoStore {
     );
   }
 
+  // [LAW:one-source-of-truth] select* methods ONLY dispatch tmux commands.
+  // The subscription-fed `sessions` tree is the source of truth for which
+  // session/window/pane is active; after tmux processes the command, the
+  // next subscription tick (or the fast-path refreshSession below) updates
+  // the tree and the computed getters reflect the new active state.
   selectSession(id: number): void {
-    this.activeSessionId = id;
-    // Tell the control client to follow the UI's focus so session-scoped
-    // notifications arrive for the session the user is looking at.
-    // Session id `$N` is accepted directly by `switch-client -t`.
+    // Optimistic: set the id we just told tmux to switch to. The
+    // %client-session-changed event will confirm it shortly. If tmux
+    // rejects the switch, the event never arrives and we stay optimistic
+    // — that's fine, a subsequent real change will correct us.
+    this.clientSessionId = id;
     void this.client.execute(`switch-client -t \\$${id}`);
+    void this.refreshSession(id);
   }
 
   selectWindow(id: number): void {
-    this.activeWindowId = id;
     const s = this.currentSession;
     const w = s?.windows.find((x) => x.id === id);
     if (s !== null && w !== undefined) {
       void this.client.execute(`select-window -t ${s.name}:${w.index}`);
+      void this.refreshSession(s.id);
     }
   }
 
@@ -712,6 +727,7 @@ export class DemoStore {
       void this.client.execute(
         `select-pane -t ${s.name}:${w.index}.${pane.index}`,
       );
+      void this.refreshSession(s.id);
     }
   }
 
@@ -723,15 +739,41 @@ export class DemoStore {
   // Derived state
   // -------------------------------------------------------------------------
 
+  // Priority order:
+  //   1. `clientSessionId` — set when %client-session-changed fires for
+  //      our -CC control client. This is the only per-client state tmux
+  //      doesn't deliver via subscriptions.
+  //   2. First session with `attached === true`.
+  //   3. First session (visibility fallback immediately after connect).
+  get activeSessionId(): number | null {
+    if (this.clientSessionId !== null) {
+      const exists = this.sessions.some((s) => s.id === this.clientSessionId);
+      if (exists) return this.clientSessionId;
+    }
+    const attached = this.sessions.find((s) => s.attached);
+    if (attached !== undefined) return attached.id;
+    return this.sessions[0]?.id ?? null;
+  }
+
   get currentSession(): SessionInfo | null {
-    return this.sessions.find((s) => s.id === this.activeSessionId) ?? null;
+    const id = this.activeSessionId;
+    if (id === null) return null;
+    return this.sessions.find((s) => s.id === id) ?? null;
+  }
+
+  get activeWindowId(): number | null {
+    const s = this.currentSession;
+    if (s === null) return null;
+    const active = s.windows.find((w) => w.active);
+    if (active !== undefined) return active.id;
+    return s.windows[0]?.id ?? null;
   }
 
   get currentWindow(): WindowInfo | null {
-    return (
-      this.currentSession?.windows.find((w) => w.id === this.activeWindowId) ??
-      null
-    );
+    const s = this.currentSession;
+    const id = this.activeWindowId;
+    if (s === null || id === null) return null;
+    return s.windows.find((w) => w.id === id) ?? null;
   }
 
   /**
