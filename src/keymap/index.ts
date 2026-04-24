@@ -14,4 +14,4 @@ export type {
 export { INITIAL_STATE, handleKey } from "./engine.js";
 export { defaultTmuxKeymap } from "./default-keymap.js";
 export type { KeymapBinding, TmuxCommander } from "./bind.js";
-export { bindKeymap } from "./bind.js";
+export { bindKeymap, dispatchAction } from "./bind.js";

@@ -27,9 +27,14 @@ import { makeAutoObservable, runInAction } from "mobx";
 import { BridgeClient } from "./ws-client.ts";
 import type { SerializedTmuxMessage } from "../shared/protocol.ts";
 import {
-  bindKeymap,
+  INITIAL_STATE,
   defaultTmuxKeymap,
-  type KeymapBinding,
+  dispatchAction,
+  handleKey,
+  type Action,
+  type KeyEvent,
+  type Keymap,
+  type KeymapState,
 } from "../../../src/keymap/index.js";
 
 export interface PaneInfo {
@@ -114,6 +119,11 @@ function encodeSnapshotLines(lines: readonly string[]): string {
 // DemoStore
 // ---------------------------------------------------------------------------
 
+export interface PendingConfirm {
+  readonly action: Action;
+  readonly prompt: string;
+}
+
 export class DemoStore {
   connState: ConnState = "connecting";
   sessions: SessionInfo[] = [];
@@ -122,13 +132,27 @@ export class DemoStore {
   events: SerializedTmuxMessage[] = [];
   errors: string[] = [];
 
+  // [LAW:one-source-of-truth] `prefixActive` is the demo's UI-facing
+  // projection of the keymap engine's state. The engine is the source of
+  // truth; this field mirrors `engineState.mode === "prefix"` and is set
+  // from exactly one place (handleKeyEvent below).
+  prefixActive = false;
+
+  // When a destructive action (kill-pane, kill-window) is dispatched, the
+  // demo shows a confirm modal backed by this observable. Setting it non-
+  // null opens the modal; confirming dispatches; cancelling discards.
+  pendingConfirm: PendingConfirm | null = null;
+
   readonly client: BridgeClient;
 
-  // [LAW:one-source-of-truth] The keymap binding lives on the store so every
-  // PaneTerminal routes keys through the same state machine — a single C-b
-  // press in one pane shouldn't leave OTHER panes in prefix mode, and vice
-  // versa. One engine per client session is the right scope.
-  readonly keymap: KeymapBinding;
+  // [LAW:one-source-of-truth] One keymap engine per client session. The
+  // engine's state (root vs. prefix) is shared across all PaneTerminal
+  // instances so pressing C-b in one pane doesn't leave the others in a
+  // stale mode. The demo drives the engine manually (rather than using
+  // bindKeymap) so it can intercept destructive actions for confirmation
+  // and tunnel the prefix-active signal into the UI.
+  private readonly keymapConfig: Keymap = defaultTmuxKeymap();
+  private engineState: KeymapState = INITIAL_STATE;
 
   // Raw latest subscription values, kept as observable fields so the
   // assembled `sessions` collection can be rebuilt lazily in one place.
@@ -138,10 +162,14 @@ export class DemoStore {
 
   constructor(client: BridgeClient) {
     this.client = client;
-    // BridgeClient already exposes execute()+detach() — it satisfies
-    // TmuxCommander structurally. No adapter needed.
-    this.keymap = bindKeymap(client, defaultTmuxKeymap());
-    makeAutoObservable(this, { client: false, keymap: false });
+    makeAutoObservable(this, {
+      client: false,
+      // engineState is a non-observable plumbing detail — the UI observes
+      // `prefixActive` instead, which is set whenever the engine transitions.
+      // [LAW:no-shared-mutable-globals] Even though MobX technically supports
+      // observing nested objects, exposing raw engine state would create a
+      // second source of truth for "is the prefix active".
+    });
 
     // [LAW:single-enforcer] Wire BridgeClient subscribers EXACTLY ONCE in
     // the constructor (which only runs once via React's useMemo). Wiring
@@ -241,6 +269,98 @@ export class DemoStore {
       this.refreshWindowDimensions(ev.windowId);
       return;
     }
+    // [LAW:one-source-of-truth] When tmux changes the active window or
+    // session (because the user ran `C-b c`, `C-b n`, etc. via the keymap,
+    // or any other tmux client did), the demo must follow. Subscriptions
+    // deliver the `window_active` / `pane_active` flags, but only every ~1
+    // second — too laggy for direct UI feedback. These event hooks keep the
+    // UI-side pointers in sync immediately.
+    if (ev.type === "session-window-changed") {
+      // tmux fires this with the session whose active window changed. Only
+      // update our pointer if it's the session the UI is currently viewing.
+      if (ev.sessionId === this.activeSessionId) {
+        this.activeWindowId = ev.windowId;
+      }
+      return;
+    }
+    if (ev.type === "client-session-changed") {
+      this.activeSessionId = ev.sessionId;
+      return;
+    }
+    if (ev.type === "window-pane-changed") {
+      // Fast-path the pane-active flag so a keymap arrow-select doesn't wait
+      // for the next subscription tick to repaint the teal border. Rebuild
+      // the affected window's panes with `active` flipped to the new pane.
+      this.sessions = this.sessions.map((s) => ({
+        ...s,
+        windows: s.windows.map((w) =>
+          w.id === ev.windowId
+            ? {
+                ...w,
+                panes: w.panes.map((p) => ({ ...p, active: p.id === ev.paneId })),
+              }
+            : w,
+        ),
+      }));
+      return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Keymap integration
+  //
+  // The demo drives the pure keymap engine directly (see
+  // tmux-control-mode-js/keymap) so it can:
+  //   1. Surface the "prefix active" signal into a MobX observable the UI
+  //      can render.
+  //   2. Intercept destructive actions (kill-pane, kill-window) for a
+  //      user-confirmation dialog before dispatching.
+  //
+  // [LAW:single-enforcer] dispatchAction from the library owns the single
+  // canonical Action → tmux command mapping. The demo only decides WHICH
+  // actions to forward and when — it never re-implements what tmux command
+  // corresponds to `split` / `select-pane` / etc.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Called by PaneTerminal whenever xterm sees a keydown. Returns true if
+   * the keymap consumed the event (caller must prevent default); false if
+   * the caller should route the key to the focused pane.
+   */
+  handleKeyEvent(ev: KeyEvent): boolean {
+    const prev = this.engineState;
+    const result = handleKey(ev, prev, this.keymapConfig);
+    if (result.state !== prev) {
+      this.engineState = result.state;
+      this.prefixActive = result.state.mode === "prefix";
+    }
+    for (const action of result.actions) this.dispatchWithConfirm(action);
+    return result.handled;
+  }
+
+  private dispatchWithConfirm(action: Action): void {
+    if (action.type === "kill-pane") {
+      this.pendingConfirm = { action, prompt: "Kill this pane?" };
+      return;
+    }
+    if (action.type === "kill-window") {
+      this.pendingConfirm = {
+        action,
+        prompt: `Kill the current window?`,
+      };
+      return;
+    }
+    dispatchAction(this.client, action);
+  }
+
+  confirmPendingAction(): void {
+    const pending = this.pendingConfirm;
+    this.pendingConfirm = null;
+    if (pending !== null) dispatchAction(this.client, pending.action);
+  }
+
+  cancelPendingAction(): void {
+    this.pendingConfirm = null;
   }
 
   private async refreshWindowDimensions(windowId: number): Promise<void> {

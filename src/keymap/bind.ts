@@ -28,6 +28,22 @@ export interface KeymapBinding {
    * pane via its existing path.
    */
   handleKey(event: KeyEvent): boolean;
+
+  /**
+   * Current engine state. Read-only snapshot; use `onStateChange` to react
+   * to transitions instead of polling.
+   */
+  readonly state: KeymapState;
+
+  /**
+   * Subscribe to state transitions. The listener fires whenever the engine
+   * moves between `root` and `prefix` (and any future modes). Returns an
+   * unsubscribe function.
+   *
+   * Typical use: render a "prefix active" indicator in the UI so users can
+   * see that the next keystroke will be interpreted as a tmux command.
+   */
+  onStateChange(listener: (state: KeymapState) => void): () => void;
 }
 
 /**
@@ -49,23 +65,48 @@ export function bindKeymap(
   keymap: Keymap,
 ): KeymapBinding {
   let state: KeymapState = INITIAL_STATE;
+  const listeners = new Set<(state: KeymapState) => void>();
 
   return {
+    get state() {
+      return state;
+    },
     handleKey(event) {
-      const result = handleKey(event, state, keymap);
+      const prev = state;
+      const result = handleKey(event, prev, keymap);
       state = result.state;
+      // [LAW:dataflow-not-control-flow] Notify listeners only when the
+      // reference changed — equal-by-reference is enough because the engine
+      // returns the shared INITIAL_STATE singleton for root transitions.
+      if (state !== prev) {
+        for (const l of listeners) l(state);
+      }
       // Fire-and-forget: actions dispatch asynchronously; the caller doesn't
       // await tmux acknowledgement just to process the next keystroke.
-      for (const action of result.actions) dispatch(client, action);
+      for (const action of result.actions) dispatchAction(client, action);
       return result.handled;
+    },
+    onStateChange(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
 
-// [LAW:single-enforcer] Exhaustive mapping from Action to tmux command.
-// Adding a new Action variant is a compile error here under `strict` —
-// TypeScript flags the unreachable `never` default.
-function dispatch(client: TmuxCommander, action: Action): void {
+/**
+ * Translate a single `Action` into the corresponding `TmuxCommander` call.
+ * Exported so consumers that drive the pure engine themselves (see
+ * `handleKey`) can delegate to the canonical dispatch table instead of
+ * reimplementing it — and can selectively override individual actions while
+ * forwarding the rest here.
+ *
+ * [LAW:single-enforcer] This is the sole canonical mapping from Action →
+ * tmux command. Adding a new Action variant is a compile error here under
+ * `strict` because the `never` default flags an inexhaustive switch.
+ */
+export function dispatchAction(client: TmuxCommander, action: Action): void {
   switch (action.type) {
     case "new-window":
       void client.execute("new-window");
