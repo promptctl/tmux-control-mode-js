@@ -4,6 +4,10 @@
 // Uses an in-memory IPC hub to couple a fake IpcMain with one or more fake
 // IpcRenderers, plus a fake TmuxTransport to drive a real TmuxClient. No real
 // Electron is involved.
+//
+// IMPORTANT: the fake IpcMain mirrors real Electron semantics — second
+// handle() call for the same channel throws. The audit (e07.5/C1) called out
+// that the previous silent-overwrite hub hid a real production crash.
 
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -48,15 +52,23 @@ function createIpcHub(): IpcHub {
   ) => unknown | Promise<unknown>;
   type OnHandler = (event: IpcMainEventLike, ...args: unknown[]) => void;
 
-  let invokeHandler: InvokeHandler | null = null;
+  const invokeHandlers = new Map<string, InvokeHandler>();
   const mainOnListeners = new Map<string, Set<OnHandler>>();
 
   const ipcMain: IpcMainLike = {
     handle(channel, listener) {
-      if (channel === IPC.invoke) invokeHandler = listener;
+      // [C1] Real Electron throws on second handler registration. The fake
+      // mirrors that contract so unit tests fail loudly when a regression
+      // re-introduces the per-window registration bug.
+      if (invokeHandlers.has(channel)) {
+        throw new Error(
+          `Attempted to register a second handler for '${channel}'`,
+        );
+      }
+      invokeHandlers.set(channel, listener);
     },
     removeHandler(channel) {
-      if (channel === IPC.invoke) invokeHandler = null;
+      invokeHandlers.delete(channel);
     },
     on(channel, listener) {
       let set = mainOnListeners.get(channel);
@@ -94,10 +106,11 @@ function createIpcHub(): IpcHub {
 
     const ipcRenderer: IpcRendererLike = {
       async invoke(channel, ...args) {
-        if (channel !== IPC.invoke || invokeHandler === null) {
+        const handler = invokeHandlers.get(channel);
+        if (handler === undefined) {
           throw new Error(`no handler registered for ${channel}`);
         }
-        return invokeHandler({ sender }, ...args);
+        return handler({ sender }, ...args);
       },
       send(channel, ...args) {
         const set = mainOnListeners.get(channel);
@@ -182,6 +195,322 @@ function feedCommandResponse(
   for (const line of outputLines) t.feed(line + "\n");
   t.feed(`%end ${commandNumber} ${commandNumber} 0\n`);
 }
+
+// ---------------------------------------------------------------------------
+// C1 — single-instance enforcement
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — C1 single-instance", () => {
+  it("throws ALREADY_REGISTERED on a second createMainBridge for the same ipcMain", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    expect(() => createMainBridge(client, hub.ipcMain)).toThrow(
+      /ALREADY_REGISTERED/,
+    );
+  });
+
+  it("releases the ipcMain on dispose so a fresh bridge can install", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+    handle.dispose();
+
+    // Should not throw.
+    const handle2 = createMainBridge(client, hub.ipcMain);
+    expect(handle2).toBeDefined();
+    handle2.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C2 — input validation on renderer requests
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — C2 input validation", () => {
+  it("rejects unknown methods without touching the client", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "kill-server",
+        args: [],
+      }),
+    ).rejects.toThrow(/UNKNOWN_METHOD/);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("rejects malformed envelope (non-object, missing method, non-array args)", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, "not-an-object"),
+    ).rejects.toThrow(/INVALID_REQUEST/);
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, { args: [] }),
+    ).rejects.toThrow(/INVALID_REQUEST/);
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "execute",
+        args: "not-an-array",
+      }),
+    ).rejects.toThrow(/INVALID_REQUEST/);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("rejects bad arg shapes (wrong arity, wrong type)", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+
+    // execute requires 1 string arg.
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, { method: "execute", args: [] }),
+    ).rejects.toThrow(/INVALID_ARG/);
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "execute",
+        args: [42],
+      }),
+    ).rejects.toThrow(/INVALID_ARG/);
+    // sendKeys requires 2 strings.
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "sendKeys",
+        args: ["%0"],
+      }),
+    ).rejects.toThrow(/INVALID_ARG/);
+    // setPaneAction requires (number, PaneAction).
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "setPaneAction",
+        args: [1, "bogus-action"],
+      }),
+    ).rejects.toThrow(/INVALID_ARG/);
+    // setFlags requires string[].
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, {
+        method: "setFlags",
+        args: [[1, 2, 3]],
+      }),
+    ).rejects.toThrow(/INVALID_ARG/);
+    expect(t.sent).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C3 — prototype-chain lookups must not resolve
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — C3 prototype pollution", () => {
+  it("rejects method='constructor' / '__proto__' / 'toString' as UNKNOWN_METHOD", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+
+    for (const evil of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      await expect(
+        renderer.ipcRenderer.invoke(IPC.invoke, { method: evil, args: [] }),
+      ).rejects.toThrow(/UNKNOWN_METHOD/);
+    }
+    expect(t.sent).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C4 — backpressure preserved across IPC
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — C4 backpressure", () => {
+  it("emits setPaneAction(Pause) once per-pane outstanding crosses the high watermark", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    // Tiny watermarks: 100B high, 25B low. Renderer ackBatchBytes set high so
+    // the renderer never acks during this test — we want main to observe
+    // unbounded outstanding bytes.
+    createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    const renderer = hub.createRenderer();
+    createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+
+    // 5 chunks of 30 bytes = 150 bytes outstanding > 100 → pause emitted once.
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %2 ${"x".repeat(30)}\n`);
+    }
+
+    const pauseCmds = t.sent.filter(
+      (c) => c.includes("refresh-client") && c.includes("%2:pause"),
+    );
+    expect(pauseCmds).toHaveLength(1);
+  });
+
+  it("emits setPaneAction(Continue) once tmux:ack drops outstanding below the low watermark", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    // No proxy — register manually so the test owns ack timing. The proxy's
+    // auto-ack is a real-IPC convenience; here we want deterministic control.
+    const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register);
+
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %3 ${"x".repeat(30)}\n`);
+    }
+    // 5×30 = 150 outstanding, > high=100 → one pause fired.
+    expect(
+      t.sent.filter((c) => c.includes("%3:pause")),
+    ).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%3:continue")),
+    ).toHaveLength(0);
+
+    // Ack 130 bytes → outstanding = 20 < low=25 → exactly one continue.
+    renderer.ipcRenderer.send(IPC.ack, { paneId: 3, bytes: 130 });
+    expect(
+      t.sent.filter((c) => c.includes("%3:continue")),
+    ).toHaveLength(1);
+  });
+
+  it("does not re-pause on every chunk while already paused", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register);
+
+    for (let i = 0; i < 20; i++) {
+      t.feed(`%output %7 ${"x".repeat(30)}\n`);
+    }
+    expect(
+      t.sent.filter((c) => c.includes("%7:pause")),
+    ).toHaveLength(1);
+  });
+
+  it("counts outstanding bytes per renderer separately (sum across renderers drives pause)", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    // Two raw subscribers; neither auto-acks.
+    const r1 = hub.createRenderer();
+    const r2 = hub.createRenderer();
+    r1.ipcRenderer.send(IPC.register);
+    r2.ipcRenderer.send(IPC.register);
+
+    // Each chunk fans out to BOTH renderers, so per-pane total grows by 60
+    // (2 × 30) per chunk. 2 chunks = 120 > 100 → pause.
+    t.feed(`%output %9 ${"x".repeat(30)}\n`);
+    expect(t.sent.filter((c) => c.includes("%9:pause"))).toHaveLength(0);
+    t.feed(`%output %9 ${"x".repeat(30)}\n`);
+    expect(t.sent.filter((c) => c.includes("%9:pause"))).toHaveLength(1);
+
+    // Drop r2 → its 60 bytes evaporate → outstanding = 60 > low=25 → no resume.
+    r2.destroy();
+    expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(0);
+
+    // Ack the rest from r1 → outstanding = 0 → resume.
+    r1.ipcRenderer.send(IPC.ack, { paneId: 9, bytes: 60 });
+    expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(1);
+  });
+
+  it("invalidates this renderer's outstanding bytes when WebContents is destroyed (resume fires)", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    const renderer = hub.createRenderer();
+    // High ack batch so renderer never acks before destruction.
+    createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %4 ${"x".repeat(30)}\n`);
+    }
+    expect(
+      t.sent.filter((c) => c.includes("%4:pause")),
+    ).toHaveLength(1);
+
+    renderer.destroy();
+    // Destroy → drop subscriber → outstanding for pane %4 drops to 0 → resume.
+    expect(
+      t.sent.filter((c) => c.includes("%4:continue")),
+    ).toHaveLength(1);
+  });
+
+  it("dispose resumes any panes the bridge had paused", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain, {
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    const renderer = hub.createRenderer();
+    createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %5 ${"x".repeat(30)}\n`);
+    }
+    handle.dispose();
+
+    expect(
+      t.sent.filter((c) => c.includes("%5:continue")),
+    ).toHaveLength(1);
+  });
+
+  it("rejects invalid watermark configuration", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    expect(() =>
+      createMainBridge(client, hub.ipcMain, {
+        outputHighWatermark: 10,
+        outputLowWatermark: 50,
+      }),
+    ).toThrow(/INVALID_ARG/);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Event forwarding
@@ -590,3 +919,60 @@ describe("Electron IPC bridge — renderer import graph", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Two-renderer integration ("opens two windows") — proves the bridge survives
+// a second window being created (real-Electron-style fake throws on duplicate
+// handle()) and that subscribers fan-out correctly.
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — two-window scenario", () => {
+  it("creates a second renderer without re-installing the bridge", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    // Renderer 1 (window 1).
+    const r1 = hub.createRenderer();
+    const p1 = createRendererBridge(r1.ipcRenderer);
+    const got1: number[] = [];
+    p1.on("window-add", (ev) => got1.push(ev.windowId));
+
+    // Renderer 2 (window 2) — would crash if the bridge re-registered the
+    // ipcMain.handle for tmux:invoke. Real Electron throws, our fake throws,
+    // and createMainBridge throws ALREADY_REGISTERED if you try to install
+    // twice. The right shape is "createMainBridge once, many windows".
+    const r2 = hub.createRenderer();
+    const p2 = createRendererBridge(r2.ipcRenderer);
+    const got2: number[] = [];
+    p2.on("window-add", (ev) => got2.push(ev.windowId));
+
+    t.feed("%window-add @11\n");
+    expect(got1).toEqual([11]);
+    expect(got2).toEqual([11]);
+
+    // Both renderers can independently invoke commands through the single
+    // shared handler.
+    const p1Pending = p1.execute("list-windows");
+    feedCommandResponse(t, 1, []);
+    await p1Pending;
+
+    const p2Pending = p2.execute("list-panes");
+    feedCommandResponse(t, 2, []);
+    await p2Pending;
+
+    expect(t.sent).toContain("list-windows\n");
+    expect(t.sent).toContain("list-panes\n");
+  });
+
+  it("regression — fake hub mirrors real Electron: second handle() throws", () => {
+    const hub = createIpcHub();
+    // Direct second registration on the same channel must throw.
+    hub.ipcMain.handle("tmux:invoke", async () => undefined);
+    expect(() =>
+      hub.ipcMain.handle("tmux:invoke", async () => undefined),
+    ).toThrow(/second handler/);
+  });
+});
+

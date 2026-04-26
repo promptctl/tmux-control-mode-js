@@ -14,6 +14,7 @@ const TMUX_CHANNELS = new Set([
   "tmux:invoke",
   "tmux:register",
   "tmux:unregister",
+  "tmux:ack",
 ]);
 
 function assertChannel(channel: string): void {

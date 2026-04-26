@@ -18,10 +18,13 @@ import type {
   TmuxMessage,
 } from "../../protocol/types.js";
 import {
+  DEFAULT_ACK_BATCH_BYTES,
   IPC,
+  type AckMessage,
   type InvokeRequest,
   type IpcRendererEventLike,
   type IpcRendererLike,
+  type RendererBridgeOptions,
 } from "./types.js";
 
 /**
@@ -31,6 +34,14 @@ import {
  * `ipcRenderer.invoke` and return the resolved `CommandResponse`. Events
  * arrive on `IPC.event` and are dispatched through an internal `TypedEmitter`
  * so `on`/`off` work identically to `TmuxClient`.
+ *
+ * Backpressure: the proxy counts bytes received from `%output` /
+ * `%extended-output` messages and replies with `tmux:ack` once the
+ * per-pane unacknowledged total crosses `ackBatchBytes`. This is the credit
+ * signal the main bridge uses to decide when to resume a paused pane. A
+ * renderer that never drains its event queue (e.g. blocked on heavy DOM
+ * work) will starve itself of new output — the same shape as tmux's own
+ * `%pause`-when-the-client-falls-behind contract.
  */
 export class TmuxClientProxy {
   private readonly ipc: IpcRendererLike;
@@ -39,17 +50,30 @@ export class TmuxClientProxy {
     event: IpcRendererEventLike,
     ...args: unknown[]
   ) => void;
+  private readonly ackBatchBytes: number;
+  // Per-pane bytes received but not yet acknowledged. The byte count is
+  // strictly the wire size of the data payload — which is exactly what main
+  // accounted on the way out, so the credit math stays balanced.
+  private readonly pendingAck = new Map<number, number>();
   private closed = false;
 
-  constructor(ipcRenderer: IpcRendererLike) {
+  constructor(
+    ipcRenderer: IpcRendererLike,
+    options: RendererBridgeOptions = {},
+  ) {
     this.ipc = ipcRenderer;
     this.emitter = new TypedEmitter();
+    this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
 
     // [LAW:dataflow-not-control-flow] Every inbound IPC event re-emits
     // unconditionally through the local emitter. The emitter's handler maps
     // decide who hears what — same as TmuxClient does with its own messages.
+    // Output messages additionally feed the credit accumulator; non-output
+    // messages contribute zero, so the same path runs for all.
     this.eventHandler = (_event, ...args) => {
-      this.emitter.emit(args[0] as TmuxMessage);
+      const msg = args[0] as TmuxMessage;
+      this.account(msg);
+      this.emitter.emit(msg);
     };
     this.ipc.on(IPC.event, this.eventHandler);
 
@@ -172,6 +196,7 @@ export class TmuxClientProxy {
       this.eventHandler as (...args: unknown[]) => void,
     );
     this.ipc.send(IPC.unregister);
+    this.pendingAck.clear();
   }
 
   // ---------------------------------------------------------------------------
@@ -180,6 +205,23 @@ export class TmuxClientProxy {
 
   private async invoke(req: InvokeRequest): Promise<CommandResponse> {
     return (await this.ipc.invoke(IPC.invoke, req)) as CommandResponse;
+  }
+
+  // [LAW:dataflow-not-control-flow] Accounting runs for every message; the
+  // discriminator decides whether anything is actually credited. Output and
+  // extended-output share the same accounting because main accounts them
+  // identically on the way out.
+  private account(msg: TmuxMessage): void {
+    if (msg.type !== "output" && msg.type !== "extended-output") return;
+    const paneId = msg.paneId;
+    const next = (this.pendingAck.get(paneId) ?? 0) + msg.data.byteLength;
+    if (next < this.ackBatchBytes) {
+      this.pendingAck.set(paneId, next);
+      return;
+    }
+    this.pendingAck.delete(paneId);
+    const ack: AckMessage = { paneId, bytes: next };
+    this.ipc.send(IPC.ack, ack);
   }
 }
 
@@ -193,12 +235,14 @@ export class TmuxClientProxy {
  */
 export function createRendererBridge(
   ipcRenderer: IpcRendererLike,
+  options?: RendererBridgeOptions,
 ): TmuxClientProxy {
-  return new TmuxClientProxy(ipcRenderer);
+  return new TmuxClientProxy(ipcRenderer, options);
 }
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
   IpcRendererLike,
   IpcRendererEventLike,
+  RendererBridgeOptions,
 } from "./types.js";
