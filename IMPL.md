@@ -284,17 +284,32 @@ class TmuxClient {
 
 The client tracks in-flight commands by `command-number` from `%begin` lines.
 `execute()` returns a `Promise<CommandResponse>` that resolves when the
-matching `%end` arrives or rejects on `%error`. This is the primary mechanism
-for correlating requests with responses.
+matching `%end` arrives or rejects with a `TmuxCommandError` on `%error`.
+This is the primary mechanism for correlating requests with responses.
 
 ```ts
 interface CommandResponse {
   commandNumber: number;
   timestamp: number;
   output: string[];   // Lines between %begin and %end
-  success: boolean;   // true for %end, false for %error
+  success: boolean;   // true for %end, false (only on TmuxCommandError.response) for %error
+}
+
+class TmuxCommandError extends Error {
+  readonly response: CommandResponse; // success: false, plus output lines
 }
 ```
+
+**Rejection contract:** all command-shaped methods (`execute`, `sendKeys`,
+`splitWindow`, `setSize`, `setPaneAction`, `subscribe`, `unsubscribe`,
+`setFlags`, `clearFlags`, `requestReport`, `queryClipboard`) reject with a
+`TmuxCommandError` instance carrying the original `CommandResponse` on
+`.response`. Callers should `instanceof TmuxCommandError` rather than
+duck-typing on `success: false`.
+
+> Pre-0.2 versions rejected with the raw `CommandResponse` object. That is a
+> breaking change. Migrate `catch (r: CommandResponse) => r.success` →
+> `catch (e) => e instanceof TmuxCommandError ? e.response : (throw e)`.
 
 ---
 
@@ -333,6 +348,54 @@ deployment-specific. A reference implementation or example could live in an
 ---
 
 ## 7. Connectors and Shims
+
+### 7.0 Shared RPC Layer (`connectors/rpc.ts`, `connectors/rpc-dispatch.ts`)
+
+Every bridge connector exposes the same fundamental shape: parse an untrusted
+`{ method, args }` payload from a peer/renderer, dispatch it to the matching
+`TmuxClient` method, and reply with a `CommandResponse`. Two files own that
+shape for **all** connectors:
+
+- `src/connectors/rpc.ts` — renderer-safe (zero Node imports). Defines the
+  `RpcRequest` discriminated union (one variant per bridged TmuxClient
+  method), `RpcMethod`, `RpcError`, and `parseRpcRequest(unknown)`. The
+  electron renderer can transitively reach this without dragging Node code
+  into its bundle.
+- `src/connectors/rpc-dispatch.ts` — Node-side. Imports `TmuxClient` (for the
+  Dispatcher type) and exports `dispatchRpcRequest(client, req)`, which is
+  exhaustively typed against `RpcRequest`. Fire methods (currently only
+  `detach`) synthesize their own success `CommandResponse` inside the
+  dispatcher so callers never have to special-case them.
+
+**Adding a TmuxClient method to the bridges:**
+
+1. Add the variant to `RpcRequest` in `rpc.ts`.
+2. Add the validator arm to `VALIDATORS` in `rpc.ts`.
+3. Add the dispatcher arm to `DISPATCH` in `rpc-dispatch.ts`.
+
+Both connectors pick the change up automatically. Missing entries fail at
+compile time via the mapped-type exhaustiveness in `Validators` and
+`Dispatcher`.
+
+The connector source files stay focused on transport-specific concerns:
+
+- `connectors/electron/main.ts` owns single-instance enforcement, the
+  per-renderer subscriber set, and the credit-based backpressure loop.
+  Its invoke handler is a 5-line straight pipe through `parseRpcRequest`
+  + `dispatchRpcRequest`.
+- `connectors/websocket/server.ts` owns the WebSocket frame protocol,
+  authentication/authorization hooks, rate limits, heartbeats, and drain
+  semantics. Its `onCall` straight-pipes through the same RPC functions —
+  no per-method dispatch table, no `isFireMethod` branch, no
+  `isTmuxError` duck-check (it catches `instanceof TmuxCommandError`
+  directly).
+
+`Connection` in `server.ts` models its lifecycle as a discriminated
+`ConnectionState` union (`pending-hello | running | draining | closed`)
+where the `running` and `draining` variants carry the live `TmuxClient` and
+`ConnectionContext`. `onCall` takes the narrowed `running` state as a
+parameter, so `client === null` is structurally unrepresentable inside it
+— no defensive guard needed.
 
 ### 7.1 Electron IPC Bridge
 

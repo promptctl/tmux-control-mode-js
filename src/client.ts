@@ -29,6 +29,7 @@ import type {
 import { TypedEmitter } from "./emitter.js";
 import type { TmuxEventMap } from "./emitter.js";
 import type { TmuxTransport } from "./transport/types.js";
+import { TmuxCommandError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -44,7 +45,7 @@ export type { SplitOptions } from "./protocol/encoder.js";
 
 interface PendingEntry {
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (response: CommandResponse) => void;
+  readonly reject: (err: TmuxCommandError) => void;
 }
 
 interface InflightEntry {
@@ -52,7 +53,7 @@ interface InflightEntry {
   readonly timestamp: number;
   readonly output: string[];
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (response: CommandResponse) => void;
+  readonly reject: (err: TmuxCommandError) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,12 +285,14 @@ export class TmuxClient {
     } else if (msg.type === "error") {
       const entry = this.inflight;
       this.inflight = null;
-      entry?.reject({
-        commandNumber: entry.commandNumber,
-        timestamp: entry.timestamp,
-        output: entry.output,
-        success: false,
-      });
+      entry?.reject(
+        new TmuxCommandError({
+          commandNumber: entry.commandNumber,
+          timestamp: entry.timestamp,
+          output: entry.output,
+          success: false,
+        }),
+      );
     }
 
     // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages flow

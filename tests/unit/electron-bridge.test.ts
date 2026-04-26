@@ -14,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { TmuxClient } from "../../src/client.js";
+import { TmuxCommandError } from "../../src/errors.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 import {
@@ -753,9 +754,9 @@ describe("Electron IPC bridge — method dispatch", () => {
     t.feed("unknown command\n");
     t.feed("%error 1 1 0\n");
 
+    await expect(pending).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(pending).rejects.toMatchObject({
-      success: false,
-      output: ["unknown command"],
+      response: { success: false, output: ["unknown command"] },
     });
   });
 });
