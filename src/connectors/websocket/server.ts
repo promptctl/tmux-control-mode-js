@@ -31,12 +31,11 @@
 // down. Every error path funnels through it.
 
 import type { TmuxClient } from "../../client.js";
+import { TmuxCommandError } from "../../errors.js";
 import type {
   CommandResponse,
-  PaneAction,
   TmuxMessage,
 } from "../../protocol/types.js";
-import type { SplitOptions } from "../../client.js";
 
 import {
   BridgeError,
@@ -44,14 +43,20 @@ import {
   PROTOCOL_VERSION,
   encodePaneOutput,
   encodeServerFrame,
-  isFireMethod,
   parseClientFrame,
   type BridgeErrorCode,
   type CallFrame,
   type ClientFrame,
-  type RpcMethod,
   type ServerFrame,
 } from "./protocol.js";
+
+import {
+  parseRpcRequest,
+  RpcError,
+  type RpcErrorCode,
+  type RpcRequest,
+} from "../rpc.js";
+import { dispatchRpcRequest } from "../rpc-dispatch.js";
 
 import type {
   AuthResult,
@@ -196,9 +201,45 @@ export function createWebSocketBridge(
 
 // ---------------------------------------------------------------------------
 // Connection state machine
+//
+// [LAW:dataflow-not-control-flow] State is a discriminated union, not an
+// enum + nullable side-data. The only path to a TmuxClient reference is
+// through the `running`/`draining` variants; the type system makes
+// `client === null` unrepresentable inside `onCall`. The previous shape
+// (nullable `client` + `phase` enum + a defensive `if (client === null)`
+// "invariant violation" guard) is gone — the invariant lives on the type.
 // ---------------------------------------------------------------------------
 
-type Phase = "pending-hello" | "running" | "draining" | "closed";
+type ConnectionState =
+  /** No hello received yet; no client. Initial state. */
+  | { readonly kind: "pending-hello" }
+  /** Hello accepted, client created, accepting calls. */
+  | {
+      readonly kind: "running";
+      readonly client: TmuxClient;
+      readonly ctx: ConnectionContext;
+    }
+  /** Drain initiated; existing in-flight calls finish, new calls rejected. */
+  | {
+      readonly kind: "draining";
+      readonly client: TmuxClient;
+      readonly ctx: ConnectionContext;
+      readonly deadlineMs: number;
+    }
+  /**
+   * Terminal state. `final` is the (client, ctx) captured at finalize time
+   * if we ever reached running; null if we closed before hello, in which
+   * case there is no client to dispose.
+   */
+  | {
+      readonly kind: "closed";
+      readonly final: {
+        readonly client: TmuxClient;
+        readonly ctx: ConnectionContext;
+      } | null;
+    };
+
+type RunningState = Extract<ConnectionState, { kind: "running" }>;
 
 interface ResolvedDefaults {
   readonly heartbeatIntervalMs: number;
@@ -221,10 +262,10 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
 }
 
 class Connection {
-  private phase: Phase = "pending-hello";
+  // [LAW:one-source-of-truth] Single state field; (client, ctx) live inside
+  // the variant that needs them, not as parallel nullable fields.
+  private state: ConnectionState = { kind: "pending-hello" };
   private identity: ConnectionIdentity = undefined;
-  private client: TmuxClient | null = null;
-  private ctx: ConnectionContext | null = null;
 
   private readonly inflight = new Map<
     string,
@@ -318,7 +359,7 @@ class Connection {
   }
 
   private onFrame(raw: string): void {
-    if (this.phase === "closed") return;
+    if (this.state.kind === "closed") return;
     let frame: ClientFrame;
     try {
       frame = parseClientFrame(raw);
@@ -343,7 +384,7 @@ class Connection {
       void this.onHello();
       return;
     }
-    if (this.phase === "pending-hello") {
+    if (this.state.kind === "pending-hello") {
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
         `received '${frame.k}' before hello`,
@@ -351,7 +392,19 @@ class Connection {
       return;
     }
     if (frame.k === "call") {
-      void this.onCall(frame);
+      // [LAW:dataflow-not-control-flow] State narrowing happens here, once,
+      // and the running variant is passed into onCall so it can read
+      // state.client without a null check. Drain rejection is also localized
+      // here — onCall never sees a non-running state.
+      if (this.state.kind === "draining") {
+        this.replyError(frame.id, "BRIDGE_CLOSED", "bridge is draining");
+        return;
+      }
+      if (this.state.kind === "running") {
+        void this.onCall(frame, this.state);
+        return;
+      }
+      // closed — drop silently; the close handler will tear down inflight.
       return;
     }
     if (frame.k === "ping") {
@@ -368,7 +421,7 @@ class Connection {
   // Hello / welcome
   // -------------------------------------------------------------------------
   private async onHello(): Promise<void> {
-    if (this.phase !== "pending-hello") {
+    if (this.state.kind !== "pending-hello") {
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
         "duplicate hello frame",
@@ -391,11 +444,15 @@ class Connection {
       return;
     }
     this.identity = authResult.identity;
-    this.ctx = { identity: this.identity, request: this.request };
+    const ctx: ConnectionContext = {
+      identity: this.identity,
+      request: this.request,
+    };
 
     // createClient()
+    let client: TmuxClient;
     try {
-      this.client = await this.opts.createClient(this.ctx);
+      client = await this.opts.createClient(ctx);
     } catch (err) {
       this.sendFatalAndClose(
         "BRIDGE_INTERNAL",
@@ -405,9 +462,13 @@ class Connection {
     }
 
     // Wire up tmux event fan-out.
-    this.client.on("*", this.onAnyEventRef);
+    client.on("*", this.onAnyEventRef);
 
-    this.phase = "running";
+    // Atomic state transition: pending-hello → running. From here on, every
+    // call site that needs `client`/`ctx` reads them off `this.state`,
+    // narrowed by `kind`.
+    this.state = { kind: "running", client, ctx };
+
     this.sendFrame({
       v: 1,
       k: "welcome",
@@ -443,12 +504,14 @@ class Connection {
 
   // -------------------------------------------------------------------------
   // Call dispatch
+  //
+  // [LAW:dataflow-not-control-flow] Narrowing is done by the caller
+  // (`dispatch`) — onCall receives a running-state value, so `state.client`
+  // is non-null by type. The previous `if (this.client === null)` guard with
+  // the "invariant violation" comment is gone: that case is structurally
+  // unrepresentable.
   // -------------------------------------------------------------------------
-  private async onCall(frame: CallFrame): Promise<void> {
-    if (this.phase === "draining") {
-      this.replyError(frame.id, "BRIDGE_CLOSED", "bridge is draining");
-      return;
-    }
+  private async onCall(frame: CallFrame, state: RunningState): Promise<void> {
     if (this.inflight.size >= this.defaults.maxInflight) {
       this.replyError(
         frame.id,
@@ -484,43 +547,27 @@ class Connection {
     }
 
     const args = authResult.args ?? frame.args;
-    const invoker = DISPATCH[frame.method];
-    const client = this.client;
-    if (invoker === undefined) {
-      this.replyError(
-        frame.id,
-        "BRIDGE_UNKNOWN_METHOD",
-        `unknown RPC method: ${frame.method}`,
-      );
-      return;
-    }
-    if (client === null) {
-      // Invariant violation: welcome was sent so client must be non-null.
-      this.replyError(
-        frame.id,
-        "BRIDGE_INTERNAL",
-        "tmux client not initialized",
-      );
-      return;
-    }
+    // state.client is non-null by type — see RunningState above.
+    const { client } = state;
 
-    if (isFireMethod(frame.method)) {
-      try {
-        // Fire methods synthesize a CommandResponse locally; the bridge
-        // does not await a tmux reply for them.
-        const synth = invoker(client, args) as CommandResponse;
-        this.replyOk(frame.id, synth);
-      } catch (err) {
-        this.replyError(
-          frame.id,
-          "BRIDGE_INTERNAL",
-          err instanceof Error ? err.message : String(err),
-        );
+    // [LAW:single-enforcer] One validation site for the {method, args}
+    // payload — parseRpcRequest from ../rpc.ts. Bad shapes raise a per-call
+    // BRIDGE_UNKNOWN_METHOD or BRIDGE_PROTOCOL_ERROR; the connection stays
+    // open. Per-method arg validation is handled by the same call.
+    let req: RpcRequest;
+    try {
+      req = parseRpcRequest({ method: frame.method, args });
+    } catch (e: unknown) {
+      if (e instanceof RpcError) {
+        this.replyError(frame.id, mapRpcCode(e.code), e.message);
+        return;
       }
-      return;
+      throw e;
     }
 
-    // Call-and-wait: dispatch + race against timeout.
+    // Call-and-wait: dispatch + race against timeout. Fire methods like
+    // `detach` no longer require a special branch — dispatchRpcRequest
+    // synthesizes their CommandResponse so the timing path is uniform.
     const startedAt = Date.now();
     const timer = setTimeout(() => {
       if (!this.inflight.has(frame.id)) return;
@@ -543,7 +590,7 @@ class Connection {
     this.inflight.set(frame.id, { timer, startedAt });
 
     try {
-      const result = (await invoker(client, args)) as CommandResponse;
+      const result = await dispatchRpcRequest(client, req);
       if (!this.inflight.has(frame.id)) return;
       this.inflight.delete(frame.id);
       clearTimeout(timer);
@@ -559,16 +606,12 @@ class Connection {
       if (!this.inflight.has(frame.id)) return;
       this.inflight.delete(frame.id);
       clearTimeout(timer);
-      // TmuxClient rejects execute() with a CommandResponse carrying
-      // success:false when tmux returns %error. Preserve that as a typed
-      // TMUX_ERROR; otherwise classify as BRIDGE_INTERNAL.
-      const isTmuxError =
-        typeof err === "object" &&
-        err !== null &&
-        "success" in err &&
-        (err as { success: unknown }).success === false;
-      if (isTmuxError) {
-        this.replyOk(frame.id, err as CommandResponse);
+      // [LAW:single-enforcer] TmuxCommandError is the typed receipt for a
+      // tmux-side %error reply (see src/errors.ts). Replying ok with the
+      // structured response preserves the wire contract — clients see a
+      // CommandResponse with success:false instead of a transport error.
+      if (err instanceof TmuxCommandError) {
+        this.replyOk(frame.id, err.response);
         this.emit({
           kind: "result",
           identity: this.identity,
@@ -590,6 +633,12 @@ class Connection {
       });
     }
   }
+
+  // [LAW:dataflow-not-control-flow] Single-arm mapping function for
+  // parse-time errors. Each RpcErrorCode maps to one BridgeErrorCode for
+  // the wire reply.
+  // (Defined here as a private helper so it stays close to its single caller.)
+  // (See `mapRpcCode` below the class definition.)
 
   private async safeAuthorize(frame: CallFrame): Promise<AuthorizeResult> {
     const hook = this.opts.authorize;
@@ -659,7 +708,7 @@ class Connection {
   private startHeartbeat(): void {
     if (this.defaults.heartbeatIntervalMs <= 0) return;
     this.heartbeatTimer = setInterval(() => {
-      if (this.phase === "closed") return;
+      if (this.state.kind === "closed") return;
       if (this.pongDeadline !== null) return;
       try {
         this.ws.ping();
@@ -681,13 +730,20 @@ class Connection {
   // Drain / terminate
   // -------------------------------------------------------------------------
   beginDrain(deadlineMs: number): void {
-    if (this.phase !== "running") return;
-    this.phase = "draining";
+    if (this.state.kind !== "running") return;
+    // Carry client+ctx forward into the draining variant — they're still
+    // needed for in-flight calls and final disposal.
+    this.state = {
+      kind: "draining",
+      client: this.state.client,
+      ctx: this.state.ctx,
+      deadlineMs,
+    };
     this.sendFrame({ v: 1, k: "draining", deadlineMs });
   }
 
   terminate(): void {
-    if (this.phase === "closed") return;
+    if (this.state.kind === "closed") return;
     try {
       this.ws.terminate();
     } catch {
@@ -749,8 +805,16 @@ class Connection {
     fatal: BridgeError | undefined,
     closeInfo: { code: number; reason: string } | undefined,
   ): void {
-    if (this.phase === "closed") return;
-    this.phase = "closed";
+    if (this.state.kind === "closed") return;
+
+    // Capture client+ctx (if we ever reached running) into the closed
+    // variant so disposal can reach them after the transition. The
+    // discriminator alone tells us whether there's anything to clean up.
+    const final =
+      this.state.kind === "running" || this.state.kind === "draining"
+        ? { client: this.state.client, ctx: this.state.ctx }
+        : null;
+    this.state = { kind: "closed", final };
 
     if (this.helloDeadline !== null) clearTimeout(this.helloDeadline);
     if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
@@ -766,10 +830,10 @@ class Connection {
     }
     this.inflight.clear();
 
-    if (this.client !== null) {
-      this.client.off("*", this.onAnyEventRef);
-      if (this.opts.disposeClient !== undefined && this.ctx !== null) {
-        void Promise.resolve(this.opts.disposeClient(this.client, this.ctx));
+    if (final !== null) {
+      final.client.off("*", this.onAnyEventRef);
+      if (this.opts.disposeClient !== undefined) {
+        void Promise.resolve(this.opts.disposeClient(final.client, final.ctx));
       }
     }
 
@@ -794,52 +858,18 @@ class Connection {
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch table
-//
-// [LAW:one-source-of-truth] Adding a TmuxClient method to the proxy means
-// adding one entry here. The types use `never` on the args so the compiler
-// enforces each entry matches its method's signature.
+// RpcError → BridgeErrorCode mapping (single arm function — Connection.onCall
+// uses this to translate parser failures into the wire error taxonomy).
 // ---------------------------------------------------------------------------
 
-type Invoker = (
-  client: TmuxClient,
-  args: readonly unknown[],
-) => Promise<CommandResponse> | CommandResponse;
+const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
+  UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
+  INVALID_REQUEST: "BRIDGE_PROTOCOL_ERROR",
+  INVALID_ARG: "BRIDGE_PROTOCOL_ERROR",
+};
 
-const DISPATCH: Readonly<Record<RpcMethod, Invoker>> = Object.freeze({
-  execute: (c, [command]) => c.execute(command as string),
-  listWindows: (c) => c.listWindows(),
-  listPanes: (c) => c.listPanes(),
-  sendKeys: (c, [target, keys]) =>
-    c.sendKeys(target as string, keys as string),
-  splitWindow: (c, [options]) => c.splitWindow(options as SplitOptions),
-  setSize: (c, [w, h]) => c.setSize(w as number, h as number),
-  setPaneAction: (c, [paneId, action]) =>
-    c.setPaneAction(paneId as number, action as PaneAction),
-  setFlags: (c, [flags]) => c.setFlags(flags as readonly string[]),
-  clearFlags: (c, [flags]) => c.clearFlags(flags as readonly string[]),
-  requestReport: (c, [paneId, report]) =>
-    c.requestReport(paneId as number, report as string),
-  queryClipboard: (c) => c.queryClipboard(),
-  subscribe: (c, [name, what, format]) =>
-    c.subscribe(name as string, what as string, format as string),
-  unsubscribe: (c, [name]) => c.unsubscribe(name as string),
-  detach: (c) => {
-    c.detach();
-    return synthesizeFireResponse();
-  },
-});
-
-function synthesizeFireResponse(): CommandResponse {
-  // Fire methods produce no tmux response, so the bridge synthesizes an
-  // empty success so the client's Promise resolves with the same shape as
-  // every other call.
-  return {
-    commandNumber: -1,
-    timestamp: Date.now(),
-    success: true,
-    output: [],
-  };
+function mapRpcCode(code: RpcErrorCode): BridgeErrorCode {
+  return RPC_ERROR_TO_BRIDGE[code];
 }
 
 // ---------------------------------------------------------------------------

@@ -1,78 +1,41 @@
 // src/connectors/electron/main.ts
 // Electron main-process bridge: forwards TmuxClient events to registered
 // renderers and routes renderer command invocations to the client.
-
-// [LAW:single-enforcer] Exactly one `handle("tmux:invoke", ...)` handler per
-// process; createMainBridge refuses a second registration on the same
-// ipcMain. All renderer method calls funnel through this single handler.
-// [LAW:one-source-of-truth] IPC channel names + request shape + validation
-// imported from ./types.js — no duplicate string literals on this side.
+//
+// This file owns ONLY what is electron-specific:
+//   - Single-instance enforcement on the ipcMain singleton.
+//   - The renderer subscriber set + per-renderer per-pane outstanding-byte
+//     accounting + watermark-driven setPaneAction(Pause/Continue) loop.
+//   - Forwarding TmuxClient events as Electron IPC messages.
+//
+// RPC validation, dispatch, and method allowlist all live in
+// `../rpc.ts`. Adding a TmuxClient method = one file edit.
+//
+// [LAW:single-enforcer] One ipcMain.handle("tmux:invoke") per process; the
+// invoke handler delegates parsing+dispatching to ../rpc.
+// [LAW:one-source-of-truth] IPC channel names from ./types.js; RPC behavior
+// from ../rpc.js. No duplication of either on this side.
 
 import type { TmuxClient } from "../../client.js";
+import { TmuxCommandError } from "../../errors.js";
 import {
   PaneAction,
-  type CommandResponse,
   type TmuxMessage,
 } from "../../protocol/types.js";
+import { parseRpcRequest } from "../rpc.js";
+import { dispatchRpcRequest } from "../rpc-dispatch.js";
 import {
   BridgeError,
   DEFAULT_OUTPUT_HIGH_WATERMARK,
   DEFAULT_OUTPUT_LOW_WATERMARK,
   IPC,
   parseAckMessage,
-  parseInvokeRequest,
-  type InvokeRequest,
   type IpcMainEventLike,
   type IpcMainLike,
   type MainBridgeHandle,
   type MainBridgeOptions,
   type WebContentsLike,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Method dispatch table.
-//
-// [LAW:dataflow-not-control-flow] One table, one indexed lookup. Adding a
-// method to TmuxClient means adding one entry here — no new control-flow
-// branch on the invoke handler.
-// [LAW:one-type-per-behavior] A single `Dispatcher` type covers every
-// TmuxClient method; `satisfies` below makes the compiler check exhaustiveness.
-// ---------------------------------------------------------------------------
-
-type Dispatcher = {
-  readonly [R in InvokeRequest as R["method"]]: (
-    client: TmuxClient,
-    args: R["args"],
-  ) => Promise<CommandResponse> | CommandResponse | undefined;
-};
-
-// [LAW:single-enforcer] DISPATCH is backed by a null-prototype object. A
-// compromised renderer sending `method: "constructor"` or `"__proto__"`
-// resolves to `undefined`, not a built-in function — closing the prototype
-// pollution footgun called out in the e07.5 audit (C3). Validation in
-// parseInvokeRequest is the primary gate; this is defense in depth.
-const DISPATCH: Dispatcher = Object.assign(
-  Object.create(null) as Dispatcher,
-  {
-    execute: (c, [command]) => c.execute(command),
-    listWindows: (c) => c.listWindows(),
-    listPanes: (c) => c.listPanes(),
-    sendKeys: (c, [target, keys]) => c.sendKeys(target, keys),
-    splitWindow: (c, [options]) => c.splitWindow(options),
-    setSize: (c, [width, height]) => c.setSize(width, height),
-    setPaneAction: (c, [paneId, action]) => c.setPaneAction(paneId, action),
-    subscribe: (c, [name, what, format]) => c.subscribe(name, what, format),
-    unsubscribe: (c, [name]) => c.unsubscribe(name),
-    setFlags: (c, [flags]) => c.setFlags(flags),
-    clearFlags: (c, [flags]) => c.clearFlags(flags),
-    requestReport: (c, [paneId, report]) => c.requestReport(paneId, report),
-    queryClipboard: (c) => c.queryClipboard(),
-    detach: (c) => {
-      c.detach();
-      return undefined;
-    },
-  } satisfies Dispatcher,
-);
 
 // ---------------------------------------------------------------------------
 // Single-instance ipcMain registration tracking.
@@ -112,9 +75,9 @@ interface SubscriberState {
  *
  * Method dispatch:
  *   - `ipcMain.handle(IPC.invoke, ...)` validates the renderer payload via
- *     `parseInvokeRequest` (allowlist + per-method arg shape check) before
- *     looking up the dispatcher. A compromised renderer cannot reach an
- *     unknown TmuxClient method or trigger a prototype-chain lookup.
+ *     `parseRpcRequest` (allowlist + per-method arg shape check) before
+ *     dispatching via `dispatchRpcRequest`. A compromised renderer cannot
+ *     reach an unknown TmuxClient method or trigger a prototype-chain lookup.
  *
  * Backpressure:
  *   - For every `%output` / `%extended-output` byte forwarded, main accounts
@@ -122,9 +85,7 @@ interface SubscriberState {
  *     total (summed across renderers) crosses `outputHighWatermark`, main
  *     calls `client.setPaneAction(paneId, Pause)`. When the renderer
  *     replies with `tmux:ack` (paneId, bytes consumed) and the total falls
- *     below `outputLowWatermark`, main resumes the pane. Renderers that
- *     never ack will starve themselves; renderers that ack faster than they
- *     consume self-deceive but cannot push past tmux's own pause limit.
+ *     below `outputLowWatermark`, main resumes the pane.
  *
  * Returns a handle whose `dispose()` removes every installed IPC handler,
  * resumes any panes the bridge had paused, and frees the ipcMain for a
@@ -176,9 +137,7 @@ export function createMainBridge(
   };
 
   // Fire-and-forget pause/continue. tmux's response carries no actionable
-  // info; a rejection means the pane already went away, which is fine —
-  // outstanding bytes will bleed off as the renderer acks (or as the
-  // subscriber set drops on destroyed).
+  // info; a rejection means the pane already went away, which is fine.
   const swallow = (): void => undefined;
   const maybePause = (paneId: number): void => {
     if (pausedPanes.has(paneId)) return;
@@ -211,10 +170,8 @@ export function createMainBridge(
         continue;
       }
       // Account output bytes per (renderer, pane) BEFORE wc.send so that an
-      // ack arriving synchronously during send (real Electron IPC is async,
-      // but a sync IPC like the test hub or any future in-process variant is
-      // not) subtracts from the right baseline. Non-output messages produce
-      // null accounting and are sent without state mutation.
+      // ack arriving synchronously during send subtracts from the right
+      // baseline. Non-output messages produce null accounting.
       if (accounted !== null) {
         const prev = state.outstanding.get(accounted.paneId) ?? 0;
         state.outstanding.set(accounted.paneId, prev + accounted.bytes);
@@ -276,27 +233,37 @@ export function createMainBridge(
   ipcMain.on(IPC.ack, onAck as (...args: unknown[]) => void);
 
   // -------------------------------------------------------------------------
-  // Single invoke handler.
+  // Single invoke handler — straight pipe through the shared RPC layer.
   //
-  // [LAW:single-enforcer] One handler; the validated method tag indexes the
-  // DISPATCH table. Validation runs first, so DISPATCH always sees a known
-  // method with well-typed args.
+  // [LAW:single-enforcer] One handler. parseRpcRequest enforces the shape;
+  // dispatchRpcRequest performs the typed dispatch. No control flow lives
+  // here — the variance is absorbed by RpcRequest.
   // -------------------------------------------------------------------------
 
   const invokeHandler = async (
     _event: unknown,
     ...args: unknown[]
   ): Promise<unknown> => {
-    // parseInvokeRequest throws BridgeError on bad input. Letting the throw
+    // parseRpcRequest throws RpcError on bad input. Letting the throw
     // propagate makes ipcRenderer.invoke reject in the renderer with the
     // bridge error message — no execution happens.
-    const req = parseInvokeRequest(args[0]);
-    const fn = DISPATCH[req.method] as (
-      c: TmuxClient,
-      a: InvokeRequest["args"],
-    ) => Promise<CommandResponse> | CommandResponse | undefined;
-    const result = await fn(client, req.args);
-    return result ?? undefined;
+    const req = parseRpcRequest(args[0]);
+    // Wrap the dispatch result in a small envelope so TmuxCommandError can
+    // cross IPC: real Electron's `ipcMain.handle` serializes `Error`
+    // rejections as opaque messages and drops their custom properties (e.g.
+    // `.response`). Returning a plain object preserves the structured
+    // CommandResponse end-to-end. The renderer's `invoke()` re-throws as a
+    // TmuxCommandError so `proxy.execute()` keeps the same contract as
+    // `client.execute()`.
+    try {
+      const response = await dispatchRpcRequest(client, req);
+      return { ok: true as const, response };
+    } catch (err) {
+      if (err instanceof TmuxCommandError) {
+        return { ok: false as const, response: err.response };
+      }
+      throw err;
+    }
   };
 
   ipcMain.handle(IPC.invoke, invokeHandler);

@@ -70,40 +70,34 @@ export interface BridgeErrorPayload {
 // ---------------------------------------------------------------------------
 
 /**
- * Every TmuxClient method the bridge can proxy. One entry per public method
- * on TmuxClient — changing this set is the public surface of the bridge.
+ * Every TmuxClient method the bridge can proxy.
  *
- * [LAW:one-source-of-truth] Both `server.ts` DISPATCH and `client.ts` call
- * helpers derive their method names from this type.
+ * [LAW:one-source-of-truth] Re-exported from `../rpc.ts` (the connector-
+ * agnostic RPC layer). Adding a method = one variant on `RpcRequest` in
+ * `rpc.ts` + one dispatcher arm in `rpc-dispatch.ts`. Both connectors pick
+ * up the change automatically.
  */
-export type RpcMethod =
-  | "execute"
-  | "listWindows"
-  | "listPanes"
-  | "sendKeys"
-  | "splitWindow"
-  | "setSize"
-  | "setPaneAction"
-  | "setFlags"
-  | "clearFlags"
-  | "requestReport"
-  | "queryClipboard"
-  | "subscribe"
-  | "unsubscribe"
-  | "detach";
+export type { RpcMethod } from "../rpc.js";
+
+import type { RpcMethod } from "../rpc.js";
 
 /**
- * "Fire" methods produce no tmux response, so the bridge synthesizes a
- * success CommandResponse as soon as the local invocation returns. Only
- * `detach` qualifies today — tmux closes the control stream in response,
- * so there is no %end to await. `subscribe`/`unsubscribe` look fire-like
- * but TmuxClient exposes them as Promise<CommandResponse> because tmux DOES
- * emit a %begin/%end pair for them.
+ * "Fire" methods that the bridge synthesizes responses for instead of
+ * waiting on tmux. Only `detach` qualifies today.
+ *
+ * @deprecated since 0.2 — the shared dispatcher in `../rpc-dispatch.ts`
+ * synthesizes fire-method responses internally; the bridge no longer
+ * consults this set. Kept for back-compat with downstream consumers that
+ * imported it from `./protocol`.
  */
 export const RPC_FIRE_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   "detach",
 ]);
 
+/**
+ * @deprecated since 0.2 — the dispatcher handles fire methods uniformly;
+ * callers no longer need to branch. Kept for back-compat.
+ */
 export function isFireMethod(method: RpcMethod): boolean {
   return RPC_FIRE_METHODS.has(method);
 }
@@ -426,6 +420,10 @@ function parseCall(x: unknown): CallFrame {
   if (!Array.isArray(o.args)) {
     throw new BridgeProtocolError("call.args must be an array");
   }
+  // The method-name allowlist is enforced by parseRpcRequest in server.ts —
+  // it raises a per-call BRIDGE_UNKNOWN_METHOD reply (connection stays open).
+  // Validating here would close the connection on every unknown method,
+  // which over-reacts to client/server version skew.
   return {
     v: 1,
     k: "call",

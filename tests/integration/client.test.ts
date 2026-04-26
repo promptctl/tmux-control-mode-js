@@ -9,6 +9,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
+import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 
 // [LAW:verifiable-goals] Gate every test behind the env var so the suite is
@@ -150,16 +151,17 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
       sessionName = uniqueSession("test-corr");
       client = await createSession(socketName, sessionName);
 
-      // TmuxClient calls entry.reject on %error — the promise rejects with a
-      // CommandResponse whose success field is false. We catch it and assert.
-      const response = await client
+      // TmuxClient rejects with TmuxCommandError on %error. The original
+      // CommandResponse is on err.response.
+      const err = await client
         .execute("invalid-command-xyz")
         .then(
-          (r) => r,
-          (r: CommandResponse) => r,
+          () => null,
+          (e: unknown) => e,
         );
 
-      expect(response.success).toBe(false);
+      expect(err).toBeInstanceOf(TmuxCommandError);
+      expect((err as TmuxCommandError).response.success).toBe(false);
     },
     15000,
   );

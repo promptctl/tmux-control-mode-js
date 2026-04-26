@@ -11,6 +11,7 @@
 // Adding an event on the main side surfaces it on the proxy automatically.
 
 import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
+import { TmuxCommandError } from "../../errors.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import type {
   CommandResponse,
@@ -26,6 +27,15 @@ import {
   type IpcRendererLike,
   type RendererBridgeOptions,
 } from "./types.js";
+
+// Wire envelope returned by the main-side invoke handler. See main.ts —
+// `dispatchRpcRequest`'s success/TmuxCommandError outcomes get encoded as a
+// plain `{ok, response}` object so the structured CommandResponse survives
+// IPC serialization. The renderer re-throws TmuxCommandError so consumers
+// see the same exception shape they would get from a local TmuxClient.
+type InvokeResultEnvelope =
+  | { readonly ok: true; readonly response: CommandResponse }
+  | { readonly ok: false; readonly response: CommandResponse };
 
 /**
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.
@@ -204,7 +214,12 @@ export class TmuxClientProxy {
   // ---------------------------------------------------------------------------
 
   private async invoke(req: InvokeRequest): Promise<CommandResponse> {
-    return (await this.ipc.invoke(IPC.invoke, req)) as CommandResponse;
+    const result = (await this.ipc.invoke(
+      IPC.invoke,
+      req,
+    )) as InvokeResultEnvelope;
+    if (!result.ok) throw new TmuxCommandError(result.response);
+    return result.response;
   }
 
   // [LAW:dataflow-not-control-flow] Accounting runs for every message; the
