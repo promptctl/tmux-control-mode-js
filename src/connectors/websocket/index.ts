@@ -15,7 +15,6 @@ export {
   BridgeProtocolError,
   PROTOCOL_VERSION,
   PANE_OUTPUT_MAGIC,
-  isFireMethod,
   isPaneOutputFrame,
   encodePaneOutput,
   decodePaneOutput,
