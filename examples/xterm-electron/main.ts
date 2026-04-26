@@ -3,11 +3,13 @@
 //
 // Responsibilities:
 //   1. Create-or-attach a dedicated tmux session and wrap it in TmuxClient.
-//   2. Wire the client into Electron's IPC via createMainBridge — no
-//      per-method ipcMain.handle boilerplate.
-//   3. Create a BrowserWindow with contextIsolation + sandbox true (the
+//   2. Wire the client into Electron's IPC via createMainBridge — installed
+//      ONCE at app.whenReady(). ipcMain is a process singleton; registering
+//      the bridge per BrowserWindow would crash the second window with
+//      "Attempted to register a second handler for tmux:invoke".
+//   3. Create BrowserWindow(s) with contextIsolation + sandbox true (the
 //      hardened default) and load the renderer.
-//   4. Clean up the client when the last window closes.
+//   4. Clean up the bridge + client when the last window closes.
 
 import { execSync } from "node:child_process";
 import { app, BrowserWindow, ipcMain } from "electron";
@@ -15,7 +17,11 @@ import * as path from "node:path";
 
 import { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { spawnTmux } from "@promptctl/tmux-control-mode-js";
-import { createMainBridge } from "@promptctl/tmux-control-mode-js/electron/main";
+import {
+  createMainBridge,
+  type MainBridgeHandle,
+  type MainBridgeOptions,
+} from "@promptctl/tmux-control-mode-js/electron/main";
 
 const SESSION = "xterm-electron-demo";
 
@@ -55,7 +61,7 @@ function waitUntilReady(client: TmuxClient): Promise<void> {
   });
 }
 
-async function createWindow(client: TmuxClient): Promise<void> {
+async function createWindow(): Promise<void> {
   const win = new BrowserWindow({
     width: 960,
     height: 640,
@@ -72,24 +78,37 @@ async function createWindow(client: TmuxClient): Promise<void> {
     },
   });
 
-  // The bridge installs ipcMain.handle for "tmux:invoke" plus subscriber
-  // registration on "tmux:register" / "tmux:unregister". Lives for the
-  // lifetime of the client.
-  const bridge = createMainBridge(client, ipcMain);
-
-  win.on("closed", () => {
-    bridge.dispose();
-  });
-
   await win.loadFile(path.join(__dirname, "..", "index.html"));
+}
+
+// Bridge tunables are configurable from the e2e harness via env vars so the
+// flood-pause test can use tiny watermarks without changing library defaults.
+function bridgeOptions(): MainBridgeOptions {
+  const opts: MainBridgeOptions = {};
+  const high = process.env.TMUX_BRIDGE_HIGH_WATERMARK;
+  const low = process.env.TMUX_BRIDGE_LOW_WATERMARK;
+  if (high !== undefined) opts.outputHighWatermark = Number.parseInt(high, 10);
+  if (low !== undefined) opts.outputLowWatermark = Number.parseInt(low, 10);
+  return opts;
 }
 
 app.whenReady().then(async () => {
   const client = createClient();
   await waitUntilReady(client);
-  await createWindow(client);
+
+  // The bridge is a process-level singleton: one ipcMain.handle for
+  // "tmux:invoke" plus subscriber registration on tmux:register /
+  // tmux:unregister / tmux:ack. Lives for the lifetime of the client.
+  const bridge: MainBridgeHandle = createMainBridge(
+    client,
+    ipcMain,
+    bridgeOptions(),
+  );
+
+  await createWindow();
 
   app.on("window-all-closed", () => {
+    bridge.dispose();
     client.close();
     app.quit();
   });
