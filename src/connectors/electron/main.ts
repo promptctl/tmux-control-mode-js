@@ -19,6 +19,7 @@
 import type { TmuxClient } from "../../client.js";
 import { TmuxCommandError } from "../../errors.js";
 import {
+  asPaneOutput,
   PaneAction,
   type TmuxMessage,
 } from "../../protocol/types.js";
@@ -295,16 +296,14 @@ export function createMainBridge(
   };
 }
 
-// [LAW:dataflow-not-control-flow] Discriminator-driven extraction: every
-// message goes through here, output-shaped ones produce a record, others
-// produce null. The caller's loop runs the same path each time.
+// [LAW:single-enforcer] The discriminator check itself lives in
+// asPaneOutput (src/protocol/types.ts). This function is the bytes-shaped
+// projection main.ts's accounting loop wants — paneId + payload size.
 function byteAccount(
   msg: TmuxMessage,
 ): { paneId: number; bytes: number } | null {
-  if (msg.type === "output" || msg.type === "extended-output") {
-    return { paneId: msg.paneId, bytes: msg.data.byteLength };
-  }
-  return null;
+  const out = asPaneOutput(msg);
+  return out === null ? null : { paneId: out.paneId, bytes: out.data.byteLength };
 }
 
 // Re-export the types a main-process consumer might need without forcing a

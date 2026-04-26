@@ -13,10 +13,11 @@
 import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
-import type {
-  CommandResponse,
-  PaneAction,
-  TmuxMessage,
+import {
+  asPaneOutput,
+  type CommandResponse,
+  type PaneAction,
+  type TmuxMessage,
 } from "../../protocol/types.js";
 import {
   DEFAULT_ACK_BATCH_BYTES,
@@ -222,20 +223,20 @@ export class TmuxClientProxy {
     return result.response;
   }
 
-  // [LAW:dataflow-not-control-flow] Accounting runs for every message; the
-  // discriminator decides whether anything is actually credited. Output and
-  // extended-output share the same accounting because main accounts them
-  // identically on the way out.
+  // [LAW:single-enforcer] Discriminator lives in asPaneOutput
+  // (src/protocol/types.ts). Once we have the typed receipt, the accounting
+  // pipeline is the same for both output and extended-output — main credits
+  // them identically on the way out, so we mirror that on the way in.
   private account(msg: TmuxMessage): void {
-    if (msg.type !== "output" && msg.type !== "extended-output") return;
-    const paneId = msg.paneId;
-    const next = (this.pendingAck.get(paneId) ?? 0) + msg.data.byteLength;
+    const out = asPaneOutput(msg);
+    if (out === null) return;
+    const next = (this.pendingAck.get(out.paneId) ?? 0) + out.data.byteLength;
     if (next < this.ackBatchBytes) {
-      this.pendingAck.set(paneId, next);
+      this.pendingAck.set(out.paneId, next);
       return;
     }
-    this.pendingAck.delete(paneId);
-    const ack: AckMessage = { paneId, bytes: next };
+    this.pendingAck.delete(out.paneId);
+    const ack: AckMessage = { paneId: out.paneId, bytes: next };
     this.ipc.send(IPC.ack, ack);
   }
 }
