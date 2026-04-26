@@ -16,8 +16,15 @@
 
 import type {
   CommandResponse,
+  PaneOutputMessage,
   TmuxMessage,
 } from "../../protocol/types.js";
+
+// [LAW:one-source-of-truth] Re-export the canonical PaneOutputMessage from
+// the protocol types module. The websocket layer USES the type but does not
+// own it — moving the definition home means the four connector consumers all
+// reach the same name through a single declaration.
+export type { PaneOutputMessage } from "../../protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Version
@@ -222,11 +229,6 @@ const FLAG_EXTENDED = 0x01;
 
 const HEADER_BASE = 6;
 const HEADER_EXTENDED = 10;
-
-export type PaneOutputMessage = Extract<
-  TmuxMessage,
-  { type: "output" } | { type: "extended-output" }
->;
 
 export function isPaneOutputFrame(buf: Uint8Array): boolean {
   return buf.length > 0 && buf[0] === PANE_OUTPUT_MAGIC;

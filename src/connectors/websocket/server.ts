@@ -32,9 +32,10 @@
 
 import type { TmuxClient } from "../../client.js";
 import { TmuxCommandError } from "../../errors.js";
-import type {
-  CommandResponse,
-  TmuxMessage,
+import {
+  isPaneOutput,
+  type CommandResponse,
+  type TmuxMessage,
 } from "../../protocol/types.js";
 
 import {
@@ -679,7 +680,12 @@ class Connection {
   private onTmuxEvent(msg: TmuxMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
 
-    if (msg.type === "output" || msg.type === "extended-output") {
+    // [LAW:single-enforcer] Discriminator lives in isPaneOutput. The
+    // remaining branch is genuinely load-bearing — pane output rides the
+    // binary side-channel; everything else rides the JSON event frame. The
+    // type predicate also narrows the else branch to SerializedEventMessage,
+    // so encodeServerFrame's typed payload is satisfied without re-checking.
+    if (isPaneOutput(msg)) {
       const bytes = encodePaneOutput(msg);
       this.ws.send(bytes);
       this.emit({

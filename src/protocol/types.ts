@@ -44,6 +44,17 @@ export interface ExtendedOutputMessage {
   readonly data: Uint8Array;
 }
 
+/**
+ * Receipt type produced by `asPaneOutput`. A `PaneOutputMessage` is *exactly*
+ * a TmuxMessage whose discriminator says it carries pane bytes + a paneId;
+ * the type system makes it impossible to construct one with any other shape.
+ *
+ * [LAW:one-source-of-truth] This is the canonical pane-output type. Connector
+ * layers (electron, websocket) re-export it but never re-declare it — see
+ * `src/connectors/websocket/protocol.ts`.
+ */
+export type PaneOutputMessage = OutputMessage | ExtendedOutputMessage;
+
 // ---------------------------------------------------------------------------
 // Pane Flow Control
 // ---------------------------------------------------------------------------
@@ -274,4 +285,29 @@ export enum PaneAction {
   Off = "off",
   Continue = "continue",
   Pause = "pause",
+}
+
+/**
+ * Type predicate for pane-output messages.
+ *
+ * [LAW:single-enforcer] The discriminator literal "output"|"extended-output"
+ * appears in this file ONLY. Every connector consumer (electron main /
+ * renderer / WS server) routes the question through here so the test cannot
+ * drift between sites. As a TypeScript predicate it also narrows the
+ * **else** branch to `Exclude<TmuxMessage, PaneOutputMessage>`, which is
+ * what the WS server's onTmuxEvent needs to feed into the JSON-event path.
+ */
+export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
+  return msg.type === "output" || msg.type === "extended-output";
+}
+
+/**
+ * Receipt-style sibling of `isPaneOutput`. Returns the same value typed as
+ * `PaneOutputMessage` when the discriminator matches, or `null` otherwise.
+ * Use this when the consumer's natural shape is `out === null ? skip : use`
+ * (e.g. ack accounting); use `isPaneOutput` when you also need the
+ * else-branch narrowing.
+ */
+export function asPaneOutput(msg: TmuxMessage): PaneOutputMessage | null {
+  return isPaneOutput(msg) ? msg : null;
 }
