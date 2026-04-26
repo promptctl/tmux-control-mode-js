@@ -81,27 +81,6 @@ export type { RpcMethod } from "../rpc.js";
 
 import type { RpcMethod } from "../rpc.js";
 
-/**
- * "Fire" methods that the bridge synthesizes responses for instead of
- * waiting on tmux. Only `detach` qualifies today.
- *
- * @deprecated since 0.2 — the shared dispatcher in `../rpc-dispatch.ts`
- * synthesizes fire-method responses internally; the bridge no longer
- * consults this set. Kept for back-compat with downstream consumers that
- * imported it from `./protocol`.
- */
-export const RPC_FIRE_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
-  "detach",
-]);
-
-/**
- * @deprecated since 0.2 — the dispatcher handles fire methods uniformly;
- * callers no longer need to branch. Kept for back-compat.
- */
-export function isFireMethod(method: RpcMethod): boolean {
-  return RPC_FIRE_METHODS.has(method);
-}
-
 // ---------------------------------------------------------------------------
 // Event messages (control plane)
 //
@@ -347,30 +326,62 @@ export class BridgeProtocolError extends BridgeError {
 //
 // Wire → typed. These functions do ALL validation for the bridge. Downstream
 // code operates on parsed types and never re-checks wire shape.
+//
+// [LAW:dataflow-not-control-flow] The parsers are an indexed lookup over the
+// frame discriminator — same shape as VALIDATORS in ../rpc.ts. The mapped
+// type forces one entry per union variant; `satisfies` makes drift between
+// the union and the parser table a compile-time error.
+// [LAW:single-enforcer] parseClientFrame / parseServerFrame are the only
+// validation sites for inbound frames. Downstream operates on typed unions.
 // ---------------------------------------------------------------------------
 
+type FrameParserTable<F extends { readonly k: string }> = {
+  readonly [K in F["k"]]: (raw: object) => Extract<F, { k: K }>;
+};
+
+const CLIENT_FRAME_PARSERS: FrameParserTable<ClientFrame> = Object.assign(
+  Object.create(null) as FrameParserTable<ClientFrame>,
+  {
+    hello: parseHello,
+    call: parseCall,
+    ping: parsePing,
+    bye: () => ({ v: 1, k: "bye" }) as const,
+  } satisfies FrameParserTable<ClientFrame>,
+);
+
+const SERVER_FRAME_PARSERS: FrameParserTable<ServerFrame> = Object.assign(
+  Object.create(null) as FrameParserTable<ServerFrame>,
+  {
+    welcome: parseWelcome,
+    event: parseEvent,
+    result: parseResult,
+    pong: parsePong,
+    draining: parseDraining,
+    error: parseFatal,
+  } satisfies FrameParserTable<ServerFrame>,
+);
+
 export function parseClientFrame(raw: string): ClientFrame {
-  const parsed = safeJsonParse(raw);
-  assertFrameEnvelope(parsed);
-  const k = (parsed as { k: unknown }).k;
-  if (k === "hello") return parseHello(parsed);
-  if (k === "call") return parseCall(parsed);
-  if (k === "ping") return parsePing(parsed);
-  if (k === "bye") return { v: 1, k: "bye" };
-  throw new BridgeProtocolError(`unknown client frame kind: ${String(k)}`);
+  return parseFrame(raw, CLIENT_FRAME_PARSERS, "client");
 }
 
 export function parseServerFrame(raw: string): ServerFrame {
+  return parseFrame(raw, SERVER_FRAME_PARSERS, "server");
+}
+
+function parseFrame<F extends { readonly k: string }>(
+  raw: string,
+  parsers: FrameParserTable<F>,
+  side: "client" | "server",
+): F {
   const parsed = safeJsonParse(raw);
   assertFrameEnvelope(parsed);
-  const k = (parsed as { k: unknown }).k;
-  if (k === "welcome") return parseWelcome(parsed);
-  if (k === "event") return parseEvent(parsed);
-  if (k === "result") return parseResult(parsed);
-  if (k === "pong") return parsePong(parsed);
-  if (k === "draining") return parseDraining(parsed);
-  if (k === "error") return parseFatal(parsed);
-  throw new BridgeProtocolError(`unknown server frame kind: ${String(k)}`);
+  const k = (parsed as { k: unknown }).k as F["k"];
+  const fn = parsers[k];
+  if (fn === undefined) {
+    throw new BridgeProtocolError(`unknown ${side} frame kind: ${String(k)}`);
+  }
+  return fn(parsed as object);
 }
 
 function safeJsonParse(raw: string): unknown {

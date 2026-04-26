@@ -380,47 +380,46 @@ class Connection {
   }
 
   private dispatch(frame: ClientFrame): void {
-    if (frame.k === "hello") {
-      void this.onHello();
-      return;
-    }
-    if (this.state.kind === "pending-hello") {
+    // Hello is the one frame allowed pre-hello; this single guard is the only
+    // load-bearing protocol invariant left in this function. Everything else
+    // is absorbed by CLIENT_FRAME_HANDLERS below.
+    if (frame.k !== "hello" && this.state.kind === "pending-hello") {
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
         `received '${frame.k}' before hello`,
       );
       return;
     }
-    if (frame.k === "call") {
-      // [LAW:dataflow-not-control-flow] State narrowing happens here, once,
-      // and the running variant is passed into onCall so it can read
-      // state.client without a null check. Drain rejection is also localized
-      // here — onCall never sees a non-running state.
-      if (this.state.kind === "draining") {
-        this.replyError(frame.id, "BRIDGE_CLOSED", "bridge is draining");
-        return;
-      }
-      if (this.state.kind === "running") {
-        void this.onCall(frame, this.state);
-        return;
-      }
-      // closed — drop silently; the close handler will tear down inflight.
+    CLIENT_FRAME_HANDLERS[frame.k](this, frame as never);
+  }
+
+  // [LAW:dataflow-not-control-flow] Per-kind handlers. State narrowing for
+  // `call` happens in routeCall, the only place that needs it.
+  routeCall(frame: CallFrame): void {
+    if (this.state.kind === "draining") {
+      this.replyError(frame.id, "BRIDGE_CLOSED", "bridge is draining");
       return;
     }
-    if (frame.k === "ping") {
-      this.sendFrame({ v: 1, k: "pong", id: frame.id });
+    if (this.state.kind === "running") {
+      void this.onCall(frame, this.state);
       return;
     }
-    if (frame.k === "bye") {
-      this.ws.close(1000, "bye");
-      return;
-    }
+    // pending-hello is excluded by the dispatch gate; closed drops silently —
+    // the close handler will tear down inflight.
+  }
+
+  replyPong(id: string): void {
+    this.sendFrame({ v: 1, k: "pong", id });
+  }
+
+  closeBye(): void {
+    this.ws.close(1000, "bye");
   }
 
   // -------------------------------------------------------------------------
   // Hello / welcome
   // -------------------------------------------------------------------------
-  private async onHello(): Promise<void> {
+  async onHello(): Promise<void> {
     if (this.state.kind !== "pending-hello") {
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
@@ -856,6 +855,33 @@ class Connection {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-kind ClientFrame handlers.
+//
+// [LAW:dataflow-not-control-flow] One entry per ClientFrame variant; the
+// dispatcher (Connection.dispatch) does a single indexed lookup. The mapped
+// type forces exhaustiveness — adding a new ClientFrame kind without a
+// handler is a compile-time error, not a runtime "unknown kind" branch.
+// [LAW:single-enforcer] Connection.dispatch is the only call site.
+// ---------------------------------------------------------------------------
+
+type ClientFrameHandlers = {
+  readonly [K in ClientFrame["k"]]: (
+    self: Connection,
+    frame: Extract<ClientFrame, { k: K }>,
+  ) => void;
+};
+
+const CLIENT_FRAME_HANDLERS: ClientFrameHandlers = Object.assign(
+  Object.create(null) as ClientFrameHandlers,
+  {
+    hello: (self) => void self.onHello(),
+    call: (self, f) => self.routeCall(f),
+    ping: (self, f) => self.replyPong(f.id),
+    bye: (self) => self.closeBye(),
+  } satisfies ClientFrameHandlers,
+);
 
 // ---------------------------------------------------------------------------
 // RpcError → BridgeErrorCode mapping (single arm function — Connection.onCall

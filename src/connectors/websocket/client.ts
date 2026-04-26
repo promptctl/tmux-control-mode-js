@@ -45,8 +45,10 @@ import {
   encodeClientFrame,
   isPaneOutputFrame,
   parseServerFrame,
+  type ResultFrame,
   type RpcMethod,
   type ServerFrame,
+  type WelcomeFrame,
   type WelcomeLimits,
 } from "./protocol.js";
 
@@ -441,51 +443,47 @@ export class WebSocketTmuxClient {
     this.handleFrame(frame);
   }
 
+  // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
+  // ServerFrame is what decides which handler runs. Mapped-type table forces
+  // exhaustiveness — same shape as VALIDATORS in ../rpc.ts and the
+  // CLIENT_FRAME_HANDLERS table on the server side.
   private handleFrame(frame: ServerFrame): void {
-    if (frame.k === "welcome") {
-      this.serverLimits = frame.limits;
-      this.attempts = 0;
-      this.transition("ready");
-      this.startHeartbeat();
-      this.flushOutbox();
-      return;
-    }
-    if (frame.k === "event") {
-      this.dispatchEvent(frame.msg as TmuxMessage);
-      return;
-    }
-    if (frame.k === "result") {
-      const p = this.pending.get(frame.id);
-      if (p === undefined) return;
-      this.pending.delete(frame.id);
-      clearTimeout(p.timer);
-      if (frame.ok) {
-        p.resolve(frame.response);
-      } else {
-        p.reject(BridgeError.fromPayload(frame.error));
-      }
-      return;
-    }
-    if (frame.k === "pong") {
-      if (this.lastPingId === frame.id && this.pongTimer !== null) {
-        clearTimeout(this.pongTimer);
-        this.pongTimer = null;
-        this.lastPingId = null;
-      }
-      return;
-    }
-    if (frame.k === "draining") {
-      this.transition("draining");
-      this.opts.onDraining?.(frame.deadlineMs);
-      return;
-    }
-    if (frame.k === "error") {
-      this.emitError(BridgeError.fromPayload(frame.error));
-      return;
+    SERVER_FRAME_HANDLERS[frame.k](this, frame as never);
+  }
+
+  onWelcome(frame: WelcomeFrame): void {
+    this.serverLimits = frame.limits;
+    this.attempts = 0;
+    this.transition("ready");
+    this.startHeartbeat();
+    this.flushOutbox();
+  }
+
+  onResult(frame: ResultFrame): void {
+    const p = this.pending.get(frame.id);
+    if (p === undefined) return;
+    this.pending.delete(frame.id);
+    clearTimeout(p.timer);
+    if (frame.ok) {
+      p.resolve(frame.response);
+    } else {
+      p.reject(BridgeError.fromPayload(frame.error));
     }
   }
 
-  private dispatchEvent(msg: TmuxMessage): void {
+  onPong(id: string): void {
+    if (this.lastPingId !== id || this.pongTimer === null) return;
+    clearTimeout(this.pongTimer);
+    this.pongTimer = null;
+    this.lastPingId = null;
+  }
+
+  onDraining(deadlineMs: number): void {
+    this.transition("draining");
+    this.opts.onDraining?.(deadlineMs);
+  }
+
+  dispatchEvent(msg: TmuxMessage): void {
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
@@ -646,7 +644,36 @@ export class WebSocketTmuxClient {
     this.opts.onState?.(next);
   }
 
-  private emitError(err: BridgeError): void {
+  emitError(err: BridgeError): void {
     this.opts.onError?.(err);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Per-kind ServerFrame handlers.
+//
+// [LAW:dataflow-not-control-flow] One entry per ServerFrame variant; the
+// `handleFrame` dispatcher does a single indexed lookup. Mapped type forces
+// exhaustiveness — adding a new ServerFrame kind without a handler is a
+// compile-time error, not a runtime "unknown kind" branch.
+// [LAW:single-enforcer] WebSocketTmuxClient.handleFrame is the only call site.
+// ---------------------------------------------------------------------------
+
+type ServerFrameHandlers = {
+  readonly [K in ServerFrame["k"]]: (
+    self: WebSocketTmuxClient,
+    frame: Extract<ServerFrame, { k: K }>,
+  ) => void;
+};
+
+const SERVER_FRAME_HANDLERS: ServerFrameHandlers = Object.assign(
+  Object.create(null) as ServerFrameHandlers,
+  {
+    welcome: (self, f: WelcomeFrame) => self.onWelcome(f),
+    event: (self, f) => self.dispatchEvent(f.msg as TmuxMessage),
+    result: (self, f: ResultFrame) => self.onResult(f),
+    pong: (self, f) => self.onPong(f.id),
+    draining: (self, f) => self.onDraining(f.deadlineMs),
+    error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
+  } satisfies ServerFrameHandlers,
+);
