@@ -189,9 +189,13 @@ export const App = observer(function App() {
               {sessions.length} sessions
             </Text>
             {/* Click to reconnect when the bridge is closed — e.g. after
-                C-b d (detach) or a dropped connection. Mantine Badge has
-                no onClick prop; wrap in a Tooltip + ActionIcon-like box
-                by using the `component="button"` escape hatch. */}
+                C-b d (detach) or a dropped connection. Rendered as a real
+                <button> via Mantine's polymorphic `component` prop so the
+                control is keyboard-focusable and has a screen-reader-
+                accessible label, not just a clickable visual badge. The
+                `disabled` attribute disables BOTH the click and any focus/
+                Enter activation when the bridge is healthy, matching the
+                cursor: default visual cue. */}
             <Tooltip
               label={
                 connState === "closed"
@@ -200,11 +204,20 @@ export const App = observer(function App() {
               }
             >
               <Badge
+                component="button"
+                type="button"
                 color={demoStore.statusColor}
                 variant="light"
+                disabled={connState !== "closed"}
+                aria-label={
+                  connState === "closed"
+                    ? "Reconnect to the tmux bridge"
+                    : `Bridge status: ${connState}`
+                }
                 style={{
                   cursor: connState === "closed" ? "pointer" : "default",
                   userSelect: "none",
+                  border: "none",
                 }}
                 onClick={() => {
                   if (connState === "closed") demoStore.connect(WS_URL);

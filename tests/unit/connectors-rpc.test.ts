@@ -332,9 +332,8 @@ describe("RpcRequest exhaustiveness", () => {
       "clearFlags",
       "requestReport",
       "queryClipboard",
-      "detach",
     ];
-    expect(methods.length).toBe(14);
+    expect(methods.length).toBe(13);
     // Round-trip type narrowing via the union to confirm the discriminator
     // is load-bearing.
     const r: RpcRequest = { method: "listWindows", args: [] };

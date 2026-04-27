@@ -363,9 +363,9 @@ shape for **all** connectors:
   into its bundle.
 - `src/connectors/rpc-dispatch.ts` — Node-side. Imports `TmuxClient` (for the
   Dispatcher type) and exports `dispatchRpcRequest(client, req)`, which is
-  exhaustively typed against `RpcRequest`. Fire methods (currently only
-  `detach`) synthesize their own success `CommandResponse` inside the
-  dispatcher so callers never have to special-case them.
+  exhaustively typed against `RpcRequest` and returns the appropriate
+  `CommandResponse` for each bridged method without requiring transport
+  layers to special-case individual RPC variants.
 
 **Adding a TmuxClient method to the bridges:**
 

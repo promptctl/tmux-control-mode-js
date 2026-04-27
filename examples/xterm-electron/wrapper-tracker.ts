@@ -2,13 +2,19 @@
 // Pure helper that owns the listener-wrapper bookkeeping for the preload's
 // `on` / `removeListener` exposure on tmuxIpc.
 //
-// Why this exists: the preload wraps each caller-supplied listener with a
-// closure that strips the IpcRendererEvent from the args. removeListener
-// must reach the wrapper to call ipcRenderer.removeListener, but the caller
-// only holds the original listener. The previous implementation used a
-// WeakMap<listener, wrapper> — single slot — so calling on(channel, fn)
-// twice silently overwrote the first wrapper while leaving it live on
-// ipcRenderer. Symptoms:
+// Why this exists: the preload installs a stable closure on `ipcRenderer.on`
+// that forwards `(event, ...args)` to the caller-supplied listener — the
+// wrapper preserves the `IpcRendererLike.on` contract verbatim, it does NOT
+// strip the event. The wrapper is needed for *identity*: contextBridge
+// proxies functions across the context-isolation boundary, and the
+// caller-supplied listener doesn't survive the round-trip with a stable
+// reference, so we cannot pass it directly to `ipcRenderer.on` and then
+// expect `ipcRenderer.removeListener` to find it later. The wrapper is a
+// stable closure on the preload side that we hand to both calls.
+//
+// The previous implementation used a `WeakMap<listener, wrapper>` — single
+// slot per listener — so calling `on(channel, fn)` twice silently overwrote
+// the first wrapper while leaving it live on `ipcRenderer`. Symptoms:
 //   * removeListener cleaned up only one of the two wrappers,
 //   * the other leaked across reloads,
 //   * double-subscribe semantics quietly collapsed.
