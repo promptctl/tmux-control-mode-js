@@ -12,21 +12,30 @@
 // `./rpc-dispatch.ts` (one dispatcher entry). Both are mapped-type-keyed by
 // `RpcMethod`, so missing entries fail at compile time.
 //
+// `RpcProxyApi` (below) closes the loop on the renderer side: any consumer
+// that exposes the bridged surface must structurally implement it. Forgetting
+// to add a proxy method when adding a new RpcRequest variant becomes a
+// compile error rather than a silently-missing method at runtime.
+//
 // [LAW:one-source-of-truth] Method names, arg shapes, and validators all
-// live here. The dispatcher uses the same RpcMethod tag set.
+// live here. The dispatcher uses the same RpcMethod tag set, and the
+// proxy API contract derives from the same union.
 // [LAW:single-enforcer] parseRpcRequest is the only validation site for
 // renderer/peer-supplied method calls. Downstream operates on RpcRequest.
 // [LAW:dataflow-not-control-flow] One indexed lookup for parsing; control
 // flow is a straight pipe per request, the variance rides in the union.
 
 import type { SplitOptions } from "../protocol/encoder.js";
-import {
-  PaneAction,
-  type CommandResponse,
-} from "../protocol/types.js";
+import { PaneAction, type CommandResponse } from "../protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // RpcRequest discriminated union — one variant per bridged TmuxClient method.
+//
+// `detach` is intentionally NOT bridged: it tears down the tmux client for
+// every renderer that shares the main-process bridge. It is an admin-only
+// operation owned by the host application; renderers must not be able to
+// invoke it. Removing it from the dispatch table makes a renderer attempt
+// fail with `UNKNOWN_METHOD` at the trust boundary.
 // ---------------------------------------------------------------------------
 
 export type RpcRequest =
@@ -69,10 +78,27 @@ export type RpcRequest =
       readonly method: "requestReport";
       readonly args: readonly [paneId: number, report: string];
     }
-  | { readonly method: "queryClipboard"; readonly args: readonly [] }
-  | { readonly method: "detach"; readonly args: readonly [] };
+  | { readonly method: "queryClipboard"; readonly args: readonly [] };
 
 export type RpcMethod = RpcRequest["method"];
+
+// ---------------------------------------------------------------------------
+// RpcProxyApi — the bridged surface a renderer-side proxy must implement.
+//
+// Derived directly from RpcRequest so adding a new variant flows into a new
+// required method on every proxy implementation. TmuxClientProxy (and any
+// future proxy for a different transport) must structurally satisfy this
+// type — TypeScript catches drift at compile time.
+//
+// [LAW:one-type-per-behavior] One type defines what every bridge proxy looks
+// like; concrete proxies are instances, not separate types.
+// ---------------------------------------------------------------------------
+
+export type RpcProxyApi = {
+  readonly [R in RpcRequest as R["method"]]: (
+    ...args: [...R["args"]]
+  ) => Promise<CommandResponse>;
+};
 
 // ---------------------------------------------------------------------------
 // RpcError — single error class for every parse failure.
@@ -115,7 +141,6 @@ export const RPC_METHOD_NAMES: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   "clearFlags",
   "requestReport",
   "queryClipboard",
-  "detach",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -188,7 +213,6 @@ const VALIDATORS: Validators = Object.assign(
         requireString(args, 1, "report"),
       ] as const,
     queryClipboard: (args) => requireNoArgs(args),
-    detach: (args) => requireNoArgs(args),
   } satisfies Validators,
 );
 
@@ -199,10 +223,7 @@ const VALIDATORS: Validators = Object.assign(
  */
 export function parseRpcRequest(raw: unknown): RpcRequest {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new RpcError(
-      "INVALID_REQUEST",
-      "request must be a non-array object",
-    );
+    throw new RpcError("INVALID_REQUEST", "request must be a non-array object");
   }
   const obj = raw as { method?: unknown; args?: unknown };
   if (typeof obj.method !== "string") {
@@ -226,33 +247,12 @@ export function parseRpcRequest(raw: unknown): RpcRequest {
 }
 
 // ---------------------------------------------------------------------------
-// Synthesized fire-method response.
-//
-// Some TmuxClient methods produce no tmux %begin/%end pair (currently only
-// `detach`). The dispatcher (in ./rpc-dispatch.ts) calls this to give every
-// dispatch a uniform Promise<CommandResponse> result, so callers never have
-// to special-case fire methods.
-// ---------------------------------------------------------------------------
-
-export function synthesizeFireResponse(): CommandResponse {
-  return {
-    commandNumber: -1,
-    timestamp: Date.now(),
-    success: true,
-    output: [],
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Validator helpers
 // ---------------------------------------------------------------------------
 
 function requireNoArgs(args: readonly unknown[]): readonly [] {
   if (args.length !== 0) {
-    throw new RpcError(
-      "INVALID_ARG",
-      `expected 0 arg(s), got ${args.length}`,
-    );
+    throw new RpcError("INVALID_ARG", `expected 0 arg(s), got ${args.length}`);
   }
   return [] as const;
 }

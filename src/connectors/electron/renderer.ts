@@ -9,6 +9,12 @@
 // [LAW:one-source-of-truth] TmuxEventMap and TypedEmitter are reused from
 // src/emitter.ts so the proxy's event API cannot drift from TmuxClient's.
 // Adding an event on the main side surfaces it on the proxy automatically.
+//
+// [LAW:one-source-of-truth] The bridged-method surface comes from the
+// `RpcProxyApi` mapped type in ../rpc.ts (which is itself derived from the
+// `RpcRequest` discriminated union). `class TmuxClientProxy implements
+// RpcProxyApi` makes drift between the renderer surface and the wire
+// protocol a compile error.
 
 import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
@@ -19,6 +25,7 @@ import {
   type PaneAction,
   type TmuxMessage,
 } from "../../protocol/types.js";
+import type { RpcProxyApi } from "../rpc.js";
 import {
   DEFAULT_ACK_BATCH_BYTES,
   IPC,
@@ -54,7 +61,7 @@ type InvokeResultEnvelope =
  * work) will starve itself of new output — the same shape as tmux's own
  * `%pause`-when-the-client-falls-behind contract.
  */
-export class TmuxClientProxy {
+export class TmuxClientProxy implements RpcProxyApi {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
   private readonly eventHandler: (
@@ -146,10 +153,7 @@ export class TmuxClientProxy {
     return this.invoke({ method: "setSize", args: [width, height] });
   }
 
-  setPaneAction(
-    paneId: number,
-    action: PaneAction,
-  ): Promise<CommandResponse> {
+  setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {
     return this.invoke({ method: "setPaneAction", args: [paneId, action] });
   }
 
@@ -182,22 +186,15 @@ export class TmuxClientProxy {
   }
 
   /**
-   * Fire-and-forget detach. Matches TmuxClient.detach — no Promise.
-   * The underlying IPC call is still awaited internally; any rejection is
-   * intentionally dropped to preserve the void return contract.
-   */
-  detach(): void {
-    void this.ipc
-      .invoke(IPC.invoke, { method: "detach", args: [] } satisfies InvokeRequest)
-      .catch(() => {
-        /* fire-and-forget */
-      });
-  }
-
-  /**
    * Unsubscribe this renderer from further events and stop listening locally.
    * Does NOT close the main-side TmuxClient — the main process owns that
    * lifecycle (closing a renderer shouldn't tear down tmux for other windows).
+   *
+   * `detach()` is intentionally NOT exposed on the proxy: it tears down the
+   * tmux connection for every renderer that shares the bridge, which is an
+   * admin operation the host application owns. Renderers that need to walk
+   * away can `close()` to drop their subscription; the main process is the
+   * single party that may invoke `client.detach()` or `client.close()`.
    */
   close(): void {
     if (this.closed) return;

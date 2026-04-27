@@ -254,8 +254,7 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
     heartbeatIntervalMs:
       opts.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs,
-    heartbeatTimeoutMs:
-      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+    heartbeatTimeoutMs: opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
     requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     helloTimeoutMs: DEFAULTS.helloTimeoutMs,
     maxInflight: opts.maxInflight ?? DEFAULTS.maxInflight,
@@ -422,10 +421,7 @@ class Connection {
   // -------------------------------------------------------------------------
   async onHello(): Promise<void> {
     if (this.state.kind !== "pending-hello") {
-      this.sendFatalAndClose(
-        "BRIDGE_PROTOCOL_ERROR",
-        "duplicate hello frame",
-      );
+      this.sendFatalAndClose("BRIDGE_PROTOCOL_ERROR", "duplicate hello frame");
       return;
     }
     if (this.helloDeadline !== null) {
@@ -565,9 +561,9 @@ class Connection {
       throw e;
     }
 
-    // Call-and-wait: dispatch + race against timeout. Fire methods like
-    // `detach` no longer require a special branch — dispatchRpcRequest
-    // synthesizes their CommandResponse so the timing path is uniform.
+    // Call-and-wait: dispatch + race against timeout. Every bridged method
+    // resolves to a CommandResponse, so the timing path is uniform across
+    // the dispatch table.
     const startedAt = Date.now();
     const timer = setTimeout(() => {
       if (!this.inflight.has(frame.id)) return;
@@ -767,11 +763,7 @@ class Connection {
     this.sendFrame({ v: 1, k: "result", id, ok: true, response });
   }
 
-  private replyError(
-    id: string,
-    code: BridgeErrorCode,
-    message: string,
-  ): void {
+  private replyError(id: string, code: BridgeErrorCode, message: string): void {
     this.sendFrame({
       v: 1,
       k: "result",

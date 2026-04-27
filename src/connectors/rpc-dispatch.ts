@@ -13,7 +13,7 @@
 
 import type { TmuxClient } from "../client.js";
 import type { CommandResponse } from "../protocol/types.js";
-import { synthesizeFireResponse, type RpcRequest } from "./rpc.js";
+import type { RpcRequest } from "./rpc.js";
 
 // ---------------------------------------------------------------------------
 // Dispatcher — single exhaustive table mapping method → invocation.
@@ -31,28 +31,21 @@ type Dispatcher = {
   ) => Promise<CommandResponse> | CommandResponse;
 };
 
-const DISPATCH: Dispatcher = Object.assign(
-  Object.create(null) as Dispatcher,
-  {
-    execute: (c, [command]) => c.execute(command),
-    listWindows: (c) => c.listWindows(),
-    listPanes: (c) => c.listPanes(),
-    sendKeys: (c, [target, keys]) => c.sendKeys(target, keys),
-    splitWindow: (c, [options]) => c.splitWindow(options),
-    setSize: (c, [width, height]) => c.setSize(width, height),
-    setPaneAction: (c, [paneId, action]) => c.setPaneAction(paneId, action),
-    subscribe: (c, [name, what, format]) => c.subscribe(name, what, format),
-    unsubscribe: (c, [name]) => c.unsubscribe(name),
-    setFlags: (c, [flags]) => c.setFlags(flags),
-    clearFlags: (c, [flags]) => c.clearFlags(flags),
-    requestReport: (c, [paneId, report]) => c.requestReport(paneId, report),
-    queryClipboard: (c) => c.queryClipboard(),
-    detach: (c) => {
-      c.detach();
-      return synthesizeFireResponse();
-    },
-  } satisfies Dispatcher,
-);
+const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
+  execute: (c, [command]) => c.execute(command),
+  listWindows: (c) => c.listWindows(),
+  listPanes: (c) => c.listPanes(),
+  sendKeys: (c, [target, keys]) => c.sendKeys(target, keys),
+  splitWindow: (c, [options]) => c.splitWindow(options),
+  setSize: (c, [width, height]) => c.setSize(width, height),
+  setPaneAction: (c, [paneId, action]) => c.setPaneAction(paneId, action),
+  subscribe: (c, [name, what, format]) => c.subscribe(name, what, format),
+  unsubscribe: (c, [name]) => c.unsubscribe(name),
+  setFlags: (c, [flags]) => c.setFlags(flags),
+  clearFlags: (c, [flags]) => c.clearFlags(flags),
+  requestReport: (c, [paneId, report]) => c.requestReport(paneId, report),
+  queryClipboard: (c) => c.queryClipboard(),
+} satisfies Dispatcher);
 
 /**
  * Dispatch a parsed RpcRequest against a TmuxClient. Always returns a

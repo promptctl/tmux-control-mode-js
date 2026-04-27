@@ -18,7 +18,6 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import {
   parseRpcRequest,
   RpcError,
-  synthesizeFireResponse,
   type RpcMethod,
   type RpcRequest,
 } from "../../src/connectors/rpc.js";
@@ -122,12 +121,19 @@ describe("parseRpcRequest — allowlist", () => {
       { method: "clearFlags", args: [["pause-after"]] },
       { method: "requestReport", args: [3, "\u001b]10;\u001b\\"] },
       { method: "queryClipboard", args: [] },
-      { method: "detach", args: [] },
     ];
     for (const e of expected) {
       const out = parseRpcRequest({ method: e.method, args: e.args });
       expect(out.method).toBe(e.method);
     }
+  });
+
+  it("rejects detach as UNKNOWN_METHOD (admin-only; not part of the renderer surface)", () => {
+    // detach() tears down the tmux client for every renderer sharing the
+    // bridge — it is owned by the host, not by any individual peer.
+    expect(() => parseRpcRequest({ method: "detach", args: [] })).toThrow(
+      /UNKNOWN_METHOD/,
+    );
   });
 
   it.each([
@@ -244,33 +250,38 @@ describe("dispatchRpcRequest — routing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// dispatchRpcRequest — fire methods synthesize a CommandResponse
+// dispatchRpcRequest — admin-only methods are not on the dispatch table
 // ---------------------------------------------------------------------------
 
-describe("dispatchRpcRequest — fire methods", () => {
-  it("detach returns a synthesized success response without awaiting tmux", async () => {
+describe("dispatchRpcRequest — admin-only", () => {
+  it("detach is not part of the bridged surface", () => {
+    // The dispatch table is mapped from RpcRequest, which excludes detach by
+    // construction. parseRpcRequest is the trust boundary that rejects it; a
+    // hypothetical bypass that constructed a 'detach' RpcRequest would also
+    // fail at compile time because no variant exists.
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    void client;
+    void t;
 
-    // Detach sends a single LF (per SPEC §4.1) and never sees a %begin/%end
-    // pair from tmux. The dispatcher must resolve immediately.
-    const result = await dispatchRpcRequest(client, {
-      method: "detach",
-      args: [],
-    });
-
-    expect(t.sent).toEqual(["\n"]);
-    expect(result.success).toBe(true);
-    expect(result.commandNumber).toBe(-1);
-    expect(result.output).toEqual([]);
-  });
-
-  it("synthesizeFireResponse is exported for observability hooks", () => {
-    const r = synthesizeFireResponse();
-    expect(r.success).toBe(true);
-    expect(r.commandNumber).toBe(-1);
-    expect(r.output).toEqual([]);
-    expect(typeof r.timestamp).toBe("number");
+    // Compile-time check: this assignment would fail to type-check if 'detach'
+    // were still part of RpcRequest.
+    const _allowed: readonly RpcMethod[] = [
+      "execute",
+      "listWindows",
+      "listPanes",
+      "sendKeys",
+      "splitWindow",
+      "setSize",
+      "setPaneAction",
+      "subscribe",
+      "unsubscribe",
+      "setFlags",
+      "clearFlags",
+      "requestReport",
+      "queryClipboard",
+    ];
+    expect(_allowed).not.toContain("detach" as RpcMethod);
   });
 });
 

@@ -52,10 +52,7 @@ import {
   type WelcomeLimits,
 } from "./protocol.js";
 
-import type {
-  BrowserWebSocketLike,
-  ReconnectPolicy,
-} from "./types.js";
+import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -230,10 +227,7 @@ export class WebSocketTmuxClient {
     return this.call("setSize", [width, height]);
   }
 
-  setPaneAction(
-    paneId: number,
-    action: PaneAction,
-  ): Promise<CommandResponse> {
+  setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {
     return this.call("setPaneAction", [paneId, action]);
   }
 
@@ -265,11 +259,9 @@ export class WebSocketTmuxClient {
     return this.call("queryClipboard", []);
   }
 
-  detach(): void {
-    // detach is fire-and-forget on TmuxClient. The bridge still sends a
-    // synthesized result so we `void` it rather than hand the promise out.
-    void this.call("detach", []);
-  }
+  // detach() is intentionally NOT exposed: it tears down the tmux client for
+  // every browser sharing the bridge, which is an admin operation owned by
+  // the server-side host. Browsers can `close()` to drop their own session.
 
   // -------------------------------------------------------------------------
   // Internal: call dispatch
@@ -306,9 +298,7 @@ export class WebSocketTmuxClient {
       (timer as unknown as { unref?: () => void }).unref?.();
 
       this.pending.set(id, { method, resolve, reject, timer });
-      this.send(
-        encodeClientFrame({ v: 1, k: "call", id, method, args }),
-      );
+      this.send(encodeClientFrame({ v: 1, k: "call", id, method, args }));
     });
   }
 
@@ -331,10 +321,14 @@ export class WebSocketTmuxClient {
     const factory =
       this.opts.createWebSocket ??
       ((url: string, subprotocol?: string | string[]) =>
-        new (globalThis as { WebSocket: new (url: string, protocols?: string | string[]) => BrowserWebSocketLike }).WebSocket(
-          url,
-          subprotocol,
-        ));
+        new (
+          globalThis as {
+            WebSocket: new (
+              url: string,
+              protocols?: string | string[],
+            ) => BrowserWebSocketLike;
+          }
+        ).WebSocket(url, subprotocol));
     let ws: BrowserWebSocketLike;
     try {
       ws = factory(this.opts.url, this.opts.subprotocol);
@@ -401,10 +395,7 @@ export class WebSocketTmuxClient {
   private onBinary(buf: Uint8Array): void {
     if (!isPaneOutputFrame(buf)) {
       this.emitError(
-        new BridgeError(
-          "BRIDGE_PROTOCOL_ERROR",
-          "unknown binary frame magic",
-        ),
+        new BridgeError("BRIDGE_PROTOCOL_ERROR", "unknown binary frame magic"),
       );
       return;
     }
@@ -608,8 +599,7 @@ export class WebSocketTmuxClient {
     const id = this.id();
     this.lastPingId = id;
     this.send(encodeClientFrame({ v: 1, k: "ping", id }));
-    const timeout =
-      this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
+    const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
     this.pongTimer = setTimeout(() => {
       // No pong — kill the socket and let the close/reconnect path run.
       this.lastPingId = null;

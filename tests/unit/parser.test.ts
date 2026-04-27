@@ -613,25 +613,30 @@ describe("fixture: message-config-error.txt", () => {
 // ---------------------------------------------------------------------------
 
 describe("fixture: multiple-notifications.txt", () => {
-  it("% lines inside response blocks are routed to onOutputLine", () => {
-    // multiple-notifications.txt has %window-renamed and %window-pane-changed
-    // inside a begin/end block — those are non-% lines starting with % but
-    // actually they ARE % lines, so they get parsed as notifications even
-    // inside a block. Only non-% lines go to onOutputLine.
+  it("% lines inside response blocks are routed to onOutputLine (SPEC §4)", () => {
+    // SPEC_MANIFEST §4: a notification will never occur inside a response
+    // block. The fixture interleaves %-prefixed lines that LOOK like
+    // notifications (%window-renamed, %window-pane-changed, %session-changed)
+    // between %begin and %end. Per the spec invariant the parser must treat
+    // those as command output, not notifications.
     const { messages, outputLines } = collect(
-      fixtureContent("multiple-notifications.txt")
+      fixtureContent("multiple-notifications.txt"),
     );
-    // The fixture has interleaved notifications inside response blocks
-    expect(messages.length).toBeGreaterThan(0);
-    // Non-% lines inside blocks go to outputLines
+
     const outputTypes = messages.map((m) => m.type);
     expect(outputTypes).toContain("begin");
     expect(outputTypes).toContain("end");
+
+    // The %-prefixed in-block lines surface verbatim as output lines.
+    const captured = outputLines.map((ol) => ol.line);
+    expect(captured).toContain("%window-renamed @1 zsh");
+    expect(captured).toContain("%window-pane-changed @1 %1");
+    expect(captured).toContain("%session-changed $1 main");
   });
 
   it("output lines have correct commandNumbers", () => {
     const { outputLines } = collect(
-      fixtureContent("multiple-notifications.txt")
+      fixtureContent("multiple-notifications.txt"),
     );
     // All output lines should have the commandNumber of the enclosing begin
     for (const ol of outputLines) {
@@ -640,17 +645,26 @@ describe("fixture: multiple-notifications.txt", () => {
     }
   });
 
-  it("% notification lines inside response block are emitted as messages", () => {
+  it("%-prefixed lines inside response block are NOT emitted as notifications", () => {
+    // Regression: prior parser dispatched %-prefixed lines through the
+    // notification table even inside response blocks, which silently dropped
+    // unknown types and falsely synthesized known ones. Per SPEC §4 these
+    // lines are command output and must not appear in the messages stream.
     const { messages } = collect(fixtureContent("multiple-notifications.txt"));
-    // window-renamed appears inside the first begin/end block
-    const windowRenamed = messages.find((m) => m.type === "window-renamed");
-    expect(windowRenamed).toBeDefined();
+    expect(messages.find((m) => m.type === "window-renamed")).toBeUndefined();
+    expect(
+      messages.find((m) => m.type === "window-pane-changed"),
+    ).toBeUndefined();
+    // session-changed appears once OUTSIDE any block in the fixture? — no,
+    // both occurrences are in-block in this fixture. The outside %window-add
+    // and %layout-change should still arrive as notifications.
+    expect(messages.find((m) => m.type === "session-changed")).toBeUndefined();
   });
 
-  it("window-add emitted outside response block", () => {
+  it("window-add and layout-change outside response block ARE notifications", () => {
     const { messages } = collect(fixtureContent("multiple-notifications.txt"));
-    const windowAdd = messages.find((m) => m.type === "window-add");
-    expect(windowAdd).toBeDefined();
+    expect(messages.find((m) => m.type === "window-add")).toBeDefined();
+    expect(messages.find((m) => m.type === "layout-change")).toBeDefined();
   });
 });
 
@@ -856,10 +870,8 @@ describe("very long line", () => {
   });
 });
 
-describe("embedded %begin inside output block", () => {
-  it("non-% lines inside response block go to onOutputLine even if they look like begin", () => {
-    // A line that doesn't start with % inside a response block goes to onOutputLine
-    // Here we test a normal output line (no % prefix) inside a block
+describe("inside-block routing (SPEC §4 invariant)", () => {
+  it("non-% lines inside response block go to onOutputLine", () => {
     const input =
       "%begin 1699900000 7 0\nsome output line\n%end 1699900000 7 0\n";
     const { messages, outputLines } = collect(input);
@@ -868,13 +880,38 @@ describe("embedded %begin inside output block", () => {
     expect(messages.find((m) => m.type === "end")).toBeDefined();
   });
 
-  it("% lines inside response block are still parsed as notifications", () => {
-    // %begin inside an active block is a nested notification — parser still dispatches it
+  it("%-prefixed lines inside response block route to onOutputLine, not the notification path", () => {
+    // SPEC_MANIFEST §4: notifications never occur inside a response block,
+    // so a %-prefixed line between %begin and %end is command output —
+    // even if its name happens to match a known notification type.
     const input =
       "%begin 1699900000 8 0\n%sessions-changed\n%end 1699900000 8 0\n";
-    const { messages } = collect(input);
-    const types = messages.map((m) => m.type);
-    expect(types).toContain("sessions-changed");
+    const { messages, outputLines } = collect(input);
+    expect(messages.map((m) => m.type)).not.toContain("sessions-changed");
+    expect(outputLines.map((o) => o.line)).toContain("%sessions-changed");
+  });
+
+  it("bare %N pane-id lines from list-panes -F '#{pane_id}' arrive as output", () => {
+    // Regression for the example workaround: list-panes -F '#{pane_id}'
+    // emits lines like "%5" inside the response block. Pre-fix, the parser
+    // tried to dispatch them as unknown notifications and silently dropped
+    // them, forcing the example to prefix the format with "id=". Now the
+    // bare ID survives the round-trip as an output line.
+    const input =
+      "%begin 1699900000 9 0\n%5\n%7\n%11\n%end 1699900000 9 0\n";
+    const { outputLines } = collect(input);
+    expect(outputLines.map((o) => o.line)).toEqual(["%5", "%7", "%11"]);
+  });
+
+  it("only %end and %error close the block; other %-lines remain output", () => {
+    const input =
+      "%begin 1699900000 1 0\n" +
+      "%output %2 hello\n" + // looks like a notification, but it's output
+      "%end 1699900000 1 0\n" +
+      "%output %2 world\n"; // outside any block — real notification
+    const { messages, outputLines } = collect(input);
+    expect(outputLines.map((o) => o.line)).toEqual(["%output %2 hello"]);
+    expect(messages.filter((m) => m.type === "output")).toHaveLength(1);
   });
 });
 

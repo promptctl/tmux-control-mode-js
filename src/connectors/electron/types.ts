@@ -48,10 +48,7 @@ export interface IpcMainLike {
     channel: string,
     listener: (event: IpcMainEventLike, ...args: unknown[]) => void,
   ): void;
-  removeListener(
-    channel: string,
-    listener: (...args: unknown[]) => void,
-  ): void;
+  removeListener(channel: string, listener: (...args: unknown[]) => void): void;
 }
 
 export interface IpcRendererEventLike {
@@ -65,10 +62,7 @@ export interface IpcRendererLike {
     channel: string,
     listener: (event: IpcRendererEventLike, ...args: unknown[]) => void,
   ): void;
-  removeListener(
-    channel: string,
-    listener: (...args: unknown[]) => void,
-  ): void;
+  removeListener(channel: string, listener: (...args: unknown[]) => void): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +166,11 @@ export type BridgeErrorCode =
   /** createMainBridge called twice on the same ipcMain. */
   | "ALREADY_REGISTERED"
   /** Invalid MainBridgeOptions (e.g. high-watermark not greater than low). */
-  | "INVALID_ARG";
+  | "INVALID_ARG"
+  /** Dispatch was abandoned because its sender was destroyed mid-flight. */
+  | "ABORTED"
+  /** Renderer attempted to unsubscribe a name it does not own. */
+  | "UNKNOWN_SUBSCRIPTION";
 
 export class BridgeError extends Error {
   readonly code: BridgeErrorCode;
