@@ -30,22 +30,18 @@ async function run(): Promise<void> {
   });
   term.open(terminalEl);
 
-  // Pick the first pane of the session. We prefix the format with a literal
-  // "id=" because tmux pane IDs render as "%N" — a bare "%N" line inside a
-  // command response would be routed by the control-mode parser through the
-  // notification path (every `%`-prefixed line is tried against the
-  // notification table first) and silently dropped as an unknown type. The
-  // "id=" prefix ensures the line starts with a non-`%` character so the
-  // parser routes it to the output callback.
+  // Pick the first pane of the session. The parser correctly routes
+  // %-prefixed lines inside a response block as command output (per
+  // SPEC_MANIFEST §4: notifications never appear inside a response block),
+  // so a bare `%N` pane id from `list-panes -F '#{pane_id}'` arrives
+  // verbatim in `paneList.output`.
   setStatus("discovering panes…");
-  const paneList = await proxy.execute('list-panes -F "id=#{pane_id}"');
-  const firstLine = paneList.output[0];
-  const paneMatch = firstLine?.match(/^id=(%\d+)$/);
-  if (paneMatch === null || paneMatch === undefined) {
+  const paneList = await proxy.execute('list-panes -F "#{pane_id}"');
+  const firstPane = paneList.output[0];
+  if (firstPane === undefined || !/^%\d+$/.test(firstPane)) {
     setStatus(`no pane found (got: ${JSON.stringify(paneList.output)})`);
     return;
   }
-  const firstPane = paneMatch[1];
   const paneId = Number.parseInt(firstPane.slice(1), 10);
   setStatus(`attached to pane ${firstPane}`);
 

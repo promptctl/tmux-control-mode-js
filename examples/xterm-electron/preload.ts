@@ -9,6 +9,8 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
+import { createWrapperTracker } from "./wrapper-tracker.js";
+
 const TMUX_CHANNELS = new Set([
   "tmux:event",
   "tmux:invoke",
@@ -25,12 +27,15 @@ function assertChannel(channel: string): void {
   }
 }
 
-// Keep a handle to each renderer-side listener so removeListener works
-// even though we wrap the caller's function with our own closure.
-const wrappers = new WeakMap<
-  (...args: unknown[]) => void,
-  (event: IpcRendererEvent, ...args: unknown[]) => void
->();
+// Listener-wrapper bookkeeping. The previous version used a single
+// WeakMap<listener, wrapper> slot — a leak waiting to happen on double
+// subscribe. The wrapper-tracker keeps one bookkeeping entry per `on()`
+// call so removeListener is LIFO-symmetric. See ./wrapper-tracker.ts for
+// the full rationale and the unit tests in tests/unit for the contract.
+type Wrapper = (event: IpcRendererEvent, ...args: unknown[]) => void;
+type Listener = (...args: unknown[]) => void;
+
+const tracker = createWrapperTracker<Listener, Wrapper>();
 
 contextBridge.exposeInMainWorld("tmuxIpc", {
   invoke(channel: string, ...args: unknown[]): Promise<unknown> {
@@ -43,24 +48,19 @@ contextBridge.exposeInMainWorld("tmuxIpc", {
     ipcRenderer.send(channel, ...args);
   },
 
-  on(channel: string, listener: (...args: unknown[]) => void): void {
+  on(channel: string, listener: Listener): void {
     assertChannel(channel);
-    const wrapped = (_event: IpcRendererEvent, ...args: unknown[]): void => {
+    const wrapped: Wrapper = (_event, ...args): void => {
       listener(_event, ...args);
     };
-    wrappers.set(listener, wrapped);
+    tracker.add(channel, listener, wrapped);
     ipcRenderer.on(channel, wrapped);
   },
 
-  removeListener(
-    channel: string,
-    listener: (...args: unknown[]) => void,
-  ): void {
+  removeListener(channel: string, listener: Listener): void {
     assertChannel(channel);
-    const wrapped = wrappers.get(listener);
-    if (wrapped !== undefined) {
-      ipcRenderer.removeListener(channel, wrapped);
-      wrappers.delete(listener);
-    }
+    const wrapped = tracker.remove(channel, listener);
+    if (wrapped === null) return;
+    ipcRenderer.removeListener(channel, wrapped);
   },
 });

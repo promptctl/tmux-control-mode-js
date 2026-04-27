@@ -725,7 +725,12 @@ describe("Electron IPC bridge — method dispatch", () => {
     await pending;
   });
 
-  it("detach is fire-and-forget (void return)", () => {
+  it("detach is NOT exposed on the proxy (admin-only) and renderer attempts are rejected", async () => {
+    // H2: detach tears down the tmux client for every renderer sharing the
+    // bridge — it is an admin operation owned by the main process, not any
+    // single window. A renderer that crafts a raw {method:'detach'} request
+    // is rejected at the trust boundary with UNKNOWN_METHOD; tmux never sees
+    // the LF detach signal (so no other windows get torn down).
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -734,10 +739,38 @@ describe("Electron IPC bridge — method dispatch", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    const result = proxy.detach();
-    expect(result).toBeUndefined();
-    // TmuxClient.detach sends a single LF per SPEC §4.1.
-    expect(t.sent).toEqual(["\n"]);
+    // Compile-time: TmuxClientProxy must not expose detach.
+    expect((proxy as unknown as { detach?: unknown }).detach).toBeUndefined();
+
+    // Runtime trust-boundary: bypassing the proxy and crafting a raw IPC
+    // payload still gets rejected with UNKNOWN_METHOD.
+    await expect(
+      renderer.ipcRenderer.invoke(IPC.invoke, { method: "detach", args: [] }),
+    ).rejects.toThrow(/UNKNOWN_METHOD/);
+    expect(t.sent).toEqual([]);
+  });
+
+  it("wraps unexpected dispatch errors with method context (H3)", async () => {
+    // H3: when the dispatcher's call into TmuxClient throws an unexpected
+    // sync error (here: an encoder failure simulated by a transport that
+    // rejects send), the bridge re-wraps the error with method context and
+    // the cause stack. The renderer must NOT see a bare opaque "send failed"
+    // message because that gives no signal about which call broke.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    // Make `send` throw — TmuxClient.execute calls transport.send synchronously.
+    (t.transport as { send: (cmd: string) => void }).send = () => {
+      throw new Error("transport offline");
+    };
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    await expect(proxy.execute("list-windows")).rejects.toThrow(
+      /BRIDGE_INTERNAL.*method=execute.*transport offline/,
+    );
   });
 
   it("rejects the renderer promise when main-side execute fails", async () => {
@@ -974,6 +1007,262 @@ describe("Electron IPC bridge — two-window scenario", () => {
     expect(() =>
       hub.ipcMain.handle("tmux:invoke", async () => undefined),
     ).toThrow(/second handler/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H4 — Per-sender pending invoke tracking; abandonment on destroyed
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
+  it("aborts in-flight invoke when sender is destroyed; FIFO stays correlated", async () => {
+    // Renderer A invokes; renderer A is destroyed BEFORE tmux replies;
+    // renderer B subsequently invokes. The TmuxClient FIFO must NOT be
+    // purged on A's death — A's pending entry stays in line, A's tmux
+    // response pops A's entry (resolved into the void on the bridge side
+    // because A is aborted), B's tmux response pops B's entry and lands.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const b = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+    const pb = createRendererBridge(b.ipcRenderer);
+
+    const aResult = pa.execute("list-windows").catch((err: unknown) => err);
+    // tmux has not yet replied — kill A.
+    a.destroy();
+    // Now B starts a request; tmux processes them in order.
+    const bResult = pb.execute("list-panes");
+
+    // Tmux replies to A's command first (still in FIFO), then B's.
+    feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
+    feedCommandResponse(t, 2, ["%1 main 0 -"]);
+
+    // A's invoke surface MUST reject with a typed BridgeError (not silently
+    // resolve and not crash) so callers can localize.
+    const aErr = await aResult;
+    expect(aErr).toBeInstanceOf(Error);
+    expect((aErr as Error).message).toMatch(/ABORTED/);
+    expect((aErr as Error).message).toMatch(/method=execute/);
+
+    // B's invoke MUST receive its own response (correlation intact).
+    const bResp = await bResult;
+    expect(bResp.success).toBe(true);
+    expect(bResp.output).toEqual(["%1 main 0 -"]);
+  });
+
+  it("aborts in-flight invoke when sender unregisters mid-request", async () => {
+    // close() on the proxy sends IPC.unregister. The bridge treats this as
+    // a teardown for the sender (matching the destroyed-handler path) so any
+    // in-flight invoke is aborted with a typed error rather than orphaned.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+    proxy.close();
+    feedCommandResponse(t, 1, []);
+
+    const err = await pending;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/ABORTED/);
+  });
+
+  it("dispose aborts every in-flight invoke", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+    handle.dispose();
+
+    // After dispose, the IPC handler is gone. The pending invoke was already
+    // awaiting on dispatchRpcRequest(client, ...) — feeding a response still
+    // resolves the underlying promise, but the post-await branch sees
+    // aborted and throws.
+    feedCommandResponse(t, 1, []);
+
+    const err = await pending;
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/ABORTED/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H7 — Per-sender subscription scoping (ownership + refcount + auto-cleanup)
+//
+// Wire helpers: tmux's `refresh-client -B` is overloaded — `'name':'value':
+// 'format'` is subscribe, bare `'name'` is unsubscribe. The encoder wraps
+// every arg in single quotes (see src/protocol/encoder.ts tmuxEscape), so
+// the wire shape is unambiguous on the test side.
+// ---------------------------------------------------------------------------
+
+function isUnsubscribeWire(line: string, name: string): boolean {
+  return line === `refresh-client -B '${name}'\n`;
+}
+
+function isSubscribeWire(line: string, name: string): boolean {
+  return line.startsWith(`refresh-client -B '${name}':'`);
+}
+
+describe("Electron IPC bridge — H7 subscription scoping", () => {
+  it("rejects unsubscribe of a name the sender does not own", async () => {
+    // A subscribes "focus"; B tries to unsubscribe it. B's request fails
+    // with UNKNOWN_SUBSCRIPTION; tmux unsubscribe is NOT called.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const b = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+    const pb = createRendererBridge(b.ipcRenderer);
+
+    // A subscribes — bridge forwards the subscribe to tmux.
+    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await aSub;
+    expect(t.sent.some((c) => isSubscribeWire(c, "focus"))).toBe(true);
+
+    const sentBefore = t.sent.length;
+
+    // B attempts to unsubscribe — bridge rejects at the trust boundary.
+    await expect(pb.unsubscribe("focus")).rejects.toThrow(
+      /UNKNOWN_SUBSCRIPTION/,
+    );
+
+    // Tmux must not have seen any unsubscribe attempt.
+    expect(t.sent.slice(sentBefore)).toEqual([]);
+  });
+
+  it("refcounts subscriptions: tmux unsubscribe fires only after the last sender drops", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const b = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+    const pb = createRendererBridge(b.ipcRenderer);
+
+    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await aSub;
+    const bSub = pb.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 2, []);
+    await bSub;
+
+    // Two senders own "focus" → refcount = 2.
+    // A unsubscribes — bridge synthesizes success without hitting tmux
+    // because B still owns it. (Verify by counting unsubscribe wire traffic.)
+    const sentBefore = t.sent.length;
+    const aResp = await pa.unsubscribe("focus");
+    expect(aResp.success).toBe(true);
+    expect(
+      t.sent.slice(sentBefore).filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toEqual([]);
+
+    // B unsubscribes — refcount hits 0 → tmux call.
+    const bUnsub = pb.unsubscribe("focus");
+    feedCommandResponse(t, 3, []);
+    await bUnsub;
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
+  });
+
+  it("auto-unsubscribes a sender's subscriptions when its WebContents is destroyed", async () => {
+    // Single-owner case: A subscribes "focus" then dies → tmux unsubscribe
+    // fires automatically as part of teardown (no leak).
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+
+    const sub = pa.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await sub;
+
+    a.destroy();
+
+    // Refcount went 1 → 0; bridge issues tmux unsubscribe.
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
+  });
+
+  it("auto-cleanup respects refcount: surviving sender keeps the subscription alive", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const b = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+    const pb = createRendererBridge(b.ipcRenderer);
+
+    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await aSub;
+    const bSub = pb.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 2, []);
+    await bSub;
+
+    a.destroy();
+    // B still owns "focus"; refcount = 1; no tmux unsubscribe yet.
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toEqual([]);
+
+    // When B finally goes too, the unsubscribe fires.
+    b.destroy();
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
+  });
+
+  it("dispose clears every refcounted subscription with one tmux unsubscribe each", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const pa = createRendererBridge(a.ipcRenderer);
+
+    const aSub1 = pa.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await aSub1;
+    const aSub2 = pa.subscribe("layout", "", "#{window_id}");
+    feedCommandResponse(t, 2, []);
+    await aSub2;
+
+    handle.dispose();
+
+    // Bridge issues an unsubscribe per refcounted name on dispose.
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "layout")),
+    ).toHaveLength(1);
   });
 });
 

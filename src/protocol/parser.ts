@@ -342,33 +342,49 @@ export class TmuxParser {
     const inResponseBlock = this.activeCommandNumber !== -1;
     const isNotification = line.charCodeAt(0) === 0x25; // '%'
 
-    // Inside a response block, non-% lines are command output.
-    // [LAW:dataflow-not-control-flow] Both branches produce a side effect
-    // (emit message or emit output line); the data (isNotification) decides which.
-    if (inResponseBlock && !isNotification) {
+    // Extract the notification type up front so the response-block routing
+    // decision below can be data-driven rather than a nested branch tree.
+    const spaceIdx = isNotification ? line.indexOf(" ", 1) : -1;
+    const typeStr = !isNotification
+      ? ""
+      : spaceIdx === -1
+        ? line.slice(1)
+        : line.slice(1, spaceIdx);
+    const argsStr =
+      !isNotification || spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
+
+    // [LAW:one-source-of-truth] SPEC_MANIFEST §4 invariant: a notification
+    // never occurs inside a response block. The only %-prefixed lines that
+    // legitimately appear between %begin and %end/%error are the block
+    // terminators themselves (`%end` and `%error`). Anything else inside a
+    // block — including `%`-prefixed lines that happen to look like
+    // notifications, e.g. `%5` from `list-panes -F '#{pane_id}'` — is
+    // command output, not a notification. Treating those as unknown
+    // notifications was the bug the example used to paper over with an
+    // `id=` prefix; the parser now follows the spec invariant directly.
+    const isBlockTerminator = typeStr === "end" || typeStr === "error";
+    const treatAsOutput = inResponseBlock && !isBlockTerminator;
+
+    // [LAW:dataflow-not-control-flow] Output routing is determined by the
+    // (inResponseBlock, isBlockTerminator) tuple — the same `processLine`
+    // operation runs every call; only the data decides which side effect.
+    if (treatAsOutput) {
       this.onOutputLine?.(this.activeCommandNumber, line);
       return;
     }
 
-    // Lines that don't start with % outside a response block are ignored
-    // (shouldn't happen in a well-formed stream, but be robust).
-    if (!isNotification) {
-      return;
-    }
-
-    // Extract type and args from `%<type> <args...>` or `%<type>`
-    const spaceIdx = line.indexOf(" ", 1);
-    const typeStr = spaceIdx === -1 ? line.slice(1) : line.slice(1, spaceIdx);
-    const args = spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
+    // Outside a response block, a non-% line is malformed protocol; drop it.
+    if (!isNotification) return;
 
     const parser = PARSERS.get(typeStr);
     if (parser === undefined) {
       // Unknown notification type — skip silently. The protocol may evolve
-      // and we must not crash on unrecognized messages.
+      // and we must not crash on unrecognized messages. (Cannot reach this
+      // branch inside a response block — `treatAsOutput` already routed.)
       return;
     }
 
-    const msg = parser(args);
+    const msg = parser(argsStr);
     if (msg === null) {
       // Malformed line for a known type — skip.
       return;

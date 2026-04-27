@@ -84,12 +84,16 @@ async function createWindow(): Promise<void> {
 // Bridge tunables are configurable from the e2e harness via env vars so the
 // flood-pause test can use tiny watermarks without changing library defaults.
 function bridgeOptions(): MainBridgeOptions {
-  const opts: MainBridgeOptions = {};
   const high = process.env.TMUX_BRIDGE_HIGH_WATERMARK;
   const low = process.env.TMUX_BRIDGE_LOW_WATERMARK;
-  if (high !== undefined) opts.outputHighWatermark = Number.parseInt(high, 10);
-  if (low !== undefined) opts.outputLowWatermark = Number.parseInt(low, 10);
-  return opts;
+  return {
+    ...(high !== undefined
+      ? { outputHighWatermark: Number.parseInt(high, 10) }
+      : {}),
+    ...(low !== undefined
+      ? { outputLowWatermark: Number.parseInt(low, 10) }
+      : {}),
+  };
 }
 
 app.whenReady().then(async () => {

@@ -13,6 +13,13 @@
 //     a `%pause` event from tmux. Pause is the protocol-level proof that
 //     main called setPaneAction(Pause) once outstanding bytes for the pane
 //     exceeded the high watermark.
+//
+// e07.6 Definition-of-done coverage (H5):
+//   - Preload double-subscribe regression: previous WeakMap-based wrapper
+//     storage collapsed double-registration of the same listener. The fix
+//     is unit-tested in `tests/unit/example-wrapper-tracker.test.ts` — the
+//     wrapper-tracking logic is pure, so the fast unit suite owns it; this
+//     Playwright suite reserves itself for what only Electron can prove.
 
 import { test, expect, _electron as electron } from "@playwright/test";
 import { execSync } from "node:child_process";
@@ -155,3 +162,10 @@ test("emits %pause to the renderer once per-pane outstanding crosses high waterm
     await app.close();
   }
 });
+
+// H5 — wrapper tracking — is unit-tested directly against
+// `examples/xterm-electron/wrapper-tracker.ts` via
+// `tests/unit/example-wrapper-tracker.test.ts`. Putting that fast, pure
+// test next to the rest of the unit suite (instead of in a multi-second
+// Electron boot) is the right shape — Playwright is for what only Electron
+// can prove (single-instance handler, watermark pause).
