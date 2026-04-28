@@ -27,12 +27,13 @@ import {
 } from "../../protocol/types.js";
 import type { RpcProxyApi } from "../rpc.js";
 import {
+  BridgeError,
   DEFAULT_ACK_BATCH_BYTES,
   IPC,
   type AckMessage,
   type InvokeRequest,
-  type IpcRendererEventLike,
   type IpcRendererLike,
+  type IpcRendererOnListener,
   type RendererBridgeOptions,
 } from "./types.js";
 
@@ -64,11 +65,16 @@ type InvokeResultEnvelope =
 export class TmuxClientProxy implements RpcProxyApi {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
-  private readonly eventHandler: (
-    event: IpcRendererEventLike,
-    ...args: unknown[]
-  ) => void;
+  private readonly eventHandler: IpcRendererOnListener;
   private readonly ackBatchBytes: number;
+  /**
+   * Positive value enables the per-call timeout in `invoke`. 0 means disabled
+   * (the default). The renderer-side promise rejects with `BridgeError("TIMEOUT")`
+   * if the underlying `ipcRenderer.invoke` does not settle in time; the
+   * underlying main-side dispatch is NOT cancelled — it will resolve in order
+   * against the TmuxClient FIFO and its result is discarded by the renderer.
+   */
+  private readonly invokeTimeoutMs: number;
   // Per-pane bytes received but not yet acknowledged. The byte count is
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
@@ -82,6 +88,7 @@ export class TmuxClientProxy implements RpcProxyApi {
     this.ipc = ipcRenderer;
     this.emitter = new TypedEmitter();
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
+    this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
     // [LAW:dataflow-not-control-flow] Every inbound IPC event re-emits
     // unconditionally through the local emitter. The emitter's handler maps
@@ -199,10 +206,7 @@ export class TmuxClientProxy implements RpcProxyApi {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.ipc.removeListener(
-      IPC.event,
-      this.eventHandler as (...args: unknown[]) => void,
-    );
+    this.ipc.removeListener(IPC.event, this.eventHandler);
     this.ipc.send(IPC.unregister);
     this.pendingAck.clear();
   }
@@ -212,12 +216,43 @@ export class TmuxClientProxy implements RpcProxyApi {
   // ---------------------------------------------------------------------------
 
   private async invoke(req: InvokeRequest): Promise<CommandResponse> {
-    const result = (await this.ipc.invoke(
-      IPC.invoke,
-      req,
-    )) as InvokeResultEnvelope;
+    // [LAW:dataflow-not-control-flow] Both the timeout and no-timeout cases
+    // run the same shape — `await` a single Promise to a settled envelope.
+    // The variability lives in which Promise is awaited, not in whether the
+    // await happens. The timeout branch races the IPC call against a timer;
+    // when timeout is disabled (the default), the IPC promise is awaited
+    // directly with no timer overhead.
+    const ipcPromise = this.ipc.invoke(IPC.invoke, req);
+    const settled =
+      this.invokeTimeoutMs > 0
+        ? await this.withTimeout(ipcPromise, req.method)
+        : await ipcPromise;
+    const result = settled as InvokeResultEnvelope;
     if (!result.ok) throw new TmuxCommandError(result.response);
     return result.response;
+  }
+
+  private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(
+          new BridgeError(
+            "TIMEOUT",
+            `proxy.${method} did not settle within ${this.invokeTimeoutMs}ms`,
+          ),
+        );
+      }, this.invokeTimeoutMs);
+      p.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          reject(e as Error);
+        },
+      );
+    });
   }
 
   // [LAW:single-enforcer] Discriminator lives in asPaneOutput
