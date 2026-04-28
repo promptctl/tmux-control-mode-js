@@ -45,12 +45,10 @@ export class HeatmapStore {
 
     this.disposeOnEvent = client.onEvent((ev) => {
       if (ev.type === "output" || ev.type === "extended-output") {
-        // base64 → byte length: each 4 chars encode 3 bytes, minus
-        // padding. We don't need exact accuracy — an estimate preserves
-        // the relative intensity between panes, which is all the
-        // heatmap needs.
-        const bytes = Math.floor((ev.dataBase64.length * 3) / 4);
-        this.accum.set(ev.paneId, (this.accum.get(ev.paneId) ?? 0) + bytes);
+        this.accum.set(
+          ev.paneId,
+          (this.accum.get(ev.paneId) ?? 0) + ev.data.byteLength,
+        );
       }
     });
 

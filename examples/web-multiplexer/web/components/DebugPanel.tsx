@@ -6,9 +6,10 @@
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
 import { useMemo, useState } from "react";
-import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
+import type { TmuxMessage } from "../../../../src/protocol/types.js";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
+import { prettyBytes } from "../format-bytes.ts";
 
 interface Props {
   readonly demoStore: DemoStore;
@@ -138,45 +139,19 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
 // Summarization
 // ---------------------------------------------------------------------------
 
-/**
- * Convert a base64 string to a printable ASCII representation where control
- * characters are escaped (\x1b, \r, \n, etc.) and high bytes are rendered as
- * \xHH. Truncates to a reasonable length so the panel stays scannable.
- */
-function prettyBase64(b64: string, max: number = 48): string {
-  let bin: string;
-  try {
-    bin = atob(b64);
-  } catch {
-    return `<invalid base64: ${b64.slice(0, max)}>`;
-  }
-  let out = "";
-  for (let i = 0; i < bin.length && out.length < max; i++) {
-    const c = bin.charCodeAt(i);
-    if (c === 0x1b) out += "\\x1b";
-    else if (c === 0x0a) out += "\\n";
-    else if (c === 0x0d) out += "\\r";
-    else if (c === 0x09) out += "\\t";
-    else if (c >= 0x20 && c <= 0x7e) out += bin[i];
-    else out += `\\x${c.toString(16).padStart(2, "0")}`;
-  }
-  if (bin.length > max) out += `… (${bin.length} bytes)`;
-  return out;
-}
-
 function paneLabel(paneId: number, labels: Map<number, string>): string {
   return labels.get(paneId) ?? `%${paneId}`;
 }
 
 function summarize(
-  ev: SerializedTmuxMessage,
+  ev: TmuxMessage,
   labels: Map<number, string>,
 ): string {
   if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  "${prettyBase64(ev.dataBase64)}"`;
+    return `${paneLabel(ev.paneId, labels)}  "${prettyBytes(ev.data)}"`;
   }
   if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} (age ${ev.age}ms)  "${prettyBase64(ev.dataBase64)}"`;
+    return `${paneLabel(ev.paneId, labels)} (age ${ev.age}ms)  "${prettyBytes(ev.data)}"`;
   }
   if (ev.type === "pause" || ev.type === "continue" || ev.type === "pane-mode-changed") {
     return paneLabel(ev.paneId, labels);
