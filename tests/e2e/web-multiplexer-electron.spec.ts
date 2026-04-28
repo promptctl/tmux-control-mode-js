@@ -18,20 +18,27 @@
 
 import { test, expect, _electron as electron } from "@playwright/test";
 import { execSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { E2E_SOCKET_DIR, e2eSocketName } from "./socket-dir.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Demo workspace root — Electron is launched against this directory so it
 // reads the workspace's package.json `main` (dist-electron/main.mjs).
 const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
 
-// [LAW:single-enforcer] Per-run unique socket name keeps the test's tmux
-// server fully isolated from the developer's default tmux. The Electron
-// app reads TMUX_DEMO_SOCKET / TMUX_DEMO_SESSION (see main.ts) and runs
-// against this isolated server; teardown's `kill-server` only affects the
-// isolated instance.
-const SOCKET = `web-multiplexer-e2e-${process.pid}-${Date.now().toString(36)}`;
+// [LAW:single-enforcer] Per-run unique socket PATH keeps the test's tmux
+// server fully isolated from every other tmux on the system. The path is
+// a regular file under E2E_SOCKET_DIR (a directory the e2e harness owns
+// exclusively — see socket-dir.ts), and the Electron app reads it via
+// TMUX_DEMO_SOCKET (main.ts switches to `tmux -S` when the value contains
+// a slash). Cleanup can therefore never reach /tmp/tmux-$UID/default or
+// any other socket the user owns: those live in a different directory we
+// never operate in.
+mkdirSync(E2E_SOCKET_DIR, { recursive: true });
+const SOCKET = e2eSocketName(process.pid, Date.now());
 const SESSION = "web-multiplexer-demo";
 
 const APP_ENV = {
@@ -43,9 +50,18 @@ const APP_ENV = {
 
 function killServer(): void {
   try {
-    execSync(`tmux -L ${SOCKET} kill-server`, { stdio: "ignore" });
+    execSync(`tmux -S ${SOCKET} kill-server`, { stdio: "ignore" });
   } catch {
     // Server not running — fine.
+  }
+  // tmux removes the socket file when it exits cleanly; if it never came
+  // up (kill-server hit "no server running") the file still exists as a
+  // zero-byte residue that the prune pass would otherwise leave behind.
+  // Unlink defensively — only ever the path we just created.
+  try {
+    rmSync(SOCKET, { force: true });
+  } catch {
+    // No file — fine.
   }
 }
 
