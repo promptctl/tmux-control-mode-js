@@ -79,6 +79,10 @@ export class TmuxClientProxy implements RpcProxyApi {
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
   private readonly pendingAck = new Map<number, number>();
+  // [LAW:single-enforcer] One teardown per proxy: `closed` gates `close()`
+  // so a second invocation is a true noop (no duplicate IPC.unregister send,
+  // no double removeListener). The host renderer-side decision is "tear down
+  // exactly once per proxy"; this flag is the single place that's enforced.
   private closed = false;
 
   constructor(

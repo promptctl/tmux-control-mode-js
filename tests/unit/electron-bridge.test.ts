@@ -585,10 +585,11 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(wildcard[1]?.type).toBe("session-renamed");
   });
 
-  it("preserves Uint8Array identity through OutputMessage round-trip", () => {
+  it("preserves Uint8Array contents through OutputMessage round-trip", () => {
     // Electron IPC uses structured clone, which preserves Uint8Array natively.
-    // Our in-memory hub passes references directly — which is a stronger test
-    // of the path, since if we accidentally stringified anywhere it would break.
+    // The hub now mirrors that with `cloneArgs` (structuredClone per arg) so
+    // a regression that depends on shared identity — or stringifies anywhere
+    // along the path — fails here the same way it would in production.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -839,6 +840,206 @@ describe("Electron IPC bridge — method dispatch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L1 — every TmuxMessage variant survives structuredClone
+//
+// Real Electron IPC payloads cross a structured-clone boundary. The bridge
+// works today because every TmuxMessage variant is plain data (primitives +
+// Uint8Array). Adding a Date / Map / Function / getter to a variant would
+// silently break IPC in production while passing every other test. This
+// table-driven check freezes the contract: every variant in the union must
+// remain structuredClone-safe.
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — L1 structuredClone parity", () => {
+  // [LAW:one-source-of-truth] One sample per discriminator. The mapped-type
+  // signature forces every variant of the TmuxMessage union to appear;
+  // adding a new event variant without updating the sample table is a
+  // compile error, not a silent skip.
+  const SAMPLES: {
+    readonly [K in TmuxMessage["type"]]: Extract<TmuxMessage, { type: K }>;
+  } = {
+    begin: { type: "begin", timestamp: 1, commandNumber: 2, flags: 0 },
+    end: { type: "end", timestamp: 1, commandNumber: 2, flags: 0 },
+    error: { type: "error", timestamp: 1, commandNumber: 2, flags: 0 },
+    output: {
+      type: "output",
+      paneId: 1,
+      data: new Uint8Array([0xde, 0xad]),
+    },
+    "extended-output": {
+      type: "extended-output",
+      paneId: 1,
+      age: 5,
+      data: new Uint8Array([0xbe, 0xef]),
+    },
+    pause: { type: "pause", paneId: 7 },
+    continue: { type: "continue", paneId: 7 },
+    "pane-mode-changed": { type: "pane-mode-changed", paneId: 7 },
+    "window-add": { type: "window-add", windowId: 11 },
+    "window-close": { type: "window-close", windowId: 11 },
+    "window-renamed": {
+      type: "window-renamed",
+      windowId: 11,
+      name: "main",
+    },
+    "window-pane-changed": {
+      type: "window-pane-changed",
+      windowId: 11,
+      paneId: 22,
+    },
+    "unlinked-window-add": { type: "unlinked-window-add", windowId: 13 },
+    "unlinked-window-close": { type: "unlinked-window-close", windowId: 13 },
+    "unlinked-window-renamed": {
+      type: "unlinked-window-renamed",
+      windowId: 13,
+      name: "side",
+    },
+    "layout-change": {
+      type: "layout-change",
+      windowId: 11,
+      windowLayout: "a",
+      windowVisibleLayout: "b",
+      windowFlags: "c",
+    },
+    "session-changed": { type: "session-changed", sessionId: 1, name: "s" },
+    "session-renamed": { type: "session-renamed", sessionId: 1, name: "s2" },
+    "sessions-changed": { type: "sessions-changed" },
+    "session-window-changed": {
+      type: "session-window-changed",
+      sessionId: 1,
+      windowId: 11,
+    },
+    "client-session-changed": {
+      type: "client-session-changed",
+      clientName: "c",
+      sessionId: 1,
+      name: "s",
+    },
+    "client-detached": { type: "client-detached", clientName: "c" },
+    "paste-buffer-changed": { type: "paste-buffer-changed", name: "buf" },
+    "paste-buffer-deleted": { type: "paste-buffer-deleted", name: "buf" },
+    "subscription-changed": {
+      type: "subscription-changed",
+      name: "n",
+      sessionId: 1,
+      windowId: -1,
+      windowIndex: -1,
+      paneId: -1,
+      value: "v",
+    },
+    message: { type: "message", message: "hi" },
+    "config-error": { type: "config-error", error: "bad" },
+    exit: { type: "exit", reason: "bye" },
+  };
+
+  it("every TmuxMessage variant round-trips through structuredClone", () => {
+    for (const [variantName, sample] of Object.entries(SAMPLES)) {
+      // structuredClone throws DataCloneError on functions / getters / Maps
+      // holding un-cloneable values — exactly the failure mode the audit
+      // worried about (a future variant silently breaking IPC).
+      const cloned = structuredClone(sample);
+      expect(
+        cloned,
+        `variant "${variantName}" did not survive structuredClone deeply`,
+      ).toEqual(sample);
+      expect(
+        cloned,
+        `variant "${variantName}" returned the same identity from clone`,
+      ).not.toBe(sample);
+    }
+  });
+
+  it("Uint8Array payloads keep byte content but get fresh identity", () => {
+    // Spot-check the only field shape with non-trivial structuredClone
+    // semantics. A regression that swaps Uint8Array → ArrayBufferView /
+    // DataView would still toEqual but would not satisfy this assertion.
+    const sample = SAMPLES.output;
+    const cloned = structuredClone(sample);
+    expect(cloned.data).toBeInstanceOf(Uint8Array);
+    expect(cloned.data).not.toBe(sample.data);
+    expect([...cloned.data]).toEqual([...sample.data]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L5 — MainBridgeHandle.drain awaits in-flight invoke dispatches
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — L5 drain", () => {
+  it("drain resolves immediately when no invokes are in flight", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+    await handle.drain();
+    handle.dispose();
+  });
+
+  it("drain awaits every in-flight invoke after dispose (aborted dispatches resolve)", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+
+    // dispose marks every in-flight dispatch aborted but doesn't await them.
+    handle.dispose();
+    let drainResolved = false;
+    const drainPromise = handle.drain().then(() => {
+      drainResolved = true;
+    });
+
+    // Drain hasn't completed yet — the underlying client.execute is still
+    // awaiting its FIFO entry (no tmux response yet).
+    await Promise.resolve();
+    expect(drainResolved).toBe(false);
+
+    feedCommandResponse(t, 1, []);
+    await drainPromise;
+    expect(drainResolved).toBe(true);
+
+    // The renderer-side promise rejected with ABORTED as expected.
+    const err = await pending;
+    expect((err as Error).message).toMatch(/ABORTED/);
+  });
+
+  it("drain honors timeoutMs and returns even when invokes don't settle", async () => {
+    // No fake transport response is fed → the in-flight invoke never settles.
+    // drain(25) must return after the timeout regardless.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    // Swallow rejection so vitest doesn't flag it; the handler is still
+    // pending until we feed a response (which we never will here).
+    void proxy.execute("hangs-forever").catch(() => undefined);
+
+    const start = Date.now();
+    await handle.drain(25);
+    const elapsed = Date.now() - start;
+
+    // Allow generous slack for CI scheduler — the assertion is "drain
+    // returned in roughly 25ms, not seconds".
+    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeGreaterThanOrEqual(20);
+
+    // Clean up: dispose removes the IPC handlers installed by the bridge.
+    // The orphaned in-flight invoke stays pending in the TmuxClient FIFO,
+    // but the fake transport holds no real handles (no sockets/timers), so
+    // there is nothing for vitest to flag as leaked.
+    handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // MainBridgeHandle.dispose
 // ---------------------------------------------------------------------------
 
@@ -1020,6 +1221,35 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
 
     handle.dispose();
     expect(r.destroyHandlerCount()).toBe(0);
+  });
+
+  it("duplicate tmux:unregister from a single sender is a noop (L3)", async () => {
+    // A misbehaving or double-firing renderer can resend tmux:unregister.
+    // The bridge must not double-decrement refcounts or duplicate any
+    // teardown side effect — teardownSender is idempotent by lookup.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    const proxy = createRendererBridge(r.ipcRenderer);
+
+    const sub = proxy.subscribe("focus", "", "#{pane_id}");
+    feedCommandResponse(t, 1, []);
+    await sub;
+
+    // First unregister: refcount 1 → 0 → tmux unsubscribe fires.
+    r.ipcRenderer.send(IPC.unregister);
+    expect(
+      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
+    ).toHaveLength(1);
+
+    // Second unregister: noop, no additional unsubscribe.
+    r.ipcRenderer.send(IPC.unregister);
+    expect(
+      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
+    ).toHaveLength(1);
   });
 
   it("late destroy after unregister is a no-op (no double teardown, no error)", async () => {

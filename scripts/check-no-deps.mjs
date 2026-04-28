@@ -3,7 +3,14 @@
 // npm consumer of tmux-control-mode-js — all runtime code lives under
 // src/ and uses only the Node.js standard library.
 //
-// Runs on prepublishOnly. Fails loudly if a dep sneaks in.
+// Scope: this script intentionally checks ONLY "dependencies" — those are
+// what `npm install tmux-control-mode-js` pulls into a consumer's tree.
+// "devDependencies" and "peerDependencies" are out of scope by design:
+// devDependencies do not ship to consumers, and the package today exposes
+// no peer surface. If you add a peerDependency, extend this script to
+// validate its shape (or rename to reflect the broader scope).
+//
+// Runs on prepublishOnly. Fails loudly if a runtime dep sneaks in.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
