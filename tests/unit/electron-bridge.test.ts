@@ -1031,10 +1031,11 @@ describe("Electron IPC bridge — L5 drain", () => {
     expect(elapsed).toBeLessThan(500);
     expect(elapsed).toBeGreaterThanOrEqual(20);
 
-    // Clean up: dispose to remove handlers; client.close to release the
-    // pending FIFO entry so vitest doesn't complain about open handles.
+    // Clean up: dispose removes the IPC handlers installed by the bridge.
+    // The orphaned in-flight invoke stays pending in the TmuxClient FIFO,
+    // but the fake transport holds no real handles (no sockets/timers), so
+    // there is nothing for vitest to flag as leaked.
     handle.dispose();
-    void t; // silence lint
   });
 });
 
