@@ -46,6 +46,10 @@
     "./websocket/protocol": {
       "types": "./dist/connectors/websocket/protocol.d.ts",
       "default": "./dist/connectors/websocket/protocol.js"
+    },
+    "./websocket/transport": {
+      "types": "./dist/connectors/websocket/transport.d.ts",
+      "default": "./dist/connectors/websocket/transport.js"
     }
   },
   "sideEffects": false,
