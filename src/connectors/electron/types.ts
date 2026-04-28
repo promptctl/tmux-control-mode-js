@@ -104,6 +104,19 @@ export interface IpcMainLike {
 }
 
 export interface IpcRendererEventLike {
+  /**
+   * Real Electron exposes `event.sender` as the `IpcRenderer` instance that
+   * received the message — useful in cases where the renderer-side handler
+   * wants to send a reply or distinguish event sources (e.g. iframe frame
+   * routing, or a preload that fans events to multiple windows).
+   *
+   * The bridge does not currently use `sender`: the renderer proxy is a 1:1
+   * pairing with the `ipcRenderer` it was constructed against, so origin is
+   * already known by construction. Typing this as `unknown` keeps the
+   * structural interface honest about not depending on it. Narrow the type
+   * (or replace with `IpcRendererLike`) if a future feature needs to validate
+   * an event's origin.
+   */
   readonly sender?: unknown;
 }
 
@@ -144,8 +157,32 @@ export interface MainBridgeHandle {
    * Remove all IPC handlers installed by createMainBridge and clear the
    * internal subscriber set. Does NOT close the underlying TmuxClient — the
    * host owns that lifecycle.
+   *
+   * `dispose()` is synchronous: it marks every in-flight invoke dispatch
+   * aborted and tears down sender accounting, but it does NOT await the
+   * underlying ipcMain.handle promises that are still resolving against the
+   * TmuxClient FIFO. Callers that need to know when those promises have
+   * actually settled (e.g. tests, or a host that tears down the TmuxClient
+   * immediately after dispose) should `await handle.drain()` after
+   * `dispose()` returns.
    */
   dispose(): void;
+  /**
+   * Resolve once every in-flight ipcMain.handle("tmux:invoke") promise has
+   * settled. Useful after `dispose()` so callers can wait for the bridge to
+   * fully unwind before tearing down the underlying `TmuxClient`. Without
+   * this, an in-flight dispatch can still be `await`ing `client.execute(...)`
+   * when the host calls `client.close()`, producing a confusing rejection
+   * shape on the renderer side.
+   *
+   * `timeoutMs`: when provided, drain returns after the timeout regardless
+   * of whether all handlers have settled. The unsettled promises are NOT
+   * cancelled — they continue resolving in the background and their post-
+   * await branches see `aborted` and throw `BridgeError("ABORTED")`. The
+   * timeout is a "I have a host shutdown deadline" escape hatch, not a
+   * cancellation primitive.
+   */
+  drain(timeoutMs?: number): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
