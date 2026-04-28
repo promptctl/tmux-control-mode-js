@@ -39,7 +39,8 @@
 
 import { reaction, observable, runInAction, type IReactionDisposer } from "mobx";
 import { Terminal } from "@xterm/xterm";
-import { decodeBase64, BridgeClient } from "./ws-client.ts";
+import { decodeBase64 } from "./ws-client.ts";
+import type { TmuxBridge } from "./bridge.ts";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
 import type { SerializedTmuxMessage } from "../shared/protocol.ts";
@@ -177,7 +178,7 @@ export class PaneTerminal {
   readonly paneId: number;
   private readonly store: DemoStore;
   private readonly uiStore: UiStore;
-  private readonly client: BridgeClient;
+  private readonly client: TmuxBridge;
 
   // Observable container box, set by a ResizeObserver inside `mount()`.
   // The size reaction reads this AND the store's pane width/height.
