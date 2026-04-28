@@ -78,6 +78,7 @@
     "test:watch": "vitest",
     "test:integration": "TMUX_INTEGRATION=1 vitest run tests/integration/",
     "test:all": "TMUX_INTEGRATION=1 vitest run",
+    "test:e2e": "npm --workspace tmux-control-mode-js-demo-web-multiplexer run build:electron && playwright test --config tests/e2e/playwright.config.ts",
     "demo": "npm --workspace tmux-control-mode-js-demo-web-multiplexer run dev",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
@@ -99,6 +100,7 @@
   "license": "MIT",
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
     "@types/node": "^22.0.0",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
