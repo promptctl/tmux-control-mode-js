@@ -26,24 +26,16 @@ import {
 // [LAW:single-enforcer] One pair of (socket, session) names drives every
 // tmux invocation in this demo. Both default to `web-multiplexer-demo`
 // but can be overridden via env so e2e runs are inherently isolated.
-//
-// SOCKET semantics: a value containing "/" is a filesystem path used with
-// `tmux -S /path/to/sock` (the library's spawnTmux applies the same rule);
-// otherwise it's a name used with `tmux -L name` and tmux puts the socket
-// under /tmp/tmux-$UID/<name>. The path mode lets the e2e harness keep
-// its sockets in a dedicated directory outside /tmp/tmux-$UID/ so its
-// cleanup pass can never reach a non-test socket.
 const SOCKET = process.env.TMUX_DEMO_SOCKET ?? "web-multiplexer-demo";
 const SESSION = process.env.TMUX_DEMO_SESSION ?? "web-multiplexer-demo";
-const SOCKET_FLAG: "-S" | "-L" = SOCKET.includes("/") ? "-S" : "-L";
 
 function ensureSession(): void {
   try {
-    execSync(`tmux ${SOCKET_FLAG} ${SOCKET} has-session -t ${SESSION}`, {
+    execSync(`tmux -L ${SOCKET} has-session -t ${SESSION}`, {
       stdio: "ignore",
     });
   } catch {
-    execSync(`tmux ${SOCKET_FLAG} ${SOCKET} new-session -d -s ${SESSION}`, {
+    execSync(`tmux -L ${SOCKET} new-session -d -s ${SESSION}`, {
       stdio: "ignore",
     });
   }
@@ -51,13 +43,7 @@ function ensureSession(): void {
 
 function createClient(): TmuxClient {
   ensureSession();
-  const transport = spawnTmux([
-    SOCKET_FLAG,
-    SOCKET,
-    "attach-session",
-    "-t",
-    SESSION,
-  ]);
+  const transport = spawnTmux(["-L", SOCKET, "attach-session", "-t", SESSION]);
   return new TmuxClient(transport);
 }
 
