@@ -35,35 +35,24 @@ import type {
 } from "./bridge.ts";
 
 export class ElectronBridge implements TmuxBridge {
-  private readonly proxy: TmuxClientProxy;
+  private readonly ipcRenderer: IpcRendererLike;
+  private readonly proxyEventHandler: (msg: TmuxMessage) => void;
+  private proxy: TmuxClientProxy | null = null;
   private state: ConnState = "connecting";
-  private closed = false;
   private nextId = 0;
   private readonly eventHandlers = new Set<EventHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly wireHandlers = new Set<WireHandler>();
-  private readonly proxyEventHandler: (msg: TmuxMessage) => void;
 
   constructor(ipcRenderer: IpcRendererLike) {
-    this.proxy = createRendererBridge(ipcRenderer);
-
-    // [LAW:single-enforcer] One proxy.on("*") subscription per bridge —
-    // every event fans out to local handlers + the wire stream from this
-    // single source. Adding a second subscription would create a second
-    // ingestion path the inspector and renderer could disagree about.
+    this.ipcRenderer = ipcRenderer;
+    // [LAW:single-enforcer] One proxy.on("*") subscription per connect()
+    // — every event fans out to local handlers + the wire stream from
+    // this single source. Storing the bound handler at construction time
+    // means each connect/disconnect cycle uses the SAME closure identity
+    // so removeListener pairs cleanly with on().
     this.proxyEventHandler = (msg) => this.fanOutEvent(msg);
-    this.proxy.on("*", this.proxyEventHandler);
-
-    // Main-side createWindow gates on `session-changed`, so by the time
-    // this constructor runs the underlying TmuxClient is already attached
-    // and ready. Defer the connecting → ready transition by one microtask
-    // so callers that wire `onState` synchronously after construction
-    // (DemoStore does this in its constructor) observe the transition.
-    queueMicrotask(() => {
-      if (this.closed) return;
-      this.setState("ready");
-    });
   }
 
   // ---------------------------------------------------------------------------
@@ -76,7 +65,7 @@ export class ElectronBridge implements TmuxBridge {
       id: this.allocId(),
       command,
     };
-    return this.invokeWithWire(request, () => this.proxy.execute(command));
+    return this.invokeWithWire(request, (proxy) => proxy.execute(command));
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
@@ -86,8 +75,8 @@ export class ElectronBridge implements TmuxBridge {
       target,
       keys,
     };
-    return this.invokeWithWire(request, () =>
-      this.proxy.sendKeys(target, keys),
+    return this.invokeWithWire(request, (proxy) =>
+      proxy.sendKeys(target, keys),
     );
   }
 
@@ -106,19 +95,38 @@ export class ElectronBridge implements TmuxBridge {
   }
 
   /**
-   * The proxy is constructed already-attached, so `connect` is a no-op.
-   * The URL argument is ignored — IPC has no URL to dial. The
-   * connecting → ready transition was scheduled by the constructor.
+   * Open the proxy and announce readiness. Idempotent — a second connect
+   * while a proxy is live is a no-op. The URL argument is ignored: IPC
+   * has no URL to dial; the renderer's tmux session is whichever one the
+   * main process attached to.
+   *
+   * Lazy proxy creation lets a renderer cycle through connect/disconnect/
+   * connect (e.g. React StrictMode dev double-mount, or a "reconnect"
+   * UI affordance) without leaking a dead proxy or duplicate IPC
+   * handlers.
    */
   connect(_url: string): void {
-    // intentional no-op
+    if (this.proxy !== null) return;
+    const proxy = createRendererBridge(this.ipcRenderer);
+    proxy.on("*", this.proxyEventHandler);
+    this.proxy = proxy;
+    this.setState("connecting");
+    // Main-side createWindow gates on `session-changed`, so by the time
+    // this runs the underlying TmuxClient is already attached and ready.
+    // Defer the ready transition by one microtask so callers that wire
+    // `onState` synchronously after connect() observe connecting → ready.
+    queueMicrotask(() => {
+      if (this.proxy !== proxy) return;
+      this.setState("ready");
+    });
   }
 
   disconnect(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.proxy.off("*", this.proxyEventHandler);
-    this.proxy.close();
+    const proxy = this.proxy;
+    if (proxy === null) return;
+    this.proxy = null;
+    proxy.off("*", this.proxyEventHandler);
+    proxy.close();
     this.setState("closed");
   }
 
@@ -166,12 +174,19 @@ export class ElectronBridge implements TmuxBridge {
 
   private async invokeWithWire(
     request: ClientToServer,
-    invoker: () => Promise<CommandResponse>,
+    invoker: (proxy: TmuxClientProxy) => Promise<CommandResponse>,
   ): Promise<CommandResponse> {
+    const proxy = this.proxy;
+    if (proxy === null) {
+      const message = `cannot ${request.kind}: bridge is not connected`;
+      this.emitWire({ dir: "in-error", ts: Date.now(), id: request.id, message });
+      this.errorHandlers.forEach((h) => h(message, request.id));
+      throw new Error(message);
+    }
     const sentAt = Date.now();
     this.emitWire({ dir: "out", ts: sentAt, msg: request });
     try {
-      const response = await invoker();
+      const response = await invoker(proxy);
       const now = Date.now();
       this.emitWire({
         dir: "in-response",

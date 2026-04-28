@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Reference web multiplexer demo for tmux-control-mode-js. Not published.",
+  "description": "Reference web-multiplexer demo for tmux-control-mode-js. Drives the same React/MobX renderer over either WebSocket (web target) or Electron IPC (desktop target). Not published.",
+  "main": "dist-electron/main.mjs",
   "scripts": {
     "dev": "concurrently -n bridge,web -c blue,green \"npm run dev:bridge\" \"npm run dev:web\"",
     "dev:watch": "concurrently -n bridge,web -c blue,green \"npm run dev:bridge:watch\" \"npm run dev:web\"",
@@ -11,6 +12,9 @@
     "dev:bridge:watch": "tsx watch server/bridge.ts",
     "dev:web": "vite",
     "build": "vite build",
+    "build:electron": "vite build && node electron/build.mjs",
+    "demo:electron": "npm run build:electron && electron .",
+    "typecheck": "tsc --noEmit",
     "start:web": "npm run dev"
   },
   "dependencies": {
@@ -30,6 +34,8 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.3",
     "concurrently": "^9.1.0",
+    "electron": "^31.0.0",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.11"
