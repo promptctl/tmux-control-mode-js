@@ -44,6 +44,7 @@ import {
   type IpcMainEventLike,
   type IpcMainInvokeEventLike,
   type IpcMainLike,
+  type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
   type WebContentsLike,
@@ -87,6 +88,16 @@ interface SenderState {
   readonly pending: Set<PendingDispatch>;
   /** Subscription names this sender currently holds (for refcount + cleanup). */
   readonly subscriptions: Set<string>;
+  /**
+   * The exact `destroyed` listener registered with `wc.once`. Stored so
+   * `teardownSender` can call `wc.removeListener` when teardown is driven
+   * by `unregister` instead of by the WebContents actually being destroyed
+   * — otherwise the once-handler stays attached on a still-alive emitter,
+   * fires later (as a no-op against a sender that no longer exists), and
+   * keeps a closure-reference path alive on the emitter for the rest of
+   * the WebContents's lifetime.
+   */
+  readonly onDestroyed: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,18 +229,22 @@ export function createMainBridge(
   const getOrCreateSender = (wc: WebContentsLike): SenderState => {
     const existing = senders.get(wc);
     if (existing !== undefined) return existing;
+    // [LAW:single-enforcer] One destroyed-handler per sender. Attaching here
+    // (not in onRegister) means a renderer that only ever invoke()s — never
+    // register()s — still cleans up correctly when its webContents dies.
+    // The handler is stored on the sender so teardownSender can detach it
+    // when the unregister path runs and wc is still alive.
+    const onDestroyed = (): void => teardownSender(wc);
     const state: SenderState = {
       wc,
       isSubscribed: false,
       outstanding: new Map(),
       pending: new Set(),
       subscriptions: new Set(),
+      onDestroyed,
     };
     senders.set(wc, state);
-    // [LAW:single-enforcer] One destroyed-handler per sender. Attaching here
-    // (not in onRegister) means a renderer that only ever invoke()s — never
-    // register()s — still cleans up correctly when its webContents dies.
-    wc.once("destroyed", () => teardownSender(wc));
+    wc.once("destroyed", onDestroyed);
     return state;
   };
 
@@ -237,6 +252,13 @@ export function createMainBridge(
     const state = senders.get(wc);
     if (state === undefined) return;
     senders.delete(wc);
+
+    // (0) Detach the destroyed handler. If we got here BECAUSE the wc was
+    //     destroyed, removeListener is harmless (the listener has already
+    //     fired and been removed by `once`). If we got here from unregister
+    //     while the wc is still alive, this is the only thing that prevents
+    //     a leaked listener on the emitter — see SenderState.onDestroyed.
+    state.wc.removeListener("destroyed", state.onDestroyed);
 
     // (1) Mark in-flight invokes aborted. The TmuxClient FIFO stays intact —
     //     the underlying %begin/%end still resolves the pending entry in
@@ -339,7 +361,14 @@ export function createMainBridge(
     // [LAW:dataflow-not-control-flow] One pass over senders, every message,
     // unconditionally. Senders that aren't subscribed are skipped via the
     // data flag (state.isSubscribed) — the loop body is the same shape.
-    for (const [wc, state] of senders) {
+    //
+    // Snapshot the senders entries before iterating: teardownSender below
+    // calls senders.delete(wc), and a destroyed wc detected mid-loop must
+    // not perturb the iteration order of the rest of the senders. V8
+    // Maps tolerate delete-during-iteration today; this snapshot makes
+    // the invariant explicit and survives engine quirks.
+    const snapshot = [...senders];
+    for (const [wc, state] of snapshot) {
       // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
       // Electron may fire "destroyed" asynchronously, so a send could race a
       // teardown. Guarding here avoids a native crash inside wc.send.
@@ -399,9 +428,17 @@ export function createMainBridge(
     maybeResume(ack.paneId);
   };
 
-  ipcMain.on(IPC.register, onRegister as (...args: unknown[]) => void);
-  ipcMain.on(IPC.unregister, onUnregister as (...args: unknown[]) => void);
-  ipcMain.on(IPC.ack, onAck as (...args: unknown[]) => void);
+  // [LAW:locality-or-seam] IpcMainOnListener — the registered listener
+  // shape — is the SAME for `on` and `removeListener`, so the same named
+  // reference passed to `on` is the one passed to `removeListener` below.
+  // No cast at either site means a refactor that wraps `onRegister` cannot
+  // silently make `dispose()` a no-op.
+  const onRegisterListener: IpcMainOnListener = onRegister;
+  const onUnregisterListener: IpcMainOnListener = onUnregister;
+  const onAckListener: IpcMainOnListener = onAck;
+  ipcMain.on(IPC.register, onRegisterListener);
+  ipcMain.on(IPC.unregister, onUnregisterListener);
+  ipcMain.on(IPC.ack, onAckListener);
 
   // -------------------------------------------------------------------------
   // Single invoke handler — straight pipe through the shared RPC layer,
@@ -499,32 +536,22 @@ export function createMainBridge(
   return {
     dispose() {
       client.off("*", forward);
-      ipcMain.removeListener(
-        IPC.register,
-        onRegister as (...args: unknown[]) => void,
-      );
-      ipcMain.removeListener(
-        IPC.unregister,
-        onUnregister as (...args: unknown[]) => void,
-      );
-      ipcMain.removeListener(IPC.ack, onAck as (...args: unknown[]) => void);
+      ipcMain.removeListener(IPC.register, onRegisterListener);
+      ipcMain.removeListener(IPC.unregister, onUnregisterListener);
+      ipcMain.removeListener(IPC.ack, onAckListener);
       ipcMain.removeHandler(IPC.invoke);
+      // Tear down every sender through the unified path: aborts in-flight
+      // dispatches, removes destroyed listeners from still-alive wcs (so
+      // dispose doesn't leak handlers across bridge re-installations),
+      // refcount-decrements every subscription (which fires the tmux
+      // unsubscribe on last drop). After this loop, senders is empty and
+      // subscriptionRefcount is empty.
+      for (const wc of [...senders.keys()]) teardownSender(wc);
       // Resume any panes we paused so we don't leave tmux stuck after teardown.
       for (const paneId of pausedPanes) {
         void client.setPaneAction(paneId, PaneAction.Continue).catch(swallow);
       }
       pausedPanes.clear();
-      // Mark every in-flight dispatch aborted; their awaits will throw
-      // BridgeError("ABORTED") rather than try to use a torn-down bridge.
-      for (const state of senders.values()) {
-        for (const p of state.pending) p.aborted = true;
-      }
-      // Clean every subscription refcount the bridge created.
-      for (const name of subscriptionRefcount.keys()) {
-        void client.unsubscribe(name).catch(swallow);
-      }
-      subscriptionRefcount.clear();
-      senders.clear();
       REGISTERED_IPC_MAINS.delete(ipcMain);
     },
   };

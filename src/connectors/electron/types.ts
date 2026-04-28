@@ -18,54 +18,6 @@
 import type { RpcRequest } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
-// Structural "like" interfaces for Electron.
-// ---------------------------------------------------------------------------
-
-export interface WebContentsLike {
-  send(channel: string, ...args: unknown[]): void;
-  once(event: "destroyed", listener: () => void): void;
-  isDestroyed(): boolean;
-}
-
-export interface IpcMainInvokeEventLike {
-  readonly sender: WebContentsLike;
-}
-
-export interface IpcMainEventLike {
-  readonly sender: WebContentsLike;
-}
-
-export interface IpcMainLike {
-  handle(
-    channel: string,
-    listener: (
-      event: IpcMainInvokeEventLike,
-      ...args: unknown[]
-    ) => unknown | Promise<unknown>,
-  ): void;
-  removeHandler(channel: string): void;
-  on(
-    channel: string,
-    listener: (event: IpcMainEventLike, ...args: unknown[]) => void,
-  ): void;
-  removeListener(channel: string, listener: (...args: unknown[]) => void): void;
-}
-
-export interface IpcRendererEventLike {
-  readonly sender?: unknown;
-}
-
-export interface IpcRendererLike {
-  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
-  send(channel: string, ...args: unknown[]): void;
-  on(
-    channel: string,
-    listener: (event: IpcRendererEventLike, ...args: unknown[]) => void,
-  ): void;
-  removeListener(channel: string, listener: (...args: unknown[]) => void): void;
-}
-
-// ---------------------------------------------------------------------------
 // IPC channel names. Defined once, imported by both sides.
 // ---------------------------------------------------------------------------
 
@@ -87,6 +39,85 @@ export const IPC = {
    */
   ack: "tmux:ack",
 } as const;
+
+/**
+ * Every channel the bridge talks on is one of the values of `IPC`. Narrowing
+ * the structural-Electron interfaces below to this type makes channel typos a
+ * compile error at the bridge boundary instead of a silent runtime mismatch.
+ *
+ * [LAW:one-source-of-truth] `IPC` is the only place channel strings are spelled;
+ * `IpcChannel` is derived from it. Adding a new channel = one edit.
+ */
+export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+
+// ---------------------------------------------------------------------------
+// Structural "like" interfaces for Electron.
+//
+// [LAW:locality-or-seam] These structural interfaces keep `electron` out of
+// the library's runtime dependencies. `IpcChannel` narrows the channel-name
+// parameter so a typo at the call site is a compile error.
+//
+// [LAW:one-type-per-behavior] `on` and `removeListener` use the SAME listener
+// shape so a registered handler can be passed verbatim to removeListener
+// without a cast — the signature mismatch this used to have was variance
+// leaking into every call site.
+// ---------------------------------------------------------------------------
+
+export interface WebContentsLike {
+  send(channel: IpcChannel, ...args: unknown[]): void;
+  once(event: "destroyed", listener: () => void): void;
+  /**
+   * Required so the bridge can detach its `destroyed` listener when a
+   * sender is torn down via `unregister` while the WebContents is still
+   * alive. Without this the once-handler closure stays attached to the
+   * emitter for the WebContents's remaining lifetime, leaks the senders
+   * Map slot it referenced, and fires later as a no-op against a
+   * sender that no longer exists.
+   */
+  removeListener(event: "destroyed", listener: () => void): void;
+  isDestroyed(): boolean;
+}
+
+export interface IpcMainInvokeEventLike {
+  readonly sender: WebContentsLike;
+}
+
+export interface IpcMainEventLike {
+  readonly sender: WebContentsLike;
+}
+
+export type IpcMainOnListener = (
+  event: IpcMainEventLike,
+  ...args: unknown[]
+) => void;
+
+export type IpcMainInvokeListener = (
+  event: IpcMainInvokeEventLike,
+  ...args: unknown[]
+) => unknown | Promise<unknown>;
+
+export interface IpcMainLike {
+  handle(channel: IpcChannel, listener: IpcMainInvokeListener): void;
+  removeHandler(channel: IpcChannel): void;
+  on(channel: IpcChannel, listener: IpcMainOnListener): void;
+  removeListener(channel: IpcChannel, listener: IpcMainOnListener): void;
+}
+
+export interface IpcRendererEventLike {
+  readonly sender?: unknown;
+}
+
+export type IpcRendererOnListener = (
+  event: IpcRendererEventLike,
+  ...args: unknown[]
+) => void;
+
+export interface IpcRendererLike {
+  invoke(channel: IpcChannel, ...args: unknown[]): Promise<unknown>;
+  send(channel: IpcChannel, ...args: unknown[]): void;
+  on(channel: IpcChannel, listener: IpcRendererOnListener): void;
+  removeListener(channel: IpcChannel, listener: IpcRendererOnListener): void;
+}
 
 // ---------------------------------------------------------------------------
 // InvokeRequest — name kept as an internal alias for renderer.ts and the
@@ -149,6 +180,20 @@ export interface RendererBridgeOptions {
    * Default: 64 KiB.
    */
   readonly ackBatchBytes?: number;
+  /**
+   * Optional per-call timeout for proxy invokes. When a positive number, the
+   * proxy rejects with `BridgeError("TIMEOUT")` if the underlying
+   * `ipcRenderer.invoke` does not settle within `invokeTimeoutMs`. Disabled
+   * (default) — proxy.execute() inherits whatever timeout the underlying
+   * `client.execute()` has, which today is none. Set this when the calling
+   * window must distinguish "main is wedged" from "tmux is slow" (e.g. a
+   * UI freeze handler that resets the proxy on persistent timeout).
+   *
+   * The TIMEOUT rejection does NOT cancel the underlying main-side dispatch:
+   * tmux may still respond eventually and the FIFO will resolve in order.
+   * Only the renderer-side promise gives up early.
+   */
+  readonly invokeTimeoutMs?: number;
 }
 
 export const DEFAULT_ACK_BATCH_BYTES = 1 << 16;
@@ -170,7 +215,9 @@ export type BridgeErrorCode =
   /** Dispatch was abandoned because its sender was destroyed mid-flight. */
   | "ABORTED"
   /** Renderer attempted to unsubscribe a name it does not own. */
-  | "UNKNOWN_SUBSCRIPTION";
+  | "UNKNOWN_SUBSCRIPTION"
+  /** Renderer-side invoke exceeded RendererBridgeOptions.invokeTimeoutMs. */
+  | "TIMEOUT";
 
 export class BridgeError extends Error {
   readonly code: BridgeErrorCode;
