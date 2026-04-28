@@ -1,35 +1,51 @@
 // tests/e2e/socket-naming.ts
-// One-source-of-truth for the e2e suite's tmux socket naming.
+// One-source-of-truth for the e2e suite's tmux socket naming and the
+// shared "is socket alive" classifier used by both the orphan-prune
+// pass and (forthcoming) the demo's socket picker.
 //
-// Sockets land in /tmp/tmux-$UID/ (where named tmux sockets live by
-// default — `tmux -L NAME` puts them there). The prefix below is what
-// the orphan-prune pass uses as its allow-list discriminator: any
-// socket whose name does NOT start with this prefix is left alone.
-//
-// Filename schema after the prefix: `<pid>-<base36-time>`. The PID
-// portion lets the prune pass check `process.kill(pid, 0)` to skip
-// sockets owned by a still-running sibling test.
+// tmux puts named sockets at /tmp/tmux-<UID>/<NAME>; both the spec and
+// the prune pass operate against that directory.
 
-// [LAW:single-enforcer] Both the spec (when picking a name) and the
-// prune pass (when matching names to act on) import this constant.
-// Diverging the two would either create unmatched test sockets that
-// never get cleaned up, or worse, an over-broad regex that touches
-// other tools' sockets.
+import { execSync } from "node:child_process";
+
+// [LAW:single-enforcer] All e2e socket names start with this prefix so
+// they're greppable when something does leak. The prune pass does NOT
+// gate on this prefix — it cleans every dead socket except `default` —
+// but keeping the prefix makes ad-hoc inspection (`ls /tmp/tmux-$UID/ |
+// grep web-multiplexer-e2e-`) trivial.
 export const E2E_SOCKET_PREFIX = "web-multiplexer-e2e-";
 
-// Regex anchored to E2E_SOCKET_PREFIX, capturing the embedded PID.
-// Anything outside this allow-list shape is invisible to cleanup.
-export const E2E_SOCKET_PATTERN = new RegExp(
-  `^${E2E_SOCKET_PREFIX.replace(/-/g, "\\-")}(\\d+)-[0-9a-z]+$`,
-);
+/**
+ * Build a unique e2e socket NAME (suitable for `tmux -L NAME`).
+ * The PID + base36 timestamp give per-run uniqueness even when the
+ * runtime clock has low resolution.
+ */
+export function e2eSocketName(pid: number, now: number): string {
+  return `${E2E_SOCKET_PREFIX}${pid}-${now.toString(36)}`;
+}
 
-/** Extract the embedded PID from an e2e socket filename, or null if it
- *  does not match our schema (so the cleanup never acts on a foreign
- *  file even if the prefix happened to align). */
-export function ownerPidOf(filename: string): number | null {
-  const m = E2E_SOCKET_PATTERN.exec(filename);
-  if (m === null) return null;
-  const pid = Number.parseInt(m[1], 10);
-  if (!Number.isFinite(pid) || pid <= 0) return null;
-  return pid;
+/** Filesystem location of the tmux socket directory for the running user. */
+export function tmuxSocketDir(): string {
+  // tmux puts named sockets at /tmp/tmux-<UID>/. process.getuid is
+  // unavailable on Windows; we don't run e2e there.
+  const uid =
+    typeof process.getuid === "function" ? process.getuid() : "unknown";
+  return `/tmp/tmux-${uid}`;
+}
+
+/**
+ * Probe whether a tmux server is bound to the named socket.
+ *
+ * `list-sessions` is the canonical liveness probe: it exits 0 when the
+ * server is reachable (regardless of whether it has any sessions yet)
+ * and non-zero with "no server running" when the socket is dead. We
+ * ignore stdio because we only care about the exit status.
+ */
+export function isServerAlive(socketName: string): boolean {
+  try {
+    execSync(`tmux -L ${socketName} list-sessions`, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -22,7 +22,7 @@ import { rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { E2E_SOCKET_PREFIX } from "./socket-naming.js";
+import { e2eSocketName, tmuxSocketDir } from "./socket-naming.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Demo workspace root — Electron is launched against this directory so it
@@ -32,11 +32,9 @@ const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
 // [LAW:single-enforcer] Per-run unique socket name keeps the test's tmux
 // server fully isolated from any other server on the system. The Electron
 // app reads TMUX_DEMO_SOCKET (main.ts uses `tmux -L`) so the socket file
-// lands in /tmp/tmux-$UID/<name>. The name embeds process.pid + a base36
-// timestamp; the orphan-prune pass in global-setup.ts reads that PID
-// back out to know whether the socket is owned by a still-running test
-// before deciding to clean it up.
-const SOCKET = `${E2E_SOCKET_PREFIX}${process.pid}-${Date.now().toString(36)}`;
+// lands in /tmp/tmux-$UID/<name>. Globally-shared naming + classifier
+// live in socket-naming.ts.
+const SOCKET = e2eSocketName(process.pid, Date.now());
 const SESSION = "web-multiplexer-demo";
 
 const APP_ENV = {
@@ -57,9 +55,7 @@ function killServer(): void {
   // its parent-pipe close), tmux had no chance to clean up. Remove the
   // file ourselves — it's only ever the path THIS test created.
   try {
-    rmSync(join(`/tmp/tmux-${process.getuid?.() ?? ""}`, SOCKET), {
-      force: true,
-    });
+    rmSync(join(tmuxSocketDir(), SOCKET), { force: true });
   } catch {
     // No file — fine.
   }
