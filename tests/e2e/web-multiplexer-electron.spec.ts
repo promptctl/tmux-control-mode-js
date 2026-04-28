@@ -18,27 +18,25 @@
 
 import { test, expect, _electron as electron } from "@playwright/test";
 import { execSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { E2E_SOCKET_DIR, e2eSocketName } from "./socket-dir.js";
+import { E2E_SOCKET_PREFIX } from "./socket-naming.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Demo workspace root — Electron is launched against this directory so it
 // reads the workspace's package.json `main` (dist-electron/main.mjs).
 const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
 
-// [LAW:single-enforcer] Per-run unique socket PATH keeps the test's tmux
-// server fully isolated from every other tmux on the system. The path is
-// a regular file under E2E_SOCKET_DIR (a directory the e2e harness owns
-// exclusively — see socket-dir.ts), and the Electron app reads it via
-// TMUX_DEMO_SOCKET (main.ts switches to `tmux -S` when the value contains
-// a slash). Cleanup can therefore never reach /tmp/tmux-$UID/default or
-// any other socket the user owns: those live in a different directory we
-// never operate in.
-mkdirSync(E2E_SOCKET_DIR, { recursive: true });
-const SOCKET = e2eSocketName(process.pid, Date.now());
+// [LAW:single-enforcer] Per-run unique socket name keeps the test's tmux
+// server fully isolated from any other server on the system. The Electron
+// app reads TMUX_DEMO_SOCKET (main.ts uses `tmux -L`) so the socket file
+// lands in /tmp/tmux-$UID/<name>. The name embeds process.pid + a base36
+// timestamp; the orphan-prune pass in global-setup.ts reads that PID
+// back out to know whether the socket is owned by a still-running test
+// before deciding to clean it up.
+const SOCKET = `${E2E_SOCKET_PREFIX}${process.pid}-${Date.now().toString(36)}`;
 const SESSION = "web-multiplexer-demo";
 
 const APP_ENV = {
@@ -50,16 +48,18 @@ const APP_ENV = {
 
 function killServer(): void {
   try {
-    execSync(`tmux -S ${SOCKET} kill-server`, { stdio: "ignore" });
+    execSync(`tmux -L ${SOCKET} kill-server`, { stdio: "ignore" });
   } catch {
     // Server not running — fine.
   }
-  // tmux removes the socket file when it exits cleanly; if it never came
-  // up (kill-server hit "no server running") the file still exists as a
-  // zero-byte residue that the prune pass would otherwise leave behind.
-  // Unlink defensively — only ever the path we just created.
+  // Belt-and-suspenders: tmux unlinks its socket on a clean kill-server,
+  // but if the Electron app already exited (and tmux died with it via
+  // its parent-pipe close), tmux had no chance to clean up. Remove the
+  // file ourselves — it's only ever the path THIS test created.
   try {
-    rmSync(SOCKET, { force: true });
+    rmSync(join(`/tmp/tmux-${process.getuid?.() ?? ""}`, SOCKET), {
+      force: true,
+    });
   } catch {
     // No file — fine.
   }
