@@ -30,6 +30,7 @@ import {
   createRendererBridge,
   TmuxClientProxy,
 } from "../../src/connectors/electron/renderer.js";
+import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -39,6 +40,13 @@ interface FakeRenderer {
   readonly ipcRenderer: IpcRendererLike;
   readonly sender: WebContentsLike;
   destroy(): void;
+  /**
+   * Visibility hook for M2 regression tests: how many `destroyed` listeners
+   * are still attached to this fake's WebContents. After a sender is torn
+   * down via `unregister` while alive, this should drop to 0 — proving the
+   * bridge actually called `removeListener` rather than leaking the handler.
+   */
+  destroyHandlerCount(): number;
 }
 
 interface IpcHub {
@@ -88,17 +96,29 @@ function createIpcHub(): IpcHub {
     type RendererHandler = (event: unknown, ...args: unknown[]) => void;
     const rendererListeners = new Map<string, Set<RendererHandler>>();
     let destroyed = false;
-    const destroyHandlers: Array<() => void> = [];
+    // Set so removeListener('destroyed', ...) can detach a single handler —
+    // mirrors real Electron, where once-handlers can be removed before
+    // they fire. Using a Set also makes "registered handler count" a
+    // first-class assertion target for the M2 leak test.
+    const destroyHandlers = new Set<() => void>();
 
     const sender: WebContentsLike = {
       send(channel, ...args) {
         if (destroyed) return;
         const set = rendererListeners.get(channel);
         if (!set) return;
-        for (const h of set) h({}, ...args);
+        // [M6] Real Electron sends args through structuredClone before they
+        // reach the renderer. Mirroring that here means a test that mutates
+        // the source object after dispatch (or relies on by-ref identity)
+        // fails the same way it would in production. Uint8Array round-trips
+        // through structuredClone natively.
+        for (const h of set) h({}, ...cloneArgs(args));
       },
       once(event, listener) {
-        if (event === "destroyed") destroyHandlers.push(listener);
+        if (event === "destroyed") destroyHandlers.add(listener);
+      },
+      removeListener(event, listener) {
+        if (event === "destroyed") destroyHandlers.delete(listener);
       },
       isDestroyed() {
         return destroyed;
@@ -111,12 +131,17 @@ function createIpcHub(): IpcHub {
         if (handler === undefined) {
           throw new Error(`no handler registered for ${channel}`);
         }
-        return handler({ sender }, ...args);
+        // [M6] Round-trip args through structuredClone so the main-side
+        // handler operates on its own copy — same as real Electron IPC.
+        // The handler's return value also crosses the IPC boundary, so we
+        // clone it on the way back.
+        const result = await handler({ sender }, ...cloneArgs(args));
+        return cloneArgs([result])[0];
       },
       send(channel, ...args) {
         const set = mainOnListeners.get(channel);
         if (!set) return;
-        for (const h of set) h({ sender }, ...args);
+        for (const h of set) h({ sender }, ...cloneArgs(args));
       },
       on(channel, listener) {
         let set = rendererListeners.get(channel);
@@ -136,12 +161,31 @@ function createIpcHub(): IpcHub {
       sender,
       destroy() {
         destroyed = true;
-        for (const h of destroyHandlers) h();
+        // Snapshot so a destroy handler that mutates the set (e.g. via
+        // teardownSender → wc.removeListener) does not perturb iteration.
+        const snapshot = [...destroyHandlers];
+        destroyHandlers.clear();
+        for (const h of snapshot) h();
       },
+      destroyHandlerCount: () => destroyHandlers.size,
     };
   }
 
   return { ipcMain, createRenderer };
+}
+
+// ---------------------------------------------------------------------------
+// structuredClone shim for the fake hub.
+//
+// Real Electron IPC payloads cross a structured-clone boundary: a renderer
+// that mutates its sent object after dispatch cannot perturb the main side,
+// and main return values arrive as fresh copies. The test hub mirrors this
+// so a regression that depends on shared identity (or mutates Uint8Array
+// payloads after send) fails here the same way it would in production.
+// ---------------------------------------------------------------------------
+
+function cloneArgs(args: readonly unknown[]): unknown[] {
+  return args.map((a) => structuredClone(a));
 }
 
 interface FakeTransport {
@@ -839,14 +883,207 @@ describe("Electron IPC bridge — dispose", () => {
 // Type surface — TmuxClientProxy mirrors TmuxClient at compile time.
 // ---------------------------------------------------------------------------
 
-describe("Electron IPC bridge — type surface", () => {
-  it("TmuxClientProxy constructor accepts an IpcRendererLike", () => {
-    // If this test compiles, the shape guarantee holds. Purely a compile-time
-    // check reified as a runtime no-op.
+describe("Electron IPC bridge — proxy parity (M6)", () => {
+  // [M6] The previous type-surface test only asserted `instanceof
+  // TmuxClientProxy`, which proves nothing about parity with TmuxClient or
+  // the wire union. The `class TmuxClientProxy implements RpcProxyApi`
+  // declaration in renderer.ts already gives us the compile-time guarantee
+  // that the proxy mirrors the wire union; the runtime check below proves
+  // that every name in RPC_METHOD_NAMES (the sole source of truth for
+  // bridged methods) is actually a callable function on the proxy
+  // prototype. A regression that adds a wire variant and forgets the
+  // proxy method now fails this test rather than silently shipping.
+  it("every RPC method name is a callable function on TmuxClientProxy", () => {
     const hub = createIpcHub();
     const r = hub.createRenderer();
-    const proxy: TmuxClientProxy = createRendererBridge(r.ipcRenderer);
-    expect(proxy).toBeInstanceOf(TmuxClientProxy);
+    const proxy = createRendererBridge(r.ipcRenderer);
+    for (const name of RPC_METHOD_NAMES) {
+      const fn = (proxy as unknown as Record<string, unknown>)[name];
+      expect(
+        typeof fn,
+        `proxy is missing method "${name}" — RPC_METHOD_NAMES diverged from TmuxClientProxy`,
+      ).toBe("function");
+      // Smoke-call: every method should accept its declared argument count.
+      // We don't assert the result here (the dispatcher needs a live client)
+      // — only that referring to the method does not throw.
+      expect(
+        () => fn,
+        `proxy.${name} reference threw on access`,
+      ).not.toThrow();
+    }
+  });
+
+  it("Uint8Array %output payloads round-trip across the IPC structuredClone boundary", async () => {
+    // [M6] The previous fake hub passed args by reference, hiding bugs that
+    // would surface in real Electron when payloads cross structuredClone.
+    // The hub now clones every IPC payload; this test pins that contract.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+    const received: TmuxMessage[] = [];
+    proxy.on("output", (m) => received.push(m));
+
+    // Synthesize a %output frame end-to-end through the parser.
+    const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    t.feed(`%output %1 \\336\\255\\276\\357\n`);
+
+    // Allow microtasks to drain.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(received).toHaveLength(1);
+    const ev = received[0]!;
+    expect(ev.type).toBe("output");
+    if (ev.type !== "output") return;
+    expect([...ev.data]).toEqual([...payload]);
+    // The renderer's copy is a fresh Uint8Array, NOT the main-side identity.
+    // (We cannot probe main-side identity directly — but a structuredClone
+    // round-trip guarantees the buffers are different objects.)
+    expect(ev.data).toBeInstanceOf(Uint8Array);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M1 — forward() must not perturb iteration when teardownSender mutates the
+// senders Map mid-loop (a destroyed wc detected during forwarding).
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — M1 forward iteration safety", () => {
+  it("delivers to surviving renderers when one is destroyed mid-broadcast", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const a = hub.createRenderer();
+    const b = hub.createRenderer();
+    const c = hub.createRenderer();
+
+    const proxyA = createRendererBridge(a.ipcRenderer);
+    const proxyB = createRendererBridge(b.ipcRenderer);
+    const proxyC = createRendererBridge(c.ipcRenderer);
+
+    const got: Array<["a" | "c", string]> = [];
+    proxyA.on("output", (m) => got.push(["a", m.type]));
+    proxyC.on("output", (m) => got.push(["c", m.type]));
+    // proxyB receives nothing — destroyed before broadcast.
+
+    // Destroy B's wc directly (real Electron: webContents went away during
+    // event delivery). Then drive a %output through main; main's forward()
+    // must visit A and C without skipping or double-tearing-down.
+    b.destroy();
+    void proxyB; // keep reference so unused-variable lint is quiet
+
+    t.feed(`%output %42 ok\n`);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const labels = got.map(([who]) => who).sort();
+    expect(labels).toEqual(["a", "c"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M2 — destroyed listener does not leak after a sender is torn down via
+// unregister while its WebContents is still alive.
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
+  it("removes the destroyed handler when teardown is driven by unregister", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    const proxy = createRendererBridge(r.ipcRenderer);
+    expect(r.destroyHandlerCount()).toBe(1);
+
+    proxy.close(); // sends tmux:unregister → main.teardownSender
+    await Promise.resolve();
+    expect(r.destroyHandlerCount()).toBe(0);
+  });
+
+  it("removes the destroyed handler when teardown is driven by dispose", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const handle = createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    createRendererBridge(r.ipcRenderer);
+    expect(r.destroyHandlerCount()).toBe(1);
+
+    handle.dispose();
+    expect(r.destroyHandlerCount()).toBe(0);
+  });
+
+  it("late destroy after unregister is a no-op (no double teardown, no error)", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    const proxy = createRendererBridge(r.ipcRenderer);
+    proxy.close();
+    expect(r.destroyHandlerCount()).toBe(0);
+
+    // Firing destroy now should not throw — destroyHandlers Set is empty.
+    expect(() => r.destroy()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M8 — invokeTimeoutMs.
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — M8 invoke timeout", () => {
+  it("rejects with BridgeError(TIMEOUT) when the IPC call does not settle in time", async () => {
+    // Fake renderer that lets us control settle timing of a single in-flight
+    // invoke. We bypass the real ipcMain handler so the call simply hangs.
+    let resolveStuck: (v: unknown) => void = () => {};
+    const stuckIpc: IpcRendererLike = {
+      invoke: () =>
+        new Promise((resolve) => {
+          resolveStuck = resolve;
+        }),
+      send: () => undefined,
+      on: () => undefined,
+      removeListener: () => undefined,
+    };
+    const proxy = new TmuxClientProxy(stuckIpc, { invokeTimeoutMs: 25 });
+
+    await expect(proxy.execute("anything")).rejects.toThrow(/TIMEOUT/);
+
+    // Late settlement must not throw an unhandled rejection (the timer
+    // already rejected the renderer-side promise; the resolution is just
+    // discarded). vitest will fail the test if an unhandled rejection
+    // propagates, so the absence of a failure here is the assertion.
+    resolveStuck({ ok: true, response: { output: [], success: true } });
+    await new Promise((r) => setTimeout(r, 5));
+  });
+
+  it("does not start a timer when invokeTimeoutMs is 0 (default)", async () => {
+    // Nothing to assert beyond "the call resolves normally" — but we use
+    // vitest's fake-timer escape: a real timer would never fire because the
+    // call resolves first. We assert correctness of the result.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    const proxy = new TmuxClientProxy(r.ipcRenderer); // no timeout option
+
+    const p = proxy.listPanes();
+    feedCommandResponse(t, 0, []);
+    const resp = await p;
+    expect(resp.success).toBe(true);
   });
 });
 

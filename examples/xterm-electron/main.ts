@@ -124,8 +124,19 @@ app.whenReady().then(async () => {
     bridgeOptions(),
   );
 
-  await createWindow();
-
+  // Shutdown ordering note (e07.7/M3):
+  //   By the time `window-all-closed` fires, every BrowserWindow has already
+  //   emitted its 'closed' event and its WebContents is destroyed. So the
+  //   `%exit` notification that `client.close()` will emit cannot be observed
+  //   by any renderer in this code path — there's no live target left to
+  //   forward to. That is intentional: a renderer's `on('exit')` handler is
+  //   useful when tmux dies UNEXPECTEDLY mid-session (parent crash,
+  //   server kill) and a window is still alive; during normal app shutdown
+  //   the renderer is already gone, so the absence of an exit hop is correct.
+  //   If you ever need exit to be observable for graceful-shutdown UI, move
+  //   `client.close()` into an `app.on('before-quit', ...)` handler so it
+  //   runs while windows are still alive — but expect to deal with the
+  //   followup `before-quit`-blocking dance Electron requires.
   app.on("window-all-closed", () => {
     bridge.dispose();
     client.close();
