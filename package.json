@@ -50,6 +50,14 @@
     "./websocket/transport": {
       "types": "./dist/connectors/websocket/transport.d.ts",
       "default": "./dist/connectors/websocket/transport.js"
+    },
+    "./streams/web": {
+      "types": "./dist/connectors/streams/web.d.ts",
+      "default": "./dist/connectors/streams/web.js"
+    },
+    "./streams/node": {
+      "types": "./dist/connectors/streams/node.d.ts",
+      "default": "./dist/connectors/streams/node.js"
     }
   },
   "sideEffects": false,
