@@ -216,12 +216,14 @@ app.whenReady().then(async () => {
   ipcMain.handle("demo:list-sockets", () => {
     // Trust the directory: prune ran on whenReady, switch handlers will
     // not strand dead sockets, and each creator self-cleans on quit.
-    // Filter only the inert names: `default` (hard skip everywhere)
-    // and the socket we're already attached to (selecting it would be
-    // a no-op).
-    return listTmuxSocketNames().filter(
-      (name) => name !== "default" && name !== active?.socket,
-    );
+    //
+    // `default` is the user's primary tmux server — explicitly INCLUDED
+    // here. It's only the cleanup pass that hard-skips `default` (so we
+    // never delete it); the picker shows it like any other live socket
+    // because attaching to it is a normal, useful thing to do. The only
+    // entry filtered out is the socket we're already attached to,
+    // because picking it would be a no-op.
+    return listTmuxSocketNames().filter((name) => name !== active?.socket);
   });
   ipcMain.handle("demo:current-socket", () => active?.socket ?? null);
   ipcMain.handle(
