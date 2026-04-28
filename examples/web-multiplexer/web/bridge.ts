@@ -11,11 +11,11 @@
 // it. Adding a method or event type here ripples through every consumer at
 // compile time — there is no second consumption shape to drift from.
 
+import type { ClientToServer } from "../shared/protocol.ts";
 import type {
-  ClientToServer,
-  SerializedTmuxMessage,
-} from "../shared/protocol.ts";
-import type { CommandResponse } from "../../../src/protocol/types.js";
+  CommandResponse,
+  TmuxMessage,
+} from "../../../src/protocol/types.js";
 
 /**
  * Connection state observed by every consumer that cares about the
@@ -39,13 +39,18 @@ export type ConnState = "connecting" | "open" | "ready" | "closed";
 /**
  * One entry per thing that crossed the bridge in either direction. Powers
  * the InspectorView's wire log. Transports synthesize this on each side.
+ *
+ * Note: `in-event.event` is a fully-decoded TmuxMessage (Uint8Array bytes
+ * for output / extended-output). Wire-side encodings such as base64 in the
+ * WebSocket JSON frame are a transport detail — the inspector renders the
+ * bytes directly.
  */
 export type WireEntry =
   | { readonly dir: "out"; readonly ts: number; readonly msg: ClientToServer }
   | {
       readonly dir: "in-event";
       readonly ts: number;
-      readonly event: SerializedTmuxMessage;
+      readonly event: TmuxMessage;
     }
   | {
       readonly dir: "in-response";
@@ -62,7 +67,7 @@ export type WireEntry =
       readonly message: string;
     };
 
-export type EventHandler = (event: SerializedTmuxMessage) => void;
+export type EventHandler = (event: TmuxMessage) => void;
 export type ErrorHandler = (message: string, id?: string) => void;
 export type StateHandler = (state: ConnState) => void;
 export type WireHandler = (entry: WireEntry) => void;

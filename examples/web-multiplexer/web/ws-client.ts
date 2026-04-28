@@ -15,9 +15,13 @@
 import { makeObservable, observable, action, reaction, runInAction } from "mobx";
 import type {
   ClientToServer,
+  SerializedTmuxMessage,
   ServerToClient,
 } from "../shared/protocol.ts";
-import type { CommandResponse } from "../../../src/protocol/types.js";
+import type {
+  CommandResponse,
+  TmuxMessage,
+} from "../../../src/protocol/types.js";
 import type {
   ConnState,
   ErrorHandler,
@@ -153,8 +157,14 @@ export class WebSocketBridge implements TmuxBridge {
       return;
     }
     if (frame.kind === "event") {
-      this.emitWire({ dir: "in-event", ts: Date.now(), event: frame.event });
-      this.eventHandlers.forEach((h) => h(frame.event));
+      // [LAW:single-enforcer] Base64 decode happens here, exactly once,
+      // at the bridge boundary. Every consumer (DemoStore, PaneTerminal,
+      // HeatmapStore, InspectorStore) and the in-event WireEntry see the
+      // same decoded TmuxMessage with Uint8Array bytes — same shape the
+      // Electron transport delivers natively.
+      const decoded = decodeFrameEvent(frame.event);
+      this.emitWire({ dir: "in-event", ts: Date.now(), event: decoded });
+      this.eventHandlers.forEach((h) => h(decoded));
       return;
     }
     if (frame.kind === "response") {
@@ -277,9 +287,32 @@ export class WebSocketBridge implements TmuxBridge {
   }
 }
 
-export function decodeBase64(b64: string): Uint8Array {
+function decodeBase64(b64: string): Uint8Array {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/**
+ * Convert a wire-shape SerializedTmuxMessage (base64-encoded data fields)
+ * into a renderer-shape TmuxMessage (Uint8Array data fields). Non-output
+ * variants pass through unchanged.
+ *
+ * [LAW:dataflow-not-control-flow] The same operation runs for every event
+ * — the discriminator selects the data shape, not whether work happens.
+ */
+function decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage {
+  if (ev.type === "output") {
+    return { type: "output", paneId: ev.paneId, data: decodeBase64(ev.dataBase64) };
+  }
+  if (ev.type === "extended-output") {
+    return {
+      type: "extended-output",
+      paneId: ev.paneId,
+      age: ev.age,
+      data: decodeBase64(ev.dataBase64),
+    };
+  }
+  return ev;
 }

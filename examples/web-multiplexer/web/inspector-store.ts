@@ -18,7 +18,7 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
-import type { SerializedTmuxMessage } from "../shared/protocol.ts";
+import type { TmuxMessage } from "../../../src/protocol/types.js";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -248,7 +248,7 @@ function summarizeForSearch(w: WireEntry): string {
   return `in error ${w.id ?? ""} ${w.message}`;
 }
 
-function eventSearchTail(ev: SerializedTmuxMessage): string {
+function eventSearchTail(ev: TmuxMessage): string {
   // Keep this cheap — it runs per filter pass. Include only the fields
   // users will realistically search for (ids + names).
   const bag: string[] = [];
