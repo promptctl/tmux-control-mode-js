@@ -25,7 +25,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
-import type { SerializedTmuxMessage } from "../shared/protocol.ts";
+import type { TmuxMessage } from "../../../src/protocol/types.js";
 import {
   INITIAL_STATE,
   defaultTmuxKeymap,
@@ -183,7 +183,7 @@ export interface DemoStoreHooks {
 export class DemoStore {
   connState: ConnState = "connecting";
   sessions: SessionInfo[] = [];
-  events: SerializedTmuxMessage[] = [];
+  events: TmuxMessage[] = [];
   errors: string[] = [];
 
   // [LAW:one-source-of-truth] This is the ONE piece of per-client state
@@ -344,7 +344,7 @@ export class DemoStore {
   // Event handling
   // -------------------------------------------------------------------------
 
-  private handleEvent(ev: SerializedTmuxMessage): void {
+  private handleEvent(ev: TmuxMessage): void {
     this.pushEvent(ev);
     if (ev.type === "subscription-changed") {
       this.applySubscription(ev.name, ev.value);
@@ -667,7 +667,7 @@ export class DemoStore {
     // each access — they can never be out of sync with the tree.
   }
 
-  private pushEvent(ev: SerializedTmuxMessage): void {
+  private pushEvent(ev: TmuxMessage): void {
     this.events = [ev, ...this.events].slice(0, 200);
   }
 
