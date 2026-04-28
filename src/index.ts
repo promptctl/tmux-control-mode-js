@@ -12,3 +12,8 @@ export type { TmuxEventMap } from "./emitter.js";
 
 export { spawnTmux } from "./transport/spawn.js";
 export type { TmuxTransport, SpawnOptions } from "./transport/types.js";
+export {
+  tmuxSocketDir,
+  listTmuxSocketNames,
+  isTmuxServerAlive,
+} from "./transport/sockets.js";
