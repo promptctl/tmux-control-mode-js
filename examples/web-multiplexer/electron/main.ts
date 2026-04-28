@@ -1,7 +1,6 @@
 // examples/web-multiplexer/electron/main.ts
-// Electron main-process entry for the unified web-multiplexer demo.
+// Electron main-process entry for the web-multiplexer demo.
 //
-// Mirrors examples/xterm-electron/main.ts:
 //   1. Create-or-attach a dedicated tmux session (isolated -L socket so
 //      e2e runs cannot collide with the developer's default server).
 //   2. Wrap it in TmuxClient and install createMainBridge ONCE on
@@ -112,8 +111,15 @@ app.whenReady().then(async () => {
   // By the time `window-all-closed` fires, every BrowserWindow has
   // already emitted its 'closed' event and its WebContents is destroyed,
   // so the %exit notification client.close() will emit cannot be
-  // observed by any renderer in this code path. That is intentional —
-  // see examples/xterm-electron/main.ts for the longer rationale.
+  // observed by any renderer in this code path. That is intentional:
+  // a renderer's `on('exit')` handler is useful when tmux dies
+  // UNEXPECTEDLY mid-session (parent crash, server kill) while a window
+  // is still alive; during normal app shutdown the renderer is already
+  // gone, so the absence of an exit hop is correct. If you ever need
+  // exit to be observable for a graceful-shutdown UI, move
+  // `client.close()` into `app.on('before-quit', ...)` so it runs while
+  // windows are still alive — at the cost of dealing with the
+  // before-quit-blocking dance Electron requires.
   app.on("window-all-closed", () => {
     bridge.dispose();
     client.close();
