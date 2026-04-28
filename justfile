@@ -8,3 +8,6 @@ demo:
 
 demo-watch:
   npm --workspace tmux-control-mode-js-demo-web-multiplexer run dev:watch
+
+demo-electron:
+  npm --workspace tmux-control-mode-js-demo-web-multiplexer run demo:electron
