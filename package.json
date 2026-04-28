@@ -53,8 +53,7 @@
     "dist"
   ],
   "workspaces": [
-    "examples/web-multiplexer",
-    "examples/xterm-electron"
+    "examples/web-multiplexer"
   ],
   "engines": {
     "node": ">=20"

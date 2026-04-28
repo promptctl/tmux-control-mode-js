@@ -1,10 +1,11 @@
 // tests/unit/example-wrapper-tracker.test.ts
 //
-// Unit-level verification of the H5 fix. The xterm-electron preload tracks
-// each `on(channel, listener)` registration so `removeListener(channel, fn)`
-// can recover the wrapper closure it installed on Electron's ipcRenderer.
-// The pre-fix WeakMap implementation overwrote on double-subscribe — the
-// new tracker (examples/xterm-electron/wrapper-tracker.ts) records every
+// Unit-level verification of the H5 fix. The web-multiplexer Electron
+// preload tracks each `on(channel, listener)` registration so
+// `removeListener(channel, fn)` can recover the wrapper closure it
+// installed on Electron's ipcRenderer. The pre-fix WeakMap implementation
+// overwrote on double-subscribe — the new tracker
+// (examples/web-multiplexer/electron/wrapper-tracker.ts) records every
 // add and pops one per remove.
 //
 // We test the helper directly because the surrounding preload imports
@@ -14,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { createWrapperTracker } from "../../examples/xterm-electron/wrapper-tracker.js";
+import { createWrapperTracker } from "../../examples/web-multiplexer/electron/wrapper-tracker.js";
 
 describe("WrapperTracker — H5 listener bookkeeping", () => {
   it("starts empty", () => {
