@@ -19,7 +19,7 @@ import {
   Modal,
   Button,
 } from "@mantine/core";
-import { BridgeClient } from "./ws-client.ts";
+import { WebSocketBridge } from "./ws-client.ts";
 import { DemoStore } from "./store.ts";
 import { UiStore } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
@@ -44,13 +44,13 @@ export const App = observer(function App() {
   // doesn't translate well to the browser UX).
   const demoStore = useMemo(
     () =>
-      new DemoStore(new BridgeClient(), {
+      new DemoStore(new WebSocketBridge(), {
         onChooseSession: () => uiStore.expandNavbar(),
       }),
     [uiStore],
   );
   // [LAW:one-source-of-truth] InspectorStore subscribes to the SAME
-  // BridgeClient as DemoStore. Both stores are pure projections of the
+  // TmuxBridge as DemoStore. Both stores are pure projections of the
   // wire — InspectorStore sees everything, DemoStore sees only events.
   const inspectorStore = useMemo(
     () => new InspectorStore(demoStore.client),

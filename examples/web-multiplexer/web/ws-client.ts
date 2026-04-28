@@ -1,57 +1,32 @@
 // examples/web-multiplexer/web/ws-client.ts
-// Browser-side WebSocket client with request/response correlation.
+// Browser-side WebSocket implementation of TmuxBridge.
 //
 // State is MobX-observable. The outbox + socket-ready relationship is
 // expressed as a reaction: whenever the socket is open and the outbox is
 // non-empty, drain the outbox. No imperative "on open, flush" glue —
 // sends queue at any time and the reaction moves them to the wire when
 // the socket is ready.
+//
+// [LAW:one-source-of-truth] WireEntry, ConnState, and the handler shapes
+// live in ./bridge.ts so a second TmuxBridge implementation can't redeclare
+// them with a drifting shape. This file owns the wire mechanics (socket
+// lifecycle, JSON framing, request/response correlation) and nothing else.
 
 import { makeObservable, observable, action, reaction, runInAction } from "mobx";
 import type {
   ClientToServer,
   ServerToClient,
-  SerializedTmuxMessage,
 } from "../shared/protocol.ts";
 import type { CommandResponse } from "../../../src/protocol/types.js";
-
-type EventHandler = (event: SerializedTmuxMessage) => void;
-type ErrorHandler = (message: string, id?: string) => void;
-type StateHandler = (state: "connecting" | "open" | "ready" | "closed") => void;
-
-/**
- * Unified wire activity stream. One entry per thing that crosses the
- * WebSocket in either direction. The protocol inspector subscribes to
- * this stream; nothing in the main app does, so the cost when nobody's
- * listening is one empty Set iteration per event.
- *
- * [LAW:one-source-of-truth] This is the single stream of wire events.
- * The inspector builds a ring buffer from it; it never peeks at the
- * individual subscriber lists.
- */
-export type WireEntry =
-  | { readonly dir: "out"; readonly ts: number; readonly msg: ClientToServer }
-  | {
-      readonly dir: "in-event";
-      readonly ts: number;
-      readonly event: SerializedTmuxMessage;
-    }
-  | {
-      readonly dir: "in-response";
-      readonly ts: number;
-      readonly id: string;
-      readonly response: CommandResponse;
-      readonly latencyMs: number;
-      readonly request: ClientToServer | null;
-    }
-  | {
-      readonly dir: "in-error";
-      readonly ts: number;
-      readonly id: string | null;
-      readonly message: string;
-    };
-
-type WireHandler = (entry: WireEntry) => void;
+import type {
+  ConnState,
+  ErrorHandler,
+  EventHandler,
+  StateHandler,
+  TmuxBridge,
+  WireEntry,
+  WireHandler,
+} from "./bridge.ts";
 
 interface Pending {
   readonly resolve: (r: CommandResponse) => void;
@@ -59,7 +34,7 @@ interface Pending {
   readonly request: ClientToServer;
 }
 
-export class BridgeClient {
+export class WebSocketBridge implements TmuxBridge {
   private ws: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
   private readonly eventHandlers = new Set<EventHandler>();
@@ -72,7 +47,7 @@ export class BridgeClient {
   // auto-drain reaction below. `state` and `outbox` are the only pieces
   // of MobX-observed state on this class; everything else is either a
   // static subscriber list (events/errors) or imperative bookkeeping.
-  state: "connecting" | "open" | "ready" | "closed" = "connecting";
+  state: ConnState = "connecting";
   outbox: ClientToServer[] = [];
 
   constructor() {
@@ -267,7 +242,7 @@ export class BridgeClient {
     return `r${this.nextId}`;
   }
 
-  setState(s: "connecting" | "open" | "ready" | "closed"): void {
+  setState(s: ConnState): void {
     this.state = s;
     this.stateHandlers.forEach((h) => h(s));
   }

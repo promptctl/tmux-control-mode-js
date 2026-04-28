@@ -30,7 +30,7 @@ import {
   Tooltip,
 } from "@mantine/core";
 import type { InspectorStore, InspectorEntry } from "../inspector-store.ts";
-import type { WireEntry } from "../ws-client.ts";
+import type { WireEntry } from "../bridge.ts";
 import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
 import type { DemoStore } from "../store.ts";
 
