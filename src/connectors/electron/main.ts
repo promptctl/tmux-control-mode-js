@@ -404,6 +404,12 @@ export function createMainBridge(
     // Unregister is the proxy.close() path: full teardown for this sender
     // (matches the destroyed-handler behavior). The proxy will not receive
     // further events; pending invokes abort; subscriptions refcount-clean.
+    //
+    // [LAW:single-enforcer] Idempotent by construction: teardownSender
+    // returns immediately when the sender is already gone. A misbehaving or
+    // double-firing renderer that re-sends `tmux:unregister` is a noop and
+    // cannot tear anything down twice (no duplicate refcount decrements,
+    // no duplicate dispatch aborts).
     teardownSender(event.sender);
   };
 
@@ -531,7 +537,33 @@ export function createMainBridge(
     }
   };
 
-  ipcMain.handle(IPC.invoke, invokeHandler);
+  // [LAW:one-source-of-truth] One Set tracks every handler-call promise so
+  // `drain()` can await them. Per-sender `pending` Sets carry the abort
+  // signal (the PendingDispatch flag); this Set carries the await target.
+  // They serve different purposes — keeping them separate is cheaper than
+  // promoting PendingDispatch into a deferred.
+  const pendingHandlerCalls = new Set<Promise<unknown>>();
+
+  const trackedInvokeHandler = (
+    event: IpcMainInvokeEventLike,
+    ...args: unknown[]
+  ): Promise<unknown> => {
+    const p = invokeHandler(event, ...args);
+    pendingHandlerCalls.add(p);
+    // Cleanup must NOT create a dangling rejection: `.finally(...)` (or
+    // `void p.finally(...)`) re-throws on rejection, which produces an
+    // unhandled rejection on the side chain because no one awaits it.
+    // `p.then(cleanup, cleanup)` swallows both outcomes into a fresh
+    // resolved promise — the original `p` is still awaited by the IPC
+    // consumer (and by `drain` via the set), so its rejection IS handled.
+    const cleanup = (): void => {
+      pendingHandlerCalls.delete(p);
+    };
+    p.then(cleanup, cleanup);
+    return p;
+  };
+
+  ipcMain.handle(IPC.invoke, trackedInvokeHandler);
 
   return {
     dispose() {
@@ -553,6 +585,25 @@ export function createMainBridge(
       }
       pausedPanes.clear();
       REGISTERED_IPC_MAINS.delete(ipcMain);
+    },
+    async drain(timeoutMs?: number): Promise<void> {
+      if (pendingHandlerCalls.size === 0) return;
+      const all = Promise.allSettled([...pendingHandlerCalls]).then(
+        () => undefined,
+      );
+      if (timeoutMs === undefined) {
+        await all;
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      });
+      try {
+        await Promise.race([all, timeout]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
     },
   };
 }
