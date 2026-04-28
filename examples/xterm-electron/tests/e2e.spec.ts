@@ -19,22 +19,35 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, "..");
-const SESSION = "xterm-electron-demo";
 
-function killSession(): void {
+// [LAW:single-enforcer] Per-run unique socket name keeps the test's tmux
+// server fully isolated from the developer's default tmux. The Electron app
+// reads TMUX_DEMO_SOCKET / TMUX_DEMO_SESSION (see main.ts) and runs against
+// this isolated server; teardown's `kill-server` only affects the isolated
+// instance, so it cannot destroy a real user session that happens to share
+// the default name on the default server.
+const SOCKET = `xterm-electron-test-${process.pid}-${Date.now().toString(36)}`;
+const SESSION = "xterm-electron-demo";
+const TEST_ENV = {
+  TMUX_DEMO_HEADLESS: "1",
+  TMUX_DEMO_SOCKET: SOCKET,
+  TMUX_DEMO_SESSION: SESSION,
+};
+
+function killServer(): void {
   try {
-    execSync(`tmux kill-session -t ${SESSION}`, { stdio: "ignore" });
+    execSync(`tmux -L ${SOCKET} kill-server`, { stdio: "ignore" });
   } catch {
-    // Not present — fine.
+    // Not running — fine.
   }
 }
 
 test.beforeEach(() => {
-  killSession();
+  killServer();
 });
 
 test.afterAll(() => {
-  killSession();
+  killServer();
 });
 
 test("keystrokes round-trip xterm → tmux → xterm via the IPC bridge", async () => {
@@ -43,7 +56,7 @@ test("keystrokes round-trip xterm → tmux → xterm via the IPC bridge", async 
     cwd: APP_ROOT,
     env: {
       ...process.env,
-      TMUX_DEMO_HEADLESS: "1",
+      ...TEST_ENV,
     },
   });
 

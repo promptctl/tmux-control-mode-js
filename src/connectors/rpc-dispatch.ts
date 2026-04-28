@@ -4,8 +4,8 @@
 // safe types and parser live in `./rpc.ts`.
 //
 // [LAW:single-enforcer] One dispatch table for every bridge connector. Every
-// dispatch goes through dispatchRpcRequest; fire methods synthesize their own
-// CommandResponse so the caller never has to know.
+// dispatch goes through dispatchRpcRequest; every method resolves to the same
+// Promise<CommandResponse> shape so callers never special-case any variant.
 // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
 // RpcRequest is what decides which TmuxClient call runs.
 // [LAW:one-type-per-behavior] One Dispatcher mapped type covers every method;
@@ -49,8 +49,9 @@ const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
 
 /**
  * Dispatch a parsed RpcRequest against a TmuxClient. Always returns a
- * Promise<CommandResponse> — fire methods synthesize their own success
- * response so callers can treat every dispatch uniformly.
+ * Promise<CommandResponse> — every entry in DISPATCH delegates to a
+ * TmuxClient method whose result is a CommandResponse, so the dispatcher
+ * resolves or rejects on that call without per-variant special-casing.
  */
 export function dispatchRpcRequest(
   client: TmuxClient,

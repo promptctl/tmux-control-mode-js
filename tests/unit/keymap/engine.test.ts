@@ -148,4 +148,33 @@ describe("full prefix sequence", () => {
     expect(step2.state).toEqual({ mode: "root" });
     expect(step2.handled).toBe(true);
   });
+
+  it("C-b then C-b returns to root with handled=false (send-prefix)", () => {
+    // tmux's default `send-prefix` behavior: pressing the prefix key a second
+    // time exits prefix mode and lets the UI forward the literal prefix to
+    // the focused pane. handled=false is the signal for that pass-through.
+    const step1 = handleKey(ev("C-b"), INITIAL_STATE, keymap);
+    expect(step1.state).toEqual({ mode: "prefix" });
+    const step2 = handleKey(ev("C-b"), step1.state, keymap);
+    expect(step2.actions).toEqual([]);
+    expect(step2.state).toEqual({ mode: "root" });
+    expect(step2.handled).toBe(false);
+  });
+
+  it("explicit binding for the prefix key still wins over send-prefix", () => {
+    // If a user binds `C-b` (the prefix) to an action, that binding fires in
+    // prefix mode rather than the send-prefix passthrough. This proves the
+    // outcome-table row priority: `matched` is checked before `isPrefix`.
+    const customKeymap = {
+      prefix: parseChord("C-b"),
+      bindings: [
+        { chord: parseChord("C-b"), action: { type: "new-window" } as const },
+      ],
+    };
+    const step1 = handleKey(ev("C-b"), INITIAL_STATE, customKeymap);
+    const step2 = handleKey(ev("C-b"), step1.state, customKeymap);
+    expect(step2.actions).toEqual([{ type: "new-window" }]);
+    expect(step2.state).toEqual({ mode: "root" });
+    expect(step2.handled).toBe(true);
+  });
 });

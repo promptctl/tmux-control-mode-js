@@ -23,21 +23,36 @@ import {
   type MainBridgeOptions,
 } from "@promptctl/tmux-control-mode-js/electron/main";
 
-const SESSION = "xterm-electron-demo";
+// [LAW:single-enforcer] One pair of (socket, session) names drives every tmux
+// invocation in the demo — the in-process `tmux has-session/new-session`
+// shells, the spawned control-mode child, and the test-suite `kill-session`
+// cleanup. Both default to `xterm-electron-demo` but can be overridden via env
+// so e2e runs are inherently isolated from the developer's default tmux server
+// (`tmux -L` selects an isolated server by socket name; sessions on different
+// sockets cannot collide, so a real user session named `xterm-electron-demo`
+// on the default server is unaffected by the demo or its tests).
+const SOCKET = process.env.TMUX_DEMO_SOCKET ?? "xterm-electron-demo";
+const SESSION = process.env.TMUX_DEMO_SESSION ?? "xterm-electron-demo";
 
 function ensureSession(): void {
   // `has-session` exits 0 when the session exists, non-zero otherwise.
   // Try to create; swallow the error when it already exists.
   try {
-    execSync(`tmux has-session -t ${SESSION}`, { stdio: "ignore" });
+    execSync(`tmux -L ${SOCKET} has-session -t ${SESSION}`, {
+      stdio: "ignore",
+    });
   } catch {
-    execSync(`tmux new-session -d -s ${SESSION}`, { stdio: "ignore" });
+    execSync(`tmux -L ${SOCKET} new-session -d -s ${SESSION}`, {
+      stdio: "ignore",
+    });
   }
 }
 
 function createClient(): TmuxClient {
   ensureSession();
-  const transport = spawnTmux(["attach-session", "-t", SESSION]);
+  // `-L` must precede the command in the argv, so the socket flag goes ahead
+  // of `attach-session` — same socket the ensureSession shells used.
+  const transport = spawnTmux(["-L", SOCKET, "attach-session", "-t", SESSION]);
   return new TmuxClient(transport);
 }
 

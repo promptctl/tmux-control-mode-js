@@ -49,10 +49,17 @@ export const INITIAL_STATE: KeymapState = { mode: "root" };
  * Advance the keymap state machine by one key event.
  *
  * Contract:
- * - `root` + prefix chord           → state=prefix, actions=[],       handled=true
- * - `root` + anything else          → state=root,   actions=[],       handled=false
- * - `prefix` + bound chord          → state=root,   actions=[action], handled=true
- * - `prefix` + unbound chord        → state=root,   actions=[],       handled=true
+ * - `root` + prefix chord                       → state=prefix, actions=[],       handled=true
+ * - `root` + anything else                      → state=root,   actions=[],       handled=false
+ * - `prefix` + bound chord                      → state=root,   actions=[action], handled=true
+ * - `prefix` + prefix chord (unbound)           → state=root,   actions=[],       handled=false  (send-prefix)
+ * - `prefix` + unbound non-prefix chord         → state=root,   actions=[],       handled=true
+ *
+ * The send-prefix row matches tmux's default `C-b C-b` behavior: pressing the
+ * prefix key a second time exits prefix mode AND lets the UI forward the
+ * literal prefix key to the focused pane (handled=false). An explicit binding
+ * for the prefix key still wins over send-prefix (the binding row is checked
+ * first in the index selection below).
  *
  * [LAW:dataflow-not-control-flow] The function always executes the same
  * sequence: compute (isPrefix, matchedBinding, isInPrefixMode), then pick
@@ -89,27 +96,41 @@ export function handleKey(
   const matched = findBinding(event, keymap.bindings);
   const inPrefixMode = state.mode === "prefix";
 
-  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the four rows of
-  // this decision are data, not four branches of an if/else cascade. Each
-  // row produces a fully-formed HandleResult; no row "skips" a field.
+  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the five rows of
+  // this decision are data, not branches of an if/else cascade. Each row
+  // produces a fully-formed HandleResult; no row "skips" a field.
   const outcomes: readonly HandleResult[] = [
-    // inPrefixMode && matched      — bound chord fires, return to root
+    // inPrefixMode && matched              — bound chord fires, return to root
     {
       state: INITIAL_STATE,
       actions: matched !== null ? [matched.action] : [],
       handled: true,
     },
-    // inPrefixMode && !matched     — unbound chord, swallow, return to root
+    // inPrefixMode && !matched && !isPrefix — unbound non-prefix chord, swallow
     { state: INITIAL_STATE, actions: [], handled: true },
-    // !inPrefixMode && isPrefix    — enter prefix mode
+    // !inPrefixMode && isPrefix            — enter prefix mode
     { state: { mode: "prefix" }, actions: [], handled: true },
-    // !inPrefixMode && !isPrefix   — pass through
+    // !inPrefixMode && !isPrefix           — pass through
+    { state: INITIAL_STATE, actions: [], handled: false },
+    // inPrefixMode && !matched && isPrefix  — send-prefix: return to root and
+    //                                        let the UI forward the literal
+    //                                        prefix key to the focused pane
     { state: INITIAL_STATE, actions: [], handled: false },
   ];
 
   // Index selection is the only decision — again, data drives which row we
-  // return, not control flow over emitted work.
-  const index = inPrefixMode ? (matched !== null ? 0 : 1) : isPrefix ? 2 : 3;
+  // return, not control flow over emitted work. An explicit binding for the
+  // prefix key (matched !== null) wins over the send-prefix row, so users can
+  // override `C-b C-b` with their own binding.
+  const index = inPrefixMode
+    ? matched !== null
+      ? 0
+      : isPrefix
+        ? 4
+        : 1
+    : isPrefix
+      ? 2
+      : 3;
   return outcomes[index];
 }
 
