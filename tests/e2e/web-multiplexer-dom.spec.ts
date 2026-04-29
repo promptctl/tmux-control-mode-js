@@ -100,47 +100,33 @@ test("multi-line output lands on distinct xterm rows", async () => {
       { delay: 10 },
     );
 
-    // Both must appear in the rendered grid …
-    await expect(page.locator(".xterm-rows").first()).toContainText(
-      SENTINEL_A,
-      { timeout: 15_000 },
-    );
-    await expect(page.locator(".xterm-rows").first()).toContainText(
-      SENTINEL_B,
-      { timeout: 15_000 },
-    );
-
-    // … and on different rows. xterm's DOM renderer emits one direct
-    // child <div> per terminal row inside .xterm-rows. The typed-input
-    // echo row contains BOTH sentinels (the literal characters
-    // 'MA…\nMB…' appear as we type them), so a row-index lookup is
-    // ambiguous — what we actually want to prove is that the printf
-    // output split onto two rows. That manifests as: at least one row
-    // containing A but not B, and at least one row containing B but
-    // not A.
-    const layout = await page.evaluate(
-      ({ a, b }) => {
+    // xterm's DOM renderer emits one <div> per terminal row inside
+    // .xterm-rows. The typed-input echo row contains BOTH sentinels
+    // (the literal characters 'MA…\\n…MB…' appear as we type them), so
+    // toContainText(SENTINEL_A) is satisfied by the echo row alone and
+    // doesn't gate on the shell having actually executed the command.
+    //
+    // What we actually want is "a row whose trimmed text EQUALS the
+    // sentinel" — that shape is only produced by printf's output stream
+    // landing on its own line. The typed-echo row (which starts with
+    // `printf '`) never matches; PS1 prompts and autosuggestions never
+    // match either. Polling on this condition both waits for execution
+    // AND proves the multi-line layout in one step.
+    const hasOwnRow = (sentinel: string): Promise<boolean> =>
+      page.evaluate((needle) => {
         const rows = document.querySelector(".xterm-rows");
-        if (rows === null) return { aOnly: 0, bOnly: 0 };
-        let aOnly = 0;
-        let bOnly = 0;
-        for (const el of Array.from(rows.children)) {
-          const text = el.textContent ?? "";
-          const hasA = text.includes(a);
-          const hasB = text.includes(b);
-          if (hasA && !hasB) aOnly++;
-          if (hasB && !hasA) bOnly++;
-        }
-        return { aOnly, bOnly };
-      },
-      { a: SENTINEL_A, b: SENTINEL_B },
-    );
+        if (rows === null) return false;
+        return Array.from(rows.children).some(
+          (el) => (el.textContent ?? "").trim() === needle,
+        );
+      }, sentinel);
 
-    // Each sentinel must appear at least once on a row that does NOT
-    // contain the other — proves the embedded \n produced a newline in
-    // the rendered output, not just literal characters jammed together.
-    expect(layout.aOnly).toBeGreaterThanOrEqual(1);
-    expect(layout.bOnly).toBeGreaterThanOrEqual(1);
+    await expect
+      .poll(() => hasOwnRow(SENTINEL_A), { timeout: 15_000 })
+      .toBe(true);
+    await expect
+      .poll(() => hasOwnRow(SENTINEL_B), { timeout: 15_000 })
+      .toBe(true);
   } finally {
     await disposeApp(handle);
   }
@@ -209,24 +195,26 @@ test("carriage-return overwrite renders the post-CR characters in place", async 
       timeout: 15_000,
     });
 
-    // Stronger: the unique TAIL appears exactly once after overwrite —
-    // the original 'before<tail>' line was overwritten in place, not
-    // scrolled away to a separate row that might still contain it.
-    // We count rows containing TAIL; expect a single output row plus
-    // the typed-input echo line, so 2 — with no third row holding the
-    // pre-CR text.
-    const rowsWithTail = await page.evaluate((needle) => {
+    // Stronger: prove the pre-CR text was overwritten in place rather
+    // than landing on its own row. We can't just count "rows containing
+    // TAIL" — shells with zsh-autosuggestions re-render the previous
+    // command at the next prompt, and the typed-input echo also
+    // contains TAIL inside the printf format string. Both produce
+    // TAIL-bearing rows that are unrelated to CR semantics.
+    //
+    // What's unique to a CR failure is a row whose trimmed text STARTS
+    // with `before<TAIL>` — that shape is only produced by printf's
+    // output stream. The typed-echo row starts with `printf`, prompt
+    // rows start with PS1 fragments, and the post-CR output starts
+    // with `XXfore`. None of those start with `before`.
+    const preCrRowExists = await page.evaluate((pre) => {
       const rows = document.querySelector(".xterm-rows");
-      if (rows === null) return -1;
-      return Array.from(rows.children).filter(
-        (el) => el.textContent !== null && el.textContent.includes(needle),
-      ).length;
-    }, TAIL);
-    // The typed input ('printf "before<tail>\rXX\n"') and the
-    // post-overwrite output ('XXfore<tail>') each contain TAIL — two
-    // rows. If the carriage return failed and produced 'before<tail>'
-    // AS WELL, we'd see three.
-    expect(rowsWithTail).toBe(2);
+      if (rows === null) return false;
+      return Array.from(rows.children).some((el) =>
+        (el.textContent ?? "").trim().startsWith(pre),
+      );
+    }, PRE);
+    expect(preCrRowExists).toBe(false);
   } finally {
     await disposeApp(handle);
   }
