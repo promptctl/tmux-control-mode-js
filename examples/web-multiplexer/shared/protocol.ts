@@ -7,7 +7,11 @@
 // Types-only imports from tmux-control-mode-js. No runtime code from the
 // library crosses into the browser bundle (enforced by build + DEMO-02).
 
-import type { TmuxMessage, CommandResponse } from "../../../src/protocol/types.js";
+import type {
+  PaneAction,
+  TmuxMessage,
+  CommandResponse,
+} from "../../../src/protocol/types.js";
 
 /**
  * A TmuxMessage serialized for JSON transport. Pane `output` and
@@ -46,7 +50,18 @@ export interface DetachRequest {
   readonly id: string;
 }
 
-export type ClientToServer = ExecuteRequest | SendKeysRequest | DetachRequest;
+export interface SetPaneActionRequest {
+  readonly kind: "setPaneAction";
+  readonly id: string;
+  readonly paneId: number;
+  readonly action: PaneAction;
+}
+
+export type ClientToServer =
+  | ExecuteRequest
+  | SendKeysRequest
+  | DetachRequest
+  | SetPaneActionRequest;
 
 // ---------------------------------------------------------------------------
 // Server → Browser

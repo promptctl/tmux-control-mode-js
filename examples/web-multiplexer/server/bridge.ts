@@ -145,6 +145,13 @@ function handleConnection(ws: WebSocket): void {
         send({ kind: "response", id: msg.id, response });
         return;
       }
+      if (msg.kind === "setPaneAction") {
+        const response = await client
+          .setPaneAction(msg.paneId, msg.action)
+          .catch((r) => r);
+        send({ kind: "response", id: msg.id, response });
+        return;
+      }
       if (msg.kind === "detach") {
         client.detach();
         return;

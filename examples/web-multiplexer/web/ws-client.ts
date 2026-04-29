@@ -20,6 +20,7 @@ import type {
 } from "../shared/protocol.ts";
 import type {
   CommandResponse,
+  PaneAction,
   TmuxMessage,
 } from "../../../src/protocol/types.js";
 import type {
@@ -203,6 +204,10 @@ export class WebSocketBridge implements TmuxBridge {
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
     return this.send({ kind: "sendKeys", id: this.id(), target, keys });
+  }
+
+  setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {
+    return this.send({ kind: "setPaneAction", id: this.id(), paneId, action });
   }
 
   detach(): void {
