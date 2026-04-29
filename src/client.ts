@@ -49,9 +49,27 @@ export type { SplitOptions } from "./protocol/encoder.js";
  * invoke it) and fire-and-forget issues `refresh-client -B <name>` to tmux.
  *
  * `dispose()` is idempotent — calling it twice is safe.
+ *
+ * The handle remains valid across transport reconnects: when the client
+ * re-issues subscriptions against a fresh tmux server (under fresh names),
+ * the same handle still disposes the right subscription.
  */
 export interface SubscriptionHandle {
   dispose(): void;
+}
+
+/**
+ * Payload for the `subscription-error` client event. Surfaces failures from
+ * the per-subscription resubscribe path that runs after a transport
+ * reconnect.
+ */
+export interface SubscriptionErrorEvent {
+  /** Lifecycle phase the error originated in. */
+  readonly phase: "resubscribe";
+  /** The freshly-allocated tmux subscription name we tried to (re)issue. */
+  readonly name: string;
+  /** Original failure cause from the underlying `sendRaw` rejection. */
+  readonly cause: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +89,18 @@ interface InflightEntry {
   readonly reject: (err: TmuxCommandError) => void;
 }
 
+// [LAW:one-source-of-truth] Per-subscription state lives in ONE record per
+// live subscription. `name` is mutable because reissue (after a transport
+// reconnect) allocates a fresh name against the new tmux server while the
+// consumer-held `SubscriptionHandle` continues to point at the same entry.
+interface SubscriptionEntry {
+  readonly what: string;
+  readonly format: string;
+  readonly handler: (value: string) => void;
+  name: string;
+  disposed: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // TmuxClient
 // ---------------------------------------------------------------------------
@@ -86,11 +116,27 @@ export class TmuxClient {
 
   // [LAW:single-enforcer] Subscription router: ONE map, ONE listener,
   // installed lazily on first typed subscribe. Auto-allocated names route
-  // %subscription-changed events to the right handler without consumers
-  // ever seeing the name.
-  private readonly subRoutes = new Map<string, (value: string) => void>();
+  // %subscription-changed events to the right entry without consumers
+  // ever seeing the name. The entries Set is the canonical "live
+  // subscriptions" list — reissueAll iterates it after a transport reconnect.
+  // [LAW:one-source-of-truth] subRoutes is derived from entries (each
+  // entry's current `name` keys into it); the two are kept in lockstep at
+  // every mutation site.
+  private readonly subRoutes = new Map<string, SubscriptionEntry>();
+  private readonly subEntries = new Set<SubscriptionEntry>();
   private subCounter = 0;
   private subListenerInstalled = false;
+  private transportReconnectInstalled = false;
+
+  // [LAW:single-enforcer] Client-lifecycle event listeners (subscription
+  // reset / per-subscription resubscribe error) live in their own sets,
+  // separate from the tmux protocol-level emitter. The protocol emitter
+  // dispatches `TmuxMessage` values; these events are client-internal and
+  // would not fit that union without polluting it.
+  private readonly subscriptionsResetHandlers = new Set<() => void>();
+  private readonly subscriptionErrorHandlers = new Set<
+    (ev: SubscriptionErrorEvent) => void
+  >();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -118,7 +164,22 @@ export class TmuxClient {
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   on(event: "*", handler: (ev: TmuxMessage) => void): void;
+  on(event: "subscriptions-reset", handler: () => void): void;
+  on(
+    event: "subscription-error",
+    handler: (ev: SubscriptionErrorEvent) => void,
+  ): void;
   on(event: string, handler: (ev: never) => void): void {
+    if (event === "subscriptions-reset") {
+      this.subscriptionsResetHandlers.add(handler as () => void);
+      return;
+    }
+    if (event === "subscription-error") {
+      this.subscriptionErrorHandlers.add(
+        handler as (ev: SubscriptionErrorEvent) => void,
+      );
+      return;
+    }
     this.emitter.on(event as "*", handler as (ev: TmuxMessage) => void);
   }
 
@@ -127,7 +188,22 @@ export class TmuxClient {
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   off(event: "*", handler: (ev: TmuxMessage) => void): void;
+  off(event: "subscriptions-reset", handler: () => void): void;
+  off(
+    event: "subscription-error",
+    handler: (ev: SubscriptionErrorEvent) => void,
+  ): void;
   off(event: string, handler: (ev: never) => void): void {
+    if (event === "subscriptions-reset") {
+      this.subscriptionsResetHandlers.delete(handler as () => void);
+      return;
+    }
+    if (event === "subscription-error") {
+      this.subscriptionErrorHandlers.delete(
+        handler as (ev: SubscriptionErrorEvent) => void,
+      );
+      return;
+    }
     this.emitter.off(event as "*", handler as (ev: TmuxMessage) => void);
   }
 
@@ -267,35 +343,52 @@ export class TmuxClient {
     );
   }
 
-  // [LAW:single-enforcer] All routed subscriptions allocate their name and
-  // register their handler here. Failure cleans up the route entry so a
-  // rejected subscribe never leaves a zombie route behind.
+  // [LAW:single-enforcer] All routed subscriptions allocate their name,
+  // create their entry, and register the entry here. Failure cleans up so
+  // a rejected subscribe never leaves a zombie route or entry behind.
   private async installRoutedSubscription(
     what: string,
     format: string,
     handler: (value: string) => void,
   ): Promise<SubscriptionHandle> {
     this.installSubscriptionListener();
-    const name = `tmux-cm-sub-${++this.subCounter}`;
-    this.subRoutes.set(name, handler);
+    this.installTransportReconnectHook();
+    const entry: SubscriptionEntry = {
+      what,
+      format,
+      handler,
+      name: `tmux-cm-sub-${++this.subCounter}`,
+      disposed: false,
+    };
+    this.subEntries.add(entry);
+    this.subRoutes.set(entry.name, entry);
     try {
-      await this.sendRaw(refreshClientSubscribe(name, what, format));
+      await this.sendRaw(refreshClientSubscribe(entry.name, what, format));
     } catch (err) {
       // [LAW:one-source-of-truth] On tmux rejection (bad format, etc.) the
-      // route entry is removed so the map mirrors only live subscriptions.
-      this.subRoutes.delete(name);
+      // route AND entry are removed so the canonical "live subscriptions"
+      // set mirrors only what tmux has actually accepted.
+      this.subRoutes.delete(entry.name);
+      this.subEntries.delete(entry);
+      entry.disposed = true;
       throw err;
     }
     return {
       dispose: () => {
+        if (entry.disposed) return;
+        entry.disposed = true;
         // [LAW:dataflow-not-control-flow] Sync handler removal first so any
         // %subscription-changed event already in flight is silently dropped
         // by the router; the unsubscribe wire command is fire-and-forget.
-        this.subRoutes.delete(name);
+        // [LAW:one-source-of-truth] Both the route map and the entries set
+        // are updated together — they are derived views over the same
+        // canonical "live subscriptions" state.
+        this.subRoutes.delete(entry.name);
+        this.subEntries.delete(entry);
         // [LAW:dataflow-not-control-flow] tmux's response is irrelevant on
         // dispose — the route is already gone client-side. Swallow any
         // rejection so a torn-down transport doesn't surface a UnhandledRejection.
-        void this.sendRaw(refreshClientUnsubscribe(name)).catch(
+        void this.sendRaw(refreshClientUnsubscribe(entry.name)).catch(
           () => undefined,
         );
       },
@@ -309,9 +402,84 @@ export class TmuxClient {
     if (this.subListenerInstalled) return;
     this.subListenerInstalled = true;
     this.emitter.on("subscription-changed", (ev) => {
-      const route = this.subRoutes.get(ev.name);
-      route?.(ev.value);
+      const entry = this.subRoutes.get(ev.name);
+      // [LAW:no-defensive-null-guards] entry can legitimately be missing
+      // (event arrived after dispose, or for an unknown name) — that's a
+      // routing decision encoded as data, not a bug.
+      entry?.handler(ev.value);
     });
+  }
+
+  // [LAW:single-enforcer] Exactly one transport.onReconnect listener exists
+  // per TmuxClient. Installed lazily on first subscribe so clients that
+  // never subscribe pay nothing, and so transports that don't implement
+  // onReconnect (e.g. spawnTmux) are not touched at all.
+  private installTransportReconnectHook(): void {
+    if (this.transportReconnectInstalled) return;
+    if (this.transport.onReconnect === undefined) return;
+    this.transportReconnectInstalled = true;
+    this.transport.onReconnect(() => {
+      // Fire-and-forget — reissueAll handles its own error reporting via
+      // the `subscription-error` client event. Awaiting here would block
+      // the transport's reconnect path on tmux response RTTs.
+      void this.reissueAll();
+    });
+  }
+
+  /**
+   * Re-issue every live subscription against the current tmux server,
+   * allocating fresh names. Called automatically when `transport.onReconnect`
+   * fires; exposed so consumers building bespoke transports can also drive
+   * it manually.
+   *
+   * Emits `subscriptions-reset` synchronously BEFORE any wire traffic, so
+   * downstream projections (e.g. `TmuxModel`) can clear cached state and
+   * show a "reconnecting" affordance until the first fresh delivery lands.
+   *
+   * Per-subscription failures emit `subscription-error` with `phase: 'resubscribe'`
+   * and do NOT throw — one bad format does not kill the rest of the batch
+   * or the client. The failed entry is dropped from the live set so a
+   * second reconnect does not retry it indefinitely.
+   *
+   * Idempotent in the sense that calling it with no live subscriptions is
+   * a no-op; safe to invoke multiple times.
+   */
+  async reissueAll(): Promise<void> {
+    // [LAW:dataflow-not-control-flow] Notify consumers FIRST so they can
+    // clear stale cached state synchronously, before any new tmux traffic
+    // could deliver fresh data on top of the old.
+    for (const handler of this.subscriptionsResetHandlers) handler();
+
+    // Snapshot the entries set; reissue mutates `entry.name` and the
+    // route map underneath us. Disposed entries are filtered at iteration
+    // time because dispose can race with the loop.
+    const snapshot = Array.from(this.subEntries);
+    for (const entry of snapshot) {
+      if (entry.disposed) continue;
+      // [LAW:one-source-of-truth] Drop the OLD name's route mapping
+      // before installing the new one. The entries set retains the
+      // entry; we only swap the route key.
+      this.subRoutes.delete(entry.name);
+      const newName = `tmux-cm-sub-${++this.subCounter}`;
+      entry.name = newName;
+      this.subRoutes.set(newName, entry);
+      try {
+        await this.sendRaw(
+          refreshClientSubscribe(newName, entry.what, entry.format),
+        );
+      } catch (cause) {
+        // tmux rejected the resubscribe — drop both views to keep them
+        // mirroring tmux state, then surface the failure. The entry's
+        // SubscriptionHandle still works (dispose is idempotent on a
+        // disposed entry).
+        this.subRoutes.delete(newName);
+        this.subEntries.delete(entry);
+        entry.disposed = true;
+        for (const h of this.subscriptionErrorHandlers) {
+          h({ phase: "resubscribe", name: newName, cause });
+        }
+      }
+    }
   }
 
   /**
