@@ -1,50 +1,36 @@
 // examples/web-multiplexer/web/pane-terminal.ts
 //
-// PaneTerminal — one per tmux pane the UI is showing. A plain class (not a
-// React component) that owns an xterm.js Terminal and an independent slice
-// of reactive state. It is instantiated from a `useMemo` keyed on pane.id
-// inside <PaneView>, then `.mount(container)`-ed and `.dispose()`-d via
-// useEffect lifecycle.
+// Demo-side adapter wiring an xterm.js Terminal into a library PaneSession.
 //
-// Why a class and not a hook stew:
-//  - The xterm lifecycle is imperative at the edges (constructor / open /
-//    write / resize / dispose). Wrapping that in a class keeps the
-//    imperative code cohesive and testable.
-//  - The reactive derivations (font size, resize, seeding state machine)
-//    live inside MobX reactions declared in `mount()`. React's useEffect
-//    dependency arrays do not model "derive side effect from observable
-//    state" cleanly; `reaction()` does.
-//  - State machine (seeding → live) needs a stable owner that survives
-//    container resize. A class is that owner.
+// The seed→live state machine, the buffer drain, and the send-keys input
+// pipe live in PaneSession (`src/pane-session.ts`). This file owns:
+//   - the xterm Terminal instance and its DOM lifecycle,
+//   - MobX-observable status fed to the toolbar (font size, applied dims),
+//   - the ResizeObserver against the container,
+//   - font-fit / pixel-to-cell math (measure-once + invert),
+//   - the xterm-specific quirk that the very first synchronous resize after
+//     `term.open()` throws inside Viewport.syncScrollArea — handled inside
+//     the sink adapter, not in PaneSession.
 //
-// State machine:
-//
-//    new PaneTerminal()   state = idle
-//        │
-//        │ mount(container)
-//        ▼
-//    register onEvent listener (begins buffering)
-//    register MobX reactions
-//    state = seeding   ──►   capture-pane -e -p -S -
-//                               │
-//                               ▼
-//                         write capture, drain buffer, flip to live
-//                         (synchronous; no await)
-//        │
-//        │ state = live   ──►   onEvent writes directly to xterm
-//        │
-//        │ dispose()
-//        ▼
-//    state = disposed, all handlers detached, term.dispose()
+// [LAW:single-enforcer] `applySizing` is the ONE site that drives xterm's
+// dimensions. The MobX reaction below is the single source — neither React
+// effects nor PaneSession ever call into xterm sizing directly.
 
 import { reaction, observable, runInAction, type IReactionDisposer } from "mobx";
 import { Terminal } from "@xterm/xterm";
+import {
+  PaneSession,
+  type PaneSessionClient,
+  type TerminalSink,
+} from "../../../src/pane-session.js";
 import type { TmuxBridge } from "./bridge.ts";
-import type { TmuxMessage } from "../../../src/protocol/types.js";
+import type {
+  ExtendedOutputMessage,
+  OutputMessage,
+  TmuxMessage,
+} from "../../../src/protocol/types.js";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
-
-type LifeState = "idle" | "seeding" | "live" | "disposed";
 
 // ---------------------------------------------------------------------------
 // Font measurement — once per page, cached.
@@ -129,6 +115,7 @@ const FONT_MAX = 16;
  * the ideal size is below FONT_MIN (callers may surface an "oversized"
  * affordance in that case).
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function fitFontSize(
   cols: number,
   rows: number,
@@ -170,7 +157,107 @@ export function dimensionsForContainer(
 }
 
 // ---------------------------------------------------------------------------
-// PaneTerminal
+// Bridge → PaneSessionClient adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * The renderer-side `TmuxBridge` collapses every server notification into a
+ * single `onEvent` stream (one IPC channel for all events). PaneSession
+ * wants a typed `on("output", h)` / `off("output", h)` surface so it can
+ * register only what it needs and detach cleanly. This adapter routes the
+ * bridge's fan-in stream to per-event listener sets.
+ *
+ * [LAW:locality-or-seam] This is the seam between the bridge's transport
+ * shape and the library's PaneSessionClient contract. Per-pane filtering
+ * happens INSIDE PaneSession (one paneId comparison per event); this layer
+ * only narrows by event type.
+ */
+function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
+  const outputHandlers = new Set<(msg: OutputMessage) => void>();
+  const extendedHandlers = new Set<(msg: ExtendedOutputMessage) => void>();
+
+  // [LAW:single-enforcer] One bridge.onEvent registration; never grows.
+  // Adding a third event type would extend this dispatch table, not add
+  // a parallel registration.
+  bridge.onEvent((ev: TmuxMessage) => {
+    if (ev.type === "output") {
+      for (const h of outputHandlers) h(ev);
+    } else if (ev.type === "extended-output") {
+      for (const h of extendedHandlers) h(ev);
+    }
+  });
+
+  return {
+    on(event: "output" | "extended-output", handler: never): void {
+      if (event === "output") {
+        outputHandlers.add(handler as (msg: OutputMessage) => void);
+      } else {
+        extendedHandlers.add(handler as (msg: ExtendedOutputMessage) => void);
+      }
+    },
+    off(event: "output" | "extended-output", handler: never): void {
+      if (event === "output") {
+        outputHandlers.delete(handler as (msg: OutputMessage) => void);
+      } else {
+        extendedHandlers.delete(
+          handler as (msg: ExtendedOutputMessage) => void,
+        );
+      }
+    },
+    execute(command) {
+      return bridge.execute(command);
+    },
+    sendKeys(target, keys) {
+      return bridge.sendKeys(target, keys);
+    },
+  } as PaneSessionClient;
+}
+
+// ---------------------------------------------------------------------------
+// xterm sink adapter
+// ---------------------------------------------------------------------------
+
+const TEXT_ENCODER = new TextEncoder();
+
+/**
+ * Build a `TerminalSink` driving the given xterm `Terminal`. Owns one
+ * xterm-specific quirk: the very first synchronous `term.resize()` after
+ * `term.open()` throws because xterm's Viewport subscribes to onResize
+ * inside open() and dereferences the renderer's `dimensions` before the
+ * renderer has booted (renderer init runs on the first render tick, not
+ * inside open()). Defer the first resize by one animation frame so the
+ * renderer is up. Subsequent resizes go through directly.
+ *
+ * [LAW:locality-or-seam] The rAF deferral is sink-specific. PaneSession
+ * sees a clean `sink.resize(cols, rows)` contract and stays renderer-
+ * agnostic.
+ */
+function createXtermSink(term: Terminal): TerminalSink {
+  let firstResizeApplied = false;
+  return {
+    write(bytes) {
+      term.write(bytes);
+    },
+    resize(cols, rows) {
+      if (!firstResizeApplied) {
+        firstResizeApplied = true;
+        requestAnimationFrame(() => term.resize(cols, rows));
+        return;
+      }
+      term.resize(cols, rows);
+    },
+    onData(handler) {
+      const d = term.onData((s) => handler(TEXT_ENCODER.encode(s)));
+      return { dispose: () => d.dispose() };
+    },
+    focus() {
+      term.focus();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PaneTerminal — framework adapter
 // ---------------------------------------------------------------------------
 
 export class PaneTerminal {
@@ -183,8 +270,8 @@ export class PaneTerminal {
   // The size reaction reads this AND the store's pane width/height.
   private readonly containerBox = observable({ w: 0, h: 0 });
 
-  // Observable "oversized" flag surfaced on the store's pane record so the
-  // toolbar can highlight the resize button.
+  // Observable status surfaced to the toolbar (font size, applied dims,
+  // oversized affordance).
   readonly status = observable({
     oversized: false,
     currentFontSize: FONT_MAX,
@@ -193,12 +280,11 @@ export class PaneTerminal {
   });
 
   private term: Terminal | null = null;
+  private session: PaneSession | null = null;
   private containerEl: HTMLElement | null = null;
   private ro: ResizeObserver | null = null;
-  private unsubEvent: (() => void) | null = null;
   private disposers: IReactionDisposer[] = [];
-  private state: LifeState = "idle";
-  private buffer: Uint8Array[] = [];
+  private disposed = false;
 
   constructor(paneId: number, store: DemoStore, uiStore: UiStore) {
     this.paneId = paneId;
@@ -209,14 +295,12 @@ export class PaneTerminal {
 
   /**
    * Mount this PaneTerminal into a DOM container. Opens an xterm.js
-   * Terminal inside it, registers the live-event listener (buffering
-   * mode), kicks off capture-pane for the seed, and installs the MobX
-   * reaction that keeps font size in sync with (pane dimensions,
-   * container dimensions). Idempotent: calling mount twice on the same
-   * instance is a no-op after the first call.
+   * Terminal inside it, builds a PaneSession on top, kicks off the seed,
+   * and installs the MobX reaction that keeps font size + cols/rows in
+   * sync with (pane dimensions, container dimensions). Idempotent.
    */
   mount(container: HTMLElement): void {
-    if (this.state !== "idle") return;
+    if (this.disposed || this.term !== null) return;
     this.containerEl = container;
 
     const term = new Terminal({
@@ -230,11 +314,7 @@ export class PaneTerminal {
       // will be overwritten by the first sizing reaction.
     });
     // [LAW:no-mode-explosion] No FitAddon: we drive cols/rows from tmux
-    // directly via `term.resize()`, and the user picks font size via the
-    // toolbar. FitAddon subscribes to onResize and dereferences the core
-    // renderer's `dimensions` before its first render tick — causing a
-    // crash on the very first synchronous sizing call. Deleting it both
-    // removes dead code and fixes that crash.
+    // directly via the sink, and the user picks font size via the toolbar.
     term.open(container);
     this.term = term;
 
@@ -245,35 +325,35 @@ export class PaneTerminal {
     // a fresh (unfocused) xterm and do nothing. The demo attaches a
     // single document-level capture-phase keydown listener in App.tsx
     // instead; see store.handleKeyEvent for routing.
+    //
+    // PaneSession owns the "keystrokes the keymap ignored → tmux send-keys"
+    // path: createXtermSink hooks `term.onData`, PaneSession calls
+    // `client.sendKeys` for each chunk. Three lines of demo code disappear.
 
-    // Keystrokes → tmux send-keys on this pane. The document-level
-    // listener prevents default on consumed chords before they reach this
-    // callback, so xterm's onData only fires for keys the keymap ignored.
-    term.onData((data) => {
-      if (this.state === "disposed") return;
-      this.store.sendKeysToPane(this.paneId, data);
+    const sink = createXtermSink(term);
+    const session = new PaneSession({
+      client: bridgeAsPaneSessionClient(this.client),
+      paneId: this.paneId,
+      sink,
+    });
+    this.session = session;
+
+    // Surface the failure modes the library exposes. The demo currently
+    // logs; production consumers might surface a UI affordance.
+    session.on("seed-error", ({ cause }) => {
+      console.error(`[pane-terminal %${this.paneId}] seed failed:`, cause);
+    });
+    session.on("seed-overflow", ({ droppedBytes }) => {
+      console.warn(
+        `[pane-terminal %${this.paneId}] seed buffer overflow, dropped ${droppedBytes} bytes`,
+      );
     });
 
-    // Live event subscription. In "seeding" state bytes go to the buffer;
-    // in "live" state bytes go straight to xterm. No event is ever
-    // dropped: the listener is registered before capture-pane is sent.
-    this.unsubEvent = this.client.onEvent((ev: TmuxMessage) => {
-      if (this.state === "disposed") return;
-      if (
-        (ev.type === "output" || ev.type === "extended-output") &&
-        ev.paneId === this.paneId
-      ) {
-        if (this.state === "live") {
-          term.write(ev.data);
-        } else {
-          this.buffer.push(ev.data);
-        }
-      }
-    });
+    void session.attach();
 
     // Container size observer → observable box.
     this.ro = new ResizeObserver((entries) => {
-      if (this.state === "disposed") return;
+      if (this.disposed) return;
       const r = entries[0].contentRect;
       runInAction(() => {
         this.containerBox.w = r.width;
@@ -285,10 +365,13 @@ export class PaneTerminal {
     // THE sizing reaction. Declared once; fires whenever pane dims OR
     // the user's chosen font size change.
     //
-    // [LAW:dataflow-not-control-flow] Derived state: xterm cols/rows
-    // come from tmux, font size comes from UiStore. Both are observable.
-    // Reaction declares the dependency and runs applySizing as the effect.
-    // Nowhere else in the codebase does xterm get resized.
+    // [LAW:dataflow-not-control-flow] Derived state: cols/rows come from
+    // tmux via the topology subscription, font size from UiStore. Both
+    // are observable. Reaction declares the dependency and runs
+    // applySizing as the effect — once for the initial values
+    // (fireImmediately) and again on each change. The xterm sink's
+    // first-resize rAF deferral makes that initial synchronous fire
+    // safe.
     this.disposers.push(
       reaction(
         () => {
@@ -303,100 +386,9 @@ export class PaneTerminal {
           if (cols <= 0 || rows <= 0) return;
           this.applySizing(cols, rows, font);
         },
+        { fireImmediately: true },
       ),
     );
-
-    // [LAW:single-enforcer] The steady-state reaction above owns all
-    // subsequent resizes. The ONE exception is the very first sizing
-    // call: xterm's Viewport subscribes to onResize inside `term.open()`
-    // and calls `syncScrollArea` which dereferences the core renderer's
-    // `dimensions`. That renderer is instantiated on the first render
-    // tick, not inside `open()`, so calling `term.resize()` synchronously
-    // here throws "Cannot read properties of undefined (reading
-    // 'dimensions')". Defer the initial sizing by one animation frame so
-    // the renderer has booted.
-    requestAnimationFrame(() => {
-      if (this.state === "disposed") return;
-      const p = this.findPane();
-      if (p === null || p.width <= 0 || p.height <= 0) return;
-      this.applySizing(p.width, p.height, this.uiStore.terminalFontSize);
-    });
-
-    // Begin the seed. This is async; events that arrive during it are
-    // buffered by the onEvent listener above, then drained inside
-    // finishSeed() synchronously.
-    this.state = "seeding";
-    void this.seed();
-  }
-
-  /**
-   * Seed xterm with tmux's current pane state:
-   *   1. capture-pane -e -p -S -   → full scrollback + visible screen
-   *   2. display-message -p '...'  → the pane's current cursor (x, y)
-   *
-   * After writing the capture, emit an ANSI cursor-positioning escape so
-   * xterm's cursor lands where tmux says it actually is — not at the
-   * bottom of the captured buffer. Without this, typing after load
-   * appears to happen on the last row instead of at the shell prompt.
-   *
-   * Then drain the buffered live events and flip to live mode. Everything
-   * after the `await` is synchronous so no event can interleave.
-   */
-  private async seed(): Promise<void> {
-    try {
-      const [captureResp, cursorResp] = await Promise.all([
-        // -e: include escapes; -p: print to stdout; -S -: from start of
-        // history to visible screen bottom. Complete scrollback + current
-        // visible rows in one command.
-        this.client.execute(`capture-pane -e -p -S - -t %${this.paneId}`),
-        // Query cursor position directly from tmux. Format vars cursor_x
-        // and cursor_y are 0-indexed from the top-left of the visible
-        // pane screen; we'll convert to 1-indexed for the ANSI CUP escape.
-        this.client.execute(
-          `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y}'`,
-        ),
-      ]);
-      if (this.state === "disposed") return;
-      if (this.term === null) return;
-      const term = this.term;
-
-      // Join captured lines with CR/LF so xterm treats them as real row
-      // breaks. tmux strips the trailing newline from each captured line.
-      const captured = captureResp.output.join("\r\n");
-
-      // Parse "<x>;<y>" from the cursor response. Guard against an empty
-      // or malformed reply by defaulting to the bottom-right of the
-      // visible area (which matches where the capture ends anyway, so
-      // the cursor move becomes a no-op in that case).
-      const cursorLine = cursorResp.output[0] ?? "";
-      const match = cursorLine.match(/^(\d+);(\d+)$/);
-      const cursorX = match !== null ? parseInt(match[1], 10) : -1;
-      const cursorY = match !== null ? parseInt(match[2], 10) : -1;
-
-      // [LAW:single-enforcer] The whole transition from "seeding" to
-      // "live" lives here. Synchronous: no await between the first
-      // write and the mode flip, so no event can interleave.
-      term.write(captured);
-
-      if (cursorX >= 0 && cursorY >= 0) {
-        // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`. 1-indexed.
-        // tmux's cursor_y/cursor_x are 0-indexed within the visible
-        // screen; add 1 for the ANSI conversion.
-        term.write(`\x1b[${cursorY + 1};${cursorX + 1}H`);
-      }
-
-      // Drain any events that arrived while we were awaiting the seed.
-      for (const bytes of this.buffer) {
-        term.write(bytes);
-      }
-      this.buffer = [];
-      this.state = "live";
-    } catch (err) {
-      if (this.state !== "disposed") {
-        this.state = "live"; // allow events to flow even if the seed failed
-        console.error("[pane-terminal] seed failed:", err);
-      }
-    }
   }
 
   /**
@@ -405,10 +397,9 @@ export class PaneTerminal {
    * size manually via the toolbar +/- buttons (no auto-fit math).
    */
   private applySizing(cols: number, rows: number, font: number): void {
-    if (this.term === null) return;
-    const term = this.term;
-    term.options.fontSize = font;
-    term.resize(cols, rows);
+    if (this.term === null || this.session === null) return;
+    this.term.options.fontSize = font;
+    this.session.resize(cols, rows);
     runInAction(() => {
       this.status.currentFontSize = font;
       this.status.appliedCols = cols;
@@ -442,23 +433,22 @@ export class PaneTerminal {
   /**
    * Focus the underlying xterm. Called by PaneCell whenever the owning
    * pane becomes the active pane — which happens on window switch, pane
-   * click, or any keymap-driven focus change. Guard against the idle /
-   * disposed states: focus() on a disposed term throws.
+   * click, or any keymap-driven focus change.
    */
   focus(): void {
-    if (this.state === "disposed" || this.term === null) return;
-    this.term.focus();
+    if (this.disposed) return;
+    this.session?.focus();
   }
 
   dispose(): void {
-    if (this.state === "disposed") return;
-    this.state = "disposed";
+    if (this.disposed) return;
+    this.disposed = true;
     for (const d of this.disposers) d();
     this.disposers = [];
     this.ro?.disconnect();
     this.ro = null;
-    this.unsubEvent?.();
-    this.unsubEvent = null;
+    this.session?.dispose();
+    this.session = null;
     try {
       this.term?.dispose();
     } catch {
@@ -466,6 +456,5 @@ export class PaneTerminal {
     }
     this.term = null;
     this.containerEl = null;
-    this.buffer = [];
   }
 }

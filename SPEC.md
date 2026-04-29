@@ -728,6 +728,38 @@ Requires `CLIENT_CONTROL`.
 
 **Source:** `cmd-refresh-client.c:82-131`, `tmux.1:1427-1438`
 
+### 11.1 One applySizing Enforcer per Consumer
+
+[LAW:single-enforcer] A consumer rendering tmux panes MUST have exactly one
+site that reacts to changes in `(pane.cols, pane.rows, fontSize)` and applies
+the result to the renderer (e.g. `xterm.Terminal.resize`). The library
+provides `PaneSession.resize(cols, rows)` which mirrors to the renderer
+sink; the consumer wires that single mirror to whatever observability primitive
+its framework offers (a MobX `reaction`, a React `useEffect`, a Svelte store
+subscription, etc.).
+
+The pattern this rule forbids:
+
+- A reaction that calls `terminal.resize(cols, rows)` AND
+- A separate `useEffect` or `ResizeObserver` callback that ALSO calls
+  `terminal.resize(...)` with a different derivation of cols/rows.
+
+When two sites resize the same renderer, race conditions and "resize loop"
+bugs follow. The library cannot ship "the one resize handler" without
+coupling to a framework — but the rule that there must be exactly one is
+universal.
+
+**Positive example (web-multiplexer demo):** one MobX `reaction` reads
+`(pane.width, pane.height, terminalFontSize)`, calls
+`paneSession.resize(cols, rows)` plus sets the xterm font; nothing else
+in the codebase resizes xterm.
+
+**Negative example:** a `ResizeObserver` synchronously calls
+`terminal.resize(...)` based on container pixels, while a separate effect
+also calls `terminal.resize(...)` based on `pane.width`. Even when both
+agree most of the time, the cases where they don't are exactly the bugs
+this rule prevents.
+
 ---
 
 ## 12. DCS Wrapping (`-CC` Mode)

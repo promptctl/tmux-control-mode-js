@@ -17,3 +17,12 @@ export {
   listTmuxSocketNames,
   isTmuxServerAlive,
 } from "./transport/sockets.js";
+
+export { PaneSession } from "./pane-session.js";
+export type {
+  TerminalSink,
+  PaneSessionClient,
+  PaneSessionOptions,
+  PaneSessionState,
+  PaneSessionEventMap,
+} from "./pane-session.js";
