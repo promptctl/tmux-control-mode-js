@@ -6,7 +6,11 @@
 // import from the specific submodule, never the barrel — keeps cycles out.
 
 export { TmuxModel } from "./tmux-model.js";
-export type { TmuxModelOptions, TmuxModelEventMap } from "./tmux-model.js";
+export type {
+  TmuxModelClient,
+  TmuxModelOptions,
+  TmuxModelEventMap,
+} from "./tmux-model.js";
 export {
   EMPTY_SNAPSHOT,
   type PaneSnapshot,

@@ -1,37 +1,37 @@
 // examples/web-multiplexer/web/store.ts
 //
-// DemoStore — reactive tmux model driven entirely by tmux subscriptions
-// (SPEC §14: refresh-client -B). No polling. No explicit refresh calls.
+// DemoStore — UI policy layer over the library's `TmuxModel`.
 //
-// Design:
-//   - On bridge ready, we install three format subscriptions:
-//       "sessions" → one record per session
-//       "windows"  → one record per (session × window)
-//       "panes"    → one record per (session × window × pane)
-//     Each uses tmux's nested loop syntax (`#{S:...}`, `#{W:...}`, `#{P:...}`)
-//     so a single subscription emits the full collection of that entity.
+// The topology projection (subscription installation, list-* bootstrap,
+// snapshot rebuild, fast-path refreshes) lives in `TmuxModel` (src/model/).
+// This store wires a `BridgeClient` adapter so `TmuxModel` runs in the
+// renderer against either WebSocket or Electron IPC, then projects each
+// `snapshot` event into MobX-observable fields.
 //
-//   - tmux pushes %subscription-changed events whenever the data changes,
-//     rate-limited to once per second per subscription. The store handles
-//     each event by re-parsing the delivered value and replacing the
-//     corresponding observable collection. MobX observers re-render.
+// What stays here is genuinely demo policy:
+//   - keymap engine driving (with confirm-modal interception for
+//     destructive actions)
+//   - the event log for the inspector
+//   - selection helpers that pair a tmux command dispatch with a
+//     fast-path refresh through the model
 //
-//   - Pane output (%output, %extended-output) is unrelated to subscriptions;
-//     the PaneView component subscribes to those events directly.
-//
-// This is the canonical reactive pattern for a tmux control-mode consumer:
-// zero polling, zero explicit queries after startup, the UI is a pure
-// function of tmux's pushed state.
+// [LAW:one-source-of-truth] Topology lives in `TmuxModel`. This file
+// projects from snapshots into the renderer's UI types; it never builds
+// or mutates a topology tree on its own.
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
+import { BridgeClient } from "./bridge-client.ts";
+// [LAW:one-way-deps] Deep-import the renderer-safe submodule. The barrel
+// at `src/index.ts` re-exports Node-only `spawnTmux`/socket helpers, and ES
+// module evaluation pulls every transitive import even for a single named
+// symbol — loading `src/index.js` in the browser fails on `node:child_process`.
+import { TmuxModel } from "../../../src/model/index.js";
+import type {
+  SessionSnapshot,
+  TmuxSnapshot,
+} from "../../../src/model/index.js";
 import type { TmuxMessage } from "../../../src/protocol/types.js";
-import {
-  buildScopedFormat,
-  parseRows,
-  FIELD_SEP,
-  ROW_SEP,
-} from "../../../src/subscriptions.js";
 import {
   INITIAL_STATE,
   defaultTmuxKeymap,
@@ -76,98 +76,39 @@ export interface SessionInfo {
 type ConnState = "connecting" | "open" | "ready" | "closed";
 
 // ---------------------------------------------------------------------------
-// Subscription format strings
+// Snapshot projection
 //
-// [LAW:one-source-of-truth] Format strings are built by the library's
-// `buildScopedFormat` helper. Field separator is US (\x1f) and row separator
-// is RS (\x1e) — C0 control bytes that cannot appear in any tmux name, so
-// the previous "if a name contains `\n` or `|` parsing breaks" footgun is
-// gone by construction.
+// `TmuxModel` produces `TmuxSnapshot` shapes with `width: number | null`;
+// the demo's UI components were written against the older "always a number"
+// shape and treat empty as 80×24. The projection collapses null → 80/24 at
+// this single boundary so the rest of the renderer stays unchanged.
 // ---------------------------------------------------------------------------
 
-const SESSION_FIELDS = ["session_id", "session_name", "session_attached"] as const;
-const WINDOW_FIELDS = [
-  "session_id",
-  "window_id",
-  "window_index",
-  "window_name",
-  "window_active",
-  "window_zoomed_flag",
-] as const;
-const PANE_FIELDS = [
-  "window_id",
-  "pane_id",
-  "pane_index",
-  "pane_active",
-  "pane_width",
-  "pane_height",
-  "pane_title",
-] as const;
-
-const SESSIONS_FORMAT = `'${buildScopedFormat("S", SESSION_FIELDS)}'`;
-const WINDOWS_FORMAT = `'${buildScopedFormat("S:W", WINDOW_FIELDS)}'`;
-const PANES_FORMAT = `'${buildScopedFormat("S:W:P", PANE_FIELDS)}'`;
-
-// list-* commands deliver one row per output line, so the field-only format
-// (no row separator) suffices; rows are joined back with ROW_SEP into the
-// subscription wire shape so the same parser handles both paths.
-const SESSION_LINE_FORMAT = `'${SESSION_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
-const WINDOW_LINE_FORMAT = `'${WINDOW_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
-const PANE_LINE_FORMAT = `'${PANE_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
-
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
-
-function stripPrefix(raw: string): number {
-  return parseInt(raw.replace(/^[$@%]/, ""), 10);
+function projectSessions(snapshot: TmuxSnapshot): SessionInfo[] {
+  return snapshot.sessions.map(projectSession);
 }
 
-function encodeSnapshotLines(lines: readonly string[]): string {
-  // [LAW:one-source-of-truth] Every row in the snapshot stream is terminated
-  // by ROW_SEP — the same shape `buildScopedFormat` produces, so the same
-  // `parseRows` invocation handles both subscription and list-* paths.
-  return lines.filter((l) => l.length > 0).map((l) => `${l}${ROW_SEP}`).join("");
-}
-
-/**
- * Replace all rows for a given session_id in an encoded snapshot string
- * with fresh ones. Used by the fast-path refresh to swap in the current
- * state of one session without discarding the others.
- *
- * [LAW:single-enforcer] The snapshot-string format (RS-terminated,
- * US-delimited rows) follows `buildScopedFormat` / `parseRows`. Anything
- * that manipulates these strings must follow that format exactly.
- */
-function mergeSessionRows(
-  existing: string,
-  sessionId: number,
-  freshRows: readonly string[],
-  sidFieldIndex: number,
-): string {
-  const sidValue = `$${sessionId}`;
-  const oldRows = existing
-    .split(ROW_SEP)
-    .filter(
-      (l) => l.length > 0 && l.split(FIELD_SEP)[sidFieldIndex] !== sidValue,
-    );
-  return encodeSnapshotLines([...oldRows, ...freshRows]);
-}
-
-/**
- * Replace all pane rows whose window_id is in the given set with fresh
- * ones. Used alongside mergeSessionRows — panes don't carry session_id in
- * our format, so we match by window.
- */
-function mergePaneRowsByWindow(
-  existing: string,
-  freshWindowIds: ReadonlySet<string>,
-  freshRows: readonly string[],
-): string {
-  const oldRows = existing
-    .split(ROW_SEP)
-    .filter((l) => l.length > 0 && !freshWindowIds.has(l.split(FIELD_SEP)[0]));
-  return encodeSnapshotLines([...oldRows, ...freshRows]);
+function projectSession(s: SessionSnapshot): SessionInfo {
+  return {
+    id: s.id,
+    name: s.name,
+    attached: s.attached,
+    windows: s.windows.map((w) => ({
+      id: w.id,
+      index: w.index,
+      name: w.name,
+      active: w.active,
+      zoomed: w.zoomed,
+      panes: w.panes.map((p) => ({
+        id: p.id,
+        index: p.index,
+        active: p.active,
+        title: p.title,
+        width: p.width ?? 80,
+        height: p.height ?? 24,
+      })),
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -195,16 +136,10 @@ export class DemoStore {
   events: TmuxMessage[] = [];
   errors: string[] = [];
 
-  // [LAW:one-source-of-truth] This is the ONE piece of per-client state
-  // tmux subscriptions cannot give us: "which session is THIS -CC control
-  // client currently attached to". `session.attached` from the subscription
-  // just means "some client is attached", so with multiple attached clients
-  // it can't identify our own. tmux broadcasts this via
-  // `%client-session-changed` — we capture that and nothing else writes it.
-  //
-  // `activeWindowId` / `activePaneId` stay fully computed from the tree:
-  // `window.active` and `pane.active` ARE the truth and DO come through the
-  // subscription.
+  // Mirrored from `TmuxSnapshot.clientSessionId` — kept as an MobX field
+  // (instead of a getter into the snapshot) so the few legacy getters that
+  // optimistically write it from selection actions can still observe the
+  // optimistic value before the next snapshot lands.
   private clientSessionId: number | null = null;
 
   // [LAW:one-source-of-truth] `prefixActive` is the demo's UI-facing
@@ -220,59 +155,66 @@ export class DemoStore {
 
   readonly client: TmuxBridge;
 
-  // [LAW:one-source-of-truth] One keymap engine per client session. The
-  // engine's state (root vs. prefix) is shared across all PaneTerminal
-  // instances so pressing C-b in one pane doesn't leave the others in a
-  // stale mode. The demo drives the engine manually (rather than using
-  // bindKeymap) so it can intercept destructive actions for confirmation
-  // and tunnel the prefix-active signal into the UI.
+  // [LAW:one-source-of-truth] One keymap engine per client session.
   private readonly keymapConfig: Keymap = defaultTmuxKeymap();
   private engineState: KeymapState = INITIAL_STATE;
   private readonly hooks: DemoStoreHooks;
 
-  // Raw latest subscription values, kept as observable fields so the
-  // assembled `sessions` collection can be rebuilt lazily in one place.
-  private latestSessions: string | null = null;
-  private latestWindows: string | null = null;
-  private latestPanes: string | null = null;
+  // [LAW:single-enforcer] BridgeClient adapts the renderer-side TmuxBridge
+  // to TmuxModelClient. Subscription routing, format-string assembly, and
+  // typed event fan-out all live there — DemoStore consumes only the
+  // model's `snapshot`/`error` stream.
+  private readonly bridgeClient: BridgeClient;
+  private readonly model: TmuxModel;
 
   constructor(client: TmuxBridge, hooks: DemoStoreHooks = {}) {
     this.client = client;
     this.hooks = hooks;
+    this.bridgeClient = new BridgeClient(client);
+    this.model = new TmuxModel(this.bridgeClient);
+
     // [LAW:single-enforcer] `keyof T` excludes private fields, so the
     // overrides argument can only constrain public members by default.
-    // Declaring "hooks" via the AdditionalKeys generic re-admits the
-    // annotation for the private field — keeping the access modifier
-    // honest while still telling MobX not to wrap it.
-    makeAutoObservable<this, "hooks">(this, {
+    // Declaring the private fields via the AdditionalKeys generic re-admits
+    // the annotation for them — keeping access modifiers honest while
+    // telling MobX not to wrap them.
+    makeAutoObservable<this, "hooks" | "bridgeClient" | "model">(this, {
       client: false,
       hooks: false,
-      // engineState is a non-observable plumbing detail — the UI observes
-      // `prefixActive` instead, which is set whenever the engine transitions.
-      // [LAW:no-shared-mutable-globals] Even though MobX technically supports
-      // observing nested objects, exposing raw engine state would create a
-      // second source of truth for "is the prefix active".
+      bridgeClient: false,
+      model: false,
     });
 
-    // [LAW:single-enforcer] Wire TmuxBridge subscribers EXACTLY ONCE in
-    // the constructor (which only runs once via React's useMemo). Wiring
-    // them in connect() would register a fresh handler each time React
+    // [LAW:single-enforcer] Wire bridge subscribers EXACTLY ONCE in the
+    // constructor (which only runs once via React's useMemo). Wiring them
+    // in connect() would register a fresh handler each time React
     // StrictMode invokes the connect-effect, causing every event to fire
-    // every duplicate handler — ie every event would be processed N times.
+    // every duplicate handler.
     this.client.onState((s) => runInAction(() => this.onStateChange(s)));
     this.client.onError((m) => runInAction(() => this.pushError(m)));
-    this.client.onEvent((ev) => runInAction(() => this.handleEvent(ev)));
+    this.client.onEvent((ev) => runInAction(() => this.pushEvent(ev)));
+
+    this.model.on("snapshot", (snap) =>
+      runInAction(() => this.applySnapshot(snap)),
+    );
+    this.model.on("error", (e) =>
+      runInAction(() =>
+        this.pushError(
+          `tmux model [${e.phase}]: ${
+            e.cause instanceof Error ? e.cause.message : String(e.cause)
+          }`,
+        ),
+      ),
+    );
   }
 
   connect(url: string): void {
-    // The transport's connect() is responsible for idempotency — e.g.
-    // WebSocketBridge no-ops a second connect while a socket is already
-    // OPEN/CONNECTING; transports that are already attached at construction
-    // (Electron IPC) treat this as a no-op and ignore the URL.
     this.client.connect(url);
   }
 
   disconnect(): void {
+    this.model.dispose();
+    this.bridgeClient.dispose();
     this.client.disconnect();
   }
 
@@ -282,119 +224,18 @@ export class DemoStore {
 
   private onStateChange(s: ConnState): void {
     this.connState = s;
-    if (s === "ready") {
-      this.installSubscriptions();
-    }
-  }
-
-  /**
-   * Install the three tmux subscriptions that drive the entire model.
-   * tmux pushes `%subscription-changed` events whenever the data changes,
-   * so there is no need to ever poll after this.
-   */
-  private async installSubscriptions(): Promise<void> {
-    try {
-      await Promise.all([
-        this.client.execute(`refresh-client -B sessions::${SESSIONS_FORMAT}`),
-        this.client.execute(`refresh-client -B windows::${WINDOWS_FORMAT}`),
-        this.client.execute(`refresh-client -B panes::${PANES_FORMAT}`),
-      ]);
-
-      // [LAW:one-source-of-truth] The live model remains driven by the
-      // subscription strings. Initial list-* snapshots are encoded into that
-      // same string shape and fed through the existing rebuild pipeline.
-      const [sessionsResp, windowsResp, panesResp] = await Promise.all([
-        this.client.execute(`list-sessions -F ${SESSION_LINE_FORMAT}`),
-        this.client.execute(`list-windows -a -F ${WINDOW_LINE_FORMAT}`),
-        this.client.execute(`list-panes -a -F ${PANE_LINE_FORMAT}`),
-      ]);
-
-      if (sessionsResp.success) {
-        this.applySubscription("sessions", encodeSnapshotLines(sessionsResp.output));
-      }
-      if (windowsResp.success) {
-        this.applySubscription("windows", encodeSnapshotLines(windowsResp.output));
-      }
-      if (panesResp.success) {
-        this.applySubscription("panes", encodeSnapshotLines(panesResp.output));
-      }
-
-      // Bootstrap the "which session is OUR client attached to" field. In
-      // practice tmux fires %client-session-changed on attach, but there's
-      // no guarantee about timing relative to our subscriptions. Ask
-      // explicitly so the UI has correct state from frame zero.
-      const sessionResp = await this.client.execute(
-        "display-message -p '#{session_id}'",
-      );
-      if (sessionResp.success && sessionResp.output[0] !== undefined) {
-        const parsed = parseInt(sessionResp.output[0].replace(/^\$/, ""), 10);
-        if (Number.isFinite(parsed)) {
-          runInAction(() => {
-            this.clientSessionId = parsed;
-          });
-        }
-      }
-    } catch (err) {
-      runInAction(() =>
-        this.pushError(
-          `subscribe failed: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
-    }
   }
 
   // -------------------------------------------------------------------------
-  // Event handling
+  // Snapshot projection
   // -------------------------------------------------------------------------
 
-  private handleEvent(ev: TmuxMessage): void {
-    this.pushEvent(ev);
-    if (ev.type === "subscription-changed") {
-      this.applySubscription(ev.name, ev.value);
-      return;
-    }
-    if (ev.type === "layout-change") {
-      // [LAW:dataflow-not-control-flow] The subscriptions drive the
-      // steady-state model, but subscription delivery is rate-limited to
-      // ~1 Hz. Pane geometry (width/height) must feel instant when a user
-      // resizes their terminal, so we fast-path on %layout-change by
-      // running a targeted list-panes for just that window and updating
-      // dimensions in place. This is O(panes-in-one-window) and completes
-      // in a few milliseconds.
-      this.refreshWindowDimensions(ev.windowId);
-      return;
-    }
-    // [LAW:one-source-of-truth] Events like session-window-changed,
-    // client-session-changed, window-pane-changed are intentionally NOT
-    // handled here. The subscription-fed `sessions` tree already carries
-    // `session.attached`, `window.active`, `pane.active` — those flags ARE
-    // the truth, and `activeSessionId`/`activeWindowId` are computed from
-    // them. Subscriptions are rate-limited to ~1 Hz, so for sub-second
-    // feedback after a user action we call `refreshSession` from the
-    // dispatch path (see `dispatchWithConfirm` and the `select*` methods).
-    // Attempting to patch these events would create parallel state.
-    //
-    // Structural fast-path (window created/destroyed): triggered off the
-    // keymap-dispatched action too, not off this event — see
-    // dispatchAndRefresh below.
-    if (ev.type === "client-session-changed") {
-      // The ONLY local state write triggered by an event. This tracks which
-      // session OUR control client is attached to — tmux doesn't express
-      // this via subscriptions.
-      this.clientSessionId = ev.sessionId;
-      void this.refreshSession(ev.sessionId);
-      return;
-    }
-    if (ev.type === "session-window-changed" || ev.type === "window-pane-changed") {
-      // No local writes — just kick the refresh so the subscription-fed
-      // tree picks up the new active flags in a few ms instead of ~1 s.
-      const sid =
-        ev.type === "session-window-changed"
-          ? ev.sessionId
-          : this.clientSessionId;
-      if (sid !== null) void this.refreshSession(sid);
-      return;
-    }
+  private applySnapshot(snap: TmuxSnapshot): void {
+    // [LAW:dataflow-not-control-flow] Always project; the snapshot's
+    // emptiness is encoded in the data (empty array, null id), not in
+    // whether we run the projection.
+    this.sessions = projectSessions(snap);
+    this.clientSessionId = snap.clientSessionId;
   }
 
   // -------------------------------------------------------------------------
@@ -453,18 +294,17 @@ export class DemoStore {
 
   /**
    * Dispatch an action to tmux and then fast-path a targeted refresh of
-   * the current session's windows/panes. Subscriptions will catch up
-   * within ~1s on their own; this just makes the UI feel snappy after a
-   * user keystroke.
+   * the current session's windows/panes via the model. Subscriptions will
+   * catch up within ~1s on their own; this just makes the UI feel snappy
+   * after a user keystroke.
    *
    * [LAW:single-enforcer] This is the ONE place that pairs an action
-   * dispatch with a refresh. Event handlers don't write active state; the
-   * refresh call here is what pulls the post-action truth from tmux.
+   * dispatch with a refresh.
    */
   private dispatchAndRefresh(action: Action): void {
     dispatchAction(this.client, action);
     const sid = this.activeSessionId;
-    if (sid !== null) void this.refreshSession(sid);
+    if (sid !== null) void this.model.refreshSession(sid);
   }
 
   confirmPendingAction(): void {
@@ -477,183 +317,9 @@ export class DemoStore {
     this.pendingConfirm = null;
   }
 
-  /**
-   * Targeted fast-path: re-run list-windows and list-panes for a single
-   * session and merge the results into the model right away. Used after
-   * session-window-changed fires for a window the subscription hasn't
-   * delivered yet — otherwise the UI would be blank for up to a second
-   * while waiting for the next subscription tick.
-   *
-   * [LAW:single-enforcer] The subscription pipeline remains the
-   * steady-state model builder. This is a fast-path nudge, not a parallel
-   * source of truth — its output is fed through the same parseRecords +
-   * rebuildModel path, so the model shape stays consistent.
-   */
-  private async refreshSession(sessionId: number): Promise<void> {
-    try {
-      const [windowsResp, panesResp] = await Promise.all([
-        this.client.execute(
-          `list-windows -t $${sessionId} -F ${WINDOW_LINE_FORMAT}`,
-        ),
-        this.client.execute(
-          `list-panes -s -t $${sessionId} -F ${PANE_LINE_FORMAT}`,
-        ),
-      ]);
-      if (!windowsResp.success || !panesResp.success) return;
-
-      // Merge by replacing the rows for this session in the latest snapshot
-      // strings. Simpler and more correct than trying to patch `sessions`
-      // directly: rebuildModel is a pure function of the three snapshots, so
-      // producing a new one for just this session and re-running the rebuild
-      // keeps everything consistent.
-      if (this.latestWindows !== null) {
-        this.latestWindows = mergeSessionRows(
-          this.latestWindows,
-          sessionId,
-          windowsResp.output,
-          /* sidFieldIndex */ 0,
-        );
-      }
-      if (this.latestPanes !== null) {
-        // Pane rows from the fast-path don't carry session_id, but all
-        // panes returned here belong to `sessionId`'s windows. We replace
-        // rows whose window_id appears in the fresh windowsResp output.
-        const freshWindowIds = new Set(
-          windowsResp.output
-            .map((line) => line.split(FIELD_SEP)[1])
-            .filter((s) => s.length > 0),
-        );
-        this.latestPanes = mergePaneRowsByWindow(
-          this.latestPanes,
-          freshWindowIds,
-          panesResp.output,
-        );
-      }
-      runInAction(() => this.rebuildModel());
-    } catch {
-      // Non-fatal: subscriptions will catch up.
-    }
-  }
-
-  private async refreshWindowDimensions(windowId: number): Promise<void> {
-    try {
-      const resp = await this.client.execute(
-        `list-panes -t @${windowId} -F '#{pane_id}${FIELD_SEP}#{pane_width}${FIELD_SEP}#{pane_height}'`,
-      );
-      if (!resp.success) return;
-      const updates = new Map<number, { w: number; h: number }>();
-      for (const line of resp.output) {
-        if (line.length === 0) continue;
-        const [pidRaw, wRaw, hRaw] = line.split(FIELD_SEP);
-        const pid = parseInt(pidRaw.replace(/^%/, ""), 10);
-        const w = parseInt(wRaw, 10);
-        const h = parseInt(hRaw, 10);
-        if (Number.isFinite(pid) && Number.isFinite(w) && Number.isFinite(h)) {
-          updates.set(pid, { w, h });
-        }
-      }
-      if (updates.size === 0) return;
-
-      // [LAW:dataflow-not-control-flow] Reassign `this.sessions` to a new
-      // array with new pane objects for any updated pane. PaneInfo is a
-      // plain object — mutating its fields in place does NOT trigger MobX
-      // observers because the field reads in PaneTerminal's reaction
-      // depend on `store.sessions` (the observable), not on per-object
-      // field accesses. The immutable rebuild guarantees the reaction
-      // re-runs and sees the new dimensions.
-      runInAction(() => {
-        this.sessions = this.sessions.map((s) => ({
-          ...s,
-          windows: s.windows.map((win) => ({
-            ...win,
-            panes: win.panes.map((p) => {
-              const u = updates.get(p.id);
-              return u !== undefined
-                ? { ...p, width: u.w, height: u.h }
-                : p;
-            }),
-          })),
-        }));
-      });
-    } catch {
-      // Non-fatal; the subscription's 1 Hz cadence will correct any miss.
-    }
-  }
-
-  private applySubscription(name: string, value: string): void {
-    if (name === "sessions") {
-      this.latestSessions = value;
-    } else if (name === "windows") {
-      this.latestWindows = value;
-    } else if (name === "panes") {
-      this.latestPanes = value;
-    } else {
-      return; // unknown subscription name — ignore
-    }
-    this.rebuildModel();
-  }
-
-  /**
-   * Rebuild the session/window/pane tree from the latest three subscription
-   * values. Called whenever any of them changes. This is a pure function of
-   * the three strings; the UI updates automatically via MobX.
-   */
-  private rebuildModel(): void {
-    // If any subscription hasn't arrived yet, leave the model empty.
-    if (
-      this.latestSessions === null ||
-      this.latestWindows === null ||
-      this.latestPanes === null
-    ) {
-      return;
-    }
-
-    const sessionRows = parseRows(this.latestSessions, SESSION_FIELDS);
-    const windowRows = parseRows(this.latestWindows, WINDOW_FIELDS);
-    const paneRows = parseRows(this.latestPanes, PANE_FIELDS);
-
-    const panesByWindow = new Map<string, PaneInfo[]>();
-    for (const p of paneRows) {
-      const list = panesByWindow.get(p.window_id) ?? [];
-      list.push({
-        id: stripPrefix(p.pane_id),
-        index: parseInt(p.pane_index, 10),
-        active: p.pane_active === "1",
-        width: parseInt(p.pane_width, 10) || 80,
-        height: parseInt(p.pane_height, 10) || 24,
-        title: p.pane_title,
-      });
-      panesByWindow.set(p.window_id, list);
-    }
-
-    const windowsBySession = new Map<string, WindowInfo[]>();
-    for (const w of windowRows) {
-      const list = windowsBySession.get(w.session_id) ?? [];
-      list.push({
-        id: stripPrefix(w.window_id),
-        index: parseInt(w.window_index, 10),
-        name: w.window_name,
-        active: w.window_active === "1",
-        zoomed: w.window_zoomed_flag === "1",
-        panes: panesByWindow.get(w.window_id) ?? [],
-      });
-      windowsBySession.set(w.session_id, list);
-    }
-
-    const built: SessionInfo[] = sessionRows.map((s) => ({
-      id: stripPrefix(s.session_id),
-      name: s.session_name,
-      attached: s.session_attached !== "0" && s.session_attached !== "",
-      windows: (windowsBySession.get(s.session_id) ?? []).sort(
-        (a, b) => a.index - b.index,
-      ),
-    }));
-
-    this.sessions = built;
-    // [LAW:one-source-of-truth] No active-id reconciliation here. Active
-    // pointers are computed from `session.attached` / `window.active` on
-    // each access — they can never be out of sync with the tree.
-  }
+  // -------------------------------------------------------------------------
+  // Event log
+  // -------------------------------------------------------------------------
 
   private pushEvent(ev: TmuxMessage): void {
     this.events = [ev, ...this.events].slice(0, 200);
@@ -680,8 +346,8 @@ export class DemoStore {
    * Resize a tmux pane to the requested cell dimensions. This is the
    * showcase of bidirectional library use: the browser tells tmux to do
    * something, tmux performs the change, and %layout-change flows back
-   * to update the store, which in turn drives PaneTerminal's reactive
-   * sizing to reflow the xterm.
+   * through the model to update pane dimensions, which in turn drives
+   * PaneTerminal's reactive sizing.
    *
    * Uses `resize-pane -t %<id> -x <cols> -y <rows>`.
    */
@@ -691,19 +357,16 @@ export class DemoStore {
     );
   }
 
-  // [LAW:one-source-of-truth] select* methods ONLY dispatch tmux commands.
-  // The subscription-fed `sessions` tree is the source of truth for which
-  // session/window/pane is active; after tmux processes the command, the
-  // next subscription tick (or the fast-path refreshSession below) updates
-  // the tree and the computed getters reflect the new active state.
+  // [LAW:one-source-of-truth] select* methods ONLY dispatch tmux commands
+  // and nudge a fast-path refresh; the model owns the topology truth.
   selectSession(id: number): void {
-    // Optimistic: set the id we just told tmux to switch to. The
-    // %client-session-changed event will confirm it shortly. If tmux
-    // rejects the switch, the event never arrives and we stay optimistic
-    // — that's fine, a subsequent real change will correct us.
+    // Optimistic: set the id we just told tmux to switch to. The next
+    // snapshot will overwrite from `client-session-changed`. If tmux
+    // rejects the switch the optimistic write stays until a real change
+    // corrects it.
     this.clientSessionId = id;
     void this.client.execute(`switch-client -t \\$${id}`);
-    void this.refreshSession(id);
+    void this.model.refreshSession(id);
   }
 
   selectWindow(id: number): void {
@@ -711,7 +374,7 @@ export class DemoStore {
     const w = s?.windows.find((x) => x.id === id);
     if (s !== null && w !== undefined) {
       void this.client.execute(`select-window -t ${s.name}:${w.index}`);
-      void this.refreshSession(s.id);
+      void this.model.refreshSession(s.id);
     }
   }
 
@@ -722,7 +385,7 @@ export class DemoStore {
       void this.client.execute(
         `select-pane -t ${s.name}:${w.index}.${pane.index}`,
       );
-      void this.refreshSession(s.id);
+      void this.model.refreshSession(s.id);
     }
   }
 
@@ -772,8 +435,9 @@ export class DemoStore {
   }
 
   /**
-   * Map of pane id → human-readable label like "cc-dump:1.0". Computed from
-   * the current model; used by the debug panel to render pane events.
+   * Map of pane id → human-readable label like "cc-dump:1.0". Computed
+   * from the current sessions tree; used by the debug panel to render
+   * pane events.
    */
   get paneLabels(): Map<number, string> {
     const m = new Map<number, string>();

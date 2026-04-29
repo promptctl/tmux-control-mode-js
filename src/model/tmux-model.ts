@@ -21,13 +21,15 @@
 //   - [LAW:no-mode-explosion] No "is this a bootstrap or a live update"
 //     mode flag. The maps are always the truth; rebuilds are unconditional.
 
-import type { TmuxClient } from "../client.js";
+import type { SubscriptionHandle } from "../client.js";
 import type {
   ClientSessionChangedMessage,
+  CommandResponse,
   LayoutChangeMessage,
   SessionWindowChangedMessage,
   WindowPaneChangedMessage,
 } from "../protocol/types.js";
+import type { TmuxEventMap } from "../emitter.js";
 import {
   EMPTY_SNAPSHOT,
   type PaneSnapshot,
@@ -99,6 +101,51 @@ interface PaneRecord {
 // Public options + event map
 // ---------------------------------------------------------------------------
 
+/**
+ * The narrow client surface TmuxModel needs. Both `TmuxClient` (Node-side
+ * library client) and consumer-built bridge adapters (renderer-side, over
+ * IPC) implement this — TmuxModel does not depend on `TmuxClient` directly.
+ *
+ * [LAW:locality-or-seam] This is the seam: TmuxModel runs anywhere the
+ * methods below can be supplied, including across an IPC boundary where
+ * subscription routing happens client-side and command execution happens
+ * server-side.
+ */
+export interface TmuxModelClient {
+  execute(command: string): Promise<CommandResponse>;
+
+  subscribeSessions<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle>;
+  subscribeWindows<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle>;
+  subscribePanes<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle>;
+
+  on<
+    K extends
+      | "client-session-changed"
+      | "layout-change"
+      | "session-window-changed"
+      | "window-pane-changed",
+  >(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  on(event: "subscriptions-reset", handler: () => void): void;
+
+  off<
+    K extends
+      | "client-session-changed"
+      | "layout-change"
+      | "session-window-changed"
+      | "window-pane-changed",
+  >(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  off(event: "subscriptions-reset", handler: () => void): void;
+}
+
 export interface TmuxModelOptions {
   /**
    * External abort signal — when triggered, the model disposes itself.
@@ -133,7 +180,7 @@ interface Disposable {
 // ---------------------------------------------------------------------------
 
 export class TmuxModel {
-  private readonly client: TmuxClient;
+  private readonly client: TmuxModelClient;
 
   // [LAW:one-source-of-truth] Three id-keyed record stores. Every mutation
   // path writes here; `rebuild()` is a pure function over the three maps.
@@ -171,7 +218,7 @@ export class TmuxModel {
   private readonly inFlightSessionRefresh = new Map<number, Promise<void>>();
   private readonly inFlightWindowDimRefresh = new Map<number, Promise<void>>();
 
-  constructor(client: TmuxClient, opts?: TmuxModelOptions) {
+  constructor(client: TmuxModelClient, opts?: TmuxModelOptions) {
     this.client = client;
 
     // [LAW:single-enforcer] Internal listener installation goes here only.

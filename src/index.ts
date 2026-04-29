@@ -50,6 +50,7 @@ export {
   findPane,
 } from "./model/index.js";
 export type {
+  TmuxModelClient,
   TmuxModelOptions,
   TmuxModelEventMap,
   TmuxModelError,
