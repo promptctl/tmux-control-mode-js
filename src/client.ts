@@ -30,6 +30,7 @@ import { TypedEmitter } from "./emitter.js";
 import type { TmuxEventMap } from "./emitter.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
+import { buildScopedFormat, parseRows, type Scope } from "./subscriptions.js";
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -38,6 +39,20 @@ import { TmuxCommandError } from "./errors.js";
 // [LAW:one-source-of-truth] SplitOptions shape lives in encoder.ts; re-exported here
 // to keep TmuxClient's public API surface unchanged for consumers.
 export type { SplitOptions } from "./protocol/encoder.js";
+
+/**
+ * Receipt for a typed format subscription created via `subscribeSessions`,
+ * `subscribeWindows`, `subscribePanes`, or `subscribe(opts, handler)`.
+ *
+ * Calling `dispose()` synchronously removes the handler from the internal
+ * router (so later `%subscription-changed` events for this name will not
+ * invoke it) and fire-and-forget issues `refresh-client -B <name>` to tmux.
+ *
+ * `dispose()` is idempotent — calling it twice is safe.
+ */
+export interface SubscriptionHandle {
+  dispose(): void;
+}
 
 // ---------------------------------------------------------------------------
 // Internal correlation state
@@ -68,6 +83,14 @@ export class TmuxClient {
   // [LAW:single-enforcer] FIFO queue and inflight slot are the sole correlation state.
   private readonly pending: PendingEntry[] = [];
   private inflight: InflightEntry | null = null;
+
+  // [LAW:single-enforcer] Subscription router: ONE map, ONE listener,
+  // installed lazily on first typed subscribe. Auto-allocated names route
+  // %subscription-changed events to the right handler without consumers
+  // ever seeing the name.
+  private readonly subRoutes = new Map<string, (value: string) => void>();
+  private subCounter = 0;
+  private subListenerInstalled = false;
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -160,16 +183,147 @@ export class TmuxClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Subscriptions (SPEC §14)
+  // Subscriptions (SPEC §14) — typed format subscriptions
   //
-  // These now go through the correlation queue like every other command.
-  // Each call resolves with the %end confirmation from tmux. Use the typed
-  // event subscribers (client.on("subscription-changed", ...)) to receive
-  // value updates over time — those are notifications and arrive
-  // independently of the subscribe/unsubscribe acknowledgement.
+  // The library installs ONE internal `subscription-changed` listener (lazy,
+  // on first call) and routes events to per-subscription handlers via an
+  // auto-allocated name. Consumers never see the name — they get a
+  // SubscriptionHandle whose `dispose()` removes the handler synchronously
+  // and unsubscribes from tmux.
+  //
+  // Field/row separators are RS (\x1e) and US (\x1f) — C0 control bytes that
+  // cannot appear in any tmux name, so name characters can never collide
+  // with delimiters by construction.
   // ---------------------------------------------------------------------------
 
+  /**
+   * Subscribe to a per-session row stream. tmux iterates `#{S:...}` and emits
+   * one row per session containing the requested fields, in order.
+   *
+   * `fields` is type-narrowed by the literal field-name list — `row.session_id`
+   * is type-checked against the array you pass in.
+   *
+   * Resolves once tmux acknowledges the subscription (`%end`). Rejects with
+   * `TmuxCommandError` if tmux rejects the format string.
+   */
+  subscribeSessions<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle> {
+    return this.subscribeScoped("S", fields, handler);
+  }
+
+  /**
+   * Subscribe to a per-window row stream. tmux iterates `#{S:#{W:...}}` and
+   * emits one row per (session × window). Each row should include
+   * `window_id` (or similar) so callers can re-correlate without the iteration
+   * scope itself being part of the row.
+   */
+  subscribeWindows<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle> {
+    return this.subscribeScoped("S:W", fields, handler);
+  }
+
+  /**
+   * Subscribe to a per-pane row stream. tmux iterates `#{S:#{W:#{P:...}}}` and
+   * emits one row per (session × window × pane). Rows should include
+   * `window_id` so panes can be rebuilt under their owning window.
+   */
+  subscribePanes<F extends string>(
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle> {
+    return this.subscribeScoped("S:W:P", fields, handler);
+  }
+
+  /**
+   * Low-level escape hatch for subscriptions outside the S/W/P iteration
+   * scopes (e.g. `#{client_session}`). Auto-allocates a name; caller chooses
+   * the format string and is responsible for separator safety.
+   *
+   * Prefer `subscribeSessions` / `subscribeWindows` / `subscribePanes` for
+   * the standard topology shapes — they pick safe RS/US separators for you.
+   */
   subscribe(
+    opts: { what: string; format: string },
+    handler: (value: string) => void,
+  ): Promise<SubscriptionHandle> {
+    return this.installRoutedSubscription(opts.what, opts.format, handler);
+  }
+
+  // [LAW:single-enforcer] Every typed subscribe path funnels through here:
+  // build the scoped format, then route values through `parseRows` so the
+  // handler receives typed records — no caller sees the wire string.
+  private subscribeScoped<F extends string>(
+    scope: Scope,
+    fields: readonly F[],
+    handler: (rows: Record<F, string>[]) => void,
+  ): Promise<SubscriptionHandle> {
+    const format = buildScopedFormat(scope, fields);
+    return this.installRoutedSubscription("", format, (value) =>
+      handler(parseRows(value, fields)),
+    );
+  }
+
+  // [LAW:single-enforcer] All routed subscriptions allocate their name and
+  // register their handler here. Failure cleans up the route entry so a
+  // rejected subscribe never leaves a zombie route behind.
+  private async installRoutedSubscription(
+    what: string,
+    format: string,
+    handler: (value: string) => void,
+  ): Promise<SubscriptionHandle> {
+    this.installSubscriptionListener();
+    const name = `tmux-cm-sub-${++this.subCounter}`;
+    this.subRoutes.set(name, handler);
+    try {
+      await this.sendRaw(refreshClientSubscribe(name, what, format));
+    } catch (err) {
+      // [LAW:one-source-of-truth] On tmux rejection (bad format, etc.) the
+      // route entry is removed so the map mirrors only live subscriptions.
+      this.subRoutes.delete(name);
+      throw err;
+    }
+    return {
+      dispose: () => {
+        // [LAW:dataflow-not-control-flow] Sync handler removal first so any
+        // %subscription-changed event already in flight is silently dropped
+        // by the router; the unsubscribe wire command is fire-and-forget.
+        this.subRoutes.delete(name);
+        // [LAW:dataflow-not-control-flow] tmux's response is irrelevant on
+        // dispose — the route is already gone client-side. Swallow any
+        // rejection so a torn-down transport doesn't surface a UnhandledRejection.
+        void this.sendRaw(refreshClientUnsubscribe(name)).catch(
+          () => undefined,
+        );
+      },
+    };
+  }
+
+  // [LAW:single-enforcer] Exactly one internal `subscription-changed`
+  // listener exists per TmuxClient. Installed lazily so clients that never
+  // call subscribe* don't pay for the listener.
+  private installSubscriptionListener(): void {
+    if (this.subListenerInstalled) return;
+    this.subListenerInstalled = true;
+    this.emitter.on("subscription-changed", (ev) => {
+      const route = this.subRoutes.get(ev.name);
+      route?.(ev.value);
+    });
+  }
+
+  /**
+   * Low-level subscribe with caller-supplied name. Used by connector layers
+   * that route `%subscription-changed` events across IPC by name and need
+   * the name to be a stable identifier on both sides.
+   *
+   * @internal End-users should prefer the typed helpers (`subscribeSessions`,
+   *   `subscribeWindows`, `subscribePanes`) or the auto-allocating escape
+   *   hatch (`subscribe(opts, handler)`).
+   */
+  subscribeRaw(
     name: string,
     what: string,
     format: string,
@@ -177,7 +331,13 @@ export class TmuxClient {
     return this.sendRaw(refreshClientSubscribe(name, what, format));
   }
 
-  unsubscribe(name: string): Promise<CommandResponse> {
+  /**
+   * Low-level unsubscribe by caller-supplied name. Pairs with
+   * `subscribeRaw`.
+   *
+   * @internal
+   */
+  unsubscribeRaw(name: string): Promise<CommandResponse> {
     return this.sendRaw(refreshClientUnsubscribe(name));
   }
 

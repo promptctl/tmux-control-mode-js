@@ -265,13 +265,51 @@ class TmuxClient {
   // Control-mode-specific
   setSize(width: number, height: number): Promise<CommandResponse>;
   setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse>;
-  subscribe(name: string, what: string, format: string): void;
-  unsubscribe(name: string): void;
+
+  // Format subscriptions — see §5.1.
+  subscribeSessions<F extends string>(fields: readonly F[], handler: (rows: Record<F, string>[]) => void): Promise<SubscriptionHandle>;
+  subscribeWindows<F extends string>(fields: readonly F[], handler: (rows: Record<F, string>[]) => void): Promise<SubscriptionHandle>;
+  subscribePanes<F extends string>(fields: readonly F[], handler: (rows: Record<F, string>[]) => void): Promise<SubscriptionHandle>;
+  subscribe(opts: { what: string; format: string }, handler: (value: string) => void): Promise<SubscriptionHandle>;
 
   // Lifecycle
   close(): void;
 }
 ```
+
+### 5.1 Format subscriptions
+
+The typed helpers (`subscribeSessions` / `subscribeWindows` / `subscribePanes`)
+take a list of tmux format fields (e.g. `["pane_id", "pane_index"]`) and a
+handler that receives `Record<F, string>[]` — a typed row per session, window,
+or pane. The library:
+
+- **Builds the format string** from the field list. Each field becomes
+  `#{field}`; the row is delimited by US (`\x1f`) and terminated by RS
+  (`\x1e`), then wrapped in the appropriate `#{S:...}` / `#{S:#{W:...}}` /
+  `#{S:#{W:#{P:...}}}` iteration scope. **RS/US are C0 control bytes that
+  cannot appear in any tmux name** — so a session named `weird|name` or
+  containing literal newlines parses correctly, where the demo's previous
+  `\n`-terminated `|`-delimited shape would have collided.
+- **Auto-allocates the subscription name** as `tmux-cm-sub-<n>` per
+  TmuxClient instance. Consumers never see the name; they get a
+  `SubscriptionHandle` whose `dispose()` removes the route synchronously and
+  fire-and-forget unsubscribes from tmux.
+- **Routes `%subscription-changed` events** through one internal listener
+  per client (installed lazily on first `subscribe*` call) and a
+  `Map<name, handler>`. Calls to `subscribe(opts, handler)` use the same
+  routing for non-S/W/P scopes — caller chooses the format string and is
+  responsible for separator safety.
+
+`buildScopedFormat` and `parseRows` are exported so consumers running over
+a transport that can't carry a handler closure (e.g. cross-process bridges)
+can still build the same wire shape and parse the value through library
+functions rather than reinventing the format.
+
+The legacy `subscribeRaw(name, what, format)` / `unsubscribeRaw(name)`
+methods exist for connector layers (Electron main, RPC dispatch) that
+multiplex a caller-supplied subscription name across IPC. These are marked
+`@internal`; end-users should prefer the typed helpers.
 
 ### Response Correlation
 

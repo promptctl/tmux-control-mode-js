@@ -27,6 +27,12 @@ import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
 import type { TmuxMessage } from "../../../src/protocol/types.js";
 import {
+  buildScopedFormat,
+  parseRows,
+  FIELD_SEP,
+  ROW_SEP,
+} from "../../../src/subscriptions.js";
+import {
   INITIAL_STATE,
   defaultTmuxKeymap,
   dispatchAction,
@@ -72,25 +78,42 @@ type ConnState = "connecting" | "open" | "ready" | "closed";
 // ---------------------------------------------------------------------------
 // Subscription format strings
 //
-// Record separator: literal 2-char `\n` (tmux preserves my backslash-n as-is
-// in the delivered value, so I split on the 2-char sequence in JS).
-// Field separator: `|`.
-//
-// Known limitation: if a session/window/pane name contains the literal
-// 2-char sequence `\n` OR the character `|`, parsing will be wrong for that
-// record. For a canonical demo against a reasonable tmux server this is
-// fine; production consumers should pick unambiguous separators or use
-// length-prefixed encoding.
+// [LAW:one-source-of-truth] Format strings are built by the library's
+// `buildScopedFormat` helper. Field separator is US (\x1f) and row separator
+// is RS (\x1e) — C0 control bytes that cannot appear in any tmux name, so
+// the previous "if a name contains `\n` or `|` parsing breaks" footgun is
+// gone by construction.
 // ---------------------------------------------------------------------------
 
-const SESSIONS_FORMAT =
-  "'#{S:#{session_id}|#{session_name}|#{session_attached}\\n}'";
+const SESSION_FIELDS = ["session_id", "session_name", "session_attached"] as const;
+const WINDOW_FIELDS = [
+  "session_id",
+  "window_id",
+  "window_index",
+  "window_name",
+  "window_active",
+  "window_zoomed_flag",
+] as const;
+const PANE_FIELDS = [
+  "window_id",
+  "pane_id",
+  "pane_index",
+  "pane_active",
+  "pane_width",
+  "pane_height",
+  "pane_title",
+] as const;
 
-const WINDOWS_FORMAT =
-  "'#{S:#{W:#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}\\n}}'";
+const SESSIONS_FORMAT = `'${buildScopedFormat("S", SESSION_FIELDS)}'`;
+const WINDOWS_FORMAT = `'${buildScopedFormat("S:W", WINDOW_FIELDS)}'`;
+const PANES_FORMAT = `'${buildScopedFormat("S:W:P", PANE_FIELDS)}'`;
 
-const PANES_FORMAT =
-  "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}\\n}}}'";
+// list-* commands deliver one row per output line, so the field-only format
+// (no row separator) suffices; rows are joined back with ROW_SEP into the
+// subscription wire shape so the same parser handles both paths.
+const SESSION_LINE_FORMAT = `'${SESSION_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
+const WINDOW_LINE_FORMAT = `'${WINDOW_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
+const PANE_LINE_FORMAT = `'${PANE_FIELDS.map((f) => `#{${f}}`).join(FIELD_SEP)}'`;
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -100,25 +123,11 @@ function stripPrefix(raw: string): number {
   return parseInt(raw.replace(/^[$@%]/, ""), 10);
 }
 
-function parseRecords(
-  value: string,
-  keys: readonly string[],
-): Array<Record<string, string>> {
-  return value
-    .split("\\n") // literal 2-char backslash-n (tmux preserves it)
-    .filter((l) => l.length > 0)
-    .map((line) => {
-      const parts = line.split("|");
-      const row: Record<string, string> = {};
-      keys.forEach((k, i) => {
-        row[k] = parts[i] ?? "";
-      });
-      return row;
-    });
-}
-
 function encodeSnapshotLines(lines: readonly string[]): string {
-  return lines.join("\\n");
+  // [LAW:one-source-of-truth] Every row in the snapshot stream is terminated
+  // by ROW_SEP — the same shape `buildScopedFormat` produces, so the same
+  // `parseRows` invocation handles both subscription and list-* paths.
+  return lines.filter((l) => l.length > 0).map((l) => `${l}${ROW_SEP}`).join("");
 }
 
 /**
@@ -126,10 +135,9 @@ function encodeSnapshotLines(lines: readonly string[]): string {
  * with fresh ones. Used by the fast-path refresh to swap in the current
  * state of one session without discarding the others.
  *
- * [LAW:single-enforcer] The snapshot-string format (`\n`-separated
- * `|`-delimited rows) is defined by the SESSIONS/WINDOWS/PANES_FORMAT
- * constants above. Anything that manipulates these strings must follow
- * that format exactly.
+ * [LAW:single-enforcer] The snapshot-string format (RS-terminated,
+ * US-delimited rows) follows `buildScopedFormat` / `parseRows`. Anything
+ * that manipulates these strings must follow that format exactly.
  */
 function mergeSessionRows(
   existing: string,
@@ -139,10 +147,11 @@ function mergeSessionRows(
 ): string {
   const sidValue = `$${sessionId}`;
   const oldRows = existing
-    .split("\\n")
-    .filter((l) => l.length > 0 && l.split("|")[sidFieldIndex] !== sidValue);
-  const combined = [...oldRows, ...freshRows];
-  return encodeSnapshotLines(combined);
+    .split(ROW_SEP)
+    .filter(
+      (l) => l.length > 0 && l.split(FIELD_SEP)[sidFieldIndex] !== sidValue,
+    );
+  return encodeSnapshotLines([...oldRows, ...freshRows]);
 }
 
 /**
@@ -156,8 +165,8 @@ function mergePaneRowsByWindow(
   freshRows: readonly string[],
 ): string {
   const oldRows = existing
-    .split("\\n")
-    .filter((l) => l.length > 0 && !freshWindowIds.has(l.split("|")[0]));
+    .split(ROW_SEP)
+    .filter((l) => l.length > 0 && !freshWindowIds.has(l.split(FIELD_SEP)[0]));
   return encodeSnapshotLines([...oldRows, ...freshRows]);
 }
 
@@ -295,15 +304,9 @@ export class DemoStore {
       // subscription strings. Initial list-* snapshots are encoded into that
       // same string shape and fed through the existing rebuild pipeline.
       const [sessionsResp, windowsResp, panesResp] = await Promise.all([
-        this.client.execute(
-          "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
-        ),
-        this.client.execute(
-          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'",
-        ),
-        this.client.execute(
-          "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'",
-        ),
+        this.client.execute(`list-sessions -F ${SESSION_LINE_FORMAT}`),
+        this.client.execute(`list-windows -a -F ${WINDOW_LINE_FORMAT}`),
+        this.client.execute(`list-panes -a -F ${PANE_LINE_FORMAT}`),
       ]);
 
       if (sessionsResp.success) {
@@ -490,10 +493,10 @@ export class DemoStore {
     try {
       const [windowsResp, panesResp] = await Promise.all([
         this.client.execute(
-          `list-windows -t $${sessionId} -F '$${sessionId}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'`,
+          `list-windows -t $${sessionId} -F ${WINDOW_LINE_FORMAT}`,
         ),
         this.client.execute(
-          `list-panes -s -t $${sessionId} -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'`,
+          `list-panes -s -t $${sessionId} -F ${PANE_LINE_FORMAT}`,
         ),
       ]);
       if (!windowsResp.success || !panesResp.success) return;
@@ -517,7 +520,7 @@ export class DemoStore {
         // rows whose window_id appears in the fresh windowsResp output.
         const freshWindowIds = new Set(
           windowsResp.output
-            .map((line) => line.split("|")[1])
+            .map((line) => line.split(FIELD_SEP)[1])
             .filter((s) => s.length > 0),
         );
         this.latestPanes = mergePaneRowsByWindow(
@@ -535,13 +538,13 @@ export class DemoStore {
   private async refreshWindowDimensions(windowId: number): Promise<void> {
     try {
       const resp = await this.client.execute(
-        `list-panes -t @${windowId} -F '#{pane_id}|#{pane_width}|#{pane_height}'`,
+        `list-panes -t @${windowId} -F '#{pane_id}${FIELD_SEP}#{pane_width}${FIELD_SEP}#{pane_height}'`,
       );
       if (!resp.success) return;
       const updates = new Map<number, { w: number; h: number }>();
       for (const line of resp.output) {
         if (line.length === 0) continue;
-        const [pidRaw, wRaw, hRaw] = line.split("|");
+        const [pidRaw, wRaw, hRaw] = line.split(FIELD_SEP);
         const pid = parseInt(pidRaw.replace(/^%/, ""), 10);
         const w = parseInt(wRaw, 10);
         const h = parseInt(hRaw, 10);
@@ -605,58 +608,43 @@ export class DemoStore {
       return;
     }
 
-    const sessionRows = parseRecords(this.latestSessions, ["sid", "name", "attached"]);
-    const windowRows = parseRecords(this.latestWindows, [
-      "sid",
-      "wid",
-      "idx",
-      "name",
-      "active",
-      "zoomed",
-    ]);
-    const paneRows = parseRecords(this.latestPanes, [
-      "wid",
-      "pid",
-      "idx",
-      "active",
-      "width",
-      "height",
-      "title",
-    ]);
+    const sessionRows = parseRows(this.latestSessions, SESSION_FIELDS);
+    const windowRows = parseRows(this.latestWindows, WINDOW_FIELDS);
+    const paneRows = parseRows(this.latestPanes, PANE_FIELDS);
 
     const panesByWindow = new Map<string, PaneInfo[]>();
     for (const p of paneRows) {
-      const list = panesByWindow.get(p.wid) ?? [];
+      const list = panesByWindow.get(p.window_id) ?? [];
       list.push({
-        id: stripPrefix(p.pid),
-        index: parseInt(p.idx, 10),
-        active: p.active === "1",
-        width: parseInt(p.width, 10) || 80,
-        height: parseInt(p.height, 10) || 24,
-        title: p.title,
+        id: stripPrefix(p.pane_id),
+        index: parseInt(p.pane_index, 10),
+        active: p.pane_active === "1",
+        width: parseInt(p.pane_width, 10) || 80,
+        height: parseInt(p.pane_height, 10) || 24,
+        title: p.pane_title,
       });
-      panesByWindow.set(p.wid, list);
+      panesByWindow.set(p.window_id, list);
     }
 
     const windowsBySession = new Map<string, WindowInfo[]>();
     for (const w of windowRows) {
-      const list = windowsBySession.get(w.sid) ?? [];
+      const list = windowsBySession.get(w.session_id) ?? [];
       list.push({
-        id: stripPrefix(w.wid),
-        index: parseInt(w.idx, 10),
-        name: w.name,
-        active: w.active === "1",
-        zoomed: w.zoomed === "1",
-        panes: panesByWindow.get(w.wid) ?? [],
+        id: stripPrefix(w.window_id),
+        index: parseInt(w.window_index, 10),
+        name: w.window_name,
+        active: w.window_active === "1",
+        zoomed: w.window_zoomed_flag === "1",
+        panes: panesByWindow.get(w.window_id) ?? [],
       });
-      windowsBySession.set(w.sid, list);
+      windowsBySession.set(w.session_id, list);
     }
 
     const built: SessionInfo[] = sessionRows.map((s) => ({
-      id: stripPrefix(s.sid),
-      name: s.name,
-      attached: s.attached !== "0" && s.attached !== "",
-      windows: (windowsBySession.get(s.sid) ?? []).sort(
+      id: stripPrefix(s.session_id),
+      name: s.session_name,
+      attached: s.session_attached !== "0" && s.session_attached !== "",
+      windows: (windowsBySession.get(s.session_id) ?? []).sort(
         (a, b) => a.index - b.index,
       ),
     }));
