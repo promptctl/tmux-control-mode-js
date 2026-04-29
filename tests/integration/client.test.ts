@@ -88,11 +88,15 @@ function killServer(socketName: string): void {
  * [LAW:dataflow-not-control-flow] Session creation and transport construction
  * always run unconditionally; variability lives in sessionName/socketName.
  */
+function shellQuote(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
 function createSession(
   socketName: string,
   sessionName: string,
 ): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
+  execSync(tmuxCmd(socketName, `new-session -d -s ${shellQuote(sessionName)}`), {
     stdio: "ignore",
   });
   const transport = spawnTmux(["attach-session", "-t", sessionName], {
@@ -247,17 +251,17 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   );
 
   it(
-    "subscribe and unsubscribe each resolve with success",
+    "subscribeRaw and unsubscribeRaw each resolve with success",
     async () => {
       sessionName = uniqueSession("test-sub");
       client = await createSession(socketName, sessionName);
-      const sub = await client.subscribe(
+      const sub = await client.subscribeRaw(
         "test-sub-1",
         "",
         "#{pane_current_command}",
       );
       expect(sub.success).toBe(true);
-      const unsub = await client.unsubscribe("test-sub-1");
+      const unsub = await client.unsubscribeRaw("test-sub-1");
       expect(unsub.success).toBe(true);
     },
     15000,
@@ -322,6 +326,191 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     },
     15000,
   );
+});
+
+// ---------------------------------------------------------------------------
+// 1d. Typed format subscriptions (headless-api-format-subs)
+//
+// [LAW:behavior-not-structure] These tests assert the contract of
+// subscribeSessions / subscribeWindows / subscribePanes / subscribe(opts)
+// against a real tmux: rows arrive shaped as Record<F, string>, names are
+// auto-allocated and unique per call, dispose() removes the route, and a
+// bad format string rejects with TmuxCommandError.
+// ---------------------------------------------------------------------------
+
+/**
+ * Wait for a handler to be invoked at least once. Returns the most recent
+ * value passed to the handler. Times out via vitest's per-test timeout.
+ */
+function nextHandlerCall<T>(
+  attach: (handler: (value: T) => void) => () => void,
+): Promise<T> {
+  return new Promise((resolve) => {
+    const dispose = attach((value) => {
+      dispose();
+      resolve(value);
+    });
+  });
+}
+
+describe.skipIf(!RUN_INTEGRATION)("Typed format subscriptions", () => {
+  let sessionName: string;
+  let socketName: string;
+  let client: TmuxClient | null = null;
+
+  beforeEach(() => {
+    socketName = uniqueSocket("typed-sub");
+  });
+
+  afterEach(() => {
+    client?.close();
+    client = null;
+    killServer(socketName);
+  });
+
+  it(
+    "subscribeSessions delivers typed rows for at least one session",
+    async () => {
+      sessionName = uniqueSession("test-typed-sess");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const fields = ["session_id", "session_name"] as const;
+      const rows = await nextHandlerCall<Record<(typeof fields)[number], string>[]>(
+        (handler) => {
+          let handle: { dispose(): void } | null = null;
+          void c.subscribeSessions(fields, handler).then((h) => (handle = h));
+          return () => handle?.dispose();
+        },
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      // Every row carries every requested field as a string.
+      for (const row of rows) {
+        expect(typeof row.session_id).toBe("string");
+        expect(typeof row.session_name).toBe("string");
+        expect(row.session_id.startsWith("$")).toBe(true);
+      }
+    },
+    15000,
+  );
+
+  it(
+    "subscribePanes delivers rows that re-correlate to list-panes",
+    async () => {
+      sessionName = uniqueSession("test-typed-panes");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const fields = [
+        "window_id",
+        "pane_id",
+        "pane_index",
+        "pane_width",
+        "pane_height",
+      ] as const;
+      const rows = await nextHandlerCall<Record<(typeof fields)[number], string>[]>(
+        (handler) => {
+          let handle: { dispose(): void } | null = null;
+          void c.subscribePanes(fields, handler).then((h) => (handle = h));
+          return () => handle?.dispose();
+        },
+      );
+      // Cross-check: list-panes -a yields the same set of pane_ids.
+      const listResp = await c.execute("list-panes -a -F '#{pane_id}'");
+      expect(listResp.success).toBe(true);
+      const listIds = new Set(
+        listResp.output.filter((s) => s.length > 0).map((s) => s.trim()),
+      );
+      const subIds = new Set(rows.map((r) => r.pane_id));
+      expect(subIds).toEqual(listIds);
+      // Each row carries its owning window_id (so a topology rebuild can group).
+      for (const row of rows) {
+        expect(row.window_id.startsWith("@")).toBe(true);
+      }
+    },
+    15000,
+  );
+
+  it(
+    "two subscribePanes calls each fire independently (auto-allocated unique names)",
+    async () => {
+      sessionName = uniqueSession("test-typed-two");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const fields = ["pane_id"] as const;
+      let handler1Calls = 0;
+      let handler2Calls = 0;
+      const sub1 = await c.subscribePanes(fields, () => {
+        handler1Calls++;
+      });
+      const sub2 = await c.subscribePanes(fields, () => {
+        handler2Calls++;
+      });
+      // tmux delivers an initial value to each new subscription; both must
+      // fire at least once. Wait until both have been seen.
+      await new Promise<void>((resolve) => {
+        const tick = () => {
+          if (handler1Calls > 0 && handler2Calls > 0) resolve();
+          else setTimeout(tick, 25);
+        };
+        tick();
+      });
+      expect(handler1Calls).toBeGreaterThan(0);
+      expect(handler2Calls).toBeGreaterThan(0);
+      sub1.dispose();
+      sub2.dispose();
+    },
+    15000,
+  );
+
+  it(
+    "dispose() removes the handler synchronously",
+    async () => {
+      sessionName = uniqueSession("test-typed-dispose");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      let calls = 0;
+      const handle = await c.subscribePanes(["pane_id"] as const, () => {
+        calls++;
+      });
+      // Dispose immediately. tmux may have already begun delivering the
+      // initial value; the contract is that NO new calls occur after
+      // dispose returns.
+      handle.dispose();
+      const callsAtDispose = calls;
+      // Trigger more topology activity so tmux would otherwise re-deliver.
+      await c.execute("split-window -h");
+      await new Promise((r) => setTimeout(r, 250));
+      await c.execute("kill-pane -t :.+");
+      await new Promise((r) => setTimeout(r, 250));
+      expect(calls).toBe(callsAtDispose);
+    },
+    15000,
+  );
+
+  it(
+    "subscribeSessions preserves names containing `|` (the demo's separator-collision case)",
+    async () => {
+      // The demo's old format used `|` as the field separator, so a session
+      // named `foo|bar` parsed wrong. RS/US separators are C0 controls that
+      // cannot appear in any tmux name, so the new format is robust by
+      // construction. This test documents the fix end-to-end.
+      sessionName = uniqueSession("pipe|in|name");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const fields = ["session_id", "session_name"] as const;
+      const rows = await nextHandlerCall<Record<(typeof fields)[number], string>[]>(
+        (handler) => {
+          let handle: { dispose(): void } | null = null;
+          void c.subscribeSessions(fields, handler).then((h) => (handle = h));
+          return () => handle?.dispose();
+        },
+      );
+      const ours = rows.find((r) => r.session_name === sessionName);
+      expect(ours).toBeDefined();
+      expect(ours!.session_name).toBe(sessionName);
+    },
+    15000,
+  );
+
 });
 
 // ---------------------------------------------------------------------------

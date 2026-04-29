@@ -108,9 +108,7 @@ function decodeFrame(data: unknown): string {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return BINARY_DECODER.decode(data);
   if (ArrayBuffer.isView(data)) {
-    return BINARY_DECODER.decode(
-      data as ArrayBufferView<ArrayBufferLike>,
-    );
+    return BINARY_DECODER.decode(data as ArrayBufferView<ArrayBufferLike>);
   }
   return "";
 }
