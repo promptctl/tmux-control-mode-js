@@ -311,6 +311,150 @@ methods exist for connector layers (Electron main, RPC dispatch) that
 multiplex a caller-supplied subscription name across IPC. These are marked
 `@internal`; end-users should prefer the typed helpers.
 
+### 5.2 TmuxModel — reactive topology projection (`model/`)
+
+`TmuxModel` is the layer above `TmuxClient`. The wire client ends at "what
+did tmux send"; `TmuxModel` answers "what does the topology look like, and
+what just changed." Every consumer that wanted a session/window/pane tree
+was reinventing the same projection above the wire — the library now owns
+it.
+
+```ts
+class TmuxModel {
+  constructor(client: TmuxClient, opts?: { signal?: AbortSignal });
+
+  snapshot(): TmuxSnapshot;
+  refreshSession(sessionId: number): Promise<void>;  // exposed fast-path
+  dispose(): void;
+
+  on('ready',    () => void): Disposable;
+  on('snapshot', (s: TmuxSnapshot) => void): Disposable;
+  on('change',   (d: TmuxDiff) => void): Disposable;
+  on('error',    (e: TmuxModelError) => void): Disposable;
+
+  // Convenience selector delegates — same impl as the pure functions below.
+  activeSessionId(): number | null;
+  activeWindowId(): number | null;
+  activePaneId(): number | null;
+  currentSession(): SessionSnapshot | null;
+  currentWindow(): WindowSnapshot | null;
+  paneLabels(): Map<number, string>;
+}
+
+// Pure selectors — composable, framework-agnostic, work on any snapshot
+// (replayed, frozen, mocked).
+function activeSessionId(s: TmuxSnapshot): number | null;
+function activeWindowId(s: TmuxSnapshot): number | null;
+function activePaneId(s: TmuxSnapshot): number | null;
+function currentSession(s: TmuxSnapshot): SessionSnapshot | null;
+function currentWindow(s: TmuxSnapshot): WindowSnapshot | null;
+function paneLabels(s: TmuxSnapshot): Map<number, string>;
+function findPane(s: TmuxSnapshot, paneId: number): PaneSnapshot | null;
+
+// Pure diff — useful for consumers that need just the delta, not the tree.
+function computeDiff(prev: TmuxSnapshot | null, next: TmuxSnapshot): TmuxDiff;
+```
+
+Architecture (the demo's intent, the demo's bugs fixed):
+
+- **Three nested format subscriptions**, one per tier (`#{S:...}` /
+  `#{S:#{W:...}}` / `#{S:#{W:#{P:...}}}`). Field lists live in
+  `src/model/format.ts` and nowhere else — the demo's per-file `*_FORMAT`
+  constants are gone.
+- **Auto-allocated subscription names** via `subscribeSessions/Windows/Panes`
+  on `TmuxClient`. Two `TmuxModel` instances on one client never collide.
+- **One record store per tier** — `Map<id, ParsedRecord>`. Subscription
+  delivery, `list-*` bootstrap, and the two fast-paths all write through
+  the same maps; `rebuild()` is a pure function over them. The demo's
+  `mergeSessionRows` / `mergePaneRowsByWindow` string-splice machinery
+  collapses to "delete keys with this prefix, set fresh keys."
+  [LAW:single-enforcer]
+- **Two fast-paths for sub-1s feedback** (subscriptions are throttled to
+  ~1Hz):
+  - `refreshSession(sessionId)` — re-runs `list-windows -t`/`list-panes -s -t`
+    for one session and merges into the maps. Triggered automatically off
+    `%session-window-changed`, `%window-pane-changed`, and
+    `%client-session-changed`; also exposed publicly.
+  - `refreshWindowDimensions(windowId)` — re-runs `list-panes -t @id` for
+    one window. Triggered off `%layout-change`. Same canonical pane format
+    string as the steady-state subscription, so there is one parser, one
+    record shape, and one write path.
+- **`ready` fires once** when all three tiers AND `clientSessionId` are
+  populated. After ready, `model.activeSessionId()` returns a real id, not
+  `null` — consumers don't have to handle a half-populated transition.
+- **`change` carries a structural diff** with per-tier
+  `{ added, removed, renamed, dimChanged, titleChanged, attachChanged,
+    activeChanged, zoomedChanged }` plus `clientSessionChanged`. Computed
+  from id-set comparisons on each rebuild (cheap for the snapshot sizes
+  tmux produces). Consumers wanting "react to *this* pane's title
+  changing" don't diff snapshots themselves — they read the field they
+  care about off the diff. [LAW:single-enforcer]
+- **`width` and `height` are `number | null`**, not `number`-with-magic-
+  fallback. The demo's `width || 80` encoded "unknown" as control flow;
+  the library encodes it in the type so consumers handle the unknown
+  case explicitly.
+- **Active state is derived, never stored.** `session.attached`,
+  `window.active`, `pane.active` ARE the truth in the snapshot tree;
+  selectors recompute the active id on every call. Stale-cache class of
+  bug is impossible. [LAW:dataflow-not-control-flow]
+- **`clientSessionId` captured from `%client-session-changed` only** — the
+  one piece of per-client state subscriptions cannot deliver. Bootstrapped
+  via `display-message -p '#{session_id}'` in case the event fired before
+  the model attached its listener.
+- **Events `session-window-changed` / `window-pane-changed` aren't patched
+  into local state** — they only kick the fast-path. Patching those events
+  would create parallel state. Subscriptions cover the steady-state truth.
+- **`dispose()` is full-shutdown.** `SubscriptionHandle.dispose()` for each
+  installed subscription removes the route in `TmuxClient` synchronously
+  and fire-and-forget unsubscribes from tmux. Direct event listeners are
+  detached. Records are cleared. Subsequent `%subscription-changed` events
+  are dropped silently. Idempotent.
+
+#### Framework adapters
+
+`TmuxModel` is event-driven, not framework-specific. Wrap `model.snapshot()`
+once at the application boundary and let your framework take over.
+
+**MobX** (the web-multiplexer demo's flavour):
+
+```ts
+import { observable, action, runInAction } from "mobx";
+
+class MobxTopology {
+  snapshot = observable.box(model.snapshot(), { deep: false });
+  constructor(model: TmuxModel) {
+    model.on("snapshot", (s) =>
+      runInAction(() => this.snapshot.set(s)),
+    );
+  }
+}
+// Components observe `topology.snapshot.get()` — every TmuxModel rebuild
+// triggers a re-render with the new snapshot.
+```
+
+**Zustand**:
+
+```ts
+import { create } from "zustand";
+
+const useTopology = create<{ snapshot: TmuxSnapshot }>((set) => ({
+  snapshot: model.snapshot(),
+}));
+model.on("snapshot", (s) => useTopology.setState({ snapshot: s }));
+// const sessions = useTopology(s => s.snapshot.sessions);
+```
+
+**Signals** (Preact / Solid / Vue):
+
+```ts
+const snapshot = signal(model.snapshot());
+model.on("snapshot", (s) => (snapshot.value = s));
+```
+
+The shape doesn't change across frameworks — only the wrapping. If your
+framework needs immutable inputs, the snapshot already is one (the diff
+is computed by id, not by reference equality).
+
 ### Response Correlation
 
 The client tracks in-flight commands by `command-number` from `%begin` lines.
