@@ -5,7 +5,7 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["./*.ts"],
+  "include": ["./*.ts", "./model/**/*.ts"],
   "references": [
     { "path": "protocol" },
     { "path": "transport" }

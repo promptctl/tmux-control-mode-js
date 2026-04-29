@@ -34,3 +34,32 @@ export type {
   PaneSessionState,
   PaneSessionEventMap,
 } from "./pane-session.js";
+
+export {
+  TmuxModel,
+  EMPTY_SNAPSHOT,
+  computeDiff,
+  isEmptyDiff,
+  activeSessionId,
+  activeWindowId,
+  activePaneId,
+  currentSession,
+  currentWindow,
+  paneLabels,
+  findPane,
+} from "./model/index.js";
+export type {
+  TmuxModelOptions,
+  TmuxModelEventMap,
+  TmuxModelError,
+  TmuxModelErrorPhase,
+  TmuxSnapshot,
+  SessionSnapshot,
+  WindowSnapshot,
+  PaneSnapshot,
+  TmuxDiff,
+  SessionsDiff,
+  WindowsDiff,
+  PanesDiff,
+  RenamePayload,
+} from "./model/index.js";
