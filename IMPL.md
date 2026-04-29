@@ -49,11 +49,7 @@ tmux-control-mode-js/
 │   │   ├── types.ts       # Transport interface
 │   │   └── index.ts       # Re-exports
 │   │
-│   ├── terminal/          # Terminal integration layer (no hard deps)
-│   │   ├── types.ts       # TerminalEmulator interface
-│   │   ├── pane-manager.ts # Routes output/input between client and terminals
-│   │   └── index.ts       # Re-exports
-│   │
+│   ├── pane-session.ts    # Headless seed→live state machine + TerminalSink interface
 │   ├── client.ts          # High-level TmuxClient combining both layers
 │   └── index.ts           # Package root
 │
@@ -82,12 +78,6 @@ tmux-control-mode-js/
       // Pure protocol — works in browser, Deno, Bun, anywhere
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
-    },
-    "./terminal": {
-      // Terminal integration — TerminalEmulator interface + PaneManager
-      // Works anywhere (no Node.js or xterm.js dependency)
-      "types": "./dist/terminal/index.d.ts",
-      "default": "./dist/terminal/index.js"
     }
   }
 }
@@ -96,11 +86,14 @@ tmux-control-mode-js/
 Consumers pick what they need:
 
 ```ts
-// Electron main process — full client with spawn transport
-import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
-
-// Renderer process — terminal integration (PaneManager + interface)
-import { PaneManager } from "@promptctl/tmux-control-mode-js/terminal";
+// Node.js / Electron main — full client with spawn transport, plus
+// PaneSession + TerminalSink for the headless seed→live state machine.
+import {
+  TmuxClient,
+  spawnTmux,
+  PaneSession,
+  type TerminalSink,
+} from "@promptctl/tmux-control-mode-js";
 
 // Browser or anywhere — protocol only
 import { TmuxParser, decode } from "@promptctl/tmux-control-mode-js/protocol";
@@ -577,7 +570,9 @@ Alternatives considered:
 
 ### 9.2 Integration Architecture
 
-Each tmux pane maps to one xterm.js `Terminal` instance. The data flow:
+Each tmux pane maps to one `PaneSession` (library) bound to one `TerminalSink`
+(consumer-supplied — typically wrapping an xterm.js `Terminal`). PaneSession
+owns the seed→live state machine; the sink is just the renderer adapter.
 
 ```
 tmux server
@@ -589,14 +584,14 @@ TmuxClient (main process)
   │
   │  IPC (Electron) or direct call
   ▼
-PaneManager (renderer)
-  │  looks up Terminal instance for pane %5
-  │  calls terminal.write(data)
+PaneSession (filters by paneId, dispatches via current bytePath)
+  │
+  │  bytePath(data)
   ▼
-xterm.js Terminal
-  │  interprets escape sequences, updates grid
+TerminalSink.write(bytes)
+  │
   ▼
-Canvas/WebGL render
+xterm.js Terminal — interprets escape sequences, updates grid
 ```
 
 User input flows in reverse:
@@ -605,116 +600,131 @@ User input flows in reverse:
 xterm.js Terminal
   │  terminal.onData(data)   // user typed "ls\r"
   ▼
-PaneManager
-  │  builds: send-keys -t %5 "ls" Enter
-  │  or: send-keys -t %5 -l "ls\r" (literal mode)
+TerminalSink.onData handler
+  ▼
+PaneSession (encodes to UTF-8, calls client.sendKeys("%5", text))
   ▼
 TmuxClient
-  │  sends command over transport
+  │  sends `send-keys -t '%5' -l '...'` over transport
   ▼
 tmux server
 ```
 
-### 9.3 Terminal Interface
+### 9.3 TerminalSink Interface
 
-We define a minimal interface that xterm.js satisfies, rather than depending
-on xterm.js directly in the core library. This keeps the core decoupled and
-allows other terminal implementations:
+PaneSession drives the renderer through a small structural interface, so the
+library never imports xterm.js. xterm.js's `Terminal` is wrapped by a tiny
+adapter (`createXtermSink`); other backends (headless captures, alternate
+emulators) wrap themselves.
 
 ```ts
-/**
- * Minimal terminal interface. xterm.js Terminal satisfies this out of the box.
- */
-interface TerminalEmulator {
-  /** Write data to the terminal for rendering */
-  write(data: string | Uint8Array): void;
-
-  /** Register callback for user input */
-  onData(callback: (data: string) => void): { dispose(): void };
-
-  /** Register callback for terminal resize */
-  onResize(callback: (size: { cols: number; rows: number }) => void): { dispose(): void };
-
-  /** Resize the terminal grid */
+interface TerminalSink {
+  /** Write decoded pane output bytes. */
+  write(bytes: Uint8Array): void;
+  /** Set the sink's logical dimensions (cols × rows). */
   resize(cols: number, rows: number): void;
-
-  /** Current dimensions */
-  readonly cols: number;
-  readonly rows: number;
+  /** Subscribe to user keystrokes; PaneSession forwards them to send-keys. */
+  onData(handler: (bytes: Uint8Array) => void): { dispose(): void };
+  /** Move keyboard focus to the sink. */
+  focus(): void;
 }
 ```
 
-xterm.js `Terminal` already implements all of these methods with the same
-signatures — no adapter needed.
+[LAW:locality-or-seam] The sink is the seam between PaneSession and any
+renderer. Adding a sink-specific quirk (e.g. xterm's first-resize crash
+workaround) belongs in the adapter, not in PaneSession.
 
-### 9.4 PaneManager
+### 9.4 PaneSession
 
-The `PaneManager` is the glue between `TmuxClient` and terminal instances.
-It manages the lifecycle of per-pane terminals:
+`PaneSession` is the per-pane state machine: `idle → seeding → live →
+disposed`. One instance per pane the consumer is rendering.
 
 ```ts
-class PaneManager {
-  constructor(client: TmuxClient, terminalFactory: () => TerminalEmulator);
+class PaneSession {
+  constructor(opts: {
+    client: PaneSessionClient;        // TmuxClient or a bridge adapter
+    paneId: number;
+    sink: TerminalSink;
+    bufferLimitBytes?: number;        // default 4 MiB
+  });
 
-  /** Get or create a terminal for a pane */
-  getTerminal(paneId: number): TerminalEmulator;
+  attach(): Promise<void>;             // begin seeding; resolves at flip time
+  resize(cols: number, rows: number): void;  // mirrors to sink only — NOT to tmux
+  focus(): void;
+  dispose(): void;                     // idempotent; AbortController-driven teardown
 
-  /** Attach a terminal to a DOM element (xterm.js .open()) */
-  attach(paneId: number, element: HTMLElement): void;
-
-  /** Detach and dispose a terminal */
-  detach(paneId: number): void;
-
-  /** Handle all routing automatically */
-  start(): void;
-  stop(): void;
+  on("state-change", h);               // 'idle'|'seeding'|'live'|'disposed'
+  on("seed-error", h);                 // capture/cursor query failed
+  on("seed-overflow", h);              // bounded buffer dropped oldest tail
+  // off() symmetrical
 }
 ```
 
 Responsibilities:
 
-- **Output routing:** Listens for `output` / `extended-output` events,
-  decodes octal escapes, calls `terminal.write(data)` on the correct instance.
-- **Input routing:** Listens for `terminal.onData()`, sends `send-keys`
-  commands to the correct pane.
-- **Resize propagation:** Listens for `terminal.onResize()`, sends
-  `refresh-client -C` with the new size. Handles per-window sizing if
-  multiple panes have different dimensions.
-- **Lifecycle:** Creates terminals on `%window-add` / first output, disposes
-  on `%window-close`.
-- **Pause/continue:** When `%pause` arrives, optionally shows a visual
-  indicator. When the user scrolls back to the bottom or interacts, sends
-  `refresh-client -A %<id>:continue`.
+- **Output routing.** Subscribes once to `output` + `extended-output` on the
+  client, filters by `paneId`, dispatches every byte through `bytePath`.
+  [LAW:dataflow-not-control-flow] During seed, `bytePath` appends to a
+  bounded buffer; at flip time it is atomically swapped to write straight
+  to the sink. The same line of code runs every event.
+- **Input routing.** Hooks `sink.onData`, encodes to UTF-8, calls
+  `client.sendKeys('%<id>', text)`. Fire-and-forget — the FIFO queue inside
+  `TmuxClient` preserves ordering relative to other commands.
+- **Seed/live state machine.** See §9.5.
+- **Lifecycle.** A single `AbortController` owns teardown. `dispose()` aborts;
+  output listeners detach; the input disposable runs; the byte path flips to
+  a no-op so any in-flight emit racing the abort lands on the floor with no
+  per-callback `if (state === "disposed") return` guards. [LAW:single-enforcer]
 
-### 9.5 Initial Pane Sync
+What PaneSession deliberately does NOT do:
 
-When a control mode client attaches to an existing session, the panes already
-have content. tmux does **not** replay historical output over control mode.
-The control client only receives new output from the point of attachment.
+- **No `resize-pane` to tmux.** `resize(cols, rows)` mirrors to the sink only.
+  The consumer's topology source is the canonical width/height; PaneSession
+  is a passive mirror so the sink and tmux never disagree.
+- **No pause/continue backpressure** (yet). xterm.js exposes a write-callback
+  signal for buffered chunks; threading it back to `refresh-client -A
+  %<id>:pause`/`:continue` is a follow-up ticket. The seed-phase buffer caps
+  growth, but a slow live sink still drops bytes silently into xterm's queue.
+- **No multi-pane management.** One `PaneSession` per pane; the consumer
+  owns the collection (whether that's a `DemoStore`-style hand-rolled tree
+  or the planned `TmuxModel`).
 
-To get the current pane content for initial display:
+### 9.5 Seed/Live State Machine
 
-1. Use `capture-pane -p -t %<id>` to capture the current visible grid content
-   as text (no escape sequences — just the rendered text).
-2. Or use `capture-pane -p -t %<id> -e` to include escape sequences (colors,
-   attributes).
-3. Write the captured content to the xterm.js instance before starting the
-   live output stream.
+When a control-mode client attaches to an existing session the panes already
+have content; tmux does NOT replay historical output. PaneSession bridges the
+gap:
 
-```ts
-async function syncPane(client: TmuxClient, terminal: TerminalEmulator, paneId: number) {
-  const response = await client.execute(`capture-pane -p -t %${paneId} -e`);
-  if (response.success) {
-    terminal.write(response.output.join("\r\n"));
-  }
-  // Now live output will append naturally
-}
-```
+1. `attach()` registers the pane-output listener BEFORE issuing any commands,
+   so bytes arriving in the seed window are captured, not dropped.
+2. In parallel:
+   - `capture-pane -e -p -S - -t %<id>` — full scrollback through visible
+     screen, including escape sequences.
+   - `display-message -p -t %<id> '#{cursor_x};#{cursor_y}'` — tmux's
+     authoritative cursor position (0-indexed within the visible screen).
+3. When both commands complete, synchronously (no await between the steps so
+   no event can interleave):
+   a. Write the captured snapshot to the sink.
+   b. Write an ANSI CUP escape (`\x1b[<row>;<col>H`, 1-indexed) so the
+      cursor lands at tmux's reported position rather than at the bottom of
+      the captured buffer.
+   c. Drain the seed-phase buffer in arrival order — live events that
+      landed during the seed window appear on top of the snapshot at the
+      snapshot's cursor.
+   d. Atomically swap `bytePath` to write straight to the sink. State =
+      `live`.
 
-Limitations: `capture-pane` returns the visible grid only, not scrollback.
-For scrollback, use `capture-pane -p -t %<id> -e -S -<lines>`. This is a
-design choice — capturing huge scrollback on attach is slow and usually
-unnecessary.
+If `capture-pane` or `display-message` fails (pane went away, transport
+hiccup), PaneSession transitions to `live` anyway — the seed buffer is
+dropped (rootless without a snapshot) and a typed `seed-error` event fires.
+[LAW:errors:no-silent-fallbacks] The library does not `console.error` and
+continue; the consumer decides whether to surface a "snapshot unavailable"
+affordance or trigger a reattach.
+
+If the seed buffer hits `bufferLimitBytes` (default 4 MiB), the oldest
+queued events are dropped to bring usage back under the cap and a
+`seed-overflow` event fires with the dropped count. Most likely cause: the
+seed is genuinely stuck and a reattach is the right move.
 
 ### 9.6 Recommended xterm.js Addons
 

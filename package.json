@@ -15,10 +15,6 @@
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
     },
-    "./terminal": {
-      "types": "./dist/terminal/index.d.ts",
-      "default": "./dist/terminal/index.js"
-    },
     "./keymap": {
       "types": "./dist/keymap/index.d.ts",
       "default": "./dist/keymap/index.js"
