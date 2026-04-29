@@ -828,16 +828,23 @@ class PaneSession {
     paneId: number;
     sink: TerminalSink;
     bufferLimitBytes?: number;        // default 4 MiB
+    stallHighChunks?: number;         // default 64; only used if sink.writeAsync
+    stallLowChunks?: number;          // default 16; must be < stallHighChunks
   });
 
   attach(): Promise<void>;             // begin seeding; resolves at flip time
   resize(cols: number, rows: number): void;  // mirrors to sink only — NOT to tmux
   focus(): void;
+  pause(): void;                       // refresh-client -A %X:pause; emits 'paused'
+  resume(): void;                      // refresh-client -A %X:continue; emits 'resumed'
+  readonly isPaused: boolean;
   dispose(): void;                     // idempotent; AbortController-driven teardown
 
   on("state-change", h);               // 'idle'|'seeding'|'live'|'disposed'
   on("seed-error", h);                 // capture/cursor query failed
   on("seed-overflow", h);              // bounded buffer dropped oldest tail
+  on("paused", h);                     // { reason: 'consumer'|'sink-stall'|'tmux' }
+  on("resumed", h);                    // running again (any cause)
   // off() symmetrical
 }
 ```
@@ -863,13 +870,54 @@ What PaneSession deliberately does NOT do:
 - **No `resize-pane` to tmux.** `resize(cols, rows)` mirrors to the sink only.
   The consumer's topology source is the canonical width/height; PaneSession
   is a passive mirror so the sink and tmux never disagree.
-- **No pause/continue backpressure** (yet). xterm.js exposes a write-callback
-  signal for buffered chunks; threading it back to `refresh-client -A
-  %<id>:pause`/`:continue` is a follow-up ticket. The seed-phase buffer caps
-  growth, but a slow live sink still drops bytes silently into xterm's queue.
 - **No multi-pane management.** One `PaneSession` per pane; the consumer
   owns the collection (whether that's a `DemoStore`-style hand-rolled tree
   or the planned `TmuxModel`).
+
+### 9.4.1 Per-pane backpressure (pause/resume)
+
+PaneSession layers per-pane flow control on top of tmux's
+`refresh-client -A %<id>:pause`/`:continue` protocol (SPEC §13). Three
+trigger sources collapse onto a single pause-state field, with the
+originating cause recorded in the `paused` event payload:
+
+- **Consumer-driven** — `paneSession.pause()` / `paneSession.resume()`
+  are idempotent verbs the consumer calls. Both fire-and-forget the
+  matching `refresh-client -A` wire command and emit `paused` /
+  `resumed` events synchronously on the call (the SPEC requires the
+  event to fire on the consumer call, not on tmux's confirming
+  notification — tmux's eventual `%pause` lands on an already-paused
+  state and collapses to a no-op).
+- **tmux-driven** — `%pause` and `%continue` notifications matching
+  this pane id flow through the same state mutator and emit `paused`
+  with `reason: 'tmux'` / `resumed`. No echo wire command (tmux is
+  already in the matching state).
+- **sink-stall** — when the sink implements the optional
+  `writeAsync(bytes): Promise<void>` hook, PaneSession routes live
+  bytes through it and tracks outstanding chunks. Crossing
+  `stallHighChunks` (default 64) auto-pauses with
+  `reason: 'sink-stall'`; draining below `stallLowChunks` (default 16)
+  auto-resumes. Critically, auto-resume only fires when the *active*
+  pause reason is `'sink-stall'` — a consumer- or tmux-initiated pause
+  is sticky regardless of how many chunks the sink eventually drains.
+
+[LAW:no-mode-explosion] Pause is its own axis (running ↔ paused)
+independent of the lifecycle axis (idle/seeding/live/disposed). A live
+pane can be running OR paused; conflating them into one enum would
+balloon to eight entries with no architectural payoff.
+
+[LAW:single-enforcer] All pause-state transitions funnel through
+`enterPaused()` / `exitPaused()`. Three trigger sources share one
+event-emission gate, guaranteeing exactly one `paused` per
+running→paused edge regardless of which sources collapse onto it.
+
+[LAW:dataflow-not-control-flow] The live byte path is one of two
+function pointers picked at construction from the sink's capability
+shape (`writeAsync` present → tracking path; absent → sync `write`).
+The hot path never branches on capability, only forwards. The
+sink-stall watermark check runs on every chunk in and every chunk
+done; the same operation runs each tick — only the value of (counter,
+current pause reason) decides the outcome.
 
 ### 9.5 Seed/Live State Machine
 

@@ -271,6 +271,69 @@ describe.skipIf(!RUN_INTEGRATION)("PaneSession seed→live", () => {
   );
 
   it(
+    "pause/resume round-trips with real tmux: %pause + %continue confirm",
+    async () => {
+      sessionName = uniqueSession("ps-pause");
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const paneId = await getActivePaneId(c);
+
+      const sink = recordingSink();
+      const session = new PaneSession({ client: c, paneId, sink });
+      await session.attach();
+
+      // We never want a `paused` event with reason !== 'consumer' to bubble
+      // here — we initiated. tmux's confirming %pause should land on an
+      // already-paused session and collapse to a no-op.
+      const pausedReasons: string[] = [];
+      let resumedCount = 0;
+      session.on("paused", ({ reason }) => pausedReasons.push(reason));
+      session.on("resumed", () => {
+        resumedCount += 1;
+      });
+
+      session.pause();
+      expect(session.isPaused).toBe(true);
+      expect(pausedReasons).toEqual(["consumer"]);
+
+      // Wait for tmux's confirming %pause notification to arrive. The
+      // PauseMessage matching this paneId is the round-trip ack.
+      await new Promise((r) => setTimeout(r, 300));
+      // Still exactly one paused event — tmux's %pause folded into the
+      // already-paused state, no second emission.
+      expect(pausedReasons).toEqual(["consumer"]);
+
+      // Trigger output while paused. tmux per SPEC §13 discards queued
+      // output for paused panes, so even after resume those bytes are
+      // gone — but the test is "no live bytes flow into the sink while
+      // paused", which is the architectural invariant.
+      const sizeAtPause = sink.chunks.length;
+      await c.execute(
+        `send-keys -t %${paneId} 'echo SHOULD-NOT-FLOW-WHILE-PAUSED' Enter`,
+      );
+      await new Promise((r) => setTimeout(r, 300));
+      expect(sink.chunks.length).toBe(sizeAtPause);
+      expect(sink.text()).not.toContain("SHOULD-NOT-FLOW-WHILE-PAUSED");
+
+      session.resume();
+      expect(session.isPaused).toBe(false);
+      expect(resumedCount).toBe(1);
+
+      // After resume, fresh output flows again.
+      await c.execute(`send-keys -t %${paneId} 'echo POST-RESUME' Enter`);
+      await waitFor(() => sink.text().includes("POST-RESUME"), 5000);
+
+      // tmux's %continue confirmation also collapses to no-op (we're
+      // already running) — exactly one resumed event.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(resumedCount).toBe(1);
+
+      session.dispose();
+    },
+    15000,
+  );
+
+  it(
     "dispose() halts sink writes immediately",
     async () => {
       sessionName = uniqueSession("ps-dispose");

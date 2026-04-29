@@ -33,6 +33,7 @@ export type {
   PaneSessionOptions,
   PaneSessionState,
   PaneSessionEventMap,
+  PauseReason,
 } from "./pane-session.js";
 
 export {

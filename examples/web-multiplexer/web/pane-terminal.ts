@@ -25,8 +25,10 @@ import {
 } from "../../../src/pane-session.js";
 import type { TmuxBridge } from "./bridge.ts";
 import type {
+  ContinueMessage,
   ExtendedOutputMessage,
   OutputMessage,
+  PauseMessage,
   TmuxMessage,
 } from "../../../src/protocol/types.js";
 import type { DemoStore, PaneInfo } from "./store.ts";
@@ -175,40 +177,56 @@ export function dimensionsForContainer(
 function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
   const outputHandlers = new Set<(msg: OutputMessage) => void>();
   const extendedHandlers = new Set<(msg: ExtendedOutputMessage) => void>();
+  const pauseHandlers = new Set<(msg: PauseMessage) => void>();
+  const continueHandlers = new Set<(msg: ContinueMessage) => void>();
 
   // [LAW:single-enforcer] One bridge.onEvent registration; never grows.
-  // Adding a third event type would extend this dispatch table, not add
-  // a parallel registration.
+  // The dispatch table fans out by event type — pane backpressure events
+  // (`pause` / `continue`) ride the same channel as output, so PaneSession
+  // sees a unified event surface.
   bridge.onEvent((ev: TmuxMessage) => {
     if (ev.type === "output") {
       for (const h of outputHandlers) h(ev);
     } else if (ev.type === "extended-output") {
       for (const h of extendedHandlers) h(ev);
+    } else if (ev.type === "pause") {
+      for (const h of pauseHandlers) h(ev);
+    } else if (ev.type === "continue") {
+      for (const h of continueHandlers) h(ev);
     }
   });
 
+  // [LAW:dataflow-not-control-flow] The on/off pair is one dispatch table
+  // keyed by event name; the same tuple lookup happens for every event,
+  // and the data (event name) decides which Set is mutated.
+  type Sets = {
+    output: typeof outputHandlers;
+    "extended-output": typeof extendedHandlers;
+    pause: typeof pauseHandlers;
+    continue: typeof continueHandlers;
+  };
+  const sets: Sets = {
+    output: outputHandlers,
+    "extended-output": extendedHandlers,
+    pause: pauseHandlers,
+    continue: continueHandlers,
+  };
+
   return {
-    on(event: "output" | "extended-output", handler: never): void {
-      if (event === "output") {
-        outputHandlers.add(handler as (msg: OutputMessage) => void);
-      } else {
-        extendedHandlers.add(handler as (msg: ExtendedOutputMessage) => void);
-      }
+    on(event: keyof Sets, handler: never): void {
+      sets[event].add(handler);
     },
-    off(event: "output" | "extended-output", handler: never): void {
-      if (event === "output") {
-        outputHandlers.delete(handler as (msg: OutputMessage) => void);
-      } else {
-        extendedHandlers.delete(
-          handler as (msg: ExtendedOutputMessage) => void,
-        );
-      }
+    off(event: keyof Sets, handler: never): void {
+      sets[event].delete(handler);
     },
     execute(command) {
       return bridge.execute(command);
     },
     sendKeys(target, keys) {
       return bridge.sendKeys(target, keys);
+    },
+    setPaneAction(paneId, action) {
+      return bridge.setPaneAction(paneId, action);
     },
   } as PaneSessionClient;
 }
@@ -237,6 +255,17 @@ function createXtermSink(term: Terminal): TerminalSink {
   return {
     write(bytes) {
       term.write(bytes);
+    },
+    // [LAW:dataflow-not-control-flow] Live writes go through writeAsync so
+    // PaneSession's outstanding-chunk counter advances on each call and
+    // decrements when xterm has parsed and rendered the chunk. xterm's
+    // write callback is the single ack — when the renderer is paint-bound,
+    // these callbacks back up, which is exactly the signal PaneSession
+    // converts into a tmux-side pause via refresh-client -A %X:pause.
+    writeAsync(bytes) {
+      return new Promise<void>((resolve) => {
+        term.write(bytes, () => resolve());
+      });
     },
     resize(cols, rows) {
       if (!firstResizeApplied) {

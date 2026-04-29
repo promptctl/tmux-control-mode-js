@@ -37,20 +37,35 @@
 //     sink only. The demo's reaction also never sends resize-pane — it
 //     mirrors the dimensions tmux already published. Consumers own the
 //     tmux-side trigger (toolbar buttons, layout changes, etc.).
-//   - Does not implement %pause/%continue backpressure. The demo doesn't
-//     either; promoting it without exposing the gap would mask the bug.
-//     Tracked in tmux-headless-api-59c as a follow-up ticket.
 //   - Does not own keymap routing. The sink emits onData for keystrokes the
 //     consumer's keymap didn't intercept; PaneSession forwards those to
 //     send-keys. Tmux-style chords (e.g. C-b n) belong on a document-level
 //     handler in the consumer because per-sink listeners only fire while the
 //     specific sink has focus, which is the wrong scope for window-switch
 //     shortcuts.
+//
+// Backpressure (this file owns it):
+//   - Per-pane pause/resume on top of tmux's `refresh-client -A %<id>:pause`
+//     / `:continue` flow-control. Three orthogonal trigger sources, all
+//     funneled into a single pause-state field:
+//       (a) consumer call: `pause()` / `resume()`,
+//       (b) tmux-driven: %pause / %continue notifications,
+//       (c) sink-stall: when the sink implements `writeAsync`, outstanding
+//           chunk count crossing the high-water mark auto-pauses; draining
+//           below the low-water mark auto-resumes.
+//   - The pause axis is independent of the lifecycle axis (idle/seeding/
+//     live/disposed). A live pane can be running OR paused — composing
+//     four lifecycle states with two pause states would balloon to eight
+//     enum entries [LAW:no-mode-explosion]; keeping them as separate fields
+//     keeps each axis pure and avoids combinatorial test surface.
 
+import { PaneAction } from "./protocol/types.js";
 import type {
   CommandResponse,
+  ContinueMessage,
   ExtendedOutputMessage,
   OutputMessage,
+  PauseMessage,
 } from "./protocol/types.js";
 
 // ---------------------------------------------------------------------------
@@ -74,13 +89,22 @@ export interface PaneSessionClient {
     event: "extended-output",
     handler: (msg: ExtendedOutputMessage) => void,
   ): void;
+  on(event: "pause", handler: (msg: PauseMessage) => void): void;
+  on(event: "continue", handler: (msg: ContinueMessage) => void): void;
   off(event: "output", handler: (msg: OutputMessage) => void): void;
   off(
     event: "extended-output",
     handler: (msg: ExtendedOutputMessage) => void,
   ): void;
+  off(event: "pause", handler: (msg: PauseMessage) => void): void;
+  off(event: "continue", handler: (msg: ContinueMessage) => void): void;
   execute(command: string): Promise<CommandResponse>;
   sendKeys(target: string, keys: string): Promise<CommandResponse>;
+  // [LAW:one-source-of-truth] PaneSession does NOT format
+  // `refresh-client -A %X:pause` itself — that wire string lives in
+  // src/protocol/encoder.ts. The seam exposes the canonical TmuxClient verb
+  // so connector adapters (Electron IPC, WebSocket) keep the same shape.
+  setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse>;
 }
 
 /**
@@ -89,7 +113,7 @@ export interface PaneSessionClient {
  * PaneSession imports nothing about the renderer — the sink is the seam.
  */
 export interface TerminalSink {
-  /** Write decoded pane output bytes. */
+  /** Write decoded pane output bytes. Synchronous; used during seed flush. */
   write(bytes: Uint8Array): void;
   /** Set the sink's logical dimensions (cols × rows). */
   resize(cols: number, rows: number): void;
@@ -97,6 +121,18 @@ export interface TerminalSink {
   onData(handler: (bytes: Uint8Array) => void): { dispose(): void };
   /** Move keyboard focus to the sink. */
   focus(): void;
+  /**
+   * Optional async write hook. When implemented, PaneSession routes live
+   * (post-seed) bytes through here and tracks outstanding chunks. The
+   * returned promise should resolve once the sink has finished processing
+   * the chunk (xterm.js: callback after rendering; Electron renderer:
+   * post-paint ack). Outstanding chunks crossing the high-water mark
+   * auto-pause tmux; draining below the low-water mark auto-resumes.
+   *
+   * Sinks without this method are treated as instantaneous: live writes go
+   * through synchronous `write()` and no stall detection runs.
+   */
+  writeAsync?(bytes: Uint8Array): Promise<void>;
 }
 
 export interface PaneSessionOptions {
@@ -111,15 +147,33 @@ export interface PaneSessionOptions {
    * common case, small enough to fail loudly on a stuck seed.
    */
   readonly bufferLimitBytes?: number;
+  /**
+   * High-water mark (in outstanding sink chunks) at which sink-stall
+   * detection auto-pauses the pane. Only consulted when the sink
+   * implements `writeAsync`. Defaults to 64.
+   */
+  readonly stallHighChunks?: number;
+  /**
+   * Low-water mark (in outstanding sink chunks) at which an auto-paused
+   * pane is resumed. Must be < `stallHighChunks`. Defaults to 16.
+   */
+  readonly stallLowChunks?: number;
 }
+
+/** Why the pane transitioned into the paused state. */
+export type PauseReason = "consumer" | "sink-stall" | "tmux";
 
 export interface PaneSessionEventMap {
   readonly "state-change": { readonly state: PaneSessionState };
   readonly "seed-error": { readonly cause: unknown };
   readonly "seed-overflow": { readonly droppedBytes: number };
+  readonly paused: { readonly reason: PauseReason };
+  readonly resumed: Record<never, never>;
 }
 
 const DEFAULT_BUFFER_LIMIT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_STALL_HIGH_CHUNKS = 64;
+const DEFAULT_STALL_LOW_CHUNKS = 16;
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
@@ -142,6 +196,8 @@ export class PaneSession {
   private readonly client: PaneSessionClient;
   private readonly sink: TerminalSink;
   private readonly bufferLimitBytes: number;
+  private readonly stallHighChunks: number;
+  private readonly stallLowChunks: number;
   private readonly abort: AbortController;
   private readonly listeners: ListenerSets = {};
 
@@ -150,11 +206,26 @@ export class PaneSession {
   // swapped to write straight through to the sink. The output handler that
   // calls `bytePath(bytes)` runs every event — no `if (state === "live")`.
   private bytePath: (bytes: Uint8Array) => void;
+
+  // [LAW:dataflow-not-control-flow] The live writer is also a function
+  // pointer — picked once at construction from the sink's capability shape
+  // (writeAsync present → tracking path; absent → sync write). The hot
+  // path never branches on capability.
+  private readonly liveBytePath: (bytes: Uint8Array) => void;
+
   private buffer: Uint8Array[] = [];
   private bufferBytes = 0;
   private state: PaneSessionState = "idle";
   private inputDisposable: { dispose(): void } | null = null;
   private detachClientListeners: (() => void) | null = null;
+
+  // [LAW:no-mode-explosion] Pause is its own axis, not folded into the
+  // lifecycle enum. `pauseReason === null` means running; non-null means
+  // paused with that originating cause. Auto-resume only fires when the
+  // active reason is "sink-stall" — consumer/tmux pauses persist until
+  // explicitly released.
+  private pauseReason: PauseReason | null = null;
+  private outstandingChunks = 0;
 
   constructor(options: PaneSessionOptions) {
     this.client = options.client;
@@ -162,8 +233,14 @@ export class PaneSession {
     this.sink = options.sink;
     this.bufferLimitBytes =
       options.bufferLimitBytes ?? DEFAULT_BUFFER_LIMIT_BYTES;
+    this.stallHighChunks = options.stallHighChunks ?? DEFAULT_STALL_HIGH_CHUNKS;
+    this.stallLowChunks = options.stallLowChunks ?? DEFAULT_STALL_LOW_CHUNKS;
     this.abort = new AbortController();
     this.bytePath = (bytes) => this.bufferAppend(bytes);
+    this.liveBytePath =
+      this.sink.writeAsync !== undefined
+        ? (bytes) => this.writeAsyncTracked(bytes)
+        : (bytes) => this.sink.write(bytes);
   }
 
   /** Current lifecycle state. Synchronous mirror of the last state-change event. */
@@ -236,6 +313,35 @@ export class PaneSession {
     this.sink.focus();
   }
 
+  /** True iff the pane is currently paused (by any cause). */
+  get isPaused(): boolean {
+    return this.pauseReason !== null;
+  }
+
+  /**
+   * Ask tmux to stop emitting %output for this pane. Idempotent: a pause
+   * issued while already paused is a no-op (no second `paused` event, no
+   * duplicate wire command). The wire command is fire-and-forget — the
+   * `paused` event fires synchronously on the consumer-call transition,
+   * not on tmux's confirming `%pause` notification (the spec requires the
+   * event to fire on the consumer call), and tmux's eventual `%pause`
+   * lands in an already-paused state which collapses to a no-op.
+   */
+  pause(): void {
+    if (this.state === "disposed") return;
+    this.enterPaused("consumer");
+  }
+
+  /**
+   * Ask tmux to resume emitting %output for this pane. Idempotent.
+   * Releases the pause regardless of which trigger caused it (consumer,
+   * tmux, sink-stall) — the consumer's intent overrides any source.
+   */
+  resume(): void {
+    if (this.state === "disposed") return;
+    this.exitPaused();
+  }
+
   /**
    * Detach all listeners and discard the seed buffer. Idempotent. After
    * dispose all event-emit and sink-write paths are inert.
@@ -254,9 +360,15 @@ export class PaneSession {
     this.inputDisposable = null;
     this.buffer = [];
     this.bufferBytes = 0;
+    this.outstandingChunks = 0;
+    this.pauseReason = null;
     // Belt-and-suspenders: if a client emit is iterating its handler set
     // concurrently with the off() above, the handler may still fire. Flipping
     // bytePath to a no-op ensures any such late call lands on the floor.
+    // Also neutralizes any in-flight writeAsync ack — onSinkChunkSettled
+    // exits early once state === "disposed", so a late settle from a
+    // disposed session can't double-decrement counters or mis-fire stall
+    // transitions.
     this.bytePath = NOOP_WRITE;
   }
 
@@ -272,11 +384,27 @@ export class PaneSession {
       if (msg.paneId !== this.paneId) return;
       this.bytePath(msg.data);
     };
+    // [LAW:dataflow-not-control-flow] Tmux pause/continue notifications
+    // feed the same pause-state mutator the consumer-driven path uses;
+    // the source of the transition is captured in the reason field, but
+    // the operation that runs is identical.
+    const onPause = (msg: PauseMessage): void => {
+      if (msg.paneId !== this.paneId) return;
+      this.enterPaused("tmux");
+    };
+    const onContinue = (msg: ContinueMessage): void => {
+      if (msg.paneId !== this.paneId) return;
+      this.exitPaused();
+    };
     this.client.on("output", onOutput);
     this.client.on("extended-output", onOutput);
+    this.client.on("pause", onPause);
+    this.client.on("continue", onContinue);
     this.detachClientListeners = () => {
       this.client.off("output", onOutput);
       this.client.off("extended-output", onOutput);
+      this.client.off("pause", onPause);
+      this.client.off("continue", onContinue);
     };
 
     // Wire user keystrokes from the sink → tmux send-keys. The consumer's
@@ -324,11 +452,14 @@ export class PaneSession {
       // Drain in arrival order so live events that landed during the seed
       // window appear on top of the snapshot at the snapshot's cursor —
       // not at whatever cursor position they happened to imply.
-      for (const bytes of this.buffer) this.sink.write(bytes);
+      // [LAW:dataflow-not-control-flow] Drain through `liveBytePath` so
+      // sink-stall accounting picks up the buffered chunks at flip time —
+      // the same path live events take from here on.
+      for (const bytes of this.buffer) this.liveBytePath(bytes);
       this.buffer = [];
       this.bufferBytes = 0;
 
-      this.bytePath = (bytes) => this.sink.write(bytes);
+      this.bytePath = this.liveBytePath;
       this.transition("live");
     } catch (cause) {
       if (this.state === "disposed") return;
@@ -336,11 +467,85 @@ export class PaneSession {
       // snapshot, the queued events are rootless — a consumer choosing to
       // surface a "snapshot unavailable" UI affordance can decide whether
       // to reattach. Live events flow from here on.
-      this.bytePath = (bytes) => this.sink.write(bytes);
+      this.bytePath = this.liveBytePath;
       this.buffer = [];
       this.bufferBytes = 0;
       this.transition("live");
       this.emit("seed-error", { cause });
+    }
+  }
+
+  // [LAW:single-enforcer] Every pause-state ENTRY funnels through here:
+  // consumer pause(), tmux %pause, and sink-stall auto-pause all call this.
+  // The single transition gate guarantees we emit at most one `paused` event
+  // per running→paused edge regardless of how many sources collapse onto it.
+  private enterPaused(reason: PauseReason): void {
+    if (this.pauseReason !== null) return;
+    this.pauseReason = reason;
+    // Tmux is the source of truth for "we observed pause"; for tmux-driven
+    // transitions we don't echo the wire command (it's already paused).
+    // Consumer- and sink-stall-driven transitions DO send the wire command
+    // — that's how we ask tmux to stop. Fire-and-forget; tmux acks with
+    // its own %pause which lands as a no-op above.
+    if (reason !== "tmux") {
+      void this.client
+        .setPaneAction(this.paneId, PaneAction.Pause)
+        .catch(() => undefined);
+    }
+    this.emit("paused", { reason });
+  }
+
+  // [LAW:single-enforcer] Mirror of enterPaused — every paused→running
+  // edge passes through here. tmux's %continue lands here too, so a
+  // consumer that called pause() and then sees tmux spontaneously
+  // resume gets a clean `resumed` event.
+  private exitPaused(): void {
+    if (this.pauseReason === null) return;
+    const previous = this.pauseReason;
+    this.pauseReason = null;
+    if (previous !== "tmux") {
+      void this.client
+        .setPaneAction(this.paneId, PaneAction.Continue)
+        .catch(() => undefined);
+    }
+    this.emit("resumed", {});
+  }
+
+  // Sink-stall accounting. Only invoked when this.sink.writeAsync is
+  // present (the constructor picks the tracking path then; the sync path
+  // never touches these counters).
+  //
+  // [LAW:dataflow-not-control-flow] Every chunk runs the same shape:
+  // increment, evaluate watermark, dispatch. The `evaluateStallPressure`
+  // call is unconditional; the data (counter vs watermark, current
+  // pause reason) decides whether a transition fires.
+  private writeAsyncTracked(bytes: Uint8Array): void {
+    this.outstandingChunks += 1;
+    this.evaluateStallPressure();
+    const writeAsync = this.sink.writeAsync as (b: Uint8Array) => Promise<void>;
+    const onSettled = (): void => this.onSinkChunkSettled();
+    writeAsync(bytes).then(onSettled, onSettled);
+  }
+
+  private onSinkChunkSettled(): void {
+    if (this.state === "disposed") return;
+    this.outstandingChunks = Math.max(0, this.outstandingChunks - 1);
+    this.evaluateStallPressure();
+  }
+
+  // [LAW:dataflow-not-control-flow] Pure value-driven dispatcher. Called
+  // on every chunk in and every chunk done; the same operation runs each
+  // tick — only the value of (counter, current pause reason) decides the
+  // outcome. No "skipped" branches.
+  private evaluateStallPressure(): void {
+    const overHigh = this.outstandingChunks >= this.stallHighChunks;
+    const underLow = this.outstandingChunks <= this.stallLowChunks;
+    if (overHigh && this.pauseReason === null) {
+      this.enterPaused("sink-stall");
+      return;
+    }
+    if (underLow && this.pauseReason === "sink-stall") {
+      this.exitPaused();
     }
   }
 
