@@ -14,6 +14,7 @@
 import type { ClientToServer } from "../shared/protocol.ts";
 import type {
   CommandResponse,
+  PaneAction,
   TmuxMessage,
 } from "../../../src/protocol/types.js";
 
@@ -88,6 +89,7 @@ export type WireHandler = (entry: WireEntry) => void;
 export interface TmuxBridge {
   execute(command: string): Promise<CommandResponse>;
   sendKeys(target: string, keys: string): Promise<CommandResponse>;
+  setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse>;
   detach(): void;
 
   connect(url: string): void;

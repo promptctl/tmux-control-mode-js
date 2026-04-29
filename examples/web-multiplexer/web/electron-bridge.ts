@@ -21,6 +21,7 @@ import {
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import type {
   CommandResponse,
+  PaneAction,
   TmuxMessage,
 } from "../../../src/protocol/types.js";
 import type { ClientToServer } from "../shared/protocol.ts";
@@ -77,6 +78,21 @@ export class ElectronBridge implements TmuxBridge {
     };
     return this.invokeWithWire(request, (proxy) =>
       proxy.sendKeys(target, keys),
+    );
+  }
+
+  setPaneAction(
+    paneId: number,
+    action: PaneAction,
+  ): Promise<CommandResponse> {
+    const request: ClientToServer = {
+      kind: "setPaneAction",
+      id: this.allocId(),
+      paneId,
+      action,
+    };
+    return this.invokeWithWire(request, (proxy) =>
+      proxy.setPaneAction(paneId, action),
     );
   }
 
