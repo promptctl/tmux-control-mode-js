@@ -409,10 +409,23 @@ export class TmuxModel {
       if (sid !== null) void this.refreshSession(sid);
     };
 
+    // [LAW:single-enforcer] After a transport reconnect the client
+    // re-issues every subscription under fresh tmux names; our held
+    // SubscriptionHandles continue to work transparently. The model's
+    // job here is purely to clear cached state so the snapshot doesn't
+    // stay populated with records from a tmux server that no longer
+    // exists, and to re-run bootstrap so callers don't have to wait a
+    // full ~1 Hz subscription tick for fresh data.
+    const onSubscriptionsReset = (): void => {
+      if (this.disposed) return;
+      this.resetForReconnect();
+    };
+
     this.client.on("client-session-changed", onClientSessionChanged);
     this.client.on("layout-change", onLayoutChange);
     this.client.on("session-window-changed", onSessionWindowChanged);
     this.client.on("window-pane-changed", onWindowPaneChanged);
+    this.client.on("subscriptions-reset", onSubscriptionsReset);
 
     this.cleanups.push({
       dispose: () => {
@@ -420,8 +433,46 @@ export class TmuxModel {
         this.client.off("layout-change", onLayoutChange);
         this.client.off("session-window-changed", onSessionWindowChanged);
         this.client.off("window-pane-changed", onWindowPaneChanged);
+        this.client.off("subscriptions-reset", onSubscriptionsReset);
       },
     });
+  }
+
+  // [LAW:single-enforcer] One reconnect-clear path. Called from the
+  // `subscriptions-reset` listener; never from anywhere else. Mirrors
+  // bootstrap() in the order it (re)populates state — the only difference
+  // is that subscription handles are preserved (TmuxClient.reissueAll has
+  // already swapped names under them).
+  private resetForReconnect(): void {
+    // Clear every record store so the empty snapshot we emit immediately
+    // is consistent with reality (tmux has just lost everything).
+    this.sessionRecords.clear();
+    this.windowRecords.clear();
+    this.paneRecords.clear();
+    this.clientSessionId = null;
+
+    // Drop in-flight refresh latches — those promises are racing against
+    // a tmux server that's gone. Letting them settle would either fail
+    // (best case) or apply scoped rows for stale ids (worst case).
+    this.inFlightSessionRefresh.clear();
+    this.inFlightWindowDimRefresh.clear();
+
+    // Reset the readiness latch so consumers waiting on `ready` get a
+    // second `ready` once the new tier deliveries land. The diff baseline
+    // also resets — the next rebuild will diff against EMPTY_SNAPSHOT,
+    // which surfaces every entity as `added` once data flows again.
+    this.tiersReceived.clear();
+    this.readyEmitted = false;
+    this.prevSnapshot = null;
+
+    // Emit the empty snapshot synchronously so consumers see "no data,
+    // reconnecting" before any await.
+    this.rebuildAndEmit();
+
+    // Re-fetch list-* + display-message so the UI doesn't stall waiting
+    // for the next ~1 Hz subscription tick. Errors flow through the
+    // existing `bootstrap` phase tagging.
+    void this.bootstrap();
   }
 
   // -------------------------------------------------------------------------

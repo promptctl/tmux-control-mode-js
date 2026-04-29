@@ -20,6 +20,26 @@ export interface TmuxTransport {
   /** Register callback for transport close/error. */
   onClose(callback: (reason?: string) => void): void;
 
+  /**
+   * Optional. Register a callback fired when the underlying wire has been
+   * re-established AFTER a previous drop — i.e. tmux now sees a fresh
+   * connection with no subscriptions or in-flight commands attached. Tells
+   * `TmuxClient` to re-issue every live subscription against the new tmux
+   * server (the old one is gone or has forgotten this client) before any
+   * new caller traffic flows.
+   *
+   * Transports that never reconnect (e.g. spawned child processes) MUST NOT
+   * implement this method — `TmuxClient` reads `transport.onReconnect?.(...)`
+   * and treats absence as "this transport is single-shot." Implementing as a
+   * no-op would silently disable subscription recovery for any transport
+   * that should support it but stubbed wrong.
+   *
+   * Each call registers an additional handler. Handlers are invoked AFTER
+   * the new wire is open and ready to accept commands; the transport must
+   * not fire onReconnect before the handshake (if any) completes.
+   */
+  onReconnect?(callback: () => void): void;
+
   /** Disconnect from tmux. */
   close(): void;
 }

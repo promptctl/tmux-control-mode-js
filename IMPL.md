@@ -455,6 +455,51 @@ The shape doesn't change across frameworks — only the wrapping. If your
 framework needs immutable inputs, the snapshot already is one (the diff
 is computed by id, not by reference equality).
 
+### 5.3 Reconnect-aware subscription lifecycle
+
+When the underlying transport reconnects (a WebSocket recovers from a
+dropped connection, an Electron renderer restarts, a custom transport
+re-establishes its wire), tmux server-side subscription state is gone:
+either the original tmux server lost this client, or a fresh tmux process
+is on the other end. Without recovery the model would silently freeze —
+the UI keeps showing pre-disconnect data forever. The library handles this
+transparently:
+
+- `TmuxTransport.onReconnect?(handler)` is the optional contract a
+  reconnecting transport implements. Spawned child processes don't
+  reconnect, so `spawnTmux` simply doesn't define the method —
+  `transport.onReconnect?.(...)` reads as no-op via optional chaining
+  rather than a stub no-op the implementer could forget to update.
+  [LAW:dataflow-not-control-flow]
+- On `transport.onReconnect`, `TmuxClient`:
+  1. Emits `subscriptions-reset` synchronously, BEFORE any wire traffic.
+     Consumers (notably `TmuxModel`) clear cached state immediately so the
+     UI doesn't show stale records during the reconnect window.
+  2. Walks every live subscription entry and re-issues each via
+     `refresh-client -B` under a freshly allocated name. The original
+     `SubscriptionHandle` returned to the consumer is unchanged — it
+     closes over the entry record, not the (now-stale) name string, so
+     `dispose()` continues to target the current subscription across any
+     number of reconnects. [LAW:single-enforcer]
+- Per-subscription resubscribe failures emit `subscription-error` with
+  `{ phase: 'resubscribe', name, cause }` and DO NOT throw out of the
+  loop — one rejected format does not strand the rest of the batch or
+  crash the client.
+- Subscriptions disposed during the disconnect are skipped: `dispose()`
+  marks the entry `disposed` and removes it from both the route map and
+  the entries set, so the reissue loop's snapshot iteration skips them.
+- `TmuxModel` listens for `subscriptions-reset` and clears its three
+  record stores, the in-flight refresh latches, and the readiness state
+  before re-running `bootstrap()` (list-sessions / list-windows /
+  list-panes / display-message). The next rebuild diffs against the
+  empty snapshot, so consumers wired to `change` see every entity
+  resurface as `added` once data lands again. A second `ready` fires
+  once all three tiers and `clientSessionId` are populated.
+
+`reissueAll()` is also exposed on `TmuxClient` as a public method, so a
+consumer hand-rolling a reconnecting transport without `onReconnect`
+support can drive recovery manually after re-establishing the wire.
+
 ### Response Correlation
 
 The client tracks in-flight commands by `command-number` from `%begin` lines.
