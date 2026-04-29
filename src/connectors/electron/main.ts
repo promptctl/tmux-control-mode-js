@@ -299,7 +299,7 @@ export function createMainBridge(
       // tmux unsubscribe is fire-and-forget on cleanup paths — by the time
       // we get here the renderer is already gone or the bridge is being
       // disposed; nothing useful can be done with the response.
-      void client.unsubscribe(name).catch(swallow);
+      void client.unsubscribeRaw(name).catch(swallow);
       return;
     }
     subscriptionRefcount.set(name, prev - 1);
@@ -327,7 +327,7 @@ export function createMainBridge(
       state.subscriptions.add(name);
       acquireSubscriptionRefcount(name);
     }
-    return client.subscribe(name, what, format);
+    return client.subscribeRaw(name, what, format);
   };
 
   const unsubscribeForSender = async (
@@ -345,7 +345,7 @@ export function createMainBridge(
     const prev = subscriptionRefcount.get(name) ?? 0;
     if (prev <= 1) {
       subscriptionRefcount.delete(name);
-      return client.unsubscribe(name);
+      return client.unsubscribeRaw(name);
     }
     subscriptionRefcount.set(name, prev - 1);
     // Other senders still own this subscription — don't tear down at tmux.
