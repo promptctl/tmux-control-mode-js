@@ -4,6 +4,7 @@
     { "path": "src/transport" },
     { "path": "src" },
     { "path": "src/keymap" },
+    { "path": "src/terminal" },
     { "path": "src/connectors" }
   ],
   "files": []

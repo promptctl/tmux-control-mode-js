@@ -6,17 +6,25 @@
 // pipe live in PaneSession (`src/pane-session.ts`). This file owns:
 //   - the xterm Terminal instance and its DOM lifecycle,
 //   - MobX-observable status fed to the toolbar (font size, applied dims),
-//   - the ResizeObserver against the container,
-//   - font-fit / pixel-to-cell math (measure-once + invert),
 //   - the xterm-specific quirk that the very first synchronous resize after
 //     `term.open()` throws inside Viewport.syncScrollArea — handled inside
 //     the sink adapter, not in PaneSession.
+//
+// Renderer-agnostic font measurement and pixel↔grid math used to live in
+// this file; it now ships from the library at
+// `@promptctl/tmux-control-mode-js/terminal` for any DOM consumer that
+// needs to invert container pixels into tmux cols/rows.
 //
 // [LAW:single-enforcer] `applySizing` is the ONE site that drives xterm's
 // dimensions. The MobX reaction below is the single source — neither React
 // effects nor PaneSession ever call into xterm sizing directly.
 
-import { reaction, observable, runInAction, type IReactionDisposer } from "mobx";
+import {
+  reaction,
+  observable,
+  runInAction,
+  type IReactionDisposer,
+} from "mobx";
 import { Terminal } from "@xterm/xterm";
 import {
   PaneSession,
@@ -34,129 +42,14 @@ import type {
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
 
-// ---------------------------------------------------------------------------
-// Font measurement — once per page, cached.
-//
-// At fontSize=12 in Menlo, we measure an 'M' and the line-height of a single
-// line. These scale linearly with font size, so we can compute the max font
-// that lets `cols × rows` fit in a given container without measuring every
-// time.
-// ---------------------------------------------------------------------------
-
 // [LAW:one-source-of-truth] One font family string used everywhere —
-// xterm's Terminal constructor, the measurement probe, and fallback
-// consumers. "JetBrainsMono Nerd Font Mono" is bundled locally under
-// web/fonts/ and loaded via web/fonts.css.
+// xterm's Terminal constructor and any future measurement probe. The
+// font file is bundled locally under web/fonts/ and loaded via
+// web/fonts.css.
 const FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
 
-interface BaseMetrics {
-  readonly charW: number; // pixels per column at fontSize=12
-  readonly charH: number; // pixels per row at fontSize=12
-}
-
-let baseMetricsCache: BaseMetrics | null = null;
-
-function measureOnce(): BaseMetrics {
-  const probe = document.createElement("div");
-  probe.style.position = "absolute";
-  probe.style.visibility = "hidden";
-  probe.style.fontFamily = FONT_FAMILY;
-  probe.style.fontSize = "12px";
-  probe.style.lineHeight = "1.2";
-  probe.style.whiteSpace = "pre";
-  // 100 monospace M's so we average out subpixel rounding.
-  probe.textContent = "M".repeat(100);
-  document.body.appendChild(probe);
-  const rect = probe.getBoundingClientRect();
-  const charW = rect.width / 100;
-  const charH = rect.height;
-  document.body.removeChild(probe);
-  return { charW, charH };
-}
-
-function getBaseMetrics(): BaseMetrics {
-  if (baseMetricsCache !== null) return baseMetricsCache;
-  baseMetricsCache = measureOnce();
-  return baseMetricsCache;
-}
-
-/**
- * Force a re-measure (called after the custom font file has finished
- * loading — before that, `getBaseMetrics` would measure the fallback font
- * and produce stale numbers).
- */
-function refreshBaseMetrics(): void {
-  baseMetricsCache = measureOnce();
-}
-
-// Kick off font-loading on module import. When the JetBrains Mono Nerd
-// Font file finishes loading, refresh the cached metrics so every
-// subsequent sizing calculation uses the correct per-character pixel
-// width. Panes that were sized before the font loaded will re-size on
-// their next reaction fire (e.g. container resize or pane dim change).
-if (typeof document !== "undefined" && "fonts" in document) {
-  void document.fonts
-    .load(`12px "JetBrainsMono Nerd Font Mono"`)
-    .then(() => refreshBaseMetrics())
-    .catch(() => {
-      /* font unavailable; stick with fallback metrics */
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Font size policy
-// ---------------------------------------------------------------------------
-
-const FONT_MIN = 6;
 const FONT_MAX = 16;
-
-/**
- * Largest integer font size in [FONT_MIN, FONT_MAX] such that cols × rows
- * fits within containerW × containerH. Returns the clamped value even when
- * the ideal size is below FONT_MIN (callers may surface an "oversized"
- * affordance in that case).
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function fitFontSize(
-  cols: number,
-  rows: number,
-  containerW: number,
-  containerH: number,
-): number {
-  const { charW, charH } = getBaseMetrics();
-  // charW/charH are measured at 12 px. Per pixel of font size: charW/12 and charH/12.
-  const maxByWidth = (containerW / cols) * (12 / charW);
-  const maxByHeight = (containerH / rows) * (12 / charH);
-  const ideal = Math.floor(Math.min(maxByWidth, maxByHeight));
-  if (ideal < FONT_MIN) return FONT_MIN;
-  if (ideal > FONT_MAX) return FONT_MAX;
-  return ideal;
-}
-
-/**
- * Inverse of `fitFontSize`: given a target font size and container, return
- * the (cols, rows) that exactly fill the container at that font size.
- *
- * Used by the "Resize" toolbar button — clicking it computes the cols/rows
- * that would fill the container at FONT_MAX (16 px), then sends
- * `resize-pane` to tmux with those values. After tmux resizes, the
- * `applySizing` reaction picks the largest font in [FONT_MIN, FONT_MAX]
- * that fits — which will be FONT_MAX, by construction.
- *
- * Result: clicking Resize gives you the maximum reasonable font size with
- * the tmux pane filling the entire browser cell. No wasted pixels.
- */
-export function dimensionsForContainer(
-  containerW: number,
-  containerH: number,
-): { cols: number; rows: number } {
-  const { charW, charH } = getBaseMetrics();
-  const scale = FONT_MAX / 12;
-  const cols = Math.max(1, Math.floor(containerW / (charW * scale)));
-  const rows = Math.max(1, Math.floor(containerH / (charH * scale)));
-  return { cols, rows };
-}
 
 // ---------------------------------------------------------------------------
 // Bridge → PaneSessionClient adapter
@@ -312,14 +205,8 @@ export class PaneTerminal {
   private readonly uiStore: UiStore;
   private readonly client: TmuxBridge;
 
-  // Observable container box, set by a ResizeObserver inside `mount()`.
-  // The size reaction reads this AND the store's pane width/height.
-  private readonly containerBox = observable({ w: 0, h: 0 });
-
-  // Observable status surfaced to the toolbar (font size, applied dims,
-  // oversized affordance).
+  // Observable status surfaced to the toolbar (font size, applied dims).
   readonly status = observable({
-    oversized: false,
     currentFontSize: FONT_MAX,
     appliedCols: 0,
     appliedRows: 0,
@@ -327,8 +214,6 @@ export class PaneTerminal {
 
   private term: Terminal | null = null;
   private session: PaneSession | null = null;
-  private containerEl: HTMLElement | null = null;
-  private ro: ResizeObserver | null = null;
   private disposers: IReactionDisposer[] = [];
   private disposed = false;
 
@@ -347,7 +232,6 @@ export class PaneTerminal {
    */
   mount(container: HTMLElement): void {
     if (this.disposed || this.term !== null) return;
-    this.containerEl = container;
 
     const term = new Terminal({
       convertEol: false,
@@ -397,17 +281,6 @@ export class PaneTerminal {
 
     void session.attach();
 
-    // Container size observer → observable box.
-    this.ro = new ResizeObserver((entries) => {
-      if (this.disposed) return;
-      const r = entries[0].contentRect;
-      runInAction(() => {
-        this.containerBox.w = r.width;
-        this.containerBox.h = r.height;
-      });
-    });
-    this.ro.observe(container);
-
     // THE sizing reaction. Declared once; fires whenever pane dims OR
     // the user's chosen font size change.
     //
@@ -450,7 +323,6 @@ export class PaneTerminal {
       this.status.currentFontSize = font;
       this.status.appliedCols = cols;
       this.status.appliedRows = rows;
-      this.status.oversized = false;
     });
   }
 
@@ -469,14 +341,6 @@ export class PaneTerminal {
   }
 
   /**
-   * Container dimensions last observed (used by the toolbar to compute
-   * "comfortable size" for the resize button).
-   */
-  get containerDimensions(): { w: number; h: number } {
-    return { w: this.containerBox.w, h: this.containerBox.h };
-  }
-
-  /**
    * Focus the underlying xterm. Called by PaneCell whenever the owning
    * pane becomes the active pane — which happens on window switch, pane
    * click, or any keymap-driven focus change.
@@ -491,8 +355,6 @@ export class PaneTerminal {
     this.disposed = true;
     for (const d of this.disposers) d();
     this.disposers = [];
-    this.ro?.disconnect();
-    this.ro = null;
     this.session?.dispose();
     this.session = null;
     try {
@@ -501,6 +363,5 @@ export class PaneTerminal {
       /* already gone */
     }
     this.term = null;
-    this.containerEl = null;
   }
 }
