@@ -1,21 +1,19 @@
-// tests/unit/example-wrapper-tracker.test.ts
+// tests/unit/wrapper-tracker.test.ts
 //
-// Unit-level verification of the H5 fix. The web-multiplexer Electron
-// preload tracks each `on(channel, listener)` registration so
-// `removeListener(channel, fn)` can recover the wrapper closure it
-// installed on Electron's ipcRenderer. The pre-fix WeakMap implementation
-// overwrote on double-subscribe — the new tracker
-// (examples/web-multiplexer/electron/wrapper-tracker.ts) records every
-// add and pops one per remove.
+// Unit-level verification of the bridge listener-bookkeeping helper. Every
+// Electron preload that re-exposes `on`/`removeListener` across the
+// contextBridge boundary tracks each registration so `removeListener` can
+// recover the stable wrapper closure installed on `ipcRenderer.on`. The
+// pre-fix WeakMap implementation overwrote on double-subscribe — the
+// shipped tracker records every add and pops one per remove.
 //
-// We test the helper directly because the surrounding preload imports
-// `electron` (not available in vitest), and the helper is the entire
-// behavioral surface for H5 — putting fast tests next to the fast suite
-// instead of inside an Electron Playwright boot.
+// The helper is the entire behavioral surface for the H5 fix; testing it
+// directly keeps these assertions in the fast suite rather than gating
+// them on an Electron Playwright boot.
 
 import { describe, expect, it } from "vitest";
 
-import { createWrapperTracker } from "../../examples/web-multiplexer/electron/wrapper-tracker.js";
+import { createWrapperTracker } from "../../src/connectors/electron/wrapper-tracker.js";
 
 describe("WrapperTracker — H5 listener bookkeeping", () => {
   it("starts empty", () => {

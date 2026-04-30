@@ -1,25 +1,29 @@
-// examples/web-multiplexer/electron/wrapper-tracker.ts
-// Pure helper that owns the listener-wrapper bookkeeping for the preload's
-// `on` / `removeListener` exposure on tmuxIpc.
+// src/connectors/electron/wrapper-tracker.ts
+// Pure helper that owns the listener-wrapper bookkeeping for Electron
+// preloads exposing an `on` / `removeListener` surface across the
+// contextBridge boundary.
 //
-// Why this exists: the preload installs a stable closure on `ipcRenderer.on`
-// that forwards `(event, ...args)` to the caller-supplied listener — the
-// wrapper preserves the `IpcRendererLike.on` contract verbatim, it does NOT
-// strip the event. The wrapper is needed for *identity*: contextBridge
-// proxies functions across the context-isolation boundary, and the
-// caller-supplied listener doesn't survive the round-trip with a stable
-// reference, so we cannot pass it directly to `ipcRenderer.on` and then
-// expect `ipcRenderer.removeListener` to find it later. The wrapper is a
-// stable closure on the preload side that we hand to both calls.
+// Why this exists: a preload that re-exposes `ipcRenderer.on` to a sandboxed
+// renderer must install a stable closure on the preload side that forwards
+// `(event, ...args)` to the caller-supplied listener. The wrapper is needed
+// for *identity*: contextBridge proxies functions across the
+// context-isolation boundary, and the caller-supplied listener does not
+// survive the round-trip with a stable reference, so the preload cannot pass
+// it to `ipcRenderer.on` and then expect `ipcRenderer.removeListener` to
+// match it later. The wrapper is a stable preload-side closure handed to
+// both calls.
 //
 // One bookkeeping slot PER `on()` call, scoped by channel:
-// Map<channel, Map<listener, wrapper[]>>. removeListener pops LIFO to
-// mirror Node's EventEmitter "remove one binding per call" contract.
+// Map<channel, Map<listener, wrapper[]>>. removeListener pops LIFO to mirror
+// Node's EventEmitter "remove one binding per call" contract.
 //
+// [LAW:single-enforcer] Sole owner of bridge-listener lifecycle. Every
+// Electron preload that re-exposes `on`/`removeListener` for the bridge
+// channels delegates here; no callsite touches the maps directly. Adding a
+// second tracker is a bug — the listener identity invariant must be enforced
+// in exactly one place.
 // [LAW:one-source-of-truth] One place owns the listener→wrappers mapping;
 // the preload calls into it from `on` and `removeListener`.
-// [LAW:single-enforcer] All bookkeeping mutations (add, remove, prune-empty)
-// live here; the preload never touches the maps directly.
 
 export interface WrapperTracker<L, W> {
   add(channel: string, listener: L, wrapper: W): void;
