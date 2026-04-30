@@ -629,3 +629,13 @@ export type {
   WebContentsLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";
+
+// Re-export the preload-side wrapper-tracker. Lives here (the canonical
+// Node-side Electron entry) so every Electron consumer's preload can pull
+// the context-isolation listener-leak guard from a single import path
+// rather than re-implementing it.
+// [LAW:one-source-of-truth] One subpath owns the bridge contract.
+export {
+  createWrapperTracker,
+  type WrapperTracker,
+} from "./wrapper-tracker.js";
