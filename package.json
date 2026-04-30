@@ -19,6 +19,10 @@
       "types": "./dist/keymap/index.d.ts",
       "default": "./dist/keymap/index.js"
     },
+    "./terminal": {
+      "types": "./dist/terminal/index.d.ts",
+      "default": "./dist/terminal/index.js"
+    },
     "./connectors/types": {
       "types": "./dist/connectors/types.d.ts",
       "default": "./dist/connectors/types.js"
@@ -104,6 +108,7 @@
     "@types/node": "^22.0.0",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
+    "happy-dom": "^20.9.0",
     "jiti": "^2.6.1",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
