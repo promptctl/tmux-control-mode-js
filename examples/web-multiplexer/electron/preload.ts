@@ -13,7 +13,7 @@
 //     separate object so the library's bridge contract stays clean.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import { createWrapperTracker } from "./wrapper-tracker.ts";
+import { createWrapperTracker } from "@promptctl/tmux-control-mode-js/electron/main";
 
 const TMUX_CHANNELS = new Set([
   "tmux:event",
