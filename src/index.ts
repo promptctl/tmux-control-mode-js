@@ -26,6 +26,12 @@ export {
   isTmuxServerAlive,
 } from "./transport/sockets.js";
 
+export { ensureSession } from "./ensure-session.js";
+export type {
+  EnsureSessionOptions,
+  EnsureSessionResult,
+} from "./ensure-session.js";
+
 export { PaneSession } from "./pane-session.js";
 export type {
   TerminalSink,
