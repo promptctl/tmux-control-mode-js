@@ -46,11 +46,12 @@ npm run demo           # starts bridge + Vite; needs at least one local tmux ses
 
 ## Architecture
 
-Three layers, built as three TS project references and shipped as subpath exports (`.`, `./protocol`, `./terminal` — the last currently planned in `IMPL.md`; verify before referencing):
+TS project references shipped as subpath exports — see `package.json` `exports` for the canonical list (`.`, `./protocol`, `./keymap`, `./terminal`, `./connectors/*`, …):
 
 - `src/protocol/` — **pure**, zero Node.js deps. Parses tmux control-mode lines into a discriminated-union `TmuxMessage`, encodes outbound commands, decodes octal escapes. Usable in browser/Deno/Bun. Declared `"sideEffects": false`.
 - `src/transport/` — Node-only. `spawnTmux()` forks `tmux -C` via `child_process`; `TmuxTransport` is the interface every consumer writes against (so tests can substitute a fake transport).
 - `src/client.ts` — `TmuxClient` orchestrates transport + parser + `TypedEmitter`. Owns the **sole** command-correlation state (a FIFO of pending promises plus one `inflight` slot matching `%begin`/`%end`/`%error` guard blocks back to their sender).
+- `src/terminal/` — **pure DOM**, zero Node.js deps. Renderer-agnostic font measurement and pixel↔grid math for embedding tmux panes in any DOM-hosted terminal (xterm.js, etc.). Browser-only; mirrors `src/protocol/` constraints.
 
 Public API is declared only in `src/index.ts`; everything else is internal. The browser-side of the demo imports **types only** from this package — all protocol work stays in Node.
 
