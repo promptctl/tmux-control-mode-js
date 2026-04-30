@@ -41,7 +41,11 @@ function toBase64(bytes: Uint8Array): string {
  */
 function serialize(msg: TmuxMessage): SerializedTmuxMessage {
   if (msg.type === "output") {
-    return { type: "output", paneId: msg.paneId, dataBase64: toBase64(msg.data) };
+    return {
+      type: "output",
+      paneId: msg.paneId,
+      dataBase64: toBase64(msg.data),
+    };
   }
   if (msg.type === "extended-output") {
     return {
@@ -91,9 +95,24 @@ function handleConnection(ws: WebSocket): void {
     }
   };
 
-  // Spawn tmux in -C mode against the host's existing tmux server.
-  // No explicit socket path — use the default server the user already has.
-  const transport = spawnTmux(["attach-session"]);
+  // Spawn tmux in -C mode. By default we attach to whatever the user's
+  // host tmux server is already serving (no -L, no -t). For e2e/test
+  // isolation, TMUX_DEMO_SOCKET pins us to a private `-L` socket and
+  // TMUX_DEMO_SESSION targets a specific session — same env contract the
+  // Electron main honors, so a single test harness can drive both
+  // targets. Either env var is independent: socket alone with no session
+  // attaches whatever exists on that socket; session alone with no
+  // socket targets the default server's named session.
+  const SOCKET = process.env.TMUX_DEMO_SOCKET;
+  const SESSION = process.env.TMUX_DEMO_SESSION;
+  const attachArgs =
+    SESSION === undefined
+      ? ["attach-session"]
+      : ["attach-session", "-t", SESSION];
+  const transport = spawnTmux(
+    attachArgs,
+    SOCKET === undefined ? undefined : { socketPath: SOCKET },
+  );
   const client = new TmuxClient(transport);
   const connection = { ws, client };
   connections.add(connection);
@@ -132,9 +151,7 @@ function handleConnection(ws: WebSocket): void {
 
     try {
       if (msg.kind === "execute") {
-        const response = await client
-          .execute(msg.command)
-          .catch((r) => r); // both resolve and reject carry CommandResponse
+        const response = await client.execute(msg.command).catch((r) => r); // both resolve and reject carry CommandResponse
         send({ kind: "response", id: msg.id, response });
         return;
       }
@@ -191,8 +208,12 @@ wss.on("connection", (ws) => {
 });
 
 httpServer.listen(BRIDGE_PORT, () => {
-  console.log(`[bridge] listening on http://localhost:${BRIDGE_PORT} (WS at /ws)`);
-  console.log(`[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`);
+  console.log(
+    `[bridge] listening on http://localhost:${BRIDGE_PORT} (WS at /ws)`,
+  );
+  console.log(
+    `[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`,
+  );
 });
 
 let shuttingDown = false;
