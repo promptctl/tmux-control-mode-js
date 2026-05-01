@@ -409,26 +409,35 @@ interface Presentation {
 function presentFor(w: WireEntry, paneLabels: Map<number, string>): Presentation {
   if (w.dir === "out") {
     const msg = w.msg;
-    if (msg.kind === "execute") {
+    if (msg.method === "execute") {
       return {
         arrow: "↑",
         color: "var(--mantine-color-blue-6)",
         type: `execute #${msg.id}`,
-        summary: msg.command,
+        summary: msg.args[0],
       };
     }
-    if (msg.kind === "sendKeys") {
+    if (msg.method === "sendKeys") {
       return {
         arrow: "↑",
         color: "var(--mantine-color-blue-6)",
         type: `sendKeys #${msg.id}`,
-        summary: `${msg.target}  ${escapeForDisplay(msg.keys)}`,
+        summary: `${msg.args[0]}  ${escapeForDisplay(msg.args[1])}`,
+      };
+    }
+    if (msg.method === "setPaneAction") {
+      const label = paneLabels.get(msg.args[0]) ?? `%${msg.args[0]}`;
+      return {
+        arrow: "↑",
+        color: "var(--mantine-color-blue-6)",
+        type: `setPaneAction #${msg.id}`,
+        summary: `${label} ${msg.args[1]}`,
       };
     }
     return {
       arrow: "↑",
       color: "var(--mantine-color-blue-6)",
-      type: `detach #${msg.id}`,
+      type: `${msg.method} #${msg.id}`,
       summary: "",
     };
   }

@@ -1,191 +1,68 @@
 // examples/web-multiplexer/server/bridge.ts
-// Bridge server: wraps a TmuxClient and exposes it to browsers over WebSocket.
+// Bridge server: hosts the library's first-party WebSocket bridge so a
+// browser can drive a tmux session through the canonical
+// `@promptctl/tmux-control-mode-js/websocket/server` surface.
 //
 // Architecture:
-//   browser <-- WebSocket (JSON) --> bridge <-- spawn + control protocol --> tmux
+//   browser <-- WebSocket --> createWebSocketBridge <-- spawn + control
+//                                                       protocol --> tmux
 //
-// The browser never imports the tmux-control-mode-js runtime — only types.
-// All wire-protocol parsing and encoding happens here on the Node side.
+// This file owns only what the demo specifically needs:
+//   - HTTP server + WebSocketServer at a known port (the library is
+//     transport-agnostic; the host wires up the actual socket).
+//   - The `createClient` hook that spawns one TmuxClient per WebSocket,
+//     honoring the demo's `TMUX_DEMO_SOCKET` / `TMUX_DEMO_SESSION` env
+//     contract (shared with the Electron demo so a single test harness
+//     drives both targets).
+//   - The `disposeClient` hook that closes the per-connection TmuxClient
+//     when the browser disconnects — without this, every refresh would
+//     leak a tmux attach.
+//   - SIGINT/SIGTERM shutdown that flushes the bridge.
+//
+// Everything else — frame encoding, RPC dispatch, hello/welcome handshake,
+// heartbeats, drain, binary pane-output framing — lives in the library.
 
 import { createServer } from "node:http";
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocketServer } from "ws";
 import { TmuxClient } from "../../../src/client.js";
 import { spawnTmux } from "../../../src/transport/spawn.js";
-import type { TmuxMessage } from "../../../src/protocol/types.js";
-import type {
-  ClientToServer,
-  ServerToClient,
-  SerializedTmuxMessage,
-} from "../shared/protocol.js";
+import { createWebSocketBridge } from "../../../src/connectors/websocket/server.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 
 // ---------------------------------------------------------------------------
-// Serialization
+// Library bridge — owns wire framing, RPC dispatch, lifecycle.
 // ---------------------------------------------------------------------------
 
-/**
- * Convert a Uint8Array to a base64 string using Node's Buffer.
- * Kept as a tiny helper so the intent is obvious at the call site.
- */
-function toBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
-}
-
-/**
- * Serialize a TmuxMessage for JSON transport. The only types that need
- * special handling are `output` and `extended-output`, which carry
- * `Uint8Array` data.
- *
- * [LAW:dataflow-not-control-flow] Returns the same shape regardless of
- * type; the variability lives in which fields are set.
- */
-function serialize(msg: TmuxMessage): SerializedTmuxMessage {
-  if (msg.type === "output") {
-    return {
-      type: "output",
-      paneId: msg.paneId,
-      dataBase64: toBase64(msg.data),
-    };
-  }
-  if (msg.type === "extended-output") {
-    return {
-      type: "extended-output",
-      paneId: msg.paneId,
-      age: msg.age,
-      dataBase64: toBase64(msg.data),
-    };
-  }
-  return msg;
-}
-
-// ---------------------------------------------------------------------------
-// Per-connection state
-// ---------------------------------------------------------------------------
-
-/**
- * Each WebSocket connection gets its own TmuxClient. This keeps one browser
- * session independent from another (no shared state, no cross-talk).
- */
-interface ConnectionState {
-  readonly ws: WebSocket;
-  readonly client: TmuxClient;
-}
-
-const connections = new Set<ConnectionState>();
-
-function removeConnection(connection: ConnectionState): void {
-  connections.delete(connection);
-}
-
-function closeConnection(connection: ConnectionState): void {
-  removeConnection(connection);
-  connection.client.close();
-  if (
-    connection.ws.readyState === connection.ws.OPEN ||
-    connection.ws.readyState === connection.ws.CONNECTING
-  ) {
-    connection.ws.terminate();
-  }
-}
-
-function handleConnection(ws: WebSocket): void {
-  const send = (frame: ServerToClient): void => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(frame));
-    }
-  };
-
-  // Spawn tmux in -C mode. By default we attach to whatever the user's
-  // host tmux server is already serving (no -L, no -t). For e2e/test
-  // isolation, TMUX_DEMO_SOCKET pins us to a private `-L` socket and
-  // TMUX_DEMO_SESSION targets a specific session — same env contract the
-  // Electron main honors, so a single test harness can drive both
-  // targets. Either env var is independent: socket alone with no session
-  // attaches whatever exists on that socket; session alone with no
-  // socket targets the default server's named session.
-  const SOCKET = process.env.TMUX_DEMO_SOCKET;
-  const SESSION = process.env.TMUX_DEMO_SESSION;
-  const attachArgs =
-    SESSION === undefined
-      ? ["attach-session"]
-      : ["attach-session", "-t", SESSION];
-  const transport = spawnTmux(
-    attachArgs,
-    SOCKET === undefined ? undefined : { socketPath: SOCKET },
-  );
-  const client = new TmuxClient(transport);
-  const connection = { ws, client };
-  connections.add(connection);
-
-  // [LAW:dataflow-not-control-flow] Forward every message through the same
-  // pipeline. The `*` wildcard is the single enforcement point.
-  client.on("*", (msg: TmuxMessage) => {
-    send({ kind: "event", event: serialize(msg) });
-  });
-
-  // Fire a ready frame after the session-changed handshake arrives.
-  const onSessionChanged = () => {
-    client.off("session-changed", onSessionChanged);
-    send({ kind: "ready" });
-  };
-  client.on("session-changed", onSessionChanged);
-
-  // [LAW:single-enforcer] When the underlying tmux client exits (user ran
-  // detach-client, tmux server died, etc.), tear down the WebSocket so the
-  // browser's connState transitions to "closed". Without this the browser
-  // would keep thinking the bridge is alive and the clickable reconnect
-  // Badge would never appear.
-  client.on("exit", () => {
-    closeConnection(connection);
-  });
-
-  // Forward browser commands to the TmuxClient and correlate responses.
-  ws.on("message", async (raw: Buffer) => {
-    let msg: ClientToServer;
-    try {
-      msg = JSON.parse(raw.toString("utf8")) as ClientToServer;
-    } catch {
-      send({ kind: "error", message: "invalid JSON frame from browser" });
-      return;
-    }
-
-    try {
-      if (msg.kind === "execute") {
-        const response = await client.execute(msg.command).catch((r) => r); // both resolve and reject carry CommandResponse
-        send({ kind: "response", id: msg.id, response });
-        return;
-      }
-      if (msg.kind === "sendKeys") {
-        const response = await client
-          .sendKeys(msg.target, msg.keys)
-          .catch((r) => r);
-        send({ kind: "response", id: msg.id, response });
-        return;
-      }
-      if (msg.kind === "setPaneAction") {
-        const response = await client
-          .setPaneAction(msg.paneId, msg.action)
-          .catch((r) => r);
-        send({ kind: "response", id: msg.id, response });
-        return;
-      }
-      if (msg.kind === "detach") {
-        client.detach();
-        return;
-      }
-    } catch (err) {
-      send({
-        kind: "error",
-        id: (msg as ClientToServer).id as string | undefined,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  });
-
-  ws.on("close", () => {
-    closeConnection(connection);
-  });
-}
+// [LAW:single-enforcer] One client per WebSocket. The library's default is
+// to share clients across connections (suitable for multi-tenant servers);
+// the demo's contract is "fresh tmux attach per browser tab" so we spawn
+// in createClient and tear down in disposeClient.
+const bridge = createWebSocketBridge({
+  createClient: () => {
+    // Spawn tmux in -C mode. By default we attach to whatever the user's
+    // host tmux server is already serving (no -L, no -t). For e2e/test
+    // isolation, TMUX_DEMO_SOCKET pins us to a private `-L` socket and
+    // TMUX_DEMO_SESSION targets a specific session — same env contract
+    // the Electron main honors, so a single test harness can drive both
+    // targets. Either env var is independent: socket alone with no
+    // session attaches whatever exists on that socket; session alone
+    // with no socket targets the default server's named session.
+    const SOCKET = process.env.TMUX_DEMO_SOCKET;
+    const SESSION = process.env.TMUX_DEMO_SESSION;
+    const attachArgs =
+      SESSION === undefined
+        ? ["attach-session"]
+        : ["attach-session", "-t", SESSION];
+    const transport = spawnTmux(
+      attachArgs,
+      SOCKET === undefined ? undefined : { socketPath: SOCKET },
+    );
+    return new TmuxClient(transport);
+  },
+  disposeClient: (client) => {
+    client.close();
+  },
+});
 
 // ---------------------------------------------------------------------------
 // HTTP + WebSocket server
@@ -197,14 +74,13 @@ const httpServer = createServer((_req, res) => {
 });
 
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, request) => {
   console.log("[bridge] client connected");
-  try {
-    handleConnection(ws);
-  } catch (err) {
+  // The library bridge's handleConnection takes ownership of the socket.
+  // It returns when the connection closes (graceful or otherwise).
+  void bridge.handleConnection(ws, request).catch((err: unknown) => {
     console.error("[bridge] connection failed:", err);
-    ws.close();
-  }
+  });
 });
 
 httpServer.listen(BRIDGE_PORT, () => {
@@ -216,18 +92,19 @@ httpServer.listen(BRIDGE_PORT, () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+
 let shuttingDown = false;
 
-function shutdown(): void {
+async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-
-  // [LAW:single-enforcer] Bridge teardown is centralized here so Ctrl+C and
-  // watcher restarts close sockets and tmux clients through one path.
-  for (const connection of [...connections]) {
-    closeConnection(connection);
-  }
-
+  // [LAW:single-enforcer] Bridge teardown is centralized: the library's
+  // shutdown drains live connections and rejects new ones; once it
+  // resolves we can close the HTTP server and exit.
+  await bridge.shutdown();
   wss.close();
   httpServer.close();
   setImmediate(() => {
@@ -235,5 +112,9 @@ function shutdown(): void {
   });
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+process.once("SIGINT", () => {
+  void shutdown();
+});
+process.once("SIGTERM", () => {
+  void shutdown();
+});
