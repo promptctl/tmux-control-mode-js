@@ -257,10 +257,7 @@ class TmuxClient {
   execute(command: string): Promise<CommandResponse>;
 
   // Convenience methods
-  listWindows(): Promise<CommandResponse>;
-  listPanes(): Promise<CommandResponse>;
   sendKeys(target: string, keys: string): Promise<CommandResponse>;
-  splitWindow(options?: SplitOptions): Promise<CommandResponse>;
 
   // Control-mode-specific
   setSize(width: number, height: number): Promise<CommandResponse>;
@@ -521,7 +518,7 @@ class TmuxCommandError extends Error {
 ```
 
 **Rejection contract:** all command-shaped methods (`execute`, `sendKeys`,
-`splitWindow`, `setSize`, `setPaneAction`, `subscribe`, `unsubscribe`,
+`setSize`, `setPaneAction`, `subscribe`, `unsubscribe`,
 `setFlags`, `clearFlags`, `requestReport`, `queryClipboard`) reject with a
 `TmuxCommandError` instance carrying the original `CommandResponse` on
 `.response`. Callers should `instanceof TmuxCommandError` rather than

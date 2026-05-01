@@ -18,7 +18,6 @@
 
 import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   asPaneOutput,
   type CommandResponse,
@@ -144,20 +143,8 @@ export class TmuxClientProxy implements RpcProxyApi {
     return this.invoke({ method: "execute", args: [command] });
   }
 
-  listWindows(): Promise<CommandResponse> {
-    return this.invoke({ method: "listWindows", args: [] });
-  }
-
-  listPanes(): Promise<CommandResponse> {
-    return this.invoke({ method: "listPanes", args: [] });
-  }
-
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
     return this.invoke({ method: "sendKeys", args: [target, keys] });
-  }
-
-  splitWindow(options?: SplitOptions): Promise<CommandResponse> {
-    return this.invoke({ method: "splitWindow", args: [options] });
   }
 
   setSize(width: number, height: number): Promise<CommandResponse> {
