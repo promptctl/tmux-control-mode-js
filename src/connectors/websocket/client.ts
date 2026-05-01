@@ -36,7 +36,6 @@ import type {
   PaneAction,
   TmuxMessage,
 } from "../../protocol/types.js";
-import type { SplitOptions } from "../../client.js";
 
 import {
   BridgeError,
@@ -207,20 +206,8 @@ export class WebSocketTmuxClient {
     return this.call("execute", [command]);
   }
 
-  listWindows(): Promise<CommandResponse> {
-    return this.call("listWindows", []);
-  }
-
-  listPanes(): Promise<CommandResponse> {
-    return this.call("listPanes", []);
-  }
-
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
     return this.call("sendKeys", [target, keys]);
-  }
-
-  splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {
-    return this.call("splitWindow", [options]);
   }
 
   setSize(width: number, height: number): Promise<CommandResponse> {
