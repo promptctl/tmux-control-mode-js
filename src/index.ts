@@ -2,7 +2,7 @@
 // [LAW:one-source-of-truth] All consumer-facing exports are declared here only.
 
 export { TmuxClient } from "./client.js";
-export type { SplitOptions, SubscriptionHandle } from "./client.js";
+export type { SubscriptionHandle } from "./client.js";
 export { TmuxCommandError } from "./errors.js";
 
 export {

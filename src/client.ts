@@ -18,9 +18,7 @@ import {
   refreshClientQueryClipboard,
   detachClient,
   sendKeys as encodeSendKeys,
-  splitWindow as encodeSplitWindow,
 } from "./protocol/encoder.js";
-import type { SplitOptions } from "./protocol/encoder.js";
 import type {
   CommandResponse,
   PaneAction,
@@ -35,10 +33,6 @@ import { buildScopedFormat, parseRows, type Scope } from "./subscriptions.js";
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
-
-// [LAW:one-source-of-truth] SplitOptions shape lives in encoder.ts; re-exported here
-// to keep TmuxClient's public API surface unchanged for consumers.
-export type { SplitOptions } from "./protocol/encoder.js";
 
 /**
  * Receipt for a typed format subscription created via `subscribeSessions`,
@@ -230,20 +224,8 @@ export class TmuxClient {
   // [LAW:one-source-of-truth] Zero command-string formatting in this file.
   // ---------------------------------------------------------------------------
 
-  listWindows(): Promise<CommandResponse> {
-    return this.execute("list-windows");
-  }
-
-  listPanes(): Promise<CommandResponse> {
-    return this.execute("list-panes");
-  }
-
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
     return this.sendRaw(encodeSendKeys(target, keys));
-  }
-
-  splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {
-    return this.sendRaw(encodeSplitWindow(options));
   }
 
   // ---------------------------------------------------------------------------

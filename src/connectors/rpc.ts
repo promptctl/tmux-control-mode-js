@@ -25,7 +25,6 @@
 // [LAW:dataflow-not-control-flow] One indexed lookup for parsing; control
 // flow is a straight pipe per request, the variance rides in the union.
 
-import type { SplitOptions } from "../protocol/encoder.js";
 import { PaneAction, type CommandResponse } from "../protocol/types.js";
 
 // ---------------------------------------------------------------------------
@@ -40,15 +39,9 @@ import { PaneAction, type CommandResponse } from "../protocol/types.js";
 
 export type RpcRequest =
   | { readonly method: "execute"; readonly args: readonly [command: string] }
-  | { readonly method: "listWindows"; readonly args: readonly [] }
-  | { readonly method: "listPanes"; readonly args: readonly [] }
   | {
       readonly method: "sendKeys";
       readonly args: readonly [target: string, keys: string];
-    }
-  | {
-      readonly method: "splitWindow";
-      readonly args: readonly [options?: SplitOptions];
     }
   | {
       readonly method: "setSize";
@@ -129,10 +122,7 @@ export class RpcError extends Error {
 
 export const RPC_METHOD_NAMES: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   "execute",
-  "listWindows",
-  "listPanes",
   "sendKeys",
-  "splitWindow",
   "setSize",
   "setPaneAction",
   "subscribe",
@@ -168,26 +158,11 @@ const VALIDATORS: Validators = Object.assign(
   Object.create(null) as Validators,
   {
     execute: (args) => [requireString(args, 0, "command")] as const,
-    listWindows: (args) => requireNoArgs(args),
-    listPanes: (args) => requireNoArgs(args),
     sendKeys: (args) =>
       [
         requireString(args, 0, "target"),
         requireString(args, 1, "keys"),
       ] as const,
-    splitWindow: (args) => {
-      requireArityAtMost(args, 1);
-      const opts = args[0];
-      if (opts === undefined) return [undefined] as const;
-      if (typeof opts !== "object" || opts === null || Array.isArray(opts)) {
-        throw new RpcError(
-          "INVALID_ARG",
-          "splitWindow: options must be an object",
-        );
-      }
-      // The encoder is the actual SplitOptions parser; here we just shape-check.
-      return [opts as SplitOptions] as const;
-    },
     setSize: (args) =>
       [
         requireFiniteNumber(args, 0, "width"),
@@ -255,15 +230,6 @@ function requireNoArgs(args: readonly unknown[]): readonly [] {
     throw new RpcError("INVALID_ARG", `expected 0 arg(s), got ${args.length}`);
   }
   return [] as const;
-}
-
-function requireArityAtMost(args: readonly unknown[], max: number): void {
-  if (args.length > max) {
-    throw new RpcError(
-      "INVALID_ARG",
-      `expected at most ${max} arg(s), got ${args.length}`,
-    );
-  }
 }
 
 function requireString(

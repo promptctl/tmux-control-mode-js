@@ -716,24 +716,6 @@ describe("Electron IPC bridge — method dispatch", () => {
     await pending;
   });
 
-  it("splitWindow forwards the options object", async () => {
-    const hub = createIpcHub();
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    createMainBridge(client, hub.ipcMain);
-
-    const renderer = hub.createRenderer();
-    const proxy = createRendererBridge(renderer.ipcRenderer);
-
-    const pending = proxy.splitWindow({ vertical: true, target: "%0" });
-    expect(t.sent[0]).toContain("split-window");
-    expect(t.sent[0]).toContain("-v");
-    expect(t.sent[0]).toContain("%0");
-
-    feedCommandResponse(t, 1, []);
-    await pending;
-  });
-
   it("setFlags forwards a readonly string array", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
@@ -1310,7 +1292,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     const r = hub.createRenderer();
     const proxy = new TmuxClientProxy(r.ipcRenderer); // no timeout option
 
-    const p = proxy.listPanes();
+    const p = proxy.execute("list-panes");
     feedCommandResponse(t, 0, []);
     const resp = await p;
     expect(resp.success).toBe(true);
