@@ -40,7 +40,7 @@ export interface AppProps {
    * The transport-agnostic bridge the renderer talks to. Constructed at
    * module scope by the entry point — App does not own its lifecycle
    * across React StrictMode remounts; it just calls connect/disconnect.
-   * Both WebSocketBridge and ElectronBridge tolerate multiple
+   * Both WSBridge and ElectronBridge tolerate multiple
    * connect/disconnect cycles, so the StrictMode dev double-mount is
    * benign.
    */

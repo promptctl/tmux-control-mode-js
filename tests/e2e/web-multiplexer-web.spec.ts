@@ -6,15 +6,16 @@
 // a real Vite-served bundle and a real WebSocket bridge instead of
 // Electron IPC. Asserts the assembled stack:
 //
-//     xterm keystroke → WebSocketBridge.sendKeys → ws frame
+//     xterm keystroke → WSBridge.sendKeys → ws call frame
 //                                                        ↓
 //                              examples/web-multiplexer/server/bridge.ts
+//                                            (createWebSocketBridge)
 //                                                        ↓
 //                                                tmux send-keys
 //                                                        ↓
 //                                            shell echoes the bytes back
 //                                                        ↓
-//     xterm rendered DOM ← WebSocketBridge.onEvent ← ws frame ← %output
+//     xterm rendered DOM ← WSBridge.onEvent ← ws binary frame ← %output
 //
 // Out of scope (covered elsewhere):
 //   - bridge backpressure                → tests/integration/websocket-bridge.test.ts
@@ -222,24 +223,26 @@ test("web-multiplexer (web target) round-trips xterm → tmux → xterm", async 
   // Phase 1: xterm mounts. The renderer waits for the first session +
   // window + pane subscription frames before rendering PaneView, so
   // .xterm being visible proves the full subscription loop ran:
-  //   WebSocketBridge.connect → bridge.ts attach-session → first
-  //   session notification → MobX store update → React render.
+  //   WSBridge.connect → createWebSocketBridge.handleConnection →
+  //   spawnTmux attach-session → first session notification → MobX
+  //   store update → React render.
   await expect(page.locator(".xterm").first()).toBeVisible({
     timeout: 30_000,
   });
 
   // Phase 2: type a sentinel into the active pane. xterm forwards the
   // keystrokes through its hidden helper textarea; PaneTerminal calls
-  // store.sendKeysToPane → WebSocketBridge.sendKeys → ws frame →
-  // bridge.ts → tmux send-keys → shell. We embed a unique sentinel so
-  // any prior shell history echo can't produce a false positive.
+  // store.sendKeysToPane → WSBridge.sendKeys → ws call frame →
+  // bridge dispatch → TmuxClient.sendKeys → tmux send-keys → shell. We
+  // embed a unique sentinel so any prior shell history echo can't
+  // produce a false positive.
   const SENTINEL = `WEB_${Date.now().toString(36).toUpperCase()}`;
   const textarea = page.locator(".xterm-helper-textarea").first();
   await textarea.focus();
   await textarea.pressSequentially(`printf ${SENTINEL}\n`, { delay: 10 });
 
   // Phase 3: the shell's printf output must land in the rendered xterm
-  // grid via the %output → ws frame → WebSocketBridge.onEvent →
+  // grid via the %output → ws binary frame → WSBridge.onEvent →
   // xterm.write path. Asserting presence is enough — the typed line
   // and the printf output both contain the sentinel, but quantity
   // would add fragility without value.
