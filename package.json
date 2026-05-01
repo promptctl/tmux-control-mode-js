@@ -27,6 +27,10 @@
       "types": "./dist/connectors/types.d.ts",
       "default": "./dist/connectors/types.js"
     },
+    "./connectors/bridge": {
+      "types": "./dist/connectors/bridge/index.d.ts",
+      "default": "./dist/connectors/bridge/index.js"
+    },
     "./electron/main": {
       "types": "./dist/connectors/electron/main.d.ts",
       "default": "./dist/connectors/electron/main.js"
