@@ -212,6 +212,13 @@ export class DemoStore {
     this.client.connect(url);
   }
 
+  disconnectForReconnect(): void {
+    // [LAW:single-enforcer] Socket switching is a transport reconnect, not
+    // store teardown. Keep BridgeModelClient/TmuxModel alive so their single
+    // reconnect handler reissues subscriptions and clears stale snapshots.
+    this.client.disconnect();
+  }
+
   disconnect(): void {
     this.model.dispose();
     this.bridgeClient.dispose();

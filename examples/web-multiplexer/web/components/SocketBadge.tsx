@@ -133,7 +133,7 @@ const PickerBadge = observer(function PickerBadge({
       // observers see a clean disconnect → reconnect cycle. The bridge
       // re-installs subscriptions on "ready" via DemoStore, which
       // refetches sessions/windows/panes against the new socket.
-      demoStore.disconnect();
+      demoStore.disconnectForReconnect();
       await ipc.switchSocket(name);
       demoStore.connect(connectUrl);
       // Mirror the main-side change locally so the badge re-renders
