@@ -4,7 +4,7 @@
 //
 // The topology projection (subscription installation, list-* bootstrap,
 // snapshot rebuild, fast-path refreshes) lives in `TmuxModel` (src/model/).
-// This store wires a `BridgeClient` adapter so `TmuxModel` runs in the
+// This store wires the library's `BridgeModelClient` so `TmuxModel` runs in the
 // renderer against either WebSocket or Electron IPC, then projects each
 // `snapshot` event into MobX-observable fields.
 //
@@ -21,7 +21,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
-import { BridgeClient } from "./bridge-client.ts";
+import { BridgeModelClient } from "../../../src/connectors/bridge/index.js";
 // [LAW:one-way-deps] Deep-import the renderer-safe submodule. The barrel
 // at `src/index.ts` re-exports Node-only `spawnTmux`/socket helpers, and ES
 // module evaluation pulls every transitive import even for a single named
@@ -160,17 +160,17 @@ export class DemoStore {
   private engineState: KeymapState = INITIAL_STATE;
   private readonly hooks: DemoStoreHooks;
 
-  // [LAW:single-enforcer] BridgeClient adapts the renderer-side TmuxBridge
-  // to TmuxModelClient. Subscription routing, format-string assembly, and
-  // typed event fan-out all live there — DemoStore consumes only the
-  // model's `snapshot`/`error` stream.
-  private readonly bridgeClient: BridgeClient;
+  // [LAW:single-enforcer] BridgeModelClient (library) adapts the renderer-
+  // side TmuxBridge to TmuxModelClient. Subscription routing, format-string
+  // assembly, and typed event fan-out all live there — DemoStore consumes
+  // only the model's `snapshot`/`error` stream.
+  private readonly bridgeClient: BridgeModelClient;
   private readonly model: TmuxModel;
 
   constructor(client: TmuxBridge, hooks: DemoStoreHooks = {}) {
     this.client = client;
     this.hooks = hooks;
-    this.bridgeClient = new BridgeClient(client);
+    this.bridgeClient = new BridgeModelClient(client);
     this.model = new TmuxModel(this.bridgeClient);
 
     // [LAW:single-enforcer] `keyof T` excludes private fields, so the

@@ -28,17 +28,10 @@ import {
 import { Terminal } from "@xterm/xterm";
 import {
   PaneSession,
-  type PaneSessionClient,
   type TerminalSink,
 } from "../../../src/pane-session.js";
+import { paneSessionClientFromBridge } from "../../../src/connectors/bridge/index.js";
 import type { TmuxBridge } from "./bridge.ts";
-import type {
-  ContinueMessage,
-  ExtendedOutputMessage,
-  OutputMessage,
-  PauseMessage,
-  TmuxMessage,
-} from "../../../src/protocol/types.js";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
 
@@ -50,79 +43,6 @@ const FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
 
 const FONT_MAX = 16;
-
-// ---------------------------------------------------------------------------
-// Bridge → PaneSessionClient adapter
-// ---------------------------------------------------------------------------
-
-/**
- * The renderer-side `TmuxBridge` collapses every server notification into a
- * single `onEvent` stream (one IPC channel for all events). PaneSession
- * wants a typed `on("output", h)` / `off("output", h)` surface so it can
- * register only what it needs and detach cleanly. This adapter routes the
- * bridge's fan-in stream to per-event listener sets.
- *
- * [LAW:locality-or-seam] This is the seam between the bridge's transport
- * shape and the library's PaneSessionClient contract. Per-pane filtering
- * happens INSIDE PaneSession (one paneId comparison per event); this layer
- * only narrows by event type.
- */
-function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
-  const outputHandlers = new Set<(msg: OutputMessage) => void>();
-  const extendedHandlers = new Set<(msg: ExtendedOutputMessage) => void>();
-  const pauseHandlers = new Set<(msg: PauseMessage) => void>();
-  const continueHandlers = new Set<(msg: ContinueMessage) => void>();
-
-  // [LAW:single-enforcer] One bridge.onEvent registration; never grows.
-  // The dispatch table fans out by event type — pane backpressure events
-  // (`pause` / `continue`) ride the same channel as output, so PaneSession
-  // sees a unified event surface.
-  bridge.onEvent((ev: TmuxMessage) => {
-    if (ev.type === "output") {
-      for (const h of outputHandlers) h(ev);
-    } else if (ev.type === "extended-output") {
-      for (const h of extendedHandlers) h(ev);
-    } else if (ev.type === "pause") {
-      for (const h of pauseHandlers) h(ev);
-    } else if (ev.type === "continue") {
-      for (const h of continueHandlers) h(ev);
-    }
-  });
-
-  // [LAW:dataflow-not-control-flow] The on/off pair is one dispatch table
-  // keyed by event name; the same tuple lookup happens for every event,
-  // and the data (event name) decides which Set is mutated.
-  type Sets = {
-    output: typeof outputHandlers;
-    "extended-output": typeof extendedHandlers;
-    pause: typeof pauseHandlers;
-    continue: typeof continueHandlers;
-  };
-  const sets: Sets = {
-    output: outputHandlers,
-    "extended-output": extendedHandlers,
-    pause: pauseHandlers,
-    continue: continueHandlers,
-  };
-
-  return {
-    on(event: keyof Sets, handler: never): void {
-      sets[event].add(handler);
-    },
-    off(event: keyof Sets, handler: never): void {
-      sets[event].delete(handler);
-    },
-    execute(command) {
-      return bridge.execute(command);
-    },
-    sendKeys(target, keys) {
-      return bridge.sendKeys(target, keys);
-    },
-    setPaneAction(paneId, action) {
-      return bridge.setPaneAction(paneId, action);
-    },
-  } as PaneSessionClient;
-}
 
 // ---------------------------------------------------------------------------
 // xterm sink adapter
@@ -245,7 +165,7 @@ export class PaneTerminal {
 
     const sink = createXtermSink(term);
     const session = new PaneSession({
-      client: bridgeAsPaneSessionClient(this.client),
+      client: paneSessionClientFromBridge(this.client),
       paneId: this.paneId,
       sink,
     });

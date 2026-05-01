@@ -1,49 +1,43 @@
-// examples/web-multiplexer/web/bridge-client.ts
+// src/connectors/bridge/model-client.ts
 //
-// BridgeClient — adapts a renderer-side `TmuxBridge` (WebSocket / Electron
-// IPC) to the library's `TmuxModelClient` interface so `TmuxModel` can run
-// in the renderer against an opaque IPC proxy.
+// Adapter: a renderer-side `TmuxBridge` → the library's `TmuxModelClient`,
+// so `TmuxModel` can run in the renderer against an opaque IPC/WS proxy.
 //
-// The underlying bridge exposes only `execute()` and `onEvent()`. This
-// adapter layers on top:
-//   - Typed `subscribeSessions/Windows/Panes` — auto-allocates names
-//     client-side, builds the format string with `buildScopedFormat`, fires
+// The bridge surface exposes only `execute()` and `onEvent()`. This adapter
+// layers on:
+//   - Typed `subscribeSessions/Windows/Panes` — auto-allocates names client-
+//     side, builds the format string with `buildScopedFormat`, fires
 //     `refresh-client -B` over `bridge.execute`, parses inbound
 //     `%subscription-changed` rows with `parseRows`.
 //   - Typed `on/off` for the four `TmuxModel`-relevant message types — a
 //     single `bridge.onEvent` listener fans out to typed handler sets.
 //   - `subscriptions-reset` — fired whenever the bridge re-enters `ready`
-//     after having been `closed`. The server-side TmuxClient at that point
-//     is a fresh process with no live subscriptions; the live entries are
-//     re-issued under the same names so existing handles keep routing.
+//     after having been `closed`/`connecting`. The server-side TmuxClient
+//     at that point is a fresh process with no live subscriptions; live
+//     entries are re-issued under their existing names so consumer-held
+//     handles keep routing.
 //
 // [LAW:single-enforcer] All `%subscription-changed` routing for the
-// renderer happens here. DemoStore no longer maintains a parallel router.
-//
+// renderer happens here. Consumers do not maintain a parallel router.
 // [LAW:dataflow-not-control-flow] Subscription delivery, typed-event
 // dispatch, and reconnect re-issue all run unconditionally — the entry's
 // `disposed` flag and the connection state decide *what* happens, not
 // *whether* the operation runs.
 
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "../../../src/protocol/types.js";
-import type { TmuxEventMap } from "../../../src/emitter.js";
-// [LAW:one-way-deps] Deep-import the renderer-safe submodules — the public
-// barrel at `src/index.js` would drag in `spawnTmux` (Node-only).
-import type { SubscriptionHandle } from "../../../src/client.js";
-import type { TmuxModelClient } from "../../../src/model/index.js";
+import type { CommandResponse, TmuxMessage } from "../../protocol/types.js";
+import type { TmuxEventMap } from "../../emitter.js";
+import type { SubscriptionHandle } from "../../client.js";
+import type { TmuxModelClient } from "../../model/index.js";
 import {
   buildScopedFormat,
   parseRows,
   type Scope,
-} from "../../../src/subscriptions.js";
+} from "../../subscriptions.js";
 import {
   refreshClientSubscribe,
   refreshClientUnsubscribe,
-} from "../../../src/protocol/encoder.js";
-import type { ConnState, TmuxBridge } from "./bridge.ts";
+} from "../../protocol/encoder.js";
+import type { ConnState, TmuxBridge } from "../types.js";
 
 type ModelEvent =
   | "client-session-changed"
@@ -65,7 +59,7 @@ function stripLf(wire: string): string {
   return wire.endsWith("\n") ? wire.slice(0, -1) : wire;
 }
 
-export class BridgeClient implements TmuxModelClient {
+export class BridgeModelClient implements TmuxModelClient {
   private readonly bridge: TmuxBridge;
 
   // [LAW:one-source-of-truth] Single name→entry router map. The
@@ -87,7 +81,7 @@ export class BridgeClient implements TmuxModelClient {
   private lastState: ConnState = "connecting";
 
   private disposed = false;
-  private readonly cleanups: Array<() => void> = [];
+  private readonly cleanups: (() => void)[] = [];
 
   constructor(bridge: TmuxBridge) {
     this.bridge = bridge;
@@ -157,7 +151,9 @@ export class BridgeClient implements TmuxModelClient {
     // racing with our refresh-client response cannot bypass the router.
     this.subs.set(name, entry);
     try {
-      await this.bridge.execute(stripLf(refreshClientSubscribe(name, "", format)));
+      await this.bridge.execute(
+        stripLf(refreshClientSubscribe(name, "", format)),
+      );
     } catch (err) {
       this.subs.delete(name);
       entry.disposed = true;
@@ -265,7 +261,9 @@ export class BridgeClient implements TmuxModelClient {
       for (const entry of this.subs.values()) {
         if (entry.disposed) continue;
         void this.bridge
-          .execute(stripLf(refreshClientSubscribe(entry.name, "", entry.format)))
+          .execute(
+            stripLf(refreshClientSubscribe(entry.name, "", entry.format)),
+          )
           .catch(() => undefined);
       }
     }
