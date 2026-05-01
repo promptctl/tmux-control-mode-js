@@ -9,8 +9,9 @@
 //
 // [LAW:dataflow-not-control-flow] Method calls and events run the same
 // pipeline every time:
-//   - methods: synthesize ClientToServer → emit "out" wire → invoke proxy
-//     → emit "in-response" wire (or "in-error" on rejection)
+//   - methods: synthesize InspectorRequest (RpcRequest + id) → emit "out"
+//     wire → invoke proxy → emit "in-response" wire (or "in-error" on
+//     rejection)
 //   - events:  proxy.on("*") → emit "in-event" wire → fan out to handlers
 // No branching on "is this a special method" or "is this a special event".
 
@@ -24,11 +25,11 @@ import type {
   PaneAction,
   TmuxMessage,
 } from "../../../src/protocol/types.js";
-import type { ClientToServer } from "../shared/protocol.ts";
 import type {
   ConnState,
   ErrorHandler,
   EventHandler,
+  InspectorRequest,
   StateHandler,
   TmuxBridge,
   WireEntry,
@@ -61,20 +62,19 @@ export class ElectronBridge implements TmuxBridge {
   // ---------------------------------------------------------------------------
 
   execute(command: string): Promise<CommandResponse> {
-    const request: ClientToServer = {
-      kind: "execute",
+    const request: InspectorRequest = {
       id: this.allocId(),
-      command,
+      method: "execute",
+      args: [command],
     };
     return this.invokeWithWire(request, (proxy) => proxy.execute(command));
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
-    const request: ClientToServer = {
-      kind: "sendKeys",
+    const request: InspectorRequest = {
       id: this.allocId(),
-      target,
-      keys,
+      method: "sendKeys",
+      args: [target, keys],
     };
     return this.invokeWithWire(request, (proxy) =>
       proxy.sendKeys(target, keys),
@@ -85,11 +85,10 @@ export class ElectronBridge implements TmuxBridge {
     paneId: number,
     action: PaneAction,
   ): Promise<CommandResponse> {
-    const request: ClientToServer = {
-      kind: "setPaneAction",
+    const request: InspectorRequest = {
       id: this.allocId(),
-      paneId,
-      action,
+      method: "setPaneAction",
+      args: [paneId, action],
     };
     return this.invokeWithWire(request, (proxy) =>
       proxy.setPaneAction(paneId, action),
@@ -97,14 +96,12 @@ export class ElectronBridge implements TmuxBridge {
   }
 
   /**
-   * No-op on Electron. WebSocketBridge.detach asks the bridge server to
-   * close its TmuxClient, which detaches every connected renderer; the
-   * Electron equivalent is an admin operation the main process owns
-   * (it holds the TmuxClient handle). The renderer-side proxy
-   * intentionally does not expose `detach` — see
-   * src/connectors/electron/renderer.ts on why. The demo's renderer
-   * does not call this method today; this stub exists to satisfy the
-   * TmuxBridge interface.
+   * No-op on Electron. The renderer-side proxy intentionally does not
+   * expose `detach` — it tears down the tmux client for every renderer
+   * sharing the bridge, which is an admin operation the main process
+   * owns. The demo's renderer does not call this method today; this stub
+   * exists to satisfy the TmuxBridge interface, mirroring the same
+   * stance taken by the WebSocket adapter (`web/ws-bridge.ts`).
    */
   detach(): void {
     // intentional no-op
@@ -189,13 +186,18 @@ export class ElectronBridge implements TmuxBridge {
   }
 
   private async invokeWithWire(
-    request: ClientToServer,
+    request: InspectorRequest,
     invoker: (proxy: TmuxClientProxy) => Promise<CommandResponse>,
   ): Promise<CommandResponse> {
     const proxy = this.proxy;
     if (proxy === null) {
-      const message = `cannot ${request.kind}: bridge is not connected`;
-      this.emitWire({ dir: "in-error", ts: Date.now(), id: request.id, message });
+      const message = `cannot ${request.method}: bridge is not connected`;
+      this.emitWire({
+        dir: "in-error",
+        ts: Date.now(),
+        id: request.id,
+        message,
+      });
       this.errorHandlers.forEach((h) => h(message, request.id));
       throw new Error(message);
     }

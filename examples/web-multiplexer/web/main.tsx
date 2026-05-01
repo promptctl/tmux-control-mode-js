@@ -4,7 +4,7 @@ import "@mantine/core/styles.css";
 import "@xterm/xterm/css/xterm.css";
 import "./fonts.css";
 import { App } from "./App.tsx";
-import { WebSocketBridge } from "./ws-client.ts";
+import { WSBridge } from "./ws-bridge.ts";
 
 const theme = createTheme({
   primaryColor: "teal",
@@ -16,7 +16,7 @@ const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.ho
 // [LAW:single-enforcer] One bridge per page load. App calls connect/
 // disconnect through React lifecycles; both are idempotent so React
 // StrictMode's intentional double-mount in dev is benign.
-const bridge = new WebSocketBridge();
+const bridge = new WSBridge();
 
 createRoot(document.getElementById("root")!).render(
   <MantineProvider theme={theme} defaultColorScheme="dark">

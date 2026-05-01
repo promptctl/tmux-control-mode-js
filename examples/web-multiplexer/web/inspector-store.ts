@@ -85,8 +85,10 @@ export class InspectorStore {
     };
 
     // Record outbound requests so the matching response can patch in
-    // the round-trip latency.
-    if (wire.dir === "out" && wire.msg.kind !== "detach") {
+    // the round-trip latency. The id lives on InspectorRequest (RpcRequest
+    // + id) — the canonical RpcRequest shape has no id of its own; the
+    // demo adapters allocate one purely for inspector correlation.
+    if (wire.dir === "out") {
       this.pendingByWireId.set(wire.msg.id, entry.id);
     }
 
@@ -122,8 +124,7 @@ export class InspectorStore {
     if (this.entries.length > MAX_ENTRIES) {
       const dropped = this.entries.shift();
       if (dropped !== undefined && dropped.wire.dir === "out") {
-        const msg = dropped.wire.msg;
-        if (msg.kind !== "detach") this.pendingByWireId.delete(msg.id);
+        this.pendingByWireId.delete(dropped.wire.msg.id);
       }
     }
   }
@@ -236,10 +237,13 @@ export class InspectorStore {
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
-    if (w.msg.kind === "execute") return `out execute ${w.msg.id} ${w.msg.command}`;
-    if (w.msg.kind === "sendKeys")
-      return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
-    return `out detach ${w.msg.id}`;
+    const m = w.msg;
+    if (m.method === "execute") return `out execute ${m.id} ${m.args[0]}`;
+    if (m.method === "sendKeys")
+      return `out sendKeys ${m.id} ${m.args[0]} ${m.args[1]}`;
+    if (m.method === "setPaneAction")
+      return `out setPaneAction ${m.id} %${m.args[0]} ${m.args[1]}`;
+    return `out ${m.method} ${m.id}`;
   }
   if (w.dir === "in-event") return `in event %${w.event.type} ${eventSearchTail(w.event)}`;
   if (w.dir === "in-response") {

@@ -1053,21 +1053,21 @@ the library, and the e2e suite runs against it.
 examples/web-multiplexer/
 ├── package.json            # React, MobX, xterm.js, Mantine, ws, electron
 ├── server/
-│   └── bridge.ts           # WebSocket relay → spawnTmux + TmuxClient
+│   └── bridge.ts           # Hosts createWebSocketBridge → spawnTmux + TmuxClient
 ├── electron/
 │   ├── main.ts             # Electron main: spawnTmux + createMainBridge
 │   ├── preload.ts          # contextBridge → window.tmuxIpc
 │   └── build.mjs           # esbuild orchestration for main + preload
 ├── web/
-│   ├── main.tsx            # Web entry — instantiates WebSocketBridge
+│   ├── main.tsx            # Web entry — instantiates WSBridge
 │   ├── main-electron.tsx   # Electron entry — instantiates ElectronBridge
 │   ├── App.tsx             # Layout, tab bar, pane grid
 │   ├── store.ts            # MobX store: sessions, windows, panes, layout
 │   ├── pane-terminal.ts    # Per-pane xterm.js Terminal + lifecycle
-│   ├── ws-client.ts        # WebSocketBridge — TmuxBridge over WebSocket
-│   ├── electron-bridge.ts  # ElectronBridge — TmuxBridge over Electron IPC
+│   ├── ws-bridge.ts        # WSBridge — TmuxBridge over the library's WebSocketTmuxClient
+│   ├── electron-bridge.ts  # ElectronBridge — TmuxBridge over the library's TmuxClientProxy
 │   └── components/         # Tab bar, status, inspector, heatmap, etc.
-├── shared/                 # Types crossing the bridge boundary
+├── shared/                 # config (ports). Wire protocol lives in the library.
 └── index.html              # Vite shell
 ```
 

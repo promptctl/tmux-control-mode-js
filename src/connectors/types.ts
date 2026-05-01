@@ -5,9 +5,9 @@
 // This file owns:
 //   - `ConnState`: the four-state lifecycle every bridge consumer observes.
 //   - `WireEntry<TRequest>`: an observability tap entry, generic over the
-//     transport's outbound-request shape so transport-specific framing
-//     (e.g. the demo's WebSocket `ClientToServer` envelope) can specialize
-//     without redeclaring the union.
+//     transport's outbound-request shape so consumers can specialize the
+//     payload type for their inspector/log view (e.g. with `RpcRequest`
+//     from `./rpc.js`) without redeclaring the union.
 //   - `TmuxBridge<TRequest>`: the transport-agnostic bridge contract every
 //     consumer (terminal sinks, topology stores, inspectors) uses.
 //
@@ -16,9 +16,10 @@
 //     `RpcProxyApi` is the FULL bridged TmuxClient surface (every method
 //     the wire RPC envelope can carry). `TmuxBridge` is intentionally a
 //     narrower consumer-facing surface — the methods a UI actually drives —
-//     plus lifecycle + subscriber semantics. A bridge that wraps a proxy
-//     forwards the subset; a bridge that owns its own transport (the demo's
-//     `WebSocketBridge`) implements them directly.
+//     plus lifecycle + subscriber semantics. A bridge adapter that wraps a
+//     library proxy (Electron's `TmuxClientProxy`, the WebSocket
+//     `WebSocketTmuxClient`) forwards that subset and adds the lifecycle +
+//     wire-tap surface this interface requires.
 //
 // [LAW:one-source-of-truth] `TmuxBridge`, `ConnState`, and `WireEntry` are
 // declared once. Every concrete bridge (Electron, WebSocket, future) and
@@ -56,11 +57,12 @@ export type ConnState = "connecting" | "open" | "ready" | "closed";
  * One entry per thing that crossed the bridge in either direction. Powers
  * inspector/wire-log views. Transports synthesize this on each side.
  *
- * The type parameter `TRequest` lets a transport specialize the request
+ * The type parameter `TRequest` lets a consumer specialize the request
  * envelope it sees on `out` and `in-response` entries. The library default
  * is `unknown` so the union can be carried across boundaries that don't
- * know the transport's framing; the demo's WebSocket bridge specializes
- * with its `ClientToServer` shape so its inspector renders typed payloads.
+ * know the transport's framing; consumers that want a typed inspector
+ * specialize with the bridged-method shape they care about (e.g.
+ * `RpcRequest` from `./rpc.js`, or that augmented with a correlation id).
  *
  * `in-event.event` is a fully-decoded `TmuxMessage` (Uint8Array bytes for
  * output / extended-output). Wire-side encodings such as base64 in a JSON

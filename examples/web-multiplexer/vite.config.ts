@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { BRIDGE_PORT, WEB_PORT } from "./shared/config";
 
 // Two HTML entries, one toolchain. Vite emits:
-//   dist/index.html             (web entry, web/main.tsx → WebSocketBridge)
+//   dist/index.html             (web entry, web/main.tsx → WSBridge)
 //   dist/electron/index.html    (electron entry, web/main-electron.tsx → ElectronBridge)
 //
 // `npm run dev:web` keeps serving the web entry from the project root for
