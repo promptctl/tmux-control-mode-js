@@ -7,3 +7,9 @@
 export type { TmuxTransport, SpawnOptions } from "./types.js";
 
 export { spawnTmux } from "./spawn.js";
+
+export {
+  tmuxSocketDir,
+  listTmuxSocketNames,
+  isTmuxServerAlive,
+} from "./sockets.js";
