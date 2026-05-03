@@ -58,7 +58,7 @@ tmux-control-mode-js/
 │   └── index.ts           # Package root
 │
 ├── examples/
-│   └── xterm-electron/    # Reference Electron + xterm.js app (see Section 10)
+│   └── web-multiplexer/   # Reference React/MobX + xterm.js demo (web + Electron entry paths) — see Section 10
 │
 ├── tests/
 │   ├── unit/              # Protocol parser, decoder, encoder
@@ -752,33 +752,38 @@ events.
 
 ---
 
-## 10. Reference Example (`examples/xterm-electron/`)
+## 10. Reference Example (`examples/web-multiplexer/`)
 
-A minimal but complete Electron app that demonstrates the full integration.
-This is not a toy — it's a working tmux client that exercises every layer of
-the library, and the test suite runs against it.
+A single React/MobX + xterm.js demo with two entry paths off a shared
+`TmuxBridge` interface: a web target (renderer ↔ Node bridge over WebSocket)
+and a desktop target (renderer ↔ main over Electron IPC). One renderer, one
+store, one set of components — the bridge is the seam.
+
+This is not a toy. It's a working tmux client that exercises every layer of
+the library, and the e2e suite runs against it.
 
 ### 10.1 Structure
 
 ```
-examples/xterm-electron/
-├── package.json            # Electron + xterm.js deps
-├── src/
-│   ├── main.ts             # Electron main process
-│   │   ├── Spawns tmux -C
-│   │   ├── Creates TmuxClient
-│   │   └── Sets up IPC bridge
-│   │
-│   ├── preload.ts          # Exposes IPC bridge to renderer
-│   │
-│   ├── renderer/
-│   │   ├── index.html      # Minimal shell: tab bar + terminal container
-│   │   ├── app.ts          # Creates PaneManager, handles layout
-│   │   ├── pane-view.ts    # Per-pane xterm.js Terminal + DOM element
-│   │   └── tab-bar.ts      # Window/tab switching from tmux notifications
-│   │
-│   └── shared/
-│       └── ipc-channels.ts # Type-safe IPC channel definitions
+examples/web-multiplexer/
+├── package.json            # React, MobX, xterm.js, Mantine, ws, electron
+├── server/
+│   └── bridge.ts           # WebSocket relay → spawnTmux + TmuxClient
+├── electron/
+│   ├── main.ts             # Electron main: spawnTmux + createMainBridge
+│   ├── preload.ts          # contextBridge → window.tmuxIpc
+│   └── build.mjs           # esbuild orchestration for main + preload
+├── web/
+│   ├── main.tsx            # Web entry — instantiates WebSocketBridge
+│   ├── main-electron.tsx   # Electron entry — instantiates ElectronBridge
+│   ├── App.tsx             # Layout, tab bar, pane grid
+│   ├── store.ts            # MobX store: sessions, windows, panes, layout
+│   ├── pane-terminal.ts    # Per-pane xterm.js Terminal + lifecycle
+│   ├── ws-client.ts        # WebSocketBridge — TmuxBridge over WebSocket
+│   ├── electron-bridge.ts  # ElectronBridge — TmuxBridge over Electron IPC
+│   └── components/         # Tab bar, status, inspector, heatmap, etc.
+├── shared/                 # Types crossing the bridge boundary
+└── index.html              # Vite shell
 ```
 
 ### 10.2 What It Demonstrates
@@ -793,12 +798,14 @@ examples/xterm-electron/
 - Client resize via `refresh-client -C` when the window resizes
 - Initial pane sync with `capture-pane`
 - Backpressure via `pause-after` flag
+- The same renderer running over both transport shapes — proving the
+  `TmuxBridge` interface is the right seam.
 
 ### 10.3 Intentional Limitations
 
-The example is deliberately minimal in UI — it's a proof of integration, not a
-polished terminal app. No fancy CSS, no preferences UI, no tmux command
-palette. Just enough to prove every protocol path works end-to-end.
+The demo is a reference, not a product. No preferences UI, no tmux command
+palette, no settings persistence. Just enough surface to prove every
+protocol path and both bridge shapes work end-to-end.
 
 ---
 
@@ -831,8 +838,9 @@ These are fast, pure, no-IO tests. They run on every commit.
 ### 11.3 xterm.js Integration Tests (Playwright)
 
 These are the integration tests that run against the reference example
-(`examples/xterm-electron/`). They exercise the full stack: spawn tmux →
-parse protocol → render in xterm.js → capture terminal state → verify.
+(`examples/web-multiplexer/`, Electron entry path). They exercise the full
+stack: spawn tmux → parse protocol → render in xterm.js → capture terminal
+state → verify.
 
 **Test runner:** Playwright with Electron support (`electron.launch()`).
 Playwright can drive the Electron app, interact with the xterm.js terminals,

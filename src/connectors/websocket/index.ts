@@ -60,3 +60,5 @@ export {
   type WebSocketTmuxClientOptions,
   type WebSocketTmuxClientState,
 } from "./client.js";
+
+export { websocketTransport } from "./transport.js";

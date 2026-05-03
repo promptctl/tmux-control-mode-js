@@ -30,8 +30,9 @@ import {
   Tooltip,
 } from "@mantine/core";
 import type { InspectorStore, InspectorEntry } from "../inspector-store.ts";
-import type { WireEntry } from "../ws-client.ts";
-import type { SerializedTmuxMessage } from "../../shared/protocol.ts";
+import type { WireEntry } from "../bridge.ts";
+import type { TmuxMessage } from "../../../../src/protocol/types.js";
+import { prettyBytes } from "../format-bytes.ts";
 import type { DemoStore } from "../store.ts";
 
 interface Props {
@@ -469,11 +470,11 @@ function renderPayload(w: WireEntry): string {
   if (w.dir === "in-event") {
     const ev = w.event;
     if (ev.type === "output" || ev.type === "extended-output") {
-      // Decode base64 and show as escaped ASCII so the inspector can
-      // serve as a raw-byte viewer.
+      // Render the Uint8Array bytes as escaped ASCII so the inspector
+      // can serve as a raw-byte viewer.
       const ageNote =
         ev.type === "extended-output" ? `  age=${ev.age}ms` : "";
-      return `paneId=%${ev.paneId}${ageNote}\nbytes=${prettyBase64(ev.dataBase64)}\n\n${JSON.stringify({ ...ev, dataBase64: `<${ev.dataBase64.length} base64 chars>` }, null, 2)}`;
+      return `paneId=%${ev.paneId}${ageNote}\nbytes=${prettyBytes(ev.data, 96)}\n\n${JSON.stringify({ ...ev, data: `<${ev.data.byteLength} bytes>` }, null, 2)}`;
     }
     return JSON.stringify(ev, null, 2);
   }
@@ -494,12 +495,12 @@ function paneLabel(id: number, labels: Map<number, string>): string {
   return labels.get(id) ?? `%${id}`;
 }
 
-function summarizeEvent(ev: SerializedTmuxMessage, labels: Map<number, string>): string {
+function summarizeEvent(ev: TmuxMessage, labels: Map<number, string>): string {
   if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  "${prettyBase64(ev.dataBase64, 64)}"`;
+    return `${paneLabel(ev.paneId, labels)}  "${prettyBytes(ev.data, 64)}"`;
   }
   if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  "${prettyBase64(ev.dataBase64, 64)}"`;
+    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  "${prettyBytes(ev.data, 64)}"`;
   }
   if (ev.type === "pause" || ev.type === "continue" || ev.type === "pane-mode-changed") {
     return paneLabel(ev.paneId, labels);
@@ -573,23 +574,3 @@ function escapeForDisplay(s: string): string {
   return out;
 }
 
-function prettyBase64(b64: string, max: number = 96): string {
-  let bin: string;
-  try {
-    bin = atob(b64);
-  } catch {
-    return `<invalid base64>`;
-  }
-  let out = "";
-  for (let i = 0; i < bin.length && out.length < max; i++) {
-    const c = bin.charCodeAt(i);
-    if (c === 0x1b) out += "\\x1b";
-    else if (c === 0x0a) out += "\\n";
-    else if (c === 0x0d) out += "\\r";
-    else if (c === 0x09) out += "\\t";
-    else if (c >= 0x20 && c <= 0x7e) out += bin[i];
-    else out += `\\x${c.toString(16).padStart(2, "0")}`;
-  }
-  if (bin.length > max) out += `… (${bin.length} bytes)`;
-  return out;
-}
