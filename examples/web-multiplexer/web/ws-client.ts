@@ -162,7 +162,8 @@ export class WebSocketBridge implements TmuxBridge {
       // HeatmapStore, InspectorStore) and the in-event WireEntry see the
       // same decoded TmuxMessage with Uint8Array bytes — same shape the
       // Electron transport delivers natively.
-      const decoded = decodeFrameEvent(frame.event);
+      const decoded = this.decodeFrameEvent(frame.event);
+      if (decoded === null) return;
       this.emitWire({ dir: "in-event", ts: Date.now(), event: decoded });
       this.eventHandlers.forEach((h) => h(decoded));
       return;
@@ -265,6 +266,26 @@ export class WebSocketBridge implements TmuxBridge {
     this.wireHandlers.forEach((h) => h(entry));
   }
 
+  private decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage | null {
+    try {
+      return decodeFrameEvent(ev);
+    } catch (err) {
+      // [LAW:no-silent-fallbacks] Bad bridge frames are surfaced as errors.
+      // Treating malformed base64 as empty output would make corruption look
+      // like legitimate terminal data and hide the responsible boundary.
+      const message =
+        err instanceof Error ? err.message : "invalid bridge event frame";
+      this.emitWire({
+        dir: "in-error",
+        ts: Date.now(),
+        id: null,
+        message,
+      });
+      this.emitError(message);
+      return null;
+    }
+  }
+
   onWire(h: WireHandler): () => void {
     this.wireHandlers.add(h);
     return () => this.wireHandlers.delete(h);
@@ -288,7 +309,12 @@ export class WebSocketBridge implements TmuxBridge {
 }
 
 function decodeBase64(b64: string): Uint8Array {
-  const bin = atob(b64);
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    throw new Error("invalid base64 event frame from bridge");
+  }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
