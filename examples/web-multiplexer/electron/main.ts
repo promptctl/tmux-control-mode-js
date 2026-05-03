@@ -36,6 +36,7 @@ import {
   type MainBridgeHandle,
   type MainBridgeOptions,
 } from "@promptctl/tmux-control-mode-js/electron/main";
+import { tmuxEscape } from "@promptctl/tmux-control-mode-js/protocol";
 
 // [LAW:single-enforcer] One pair of (socket, session) names drives the
 // demo's INITIAL connection. Both default to `web-multiplexer-demo` but
@@ -186,7 +187,7 @@ async function connectTo(socket: string, session: string): Promise<void> {
   await waitUntilReady(client);
   const { created } = await ensureSession(client, { name: session });
   if (!wasServerAlive || created) ourSockets.add(socket);
-  await client.execute(`switch-client -t ${session}`);
+  await client.execute(`switch-client -t ${tmuxEscape(session)}`);
   const bridge = createMainBridge(client, ipcMain, bridgeOptions());
   active = { socket, session, client, bridge };
 }

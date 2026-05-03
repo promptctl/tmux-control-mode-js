@@ -12,10 +12,11 @@
 //
 // Reuse: a single client returned by this function may be shared by N
 // `PaneSession` instances — each session adds its own listener, paneId
-// filtering happens inside the session. ONE `bridge.onEvent` registration
-// per call regardless of how many sessions attach.
+// filtering happens inside the session. At most one `bridge.onEvent`
+// registration exists while handlers are attached; it detaches again when
+// the last handler is removed.
 //
-// [LAW:single-enforcer] One `bridge.onEvent` registration; one dispatch
+// [LAW:single-enforcer] One bridge-event registration owner; one dispatch
 // table keyed by event type. The same lookup runs for every event — what
 // differs is which `Set` is mutated.
 // [LAW:locality-or-seam] This module IS the seam between the bridge's fan-
@@ -55,21 +56,20 @@ function emptySets(): HandlerSets {
  * handler sets and forwards command verbs straight through.
  *
  * The returned client may be reused across multiple `PaneSession`
- * instances — registering N sessions costs ONE `bridge.onEvent`
- * registration, not N. The bridge `unsubscribe` returned here detaches the
- * single listener; sessions that called `client.on(...)` should still
- * `client.off(...)` (or `dispose()` themselves) before discarding the
- * client.
+ * instances — registering N sessions costs at most ONE `bridge.onEvent`
+ * registration, not N. The single listener detaches when the last typed
+ * handler is removed and re-attaches on later use.
  */
 export function paneSessionClientFromBridge(
   bridge: TmuxBridge,
 ): PaneSessionClient {
   const sets = emptySets();
+  let detachBridge: (() => void) | null = null;
 
   // [LAW:dataflow-not-control-flow] Every event runs the same lookup; the
   // event's `type` field decides which handler set fires. No control-flow
   // gating beyond the union narrowing required for type safety.
-  bridge.onEvent((ev: TmuxMessage) => {
+  const routeEvent = (ev: TmuxMessage): void => {
     if (ev.type === "output") {
       for (const h of sets.output) h(ev);
     } else if (ev.type === "extended-output") {
@@ -79,14 +79,29 @@ export function paneSessionClientFromBridge(
     } else if (ev.type === "continue") {
       for (const h of sets.continue) h(ev);
     }
-  });
+  };
+  const handlerCount = (): number =>
+    sets.output.size +
+    sets["extended-output"].size +
+    sets.pause.size +
+    sets.continue.size;
+  const attachIfNeeded = (): void => {
+    if (detachBridge === null) detachBridge = bridge.onEvent(routeEvent);
+  };
+  const detachIfIdle = (): void => {
+    if (handlerCount() > 0 || detachBridge === null) return;
+    detachBridge();
+    detachBridge = null;
+  };
 
   return {
     on(event: PaneEventName, handler: never): void {
       sets[event].add(handler);
+      attachIfNeeded();
     },
     off(event: PaneEventName, handler: never): void {
       sets[event].delete(handler);
+      detachIfIdle();
     },
     execute(command) {
       return bridge.execute(command);
