@@ -1,11 +1,16 @@
 // examples/web-multiplexer/electron/preload.ts
 // Runs with sandbox: true + contextIsolation: true.
-// Exposes the ipcRenderer surface required by `createRendererBridge` under
-// window.tmuxIpc — no other IPC is reachable from the renderer.
 //
-// The exposed object is structurally assignable to IpcRendererLike, the
-// library's minimal contract — the multiplexer's main-electron.tsx hands
-// it straight to ElectronBridge with no casts.
+// Exposes two API surfaces, each on its own contextBridge name:
+//
+//   window.tmuxIpc — the ipcRenderer surface required by the library's
+//     `createRendererBridge`. Structurally assignable to IpcRendererLike
+//     so the multiplexer's main-electron.tsx hands it straight to
+//     ElectronBridge with no casts.
+//
+//   window.demoIpc — demo-specific RPC for the socket picker. Strict
+//     allowlist of methods (no generic invoke escape hatch). Lives on a
+//     separate object so the library's bridge contract stays clean.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import { createWrapperTracker } from "./wrapper-tracker.ts";
@@ -56,5 +61,22 @@ contextBridge.exposeInMainWorld("tmuxIpc", {
     const wrapped = tracker.remove(channel, listener);
     if (wrapped === null) return;
     ipcRenderer.removeListener(channel, wrapped);
+  },
+});
+
+// Demo-only RPC for the socket picker. Each method is a fixed wrapper
+// over its own ipcRenderer.invoke channel — no generic invoke surface
+// is exposed, so the renderer can't reach anything outside this list.
+contextBridge.exposeInMainWorld("demoIpc", {
+  listSockets(): Promise<readonly string[]> {
+    return ipcRenderer.invoke("demo:list-sockets") as Promise<
+      readonly string[]
+    >;
+  },
+  currentSocket(): Promise<string | null> {
+    return ipcRenderer.invoke("demo:current-socket") as Promise<string | null>;
+  },
+  switchSocket(name: string): Promise<void> {
+    return ipcRenderer.invoke("demo:switch-socket", name) as Promise<void>;
   },
 });
