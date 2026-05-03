@@ -8,9 +8,9 @@
 
 export interface DemoIpc {
   /**
-   * Names in /tmp/tmux-$UID/, minus `default` and the currently-attached
-   * socket. Trusted directly: pruning runs at app launch (and any other
-   * policy-defined moment) so callers never re-probe liveness.
+   * Names in /tmp/tmux-$UID/, minus the currently-attached socket. `default`
+   * is included when present. Trusted directly: pruning runs at app launch
+   * (and any other policy-defined moment) so callers never re-probe liveness.
    */
   listSockets(): Promise<readonly string[]>;
 
