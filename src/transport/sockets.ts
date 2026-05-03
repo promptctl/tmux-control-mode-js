@@ -17,7 +17,7 @@
 // any name, only my prefix, etc." — instead we expose neutral primitives
 // and let callers compose policy from them.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 
 /**
@@ -63,7 +63,11 @@ export function listTmuxSocketNames(): readonly string[] {
  */
 export function isTmuxServerAlive(socketName: string): boolean {
   try {
-    execSync(`tmux -L ${socketName} list-sessions`, { stdio: "ignore" });
+    // [LAW:single-enforcer] tmux liveness probes pass socketName as an argv
+    // element, never through a shell-interpreted command string.
+    execFileSync("tmux", ["-L", socketName, "list-sessions"], {
+      stdio: "ignore",
+    });
     return true;
   } catch {
     return false;

@@ -18,7 +18,7 @@
 //   5. Open a BrowserWindow with contextIsolation+sandbox enabled and
 //      load the renderer bundle Vite produced under dist/electron/.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { app, BrowserWindow, ipcMain } from "electron";
 import * as path from "node:path";
@@ -51,15 +51,21 @@ const INITIAL_SESSION =
 // concerned — we never created them, we never kill them.
 const ourSockets = new Set<string>();
 
+function tmux(socket: string, args: readonly string[]): string {
+  // [LAW:single-enforcer] All Electron main-process tmux subprocess calls
+  // cross the process boundary here via argv arrays. Socket/session names
+  // never pass through shell parsing.
+  return execFileSync("tmux", ["-L", socket, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
 function ensureSession(socket: string, session: string): void {
   try {
-    execSync(`tmux -L ${socket} has-session -t ${session}`, {
-      stdio: "ignore",
-    });
+    tmux(socket, ["has-session", "-t", session]);
   } catch {
-    execSync(`tmux -L ${socket} new-session -d -s ${session}`, {
-      stdio: "ignore",
-    });
+    tmux(socket, ["new-session", "-d", "-s", session]);
     ourSockets.add(socket);
   }
 }
@@ -81,7 +87,7 @@ function pruneDeadSockets(): void {
 function killOurSockets(): void {
   for (const name of ourSockets) {
     try {
-      execSync(`tmux -L ${name} kill-server`, { stdio: "ignore" });
+      tmux(name, ["kill-server"]);
     } catch {
       // Server already gone — fine.
     }
@@ -101,10 +107,7 @@ function pickSessionOn(socket: string): string {
   // to the first. tmux's `list-sessions -F #{session_name}` prints one
   // session name per line.
   try {
-    const stdout = execSync(
-      `tmux -L ${socket} list-sessions -F '#{session_name}'`,
-      { encoding: "utf8" },
-    );
+    const stdout = tmux(socket, ["list-sessions", "-F", "#{session_name}"]);
     const first = stdout.split("\n")[0]?.trim() ?? "";
     if (first.length > 0) return first;
   } catch {
