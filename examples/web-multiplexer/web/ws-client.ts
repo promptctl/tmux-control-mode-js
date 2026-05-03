@@ -1,57 +1,36 @@
 // examples/web-multiplexer/web/ws-client.ts
-// Browser-side WebSocket client with request/response correlation.
+// Browser-side WebSocket implementation of TmuxBridge.
 //
 // State is MobX-observable. The outbox + socket-ready relationship is
 // expressed as a reaction: whenever the socket is open and the outbox is
 // non-empty, drain the outbox. No imperative "on open, flush" glue —
 // sends queue at any time and the reaction moves them to the wire when
 // the socket is ready.
+//
+// [LAW:one-source-of-truth] WireEntry, ConnState, and the handler shapes
+// live in ./bridge.ts so a second TmuxBridge implementation can't redeclare
+// them with a drifting shape. This file owns the wire mechanics (socket
+// lifecycle, JSON framing, request/response correlation) and nothing else.
 
 import { makeObservable, observable, action, reaction, runInAction } from "mobx";
 import type {
   ClientToServer,
-  ServerToClient,
   SerializedTmuxMessage,
+  ServerToClient,
 } from "../shared/protocol.ts";
-import type { CommandResponse } from "../../../src/protocol/types.js";
-
-type EventHandler = (event: SerializedTmuxMessage) => void;
-type ErrorHandler = (message: string, id?: string) => void;
-type StateHandler = (state: "connecting" | "open" | "ready" | "closed") => void;
-
-/**
- * Unified wire activity stream. One entry per thing that crosses the
- * WebSocket in either direction. The protocol inspector subscribes to
- * this stream; nothing in the main app does, so the cost when nobody's
- * listening is one empty Set iteration per event.
- *
- * [LAW:one-source-of-truth] This is the single stream of wire events.
- * The inspector builds a ring buffer from it; it never peeks at the
- * individual subscriber lists.
- */
-export type WireEntry =
-  | { readonly dir: "out"; readonly ts: number; readonly msg: ClientToServer }
-  | {
-      readonly dir: "in-event";
-      readonly ts: number;
-      readonly event: SerializedTmuxMessage;
-    }
-  | {
-      readonly dir: "in-response";
-      readonly ts: number;
-      readonly id: string;
-      readonly response: CommandResponse;
-      readonly latencyMs: number;
-      readonly request: ClientToServer | null;
-    }
-  | {
-      readonly dir: "in-error";
-      readonly ts: number;
-      readonly id: string | null;
-      readonly message: string;
-    };
-
-type WireHandler = (entry: WireEntry) => void;
+import type {
+  CommandResponse,
+  TmuxMessage,
+} from "../../../src/protocol/types.js";
+import type {
+  ConnState,
+  ErrorHandler,
+  EventHandler,
+  StateHandler,
+  TmuxBridge,
+  WireEntry,
+  WireHandler,
+} from "./bridge.ts";
 
 interface Pending {
   readonly resolve: (r: CommandResponse) => void;
@@ -59,7 +38,7 @@ interface Pending {
   readonly request: ClientToServer;
 }
 
-export class BridgeClient {
+export class WebSocketBridge implements TmuxBridge {
   private ws: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
   private readonly eventHandlers = new Set<EventHandler>();
@@ -72,7 +51,7 @@ export class BridgeClient {
   // auto-drain reaction below. `state` and `outbox` are the only pieces
   // of MobX-observed state on this class; everything else is either a
   // static subscriber list (events/errors) or imperative bookkeeping.
-  state: "connecting" | "open" | "ready" | "closed" = "connecting";
+  state: ConnState = "connecting";
   outbox: ClientToServer[] = [];
 
   constructor() {
@@ -178,8 +157,15 @@ export class BridgeClient {
       return;
     }
     if (frame.kind === "event") {
-      this.emitWire({ dir: "in-event", ts: Date.now(), event: frame.event });
-      this.eventHandlers.forEach((h) => h(frame.event));
+      // [LAW:single-enforcer] Base64 decode happens here, exactly once,
+      // at the bridge boundary. Every consumer (DemoStore, PaneTerminal,
+      // HeatmapStore, InspectorStore) and the in-event WireEntry see the
+      // same decoded TmuxMessage with Uint8Array bytes — same shape the
+      // Electron transport delivers natively.
+      const decoded = this.decodeFrameEvent(frame.event);
+      if (decoded === null) return;
+      this.emitWire({ dir: "in-event", ts: Date.now(), event: decoded });
+      this.eventHandlers.forEach((h) => h(decoded));
       return;
     }
     if (frame.kind === "response") {
@@ -267,7 +253,7 @@ export class BridgeClient {
     return `r${this.nextId}`;
   }
 
-  setState(s: "connecting" | "open" | "ready" | "closed"): void {
+  setState(s: ConnState): void {
     this.state = s;
     this.stateHandlers.forEach((h) => h(s));
   }
@@ -278,6 +264,26 @@ export class BridgeClient {
 
   private emitWire(entry: WireEntry): void {
     this.wireHandlers.forEach((h) => h(entry));
+  }
+
+  private decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage | null {
+    try {
+      return decodeFrameEvent(ev);
+    } catch (err) {
+      // [LAW:no-silent-fallbacks] Bad bridge frames are surfaced as errors.
+      // Treating malformed base64 as empty output would make corruption look
+      // like legitimate terminal data and hide the responsible boundary.
+      const message =
+        err instanceof Error ? err.message : "invalid bridge event frame";
+      this.emitWire({
+        dir: "in-error",
+        ts: Date.now(),
+        id: null,
+        message,
+      });
+      this.emitError(message);
+      return null;
+    }
   }
 
   onWire(h: WireHandler): () => void {
@@ -302,9 +308,37 @@ export class BridgeClient {
   }
 }
 
-export function decodeBase64(b64: string): Uint8Array {
-  const bin = atob(b64);
+function decodeBase64(b64: string): Uint8Array {
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    throw new Error("invalid base64 event frame from bridge");
+  }
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+
+/**
+ * Convert a wire-shape SerializedTmuxMessage (base64-encoded data fields)
+ * into a renderer-shape TmuxMessage (Uint8Array data fields). Non-output
+ * variants pass through unchanged.
+ *
+ * [LAW:dataflow-not-control-flow] The same operation runs for every event
+ * — the discriminator selects the data shape, not whether work happens.
+ */
+function decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage {
+  if (ev.type === "output") {
+    return { type: "output", paneId: ev.paneId, data: decodeBase64(ev.dataBase64) };
+  }
+  if (ev.type === "extended-output") {
+    return {
+      type: "extended-output",
+      paneId: ev.paneId,
+      age: ev.age,
+      data: decodeBase64(ev.dataBase64),
+    };
+  }
+  return ev;
 }

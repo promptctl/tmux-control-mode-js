@@ -19,7 +19,7 @@ import {
   Modal,
   Button,
 } from "@mantine/core";
-import { BridgeClient } from "./ws-client.ts";
+import type { TmuxBridge } from "./bridge.ts";
 import { DemoStore } from "./store.ts";
 import { UiStore } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
@@ -34,9 +34,24 @@ import { InspectorView } from "./components/InspectorView.tsx";
 import { HeatmapView } from "./components/HeatmapView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
-const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+export interface AppProps {
+  /**
+   * The transport-agnostic bridge the renderer talks to. Constructed at
+   * module scope by the entry point — App does not own its lifecycle
+   * across React StrictMode remounts; it just calls connect/disconnect.
+   * Both WebSocketBridge and ElectronBridge tolerate multiple
+   * connect/disconnect cycles, so the StrictMode dev double-mount is
+   * benign.
+   */
+  readonly bridge: TmuxBridge;
+  /**
+   * URL for transports that dial somewhere (WebSocket). Ignored by
+   * transports that are already attached at construction (Electron IPC).
+   */
+  readonly connectUrl: string;
+}
 
-export const App = observer(function App() {
+export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   const uiStore = useMemo(() => new UiStore(), []);
   // Demo-side policy hooks: the library's keymap emits `choose-session`
   // for C-b s, but the demo handles it by popping the sidebar open rather
@@ -44,13 +59,13 @@ export const App = observer(function App() {
   // doesn't translate well to the browser UX).
   const demoStore = useMemo(
     () =>
-      new DemoStore(new BridgeClient(), {
+      new DemoStore(bridge, {
         onChooseSession: () => uiStore.expandNavbar(),
       }),
-    [uiStore],
+    [bridge, uiStore],
   );
   // [LAW:one-source-of-truth] InspectorStore subscribes to the SAME
-  // BridgeClient as DemoStore. Both stores are pure projections of the
+  // TmuxBridge as DemoStore. Both stores are pure projections of the
   // wire — InspectorStore sees everything, DemoStore sees only events.
   const inspectorStore = useMemo(
     () => new InspectorStore(demoStore.client),
@@ -62,13 +77,13 @@ export const App = observer(function App() {
   );
 
   useEffect(() => {
-    demoStore.connect(WS_URL);
+    demoStore.connect(connectUrl);
     return () => {
       heatmapStore.dispose();
       inspectorStore.dispose();
       demoStore.disconnect();
     };
-  }, [demoStore, heatmapStore, inspectorStore]);
+  }, [demoStore, heatmapStore, inspectorStore, connectUrl]);
 
   // Document-level keymap routing.
   //
@@ -220,7 +235,7 @@ export const App = observer(function App() {
                   border: "none",
                 }}
                 onClick={() => {
-                  if (connState === "closed") demoStore.connect(WS_URL);
+                  if (connState === "closed") demoStore.connect(connectUrl);
                 }}
               >
                 bridge: {connState}

@@ -24,8 +24,8 @@
 // function of tmux's pushed state.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import { BridgeClient } from "./ws-client.ts";
-import type { SerializedTmuxMessage } from "../shared/protocol.ts";
+import type { TmuxBridge } from "./bridge.ts";
+import type { TmuxMessage } from "../../../src/protocol/types.js";
 import {
   INITIAL_STATE,
   defaultTmuxKeymap,
@@ -183,7 +183,7 @@ export interface DemoStoreHooks {
 export class DemoStore {
   connState: ConnState = "connecting";
   sessions: SessionInfo[] = [];
-  events: SerializedTmuxMessage[] = [];
+  events: TmuxMessage[] = [];
   errors: string[] = [];
 
   // [LAW:one-source-of-truth] This is the ONE piece of per-client state
@@ -209,7 +209,7 @@ export class DemoStore {
   // null opens the modal; confirming dispatches; cancelling discards.
   pendingConfirm: PendingConfirm | null = null;
 
-  readonly client: BridgeClient;
+  readonly client: TmuxBridge;
 
   // [LAW:one-source-of-truth] One keymap engine per client session. The
   // engine's state (root vs. prefix) is shared across all PaneTerminal
@@ -227,10 +227,15 @@ export class DemoStore {
   private latestWindows: string | null = null;
   private latestPanes: string | null = null;
 
-  constructor(client: BridgeClient, hooks: DemoStoreHooks = {}) {
+  constructor(client: TmuxBridge, hooks: DemoStoreHooks = {}) {
     this.client = client;
     this.hooks = hooks;
-    makeAutoObservable(this, {
+    // [LAW:single-enforcer] `keyof T` excludes private fields, so the
+    // overrides argument can only constrain public members by default.
+    // Declaring "hooks" via the AdditionalKeys generic re-admits the
+    // annotation for the private field — keeping the access modifier
+    // honest while still telling MobX not to wrap it.
+    makeAutoObservable<this, "hooks">(this, {
       client: false,
       hooks: false,
       // engineState is a non-observable plumbing detail — the UI observes
@@ -240,7 +245,7 @@ export class DemoStore {
       // second source of truth for "is the prefix active".
     });
 
-    // [LAW:single-enforcer] Wire BridgeClient subscribers EXACTLY ONCE in
+    // [LAW:single-enforcer] Wire TmuxBridge subscribers EXACTLY ONCE in
     // the constructor (which only runs once via React's useMemo). Wiring
     // them in connect() would register a fresh handler each time React
     // StrictMode invokes the connect-effect, causing every event to fire
@@ -251,8 +256,10 @@ export class DemoStore {
   }
 
   connect(url: string): void {
-    // BridgeClient.connect() is itself idempotent — a second call while
-    // an existing socket is OPEN/CONNECTING is a no-op.
+    // The transport's connect() is responsible for idempotency — e.g.
+    // WebSocketBridge no-ops a second connect while a socket is already
+    // OPEN/CONNECTING; transports that are already attached at construction
+    // (Electron IPC) treat this as a no-op and ignore the URL.
     this.client.connect(url);
   }
 
@@ -337,7 +344,7 @@ export class DemoStore {
   // Event handling
   // -------------------------------------------------------------------------
 
-  private handleEvent(ev: SerializedTmuxMessage): void {
+  private handleEvent(ev: TmuxMessage): void {
     this.pushEvent(ev);
     if (ev.type === "subscription-changed") {
       this.applySubscription(ev.name, ev.value);
@@ -660,7 +667,7 @@ export class DemoStore {
     // each access — they can never be out of sync with the tree.
   }
 
-  private pushEvent(ev: SerializedTmuxMessage): void {
+  private pushEvent(ev: TmuxMessage): void {
     this.events = [ev, ...this.events].slice(0, 200);
   }
 

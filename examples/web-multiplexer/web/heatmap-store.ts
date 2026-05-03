@@ -19,7 +19,7 @@
 // the accumulator), not by skipping work.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { BridgeClient } from "./ws-client.ts";
+import type { TmuxBridge } from "./bridge.ts";
 
 const TICK_INTERVAL_MS = 200;
 /** Per-tick multiplier applied to existing rates so quiet panes fade. */
@@ -40,17 +40,15 @@ export class HeatmapStore {
   private timerHandle: number | null = null;
   private readonly disposeOnEvent: () => void;
 
-  constructor(client: BridgeClient) {
+  constructor(client: TmuxBridge) {
     makeAutoObservable(this);
 
     this.disposeOnEvent = client.onEvent((ev) => {
       if (ev.type === "output" || ev.type === "extended-output") {
-        // base64 → byte length: each 4 chars encode 3 bytes, minus
-        // padding. We don't need exact accuracy — an estimate preserves
-        // the relative intensity between panes, which is all the
-        // heatmap needs.
-        const bytes = Math.floor((ev.dataBase64.length * 3) / 4);
-        this.accum.set(ev.paneId, (this.accum.get(ev.paneId) ?? 0) + bytes);
+        this.accum.set(
+          ev.paneId,
+          (this.accum.get(ev.paneId) ?? 0) + ev.data.byteLength,
+        );
       }
     });
 

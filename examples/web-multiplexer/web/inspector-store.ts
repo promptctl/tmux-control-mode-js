@@ -9,7 +9,7 @@
 // [LAW:one-source-of-truth] The store's `entries` array is the single
 // canonical timeline. All derived views (filters, search, latency
 // annotations) are computed from it. Nothing else in the app talks to
-// `BridgeClient.onWire` — if it did, entries could diverge.
+// `TmuxBridge.onWire` — if it did, entries could diverge.
 //
 // [LAW:dataflow-not-control-flow] The append path is unconditional:
 // every wire entry goes into the ring, then the same filter pipeline
@@ -17,8 +17,8 @@
 // the append path — not as a branch that disables a subscriber.
 
 import { makeAutoObservable } from "mobx";
-import type { BridgeClient, WireEntry } from "./ws-client.ts";
-import type { SerializedTmuxMessage } from "../shared/protocol.ts";
+import type { TmuxBridge, WireEntry } from "./bridge.ts";
+import type { TmuxMessage } from "../../../src/protocol/types.js";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -60,7 +60,7 @@ export class InspectorStore {
   private readonly pendingByWireId = new Map<string, number>();
   private readonly disposeWire: () => void;
 
-  constructor(client: BridgeClient) {
+  constructor(client: TmuxBridge) {
     makeAutoObservable(this);
     this.disposeWire = client.onWire((e) => this.ingest(e));
   }
@@ -248,7 +248,7 @@ function summarizeForSearch(w: WireEntry): string {
   return `in error ${w.id ?? ""} ${w.message}`;
 }
 
-function eventSearchTail(ev: SerializedTmuxMessage): string {
+function eventSearchTail(ev: TmuxMessage): string {
   // Keep this cheap — it runs per filter pass. Include only the fields
   // users will realistically search for (ids + names).
   const bag: string[] = [];
