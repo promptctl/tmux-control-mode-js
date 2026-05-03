@@ -48,6 +48,16 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
   const closeCallbacks: ((reason?: string) => void)[] = [];
+  let closed = false;
+
+  const dispatchClose = (reason?: string): void => {
+    // [LAW:single-enforcer] One synthetic close notification per transport.
+    // Browser/WebSocket runtimes commonly emit `error` and then `close` for
+    // one disconnect; TmuxClient should observe that as one exit path.
+    if (closed) return;
+    closed = true;
+    closeCallbacks.forEach((cb) => cb(reason));
+  };
 
   ws.addEventListener("message", (event: { data: unknown }) => {
     const chunk = decodeFrame(event.data);
@@ -57,7 +67,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   ws.addEventListener(
     "close",
     (event: { code?: number; reason?: string }) => {
-      closeCallbacks.forEach((cb) => cb(closeReason(event)));
+      dispatchClose(closeReason(event));
     },
   );
 
@@ -66,7 +76,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   // We forward a generic reason; consumers wanting richer diagnostics should
   // attach their own listener before adapting.
   ws.addEventListener("error", () => {
-    closeCallbacks.forEach((cb) => cb("websocket error"));
+    dispatchClose("websocket error");
   });
 
   return {

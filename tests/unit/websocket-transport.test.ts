@@ -160,6 +160,16 @@ describe("websocketTransport", () => {
     expect(reasons).toEqual(["websocket error"]);
   });
 
+  it("error followed by close dispatches one onClose notification", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose(1006, "abnormal closure");
+    expect(reasons).toEqual(["websocket error"]);
+  });
+
   it("close() closes the underlying socket", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
