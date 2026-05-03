@@ -164,9 +164,19 @@ describe("parseRpcRequest — arg shape", () => {
     [{ method: "setSize", args: [80] }],
     [{ method: "setSize", args: ["80", "24"] }],
     [{ method: "setSize", args: [Number.NaN, 24] }],
+    [{ method: "setSize", args: [-1, 24] }],
+    [{ method: "setSize", args: [80, -1] }],
+    [{ method: "setSize", args: [3.5, 24] }],
+    [{ method: "setSize", args: [80, 3.5] }],
     [{ method: "setPaneAction", args: [1, "bogus"] }],
     [{ method: "setPaneAction", args: ["1", PaneAction.Pause] }],
+    [{ method: "setPaneAction", args: [-3, PaneAction.Pause] }],
+    [{ method: "setPaneAction", args: [3.7, PaneAction.Pause] }],
     [{ method: "subscribe", args: ["a", "b"] }],
+    [{ method: "subscribe", args: ["", "b", "c"] }],
+    [{ method: "unsubscribe", args: [""] }],
+    [{ method: "requestReport", args: [-1, "report"] }],
+    [{ method: "requestReport", args: [3.5, "report"] }],
     [{ method: "setFlags", args: [[1, 2]] }],
     [{ method: "setFlags", args: ["not-an-array"] }],
     [{ method: "splitWindow", args: ["not-an-object"] }],
@@ -179,6 +189,26 @@ describe("parseRpcRequest — arg shape", () => {
     const out = parseRpcRequest({ method: "splitWindow", args: [] });
     expect(out.method).toBe("splitWindow");
     expect(out.args).toEqual([undefined]);
+  });
+
+  it.each([
+    { vertical: "yes" },
+    { target: 42 },
+    { bogus: true },
+    { vertical: true, extra: "nope" },
+  ])("rejects splitWindow with invalid options: %j", (opts) => {
+    expect(() =>
+      parseRpcRequest({ method: "splitWindow", args: [opts] }),
+    ).toThrow(/INVALID_ARG/);
+  });
+
+  it("accepts splitWindow with valid options", () => {
+    const out = parseRpcRequest({
+      method: "splitWindow",
+      args: [{ vertical: true, target: "%0" }],
+    });
+    expect(out.method).toBe("splitWindow");
+    expect(out.args).toEqual([{ vertical: true, target: "%0" }]);
   });
 });
 

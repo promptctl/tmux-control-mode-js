@@ -311,3 +311,42 @@ export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
 export function asPaneOutput(msg: TmuxMessage): PaneOutputMessage | null {
   return isPaneOutput(msg) ? msg : null;
 }
+
+/**
+ * Runtime set of TmuxMessage type discriminators that can appear in
+ * serialized event frames (everything except output/extended-output, which
+ * travel as binary frames). Used by the WS parseEvent trust boundary to
+ * reject unknown types.
+ *
+ * [LAW:one-source-of-truth] Derivable from the TmuxMessage union — if a new
+ * variant is added, TypeScript will flag this set as incomplete when the
+ * exhaustive check below is updated.
+ */
+export const SERIALIZED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "begin",
+  "end",
+  "error",
+  "pause",
+  "continue",
+  "pane-mode-changed",
+  "window-add",
+  "window-close",
+  "window-renamed",
+  "window-pane-changed",
+  "unlinked-window-add",
+  "unlinked-window-close",
+  "unlinked-window-renamed",
+  "layout-change",
+  "session-changed",
+  "session-renamed",
+  "sessions-changed",
+  "session-window-changed",
+  "client-session-changed",
+  "client-detached",
+  "paste-buffer-changed",
+  "paste-buffer-deleted",
+  "subscription-changed",
+  "message",
+  "config-error",
+  "exit",
+] as const satisfies readonly TmuxMessage["type"][]);

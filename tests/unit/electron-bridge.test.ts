@@ -24,6 +24,8 @@ import {
   type IpcMainEventLike,
   type IpcRendererLike,
   type WebContentsLike,
+  parseAckMessage,
+  BridgeError,
 } from "../../src/connectors/electron/types.js";
 import { createMainBridge } from "../../src/connectors/electron/main.js";
 import {
@@ -1730,6 +1732,37 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     expect(
       t.sent.filter((c) => isUnsubscribeWire(c, "layout")),
     ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAckMessage — ack channel trust boundary validation
+// ---------------------------------------------------------------------------
+
+describe("parseAckMessage — trust boundary", () => {
+  it("accepts valid ack", () => {
+    const msg = parseAckMessage({ paneId: 3, bytes: 1024 });
+    expect(msg).toEqual({ paneId: 3, bytes: 1024 });
+  });
+
+  it.each([
+    ["non-object", "string"],
+    ["null", null],
+    ["array", [1, 2]],
+  ])("rejects %s envelope", (_name, value) => {
+    expect(() => parseAckMessage(value)).toThrow(/INVALID_ARG/);
+  });
+
+  it.each([
+    ["negative paneId", { paneId: -1, bytes: 0 }],
+    ["non-integer paneId", { paneId: 3.5, bytes: 0 }],
+    ["NaN paneId", { paneId: Number.NaN, bytes: 0 }],
+    ["negative bytes", { paneId: 0, bytes: -1 }],
+    ["non-finite bytes", { paneId: 0, bytes: Infinity }],
+    ["missing paneId", { bytes: 0 }],
+    ["missing bytes", { paneId: 0 }],
+  ])("rejects %s", (_name, value) => {
+    expect(() => parseAckMessage(value)).toThrow(/INVALID_ARG/);
   });
 });
 
