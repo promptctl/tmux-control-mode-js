@@ -5,3 +5,7 @@ dist-electron/
 .DS_Store
 test-results/
 playwright-report/
+examples/xterm-electron/dist/
+examples/xterm-electron/node_modules/
+examples/xterm-electron/test-results/
+.claude/*.lock
