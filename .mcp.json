@@ -8,6 +8,24 @@
         "chrome-devtools-mcp@latest"
       ],
       "env": {}
+    },
+    "electric-cherry": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "electric-cherry@0.1.1"
+      ],
+      "env": {}
+    },
+    "cherry-chrome-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "github:brandon-fryslie/cherry-chrome-mcp#e22899427a4b9d2358dae8c617b0ad1543e184bc"
+      ],
+      "env": {}
     }
   }
 }
