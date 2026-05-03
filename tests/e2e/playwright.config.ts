@@ -9,6 +9,10 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
+  // Prune orphan tmux sockets from prior interrupted runs. See
+  // global-setup.ts for the safety guarantees: path isolation, tmux
+  // liveness probing, and unlinking only dead socket files.
+  globalSetup: "./global-setup.ts",
   // The Electron smoke spec spawns a real tmux server inside an Electron
   // child process. Cold launch + handshake fits comfortably in 30 s; we
   // give the whole test 60 s of room.
