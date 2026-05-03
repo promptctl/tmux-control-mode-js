@@ -64,12 +64,9 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
-  ws.addEventListener(
-    "close",
-    (event: { code?: number; reason?: string }) => {
-      dispatchClose(closeReason(event));
-    },
-  );
+  ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
+    dispatchClose(closeReason(event));
+  });
 
   // The `error` event on a browser WebSocket is intentionally information-
   // free (the spec hides details to avoid leaking cross-origin probe data).
@@ -108,9 +105,7 @@ function decodeFrame(data: unknown): string {
   if (typeof data === "string") return data;
   if (data instanceof ArrayBuffer) return BINARY_DECODER.decode(data);
   if (ArrayBuffer.isView(data)) {
-    return BINARY_DECODER.decode(
-      data as ArrayBufferView<ArrayBufferLike>,
-    );
+    return BINARY_DECODER.decode(data as ArrayBufferView<ArrayBufferLike>);
   }
   return "";
 }
