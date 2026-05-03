@@ -3,6 +3,5 @@ dist/
 dist-electron/
 *.tsbuildinfo
 .DS_Store
-examples/xterm-electron/dist/
-examples/xterm-electron/node_modules/
-examples/xterm-electron/test-results/
+test-results/
+playwright-report/

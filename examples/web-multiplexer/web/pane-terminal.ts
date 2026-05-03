@@ -39,10 +39,10 @@
 
 import { reaction, observable, runInAction, type IReactionDisposer } from "mobx";
 import { Terminal } from "@xterm/xterm";
-import { decodeBase64, BridgeClient } from "./ws-client.ts";
+import type { TmuxBridge } from "./bridge.ts";
+import type { TmuxMessage } from "../../../src/protocol/types.js";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import type { UiStore } from "./ui-store.ts";
-import type { SerializedTmuxMessage } from "../shared/protocol.ts";
 
 type LifeState = "idle" | "seeding" | "live" | "disposed";
 
@@ -177,7 +177,7 @@ export class PaneTerminal {
   readonly paneId: number;
   private readonly store: DemoStore;
   private readonly uiStore: UiStore;
-  private readonly client: BridgeClient;
+  private readonly client: TmuxBridge;
 
   // Observable container box, set by a ResizeObserver inside `mount()`.
   // The size reaction reads this AND the store's pane width/height.
@@ -257,17 +257,16 @@ export class PaneTerminal {
     // Live event subscription. In "seeding" state bytes go to the buffer;
     // in "live" state bytes go straight to xterm. No event is ever
     // dropped: the listener is registered before capture-pane is sent.
-    this.unsubEvent = this.client.onEvent((ev: SerializedTmuxMessage) => {
+    this.unsubEvent = this.client.onEvent((ev: TmuxMessage) => {
       if (this.state === "disposed") return;
       if (
         (ev.type === "output" || ev.type === "extended-output") &&
         ev.paneId === this.paneId
       ) {
-        const bytes = decodeBase64(ev.dataBase64);
         if (this.state === "live") {
-          term.write(bytes);
+          term.write(ev.data);
         } else {
-          this.buffer.push(bytes);
+          this.buffer.push(ev.data);
         }
       }
     });
