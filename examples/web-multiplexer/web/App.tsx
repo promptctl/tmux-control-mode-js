@@ -25,6 +25,7 @@ import { UiStore } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
+import { SocketBadge } from "./components/SocketBadge.tsx";
 import { WindowTabs } from "./components/WindowTabs.tsx";
 import { PaneView } from "./components/PaneView.tsx";
 import { DebugPanel } from "./components/DebugPanel.tsx";
@@ -203,44 +204,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             <Text size="xs" c="dimmed">
               {sessions.length} sessions
             </Text>
-            {/* Click to reconnect when the bridge is closed — e.g. after
-                C-b d (detach) or a dropped connection. Rendered as a real
-                <button> via Mantine's polymorphic `component` prop so the
-                control is keyboard-focusable and has a screen-reader-
-                accessible label, not just a clickable visual badge. The
-                `disabled` attribute disables BOTH the click and any focus/
-                Enter activation when the bridge is healthy, matching the
-                cursor: default visual cue. */}
-            <Tooltip
-              label={
-                connState === "closed"
-                  ? "Click to reconnect"
-                  : `Bridge is ${connState}`
-              }
-            >
-              <Badge
-                component="button"
-                type="button"
-                color={demoStore.statusColor}
-                variant="light"
-                disabled={connState !== "closed"}
-                aria-label={
-                  connState === "closed"
-                    ? "Reconnect to the tmux bridge"
-                    : `Bridge status: ${connState}`
-                }
-                style={{
-                  cursor: connState === "closed" ? "pointer" : "default",
-                  userSelect: "none",
-                  border: "none",
-                }}
-                onClick={() => {
-                  if (connState === "closed") demoStore.connect(connectUrl);
-                }}
-              >
-                bridge: {connState}
-              </Badge>
-            </Tooltip>
+            {/* Connection-status badge. On the Electron target this is
+                also the entry point to the socket picker (click → menu of
+                live tmux sockets). On the web target it falls back to a
+                plain reconnect button. See components/SocketBadge.tsx. */}
+            <SocketBadge demoStore={demoStore} connectUrl={connectUrl} />
             <Tooltip label={uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"}>
               <ActionIcon
                 variant="subtle"
