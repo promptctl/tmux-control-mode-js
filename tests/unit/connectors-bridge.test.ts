@@ -47,10 +47,10 @@ function createFakeBridge(): FakeBridge {
   const pendingExecutes: Array<(r: CommandResponse) => void> = [];
 
   const okResponse: CommandResponse = {
+    commandNumber: 0,
+    timestamp: 0,
+    output: [],
     success: true,
-    command: "",
-    output: "",
-    error: "",
   };
 
   return {
@@ -98,7 +98,7 @@ function createFakeBridge(): FakeBridge {
     resolveLastExecute() {
       const r = pendingExecutes.shift();
       if (r === undefined) throw new Error("no pending execute");
-      r({ ...okResponse, command: executed[executed.length - 1] ?? "" });
+      r({ ...okResponse, commandNumber: executed.length });
     },
     executed,
     sentKeys,
@@ -172,6 +172,30 @@ describe("paneSessionClientFromBridge", () => {
     bridge.emit({ type: "output", paneId: 2, data: new Uint8Array() });
 
     expect(seen).toEqual([1]);
+    expect(bridge.eventListenerCount()).toBe(0);
+  });
+
+  it("reattaches the bridge listener after all handlers were removed", () => {
+    const bridge = createFakeBridge();
+    const client = paneSessionClientFromBridge(bridge);
+
+    const seen: number[] = [];
+    const first = (m: { paneId: number }): void => {
+      seen.push(m.paneId);
+    };
+    const second = (m: { paneId: number }): void => {
+      seen.push(m.paneId);
+    };
+
+    client.on("output", first);
+    client.off("output", first);
+    expect(bridge.eventListenerCount()).toBe(0);
+
+    client.on("output", second);
+    expect(bridge.eventListenerCount()).toBe(1);
+    bridge.emit({ type: "output", paneId: 3, data: new Uint8Array() });
+
+    expect(seen).toEqual([3]);
   });
 
   it("ignores non-pane events", () => {

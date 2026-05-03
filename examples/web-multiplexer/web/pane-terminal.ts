@@ -129,8 +129,8 @@ export class PaneTerminal {
   /**
    * Mount this PaneTerminal into a DOM container. Opens an xterm.js
    * Terminal inside it, builds a PaneSession on top, kicks off the seed,
-   * and installs the MobX reaction that keeps font size + cols/rows in
-   * sync with (pane dimensions, container dimensions). Idempotent.
+   * and installs the MobX reaction that applies tmux pane cols/rows with
+   * the user's chosen font size. Idempotent.
    */
   mount(container: HTMLElement): void {
     if (this.disposed || this.term !== null) return;

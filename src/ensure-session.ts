@@ -27,6 +27,7 @@
 // line), not in branching JS that conditionally creates or attaches.
 
 import type { TmuxClient } from "./client.js";
+import { tmuxEscape } from "./protocol/encoder.js";
 
 export interface EnsureSessionOptions {
   /** tmux session name. Cannot contain `:` or `.` per tmux's own rules. */
@@ -54,7 +55,7 @@ export async function ensureSession(
     return { created: true, sessionId: firstLine };
   }
   const idResp = await client.execute(
-    `display-message -p -t ${tmuxQuote(opts.name)} '#{session_id}'`,
+    `display-message -p -t ${tmuxEscape(opts.name)} '#{session_id}'`,
   );
   const sessionId = idResp.output[0]?.trim() ?? "";
   if (sessionId.length === 0) {
@@ -66,15 +67,9 @@ export async function ensureSession(
 }
 
 function buildNewSessionCommand(opts: EnsureSessionOptions): string {
-  const parts = ["new-session", "-A", "-d", "-s", tmuxQuote(opts.name)];
-  if (opts.cwd !== undefined) parts.push("-c", tmuxQuote(opts.cwd));
-  if (opts.windowName !== undefined) parts.push("-n", tmuxQuote(opts.windowName));
+  const parts = ["new-session", "-A", "-d", "-s", tmuxEscape(opts.name)];
+  if (opts.cwd !== undefined) parts.push("-c", tmuxEscape(opts.cwd));
+  if (opts.windowName !== undefined) parts.push("-n", tmuxEscape(opts.windowName));
   parts.push("-P", "-F", "'#{session_id}'");
   return parts.join(" ");
-}
-
-// tmux's command parser treats single-quoted strings literally except for
-// embedded single quotes. Close-escape-reopen is the standard idiom.
-function tmuxQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
 }
