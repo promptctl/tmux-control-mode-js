@@ -197,6 +197,40 @@ async function attach(
 // ---------------------------------------------------------------------------
 
 describe("PaneSession backpressure", () => {
+  it("rejects invalid stall thresholds at construction", () => {
+    const client = createFakeClient();
+    const sink = syncSink();
+
+    expect(
+      () =>
+        new PaneSession({
+          client,
+          paneId: PANE,
+          sink,
+          stallHighChunks: 0,
+        }),
+    ).toThrow(/stallHighChunks/);
+    expect(
+      () =>
+        new PaneSession({
+          client,
+          paneId: PANE,
+          sink,
+          stallLowChunks: -1,
+        }),
+    ).toThrow(/stallLowChunks/);
+    expect(
+      () =>
+        new PaneSession({
+          client,
+          paneId: PANE,
+          sink,
+          stallHighChunks: 2,
+          stallLowChunks: 2,
+        }),
+    ).toThrow(/lower than stallHighChunks/);
+  });
+
   it("consumer pause/resume fires events and sends wire commands", async () => {
     const client = createFakeClient();
     const sink = syncSink();

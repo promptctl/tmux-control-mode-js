@@ -22,10 +22,10 @@
 //     (`bytePath`), not an `if (state === "live") write else buffer` branch.
 //     Same line of code runs every event; what differs is which function
 //     `bytePath` references. Atomically swapped at flip time.
-//   - [LAW:single-enforcer] One AbortController gates all listener teardown.
-//     The demo's five separate `if (state === "disposed") return` callback
-//     guards collapse to: dispose() aborts; listeners detach; bytePath flips
-//     to a no-op for any in-flight emit racing the abort.
+//   - [LAW:single-enforcer] One dispose path owns listener teardown. The
+//     demo's scattered disposal checks collapse to: dispose() detaches
+//     client/sink listeners and flips bytePath to a no-op for any in-flight
+//     emit racing the detach.
 //   - No silent fallbacks: seed failures emit a typed `seed-error` event
 //     instead of being console.error'd.
 //   - Bounded buffer: at the byte cap, drop oldest queued events and emit
@@ -160,6 +160,12 @@ export interface PaneSessionOptions {
   readonly stallLowChunks?: number;
 }
 
+interface PaneSessionConfig {
+  readonly bufferLimitBytes: number;
+  readonly stallHighChunks: number;
+  readonly stallLowChunks: number;
+}
+
 /** Why the pane transitioned into the paused state. */
 export type PauseReason = "consumer" | "sink-stall" | "tmux";
 
@@ -180,6 +186,34 @@ const TEXT_DECODER = new TextDecoder("utf-8", { fatal: false });
 
 const NOOP_WRITE = (_bytes: Uint8Array): void => undefined;
 
+function paneSessionConfig(options: PaneSessionOptions): PaneSessionConfig {
+  const bufferLimitBytes =
+    options.bufferLimitBytes ?? DEFAULT_BUFFER_LIMIT_BYTES;
+  const stallHighChunks =
+    options.stallHighChunks ?? DEFAULT_STALL_HIGH_CHUNKS;
+  const stallLowChunks = options.stallLowChunks ?? DEFAULT_STALL_LOW_CHUNKS;
+
+  // [LAW:single-enforcer] Stall threshold invariants are enforced once at
+  // construction, before evaluateStallPressure can observe invalid states.
+  if (!Number.isInteger(stallHighChunks) || stallHighChunks < 1) {
+    throw new Error(
+      "PaneSession: stallHighChunks must be a positive integer",
+    );
+  }
+  if (!Number.isInteger(stallLowChunks) || stallLowChunks < 0) {
+    throw new Error(
+      "PaneSession: stallLowChunks must be a non-negative integer",
+    );
+  }
+  if (stallLowChunks >= stallHighChunks) {
+    throw new Error(
+      "PaneSession: stallLowChunks must be lower than stallHighChunks",
+    );
+  }
+
+  return { bufferLimitBytes, stallHighChunks, stallLowChunks };
+}
+
 // ---------------------------------------------------------------------------
 // PaneSession
 // ---------------------------------------------------------------------------
@@ -198,7 +232,6 @@ export class PaneSession {
   private readonly bufferLimitBytes: number;
   private readonly stallHighChunks: number;
   private readonly stallLowChunks: number;
-  private readonly abort: AbortController;
   private readonly listeners: ListenerSets = {};
 
   // [LAW:dataflow-not-control-flow] The byte path is data, not control flow.
@@ -228,14 +261,13 @@ export class PaneSession {
   private outstandingChunks = 0;
 
   constructor(options: PaneSessionOptions) {
+    const config = paneSessionConfig(options);
     this.client = options.client;
     this.paneId = options.paneId;
     this.sink = options.sink;
-    this.bufferLimitBytes =
-      options.bufferLimitBytes ?? DEFAULT_BUFFER_LIMIT_BYTES;
-    this.stallHighChunks = options.stallHighChunks ?? DEFAULT_STALL_HIGH_CHUNKS;
-    this.stallLowChunks = options.stallLowChunks ?? DEFAULT_STALL_LOW_CHUNKS;
-    this.abort = new AbortController();
+    this.bufferLimitBytes = config.bufferLimitBytes;
+    this.stallHighChunks = config.stallHighChunks;
+    this.stallLowChunks = config.stallLowChunks;
     this.bytePath = (bytes) => this.bufferAppend(bytes);
     this.liveBytePath =
       this.sink.writeAsync !== undefined
@@ -349,11 +381,10 @@ export class PaneSession {
   dispose(): void {
     if (this.state === "disposed") return;
     this.transition("disposed");
-    // [LAW:single-enforcer] One abort signal cancels every listener attached
+    // [LAW:single-enforcer] One dispose path detaches every listener attached
     // by installListeners(). The detachClientListeners closure removes the
     // client.on registrations; the inputDisposable removes the sink.onData
-    // registration; the abort signal is the synchronization point.
-    this.abort.abort();
+    // registration.
     this.detachClientListeners?.();
     this.detachClientListeners = null;
     this.inputDisposable?.dispose();

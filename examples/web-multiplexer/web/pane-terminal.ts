@@ -179,12 +179,14 @@ function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
   const extendedHandlers = new Set<(msg: ExtendedOutputMessage) => void>();
   const pauseHandlers = new Set<(msg: PauseMessage) => void>();
   const continueHandlers = new Set<(msg: ContinueMessage) => void>();
+  let detachBridge: (() => void) | null = null;
 
-  // [LAW:single-enforcer] One bridge.onEvent registration; never grows.
+  // [LAW:single-enforcer] At most one bridge.onEvent registration; it exists
+  // only while at least one typed PaneSession handler is registered.
   // The dispatch table fans out by event type — pane backpressure events
   // (`pause` / `continue`) ride the same channel as output, so PaneSession
   // sees a unified event surface.
-  bridge.onEvent((ev: TmuxMessage) => {
+  const routeEvent = (ev: TmuxMessage): void => {
     if (ev.type === "output") {
       for (const h of outputHandlers) h(ev);
     } else if (ev.type === "extended-output") {
@@ -194,7 +196,7 @@ function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
     } else if (ev.type === "continue") {
       for (const h of continueHandlers) h(ev);
     }
-  });
+  };
 
   // [LAW:dataflow-not-control-flow] The on/off pair is one dispatch table
   // keyed by event name; the same tuple lookup happens for every event,
@@ -211,13 +213,28 @@ function bridgeAsPaneSessionClient(bridge: TmuxBridge): PaneSessionClient {
     pause: pauseHandlers,
     continue: continueHandlers,
   };
+  const handlerCount = (): number =>
+    outputHandlers.size +
+    extendedHandlers.size +
+    pauseHandlers.size +
+    continueHandlers.size;
+  const attachIfNeeded = (): void => {
+    if (detachBridge === null) detachBridge = bridge.onEvent(routeEvent);
+  };
+  const detachIfIdle = (): void => {
+    if (handlerCount() > 0 || detachBridge === null) return;
+    detachBridge();
+    detachBridge = null;
+  };
 
   return {
     on(event: keyof Sets, handler: never): void {
       sets[event].add(handler);
+      attachIfNeeded();
     },
     off(event: keyof Sets, handler: never): void {
       sets[event].delete(handler);
+      detachIfIdle();
     },
     execute(command) {
       return bridge.execute(command);

@@ -13,9 +13,10 @@
 //   - Typed `on/off` for the four `TmuxModel`-relevant message types — a
 //     single `bridge.onEvent` listener fans out to typed handler sets.
 //   - `subscriptions-reset` — fired whenever the bridge re-enters `ready`
-//     after having been `closed`. The server-side TmuxClient at that point
-//     is a fresh process with no live subscriptions; the live entries are
-//     re-issued under the same names so existing handles keep routing.
+//     after a post-ready non-ready state. The server-side TmuxClient at
+//     that point is a fresh process with no live subscriptions; the live
+//     entries are re-issued under the same names so existing handles keep
+//     routing.
 //
 // [LAW:single-enforcer] All `%subscription-changed` routing for the
 // renderer happens here. DemoStore no longer maintains a parallel router.
@@ -80,11 +81,11 @@ export class BridgeClient implements TmuxModelClient {
   >();
   private readonly resetListeners = new Set<() => void>();
 
-  // Track the most recent terminal state to detect "ready after closed"
-  // (bridge dropped + reconnected). On the *first* `ready` we don't fire
-  // a reset because consumers haven't subscribed yet.
+  // Track reconnects across the full bridge lifecycle
+  // (closed → connecting → open → ready). On the *first* `ready` we don't
+  // fire a reset because consumers haven't subscribed yet.
   private hadReadyOnce = false;
-  private lastState: ConnState = "connecting";
+  private resetOnNextReady = false;
 
   private disposed = false;
   private readonly cleanups: Array<() => void> = [];
@@ -244,23 +245,23 @@ export class BridgeClient implements TmuxModelClient {
   }
 
   // [LAW:single-enforcer] Reconnect handling lives here only. When the
-  // bridge transitions back to `ready` after having been `closed`, the
-  // server-side TmuxClient is a fresh process with no live subscriptions —
+  // bridge transitions back to `ready` after any post-ready non-ready state,
+  // the server-side TmuxClient is a fresh process with no live subscriptions —
   // re-issue every entry under its existing name so consumer-held handles
   // keep working, and notify TmuxModel to clear cached state.
   private handleStateChange(state: ConnState): void {
     if (this.disposed) return;
-    const prev = this.lastState;
-    this.lastState = state;
-    if (state !== "ready") return;
+    if (state !== "ready") {
+      if (this.hadReadyOnce) this.resetOnNextReady = true;
+      return;
+    }
 
     if (!this.hadReadyOnce) {
       this.hadReadyOnce = true;
       return;
     }
-    // ready after a closed/connecting cycle — the underlying tmux server
-    // has lost everything we registered.
-    if (prev === "closed" || prev === "connecting") {
+    if (this.resetOnNextReady) {
+      this.resetOnNextReady = false;
       for (const handler of this.resetListeners) handler();
       for (const entry of this.subs.values()) {
         if (entry.disposed) continue;
