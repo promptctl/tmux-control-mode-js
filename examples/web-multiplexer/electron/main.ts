@@ -26,6 +26,7 @@ import * as path from "node:path";
 import {
   TmuxClient,
   spawnTmux,
+  ensureSession,
   tmuxSocketDir,
   listTmuxSocketNames,
   isTmuxServerAlive,
@@ -35,6 +36,7 @@ import {
   type MainBridgeHandle,
   type MainBridgeOptions,
 } from "@promptctl/tmux-control-mode-js/electron/main";
+import { tmuxEscape } from "@promptctl/tmux-control-mode-js/protocol";
 
 // [LAW:single-enforcer] One pair of (socket, session) names drives the
 // demo's INITIAL connection. Both default to `web-multiplexer-demo` but
@@ -59,15 +61,6 @@ function tmux(socket: string, args: readonly string[]): string {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });
-}
-
-function ensureSession(socket: string, session: string): void {
-  try {
-    tmux(socket, ["has-session", "-t", session]);
-  } catch {
-    tmux(socket, ["new-session", "-d", "-s", session]);
-    ourSockets.add(socket);
-  }
 }
 
 function pruneDeadSockets(): void {
@@ -181,10 +174,20 @@ interface Active {
 let active: Active | null = null;
 
 async function connectTo(socket: string, session: string): Promise<void> {
-  ensureSession(socket, session);
-  const transport = spawnTmux(["-L", socket, "attach-session", "-t", session]);
+  // [LAW:single-enforcer] Library `ensureSession` owns the create-or-attach
+  // contract — no shell-out, no has-session pre-check. To run the helper we
+  // first need an attached control client, but we don't yet know whether
+  // `session` exists. Bootstrap by attaching with no target: tmux auto-
+  // creates a default session if no server exists, or attaches to an
+  // arbitrary existing one. ensureSession then ensures `session` exists,
+  // and switch-client moves the control client onto it.
+  const wasServerAlive = isTmuxServerAlive(socket);
+  const transport = spawnTmux([], { socketPath: socket });
   const client = new TmuxClient(transport);
   await waitUntilReady(client);
+  const { created } = await ensureSession(client, { name: session });
+  if (!wasServerAlive || created) ourSockets.add(socket);
+  await client.execute(`switch-client -t ${tmuxEscape(session)}`);
   const bridge = createMainBridge(client, ipcMain, bridgeOptions());
   active = { socket, session, client, bridge };
 }

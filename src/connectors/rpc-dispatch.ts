@@ -33,10 +33,7 @@ type Dispatcher = {
 
 const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
   execute: (c, [command]) => c.execute(command),
-  listWindows: (c) => c.listWindows(),
-  listPanes: (c) => c.listPanes(),
   sendKeys: (c, [target, keys]) => c.sendKeys(target, keys),
-  splitWindow: (c, [options]) => c.splitWindow(options),
   setSize: (c, [width, height]) => c.setSize(width, height),
   setPaneAction: (c, [paneId, action]) => c.setPaneAction(paneId, action),
   subscribe: (c, [name, what, format]) => c.subscribeRaw(name, what, format),

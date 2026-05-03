@@ -108,11 +108,7 @@ describe("parseRpcRequest — allowlist", () => {
   it("accepts every known RpcMethod", () => {
     const expected: ReadonlyArray<{ method: RpcMethod; args: readonly unknown[] }> = [
       { method: "execute", args: ["list-windows"] },
-      { method: "listWindows", args: [] },
-      { method: "listPanes", args: [] },
       { method: "sendKeys", args: ["%0", "echo hi"] },
-      { method: "splitWindow", args: [{ vertical: true }] },
-      { method: "splitWindow", args: [] }, // optional arg
       { method: "setSize", args: [80, 24] },
       { method: "setPaneAction", args: [1, PaneAction.Pause] },
       { method: "subscribe", args: ["sub", "%0", "#{pane_pid}"] },
@@ -169,16 +165,8 @@ describe("parseRpcRequest — arg shape", () => {
     [{ method: "subscribe", args: ["a", "b"] }],
     [{ method: "setFlags", args: [[1, 2]] }],
     [{ method: "setFlags", args: ["not-an-array"] }],
-    [{ method: "splitWindow", args: ["not-an-object"] }],
-    [{ method: "listWindows", args: ["extra"] }],
   ])("rejects invalid args: %j", (req) => {
     expect(() => parseRpcRequest(req)).toThrow(/INVALID_ARG/);
-  });
-
-  it("accepts splitWindow with no args (optional)", () => {
-    const out = parseRpcRequest({ method: "splitWindow", args: [] });
-    expect(out.method).toBe("splitWindow");
-    expect(out.args).toEqual([undefined]);
   });
 });
 
@@ -197,10 +185,13 @@ describe("dispatchRpcRequest — routing", () => {
   // (transport, client) pair so it can both observe `sent` and feed responses.
   void makeClient;
 
-  it("listWindows → 'list-windows'", async () => {
+  it("execute forwards the raw command string", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
-    const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
+    const p = dispatchRpcRequest(client, {
+      method: "execute",
+      args: ["list-windows"],
+    });
     expect(t.sent).toEqual(["list-windows\n"]);
     feedOk(t.feed, 1, ["@0 zsh 1 -"]);
     const r = await p;
@@ -268,10 +259,7 @@ describe("dispatchRpcRequest — admin-only", () => {
     // were still part of RpcRequest.
     const _allowed: readonly RpcMethod[] = [
       "execute",
-      "listWindows",
-      "listPanes",
       "sendKeys",
-      "splitWindow",
       "setSize",
       "setPaneAction",
       "subscribe",
@@ -320,10 +308,7 @@ describe("RpcRequest exhaustiveness", () => {
     // non-empty so the test counts as exercised.
     const methods: RpcMethod[] = [
       "execute",
-      "listWindows",
-      "listPanes",
       "sendKeys",
-      "splitWindow",
       "setSize",
       "setPaneAction",
       "subscribe",
@@ -333,11 +318,11 @@ describe("RpcRequest exhaustiveness", () => {
       "requestReport",
       "queryClipboard",
     ];
-    expect(methods.length).toBe(13);
+    expect(methods.length).toBe(10);
     // Round-trip type narrowing via the union to confirm the discriminator
     // is load-bearing.
-    const r: RpcRequest = { method: "listWindows", args: [] };
-    expect(r.method).toBe("listWindows");
+    const r: RpcRequest = { method: "execute", args: ["list-windows"] };
+    expect(r.method).toBe("execute");
   });
 });
 

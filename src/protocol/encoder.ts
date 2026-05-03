@@ -4,13 +4,6 @@
 
 import type { PaneAction } from "./types.js";
 
-// [LAW:one-source-of-truth] Encoder owns the SplitOptions shape; client.ts re-exports
-// for API compatibility. Two definitions would drift.
-export interface SplitOptions {
-  readonly vertical?: boolean;
-  readonly target?: string;
-}
-
 // [LAW:single-enforcer] All user-argument escaping goes through this one function.
 function tmuxEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
@@ -55,16 +48,6 @@ function sendKeys(target: string, keys: string): string {
   return buildCommand(
     `send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`,
   );
-}
-
-// [LAW:one-source-of-truth] split-window wire format lives here only.
-// [LAW:dataflow-not-control-flow] Ternaries select VALUES (flag string, target fragment);
-// the build operation runs unconditionally.
-function splitWindow(options: SplitOptions = {}): string {
-  const dirFlag = options.vertical === true ? "-v" : "-h";
-  const targetPart =
-    options.target !== undefined ? ` -t ${tmuxEscape(options.target)}` : "";
-  return buildCommand(`split-window ${dirFlag}${targetPart}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +148,6 @@ export {
   refreshClientSubscribe,
   refreshClientUnsubscribe,
   sendKeys,
-  splitWindow,
   refreshClientSetFlags,
   refreshClientClearFlags,
   refreshClientReport,
