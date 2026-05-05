@@ -17,7 +17,7 @@
 // tests/e2e/web-multiplexer-electron.spec.ts.
 
 import { test, expect, _electron as electron } from "@playwright/test";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,13 @@ import { fileURLToPath } from "node:url";
 import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
 import { e2eSocketName } from "./socket-naming.js";
+
+// [LAW:single-enforcer] All tmux subprocess invocations cross the
+// process boundary as argv arrays. Mirrors the wrapper in the Electron
+// main process and the sister electron spec.
+function tmux(socket: string, args: readonly string[]): void {
+  execFileSync("tmux", ["-L", socket, ...args], { stdio: "ignore" });
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
@@ -38,7 +45,7 @@ function freshSocket(): string {
 
 function killSocket(name: string): void {
   try {
-    execSync(`tmux -L ${name} kill-server`, { stdio: "ignore" });
+    tmux(name, ["kill-server"]);
   } catch {
     // Server already gone.
   }
