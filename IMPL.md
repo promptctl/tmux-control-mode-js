@@ -380,15 +380,39 @@ compile time via the mapped-type exhaustiveness in `Validators` and
 The connector source files stay focused on transport-specific concerns:
 
 - `connectors/electron/main.ts` owns single-instance enforcement, the
-  per-renderer subscriber set, and the credit-based backpressure loop.
-  Its invoke handler is a 5-line straight pipe through `parseRpcRequest`
-  + `dispatchRpcRequest`.
+  per-renderer SenderState (WebContents handle, destroyed-listener wiring,
+  in-flight invoke set), and ack-frame parsing. Its invoke handler is a
+  short straight pipe through `parseRpcRequest` + `dispatchRpcRequest`,
+  with subscribe/unsubscribe intercepted into the shared
+  `BridgeConnection` helper for ownership tracking.
 - `connectors/websocket/server.ts` owns the WebSocket frame protocol,
   authentication/authorization hooks, rate limits, heartbeats, and drain
   semantics. Its `onCall` straight-pipes through the same RPC functions —
   no per-method dispatch table, no `isFireMethod` branch, no
   `isTmuxError` duck-check (it catches `instanceof TmuxCommandError`
-  directly).
+  directly). subscribe/unsubscribe are likewise intercepted into the
+  shared `BridgeConnection` helper.
+- `connectors/bridge-connection.ts` is the transport-agnostic per-peer
+  bookkeeping shared by both bridges:
+  - **Subscription ownership + refcount.** Every peer (one per renderer
+    on Electron, one per WS connection) holds a Set of subscription names.
+    A peer can only unsubscribe names it owns — cross-peer teardown
+    attempts raise `BRIDGE_UNKNOWN_SUBSCRIPTION`. The first peer to claim
+    a name writes the canonical `(what, format)` pair; subsequent peers
+    claiming the same name with a divergent `(what, format)` are rejected
+    with `BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT` (silently overwriting
+    tmux's binding would change the wire format observed by prior
+    subscribers — to update, unsubscribe first).
+  - **Per-pane outstanding-byte accounting + watermark loop.** Every pane
+    output forwarded to a peer adds to that peer's per-pane outstanding
+    tally; when the per-pane sum (across all peers) crosses
+    `outputHighWatermark`, the helper fires
+    `client.setPaneAction(paneId, Pause)` exactly once. Acks decrement
+    the sum; when it falls below `outputLowWatermark`, the helper
+    resumes. On Electron the ack arrives via a `tmux:ack` IPC frame; on
+    WebSocket the helper's `clearPeerOutstanding` is driven by
+    `ws.bufferedAmount` reaching the low watermark (the only "in-flight
+    bytes" signal protocol v1 exposes without a dedicated ack frame).
 
 `Connection` in `server.ts` models its lifecycle as a discriminated
 `ConnectionState` union (`pending-hello | running | draining | closed`)

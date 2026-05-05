@@ -58,6 +58,12 @@ import {
   type RpcRequest,
 } from "../rpc.js";
 import { dispatchRpcRequest } from "../rpc-dispatch.js";
+import {
+  createBridgeConnection,
+  DEFAULT_OUTPUT_LOW_WATERMARK,
+  type BridgeConnection,
+  type Peer,
+} from "../bridge-connection.js";
 
 import type {
   AuthResult,
@@ -131,6 +137,25 @@ export interface WebSocketBridgeOptions {
   readonly heartbeatTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly maxInflight?: number;
+
+  /**
+   * Per-pane outstanding-byte threshold (summed across all peers connected
+   * to the same TmuxClient) at which the bridge issues
+   * `setPaneAction(paneId, Pause)`. The threshold is also tripped by the
+   * underlying `ws.bufferedAmount` exceeding it for connections whose OS
+   * send buffer is filling up — without a per-call ack frame in protocol
+   * v1, `bufferedAmount` is the only "in-flight bytes" signal the WS path
+   * can read. Default: 1 MiB (see `DEFAULT_OUTPUT_HIGH_WATERMARK`).
+   */
+  readonly outputHighWatermark?: number;
+  /**
+   * Per-pane outstanding-byte threshold at which a paused pane is resumed.
+   * Must be < `outputHighWatermark`. Also serves as the
+   * `ws.bufferedAmount` threshold below which the bridge treats the OS
+   * send buffer as drained (and clears that peer's outstanding accounting,
+   * triggering resume). Default: 256 KiB.
+   */
+  readonly outputLowWatermark?: number;
 
   /** Observability hook fired for every notable event. */
   readonly onEvent?: (ev: BridgeObservabilityEvent) => void;
@@ -219,24 +244,35 @@ type ConnectionState =
       readonly kind: "running";
       readonly client: TmuxClient;
       readonly ctx: ConnectionContext;
+      /** Shared bookkeeping: subscription refcount + per-pane outstanding
+       *  bytes. The connection acts as a single peer inside this helper —
+       *  every subscribe/unsubscribe and every pane-output send routes
+       *  through the same instance the Electron bridge uses. */
+      readonly bridge: BridgeConnection;
+      readonly peer: Peer;
     }
   /** Drain initiated; existing in-flight calls finish, new calls rejected. */
   | {
       readonly kind: "draining";
       readonly client: TmuxClient;
       readonly ctx: ConnectionContext;
+      readonly bridge: BridgeConnection;
+      readonly peer: Peer;
       readonly deadlineMs: number;
     }
   /**
-   * Terminal state. `final` is the (client, ctx) captured at finalize time
-   * if we ever reached running; null if we closed before hello, in which
-   * case there is no client to dispose.
+   * Terminal state. `final` is the (client, ctx, bridge, peer) captured at
+   * finalize time if we ever reached running; null if we closed before
+   * hello, in which case there is no client to dispose and no bridge to
+   * tear down.
    */
   | {
       readonly kind: "closed";
       readonly final: {
         readonly client: TmuxClient;
         readonly ctx: ConnectionContext;
+        readonly bridge: BridgeConnection;
+        readonly peer: Peer;
       } | null;
     };
 
@@ -457,13 +493,41 @@ class Connection {
       return;
     }
 
+    // [LAW:single-enforcer] One BridgeConnection per Connection. It owns the
+    // subscription refcount + per-pane outstanding-byte accounting + the
+    // watermark-driven setPaneAction loop — the same bookkeeping the
+    // Electron bridge uses, so neither transport re-implements any of it.
+    // Per-connection scope is sufficient for the audit goals: subscription
+    // ownership prevents cross-peer teardowns (UNKNOWN_SUBSCRIPTION); the
+    // watermark + bufferedAmount fallback prevents the OOM hazard from a
+    // slow consumer.
+    //
+    // [LAW:locality-or-seam] Bridge construction MUST precede client.on so
+    // a watermark-config validation failure does not leak the event
+    // listener. If createBridgeConnection throws, the event listener was
+    // never wired and finalize's `final === null` branch correctly skips
+    // cleanup.
+    let bridge: BridgeConnection;
+    try {
+      bridge = createBridgeConnection({
+        client,
+        outputHighWatermark: this.opts.outputHighWatermark,
+        outputLowWatermark: this.opts.outputLowWatermark,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
+      return;
+    }
+    const peer = bridge.registerPeer();
+
     // Wire up tmux event fan-out.
     client.on("*", this.onAnyEventRef);
 
     // Atomic state transition: pending-hello → running. From here on, every
-    // call site that needs `client`/`ctx` reads them off `this.state`,
-    // narrowed by `kind`.
-    this.state = { kind: "running", client, ctx };
+    // call site that needs `client`/`ctx`/`bridge`/`peer` reads them off
+    // `this.state`, narrowed by `kind`.
+    this.state = { kind: "running", client, ctx, bridge, peer };
 
     this.sendFrame({
       v: 1,
@@ -543,8 +607,6 @@ class Connection {
     }
 
     const args = authResult.args ?? frame.args;
-    // state.client is non-null by type — see RunningState above.
-    const { client } = state;
 
     // [LAW:single-enforcer] One validation site for the {method, args}
     // payload — parseRpcRequest from ../rpc.ts. Bad shapes raise a per-call
@@ -586,7 +648,7 @@ class Connection {
     this.inflight.set(frame.id, { timer, startedAt });
 
     try {
-      const result = await dispatchRpcRequest(client, req);
+      const result = await this.runDispatch(state, req);
       if (!this.inflight.has(frame.id)) return;
       this.inflight.delete(frame.id);
       clearTimeout(timer);
@@ -617,6 +679,23 @@ class Connection {
         });
         return;
       }
+      // [LAW:single-enforcer] BridgeError raised by the shared helper
+      // (BRIDGE_UNKNOWN_SUBSCRIPTION, BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT,
+      // ...) carries a typed code already — surface it verbatim instead of
+      // collapsing into BRIDGE_INTERNAL. Without this, a renderer reading
+      // `.code` would see every helper-rejection as the same opaque code.
+      if (err instanceof BridgeError) {
+        this.replyError(frame.id, err.code, err.message);
+        this.emit({
+          kind: "result",
+          identity: this.identity,
+          id: frame.id,
+          ok: false,
+          code: err.code,
+          durationMs: Date.now() - startedAt,
+        });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.replyError(frame.id, "BRIDGE_INTERNAL", message);
       this.emit({
@@ -628,6 +707,26 @@ class Connection {
         durationMs: Date.now() - startedAt,
       });
     }
+  }
+
+  // [LAW:single-enforcer] Subscribe/unsubscribe go through the shared
+  // BridgeConnection helper so subscription ownership + refcount + the
+  // divergent-re-subscribe rejection (BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT)
+  // are enforced exactly once across both transports. Every other RPC
+  // dispatches verbatim through dispatchRpcRequest.
+  private runDispatch(
+    state: RunningState,
+    req: RpcRequest,
+  ): Promise<CommandResponse> {
+    if (req.method === "subscribe") {
+      const [name, what, format] = req.args;
+      return state.bridge.subscribeForPeer(state.peer, name, what, format);
+    }
+    if (req.method === "unsubscribe") {
+      const [name] = req.args;
+      return state.bridge.unsubscribeForPeer(state.peer, name);
+    }
+    return dispatchRpcRequest(state.client, req);
   }
 
   // [LAW:dataflow-not-control-flow] Single-arm mapping function for
@@ -672,9 +771,29 @@ class Connection {
   //
   // Pane output rides a binary frame to skip base64. Every other notification
   // rides a JSON event frame.
+  //
+  // [LAW:dataflow-not-control-flow] Backpressure runs the same shape on
+  // every send: account bytes against this peer for the pane (the helper
+  // fires setPaneAction(Pause) when the per-pane sum crosses the high
+  // watermark), then sample `ws.bufferedAmount` to detect that the OS send
+  // buffer has drained — the only "in-flight bytes" signal protocol v1
+  // exposes. When the buffered amount is below the low watermark, the
+  // helper clears this peer's outstanding so paused panes resume. There is
+  // no special "fast-client" branch — fast clients drain to 0 every send,
+  // which keeps the per-pane sum at 0, and pause never fires.
   // -------------------------------------------------------------------------
   private onTmuxEvent(msg: TmuxMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
+
+    // Backpressure runs only after hello — pre-hello we don't have a peer
+    // registered with the bridge. By construction the WS server never fans
+    // events before reaching `running` (client.on('*', ...) is wired in
+    // onHello), so this is a structural invariant; the early-return is
+    // defensive against future refactors that might wire fan-out earlier.
+    if (this.state.kind !== "running" && this.state.kind !== "draining") {
+      return;
+    }
+    const { bridge, peer } = this.state;
 
     // [LAW:single-enforcer] Discriminator lives in isPaneOutput. The
     // remaining branch is genuinely load-bearing — pane output rides the
@@ -684,6 +803,8 @@ class Connection {
     if (isPaneOutput(msg)) {
       const bytes = encodePaneOutput(msg);
       this.ws.send(bytes);
+      bridge.accountOutput(peer, msg.paneId, bytes.byteLength);
+      this.maybeFlushBuffered(bridge, peer);
       this.emit({
         kind: "event-out",
         identity: this.identity,
@@ -701,6 +822,23 @@ class Connection {
       type: msg.type,
       bytes: encoded.length,
     });
+  }
+
+  // [LAW:dataflow-not-control-flow] One sampling site for the OS send
+  // buffer. Without an ack frame in protocol v1, `bufferedAmount === 0`
+  // (or below the low watermark) is the only "everything I sent has been
+  // flushed" signal the bridge can read. When the buffer is drained the
+  // helper clears this peer's outstanding, which fires
+  // setPaneAction(Continue) on any pane the watermark loop had paused.
+  private maybeFlushBuffered(bridge: BridgeConnection, peer: Peer): void {
+    const buffered = this.ws.bufferedAmount;
+    if (buffered === undefined) return;
+    if (buffered > this.lowWatermark()) return;
+    bridge.clearPeerOutstanding(peer);
+  }
+
+  private lowWatermark(): number {
+    return this.opts.outputLowWatermark ?? DEFAULT_OUTPUT_LOW_WATERMARK;
   }
 
   // -------------------------------------------------------------------------
@@ -732,12 +870,14 @@ class Connection {
   // -------------------------------------------------------------------------
   beginDrain(deadlineMs: number): void {
     if (this.state.kind !== "running") return;
-    // Carry client+ctx forward into the draining variant — they're still
-    // needed for in-flight calls and final disposal.
+    // Carry client/ctx/bridge/peer forward into the draining variant —
+    // they're still needed for in-flight calls and final disposal.
     this.state = {
       kind: "draining",
       client: this.state.client,
       ctx: this.state.ctx,
+      bridge: this.state.bridge,
+      peer: this.state.peer,
       deadlineMs,
     };
     this.sendFrame({ v: 1, k: "draining", deadlineMs });
@@ -804,12 +944,17 @@ class Connection {
   ): void {
     if (this.state.kind === "closed") return;
 
-    // Capture client+ctx (if we ever reached running) into the closed
-    // variant so disposal can reach them after the transition. The
+    // Capture client/ctx/bridge/peer (if we ever reached running) into the
+    // closed variant so disposal can reach them after the transition. The
     // discriminator alone tells us whether there's anything to clean up.
     const final =
       this.state.kind === "running" || this.state.kind === "draining"
-        ? { client: this.state.client, ctx: this.state.ctx }
+        ? {
+            client: this.state.client,
+            ctx: this.state.ctx,
+            bridge: this.state.bridge,
+            peer: this.state.peer,
+          }
         : null;
     this.state = { kind: "closed", final };
 
@@ -829,6 +974,14 @@ class Connection {
 
     if (final !== null) {
       final.client.off("*", this.onAnyEventRef);
+      // [LAW:single-enforcer] Single shutdown path: removePeer drops this
+      // connection's outstanding-byte accounting (resuming any panes paused
+      // only because of this peer's lag) and refcount-decrements every
+      // subscription this peer owned (firing client.unsubscribe on last
+      // drop). bridge.dispose() then resumes any panes the helper had
+      // paused, since the helper is per-Connection and is going away.
+      final.bridge.removePeer(final.peer);
+      final.bridge.dispose();
       if (this.opts.disposeClient !== undefined) {
         void Promise.resolve(this.opts.disposeClient(final.client, final.ctx));
       }

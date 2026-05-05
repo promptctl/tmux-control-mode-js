@@ -4,32 +4,37 @@
 //
 // This file owns ONLY what is electron-specific:
 //   - Single-instance enforcement on the ipcMain singleton.
-//   - One unified per-sender state map (subscription flag, outstanding bytes,
-//     in-flight invokes, owned subscription names) — every per-renderer
-//     concern routes through this map so teardown is one operation.
-//   - Watermark-driven setPaneAction(Pause/Continue) loop.
-//   - Subscription ownership (refcount) and auto-cleanup on disconnect so a
-//     compromised renderer cannot unsubscribe another window's subscriptions
-//     and a renderer reload doesn't leak tmux-side subscriptions.
+//   - Per-sender IPC-side wiring (one unified SenderState per renderer with
+//     the destroyed-listener handle, in-flight invoke set, isSubscribed flag).
 //   - Forwarding TmuxClient events as Electron IPC messages.
+//   - Ack-frame parsing (an electron-specific channel; not part of the
+//     transport-agnostic RPC).
+//   - Envelope-shaped invoke replies (real Electron's IPC serializer drops
+//     subclass props on rejected Errors, so every outcome rides the
+//     `InvokeResultEnvelope` discriminated union).
+//
+// All the bookkeeping that is NOT electron-specific — subscription
+// ownership/refcount, per-peer per-pane outstanding-byte accounting, the
+// watermark loop that drives `setPaneAction(Pause/Continue)` — lives in
+// `../bridge-connection.ts` and is shared with the WebSocket bridge.
 //
 // RPC validation, dispatch, and method allowlist all live in `../rpc.ts`.
 // Adding a TmuxClient method = one file edit.
 //
 // [LAW:single-enforcer] One ipcMain.handle("tmux:invoke") per process; the
 // invoke handler delegates parsing+dispatching to ../rpc, with subscription
-// RPCs intercepted at the bridge boundary so refcount + ownership are
-// enforced in exactly one place.
-// [LAW:one-source-of-truth] One SenderState entry per renderer, holding
-// every per-renderer concern; teardownSender is the only cleanup path.
+// RPCs intercepted at the bridge boundary so the shared `BridgeConnection`
+// helper enforces refcount + ownership in exactly one place.
+// [LAW:one-source-of-truth] One SenderState entry per renderer, and one
+// `Peer` token per renderer registered with the helper; teardownSender is
+// the only path that releases both.
 // [LAW:one-source-of-truth] IPC channel names from ./types.js; RPC behavior
-// from ../rpc.js. No duplication of either on this side.
+// from ../rpc.js; subscription/refcount/watermark from ../bridge-connection.js.
 
 import type { TmuxClient } from "../../client.js";
 import { TmuxCommandError } from "../../errors.js";
 import {
   asPaneOutput,
-  PaneAction,
   type CommandResponse,
   type TmuxMessage,
 } from "../../protocol/types.js";
@@ -41,9 +46,12 @@ import {
 } from "../rpc.js";
 import { dispatchRpcRequest } from "../rpc-dispatch.js";
 import {
+  createBridgeConnection,
+  type BridgeConnection,
+  type Peer,
+} from "../bridge-connection.js";
+import {
   BridgeError,
-  DEFAULT_OUTPUT_HIGH_WATERMARK,
-  DEFAULT_OUTPUT_LOW_WATERMARK,
   IPC,
   parseAckMessage,
   type BridgeErrorCode,
@@ -128,6 +136,12 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
 
 // ---------------------------------------------------------------------------
 // Per-sender state.
+//
+// Subscription ownership, refcount, and outstanding-byte accounting all live
+// inside the shared BridgeConnection helper, keyed by the `peer` token below.
+// SenderState carries only what is electron-specific: the WebContents, the
+// destroyed-listener handle, the in-flight invoke set, and the isSubscribed
+// flag that gates event forwarding.
 // ---------------------------------------------------------------------------
 
 interface PendingDispatch {
@@ -145,14 +159,13 @@ interface PendingDispatch {
 
 interface SenderState {
   readonly wc: WebContentsLike;
+  /** Token returned by BridgeConnection.registerPeer — the Map key the helper
+   *  uses internally for refcount + outstanding-byte accounting. */
+  readonly peer: Peer;
   /** True once the renderer has sent IPC.register; toggled off by unregister. */
   isSubscribed: boolean;
-  /** Per-pane bytes sent to this renderer but not yet acknowledged. */
-  readonly outstanding: Map<number, number>;
   /** In-flight invoke dispatches owned by this sender. */
   readonly pending: Set<PendingDispatch>;
-  /** Subscription names this sender currently holds (for refcount + cleanup). */
-  readonly subscriptions: Set<string>;
   /**
    * The exact `destroyed` listener registered with `wc.once`. Stored so
    * `teardownSender` can call `wc.removeListener` when teardown is driven
@@ -189,20 +202,21 @@ interface SenderState {
  *     `parseRpcRequest` (allowlist + per-method arg shape check) before
  *     dispatching via `dispatchRpcRequest`. A compromised renderer cannot
  *     reach an unknown TmuxClient method or trigger a prototype-chain lookup.
- *   - Subscribe / unsubscribe are intercepted at the bridge boundary: every
- *     subscription name carries an ownership tag for its sender. A renderer
- *     attempting to unsubscribe a name it does not own is rejected with
- *     `BRIDGE_UNKNOWN_SUBSCRIPTION` — preventing one window from tearing down
- *     another window's subscriptions. The bridge refcounts subscriptions so
- *     the underlying tmux unsubscribe fires only when the last sender drops.
+ *   - Subscribe / unsubscribe are intercepted at the bridge boundary and
+ *     routed through the shared `BridgeConnection` helper, which holds the
+ *     refcount and ownership map. A renderer attempting to unsubscribe a
+ *     name it does not own is rejected with `BRIDGE_UNKNOWN_SUBSCRIPTION`;
+ *     a divergent re-subscribe (existing name, different what/format) is
+ *     rejected with `BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT`.
  *
  * Backpressure:
- *   - For every `%output` / `%extended-output` byte forwarded, main accounts
- *     it as outstanding for that (renderer, pane) pair. When the per-pane
- *     total (summed across renderers) crosses `outputHighWatermark`, main
- *     calls `client.setPaneAction(paneId, Pause)`. When the renderer
- *     replies with `tmux:ack` (paneId, bytes consumed) and the total falls
- *     below `outputLowWatermark`, main resumes the pane.
+ *   - For every `%output` / `%extended-output` byte forwarded, the helper
+ *     accounts it as outstanding for that (renderer, pane) pair. When the
+ *     per-pane total (summed across renderers) crosses
+ *     `outputHighWatermark`, the helper calls
+ *     `client.setPaneAction(paneId, Pause)`. When the renderer replies with
+ *     `tmux:ack` and the total falls below `outputLowWatermark`, the helper
+ *     resumes the pane.
  *
  * Renderer death:
  *   - `webContents.once("destroyed", ...)` fires `teardownSender` once per
@@ -210,15 +224,16 @@ interface SenderState {
  *       (1) marks all in-flight invoke dispatches `aborted` so the await
  *           resolves but the result is discarded with a BridgeError
  *           (the TmuxClient FIFO stays intact — no purge → no desync);
- *       (2) drops outstanding-byte accounting and resumes any panes that
- *           were paused only because of this renderer's lag;
- *       (3) refcount-decrements every subscription this sender owned and
- *           calls `client.unsubscribe` for any whose refcount hits zero.
+ *       (2) calls `bridge.removePeer(peer)` which drops outstanding-byte
+ *           accounting (resuming any panes paused only because of this
+ *           renderer's lag) and refcount-decrements every subscription this
+ *           sender owned (firing `client.unsubscribe` on last drop).
  *
  * Returns a handle whose `dispose()` removes every installed IPC handler,
- * resumes any panes the bridge had paused, refcount-cleans every subscription
- * the bridge created, and frees the ipcMain for a subsequent createMainBridge.
- * The caller still owns `client.close()`.
+ * tears down every sender, calls `bridge.dispose()` (which resumes any panes
+ * the bridge had paused and refcount-cleans every subscription the bridge
+ * created), and frees the ipcMain for a subsequent createMainBridge. The
+ * caller still owns `client.close()`.
  */
 export function createMainBridge(
   client: TmuxClient,
@@ -235,57 +250,24 @@ export function createMainBridge(
   }
   REGISTERED_IPC_MAINS.add(ipcMain);
 
-  const high = options.outputHighWatermark ?? DEFAULT_OUTPUT_HIGH_WATERMARK;
-  const low = options.outputLowWatermark ?? DEFAULT_OUTPUT_LOW_WATERMARK;
-  if (!(high > low && low >= 0)) {
+  // [LAW:single-enforcer] Watermark validation lives inside
+  // createBridgeConnection. A bad config throws BridgeError("BRIDGE_INVALID_ARG")
+  // here too (one error shape across both transports). On failure we have to
+  // release the ipcMain registration we just claimed so a corrected retry can
+  // install cleanly — the throw aborts construction otherwise.
+  let bridge: BridgeConnection;
+  try {
+    bridge = createBridgeConnection({
+      client,
+      outputHighWatermark: options.outputHighWatermark,
+      outputLowWatermark: options.outputLowWatermark,
+    });
+  } catch (err) {
     REGISTERED_IPC_MAINS.delete(ipcMain);
-    throw new BridgeError(
-      "BRIDGE_INVALID_ARG",
-      `outputHighWatermark (${high}) must be > outputLowWatermark (${low}) >= 0`,
-    );
+    throw err;
   }
 
   const senders = new Map<WebContentsLike, SenderState>();
-  const pausedPanes = new Set<number>();
-  // Refcount: subscription name → number of senders currently holding it.
-  // Drives whether unsubscribe propagates to tmux.
-  const subscriptionRefcount = new Map<string, number>();
-
-  // Fire-and-forget pause/continue/unsubscribe — tmux's response carries no
-  // actionable info; a rejection means the pane/subscription already went
-  // away, which is fine.
-  const swallow = (): void => undefined;
-
-  // -------------------------------------------------------------------------
-  // Backpressure helpers.
-  //
-  // [LAW:dataflow-not-control-flow] Pause/resume decisions are pure functions
-  // of the outstanding-bytes map; the same pause/resume operation runs on
-  // every accounting tick — only the data (the per-pane sum) decides whether
-  // setPaneAction fires.
-  // -------------------------------------------------------------------------
-
-  const totalOutstanding = (paneId: number): number => {
-    let sum = 0;
-    for (const s of senders.values()) {
-      sum += s.outstanding.get(paneId) ?? 0;
-    }
-    return sum;
-  };
-
-  const maybePause = (paneId: number): void => {
-    if (pausedPanes.has(paneId)) return;
-    if (totalOutstanding(paneId) < high) return;
-    pausedPanes.add(paneId);
-    void client.setPaneAction(paneId, PaneAction.Pause).catch(swallow);
-  };
-
-  const maybeResume = (paneId: number): void => {
-    if (!pausedPanes.has(paneId)) return;
-    if (totalOutstanding(paneId) > low) return;
-    pausedPanes.delete(paneId);
-    void client.setPaneAction(paneId, PaneAction.Continue).catch(swallow);
-  };
 
   // -------------------------------------------------------------------------
   // Sender state lifecycle.
@@ -300,12 +282,12 @@ export function createMainBridge(
     // The handler is stored on the sender so teardownSender can detach it
     // when the unregister path runs and wc is still alive.
     const onDestroyed = (): void => teardownSender(wc);
+    const peer = bridge.registerPeer();
     const state: SenderState = {
       wc,
+      peer,
       isSubscribed: false,
-      outstanding: new Map(),
       pending: new Set(),
-      subscriptions: new Set(),
       onDestroyed,
     };
     senders.set(wc, state);
@@ -332,89 +314,11 @@ export function createMainBridge(
     //     trying to deliver to a dead webContents.
     for (const p of state.pending) p.aborted = true;
 
-    // (2) Drop outstanding-byte accounting and resume panes that were paused
-    //     only because of this renderer's lag.
-    const paneIds = [...state.outstanding.keys()];
-    state.outstanding.clear();
-    for (const paneId of paneIds) maybeResume(paneId);
-
-    // (3) Refcount-decrement subscriptions this sender owned. Last sender
-    //     out triggers the tmux unsubscribe.
-    for (const name of state.subscriptions) releaseSubscriptionRefcount(name);
-    state.subscriptions.clear();
-  };
-
-  // -------------------------------------------------------------------------
-  // Subscription ownership + refcount.
-  //
-  // [LAW:single-enforcer] Subscription RPCs go through this layer instead
-  // of straight to dispatchRpcRequest. The bridge owns ownership tracking
-  // and refcount decrement; tmux only sees (subscribe, unsubscribe) calls
-  // when refcount transitions cross zero.
-  // -------------------------------------------------------------------------
-
-  const acquireSubscriptionRefcount = (name: string): void => {
-    subscriptionRefcount.set(name, (subscriptionRefcount.get(name) ?? 0) + 1);
-  };
-
-  const releaseSubscriptionRefcount = (name: string): void => {
-    const prev = subscriptionRefcount.get(name) ?? 0;
-    if (prev <= 1) {
-      subscriptionRefcount.delete(name);
-      // tmux unsubscribe is fire-and-forget on cleanup paths — by the time
-      // we get here the renderer is already gone or the bridge is being
-      // disposed; nothing useful can be done with the response.
-      void client.unsubscribe(name).catch(swallow);
-      return;
-    }
-    subscriptionRefcount.set(name, prev - 1);
-  };
-
-  /** Synthesized success response for refcounted no-op operations. */
-  const synthesizeOk = (): CommandResponse => ({
-    commandNumber: -1,
-    timestamp: Date.now(),
-    success: true,
-    output: [],
-  });
-
-  const subscribeForSender = async (
-    state: SenderState,
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse> => {
-    // [LAW:dataflow-not-control-flow] Every subscribe forwards to tmux —
-    // tmux's `refresh-client -B` is replace-or-add semantics, so
-    // re-subscribing with a new format is a valid update path. The bridge's
-    // role is ownership tracking, not deduplicating tmux calls.
-    if (!state.subscriptions.has(name)) {
-      state.subscriptions.add(name);
-      acquireSubscriptionRefcount(name);
-    }
-    return client.subscribe(name, what, format);
-  };
-
-  const unsubscribeForSender = async (
-    state: SenderState,
-    name: string,
-  ): Promise<CommandResponse> => {
-    if (!state.subscriptions.has(name)) {
-      throw new BridgeError(
-        "BRIDGE_UNKNOWN_SUBSCRIPTION",
-        `sender does not own subscription "${name}" (this prevents one ` +
-          `renderer from tearing down another's subscriptions)`,
-      );
-    }
-    state.subscriptions.delete(name);
-    const prev = subscriptionRefcount.get(name) ?? 0;
-    if (prev <= 1) {
-      subscriptionRefcount.delete(name);
-      return client.unsubscribe(name);
-    }
-    subscriptionRefcount.set(name, prev - 1);
-    // Other senders still own this subscription — don't tear down at tmux.
-    return synthesizeOk();
+    // (2) Drop helper-side accounting + subscription refcounts in one call.
+    //     bridge.removePeer fires setPaneAction(Continue) for any pane this
+    //     sender's outstanding bytes were keeping paused, and unsubscribes
+    //     from tmux for any subscription this sender was the last owner of.
+    bridge.removePeer(state.peer);
   };
 
   // -------------------------------------------------------------------------
@@ -446,12 +350,10 @@ export function createMainBridge(
       // ack arriving synchronously during send subtracts from the right
       // baseline. Non-output messages produce null accounting.
       if (accounted !== null) {
-        const prev = state.outstanding.get(accounted.paneId) ?? 0;
-        state.outstanding.set(accounted.paneId, prev + accounted.bytes);
+        bridge.accountOutput(state.peer, accounted.paneId, accounted.bytes);
       }
       wc.send(IPC.event, msg);
     }
-    if (accounted !== null) maybePause(accounted.paneId);
   };
 
   client.on("*", forward);
@@ -492,11 +394,7 @@ export function createMainBridge(
       }
     })();
     if (ack === null) return;
-    const prev = state.outstanding.get(ack.paneId) ?? 0;
-    const next = Math.max(0, prev - ack.bytes);
-    if (next === 0) state.outstanding.delete(ack.paneId);
-    else state.outstanding.set(ack.paneId, next);
-    maybeResume(ack.paneId);
+    bridge.ackOutput(state.peer, ack.paneId, ack.bytes);
   };
 
   // [LAW:locality-or-seam] IpcMainOnListener — the registered listener
@@ -518,7 +416,7 @@ export function createMainBridge(
   // [LAW:single-enforcer] One handler. parseRpcRequest enforces the shape;
   // dispatchRpcRequest performs the typed dispatch for everything except
   // the bridge-stateful operations (subscribe/unsubscribe), whose ownership
-  // logic lives ONLY here.
+  // logic lives in the shared BridgeConnection helper.
   // -------------------------------------------------------------------------
 
   const runDispatch = (
@@ -527,11 +425,11 @@ export function createMainBridge(
   ): Promise<CommandResponse> => {
     if (req.method === "subscribe") {
       const [name, what, format] = req.args;
-      return subscribeForSender(state, name, what, format);
+      return bridge.subscribeForPeer(state.peer, name, what, format);
     }
     if (req.method === "unsubscribe") {
       const [name] = req.args;
-      return unsubscribeForSender(state, name);
+      return bridge.unsubscribeForPeer(state.peer, name);
     }
     return dispatchRpcRequest(client, req);
   };
@@ -623,16 +521,13 @@ export function createMainBridge(
       ipcMain.removeHandler(IPC.invoke);
       // Tear down every sender through the unified path: aborts in-flight
       // dispatches, removes destroyed listeners from still-alive wcs (so
-      // dispose doesn't leak handlers across bridge re-installations),
-      // refcount-decrements every subscription (which fires the tmux
-      // unsubscribe on last drop). After this loop, senders is empty and
-      // subscriptionRefcount is empty.
+      // dispose doesn't leak handlers across bridge re-installations), and
+      // calls bridge.removePeer for each. Then bridge.dispose() flushes any
+      // residual pause state and unsubscribes any names the bridge created
+      // but no peer was holding (defense in depth — removePeer should have
+      // taken care of all of them).
       for (const wc of [...senders.keys()]) teardownSender(wc);
-      // Resume any panes we paused so we don't leave tmux stuck after teardown.
-      for (const paneId of pausedPanes) {
-        void client.setPaneAction(paneId, PaneAction.Continue).catch(swallow);
-      }
-      pausedPanes.clear();
+      bridge.dispose();
       REGISTERED_IPC_MAINS.delete(ipcMain);
     },
     async drain(timeoutMs?: number): Promise<void> {
