@@ -62,11 +62,22 @@ function tmux(socket: string, args: readonly string[]): string {
 }
 
 function ensureSession(socket: string, session: string): void {
+  // [LAW:dataflow-not-control-flow] Liveness is observed up front, then
+  // the value (`serverWasAlive`) decides ownership — we never branch on
+  // "did we create a server" by structural means. Same operations
+  // execute every call.
+  const serverWasAlive = isTmuxServerAlive(socket);
   try {
     tmux(socket, ["has-session", "-t", session]);
   } catch {
     tmux(socket, ["new-session", "-d", "-s", session]);
-    ourSockets.add(socket);
+    // Only claim the socket as ours if WE started the server. If the
+    // server existed before us (we just added a session to a
+    // user-owned tmux), it stays read-only on quit. `default` is the
+    // user's primary and is hard-skipped regardless.
+    if (!serverWasAlive && socket !== "default") {
+      ourSockets.add(socket);
+    }
   }
 }
 
@@ -191,9 +202,21 @@ async function connectTo(socket: string, session: string): Promise<void> {
 
 async function swapTo(newSocket: string): Promise<void> {
   if (active === null) return;
+  // Pre-flight liveness check BEFORE any teardown. If the picker is
+  // showing a stale entry (server died between enumerate and click),
+  // we surface the failure with the previous bridge still attached so
+  // the renderer can prompt for a re-pick. We can't construct the new
+  // bridge first to enable rollback because createMainBridge throws if
+  // ipcMain already has handlers (REGISTERED_IPC_MAINS) — the dispose
+  // has to come before any new connect attempt. Fail loudly instead.
+  if (!isTmuxServerAlive(newSocket)) {
+    throw new Error(
+      `swapTo: tmux server on socket "${newSocket}" is not alive`,
+    );
+  }
   // [LAW:single-enforcer] One bridge installed at a time. Dispose first
   // so createMainBridge in connectTo() finds a clean ipcMain to register
-  // on (REGISTERED_IPC_MAINS in the library throws otherwise).
+  // on.
   active.bridge.dispose();
   active.client.close();
   active = null;
