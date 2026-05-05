@@ -1,9 +1,9 @@
-# Console — a new tab in `examples/web-multiplexer/`
+# Console — design
 
-**Status:** design. Implementation-ready.
-**Date:** 2026-05-04
-**Scope:** adds a fourth `AppMode` to the existing app, alongside
-Multiplexer / Inspector / Heatmap.
+**Status:** design.
+**Date:** 2026-05-04 (rev 2026-05-05).
+**Scope:** adds a fourth `AppMode` to `examples/web-multiplexer/`,
+alongside Multiplexer / Inspector / Heatmap.
 
 ---
 
@@ -13,248 +13,126 @@ A **Console** tab that turns the browser into a live operator surface
 for the underlying tmux server. Two functions, side-by-side:
 
 - **REPL** — type a tmux command, see the response with timing.
-- **Format Playground** — pick a target (session/window/pane), type a
-  format string, see it evaluated live (one-shot or subscribed).
+- **Format Playground** — pick a target (session/window/pane), type
+  a format string, see it evaluated live (one-shot or subscribed).
 
 The Multiplexer tab consumes tmux state. The Inspector observes the
-wire. The Console **drives** tmux directly — it's the third leg of
-the table.
+wire. The Console **drives** tmux directly — the third leg of the
+table.
 
 ---
 
 ## Why these two together (and nothing else)
 
-The original brainstorm had five candidates: Format Playground, REPL,
+The brainstorm produced five candidates: Format Playground, REPL,
 Layout Designer, Key Binding Browser, Snapshot/Restore. The first two
-combine into a single coherent tab; the others either belong
-elsewhere or want their own design pass.
+combine into a single coherent tab; the others either belong elsewhere
+or want their own design pass.
 
-Reasons REPL + Playground share a tab:
+REPL + Playground share a tab because:
 
-- **Same mental model** for the user: "type something tmux evaluates,
-  see the result." Different *shape* of result (command response vs.
-  format substitution), same UI grammar (input → result area).
-- **Same UI primitives** — input box, monospaced output, history,
+- **Same mental model**: "type something tmux evaluates, see the
+  result." Different shape of result (command response vs. format
+  substitution), same UI grammar (input → result area).
+- **Same UI primitives**: input box, monospaced output, history,
   copy-to-clipboard. Building one builds 80% of the other.
-- **Complementary coverage of the protocol**: REPL exercises
+- **Complementary protocol coverage**: REPL exercises
   `%begin`/`%end`/`%error` correlation; Playground exercises formats
   + `%subscription-changed`. Together they make the *whole* command
   side of the protocol tangible.
 
 Layout Designer, Key Bindings, Snapshot/Restore are **out of scope
-for this doc**. Each is a viable future tab; none belongs in Console.
+for this doc**.
 
 ---
 
 ## Integration with the existing app
 
-### `UiStore.AppMode`
+### App-mode union
 
-Add `"console"` to the union, default flow stays `"multiplexer"`:
-
-```ts
-// ui-store.ts
-export type AppMode = "multiplexer" | "inspector" | "heatmap" | "console";
-```
-
-Update the persistence guard in `loadFromStorage()` and the
-`SegmentedControl` data array in `App.tsx` to include the new value.
-The persisted-shape migration is forward-compatible — older sessions
-fall back to `"multiplexer"` automatically.
+`UiStore.AppMode` extends to include `"console"`. Default flow stays
+`"multiplexer"`. The persistence guard in `loadFromStorage()` updates
+to accept the new value; older sessions fall back to `"multiplexer"`
+automatically (forward-compatible).
 
 ### `App.tsx`
 
-One new branch in the existing rendering switch:
-
-```tsx
-{uiStore.appMode === "inspector" ? (
-  <InspectorView ... />
-) : uiStore.appMode === "heatmap" ? (
-  <HeatmapView ... />
-) : uiStore.appMode === "console" ? (
-  <ConsoleView store={consoleStore} demoStore={demoStore} />
-) : currentSession === null ? (
-  ...
-)}
-```
-
-`ConsoleStore` is constructed in `App.tsx` next to `InspectorStore`
-and `HeatmapStore`, with the same lifecycle (constructed once via
-`useMemo`, disposed in the `useEffect` cleanup).
+- New render branch for `appMode === "console"` mounts
+  `<ConsoleView>` with the new store and `demoStore`.
+- New option in the header `SegmentedControl`. Suggested ordering:
+  Multiplexer, Console, Inspector, Heatmap (operator-driving sits
+  next to operator-using; diagnostic surfaces trail).
+- The current `SegmentedControl.onChange` is a hard-coded ternary
+  that maps any unknown value to `"multiplexer"`. Refactor to a
+  typed cast once the union covers every option Mantine emits — the
+  persistence guard in `UiStore` is the trust boundary for invalid
+  stored values, not the `onChange` handler. Without this refactor,
+  clicking Console silently routes back to Multiplexer.
+- `ConsoleStore` lifecycle parallels `InspectorStore` /
+  `HeatmapStore`: constructed via `useMemo`, disposed in cleanup.
 
 ### Component layout
 
 ```
 web/components/
-  ConsoleView.tsx          ← top-level layout (split, header)
-  ConsoleRepl.tsx          ← REPL half
-  ConsoleFormatPlayground.tsx ← Playground half
+  ConsoleView.tsx              ← top-level shell
+  ConsoleRepl.tsx              ← REPL half
+  ConsoleFormatPlayground.tsx  ← Playground half
 ```
 
-Visual: horizontal split via Mantine `Grid` on wide viewports, vertical
-stack below ~900px width. REPL on the left/top (it's the busier
-surface), Playground on the right/bottom.
+Visual: horizontal split on wide viewports, vertical stack below
+~900px. REPL on the left/top (busier surface), Playground on the
+right/bottom.
 
 ---
 
 ## State model
 
-Single `ConsoleStore`, MobX, follows the `InspectorStore` /
-`HeatmapStore` pattern (constructed with the bridge, has a `dispose()`).
+A single `ConsoleStore` (MobX) owns all Console-tab state. It mirrors
+`InspectorStore` / `HeatmapStore`: bridge-coupled, `dispose()` for
+explicit teardown, no React-state crossover.
 
-```ts
-// console-store.ts
-import { makeAutoObservable, runInAction } from "mobx";
-import type { TmuxBridge } from "./bridge.ts";
-import type { CommandResponse } from "../../../src/protocol/types.js";
+State the store owns:
 
-export type ReplEntryStatus = "pending" | "ok" | "error";
+- **REPL history** — bounded ring (~200 entries). Persisted commands,
+  not persisted response bodies (responses can be huge).
+- **Pending-command tracking** — entries transition `pending → ok |
+  error` with latency captured at submit time.
+- **Playground subscription** — exactly one active at a time.
+  Switching target / format / mode mechanically tears down and
+  re-subscribes inside the store, never inside a component effect.
+- **Playground evaluation result** — one-shot value or subscribed
+  latest snapshot, plus the tmux error string when present.
 
-export interface ReplEntry {
-  readonly id: number;
-  readonly command: string;
-  readonly issuedAt: number;
-  status: ReplEntryStatus;
-  response: CommandResponse | null;
-  latencyMs: number | null;
-  errorMessage: string | null;
-}
+Architectural rules (the load-bearing constraints; implementation
+details belong in the tickets):
 
-export type PlaygroundMode = "one-shot" | "subscribed";
-
-export interface PlaygroundTarget {
-  readonly kind: "session" | "window" | "pane";
-  readonly tmuxId: string; // "$1" | "@3" | "%7"
-  readonly label: string;  // human-readable for the picker
-}
-
-export class ConsoleStore {
-  // REPL
-  readonly history: ReplEntry[] = [];      // bounded ring (default 200)
-  draft: string = "";
-  historyCursor: number | null = null;     // for up/down recall
-  private nextId = 1;
-
-  // Playground
-  format: string = "#{session_name}: #{window_name} → #{pane_current_command}";
-  target: PlaygroundTarget | null = null;  // null = current active pane
-  mode: PlaygroundMode = "one-shot";
-  oneShotResult: string | null = null;
-  oneShotError: string | null = null;
-  subscriptionResult: string | null = null;
-  subscriptionUpdates: number = 0;
-  private subscriptionName: string | null = null;
-  private subscriptionDispose: (() => void) | null = null;
-
-  constructor(private readonly bridge: TmuxBridge) {
-    makeAutoObservable(this, {}, { autoBind: true });
-  }
-
-  dispose(): void {
-    void this.teardownSubscription();
-  }
-
-  // ... methods below
-}
-```
-
-Key design points:
-
-- **Bounded history ring** — `MAX_REPL_ENTRIES = 200`. When exceeded,
-  drop the oldest. No unbounded growth.
-- **No `any`, no swallowed errors** — `ReplEntry.status` is a
-  discriminated state, not an optional response. A failed command
-  renders the error inline and stays in history.
-- **Playground subscription is owned by the store**, never by a
-  component effect. `dispose()` on the store is the single tear-down
-  point. Switching `target` or `format` while subscribed transparently
-  re-subscribes (no leaked subscriptions).
-- **`autoBind: true`** so methods can be passed as event handlers
-  without `bind` boilerplate.
-
-### Methods (sketches)
-
-```ts
-async submit(): Promise<void> {
-  const command = this.draft.trim();
-  if (command.length === 0) return;
-  const entry: ReplEntry = {
-    id: this.nextId++,
-    command,
-    issuedAt: Date.now(),
-    status: "pending",
-    response: null,
-    latencyMs: null,
-    errorMessage: null,
-  };
-  this.appendEntry(entry);
-  this.draft = "";
-  this.historyCursor = null;
-
-  const start = performance.now();
-  try {
-    const response = await this.bridge.execute(command);
-    runInAction(() => {
-      entry.status = response.error ? "error" : "ok";
-      entry.response = response;
-      entry.latencyMs = performance.now() - start;
-    });
-  } catch (err) {
-    runInAction(() => {
-      entry.status = "error";
-      entry.errorMessage = err instanceof Error ? err.message : String(err);
-      entry.latencyMs = performance.now() - start;
-    });
-  }
-}
-
-recallPrev(): void { /* walk historyCursor back */ }
-recallNext(): void { /* walk historyCursor forward */ }
-clear(): void { this.history.length = 0; }
-
-setFormat(s: string): void { this.format = s; void this.refresh(); }
-setTarget(t: PlaygroundTarget | null): void { this.target = t; void this.refresh(); }
-setMode(m: PlaygroundMode): void { this.mode = m; void this.refresh(); }
-
-private async refresh(): Promise<void> {
-  await this.teardownSubscription();
-  this.mode === "subscribed"
-    ? await this.startSubscription()
-    : await this.runOneShot();
-}
-
-private async runOneShot(): Promise<void> {
-  const target = this.targetSpec(); // "" if null → current
-  const cmd = `display-message -p ${target} -F '${escapeFormat(this.format)}'`;
-  const resp = await this.bridge.execute(cmd);
-  runInAction(() => {
-    this.oneShotResult = resp.error ? null : resp.lines.join("\n");
-    this.oneShotError = resp.error ? resp.lines.join("\n") : null;
-  });
-}
-
-private async startSubscription(): Promise<void> { /* refresh-client -B + onEvent listener */ }
-private async teardownSubscription(): Promise<void> { /* refresh-client -u + dispose listener */ }
-```
-
-**Important:** `escapeFormat` and the format string itself are sent
-unmodified except for shell-quote-escaping of single quotes. The
-Playground is for the *operator*; we do not validate or rewrite
-their format. tmux's error message is the truth.
+- REPL entries are **discriminated by `status`**, not a nullable
+  bag-of-fields. Each variant carries only the fields it can
+  populate; TypeScript narrows from `status` alone. State transitions
+  *replace* entries in the array — variants change shape, so
+  in-place mutation is wrong.
+- The bounded ring **never evicts a pending entry**. A pending
+  entry's resolution must always find a slot.
+- Subscription lifecycle is owned by the store. `dispose()` is the
+  single tear-down point. Component mount/unmount does not start or
+  stop subscriptions.
+- Target picker reads from `demoStore.sessions` / `windows` / `panes`
+  — `[LAW:one-source-of-truth]`. No separate enumeration.
+- Every REPL submit runs the same pipeline regardless of outcome —
+  `[LAW:dataflow-not-control-flow]`. Status is data, not control flow.
 
 ---
 
 ## Wire / library: nothing new required
 
-- REPL → `bridge.execute()` (already exists).
-- Playground one-shot → `bridge.execute("display-message -p ...")`.
-- Playground subscribed → `bridge.execute("refresh-client -B name::format")`
-  + listening to `subscription-changed` events on the bridge.
-- Tear-down → `bridge.execute("refresh-client -u name")`.
+- REPL → existing `bridge.execute()`.
+- Playground one-shot → `display-message -p ...` via `bridge.execute()`.
+- Playground subscribed → `refresh-client -B name::format` plus the
+  existing `subscription-changed` event path on the bridge.
+- Tear-down → `refresh-client -u name`.
 
-No new bridge wire messages. No new library API. The
-`subscription-changed` event ships through `TmuxBridge.onEvent`,
-same path InspectorStore uses.
+No new bridge wire messages. No new library API.
 
 ---
 
@@ -279,12 +157,15 @@ same path InspectorStore uses.
 
 - Up/Down recalls history into the input.
 - Enter submits. (Multiline commands deferred — see Open questions.)
-- Ctrl+L clears history (matches tmux/shell convention).
+- The visible **[clear]** button is the only clear path. Chord
+  shortcuts are intentionally not bound: the app-level keymap
+  bypasses INPUT/TEXTAREA via `isRegularTextInput()`, so a chord
+  would never fire from the focused REPL input. Ctrl+L additionally
+  collides with the browser's address-bar shortcut.
 - Latency rendered next to the command, color-coded
   (green ≤25ms, yellow ≤200ms, red >200ms).
 - Error responses render with a red gutter; ok responses neutral.
-- Each history row is selectable; click to copy via Mantine
-  `CopyButton`.
+- Each row supports click-to-copy (Mantine `CopyButton`).
 
 ### Playground pane
 
@@ -307,37 +188,21 @@ same path InspectorStore uses.
 ```
 
 - **Target picker** is a Mantine `Select` populated from
-  `demoStore.sessions`/`windows`/`panes` — *one source of truth*,
-  per `[LAW:one-source-of-truth]`. Plus a synthetic "Active pane"
-  entry that resolves to whatever the current active pane is at
-  request time. No duplicate enumeration.
+  `demoStore.sessions` / `windows` / `panes`, plus a synthetic
+  "Active pane" entry resolving at request time.
 - **Mode toggle** = Mantine `SegmentedControl`. Switching modes
-  triggers `setMode()` which tears down any live subscription and
-  starts the appropriate flow.
-- **Presets** are a small fixed set (≤6) of useful formats —
-  not user-editable in v1. v2 can persist user-saved presets through
-  UiStore; flag in open questions, don't build.
-- **Result area** shows either the value (mono, no highlighting),
-  or the tmux error message in red. Subscription-mode result is the
-  latest snapshot; previous values are not retained (no log, just a
-  counter so the operator sees pushes are arriving).
+  triggers store-side teardown + restart of the appropriate flow.
+- **Presets** are a small fixed set (≤6) of useful formats, not
+  user-editable in v1. Possible v2: persisted custom presets
+  (deferred — see Open questions).
+- **Result area** shows the value (mono, no highlighting) or the
+  tmux error string in red. Subscription mode shows the latest
+  snapshot + an update counter; previous values are not retained.
 
 ### Header
 
-The existing header `SegmentedControl` (mode picker) gets a fourth
-option:
-
-```tsx
-data={[
-  { label: "Multiplexer", value: "multiplexer" },
-  { label: "Console",     value: "console" },
-  { label: "Inspector",   value: "inspector" },
-  { label: "Heatmap",     value: "heatmap" },
-]}
-```
-
-Order: Multiplexer first (default), Console second (operator-driving
-sits next to operator-using), Inspector and Heatmap after (diagnostic).
+The existing header `SegmentedControl` gains a fourth option in the
+suggested order above. No other header changes.
 
 ---
 
@@ -345,120 +210,114 @@ sits next to operator-using), Inspector and Heatmap after (diagnostic).
 
 Light-touch additions to `UiStore`:
 
-| Field | Default | Persisted? | Why |
-|---|---|---|---|
-| `appMode === "console"` | no | yes (existing) | already round-trips. |
-| `console.commandHistory` (last N strings) | `[]` | yes | recall across reloads is table stakes for a REPL. |
-| `console.lastFormat` | preset | yes | iterating on a format and reloading mid-iteration is common. |
-| `console.lastTarget` | active | yes | sticky targeting matches operator expectation. |
-| `console.lastMode` | one-shot | yes | mode preference. |
-| Live response history (the `ReplEntry` ring with responses) | n/a | **no** | responses can be huge; persist only commands. |
+| Field                           | Persisted? | Why |
+|---|---|---|
+| `appMode === "console"`         | yes (existing) | already round-trips. |
+| `console.commandHistory` (≤50)  | yes        | recall across reloads is table stakes for a REPL. |
+| `console.lastFormat`            | yes        | iterating on a format and reloading mid-iteration is common. |
+| `console.lastTarget`            | yes        | sticky targeting matches operator expectation. |
+| `console.lastMode`              | yes        | mode preference. |
+| In-flight REPL response bodies  | **no**     | responses can be huge; commands are enough to seed recall. |
 
-Persist commands as a flat `string[]` capped at 50. On boot,
-`ConsoleStore` reads them from `UiStore` and seeds the up-arrow
-recall buffer (without rendering them as past history — they're
-"available to recall," not "things I just ran").
+On boot the store hydrates the recall buffer from the persisted
+command list. Persisted commands are *recall-available*, not rendered
+as past history.
 
 ---
 
 ## Edge cases (the production bar)
 
-- **Unmount during pending command.** A `ReplEntry` in `pending`
-  state when the user switches tabs: do not abort. The bridge call
-  is in flight; let it resolve into history naturally. The store is
-  owned by `App.tsx`, not the view, so the `runInAction` patch lands
-  even when the view is unmounted. Switching back shows the resolved
-  entry.
-- **Live subscription across tab switches.** Switching away from
-  Console: subscription stays alive (cheap — tmux keys by name and
-  rate-limits per subscription). The store outlives the view.
-  Subscription is torn down only on `dispose()`, which fires when
-  the bridge tears down or the app unmounts.
-- **Bridge disconnects mid-command.** REPL command in flight when
-  bridge closes: the `bridge.execute()` promise rejects. The catch
-  branch transitions the entry to `error` with the error message.
-  UI shows the failure.
+- **Unmount during a pending command.** The store outlives the view
+  (owned by `App.tsx`); the resolution still lands. Switching back
+  shows the resolved entry.
+- **Live subscription across tab switches.** Subscription stays
+  alive — tmux keys subscriptions by name and rate-limits per-name,
+  so leaving it active costs nothing visible. Tear-down only on
+  `dispose()`.
+- **Bridge disconnects mid-command.** `bridge.execute()` rejects;
+  entry transitions to `error` carrying the actual error message.
 - **Multiline command output.** `CommandResponse.lines` is already
-  an array of strings. Render with `<pre>` semantics; do not
-  collapse newlines.
-- **Format with embedded single quotes.** `escapeFormat` doubles
-  any `'` into `'\''` for the shell-quoted form. Test fixture: a
-  format containing `it's`.
-- **Format that produces empty output.** Render `(empty)` in
-  dimmed gray, not blank. Otherwise the operator can't tell
-  "evaluated to empty" from "subscription hasn't fired yet."
-- **Subscription that never fires.** A format that depends on
-  state that doesn't change won't push events. Show last value
-  with the update counter; no spinner, no false "loading" state.
+  an array; render with `<pre>` semantics, no newline collapse.
+- **Format with embedded single quotes.** `escapeFormat` replaces
+  each `'` with `'\''` — the standard close-quote, escaped-quote,
+  reopen-quote pattern for shell-quoted strings. Test fixture:
+  `it's`.
+- **Format that produces empty output.** Render `(empty)` in dimmed
+  gray. Distinguishes "evaluated to empty" from "subscription hasn't
+  fired yet."
+- **Subscription that never fires.** Some formats depend on state
+  that doesn't change. Show last value with the update counter; no
+  spinner, no false "loading" state.
 
 ---
 
 ## What "production quality" means concretely
 
-- ✅ Discriminated state for `ReplEntry`, no optional-bag-of-fields.
-- ✅ MobX store with explicit lifecycle, not React state.
-- ✅ Persistence via the existing `UiStore` reaction pattern (one
-  source of truth for persistent UI).
-- ✅ Subscription lifecycle owned by the store, mechanically
-  prevents leaks.
-- ✅ Bounded ring for history; no unbounded growth.
-- ✅ Errors render visibly with the actual tmux error message.
-- ✅ Target picker pulls from `demoStore` (one source); does not
-  re-enumerate sessions/windows/panes from tmux.
-- ✅ Architectural law markers (`[LAW:one-source-of-truth]`,
-  `[LAW:dataflow-not-control-flow]`) on the store, matching
-  existing conventions.
-- ✅ No `any`. Discriminated unions where state has multiple shapes.
+- Discriminated state for REPL entries — `status` is the discriminant,
+  no nullable bag-of-fields.
+- MobX store with explicit lifecycle, not React state.
+- Persistence via the existing `UiStore` reaction pattern.
+- Subscription lifecycle owned by the store, mechanically prevents
+  leaks.
+- Bounded ring for history; no unbounded growth; pending entries
+  never evicted.
+- Errors surface the actual tmux error message, not a swallowed
+  `console.error`.
+- Target picker pulls from `demoStore` (one source of truth); does
+  not re-enumerate sessions/windows/panes.
+- Architectural law markers (`[LAW:one-source-of-truth]`,
+  `[LAW:dataflow-not-control-flow]`) on the new store.
+- No `any`.
 
 ---
 
-## Implementation order
+## Tracking
 
-1. `console-store.ts` — full state model, methods, dispose.
-2. `ui-store.ts` — extend `AppMode` union, persistence shape, guards.
-3. `ConsoleView.tsx` — layout shell.
-4. `ConsoleRepl.tsx` — input + history + recall + clear.
-5. `ConsoleFormatPlayground.tsx` — picker + format input + result + mode toggle.
-6. `App.tsx` — wire store construction, dispose, render branch, header
-   `SegmentedControl` option.
-7. Tests — at minimum: store unit tests for REPL submit (ok / error /
-   pending → resolved), Playground subscribe/teardown idempotency,
-   `escapeFormat` round-trip with embedded quotes.
+Implementation tracked via `lit` under epic
+`tmux-showcase-bhx.25` with three children:
 
-Lands as one phase under `.planning/phases/`. The full app is
-testable end-to-end once #6 is wired; #7 is concurrent.
+- `.25.1` — store + UiStore integration + tab shell (foundation;
+  blocks both panes).
+- `.25.2` — REPL pane.
+- `.25.3` — Format Playground pane.
+
+The foundation blocks both panes; the panes are independent. Per
+`.planning/STATE.md`, no new phase artifacts under `.planning/phases/`.
 
 ---
 
 ## Open questions
 
-- **Multiline commands in REPL.** Single-line is much simpler to
-  build and covers >99% of usage. Argument for multiline:
-  `if-shell` / `bind-key` syntax. Lean single-line for v1; revisit
-  if operator usage demands.
-- **Should the Playground share a session with `demoStore`'s
-  subscriptions?** The store sends its own
-  `refresh-client -B playground::...`; the bridge already has
-  `sessions`/`windows`/`panes` subscriptions named separately. They
-  don't collide (tmux keys subscriptions by name) but they do
-  generate two listener fan-outs. Acceptable; flag if perf shows up
-  in profiling.
-- **Subscription rate vs. UI render rate.** tmux rate-limits
-  `%subscription-changed` to once per second per subscription. Fine
-  for the playground display, but if the operator picks a
-  fast-changing format (`#{cursor_x}`) we still update at 1Hz. No
-  action needed; document in the UI as a tooltip on the update
-  counter.
+- **Multiline commands in REPL.** Single-line covers >99% of usage
+  and is much simpler. Argument for multiline: `if-shell` /
+  `bind-key` syntax. Lean single-line for v1; revisit if operator
+  usage demands.
+- **Custom user presets in the Playground.** v2 candidate; persist
+  through `UiStore`. Out of scope for v1.
+- **Rate-limit of subscription pushes.** tmux throttles
+  `%subscription-changed` to 1Hz per subscription. Fine for the
+  Playground display; document via tooltip on the update counter.
 
 ---
 
-## Future tabs (out of scope here, listed for context)
+## Non-goals
 
-The other ideas from the brainstorm are still good. Each warrants
-its own design doc when its turn comes:
+- Not reimplementing tmux's `choose-tree` / `command-prompt` TUI
+  affordances inside the browser.
+- Not a generic shell. The Console REPL takes tmux commands; shell
+  commands belong in panes.
+- Not a configuration editor. `.tmux.conf` editing is out of scope.
+- Not a tmux replacement. We drive tmux via control mode; we do not
+  reimplement multiplexing in JS.
 
-- **Layout designer** — visual splitter editor; needs its own pane
-  geometry model.
+---
+
+## Future tabs (out of scope, listed for context)
+
+The brainstorm's other ideas remain viable. Each warrants its own
+design when its turn comes:
+
+- **Layout designer** — visual splitter editor.
 - **Snapshot/restore** — needs the fidelity question answered (TUI
   processes don't survive `send-keys` replay).
 - **Key binding browser** — likely a side panel rather than a tab.
