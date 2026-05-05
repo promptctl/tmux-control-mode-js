@@ -489,10 +489,7 @@ function parseEvent(x: unknown): EventFrame {
     throw new BridgeProtocolError("event.msg must be an object");
   }
   const msg = o.msg as { type?: unknown };
-  if (
-    typeof msg.type !== "string" ||
-    !SERIALIZED_EVENT_TYPES.has(msg.type)
-  ) {
+  if (typeof msg.type !== "string" || !SERIALIZED_EVENT_TYPES.has(msg.type)) {
     throw new BridgeProtocolError(
       `event.msg.type must be a known TmuxMessage discriminator, got ${JSON.stringify(msg.type)}`,
     );
