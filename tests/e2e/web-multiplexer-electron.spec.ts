@@ -17,7 +17,7 @@
 //                            → tmux-testing-6yp.5
 
 import { test, expect, _electron as electron } from "@playwright/test";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,14 @@ import { fileURLToPath } from "node:url";
 import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
 import { e2eSocketName } from "./socket-naming.js";
+
+// [LAW:single-enforcer] All tmux subprocess invocations cross the
+// process boundary as argv arrays. Socket/session names never pass
+// through shell parsing — mirrors the wrapper in the Electron main
+// process (examples/web-multiplexer/electron/main.ts).
+function tmux(socket: string, args: readonly string[]): void {
+  execFileSync("tmux", ["-L", socket, ...args], { stdio: "ignore" });
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Demo workspace root — Electron is launched against this directory so it
@@ -48,7 +56,7 @@ const APP_ENV = {
 
 function killServer(): void {
   try {
-    execSync(`tmux -L ${SOCKET} kill-server`, { stdio: "ignore" });
+    tmux(SOCKET, ["kill-server"]);
   } catch {
     // Server not running — fine.
   }
@@ -71,7 +79,7 @@ const altSockets = new Set<string>();
 function killAltSockets(): void {
   for (const name of altSockets) {
     try {
-      execSync(`tmux -L ${name} kill-server`, { stdio: "ignore" });
+      tmux(name, ["kill-server"]);
     } catch {
       // Server already gone.
     }
@@ -137,9 +145,7 @@ test("socket picker swaps the demo's TmuxClient onto a different live socket", a
   const ALT_SOCKET = e2eSocketName(process.pid, Date.now() + 1);
   const ALT_SESSION = "alt";
   altSockets.add(ALT_SOCKET);
-  execSync(`tmux -L ${ALT_SOCKET} new-session -d -s ${ALT_SESSION}`, {
-    stdio: "ignore",
-  });
+  tmux(ALT_SOCKET, ["new-session", "-d", "-s", ALT_SESSION]);
 
   const app = await electron.launch({
     args: [APP_ROOT],
