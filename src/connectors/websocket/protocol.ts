@@ -39,39 +39,25 @@ export const PROTOCOL_VERSION = 1 as const;
 
 // ---------------------------------------------------------------------------
 // Error taxonomy
+//
+// [LAW:one-source-of-truth] BridgeErrorCode + BridgeErrorPayload + BridgeError
+// + BridgeProtocolError live in `../errors.ts` and are shared with the
+// Electron connector. This module re-exports them so wire-protocol consumers
+// keep one import site and `instanceof BridgeError` works irrespective of
+// which transport produced the error. No parallel declarations exist here.
 // ---------------------------------------------------------------------------
 
-/**
- * Canonical error codes for every failure a bridge call can surface.
- * Browser consumers branch on `code`, not on message text.
- *
- * [LAW:one-source-of-truth] Every code used anywhere in the bridge must be
- * listed here. Adding a new failure mode means adding a variant.
- */
-export type BridgeErrorCode =
-  /** tmux replied with %error (a tmux-level command failure). */
-  | "TMUX_ERROR"
-  /** Malformed frame, unknown discriminator, wrong protocol version. */
-  | "BRIDGE_PROTOCOL_ERROR"
-  /** `authenticate()` hook rejected the connection at upgrade time. */
-  | "BRIDGE_AUTH_DENIED"
-  /** `authorize()` hook rejected a specific call. */
-  | "BRIDGE_COMMAND_DENIED"
-  /** Called a method not present in the RPC dispatch table. */
-  | "BRIDGE_UNKNOWN_METHOD"
-  /** Per-connection rate limit exceeded. */
-  | "BRIDGE_RATE_LIMITED"
-  /** Deadline reached before the response arrived. */
-  | "BRIDGE_TIMEOUT"
-  /** Connection closed while the call was in flight. */
-  | "BRIDGE_CLOSED"
-  /** Unexpected bridge-internal error. */
-  | "BRIDGE_INTERNAL";
-
-export interface BridgeErrorPayload {
-  readonly code: BridgeErrorCode;
-  readonly message: string;
-}
+export {
+  BridgeError,
+  BridgeProtocolError,
+  type BridgeErrorCode,
+  type BridgeErrorPayload,
+} from "../errors.js";
+import {
+  BridgeProtocolError,
+  type BridgeErrorCode,
+  type BridgeErrorPayload,
+} from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // RPC methods
@@ -290,38 +276,6 @@ export function decodePaneOutput(buf: Uint8Array): PaneOutputMessage {
     age,
     data: buf.slice(HEADER_EXTENDED),
   };
-}
-
-// ---------------------------------------------------------------------------
-// Typed errors
-//
-// BridgeError is thrown at the seams where untyped wire data becomes typed
-// objects. Anywhere else the code returns typed results; control never flows
-// through `any`.
-// ---------------------------------------------------------------------------
-
-export class BridgeError extends Error {
-  readonly code: BridgeErrorCode;
-  constructor(code: BridgeErrorCode, message: string) {
-    super(message);
-    this.name = "BridgeError";
-    this.code = code;
-  }
-
-  toPayload(): BridgeErrorPayload {
-    return { code: this.code, message: this.message };
-  }
-
-  static fromPayload(p: BridgeErrorPayload): BridgeError {
-    return new BridgeError(p.code, p.message);
-  }
-}
-
-export class BridgeProtocolError extends BridgeError {
-  constructor(message: string) {
-    super("BRIDGE_PROTOCOL_ERROR", message);
-    this.name = "BridgeProtocolError";
-  }
 }
 
 // ---------------------------------------------------------------------------

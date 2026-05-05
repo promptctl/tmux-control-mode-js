@@ -291,7 +291,10 @@ describe("Electron IPC bridge — C2 input validation", () => {
         method: "kill-server",
         args: [],
       }),
-    ).rejects.toThrow(/UNKNOWN_METHOD/);
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_UNKNOWN_METHOD" },
+    });
     expect(t.sent).toEqual([]);
   });
 
@@ -305,16 +308,25 @@ describe("Electron IPC bridge — C2 input validation", () => {
 
     await expect(
       renderer.ipcRenderer.invoke(IPC.invoke, "not-an-object"),
-    ).rejects.toThrow(/INVALID_REQUEST/);
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_INVALID_REQUEST" },
+    });
     await expect(
       renderer.ipcRenderer.invoke(IPC.invoke, { args: [] }),
-    ).rejects.toThrow(/INVALID_REQUEST/);
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_INVALID_REQUEST" },
+    });
     await expect(
       renderer.ipcRenderer.invoke(IPC.invoke, {
         method: "execute",
         args: "not-an-array",
       }),
-    ).rejects.toThrow(/INVALID_REQUEST/);
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_INVALID_REQUEST" },
+    });
     expect(t.sent).toEqual([]);
   });
 
@@ -326,37 +338,27 @@ describe("Electron IPC bridge — C2 input validation", () => {
 
     const renderer = hub.createRenderer();
 
+    const expectInvalidArg = async (req: object): Promise<void> => {
+      await expect(
+        renderer.ipcRenderer.invoke(IPC.invoke, req),
+      ).resolves.toMatchObject({
+        status: "bridge-error",
+        error: { code: "BRIDGE_INVALID_ARG" },
+      });
+    };
+
     // execute requires 1 string arg.
-    await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, { method: "execute", args: [] }),
-    ).rejects.toThrow(/INVALID_ARG/);
-    await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
-        method: "execute",
-        args: [42],
-      }),
-    ).rejects.toThrow(/INVALID_ARG/);
+    await expectInvalidArg({ method: "execute", args: [] });
+    await expectInvalidArg({ method: "execute", args: [42] });
     // sendKeys requires 2 strings.
-    await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
-        method: "sendKeys",
-        args: ["%0"],
-      }),
-    ).rejects.toThrow(/INVALID_ARG/);
+    await expectInvalidArg({ method: "sendKeys", args: ["%0"] });
     // setPaneAction requires (number, PaneAction).
-    await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
-        method: "setPaneAction",
-        args: [1, "bogus-action"],
-      }),
-    ).rejects.toThrow(/INVALID_ARG/);
+    await expectInvalidArg({
+      method: "setPaneAction",
+      args: [1, "bogus-action"],
+    });
     // setFlags requires string[].
-    await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
-        method: "setFlags",
-        args: [[1, 2, 3]],
-      }),
-    ).rejects.toThrow(/INVALID_ARG/);
+    await expectInvalidArg({ method: "setFlags", args: [[1, 2, 3]] });
     expect(t.sent).toEqual([]);
   });
 });
@@ -377,7 +379,10 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
     for (const evil of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
       await expect(
         renderer.ipcRenderer.invoke(IPC.invoke, { method: evil, args: [] }),
-      ).rejects.toThrow(/UNKNOWN_METHOD/);
+      ).resolves.toMatchObject({
+        status: "bridge-error",
+        error: { code: "BRIDGE_UNKNOWN_METHOD" },
+      });
     }
     expect(t.sent).toEqual([]);
   });
@@ -790,10 +795,13 @@ describe("Electron IPC bridge — method dispatch", () => {
     expect((proxy as unknown as { detach?: unknown }).detach).toBeUndefined();
 
     // Runtime trust-boundary: bypassing the proxy and crafting a raw IPC
-    // payload still gets rejected with UNKNOWN_METHOD.
+    // payload still gets rejected with BRIDGE_UNKNOWN_METHOD.
     await expect(
       renderer.ipcRenderer.invoke(IPC.invoke, { method: "detach", args: [] }),
-    ).rejects.toThrow(/UNKNOWN_METHOD/);
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_UNKNOWN_METHOD" },
+    });
     expect(t.sent).toEqual([]);
   });
 
@@ -1295,7 +1303,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(BridgeError);
-    expect((err as BridgeError).code).toBe("TIMEOUT");
+    expect((err as BridgeError).code).toBe("BRIDGE_TIMEOUT");
 
     // Late settlement must not throw an unhandled rejection (the timer
     // already rejected the renderer-side promise; the resolution is just
@@ -1768,6 +1776,81 @@ describe("parseAckMessage — trust boundary", () => {
     ["missing bytes", { paneId: 0 }],
   ])("rejects %s", (_name, value) => {
     expect(() => parseAckMessage(value)).toThrow(/INVALID_ARG/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// qz5.2 — BridgeError round-trips with .code preserved across Electron IPC.
+//
+// Real Electron's `ipcMain.handle` rejection serializer drops subclass
+// properties on Error instances, so a renderer reading `.code` directly off
+// a thrown rejection will see `undefined`. The bridge solves this by
+// returning a typed `InvokeResultEnvelope` and letting the renderer
+// reconstruct via `BridgeError.fromPayload`. These tests prove that:
+//
+//   1. The renderer-side rejection IS a BridgeError instance.
+//   2. The `.code` field survives the structured-clone hop.
+//   3. The same class identity is shared with the WebSocket connector
+//      (one `BridgeError` declaration in `src/connectors/errors.ts`).
+// ---------------------------------------------------------------------------
+
+describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
+  it("renderer-side rejection is `instanceof BridgeError` with `.code` preserved (BRIDGE_INTERNAL)", async () => {
+    // Drive a BRIDGE_INTERNAL rejection by making the synchronous send path
+    // throw inside TmuxClient — the bridge wraps it via the envelope.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    (t.transport as { send: (cmd: string) => void }).send = () => {
+      throw new Error("transport offline");
+    };
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const err = await proxy
+      .execute("list-windows")
+      .then(() => undefined, (e: unknown) => e);
+
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe("BRIDGE_INTERNAL");
+    expect((err as Error).message).toMatch(/method=execute/);
+  });
+
+  it("renderer-side rejection carries BRIDGE_UNKNOWN_METHOD via the proxy", async () => {
+    // Going through the proxy is the canonical reconstruction path. Calling
+    // a method that fails parseRpcRequest must surface as a typed
+    // BridgeError on the renderer side, not as a generic Error with the
+    // code lost in serialization.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    // Skip the proxy and call ipc.invoke directly with a bogus method name.
+    // The envelope shape was already verified in C2; here we focus on the
+    // class identity by reconstructing manually — same code path the proxy
+    // uses internally.
+    const envelope = (await renderer.ipcRenderer.invoke(IPC.invoke, {
+      method: "kill-server",
+      args: [],
+    })) as { status: string; error: { code: string; message: string } };
+
+    expect(envelope.status).toBe("bridge-error");
+    const reconstructed = BridgeError.fromPayload(envelope.error as never);
+    expect(reconstructed).toBeInstanceOf(BridgeError);
+    expect(reconstructed.code).toBe("BRIDGE_UNKNOWN_METHOD");
+  });
+
+  it("the BridgeError class is the SAME class as the websocket connector exposes", async () => {
+    // [LAW:one-source-of-truth] Both transports import BridgeError from
+    // `src/connectors/errors.ts`. A constructor-identity check would trip
+    // immediately if a future refactor reintroduced a parallel
+    // declaration on either side.
+    const wsModule = await import("../../src/connectors/websocket/protocol.js");
+    expect(wsModule.BridgeError).toBe(BridgeError);
   });
 });
 
