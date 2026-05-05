@@ -311,3 +311,58 @@ export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
 export function asPaneOutput(msg: TmuxMessage): PaneOutputMessage | null {
   return isPaneOutput(msg) ? msg : null;
 }
+
+/**
+ * TmuxMessage discriminants that can appear in serialized event frames.
+ * Excludes output/extended-output — those travel as binary frames.
+ */
+type SerializedEventType = Exclude<
+  TmuxMessage["type"],
+  "output" | "extended-output"
+>;
+
+/**
+ * Compile-time exhaustive map of serialized event discriminants. The
+ * `satisfies Record<SerializedEventType, true>` clause is the load-bearing
+ * check: if a new TmuxMessage variant is added (and it's not output-shaped),
+ * TypeScript errors here until it's listed.
+ *
+ * [LAW:one-source-of-truth] Single map, derivable from the TmuxMessage union.
+ * The runtime Set below is just a key projection of this object.
+ */
+const SERIALIZED_EVENT_TYPE_MAP = {
+  begin: true,
+  end: true,
+  error: true,
+  pause: true,
+  continue: true,
+  "pane-mode-changed": true,
+  "window-add": true,
+  "window-close": true,
+  "window-renamed": true,
+  "window-pane-changed": true,
+  "unlinked-window-add": true,
+  "unlinked-window-close": true,
+  "unlinked-window-renamed": true,
+  "layout-change": true,
+  "session-changed": true,
+  "session-renamed": true,
+  "sessions-changed": true,
+  "session-window-changed": true,
+  "client-session-changed": true,
+  "client-detached": true,
+  "paste-buffer-changed": true,
+  "paste-buffer-deleted": true,
+  "subscription-changed": true,
+  message: true,
+  "config-error": true,
+  exit: true,
+} as const satisfies Record<SerializedEventType, true>;
+
+/**
+ * Runtime set used by the WS parseEvent trust boundary to reject unknown
+ * event types. Derived from SERIALIZED_EVENT_TYPE_MAP.
+ */
+export const SERIALIZED_EVENT_TYPES: ReadonlySet<string> = new Set(
+  Object.keys(SERIALIZED_EVENT_TYPE_MAP),
+);

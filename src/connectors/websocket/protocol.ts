@@ -19,6 +19,7 @@ import type {
   PaneOutputMessage,
   TmuxMessage,
 } from "../../protocol/types.js";
+import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 
 // [LAW:one-source-of-truth] Re-export the canonical PaneOutputMessage from
 // the protocol types module. The websocket layer USES the type but does not
@@ -487,9 +488,12 @@ function parseEvent(x: unknown): EventFrame {
   if (typeof o.msg !== "object" || o.msg === null) {
     throw new BridgeProtocolError("event.msg must be an object");
   }
-  // Trust the server's TmuxMessage shape here; the parser upstream already
-  // validated it before it reached us. Clients re-validating would duplicate
-  // the protocol layer. Types assert what the server promises to send.
+  const msg = o.msg as { type?: unknown };
+  if (typeof msg.type !== "string" || !SERIALIZED_EVENT_TYPES.has(msg.type)) {
+    throw new BridgeProtocolError(
+      `event.msg.type must be a known TmuxMessage discriminator, got ${JSON.stringify(msg.type)}`,
+    );
+  }
   return { v: 1, k: "event", msg: o.msg as SerializedEventMessage };
 }
 
