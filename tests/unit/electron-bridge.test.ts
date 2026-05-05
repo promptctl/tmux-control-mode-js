@@ -1290,7 +1290,12 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     };
     const proxy = new TmuxClientProxy(stuckIpc, { invokeTimeoutMs: 25 });
 
-    await expect(proxy.execute("anything")).rejects.toThrow(/TIMEOUT/);
+    const err = await proxy.execute("anything").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(BridgeError);
+    expect((err as BridgeError).code).toBe("TIMEOUT");
 
     // Late settlement must not throw an unhandled rejection (the timer
     // already rejected the renderer-side promise; the resolution is just

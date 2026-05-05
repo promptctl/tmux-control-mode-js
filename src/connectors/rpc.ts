@@ -164,6 +164,13 @@ type Validators = {
   readonly [R in RpcRequest as R["method"]]: ArgValidator<R>;
 };
 
+// Module-scoped allowlist for splitWindow options. Hoisted from the
+// per-call validator body so the Set is allocated once at module load.
+const KNOWN_SPLIT_OPTIONS: ReadonlySet<string> = new Set([
+  "vertical",
+  "target",
+]);
+
 const VALIDATORS: Validators = Object.assign(
   Object.create(null) as Validators,
   {
@@ -200,9 +207,8 @@ const VALIDATORS: Validators = Object.assign(
           "splitWindow: options.target must be a string",
         );
       }
-      const known = new Set(["vertical", "target"]);
       for (const key of Object.keys(obj)) {
-        if (!known.has(key)) {
+        if (!KNOWN_SPLIT_OPTIONS.has(key)) {
           throw new RpcError(
             "INVALID_ARG",
             `splitWindow: unknown option "${key}"`,
