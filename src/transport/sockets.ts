@@ -60,6 +60,12 @@ export function listTmuxSocketNames(): readonly string[] {
  * exits 0 if the server is reachable (regardless of whether any
  * sessions exist yet) and non-zero with "no server running" otherwise.
  * stdio is silenced because callers only care about the exit status.
+ *
+ * Only a non-zero exit status counts as "dead". Spawn failures
+ * (`ENOENT` for missing tmux, `EACCES`, signal kills) propagate —
+ * those signal a broken environment, and silently classifying them as
+ * "no server" would let cleanup callers unlink real sockets on a
+ * machine where tmux just isn't installed.
  */
 export function isTmuxServerAlive(socketName: string): boolean {
   try {
@@ -69,7 +75,19 @@ export function isTmuxServerAlive(socketName: string): boolean {
       stdio: "ignore",
     });
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // [LAW:no-defensive-null-guards] no silent fallback — only the
+    // shape of the error decides. `status: number` means tmux ran and
+    // exited non-zero (the documented "no server" path). Anything else
+    // (spawn failure, signal) is a real error and must surface.
+    if (
+      err !== null &&
+      typeof err === "object" &&
+      "status" in err &&
+      typeof (err as { status: unknown }).status === "number"
+    ) {
+      return false;
+    }
+    throw err;
   }
 }
