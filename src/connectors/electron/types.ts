@@ -15,6 +15,8 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
+import type { CommandResponse } from "../../protocol/types.js";
+import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { RpcRequest } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
@@ -140,6 +142,31 @@ export interface IpcRendererLike {
 export type InvokeRequest = RpcRequest;
 
 // ---------------------------------------------------------------------------
+// InvokeResultEnvelope — the wire shape `ipcMain.handle("tmux:invoke")`
+// returns and `ipcRenderer.invoke(...)` resolves to.
+//
+// [LAW:one-source-of-truth] Both main.ts (which constructs envelopes) and
+// renderer.ts (which dispatches on `status` and reconstructs typed errors)
+// import this declaration. There is no parallel definition on either side.
+//
+// [LAW:dataflow-not-control-flow] Every outcome of an invoke handler call
+// becomes a value in this discriminated union; the renderer-side proxy
+// dispatches on `status` rather than on whether a Promise rejected. The
+// handler never throws, so `ipcMain.handle` never has to round-trip an
+// Error subclass through Electron's structured-clone serializer (which
+// would drop `.code` on `BridgeError` and `.response` on
+// `TmuxCommandError`).
+// ---------------------------------------------------------------------------
+
+export type InvokeResultEnvelope =
+  | { readonly status: "ok"; readonly response: CommandResponse }
+  | { readonly status: "tmux-error"; readonly response: CommandResponse }
+  | {
+      readonly status: "bridge-error";
+      readonly error: BridgeErrorPayloadType;
+    };
+
+// ---------------------------------------------------------------------------
 // Renderer → main: output-byte ack frame.
 // ---------------------------------------------------------------------------
 
@@ -164,7 +191,8 @@ export interface MainBridgeHandle {
    * TmuxClient FIFO. Callers that need to know when those promises have
    * actually settled (e.g. tests, or a host that tears down the TmuxClient
    * immediately after dispose) should `await handle.drain()` after
-   * `dispose()` returns.
+   * `dispose()` returns. Aborted dispatches surface to renderers as
+   * `BridgeError("BRIDGE_ABORTED", ...)`.
    */
   dispose(): void;
   /**
@@ -178,9 +206,13 @@ export interface MainBridgeHandle {
    * `timeoutMs`: when provided, drain returns after the timeout regardless
    * of whether all handlers have settled. The unsettled promises are NOT
    * cancelled — they continue resolving in the background and their post-
-   * await branches see `aborted` and throw `BridgeError("ABORTED")`. The
+   * await branches see `aborted` and throw `BridgeError("BRIDGE_ABORTED")`. The
    * timeout is a "I have a host shutdown deadline" escape hatch, not a
    * cancellation primitive.
+   *
+   * Late dispatches that observe the abort flag report
+   * `BridgeError("BRIDGE_ABORTED", ...)` to their callers via the result
+   * envelope.
    */
   drain(timeoutMs?: number): Promise<void>;
 }
@@ -219,7 +251,7 @@ export interface RendererBridgeOptions {
   readonly ackBatchBytes?: number;
   /**
    * Optional per-call timeout for proxy invokes. When a positive number, the
-   * proxy rejects with `BridgeError("TIMEOUT")` if the underlying
+   * proxy rejects with `BridgeError("BRIDGE_TIMEOUT")` if the underlying
    * `ipcRenderer.invoke` does not settle within `invokeTimeoutMs`. Disabled
    * (default) — proxy.execute() inherits whatever timeout the underlying
    * `client.execute()` has, which today is none. Set this when the calling
@@ -238,32 +270,26 @@ export const DEFAULT_ACK_BATCH_BYTES = 1 << 16;
 // ---------------------------------------------------------------------------
 // Bridge errors.
 //
-// RPC-validation failures (INVALID_REQUEST / UNKNOWN_METHOD / INVALID_ARG)
-// throw RpcError from ../rpc.ts. BridgeError below is reserved for
-// electron-specific failures: the single-instance enforcement guard and
-// invalid bridge-option configuration.
+// [LAW:one-source-of-truth] BridgeError + BridgeErrorCode + BridgeErrorPayload
+// live in `../errors.ts` and are shared with the WebSocket connector. This
+// module re-exports them so electron-only consumers keep a single import site
+// and `instanceof BridgeError` works irrespective of which transport produced
+// the error. No parallel class declaration exists here.
+//
+// RPC-validation failures (BRIDGE_INVALID_REQUEST / BRIDGE_UNKNOWN_METHOD /
+// BRIDGE_INVALID_ARG) are produced by `parseRpcRequest` (which throws
+// `RpcError`) and translated into `BridgeError` at the IPC trust boundary in
+// `main.ts`. BridgeError thrown directly is reserved for bridge-internal
+// failures (single-instance guard, invalid options, abort, subscription
+// ownership, ack-frame parse).
 // ---------------------------------------------------------------------------
 
-export type BridgeErrorCode =
-  /** createMainBridge called twice on the same ipcMain. */
-  | "ALREADY_REGISTERED"
-  /** Invalid MainBridgeOptions (e.g. high-watermark not greater than low). */
-  | "INVALID_ARG"
-  /** Dispatch was abandoned because its sender was destroyed mid-flight. */
-  | "ABORTED"
-  /** Renderer attempted to unsubscribe a name it does not own. */
-  | "UNKNOWN_SUBSCRIPTION"
-  /** Renderer-side invoke exceeded RendererBridgeOptions.invokeTimeoutMs. */
-  | "TIMEOUT";
-
-export class BridgeError extends Error {
-  readonly code: BridgeErrorCode;
-  constructor(code: BridgeErrorCode, message: string) {
-    super(`[${code}] ${message}`);
-    this.name = "BridgeError";
-    this.code = code;
-  }
-}
+export {
+  BridgeError,
+  type BridgeErrorCode,
+  type BridgeErrorPayload,
+} from "../errors.js";
+import { BridgeError } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Ack validation (electron-specific channel; not part of the shared RPC).
@@ -275,7 +301,10 @@ export class BridgeError extends Error {
 
 export function parseAckMessage(raw: unknown): AckMessage {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new BridgeError("INVALID_ARG", "ack must be a non-array object");
+    throw new BridgeError(
+      "BRIDGE_INVALID_ARG",
+      "ack must be a non-array object",
+    );
   }
   const obj = raw as { paneId?: unknown; bytes?: unknown };
   if (
@@ -285,7 +314,7 @@ export function parseAckMessage(raw: unknown): AckMessage {
     !Number.isInteger(obj.paneId)
   ) {
     throw new BridgeError(
-      "INVALID_ARG",
+      "BRIDGE_INVALID_ARG",
       "ack.paneId must be a non-negative integer",
     );
   }
@@ -295,7 +324,7 @@ export function parseAckMessage(raw: unknown): AckMessage {
     obj.bytes < 0
   ) {
     throw new BridgeError(
-      "INVALID_ARG",
+      "BRIDGE_INVALID_ARG",
       "ack.bytes must be a non-negative finite number",
     );
   }

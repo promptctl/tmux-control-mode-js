@@ -33,7 +33,12 @@ import {
   type CommandResponse,
   type TmuxMessage,
 } from "../../protocol/types.js";
-import { parseRpcRequest, RpcError, type RpcRequest } from "../rpc.js";
+import {
+  parseRpcRequest,
+  RpcError,
+  type RpcErrorCode,
+  type RpcRequest,
+} from "../rpc.js";
 import { dispatchRpcRequest } from "../rpc-dispatch.js";
 import {
   BridgeError,
@@ -41,6 +46,8 @@ import {
   DEFAULT_OUTPUT_LOW_WATERMARK,
   IPC,
   parseAckMessage,
+  type BridgeErrorCode,
+  type InvokeResultEnvelope,
   type IpcMainEventLike,
   type IpcMainInvokeEventLike,
   type IpcMainLike,
@@ -49,6 +56,64 @@ import {
   type MainBridgeOptions,
   type WebContentsLike,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// RpcError → BridgeError mapping at the IPC trust boundary.
+//
+// [LAW:single-enforcer] RpcError is connector-internal; it is mapped to a
+// `BridgeError` here so the wire taxonomy is unified across both transports.
+// (The WebSocket server has the same mapping at its own seam — see
+// `src/connectors/websocket/server.ts:RPC_ERROR_TO_BRIDGE`.)
+// ---------------------------------------------------------------------------
+
+const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
+  UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
+  INVALID_REQUEST: "BRIDGE_INVALID_REQUEST",
+  INVALID_ARG: "BRIDGE_INVALID_ARG",
+};
+
+function rpcErrorToBridge(err: RpcError): BridgeError {
+  // RpcError prepends `[CODE] ` to its `.message`; the bridge code on the
+  // BridgeError already supplies that prefix, so strip RpcError's first to
+  // avoid double-prefixed messages like `[BRIDGE_INVALID_ARG] [INVALID_ARG] ...`.
+  const stripped = err.message.replace(/^\[[A-Z_]+\] /, "");
+  return new BridgeError(RPC_ERROR_TO_BRIDGE[err.code], stripped);
+}
+
+function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
+  return { status: "bridge-error", error: rpcErrorToBridge(err).toPayload() };
+}
+
+function abortedEnvelope(method: string): InvokeResultEnvelope {
+  return {
+    status: "bridge-error",
+    error: new BridgeError(
+      "BRIDGE_ABORTED",
+      `dispatch for method=${method} aborted: sender destroyed`,
+    ).toPayload(),
+  };
+}
+
+function internalErrorEnvelope(
+  method: string,
+  err: unknown,
+): InvokeResultEnvelope {
+  const causeMsg = err instanceof Error ? err.message : String(err);
+  const wrapped = new BridgeError(
+    "BRIDGE_INTERNAL",
+    `dispatch failed for method=${method}: ${causeMsg}`,
+  );
+  // [LAW:locality-or-seam] Preserve the original cause's stack so renderer
+  // logs localize the failure to the function that actually threw — not
+  // just to the bridge frame that wrapped it. Mirrors the pre-envelope
+  // behavior where a thrown Error carried `wrapped.stack = ${own}\nCaused
+  // by: ${cause}`.
+  if (err instanceof Error && err.stack !== undefined) {
+    const own = wrapped.stack ?? wrapped.message;
+    wrapped.stack = `${own}\nCaused by: ${err.stack}`;
+  }
+  return { status: "bridge-error", error: wrapped.toPayload() };
+}
 
 // ---------------------------------------------------------------------------
 // Single-instance ipcMain registration tracking.
@@ -71,8 +136,8 @@ interface PendingDispatch {
    * while this dispatch's await is in-flight. The TmuxClient FIFO is
    * intentionally NOT purged — the underlying %begin/%end pair still pops
    * the pending entry in order so subsequent dispatches stay correlated.
-   * The post-await branch in invokeHandler observes `aborted` and discards
-   * the result via a typed BridgeError instead of trying to send it to a
+   * The post-await branch in invokeHandler observes `aborted` and returns
+   * a `BRIDGE_ABORTED` envelope instead of trying to send a result to a
    * dead webContents.
    */
   aborted: boolean;
@@ -127,7 +192,7 @@ interface SenderState {
  *   - Subscribe / unsubscribe are intercepted at the bridge boundary: every
  *     subscription name carries an ownership tag for its sender. A renderer
  *     attempting to unsubscribe a name it does not own is rejected with
- *     `UNKNOWN_SUBSCRIPTION` — preventing one window from tearing down
+ *     `BRIDGE_UNKNOWN_SUBSCRIPTION` — preventing one window from tearing down
  *     another window's subscriptions. The bridge refcounts subscriptions so
  *     the underlying tmux unsubscribe fires only when the last sender drops.
  *
@@ -162,7 +227,7 @@ export function createMainBridge(
 ): MainBridgeHandle {
   if (REGISTERED_IPC_MAINS.has(ipcMain)) {
     throw new BridgeError(
-      "ALREADY_REGISTERED",
+      "BRIDGE_ALREADY_REGISTERED",
       "createMainBridge has already been called on this ipcMain. Register " +
         "the bridge once at app.whenReady() rather than per BrowserWindow — " +
         "ipcMain is a process singleton.",
@@ -175,7 +240,7 @@ export function createMainBridge(
   if (!(high > low && low >= 0)) {
     REGISTERED_IPC_MAINS.delete(ipcMain);
     throw new BridgeError(
-      "INVALID_ARG",
+      "BRIDGE_INVALID_ARG",
       `outputHighWatermark (${high}) must be > outputLowWatermark (${low}) >= 0`,
     );
   }
@@ -263,8 +328,8 @@ export function createMainBridge(
     // (1) Mark in-flight invokes aborted. The TmuxClient FIFO stays intact —
     //     the underlying %begin/%end still resolves the pending entry in
     //     order — but the post-await branch in invokeHandler observes the
-    //     aborted flag and throws BridgeError("ABORTED") instead of trying
-    //     to deliver to a dead webContents.
+    //     aborted flag and returns a BRIDGE_ABORTED envelope instead of
+    //     trying to deliver to a dead webContents.
     for (const p of state.pending) p.aborted = true;
 
     // (2) Drop outstanding-byte accounting and resume panes that were paused
@@ -336,7 +401,7 @@ export function createMainBridge(
   ): Promise<CommandResponse> => {
     if (!state.subscriptions.has(name)) {
       throw new BridgeError(
-        "UNKNOWN_SUBSCRIPTION",
+        "BRIDGE_UNKNOWN_SUBSCRIPTION",
         `sender does not own subscription "${name}" (this prevents one ` +
           `renderer from tearing down another's subscriptions)`,
       );
@@ -474,64 +539,51 @@ export function createMainBridge(
   const invokeHandler = async (
     event: IpcMainInvokeEventLike,
     ...args: unknown[]
-  ): Promise<unknown> => {
-    // [LAW:single-enforcer] parseRpcRequest is the only validation site;
-    // RpcError surfaces with structured code + message, propagated verbatim
-    // so the renderer sees the same contract every time.
+  ): Promise<InvokeResultEnvelope> => {
+    // [LAW:dataflow-not-control-flow] The handler ALWAYS returns an
+    // InvokeResultEnvelope — every outcome (success, tmux %error, bridge
+    // failure) becomes a value in the envelope's discriminated union. The
+    // handler never rejects.
     //
-    // The dispatch result is wrapped in a small envelope so TmuxCommandError
-    // can cross IPC: real Electron's `ipcMain.handle` serializes `Error`
-    // rejections as opaque messages and drops their custom properties (e.g.
-    // `.response`). Returning a plain object preserves the structured
-    // CommandResponse end-to-end. The renderer's `invoke()` re-throws as a
-    // TmuxCommandError so `proxy.execute()` keeps the same contract as
-    // `client.execute()`.
+    // Why never reject: real Electron's `ipcMain.handle` serializes a
+    // promise rejection by reading `.message` (and `.stack` in dev mode);
+    // structured-clone DROPS subclass properties like `.code`. Throwing
+    // BridgeError out of this handler loses the very piece of information
+    // the renderer needs to branch on. The wire envelope carries
+    // `BridgeErrorPayload` (`{code, message}`) so the renderer
+    // reconstructs a typed BridgeError via `BridgeError.fromPayload`.
     //
-    // [LAW:locality-or-seam] Unexpected sync throws (encoder bugs, internal
-    // invariant violations) MUST cross IPC with localizing context, not as
-    // bare opaque messages. Real Electron drops custom Error properties on
-    // serialization, so the context has to ride in `.message`. The wrapper
-    // adds method name + original cause; the original stack is preserved on
-    // `.stack` for renderer-side logging.
+    // [LAW:single-enforcer] parseRpcRequest is still the only validation
+    // site; the difference is that RpcError no longer escapes — it is
+    // mapped to BridgeError at this seam (rpcErrorToBridge below).
     const senderState = getOrCreateSender(event.sender);
     const dispatch: PendingDispatch = { aborted: false };
     senderState.pending.add(dispatch);
 
-    let method = "<unknown>";
     try {
-      const req = parseRpcRequest(args[0]);
-      method = req.method;
+      let req: RpcRequest;
+      try {
+        req = parseRpcRequest(args[0]);
+      } catch (err) {
+        if (err instanceof RpcError) return rpcErrorEnvelope(err);
+        return internalErrorEnvelope("<unknown>", err);
+      }
+      const method = req.method;
       try {
         const response = await runDispatch(senderState, req);
-        if (dispatch.aborted) {
-          throw new BridgeError(
-            "ABORTED",
-            `dispatch for method=${method} aborted: sender destroyed`,
-          );
-        }
-        return { ok: true as const, response };
+        if (dispatch.aborted) return abortedEnvelope(method);
+        return { status: "ok", response };
       } catch (err) {
+        if (dispatch.aborted) return abortedEnvelope(method);
         if (err instanceof TmuxCommandError) {
-          if (dispatch.aborted) {
-            throw new BridgeError(
-              "ABORTED",
-              `dispatch for method=${method} aborted: sender destroyed`,
-            );
-          }
-          return { ok: false as const, response: err.response };
+          return { status: "tmux-error", response: err.response };
         }
-        throw err;
+        if (err instanceof BridgeError) {
+          return { status: "bridge-error", error: err.toPayload() };
+        }
+        if (err instanceof RpcError) return rpcErrorEnvelope(err);
+        return internalErrorEnvelope(method, err);
       }
-    } catch (err) {
-      if (err instanceof RpcError || err instanceof BridgeError) throw err;
-      const causeMsg = err instanceof Error ? err.message : String(err);
-      const wrapped = new Error(
-        `[BRIDGE_INTERNAL] dispatch failed for method=${method}: ${causeMsg}`,
-      );
-      if (err instanceof Error && err.stack !== undefined) {
-        wrapped.stack = `${wrapped.stack ?? wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      throw wrapped;
     } finally {
       senderState.pending.delete(dispatch);
     }
@@ -542,20 +594,17 @@ export function createMainBridge(
   // signal (the PendingDispatch flag); this Set carries the await target.
   // They serve different purposes — keeping them separate is cheaper than
   // promoting PendingDispatch into a deferred.
-  const pendingHandlerCalls = new Set<Promise<unknown>>();
+  const pendingHandlerCalls = new Set<Promise<InvokeResultEnvelope>>();
 
   const trackedInvokeHandler = (
     event: IpcMainInvokeEventLike,
     ...args: unknown[]
-  ): Promise<unknown> => {
+  ): Promise<InvokeResultEnvelope> => {
     const p = invokeHandler(event, ...args);
     pendingHandlerCalls.add(p);
-    // Cleanup must NOT create a dangling rejection: `.finally(...)` (or
-    // `void p.finally(...)`) re-throws on rejection, which produces an
-    // unhandled rejection on the side chain because no one awaits it.
-    // `p.then(cleanup, cleanup)` swallows both outcomes into a fresh
-    // resolved promise — the original `p` is still awaited by the IPC
-    // consumer (and by `drain` via the set), so its rejection IS handled.
+    // The envelope-returning handler never rejects under normal flow, but
+    // keep the symmetric cleanup so a programming error (a rejection that
+    // somehow escapes the try/catch) does not leak into the tracking Set.
     const cleanup = (): void => {
       pendingHandlerCalls.delete(p);
     };
@@ -623,6 +672,8 @@ function byteAccount(
 // Re-export the types a main-process consumer might need without forcing a
 // second import site.
 export type {
+  BridgeErrorCode,
+  BridgeErrorPayload,
   IpcMainLike,
   MainBridgeHandle,
   MainBridgeOptions,
