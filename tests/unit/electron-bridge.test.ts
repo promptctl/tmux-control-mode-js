@@ -1823,6 +1823,54 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       expect(t.sent.slice(sentBefore)).toEqual([]);
     });
 
+    it("rolls back the entire record (and every concurrent joiner) when tmux rejects the first subscribe", async () => {
+      // Race the bloodhound caught in the qz5.5 review: the helper
+      // optimistically installed a record before `client.subscribe`
+      // resolved, so a concurrent peer with the matching (what, format)
+      // could short-circuit to a synthesized OK. If tmux then rejected the
+      // first call, the second peer was left holding a phantom
+      // subscription. The fix queues concurrent joiners on an `inflight`
+      // promise; this test pins that they all reject together.
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      createMainBridge(client, hub.ipcMain);
+
+      const a = hub.createRenderer();
+      const b = hub.createRenderer();
+      const pa = createRendererBridge(a.ipcRenderer);
+      const pb = createRendererBridge(b.ipcRenderer);
+
+      // A initiates the subscribe; B races in with the same (what, format).
+      const aSub = pa.subscribe("foo", "", "#{x}");
+      // Yield once so A's subscribe call reaches client.subscribe (the
+      // bridge dispatch path is async). Then B's call observes the
+      // record and queues on inflight.
+      await Promise.resolve();
+      await Promise.resolve();
+      const bSub = pb.subscribe("foo", "", "#{x}");
+
+      // tmux rejects A's subscribe. Both A and B must reject — B was
+      // queued on the inflight promise, not optimistically resolved.
+      t.feed("%begin 1 1 0\n");
+      t.feed("nope\n");
+      t.feed("%error 1 1 0\n");
+
+      await expect(aSub).rejects.toBeInstanceOf(TmuxCommandError);
+      await expect(bSub).rejects.toBeInstanceOf(TmuxCommandError);
+
+      // Neither peer should still be carrying ownership — a follow-up
+      // unsubscribe would surface BRIDGE_UNKNOWN_SUBSCRIPTION because the
+      // rollback dropped both peers' state.subscriptions and deleted the
+      // shared record.
+      await expect(pa.unsubscribe("foo")).rejects.toMatchObject({
+        code: "BRIDGE_UNKNOWN_SUBSCRIPTION",
+      });
+      await expect(pb.unsubscribe("foo")).rejects.toMatchObject({
+        code: "BRIDGE_UNKNOWN_SUBSCRIPTION",
+      });
+    });
+
     it("allows a sender to update its OWN format after unsubscribing first", async () => {
       // The rejection rule says "to update format, unsubscribe first". This
       // pins that the workaround actually works — a single owner can

@@ -497,10 +497,18 @@ class Connection {
     // subscription refcount + per-pane outstanding-byte accounting + the
     // watermark-driven setPaneAction loop — the same bookkeeping the
     // Electron bridge uses, so neither transport re-implements any of it.
-    // Per-connection scope is sufficient for the audit goals: subscription
-    // ownership prevents cross-peer teardowns (UNKNOWN_SUBSCRIPTION); the
-    // watermark + bufferedAmount fallback prevents the OOM hazard from a
-    // slow consumer.
+    //
+    // SCOPE NOTE: per-connection scope satisfies the qz5.5 audit
+    // findings (C2 cross-peer unsubscribe rejection — UNKNOWN_SUBSCRIPTION;
+    // C3 OOM hazard prevention via watermark + bufferedAmount drain
+    // signal). It does NOT close the cross-WS analog of C1: when two WS
+    // connections share a TmuxClient and subscribe the same name with
+    // divergent (what, format), each Connection's helper has its own
+    // record, both call client.subscribe, and tmux's last-write-wins
+    // semantics overwrite the first binding's format. A future lift to
+    // factory-scope (Map<TmuxClient, BridgeConnection> with refcount)
+    // would close this gap; the qz5.5 ticket scoped C1 to Electron and
+    // explicitly documented this as a follow-up — see IMPL.md §7.
     //
     // [LAW:locality-or-seam] Bridge construction MUST precede client.on so
     // a watermark-config validation failure does not leak the event

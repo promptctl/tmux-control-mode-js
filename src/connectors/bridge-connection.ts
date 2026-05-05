@@ -86,6 +86,17 @@ interface SubscriptionRecord {
   readonly format: string;
   /** Peers currently holding this name (refcount = owners.size). */
   readonly owners: Set<Peer>;
+  /**
+   * The in-flight `client.subscribe` promise for the FIRST subscriber that
+   * created this record. Cleared to `undefined` once the call settles.
+   * While present, concurrent subscribers with a matching `(what, format)`
+   * AWAIT this promise before claiming ownership — never short-circuit to
+   * a synthesized OK based on an optimistic record. This closes a race
+   * where a concurrent peer would otherwise resolve OK before tmux has
+   * confirmed the binding, and a subsequent tmux rejection on the first
+   * call would leave the second peer holding a phantom subscription.
+   */
+  inflight: Promise<CommandResponse> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +259,82 @@ export function createBridgeConnection(
     return false;
   };
 
+  // [LAW:dataflow-not-control-flow] Concurrent subscribes to the same
+  // name share fate via a single `inflight` promise stored on the record.
+  // The first subscriber installs the record + issues client.subscribe;
+  // subsequent peers with a matching (what, format) AWAIT that promise
+  // before claiming ownership. If tmux rejects, every queued peer sees
+  // the same rejection — no peer is left holding a phantom subscription.
+  const subscribeForPeerImpl = async (
+    peer: Peer,
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> => {
+    const state = peers.get(peer);
+    if (state === undefined) {
+      throw new BridgeError(
+        "BRIDGE_INTERNAL",
+        "subscribeForPeer called for a peer that is not registered",
+      );
+    }
+    const existing = subscriptions.get(name);
+    if (existing !== undefined) {
+      if (existing.what !== what || existing.format !== format) {
+        throw new BridgeError(
+          "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT",
+          `subscription "${name}" is already held with a different ` +
+            `(what, format) pair; unsubscribe first if you need to update it`,
+        );
+      }
+      // Queue on the in-flight subscribe (if any). Awaiting here means a
+      // tmux rejection on the first call rejects every queued peer too —
+      // the same shape every async caller already handles. The first
+      // call's catch path has cleared the record by the time we resume,
+      // so success/failure is the only branch.
+      if (existing.inflight !== undefined) {
+        await existing.inflight;
+      }
+      // After settle, the record might still exist (success — the common
+      // case) or have been deleted (failure — the await above already
+      // propagated the rejection, so we never reach here in that case).
+      // Claim ownership of the surviving record.
+      if (!state.subscriptions.has(name)) {
+        state.subscriptions.add(name);
+        existing.owners.add(peer);
+      }
+      return synthesizeOk();
+    }
+
+    const inflight = client.subscribe(name, what, format);
+    const record: SubscriptionRecord = {
+      what,
+      format,
+      owners: new Set([peer]),
+      inflight,
+    };
+    subscriptions.set(name, record);
+    state.subscriptions.add(name);
+    try {
+      const response = await inflight;
+      record.inflight = undefined;
+      return response;
+    } catch (err) {
+      // Rollback: tmux refused to install the subscription. Drop the
+      // ENTIRE record (and every owner who optimistically joined while
+      // the call was in flight) so the system stays consistent. Any peer
+      // still awaiting `inflight` will see the same rejection re-thrown.
+      record.inflight = undefined;
+      for (const owner of record.owners) {
+        const ownerState = peers.get(owner);
+        ownerState?.subscriptions.delete(name);
+      }
+      record.owners.clear();
+      subscriptions.delete(name);
+      throw err;
+    }
+  };
+
   return {
     registerPeer(): Peer {
       const peer: Peer = { id: nextPeerId++ };
@@ -279,67 +366,7 @@ export function createBridgeConnection(
       state.subscriptions.clear();
     },
 
-    async subscribeForPeer(
-      peer: Peer,
-      name: string,
-      what: string,
-      format: string,
-    ): Promise<CommandResponse> {
-      const state = peers.get(peer);
-      if (state === undefined) {
-        // [LAW:no-defensive-null-guards] Trust-boundary check: a transport
-        // that mishandles its own peer lifecycle (calling subscribe after
-        // removePeer) would otherwise silently corrupt the bookkeeping. The
-        // throw fails loudly at the bridge boundary instead.
-        throw new BridgeError(
-          "BRIDGE_INTERNAL",
-          "subscribeForPeer called for a peer that is not registered",
-        );
-      }
-
-      const existing = subscriptions.get(name);
-      if (existing !== undefined) {
-        // Divergent re-subscribe: a peer claims an existing name with a
-        // different (what, format). Reject — silently overwriting tmux's
-        // binding would change the format observed by prior subscribers.
-        if (existing.what !== what || existing.format !== format) {
-          throw new BridgeError(
-            "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT",
-            `subscription "${name}" is already held with a different ` +
-              `(what, format) pair; unsubscribe first if you need to update it`,
-          );
-        }
-        // Same key — just claim ownership (idempotent for repeat callers).
-        if (!state.subscriptions.has(name)) {
-          state.subscriptions.add(name);
-          existing.owners.add(peer);
-        }
-        return synthesizeOk();
-      }
-
-      // First subscriber for this name: store the canonical (what, format)
-      // OPTIMISTICALLY before the await so a concurrent subscribe from
-      // another peer with the same key short-circuits to the synthesized-ok
-      // path (matching the refcount the await is about to establish).
-      const record: SubscriptionRecord = {
-        what,
-        format,
-        owners: new Set([peer]),
-      };
-      subscriptions.set(name, record);
-      state.subscriptions.add(name);
-      try {
-        return await client.subscribe(name, what, format);
-      } catch (err) {
-        // Rollback: tmux refused to install the subscription. Drop our
-        // ownership claim so a retry from this peer (or any other peer) can
-        // re-establish the canonical record cleanly.
-        record.owners.delete(peer);
-        state.subscriptions.delete(name);
-        if (record.owners.size === 0) subscriptions.delete(name);
-        throw err;
-      }
-    },
+    subscribeForPeer: subscribeForPeerImpl,
 
     async unsubscribeForPeer(
       peer: Peer,
@@ -397,19 +424,17 @@ export function createBridgeConnection(
     },
 
     dispose(): void {
-      for (const peer of [...peers.keys()]) {
-        const state = peers.get(peer);
-        if (state === undefined) continue;
-        peers.delete(peer);
-        state.outstanding.clear();
-        for (const name of state.subscriptions) {
-          const lastOwner = releaseName(name, peer);
-          if (lastOwner) void client.unsubscribe(name).catch(swallow);
-        }
-        state.subscriptions.clear();
-      }
-      // Resume any panes the helper had paused so tmux is not left stuck
-      // after teardown.
+      // [LAW:single-enforcer] One peer-teardown path. dispose's body used
+      // to inline a hand-written variant of removePeer; collapsing both
+      // sites onto a single call removes a drift surface (a future change
+      // to refcount semantics that lands in only one place would be a
+      // real bug). The redundant per-pane maybeResume work removePeer
+      // does is bounded by the number of paused panes — small.
+      for (const peer of [...peers.keys()]) this.removePeer(peer);
+      // Final defense: removePeer's maybeResume should have cleared every
+      // entry from pausedPanes by now (totalOutstanding goes to 0 once the
+      // last peer leaves), but flush unconditionally so a programming error
+      // that left pausedPanes populated does not leave tmux stuck.
       for (const paneId of pausedPanes) {
         void client.setPaneAction(paneId, PaneAction.Continue).catch(swallow);
       }
