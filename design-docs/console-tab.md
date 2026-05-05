@@ -41,8 +41,8 @@ REPL + Playground share a tab because:
   + `%subscription-changed`. Together they make the *whole* command
   side of the protocol tangible.
 
-Layout Designer, Key Bindings, Snapshot/Restore are **out of scope
-for this doc**.
+Layout Designer, Key Binding Browser, Snapshot/Restore are **out of
+scope for this doc**.
 
 ---
 
@@ -62,14 +62,15 @@ automatically (forward-compatible).
 - New option in the header `SegmentedControl`. Suggested ordering:
   Multiplexer, Console, Inspector, Heatmap (operator-driving sits
   next to operator-using; diagnostic surfaces trail).
-- The current `SegmentedControl.onChange` is a hard-coded ternary
-  that maps any unknown value to `"multiplexer"`. Refactor to a
-  typed cast once the union covers every option Mantine emits — the
-  persistence guard in `UiStore` is the trust boundary for invalid
-  stored values, not the `onChange` handler. Without this refactor,
-  clicking Console silently routes back to Multiplexer.
+- The current header `SegmentedControl.onChange` maps any unknown
+  value to `"multiplexer"`. The trust boundary for invalid persisted
+  app modes is the persistence guard in `UiStore`, not the `onChange`
+  handler — extend the union exhaustively so the handler stops
+  swallowing unknown values silently. Without this, clicking Console
+  routes back to Multiplexer.
 - `ConsoleStore` lifecycle parallels `InspectorStore` /
-  `HeatmapStore`: constructed via `useMemo`, disposed in cleanup.
+  `HeatmapStore`: constructed at mount, explicitly disposed at
+  unmount.
 
 ### Component layout
 
@@ -126,13 +127,16 @@ details belong in the tickets):
 
 ## Wire / library: nothing new required
 
-- REPL → existing `bridge.execute()`.
-- Playground one-shot → `display-message -p ...` via `bridge.execute()`.
-- Playground subscribed → `refresh-client -B name::format` plus the
-  existing `subscription-changed` event path on the bridge.
-- Tear-down → `refresh-client -u name`.
-
-No new bridge wire messages. No new library API.
+The Console reuses existing seams. The REPL submits commands through
+the same execute path the rest of the app already uses. The Playground
+one-shot mode goes through that same execute path; subscribed mode
+rides the existing format-subscription channel and its
+`%subscription-changed` event flow. No new bridge wire messages, no
+new library API, no new event types — Console is purely a new
+*consumer* of surfaces that already exist. Exact tmux command
+syntax for subscribe / unsubscribe / one-shot evaluation is verified
+against tmux source during implementation; it is not a design-doc
+concern.
 
 ---
 
@@ -159,9 +163,9 @@ No new bridge wire messages. No new library API.
 - Enter submits. (Multiline commands deferred — see Open questions.)
 - The visible **[clear]** button is the only clear path. Chord
   shortcuts are intentionally not bound: the app-level keymap
-  bypasses INPUT/TEXTAREA via `isRegularTextInput()`, so a chord
-  would never fire from the focused REPL input. Ctrl+L additionally
-  collides with the browser's address-bar shortcut.
+  already bypasses regular text inputs, so a chord would not fire
+  from the focused REPL input; and Ctrl+L collides with the
+  browser's address-bar shortcut.
 - Latency rendered next to the command, color-coded
   (green ≤25ms, yellow ≤200ms, red >200ms).
 - Error responses render with a red gutter; ok responses neutral.
@@ -234,14 +238,15 @@ as past history.
   alive — tmux keys subscriptions by name and rate-limits per-name,
   so leaving it active costs nothing visible. Tear-down only on
   `dispose()`.
-- **Bridge disconnects mid-command.** `bridge.execute()` rejects;
-  entry transitions to `error` carrying the actual error message.
-- **Multiline command output.** `CommandResponse.lines` is already
-  an array; render with `<pre>` semantics, no newline collapse.
-- **Format with embedded single quotes.** `escapeFormat` replaces
-  each `'` with `'\''` — the standard close-quote, escaped-quote,
-  reopen-quote pattern for shell-quoted strings. Test fixture:
-  `it's`.
+- **Bridge disconnects mid-command.** The execute call rejects; the
+  entry transitions to the error variant carrying the actual error
+  message — never a swallowed log.
+- **Multiline command output.** Command responses are
+  line-oriented; render preserving line breaks, no newline collapse.
+- **Format with embedded single quotes.** Single-quote escaping for
+  shell-quoted format strings is owned by the store, not by callers
+  — format strings round-trip through tmux safely regardless of
+  embedded quotes. Test fixture: `it's`.
 - **Format that produces empty output.** Render `(empty)` in dimmed
   gray. Distinguishes "evaluated to empty" from "subscription hasn't
   fired yet."
@@ -320,4 +325,4 @@ design when its turn comes:
 - **Layout designer** — visual splitter editor.
 - **Snapshot/restore** — needs the fidelity question answered (TUI
   processes don't survive `send-keys` replay).
-- **Key binding browser** — likely a side panel rather than a tab.
+- **Key Binding Browser** — likely a side panel rather than a tab.
