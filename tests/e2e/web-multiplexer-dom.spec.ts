@@ -83,8 +83,15 @@ async function launchApp(): Promise<AppHandle> {
 }
 
 async function disposeApp(handle: AppHandle): Promise<void> {
-  await handle.app.close();
-  killSocket(handle.socket);
+  // [LAW:single-enforcer] killSocket must run unconditionally — it owns
+  // cleanup of THIS test's per-run socket, and a Playwright/Electron
+  // shutdown reject would otherwise leak the tmux server into
+  // subsequent runs.
+  try {
+    await handle.app.close();
+  } finally {
+    killSocket(handle.socket);
+  }
 }
 
 test("multi-line output lands on distinct xterm rows", async () => {
