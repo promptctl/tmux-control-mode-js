@@ -164,6 +164,13 @@ type Validators = {
   readonly [R in RpcRequest as R["method"]]: ArgValidator<R>;
 };
 
+// Module-scoped allowlist for splitWindow options. Hoisted from the
+// per-call validator body so the Set is allocated once at module load.
+const KNOWN_SPLIT_OPTIONS: ReadonlySet<string> = new Set([
+  "vertical",
+  "target",
+]);
+
 const VALIDATORS: Validators = Object.assign(
   Object.create(null) as Validators,
   {
@@ -185,31 +192,53 @@ const VALIDATORS: Validators = Object.assign(
           "splitWindow: options must be an object",
         );
       }
-      // The encoder is the actual SplitOptions parser; here we just shape-check.
+      const obj = opts as Record<string, unknown>;
+      // [LAW:single-enforcer] Full field validation — the encoder consumes
+      // validated data, it is not a second validator.
+      if ("vertical" in obj && typeof obj.vertical !== "boolean") {
+        throw new RpcError(
+          "INVALID_ARG",
+          "splitWindow: options.vertical must be a boolean",
+        );
+      }
+      if ("target" in obj && typeof obj.target !== "string") {
+        throw new RpcError(
+          "INVALID_ARG",
+          "splitWindow: options.target must be a string",
+        );
+      }
+      for (const key of Object.keys(obj)) {
+        if (!KNOWN_SPLIT_OPTIONS.has(key)) {
+          throw new RpcError(
+            "INVALID_ARG",
+            `splitWindow: unknown option "${key}"`,
+          );
+        }
+      }
       return [opts as SplitOptions] as const;
     },
     setSize: (args) =>
       [
-        requireFiniteNumber(args, 0, "width"),
-        requireFiniteNumber(args, 1, "height"),
+        requireNonNegativeInteger(args, 0, "width"),
+        requireNonNegativeInteger(args, 1, "height"),
       ] as const,
     setPaneAction: (args) =>
       [
-        requireFiniteNumber(args, 0, "paneId"),
+        requireNonNegativeInteger(args, 0, "paneId"),
         requirePaneAction(args, 1),
       ] as const,
     subscribe: (args) =>
       [
-        requireString(args, 0, "name"),
+        requireNonEmptyString(args, 0, "name"),
         requireString(args, 1, "what"),
         requireString(args, 2, "format"),
       ] as const,
-    unsubscribe: (args) => [requireString(args, 0, "name")] as const,
+    unsubscribe: (args) => [requireNonEmptyString(args, 0, "name")] as const,
     setFlags: (args) => [requireStringArray(args, 0, "flags")] as const,
     clearFlags: (args) => [requireStringArray(args, 0, "flags")] as const,
     requestReport: (args) =>
       [
-        requireFiniteNumber(args, 0, "paneId"),
+        requireNonNegativeInteger(args, 0, "paneId"),
         requireString(args, 1, "report"),
       ] as const,
     queryClipboard: (args) => requireNoArgs(args),
@@ -291,6 +320,42 @@ function requireFiniteNumber(
     throw new RpcError(
       "INVALID_ARG",
       `arg ${index} (${name}) must be a finite number`,
+    );
+  }
+  return v;
+}
+
+// [LAW:single-enforcer] Non-negative integer check for pane IDs and dimensions.
+// Reusable across all methods that accept tmux entity IDs or sizes — same rule
+// enforced once, consumed everywhere.
+function requireNonNegativeInteger(
+  args: readonly unknown[],
+  index: number,
+  name: string,
+): number {
+  const v = requireFiniteNumber(args, index, name);
+  if (v < 0 || !Number.isInteger(v)) {
+    throw new RpcError(
+      "INVALID_ARG",
+      `arg ${index} (${name}) must be a non-negative integer`,
+    );
+  }
+  return v;
+}
+
+// [LAW:single-enforcer] Non-empty string check for subscription names.
+// The WS frame parser already rejects empty IDs; the RPC layer must be
+// symmetric — empty subscription names are meaningless to tmux.
+function requireNonEmptyString(
+  args: readonly unknown[],
+  index: number,
+  name: string,
+): string {
+  const v = requireString(args, index, name);
+  if (v.length === 0) {
+    throw new RpcError(
+      "INVALID_ARG",
+      `arg ${index} (${name}) must be a non-empty string`,
     );
   }
   return v;

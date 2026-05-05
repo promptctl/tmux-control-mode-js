@@ -5,6 +5,10 @@
 // the test can drive what would normally arrive from a relay.
 
 import { websocketTransport } from "../../src/connectors/websocket/transport.js";
+import {
+  parseServerFrame,
+  BridgeProtocolError,
+} from "../../src/connectors/websocket/protocol.js";
 import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
 
 type Listener = (event: unknown) => void;
@@ -187,5 +191,55 @@ describe("websocketTransport", () => {
     t.onData((c) => chunks.push(c));
     ws.emitMessage(null);
     expect(chunks).toEqual([""]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseServerFrame — event type discriminator validation
+// ---------------------------------------------------------------------------
+
+describe("parseServerFrame — event type validation", () => {
+  const welcomeFrame = JSON.stringify({
+    v: 1,
+    k: "welcome",
+    protocol: 1,
+    limits: { requestTimeoutMs: 5000, heartbeatIntervalMs: 30000, maxInflight: 4 },
+  });
+
+  it("accepts a valid event frame with known type", () => {
+    const frame = parseServerFrame(
+      JSON.stringify({ v: 1, k: "event", msg: { type: "layout-change" } }),
+    );
+    expect(frame.k).toBe("event");
+  });
+
+  it("rejects event frame with unknown msg.type", () => {
+    const fn = (): unknown =>
+      parseServerFrame(
+        JSON.stringify({ v: 1, k: "event", msg: { type: "bogus" } }),
+      );
+    expect(fn).toThrow(BridgeProtocolError);
+    expect(fn).toThrow(/known TmuxMessage discriminator/);
+  });
+
+  it("rejects event frame with non-string msg.type", () => {
+    const fn = (): unknown =>
+      parseServerFrame(
+        JSON.stringify({ v: 1, k: "event", msg: { type: 42 } }),
+      );
+    expect(fn).toThrow(BridgeProtocolError);
+    expect(fn).toThrow(/known TmuxMessage discriminator/);
+  });
+
+  it("rejects event frame with missing msg.type", () => {
+    const fn = (): unknown =>
+      parseServerFrame(JSON.stringify({ v: 1, k: "event", msg: {} }));
+    expect(fn).toThrow(BridgeProtocolError);
+    expect(fn).toThrow(/known TmuxMessage discriminator/);
+  });
+
+  it("still parses non-event frames (welcome) without change", () => {
+    const frame = parseServerFrame(welcomeFrame);
+    expect(frame.k).toBe("welcome");
   });
 });

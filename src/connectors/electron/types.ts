@@ -278,8 +278,16 @@ export function parseAckMessage(raw: unknown): AckMessage {
     throw new BridgeError("INVALID_ARG", "ack must be a non-array object");
   }
   const obj = raw as { paneId?: unknown; bytes?: unknown };
-  if (typeof obj.paneId !== "number" || !Number.isFinite(obj.paneId)) {
-    throw new BridgeError("INVALID_ARG", "ack.paneId must be a finite number");
+  if (
+    typeof obj.paneId !== "number" ||
+    !Number.isFinite(obj.paneId) ||
+    obj.paneId < 0 ||
+    !Number.isInteger(obj.paneId)
+  ) {
+    throw new BridgeError(
+      "INVALID_ARG",
+      "ack.paneId must be a non-negative integer",
+    );
   }
   if (
     typeof obj.bytes !== "number" ||
