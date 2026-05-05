@@ -29,7 +29,10 @@ describe("connectors/errors — BridgeError shape", () => {
   it("toPayload strips the prefix so wire messages stay code-free", () => {
     const e = new BridgeError("BRIDGE_INVALID_ARG", "bad arg");
     const p = e.toPayload();
-    expect(p).toEqual({ code: "BRIDGE_INVALID_ARG", message: "bad arg" });
+    // V8 always populates `.stack`; the payload carries it as debug-aid.
+    // The contract here is `code` and `message` — `stack` is opaque.
+    expect(p.code).toBe("BRIDGE_INVALID_ARG");
+    expect(p.message).toBe("bad arg");
   });
 
   it("fromPayload reconstructs a typed BridgeError with the original code", () => {
@@ -51,6 +54,34 @@ describe("connectors/errors — BridgeError shape", () => {
     const restored = BridgeError.fromPayload(original.toPayload());
     expect(restored.message).toBe(original.message);
     expect(restored.code).toBe(original.code);
+  });
+
+  it("payload round-trip preserves Error.stack when present", () => {
+    // Stack is debug-aid for renderer-side logs. The original (pre-
+    // envelope) Electron path appended a `Caused by:` block to
+    // `wrapped.stack`; the new payload-based path must give the renderer
+    // the same trace context so a regression doesn't silently degrade
+    // debuggability across IPC.
+    const original = new BridgeError(
+      "BRIDGE_INTERNAL",
+      "dispatch failed: cause",
+    );
+    original.stack = `${original.stack ?? original.message}\nCaused by: Error: original cause\n    at fakeFn (fake.ts:1:1)`;
+
+    const payload = original.toPayload();
+    expect(payload.stack).toBe(original.stack);
+
+    const restored = BridgeError.fromPayload(payload);
+    expect(restored.stack).toBe(original.stack);
+  });
+
+  it("toPayload omits stack when the error has none (e.g. test harnesses with stack-stripped Errors)", () => {
+    const e = new BridgeError("BRIDGE_TIMEOUT", "deadline reached");
+    // V8 always populates .stack, but consumers (or test fixtures) can
+    // strip it. The payload must still be well-formed without it.
+    e.stack = undefined;
+    const p = e.toPayload();
+    expect("stack" in p).toBe(false);
   });
 });
 

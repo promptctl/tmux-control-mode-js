@@ -15,6 +15,8 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
+import type { CommandResponse } from "../../protocol/types.js";
+import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { RpcRequest } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,31 @@ export interface IpcRendererLike {
 // ---------------------------------------------------------------------------
 
 export type InvokeRequest = RpcRequest;
+
+// ---------------------------------------------------------------------------
+// InvokeResultEnvelope — the wire shape `ipcMain.handle("tmux:invoke")`
+// returns and `ipcRenderer.invoke(...)` resolves to.
+//
+// [LAW:one-source-of-truth] Both main.ts (which constructs envelopes) and
+// renderer.ts (which dispatches on `status` and reconstructs typed errors)
+// import this declaration. There is no parallel definition on either side.
+//
+// [LAW:dataflow-not-control-flow] Every outcome of an invoke handler call
+// becomes a value in this discriminated union; the renderer-side proxy
+// dispatches on `status` rather than on whether a Promise rejected. The
+// handler never throws, so `ipcMain.handle` never has to round-trip an
+// Error subclass through Electron's structured-clone serializer (which
+// would drop `.code` on `BridgeError` and `.response` on
+// `TmuxCommandError`).
+// ---------------------------------------------------------------------------
+
+export type InvokeResultEnvelope =
+  | { readonly status: "ok"; readonly response: CommandResponse }
+  | { readonly status: "tmux-error"; readonly response: CommandResponse }
+  | {
+      readonly status: "bridge-error";
+      readonly error: BridgeErrorPayloadType;
+    };
 
 // ---------------------------------------------------------------------------
 // Renderer → main: output-byte ack frame.

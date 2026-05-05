@@ -1816,6 +1816,14 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     expect(err).toBeInstanceOf(BridgeError);
     expect((err as BridgeError).code).toBe("BRIDGE_INTERNAL");
     expect((err as Error).message).toMatch(/method=execute/);
+    // Stack preservation regression (qz5.2 PR feedback): the cause's stack
+    // must propagate across IPC so renderer-side logs localize to the
+    // function that actually threw, not just to the bridge wrapper. The
+    // pre-envelope code did this via `wrapped.stack = own + "\nCaused by: " + cause.stack`;
+    // the new payload-based path must give the renderer the same context.
+    const stack = (err as Error).stack ?? "";
+    expect(stack).toMatch(/Caused by:/);
+    expect(stack).toMatch(/transport offline/);
   });
 
   it("renderer-side rejection carries BRIDGE_UNKNOWN_METHOD via the proxy", async () => {

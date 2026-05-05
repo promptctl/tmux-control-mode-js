@@ -73,6 +73,19 @@ export type BridgeErrorCode =
 export interface BridgeErrorPayload {
   readonly code: BridgeErrorCode;
   readonly message: string;
+  /**
+   * Optional `Error.stack` from the producing side. Carried so a renderer-
+   * side consumer that logs the reconstructed `BridgeError` sees the same
+   * trace context an unwrapped Electron rejection would have shown in dev
+   * mode (where Electron normally serializes `.stack` along with `.message`).
+   *
+   * Used today by `BRIDGE_INTERNAL` envelopes built at the IPC boundary —
+   * those wrap an unexpected dispatch failure and carry the cause's stack
+   * appended via `\nCaused by: ...` so renderer logs localize without a
+   * round-trip to the main process. Other code paths typically omit this
+   * field; it is debug-aid, not load-bearing.
+   */
+  readonly stack?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,11 +109,22 @@ export class BridgeError extends Error {
   }
 
   toPayload(): BridgeErrorPayload {
-    return { code: this.code, message: this.bareMessage() };
+    const base: BridgeErrorPayload = {
+      code: this.code,
+      message: this.bareMessage(),
+    };
+    // [LAW:dataflow-not-control-flow] Stack is data on the payload — a
+    // renderer that reconstructs via fromPayload sees the same trace
+    // context every time. The `?? undefined` keeps the payload object
+    // shape consistent across V8 versions where `.stack` is sometimes
+    // absent on freshly-thrown errors (very old runtimes).
+    return this.stack === undefined ? base : { ...base, stack: this.stack };
   }
 
   static fromPayload(p: BridgeErrorPayload): BridgeError {
-    return new BridgeError(p.code, p.message);
+    const e = new BridgeError(p.code, p.message);
+    if (p.stack !== undefined) e.stack = p.stack;
+    return e;
   }
 
   /**

@@ -31,8 +31,8 @@ import {
   DEFAULT_ACK_BATCH_BYTES,
   IPC,
   type AckMessage,
-  type BridgeErrorPayload,
   type InvokeRequest,
+  type InvokeResultEnvelope,
   type IpcRendererLike,
   type IpcRendererOnListener,
   type RendererBridgeOptions,
@@ -40,16 +40,17 @@ import {
 
 // Wire envelope returned by the main-side invoke handler.
 //
-// [LAW:one-source-of-truth] The shape lives in `./main.ts` (canonical) and
-// is re-imported as a type here so a renderer-only consumer never needs to
-// reach into main-side code. The discriminator `status` covers every
-// outcome: success, tmux %error, bridge-level failure. Bridge-level
-// failures ride a `BridgeErrorPayload` (not a raw Error) so `.code`
-// survives the structured-clone serializer Electron applies to IPC traffic.
-type InvokeResultEnvelope =
-  | { readonly status: "ok"; readonly response: CommandResponse }
-  | { readonly status: "tmux-error"; readonly response: CommandResponse }
-  | { readonly status: "bridge-error"; readonly error: BridgeErrorPayload };
+// [LAW:one-source-of-truth] `InvokeResultEnvelope` is defined in `./types.ts`
+// (renderer-safe, shared between main.ts and renderer.ts) — there is exactly
+// one declaration of this shape in the codebase. The renderer dispatches on
+// `status` and reconstructs typed exceptions:
+//   - `ok`            → resolve with response
+//   - `tmux-error`    → throw TmuxCommandError(response)
+//   - `bridge-error`  → throw BridgeError.fromPayload(error)
+//
+// Bridge-level failures ride a `BridgeErrorPayload` (not a raw Error) so
+// `.code` survives Electron's structured-clone IPC serializer, which would
+// otherwise drop subclass properties.
 
 /**
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.

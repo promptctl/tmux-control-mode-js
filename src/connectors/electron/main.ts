@@ -47,7 +47,7 @@ import {
   IPC,
   parseAckMessage,
   type BridgeErrorCode,
-  type BridgeErrorPayload,
+  type InvokeResultEnvelope,
   type IpcMainEventLike,
   type IpcMainInvokeEventLike,
   type IpcMainLike,
@@ -56,29 +56,6 @@ import {
   type MainBridgeOptions,
   type WebContentsLike,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Invoke result envelope.
-//
-// [LAW:dataflow-not-control-flow] Every outcome of an invoke handler call
-// becomes a value in this discriminated union. The handler never throws —
-// every failure path becomes an envelope variant. The renderer-side proxy
-// dispatches on `status` and reconstructs typed exceptions:
-//   - `ok`            → resolve with response
-//   - `tmux-error`    → throw TmuxCommandError(response)
-//   - `bridge-error`  → throw BridgeError.fromPayload(error)
-//
-// Why this shape: real Electron's `ipcMain.handle` rejection serializer drops
-// subclass properties (BridgeError.code, TmuxCommandError.response) on the
-// way to the renderer, leaving only `.message`. Returning a plain object
-// preserves every structured field — the renderer reconstructs the typed
-// error rather than guessing from a regex on the message.
-// ---------------------------------------------------------------------------
-
-export type InvokeResultEnvelope =
-  | { readonly status: "ok"; readonly response: CommandResponse }
-  | { readonly status: "tmux-error"; readonly response: CommandResponse }
-  | { readonly status: "bridge-error"; readonly error: BridgeErrorPayload };
 
 // ---------------------------------------------------------------------------
 // RpcError → BridgeError mapping at the IPC trust boundary.
@@ -122,13 +99,20 @@ function internalErrorEnvelope(
   err: unknown,
 ): InvokeResultEnvelope {
   const causeMsg = err instanceof Error ? err.message : String(err);
-  return {
-    status: "bridge-error",
-    error: new BridgeError(
-      "BRIDGE_INTERNAL",
-      `dispatch failed for method=${method}: ${causeMsg}`,
-    ).toPayload(),
-  };
+  const wrapped = new BridgeError(
+    "BRIDGE_INTERNAL",
+    `dispatch failed for method=${method}: ${causeMsg}`,
+  );
+  // [LAW:locality-or-seam] Preserve the original cause's stack so renderer
+  // logs localize the failure to the function that actually threw — not
+  // just to the bridge frame that wrapped it. Mirrors the pre-envelope
+  // behavior where a thrown Error carried `wrapped.stack = ${own}\nCaused
+  // by: ${cause}`.
+  if (err instanceof Error && err.stack !== undefined) {
+    const own = wrapped.stack ?? wrapped.message;
+    wrapped.stack = `${own}\nCaused by: ${err.stack}`;
+  }
+  return { status: "bridge-error", error: wrapped.toPayload() };
 }
 
 // ---------------------------------------------------------------------------
