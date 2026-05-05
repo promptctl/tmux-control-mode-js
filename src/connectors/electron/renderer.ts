@@ -32,19 +32,25 @@ import {
   IPC,
   type AckMessage,
   type InvokeRequest,
+  type InvokeResultEnvelope,
   type IpcRendererLike,
   type IpcRendererOnListener,
   type RendererBridgeOptions,
 } from "./types.js";
 
-// Wire envelope returned by the main-side invoke handler. See main.ts —
-// `dispatchRpcRequest`'s success/TmuxCommandError outcomes get encoded as a
-// plain `{ok, response}` object so the structured CommandResponse survives
-// IPC serialization. The renderer re-throws TmuxCommandError so consumers
-// see the same exception shape they would get from a local TmuxClient.
-type InvokeResultEnvelope =
-  | { readonly ok: true; readonly response: CommandResponse }
-  | { readonly ok: false; readonly response: CommandResponse };
+// Wire envelope returned by the main-side invoke handler.
+//
+// [LAW:one-source-of-truth] `InvokeResultEnvelope` is defined in `./types.ts`
+// (renderer-safe, shared between main.ts and renderer.ts) — there is exactly
+// one declaration of this shape in the codebase. The renderer dispatches on
+// `status` and reconstructs typed exceptions:
+//   - `ok`            → resolve with response
+//   - `tmux-error`    → throw TmuxCommandError(response)
+//   - `bridge-error`  → throw BridgeError.fromPayload(error)
+//
+// Bridge-level failures ride a `BridgeErrorPayload` (not a raw Error) so
+// `.code` survives Electron's structured-clone IPC serializer, which would
+// otherwise drop subclass properties.
 
 /**
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.
@@ -69,10 +75,11 @@ export class TmuxClientProxy implements RpcProxyApi {
   private readonly ackBatchBytes: number;
   /**
    * Positive value enables the per-call timeout in `invoke`. 0 means disabled
-   * (the default). The renderer-side promise rejects with `BridgeError("TIMEOUT")`
-   * if the underlying `ipcRenderer.invoke` does not settle in time; the
-   * underlying main-side dispatch is NOT cancelled — it will resolve in order
-   * against the TmuxClient FIFO and its result is discarded by the renderer.
+   * (the default). The renderer-side promise rejects with
+   * `BridgeError("BRIDGE_TIMEOUT")` if the underlying `ipcRenderer.invoke`
+   * does not settle in time; the underlying main-side dispatch is NOT
+   * cancelled — it will resolve in order against the TmuxClient FIFO and its
+   * result is discarded by the renderer.
    */
   private readonly invokeTimeoutMs: number;
   // Per-pane bytes received but not yet acknowledged. The byte count is
@@ -232,8 +239,16 @@ export class TmuxClientProxy implements RpcProxyApi {
         ? await this.withTimeout(ipcPromise, req.method)
         : await ipcPromise;
     const result = settled as InvokeResultEnvelope;
-    if (!result.ok) throw new TmuxCommandError(result.response);
-    return result.response;
+    if (result.status === "ok") return result.response;
+    if (result.status === "tmux-error") {
+      throw new TmuxCommandError(result.response);
+    }
+    // [LAW:single-enforcer] BridgeError reconstruction lives at this seam
+    // only — `BridgeError.fromPayload` is the single way a renderer-side
+    // typed error is rebuilt from a wire payload. Real Electron's
+    // structured-clone serializer drops `.code` on Error subclasses, so the
+    // payload pair is what keeps the error machine-distinguishable.
+    throw BridgeError.fromPayload(result.error);
   }
 
   private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {
@@ -241,7 +256,7 @@ export class TmuxClientProxy implements RpcProxyApi {
       const timer = setTimeout(() => {
         reject(
           new BridgeError(
-            "TIMEOUT",
+            "BRIDGE_TIMEOUT",
             `proxy.${method} did not settle within ${this.invokeTimeoutMs}ms`,
           ),
         );

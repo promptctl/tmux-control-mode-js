@@ -888,8 +888,8 @@ const CLIENT_FRAME_HANDLERS: ClientFrameHandlers = Object.assign(
 
 const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
   UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
-  INVALID_REQUEST: "BRIDGE_PROTOCOL_ERROR",
-  INVALID_ARG: "BRIDGE_PROTOCOL_ERROR",
+  INVALID_REQUEST: "BRIDGE_INVALID_REQUEST",
+  INVALID_ARG: "BRIDGE_INVALID_ARG",
 };
 
 function mapRpcCode(code: RpcErrorCode): BridgeErrorCode {
