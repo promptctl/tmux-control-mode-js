@@ -331,11 +331,11 @@ type SerializedEventType = Exclude<
  * The runtime Set below is just a key projection of this object.
  */
 const SERIALIZED_EVENT_TYPE_MAP = {
-  "begin": true,
-  "end": true,
-  "error": true,
-  "pause": true,
-  "continue": true,
+  begin: true,
+  end: true,
+  error: true,
+  pause: true,
+  continue: true,
   "pane-mode-changed": true,
   "window-add": true,
   "window-close": true,
@@ -354,9 +354,9 @@ const SERIALIZED_EVENT_TYPE_MAP = {
   "paste-buffer-changed": true,
   "paste-buffer-deleted": true,
   "subscription-changed": true,
-  "message": true,
+  message: true,
   "config-error": true,
-  "exit": true,
+  exit: true,
 } as const satisfies Record<SerializedEventType, true>;
 
 /**
