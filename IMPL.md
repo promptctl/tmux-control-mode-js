@@ -427,7 +427,8 @@ The connector source files stay focused on transport-specific concerns:
   `client.subscribe` calls reach tmux and the second overwrites the
   first's binding — the cross-WS analog of the audit's C1 hazard. This is
   a known follow-up (lift the helper to factory scope keyed on TmuxClient
-  with refcount); the qz5.5 ticket scoped C1 to Electron.
+  with refcount); the qz5.5 ticket scoped C1 to Electron. Tracked as
+  `tmux-connectors-qz5.5.1`.
 
 `Connection` in `server.ts` models its lifecycle as a discriminated
 `ConnectionState` union (`pending-hello | running | draining | closed`)

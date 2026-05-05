@@ -508,7 +508,8 @@ class Connection {
     // semantics overwrite the first binding's format. A future lift to
     // factory-scope (Map<TmuxClient, BridgeConnection> with refcount)
     // would close this gap; the qz5.5 ticket scoped C1 to Electron and
-    // explicitly documented this as a follow-up — see IMPL.md §7.
+    // explicitly documented this as a follow-up — see IMPL.md §7. Tracked
+    // as tmux-connectors-qz5.5.1.
     //
     // [LAW:locality-or-seam] Bridge construction MUST precede client.on so
     // a watermark-config validation failure does not leak the event
