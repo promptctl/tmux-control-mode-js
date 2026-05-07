@@ -3,6 +3,7 @@
 
 export { TmuxClient } from "./client.js";
 export type { SplitOptions } from "./client.js";
+export type { ConnectionState } from "./connection-state.js";
 export { TmuxCommandError } from "./errors.js";
 
 export { PaneAction } from "./protocol/types.js";

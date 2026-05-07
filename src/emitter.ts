@@ -36,6 +36,32 @@ import type {
   ExitMessage,
   TmuxMessage,
 } from "./protocol/types.js";
+import type {
+  ConnectionStateMessage,
+  ReconnectedMessage,
+} from "./connection-state.js";
+
+/**
+ * Every event the emitter can carry. `TmuxMessage` (parsed from tmux output)
+ * plus the synthetic lifecycle events that client classes synthesize. This is
+ * the type seen by `'*'` wildcard listeners.
+ *
+ * [LAW:one-source-of-truth] Wildcard listeners read this union; per-event
+ * listeners read `TmuxEventMap`. Both are derived in this file only.
+ */
+export type EmitterMessage =
+  | TmuxMessage
+  | ConnectionStateMessage
+  | ReconnectedMessage;
+
+/**
+ * Type guard separating parsed tmux messages from synthetic lifecycle events.
+ * [LAW:single-enforcer] One discriminator check used by every emitter consumer
+ * that needs to skip synthetic events (stream projections, wire forwarding).
+ */
+export function isTmuxMessage(ev: EmitterMessage): ev is TmuxMessage {
+  return ev.type !== "connection-state" && ev.type !== "reconnected";
+}
 
 /**
  * Maps each tmux notification type string to its corresponding message interface.
@@ -71,6 +97,11 @@ export interface TmuxEventMap {
   message: MessageMessage;
   "config-error": ConfigErrorMessage;
   exit: ExitMessage;
+  // [LAW:one-source-of-truth] Synthetic lifecycle events emitted by client
+  // classes (TmuxClient, WebSocketTmuxClient, TmuxClientProxy). Not parsed
+  // from tmux output. The ConnectionState shape lives in connection-state.ts.
+  "connection-state": ConnectionStateMessage;
+  reconnected: ReconnectedMessage;
 }
 
 // Internal handler type — erases the event payload for storage.
@@ -92,7 +123,7 @@ export class TypedEmitter {
     event: K,
     handler: (event: TmuxEventMap[K]) => void,
   ): void;
-  on(event: "*", handler: (event: TmuxMessage) => void): void;
+  on(event: "*", handler: (event: EmitterMessage) => void): void;
   on(event: string, handler: AnyHandler): void {
     if (event === "*") {
       this.wildcardHandlers.add(handler);
@@ -110,7 +141,7 @@ export class TypedEmitter {
     event: K,
     handler: (event: TmuxEventMap[K]) => void,
   ): void;
-  off(event: "*", handler: (event: TmuxMessage) => void): void;
+  off(event: "*", handler: (event: EmitterMessage) => void): void;
   off(event: string, handler: AnyHandler): void {
     if (event === "*") {
       this.wildcardHandlers.delete(handler);
@@ -124,15 +155,15 @@ export class TypedEmitter {
     }
   }
 
-  emit(event: TmuxMessage): void {
+  emit(event: EmitterMessage): void {
     const set = this.handlers.get(event.type);
     if (set !== undefined) {
       for (const handler of set) {
-        (handler as (event: TmuxMessage) => void)(event);
+        (handler as (event: EmitterMessage) => void)(event);
       }
     }
     for (const handler of this.wildcardHandlers) {
-      (handler as (event: TmuxMessage) => void)(event);
+      (handler as (event: EmitterMessage) => void)(event);
     }
   }
 }

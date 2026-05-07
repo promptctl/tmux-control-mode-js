@@ -9,22 +9,24 @@ import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
 
 import type { TmuxClient } from "../../client.js";
+import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import type { TmuxMessage } from "../../protocol/types.js";
 
 /**
  * Adapt a TmuxClient as a Node.js `Readable` stream in object mode.
  *
- * Every notification is `push`ed; the synthetic `exit` message is pushed
- * AND followed by `push(null)` to signal end-of-stream. Destroying the
- * stream unsubscribes from the client (the TmuxClient itself is not
- * closed — the adapter is a non-owning projection).
+ * Every TmuxMessage is `push`ed; the `exit` message (whether parsed from
+ * the `%exit` notification or synthesized by TmuxClient on transport close)
+ * is pushed AND followed by `push(null)` to signal end-of-stream.
+ * Destroying the stream unsubscribes from the client (the TmuxClient
+ * itself is not closed — the adapter is a non-owning projection).
  *
  * Useful in Node-side test harnesses or pipelines that compose tmux events
  * with other Node streams (e.g. `pipeline(toNodeStream(client), filter,
  * sink)`).
  */
 export function toNodeStream(client: TmuxClient): Readable {
-  let handler: ((event: TmuxMessage) => void) | null = null;
+  let handler: ((event: EmitterMessage) => void) | null = null;
   const stream = new Readable({
     objectMode: true,
     // [LAW:dataflow-not-control-flow] Pull-trigger is a no-op — the events
@@ -39,8 +41,13 @@ export function toNodeStream(client: TmuxClient): Readable {
       cb(err);
     },
   });
-  handler = (event: TmuxMessage): void => {
-    stream.push(event);
+  handler = (event: EmitterMessage): void => {
+    // [LAW:locality-or-seam] This adapter projects parsed tmux messages.
+    // Synthetic lifecycle events (connection-state, reconnected) belong on
+    // the typed `client.on('connection-state', …)` channel — they would
+    // arrive after `exit` and try to push past EOF here.
+    if (!isTmuxMessage(event)) return;
+    stream.push(event satisfies TmuxMessage);
     if (event.type === "exit") stream.push(null);
   };
   client.on("*", handler);
@@ -65,7 +72,9 @@ export function toNodeStream(client: TmuxClient): Readable {
  */
 export function toEventEmitter(client: TmuxClient): EventEmitter {
   const ee = new EventEmitter();
-  client.on("*", (event: TmuxMessage): void => {
+  client.on("*", (event: EmitterMessage): void => {
+    // Mirror toNodeStream: only parsed tmux events project onto the EE.
+    if (!isTmuxMessage(event)) return;
     ee.emit(event.type, event);
     ee.emit("*", event);
   });
