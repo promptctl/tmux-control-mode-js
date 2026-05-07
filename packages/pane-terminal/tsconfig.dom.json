@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // [LAW:one-way-deps] DOM/JSX scope is confined to UI adapters
+  // (./xterm-sink, ./react, ./vanilla). These reference core via project
+  // references — they may import core types but core may not import them.
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    "types": []
+  },
+  "references": [
+    { "path": "../../src" },
+    { "path": "./tsconfig.core.json" }
+  ],
+  "include": [
+    "src/xterm-sink/**/*.ts",
+    "src/xterm-sink/**/*.tsx",
+    "src/react/**/*.ts",
+    "src/react/**/*.tsx",
+    "src/vanilla/**/*.ts",
+    "src/vanilla/**/*.tsx"
+  ]
+}
