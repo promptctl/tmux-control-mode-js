@@ -63,7 +63,14 @@ export type BridgeErrorCode =
   /** createMainBridge called twice on the same ipcMain. */
   | "BRIDGE_ALREADY_REGISTERED"
   /** Renderer attempted to unsubscribe a name it does not own. */
-  | "BRIDGE_UNKNOWN_SUBSCRIPTION";
+  | "BRIDGE_UNKNOWN_SUBSCRIPTION"
+  /**
+   * A peer attempted to subscribe a name already held under a different
+   * (what, format) pair. The bridge refuses to silently overwrite tmux's
+   * binding because that would change the wire format the prior subscriber
+   * is observing — see `bridge-connection.ts` for the rationale.
+   */
+  | "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT";
 
 // ---------------------------------------------------------------------------
 // BridgeErrorPayload — the wire shape used by BOTH transports to carry a
