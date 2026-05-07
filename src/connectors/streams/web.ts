@@ -14,9 +14,10 @@ import type { TmuxMessage } from "../../protocol/types.js";
 /**
  * Adapt a TmuxClient's event stream as a `ReadableStream<TmuxMessage>`.
  *
- * Every parsed tmux notification is enqueued. The `exit` message is
- * enqueued AND closes the stream — so consumers awaiting end-of-stream see
- * the reason before EOF. Synthetic lifecycle events (connection-state /
+ * Every TmuxMessage is enqueued (including `exit`, whether parsed from the
+ * `%exit` notification or synthesized by TmuxClient on transport close); the
+ * `exit` message also closes the stream so consumers awaiting end-of-stream
+ * see the reason before EOF. Synthetic lifecycle events (connection-state /
  * reconnected) are NOT enqueued — they belong on the typed
  * `client.on('connection-state', …)` channel and would otherwise arrive
  * after the stream is already closed.

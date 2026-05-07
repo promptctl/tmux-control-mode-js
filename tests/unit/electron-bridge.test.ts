@@ -14,6 +14,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { TmuxClient } from "../../src/client.js";
+import { isTmuxMessage } from "../../src/emitter.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
@@ -436,8 +437,11 @@ describe("Electron IPC bridge — event forwarding", () => {
     proxy.on("window-add", (ev) => typed.push(ev));
     // Filter to parsed-tmux events so the synthetic connection-state snapshot
     // that main sends on register doesn't perturb the count.
+    // [LAW:single-enforcer] use the same discriminator as runtime filtering
+    // (src/emitter.ts:isTmuxMessage); inline copies drift when the synthetic
+    // event set grows.
     proxy.on("*", (ev) => {
-      if (ev.type !== "connection-state" && ev.type !== "reconnected") {
+      if (isTmuxMessage(ev)) {
         wildcard.push(ev);
       }
     });

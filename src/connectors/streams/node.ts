@@ -15,10 +15,11 @@ import type { TmuxMessage } from "../../protocol/types.js";
 /**
  * Adapt a TmuxClient as a Node.js `Readable` stream in object mode.
  *
- * Every notification is `push`ed; the synthetic `exit` message is pushed
- * AND followed by `push(null)` to signal end-of-stream. Destroying the
- * stream unsubscribes from the client (the TmuxClient itself is not
- * closed — the adapter is a non-owning projection).
+ * Every TmuxMessage is `push`ed; the `exit` message (whether parsed from
+ * the `%exit` notification or synthesized by TmuxClient on transport close)
+ * is pushed AND followed by `push(null)` to signal end-of-stream.
+ * Destroying the stream unsubscribes from the client (the TmuxClient
+ * itself is not closed — the adapter is a non-owning projection).
  *
  * Useful in Node-side test harnesses or pipelines that compose tmux events
  * with other Node streams (e.g. `pipeline(toNodeStream(client), filter,
