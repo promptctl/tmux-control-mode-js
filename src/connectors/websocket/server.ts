@@ -31,6 +31,7 @@
 // down. Every error path funnels through it.
 
 import type { TmuxClient } from "../../client.js";
+import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
 import {
   isPaneOutput,
@@ -309,7 +310,7 @@ class Connection {
   >();
   private readonly rateWindow: number[] = [];
 
-  private readonly onAnyEventRef: (msg: TmuxMessage) => void;
+  private readonly onAnyEventRef: (msg: EmitterMessage) => void;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongDeadline: ReturnType<typeof setTimeout> | null = null;
   private helloDeadline: ReturnType<typeof setTimeout> | null = null;
@@ -325,7 +326,12 @@ class Connection {
     private readonly opts: WebSocketBridgeOptions,
     private readonly defaults: ResolvedDefaults,
   ) {
-    this.onAnyEventRef = (msg: TmuxMessage): void => this.onTmuxEvent(msg);
+    // The WS server forwards parsed tmux events over the wire; synthetic
+    // lifecycle events are bridge-internal and the peer has its own
+    // connection-state via the welcome handshake.
+    this.onAnyEventRef = (msg: EmitterMessage): void => {
+      if (isTmuxMessage(msg)) this.onTmuxEvent(msg);
+    };
   }
 
   async run(): Promise<void> {
