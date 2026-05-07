@@ -213,6 +213,12 @@ export function createBridgeConnection(
   const pausedPanes = new Set<number>();
   let nextPeerId = 1;
 
+  // Forward declaration: defined below as a closure so both `removePeer` (in
+  // the returned object) and `dispose` can call it without going through
+  // `this`. A destructured `const { dispose } = bridge; dispose();` would
+  // otherwise lose its binding and silently no-op the teardown loop.
+  let removePeerImpl: (peer: Peer) => void;
+
   // Fire-and-forget pause/continue/unsubscribe — tmux's response carries no
   // actionable information at this layer; a rejection means the pane or
   // subscription already went away, which is fine on cleanup paths.
@@ -335,6 +341,26 @@ export function createBridgeConnection(
     }
   };
 
+  removePeerImpl = (peer: Peer): void => {
+    const state = peers.get(peer);
+    if (state === undefined) return;
+    peers.delete(peer);
+
+    // (1) Drop outstanding bytes; resume panes whose remaining sum (across
+    //     surviving peers) drops below the low watermark.
+    const paneIds = [...state.outstanding.keys()];
+    state.outstanding.clear();
+    for (const paneId of paneIds) maybeResume(paneId);
+
+    // (2) Refcount-decrement every subscription this peer held. Last-owner
+    //     transitions fire client.unsubscribe.
+    for (const name of state.subscriptions) {
+      const lastOwner = releaseName(name, peer);
+      if (lastOwner) void client.unsubscribe(name).catch(swallow);
+    }
+    state.subscriptions.clear();
+  };
+
   return {
     registerPeer(): Peer {
       const peer: Peer = { id: nextPeerId++ };
@@ -346,25 +372,7 @@ export function createBridgeConnection(
       return peer;
     },
 
-    removePeer(peer: Peer): void {
-      const state = peers.get(peer);
-      if (state === undefined) return;
-      peers.delete(peer);
-
-      // (1) Drop outstanding bytes; resume panes whose remaining sum (across
-      //     surviving peers) drops below the low watermark.
-      const paneIds = [...state.outstanding.keys()];
-      state.outstanding.clear();
-      for (const paneId of paneIds) maybeResume(paneId);
-
-      // (2) Refcount-decrement every subscription this peer held. Last-owner
-      //     transitions fire client.unsubscribe.
-      for (const name of state.subscriptions) {
-        const lastOwner = releaseName(name, peer);
-        if (lastOwner) void client.unsubscribe(name).catch(swallow);
-      }
-      state.subscriptions.clear();
-    },
+    removePeer: removePeerImpl,
 
     subscribeForPeer: subscribeForPeerImpl,
 
@@ -385,6 +393,38 @@ export function createBridgeConnection(
           `peer does not own subscription "${name}" (this prevents one ` +
             `connection from tearing down another's subscriptions)`,
         );
+      }
+      // [LAW:one-source-of-truth] If the original subscribe is still in
+      // flight, queued joiners are awaiting the same `inflight` promise and
+      // have not yet claimed ownership in `record.owners`. Releasing this
+      // peer before the joiners' post-await blocks run would let the
+      // last-owner check fire too early, deleting the record from
+      // `subscriptions` while joiners still mutate `state.subscriptions`
+      // — the joiners would end up with phantom entries pointing at a
+      // detached record. Awaiting `inflight` and yielding one microtask
+      // lets every queued `subscribeForPeer` continuation run first, so by
+      // the time `releaseName` runs the owner set reflects post-join state.
+      const rec = subscriptions.get(name);
+      if (rec !== undefined && rec.inflight !== undefined) {
+        try {
+          await rec.inflight;
+        } catch {
+          // Subscribe rejection rolls back the record (see
+          // subscribeForPeerImpl's catch); the peer's `state.subscriptions`
+          // entry is cleared as part of that rollback. The re-check below
+          // sees an empty state and returns synthesized OK — the bridge
+          // never installed the binding, so no `client.unsubscribe` is owed.
+        }
+        // Yield once more so any joiner whose continuation was queued AFTER
+        // this await still gets to claim ownership before we evaluate
+        // last-owner. Microtask ordering is FIFO; this drain is the cheap
+        // correctness anchor that makes the ordering observable to us.
+        await Promise.resolve();
+      }
+      // Re-check after the await — rollback or a peer dispose during the
+      // wait may have already cleared this peer's slot.
+      if (!state.subscriptions.has(name)) {
+        return synthesizeOk();
       }
       state.subscriptions.delete(name);
       const lastOwner = releaseName(name, peer);
@@ -430,7 +470,10 @@ export function createBridgeConnection(
       // to refcount semantics that lands in only one place would be a
       // real bug). The redundant per-pane maybeResume work removePeer
       // does is bounded by the number of paused panes — small.
-      for (const peer of [...peers.keys()]) this.removePeer(peer);
+      // [LAW:locality-or-seam] Calls the closure-scoped `removePeerImpl`
+      // (not `this.removePeer`) so a destructured `const { dispose } =
+      // bridge; dispose();` still tears down the helper correctly.
+      for (const peer of [...peers.keys()]) removePeerImpl(peer);
       // Final defense: removePeer's maybeResume should have cleared every
       // entry from pausedPanes by now (totalOutstanding goes to 0 once the
       // last peer leaves), but flush unconditionally so a programming error

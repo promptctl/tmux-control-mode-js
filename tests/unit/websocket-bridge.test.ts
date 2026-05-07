@@ -90,9 +90,18 @@ function createFakeWs(): FakeWs {
         outbound.push(data);
       } else if (data instanceof Uint8Array) {
         outbound.push(data);
+      } else if (ArrayBuffer.isView(data)) {
+        // ArrayBufferView (DataView, typed arrays other than Uint8Array) —
+        // wrap the underlying buffer with the view's offset/length so the
+        // copy reflects the view, not the entire backing buffer. The bridge
+        // only sends Uint8Array binary frames today, so this branch is
+        // reachable only if a future encoder switches representations.
+        const view = data as ArrayBufferView;
+        outbound.push(
+          new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+        );
       } else {
-        // ArrayBufferView other than Uint8Array — copy to Uint8Array for
-        // assertions (the bridge only ever sends Uint8Array binary frames).
+        // Raw ArrayBuffer.
         outbound.push(new Uint8Array(data as ArrayBuffer));
       }
     },
@@ -312,6 +321,48 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
     ).toHaveLength(1);
   });
 
+  it("resumes a paused pane when bufferedAmount drains via a non-pane-output send", async () => {
+    // Regression: previously the watermark drain sample only fired on
+    // pane-output sends. Once a pane was paused tmux stopped emitting its
+    // output, so the OS-buffer drain was never re-observed and the pane
+    // could stay paused indefinitely. The fix routes every outbound send
+    // (JSON event frames + RPC results) through the same chokepoint that
+    // samples bufferedAmount, so any traffic — not just pane-output —
+    // unsticks a paused pane once the OS buffer drains.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    await flush();
+    ws.setBuffered(80);
+
+    // Drive the connection across the high watermark — pause fires once.
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %5 ${"x".repeat(30)}\n`);
+    }
+    await flush();
+    expect(t.sent.filter((c) => c.includes("%5:pause"))).toHaveLength(1);
+    expect(t.sent.filter((c) => c.includes("%5:continue"))).toHaveLength(0);
+
+    // Simulate the OS buffer draining while pane output stays silent (tmux
+    // stops emitting %5 because it's paused). A non-pane tmux notification
+    // arrives — under the old code, this JSON event would be sent without
+    // sampling bufferedAmount, leaving the pause stuck. With the fix, the
+    // JSON send routes through wsSend → maybeFlushBuffered → resume.
+    ws.setBuffered(0);
+    t.feed("%session-changed $0 main\n");
+    await flush();
+
+    expect(t.sent.filter((c) => c.includes("%5:continue"))).toHaveLength(1);
+  });
+
   it("does not pause for a fast consumer whose bufferedAmount stays drained", async () => {
     // Sanity check: the watermark is a slow-consumer guard, not a per-event
     // hairtrigger. A peer whose OS buffer flushes immediately should never
@@ -405,8 +456,14 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
 // ---------------------------------------------------------------------------
 
 async function flush(): Promise<void> {
-  // Two microtask drains is enough for any chained-await the bridge
-  // performs internally between frame parse, helper dispatch, and reply.
+  // Three microtask drains. The hello → running transition chains three
+  // awaits internally — safeAuthenticate (resolves synchronously when no
+  // auth hook is configured but still consumes a microtask), createClient
+  // (same), and the post-construction state assignment that unblocks
+  // subsequent dispatch. Reducing this to two leaves the next call frame
+  // racing the state being still "pending-hello" and the bridge sends a
+  // fatal. Any tighter coupling than three drains would be an internal
+  // brittleness signal worth fixing in the bridge, not the test.
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();

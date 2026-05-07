@@ -811,9 +811,8 @@ class Connection {
     // so encodeServerFrame's typed payload is satisfied without re-checking.
     if (isPaneOutput(msg)) {
       const bytes = encodePaneOutput(msg);
-      this.ws.send(bytes);
       bridge.accountOutput(peer, msg.paneId, bytes.byteLength);
-      this.maybeFlushBuffered(bridge, peer);
+      this.wsSend(bytes);
       this.emit({
         kind: "event-out",
         identity: this.identity,
@@ -824,7 +823,7 @@ class Connection {
     }
 
     const encoded = encodeServerFrame({ v: 1, k: "event", msg });
-    this.ws.send(encoded);
+    this.wsSend(encoded);
     this.emit({
       kind: "event-out",
       identity: this.identity,
@@ -833,17 +832,42 @@ class Connection {
     });
   }
 
+  // [LAW:dataflow-not-control-flow] Single chokepoint for outbound writes.
+  // Every JSON frame and every binary pane-output frame routes through here
+  // so the OS-buffer drain sample fires on a uniform shape regardless of
+  // payload. This closes a deadlock surface: previously the drain sample
+  // only fired after pane-output sends, so once every active pane was
+  // paused tmux stopped emitting their output, no further sends ran, and
+  // `bufferedAmount` was never re-observed even when the OS buffer drained
+  // — panes stuck paused indefinitely. Routing JSON event frames, RPC
+  // results, and pongs through the same chokepoint keeps the resume signal
+  // alive on any outbound traffic. Heartbeat ticks add a final backstop
+  // for genuinely idle connections.
+  private wsSend(payload: string | Uint8Array): void {
+    if (this.ws.readyState !== WEBSOCKET_OPEN) return;
+    try {
+      this.ws.send(payload);
+    } catch {
+      // Write failed — socket is going away. Let the close handler clean up.
+      return;
+    }
+    this.maybeFlushBuffered();
+  }
+
   // [LAW:dataflow-not-control-flow] One sampling site for the OS send
   // buffer. Without an ack frame in protocol v1, `bufferedAmount === 0`
   // (or below the low watermark) is the only "everything I sent has been
   // flushed" signal the bridge can read. When the buffer is drained the
   // helper clears this peer's outstanding, which fires
   // setPaneAction(Continue) on any pane the watermark loop had paused.
-  private maybeFlushBuffered(bridge: BridgeConnection, peer: Peer): void {
+  private maybeFlushBuffered(): void {
+    if (this.state.kind !== "running" && this.state.kind !== "draining") {
+      return;
+    }
     const buffered = this.ws.bufferedAmount;
     if (buffered === undefined) return;
     if (buffered > this.lowWatermark()) return;
-    bridge.clearPeerOutstanding(peer);
+    this.state.bridge.clearPeerOutstanding(this.state.peer);
   }
 
   private lowWatermark(): number {
@@ -857,6 +881,14 @@ class Connection {
     if (this.defaults.heartbeatIntervalMs <= 0) return;
     this.heartbeatTimer = setInterval(() => {
       if (this.state.kind === "closed") return;
+      // [LAW:dataflow-not-control-flow] Heartbeat tick is the idle-path
+      // backstop for the drain sample — when no events flow in either
+      // direction (every active pane paused, no JSON traffic), neither the
+      // tmux event fan-out nor `sendFrame` runs, so the OS-buffer drain
+      // would never be re-observed. Sampling here keeps panes recoverable
+      // on idle connections; it's a passive read so it's safe to fire
+      // before/after the ping regardless of the inflight pong state.
+      this.maybeFlushBuffered();
       if (this.pongDeadline !== null) return;
       try {
         this.ws.ping();
@@ -923,12 +955,11 @@ class Connection {
   }
 
   private sendFrame(frame: ServerFrame): void {
-    if (this.ws.readyState !== WEBSOCKET_OPEN) return;
-    try {
-      this.ws.send(encodeServerFrame(frame));
-    } catch {
-      // Write failed — socket is going away. Let the close handler clean up.
-    }
+    // [LAW:single-enforcer] Routes through `wsSend`, the single chokepoint
+    // that samples the OS send buffer after every write. RPC results and
+    // events that don't carry pane-output bytes still pump the drain
+    // signal — see `wsSend` for the deadlock context.
+    this.wsSend(encodeServerFrame(frame));
   }
 
   private sendFatalAndClose(
