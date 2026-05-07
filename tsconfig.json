@@ -4,7 +4,8 @@
     { "path": "src/transport" },
     { "path": "src" },
     { "path": "src/keymap" },
-    { "path": "src/connectors" }
+    { "path": "src/connectors" },
+    { "path": "packages/pane-terminal" }
   ],
   "files": []
 }

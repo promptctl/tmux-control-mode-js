@@ -65,6 +65,7 @@
     "dist"
   ],
   "workspaces": [
+    "packages/*",
     "examples/web-multiplexer"
   ],
   "engines": {
