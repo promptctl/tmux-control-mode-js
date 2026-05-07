@@ -31,3 +31,16 @@ jobs:
       - run: npm run test:integration
         env:
           TMUX_INTEGRATION: "1"
+
+      # Hard-requirement gates for @promptctl/pane-terminal. These are RED
+      # until the pane-terminal-8w9 epic implements PaneStream, sinks, and
+      # adapters — the failing output IS the contract (see
+      # tmux-pane-terminal-8w9.3 and design-docs/pane-session-v2.md).
+      # `continue-on-error: true` so the gate failures annotate the run
+      # without blocking merges of intermediate epic steps. Flip to
+      # required once gate 7 goes green.
+      - name: pane-terminal — bench/test gates (red until 8w9.4–7 land)
+        run: npm run -w @promptctl/pane-terminal bench:gate
+        env:
+          TMUX_INTEGRATION: "1"
+        continue-on-error: true
