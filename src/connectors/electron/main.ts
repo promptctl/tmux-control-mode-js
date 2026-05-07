@@ -32,6 +32,7 @@
 // from ../rpc.js; subscription/refcount/watermark from ../bridge-connection.js.
 
 import type { TmuxClient } from "../../client.js";
+import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
 import {
   asPaneOutput,
@@ -325,8 +326,11 @@ export function createMainBridge(
   // Event forwarding.
   // -------------------------------------------------------------------------
 
-  const forward = (msg: TmuxMessage): void => {
-    const accounted = byteAccount(msg);
+  const forward = (msg: EmitterMessage): void => {
+    // Synthetic lifecycle events have no pane bytes; account returns null
+    // for non-output messages anyway, but isTmuxMessage narrows the type for
+    // byteAccount which requires TmuxMessage.
+    const accounted = isTmuxMessage(msg) ? byteAccount(msg) : null;
     // [LAW:dataflow-not-control-flow] One pass over senders, every message,
     // unconditionally. Senders that aren't subscribed are skipped via the
     // data flag (state.isSubscribed) — the loop body is the same shape.
@@ -365,6 +369,16 @@ export function createMainBridge(
   const onRegister = (event: IpcMainEventLike): void => {
     const state = getOrCreateSender(event.sender);
     state.isSubscribed = true;
+    // [LAW:dataflow-not-control-flow] Late-joining renderers need the current
+    // lifecycle state immediately, not just when the next transition happens.
+    // Send a snapshot through the same IPC.event channel the live transitions
+    // use — receivers treat it identically.
+    if (!event.sender.isDestroyed()) {
+      event.sender.send(IPC.event, {
+        type: "connection-state",
+        state: client.connectionState,
+      });
+    }
   };
 
   const onUnregister = (event: IpcMainEventLike): void => {
