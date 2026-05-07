@@ -1746,6 +1746,167 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       t.sent.filter((c) => isUnsubscribeWire(c, "layout")),
     ).toHaveLength(1);
   });
+
+  // -------------------------------------------------------------------------
+  // qz5.5 / C1 — divergent re-subscribe across senders.
+  //
+  // Pre-qz5.5 (electron/main.ts:316-331), `subscribeForSender` always
+  // forwarded `client.subscribe(name, what, format)` to tmux. When sender A
+  // held name=foo with format='#{a}' and sender B subscribed name=foo with
+  // format='#{b}', tmux's binding for "foo" was overwritten to '#{b}' but
+  // A's per-sender record still claimed it owned "foo" — so A's events
+  // arrived in B's format until A unsubscribed, at which point the refcount
+  // hit 0 and B's binding was destroyed too. The audit (C1) called this out
+  // as "either key on (name, what, format) or reject divergent re-subscribes
+  // — document which".
+  //
+  // qz5.5 chose REJECTION via the shared BridgeConnection helper: a peer
+  // claiming an existing name with a different (what, format) gets
+  // BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT. To update the format, unsubscribe
+  // first.
+  // -------------------------------------------------------------------------
+  describe("Electron IPC bridge — qz5.5 C1 divergent re-subscribe", () => {
+    it("rejects a second sender re-subscribing the same name with a different (what, format)", async () => {
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      createMainBridge(client, hub.ipcMain);
+
+      const a = hub.createRenderer();
+      const b = hub.createRenderer();
+      const pa = createRendererBridge(a.ipcRenderer);
+      const pb = createRendererBridge(b.ipcRenderer);
+
+      // A claims (foo, '', '#{a}'); bridge forwards to tmux with '#{a}'.
+      const aSub = pa.subscribe("foo", "", "#{a}");
+      feedCommandResponse(t, 1, []);
+      await aSub;
+
+      // B attempts to claim (foo, '', '#{b}') — different format.
+      // Bridge MUST reject so A's binding is preserved.
+      await expect(pb.subscribe("foo", "", "#{b}")).rejects.toMatchObject({
+        code: "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT",
+      });
+
+      // tmux must not have seen a second subscribe overwriting A's format.
+      // (Electron's encoder produces `refresh-client -B 'foo':'':'#{...}'\n`.)
+      const fooSubs = t.sent.filter((c) =>
+        c.startsWith("refresh-client -B 'foo':"),
+      );
+      expect(fooSubs).toHaveLength(1);
+      expect(fooSubs[0]).toContain("'#{a}'");
+      expect(fooSubs[0]).not.toContain("'#{b}'");
+    });
+
+    it("accepts a second sender claiming the same name with the SAME (what, format) (refcount bumps; tmux not re-asked)", async () => {
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      createMainBridge(client, hub.ipcMain);
+
+      const a = hub.createRenderer();
+      const b = hub.createRenderer();
+      const pa = createRendererBridge(a.ipcRenderer);
+      const pb = createRendererBridge(b.ipcRenderer);
+
+      const aSub = pa.subscribe("foo", "", "#{x}");
+      feedCommandResponse(t, 1, []);
+      await aSub;
+
+      // B subscribes the SAME (what, format). Helper synthesizes ok and
+      // does NOT issue a second tmux subscribe (refcount bumps to 2). The
+      // synthesized response is observable as success without a wire send.
+      const sentBefore = t.sent.length;
+      const bSub = pb.subscribe("foo", "", "#{x}");
+      const resp = await bSub;
+      expect(resp.success).toBe(true);
+      expect(t.sent.slice(sentBefore)).toEqual([]);
+    });
+
+    it("rolls back the entire record (and every concurrent joiner) when tmux rejects the first subscribe", async () => {
+      // Race the bloodhound caught in the qz5.5 review: the helper
+      // optimistically installed a record before `client.subscribe`
+      // resolved, so a concurrent peer with the matching (what, format)
+      // could short-circuit to a synthesized OK. If tmux then rejected the
+      // first call, the second peer was left holding a phantom
+      // subscription. The fix queues concurrent joiners on an `inflight`
+      // promise; this test pins that they all reject together.
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      createMainBridge(client, hub.ipcMain);
+
+      const a = hub.createRenderer();
+      const b = hub.createRenderer();
+      const pa = createRendererBridge(a.ipcRenderer);
+      const pb = createRendererBridge(b.ipcRenderer);
+
+      // A initiates the subscribe; B races in with the same (what, format).
+      const aSub = pa.subscribe("foo", "", "#{x}");
+      // Yield once so A's subscribe call reaches client.subscribe (the
+      // bridge dispatch path is async). Then B's call observes the
+      // record and queues on inflight.
+      await Promise.resolve();
+      await Promise.resolve();
+      const bSub = pb.subscribe("foo", "", "#{x}");
+
+      // tmux rejects A's subscribe. Both A and B must reject — B was
+      // queued on the inflight promise, not optimistically resolved.
+      t.feed("%begin 1 1 0\n");
+      t.feed("nope\n");
+      t.feed("%error 1 1 0\n");
+
+      await expect(aSub).rejects.toBeInstanceOf(TmuxCommandError);
+      await expect(bSub).rejects.toBeInstanceOf(TmuxCommandError);
+
+      // Neither peer should still be carrying ownership — a follow-up
+      // unsubscribe would surface BRIDGE_UNKNOWN_SUBSCRIPTION because the
+      // rollback dropped both peers' state.subscriptions and deleted the
+      // shared record.
+      await expect(pa.unsubscribe("foo")).rejects.toMatchObject({
+        code: "BRIDGE_UNKNOWN_SUBSCRIPTION",
+      });
+      await expect(pb.unsubscribe("foo")).rejects.toMatchObject({
+        code: "BRIDGE_UNKNOWN_SUBSCRIPTION",
+      });
+    });
+
+    it("allows a sender to update its OWN format after unsubscribing first", async () => {
+      // The rejection rule says "to update format, unsubscribe first". This
+      // pins that the workaround actually works — a single owner can
+      // unsubscribe + re-subscribe with a new format and tmux sees both
+      // calls in order.
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      createMainBridge(client, hub.ipcMain);
+
+      const a = hub.createRenderer();
+      const pa = createRendererBridge(a.ipcRenderer);
+
+      const sub1 = pa.subscribe("foo", "", "#{a}");
+      feedCommandResponse(t, 1, []);
+      await sub1;
+
+      const unsub = pa.unsubscribe("foo");
+      feedCommandResponse(t, 2, []);
+      await unsub;
+
+      // Now re-subscribe with a different format — refcount is 0 again, so
+      // the new (what, format) becomes the canonical record without a
+      // conflict.
+      const sub2 = pa.subscribe("foo", "", "#{b}");
+      feedCommandResponse(t, 3, []);
+      const resp2 = await sub2;
+      expect(resp2.success).toBe(true);
+      const fooSubs = t.sent.filter((c) =>
+        c.startsWith("refresh-client -B 'foo':"),
+      );
+      expect(fooSubs).toHaveLength(2);
+      expect(fooSubs[0]).toContain("'#{a}'");
+      expect(fooSubs[1]).toContain("'#{b}'");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
