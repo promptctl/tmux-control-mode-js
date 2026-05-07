@@ -213,12 +213,6 @@ export function createBridgeConnection(
   const pausedPanes = new Set<number>();
   let nextPeerId = 1;
 
-  // Forward declaration: defined below as a closure so both `removePeer` (in
-  // the returned object) and `dispose` can call it without going through
-  // `this`. A destructured `const { dispose } = bridge; dispose();` would
-  // otherwise lose its binding and silently no-op the teardown loop.
-  let removePeerImpl: (peer: Peer) => void;
-
   // Fire-and-forget pause/continue/unsubscribe — tmux's response carries no
   // actionable information at this layer; a rejection means the pane or
   // subscription already went away, which is fine on cleanup paths.
@@ -341,7 +335,11 @@ export function createBridgeConnection(
     }
   };
 
-  removePeerImpl = (peer: Peer): void => {
+  // Closure-scoped so both the returned object's `removePeer` member and
+  // `dispose` reference it directly. A destructured `const { dispose } =
+  // bridge; dispose();` would otherwise lose its `this` binding and
+  // silently no-op the teardown loop.
+  const removePeerImpl = (peer: Peer): void => {
     const state = peers.get(peer);
     if (state === undefined) return;
     peers.delete(peer);
