@@ -1,5 +1,5 @@
 
-  Design Proposal — @tmux-control-mode-js/pane-terminal
+  Design Proposal — @promptctl/pane-terminal
 
   TL;DR
 
@@ -36,7 +36,7 @@
   │                                   │ <50ms tmux serialization                                │ CI            │
   └───────────────────────────────────┴─────────────────────────────────────────────────────────┴───────────────┘
 
-  These benchmarks land in step 1 of the migration and run in CI. Regressing any bound fails the build.
+  These benchmarks land in step 2 of the migration and run in CI. Regressing any bound fails the build.
 
   ---
   Foundational optimizations (built in, not deferred)
@@ -60,7 +60,7 @@
 
   Uint8Array from client.onEvent → stream (filter by paneId, no copy) → sink.write(Uint8Array) →
   xterm.write(Uint8Array). xterm.js accepts Uint8Array natively. No TextDecoder in any hot path. IPC carries
-  Uint8Array directly via Electron structured clone (one memcpy at the process boundary, unavoidable; one zero
+  Uint8Array directly via Electron structured clone (one memcpy at the process boundary, unavoidable; zero
   allocations beyond that).
 
   This single decision makes the hot path allocation-free per byte and eliminates the U+FFFD corruption that
@@ -272,9 +272,9 @@
 
   Subpath imports keep xterm.js out of consumers that only want headless tracking:
 
-  import { PaneStream } from '@tmux-control-mode-js/pane-terminal/stream'        // no xterm
-  import { PaneTerminal } from '@tmux-control-mode-js/pane-terminal/react'       // brings xterm
-  import { BufferingSink } from '@tmux-control-mode-js/pane-terminal/sink'       // for tests
+  import { PaneStream } from '@promptctl/pane-terminal/stream'        // no xterm
+  import { PaneTerminal } from '@promptctl/pane-terminal/react'       // brings xterm
+  import { BufferingSink } from '@promptctl/pane-terminal/sink'       // for tests
 
   ---
   What promptctl looks like after adoption
