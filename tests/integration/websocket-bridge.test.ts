@@ -485,6 +485,74 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
   );
 });
 
+// ---------------------------------------------------------------------------
+// qz5.5 — subscription scoping across two WS connections.
+//
+// The audit (C2) called out that the WS bridge had no per-connection
+// subscription scoping: a peer could unsubscribe a name owned by another
+// peer and tear down its subscription. The qz5.5 lift routes
+// subscribe/unsubscribe through a per-Connection BridgeConnection helper,
+// so a peer's unsubscribe of a name it does not own is rejected with
+// BRIDGE_UNKNOWN_SUBSCRIPTION (the same code the Electron bridge raises).
+//
+// This test runs against the REAL `ws` package + a real tmux process — the
+// unit-test version (tests/unit/websocket-bridge.test.ts) covers the same
+// shape with fakes; this version pins that the wire-frame round-trip
+// preserves the contract end-to-end.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — qz5.5 subscription scoping (real socket)",
+  () => {
+    let fx: Fixture;
+    beforeEach(async () => {
+      fx = await startFixture("qz5-scope");
+    });
+    afterEach(async () => {
+      await fx.shutdown();
+    });
+
+    it(
+      "peer B's unsubscribe of a name only peer A owns is rejected with BRIDGE_UNKNOWN_SUBSCRIPTION",
+      async () => {
+        const a = createWsBackedClient(fx.url);
+        const b = createWsBackedClient(fx.url);
+        await Promise.all([
+          waitForState(a.client, "ready"),
+          waitForState(b.client, "ready"),
+        ]);
+
+        // A subscribes "qz5-focus".
+        const aSub = await a.client.subscribe(
+          "qz5-focus",
+          "",
+          "#{pane_id}",
+        );
+        expect(aSub.success).toBe(true);
+
+        // B's unsubscribe must be rejected — B never claimed "qz5-focus"
+        // through its own helper, so the bridge raises
+        // BRIDGE_UNKNOWN_SUBSCRIPTION at the trust boundary. tmux is
+        // never asked to unsubscribe.
+        const err = await b.client
+          .unsubscribe("qz5-focus")
+          .then(() => undefined, (e: unknown) => e);
+        expect(err).toBeInstanceOf(BridgeError);
+        expect((err as BridgeError).code).toBe("BRIDGE_UNKNOWN_SUBSCRIPTION");
+
+        // A's subscription is preserved: A can still unsubscribe its
+        // OWN name without surprises.
+        const aUnsub = await a.client.unsubscribe("qz5-focus");
+        expect(aUnsub.success).toBe(true);
+
+        a.client.close();
+        b.client.close();
+      },
+      15_000,
+    );
+  },
+);
+
 describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — protocol", () => {
   it(
     "welcome.protocol matches PROTOCOL_VERSION",

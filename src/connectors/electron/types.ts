@@ -234,8 +234,15 @@ export interface MainBridgeOptions {
   readonly outputLowWatermark?: number;
 }
 
-export const DEFAULT_OUTPUT_HIGH_WATERMARK = 1 << 20;
-export const DEFAULT_OUTPUT_LOW_WATERMARK = 1 << 18;
+// [LAW:one-source-of-truth] Watermark defaults live in
+// `../bridge-connection.ts` (where the watermark loop is implemented) and
+// are re-exported here so a main-process consumer that only imports from
+// `./types` keeps a single import site. Removing this re-export silently
+// would break external callers that reference the names.
+export {
+  DEFAULT_OUTPUT_HIGH_WATERMARK,
+  DEFAULT_OUTPUT_LOW_WATERMARK,
+} from "../bridge-connection.js";
 
 // ---------------------------------------------------------------------------
 // Renderer-bridge tunables.
