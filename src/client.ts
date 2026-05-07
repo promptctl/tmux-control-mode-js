@@ -5,6 +5,10 @@
 // [LAW:one-source-of-truth] Command correlation state lives exclusively here.
 // [LAW:single-enforcer] FIFO queue is the sole mechanism for matching responses to commands.
 
+import {
+  sameConnectionState,
+  type ConnectionState,
+} from "./connection-state.js";
 import { TmuxParser } from "./protocol/parser.js";
 import {
   buildCommand,
@@ -27,7 +31,7 @@ import type {
   TmuxMessage,
 } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
-import type { TmuxEventMap } from "./emitter.js";
+import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
 
@@ -69,6 +73,12 @@ export class TmuxClient {
   private readonly pending: PendingEntry[] = [];
   private inflight: InflightEntry | null = null;
 
+  // [LAW:one-source-of-truth] connectionState is the single lifecycle field.
+  // The transitions live in setConnectionState; nothing outside that method
+  // mutates this field.
+  private currentConnectionState: ConnectionState = { status: "connecting" };
+  private userClosed = false;
+
   constructor(transport: TmuxTransport) {
     this.transport = transport;
     this.emitter = new TypedEmitter();
@@ -80,10 +90,44 @@ export class TmuxClient {
       this.inflight?.output.push(line);
     };
 
-    transport.onData((chunk) => this.parser.feed(chunk));
-    transport.onClose((reason) => {
-      this.emitter.emit({ type: "exit", reason });
+    transport.onData((chunk) => {
+      // First chunk from tmux is the cheapest "tmux is talking" signal.
+      // [LAW:single-enforcer] Lifecycle transitions go through setConnectionState
+      // only — the equality check inside makes this idempotent on every chunk.
+      this.setConnectionState({ status: "ready" });
+      this.parser.feed(chunk);
     });
+    transport.onClose((reason) => {
+      // The protocol-level `exit` event preserves backward compat; the
+      // synthetic `connection-state: closed` is the lifecycle channel.
+      this.emitter.emit({ type: "exit", reason });
+      this.setConnectionState({
+        status: "closed",
+        reason: this.userClosed
+          ? "disposed"
+          : reason === undefined
+            ? "exit"
+            : "transport-error",
+      });
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Connection lifecycle
+  // ---------------------------------------------------------------------------
+
+  get connectionState(): ConnectionState {
+    return this.currentConnectionState;
+  }
+
+  // [LAW:single-enforcer] Sole writer for currentConnectionState. Idempotent:
+  // a transition to the same status is a no-op (state objects are compared by
+  // status string and, for closed/reconnecting, by their discriminating field).
+  // Spawn-style TmuxClient never emits 'reconnected' — it has no second `ready`.
+  private setConnectionState(next: ConnectionState): void {
+    if (sameConnectionState(this.currentConnectionState, next)) return;
+    this.currentConnectionState = next;
+    this.emitter.emit({ type: "connection-state", state: next });
   }
 
   // ---------------------------------------------------------------------------
@@ -94,18 +138,18 @@ export class TmuxClient {
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  on(event: "*", handler: (ev: TmuxMessage) => void): void;
+  on(event: "*", handler: (ev: EmitterMessage) => void): void;
   on(event: string, handler: (ev: never) => void): void {
-    this.emitter.on(event as "*", handler as (ev: TmuxMessage) => void);
+    this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  off(event: "*", handler: (ev: TmuxMessage) => void): void;
+  off(event: "*", handler: (ev: EmitterMessage) => void): void;
   off(event: string, handler: (ev: never) => void): void {
-    this.emitter.off(event as "*", handler as (ev: TmuxMessage) => void);
+    this.emitter.off(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
   // ---------------------------------------------------------------------------
@@ -251,6 +295,9 @@ export class TmuxClient {
   // ---------------------------------------------------------------------------
 
   close(): void {
+    // Flag intent BEFORE tearing down the transport — the onClose handler
+    // reads this to disambiguate `disposed` from `exit`/`transport-error`.
+    this.userClosed = true;
     this.transport.close();
   }
 

@@ -19,9 +19,6 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 import {
   IPC,
-  type IpcMainLike,
-  type IpcMainInvokeEventLike,
-  type IpcMainEventLike,
   type IpcRendererLike,
   type WebContentsLike,
   parseAckMessage,
@@ -33,162 +30,18 @@ import {
   TmuxClientProxy,
 } from "../../src/connectors/electron/renderer.js";
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
+import {
+  createIpcHub,
+  type FakeRenderer,
+  type IpcHub,
+} from "./_helpers/ipc-hub.js";
 
 // ---------------------------------------------------------------------------
-// Fakes
+// Test-only types
 // ---------------------------------------------------------------------------
-
-interface FakeRenderer {
-  readonly ipcRenderer: IpcRendererLike;
-  readonly sender: WebContentsLike;
-  destroy(): void;
-  /**
-   * Visibility hook for M2 regression tests: how many `destroyed` listeners
-   * are still attached to this fake's WebContents. After a sender is torn
-   * down via `unregister` while alive, this should drop to 0 — proving the
-   * bridge actually called `removeListener` rather than leaking the handler.
-   */
-  destroyHandlerCount(): number;
-}
-
-interface IpcHub {
-  readonly ipcMain: IpcMainLike;
-  createRenderer(): FakeRenderer;
-}
-
-function createIpcHub(): IpcHub {
-  type InvokeHandler = (
-    event: IpcMainInvokeEventLike,
-    ...args: unknown[]
-  ) => unknown | Promise<unknown>;
-  type OnHandler = (event: IpcMainEventLike, ...args: unknown[]) => void;
-
-  const invokeHandlers = new Map<string, InvokeHandler>();
-  const mainOnListeners = new Map<string, Set<OnHandler>>();
-
-  const ipcMain: IpcMainLike = {
-    handle(channel, listener) {
-      // [C1] Real Electron throws on second handler registration. The fake
-      // mirrors that contract so unit tests fail loudly when a regression
-      // re-introduces the per-window registration bug.
-      if (invokeHandlers.has(channel)) {
-        throw new Error(
-          `Attempted to register a second handler for '${channel}'`,
-        );
-      }
-      invokeHandlers.set(channel, listener);
-    },
-    removeHandler(channel) {
-      invokeHandlers.delete(channel);
-    },
-    on(channel, listener) {
-      let set = mainOnListeners.get(channel);
-      if (!set) {
-        set = new Set();
-        mainOnListeners.set(channel, set);
-      }
-      set.add(listener as OnHandler);
-    },
-    removeListener(channel, listener) {
-      mainOnListeners.get(channel)?.delete(listener as OnHandler);
-    },
-  };
-
-  function createRenderer(): FakeRenderer {
-    type RendererHandler = (event: unknown, ...args: unknown[]) => void;
-    const rendererListeners = new Map<string, Set<RendererHandler>>();
-    let destroyed = false;
-    // Set so removeListener('destroyed', ...) can detach a single handler —
-    // mirrors real Electron, where once-handlers can be removed before
-    // they fire. Using a Set also makes "registered handler count" a
-    // first-class assertion target for the M2 leak test.
-    const destroyHandlers = new Set<() => void>();
-
-    const sender: WebContentsLike = {
-      send(channel, ...args) {
-        if (destroyed) return;
-        const set = rendererListeners.get(channel);
-        if (!set) return;
-        // [M6] Real Electron sends args through structuredClone before they
-        // reach the renderer. Mirroring that here means a test that mutates
-        // the source object after dispatch (or relies on by-ref identity)
-        // fails the same way it would in production. Uint8Array round-trips
-        // through structuredClone natively.
-        for (const h of set) h({}, ...cloneArgs(args));
-      },
-      once(event, listener) {
-        if (event === "destroyed") destroyHandlers.add(listener);
-      },
-      removeListener(event, listener) {
-        if (event === "destroyed") destroyHandlers.delete(listener);
-      },
-      isDestroyed() {
-        return destroyed;
-      },
-    };
-
-    const ipcRenderer: IpcRendererLike = {
-      async invoke(channel, ...args) {
-        const handler = invokeHandlers.get(channel);
-        if (handler === undefined) {
-          throw new Error(`no handler registered for ${channel}`);
-        }
-        // [M6] Round-trip args through structuredClone so the main-side
-        // handler operates on its own copy — same as real Electron IPC.
-        // The handler's return value also crosses the IPC boundary, so we
-        // clone it on the way back.
-        const result = await handler({ sender }, ...cloneArgs(args));
-        return cloneArgs([result])[0];
-      },
-      send(channel, ...args) {
-        const set = mainOnListeners.get(channel);
-        if (!set) return;
-        for (const h of set) h({ sender }, ...cloneArgs(args));
-      },
-      on(channel, listener) {
-        let set = rendererListeners.get(channel);
-        if (!set) {
-          set = new Set();
-          rendererListeners.set(channel, set);
-        }
-        set.add(listener as RendererHandler);
-      },
-      removeListener(channel, listener) {
-        rendererListeners.get(channel)?.delete(listener as RendererHandler);
-      },
-    };
-
-    return {
-      ipcRenderer,
-      sender,
-      destroy() {
-        destroyed = true;
-        // Snapshot so a destroy handler that mutates the set (e.g. via
-        // teardownSender → wc.removeListener) does not perturb iteration.
-        const snapshot = [...destroyHandlers];
-        destroyHandlers.clear();
-        for (const h of snapshot) h();
-      },
-      destroyHandlerCount: () => destroyHandlers.size,
-    };
-  }
-
-  return { ipcMain, createRenderer };
-}
-
-// ---------------------------------------------------------------------------
-// structuredClone shim for the fake hub.
-//
-// Real Electron IPC payloads cross a structured-clone boundary: a renderer
-// that mutates its sent object after dispatch cannot perturb the main side,
-// and main return values arrive as fresh copies. The test hub mirrors this
-// so a regression that depends on shared identity (or mutates Uint8Array
-// payloads after send) fails here the same way it would in production.
-// ---------------------------------------------------------------------------
-
-function cloneArgs(args: readonly unknown[]): unknown[] {
-  return args.map((a) => structuredClone(a));
-}
+// `FakeRenderer` and `createIpcHub` live in `./_helpers/ipc-hub.ts` so other
+// test files (e.g. connection-state) can drive the bridges without
+// duplicating the in-memory IPC scaffolding.
 
 interface FakeTransport {
   readonly transport: TmuxTransport;
@@ -581,7 +434,13 @@ describe("Electron IPC bridge — event forwarding", () => {
     const typed: TmuxMessage[] = [];
     const wildcard: TmuxMessage[] = [];
     proxy.on("window-add", (ev) => typed.push(ev));
-    proxy.on("*", (ev) => wildcard.push(ev));
+    // Filter to parsed-tmux events so the synthetic connection-state snapshot
+    // that main sends on register doesn't perturb the count.
+    proxy.on("*", (ev) => {
+      if (ev.type !== "connection-state" && ev.type !== "reconnected") {
+        wildcard.push(ev);
+      }
+    });
 
     t.feed("%window-add @5\n");
     t.feed("%session-renamed $1 my-session\n");

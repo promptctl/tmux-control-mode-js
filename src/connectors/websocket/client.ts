@@ -20,7 +20,15 @@
 // [LAW:single-enforcer] `finalizeConnection` is the only cleanup site; every
 // close/error/reconnect flows through it.
 
-import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
+import {
+  sameConnectionState,
+  type ConnectionState,
+} from "../../connection-state.js";
+import {
+  TypedEmitter,
+  type EmitterMessage,
+  type TmuxEventMap,
+} from "../../emitter.js";
 
 // Internal structural view of TypedEmitter's untyped implementation signature.
 // TypedEmitter's public API uses typed overloads; the WebSocket client deals
@@ -29,7 +37,7 @@ import { TypedEmitter, type TmuxEventMap } from "../../emitter.js";
 interface EmitterImpl {
   on(event: string, handler: (ev: never) => void): void;
   off(event: string, handler: (ev: never) => void): void;
-  emit(msg: TmuxMessage): void;
+  emit(msg: EmitterMessage): void;
 }
 import type {
   CommandResponse,
@@ -129,6 +137,12 @@ export class WebSocketTmuxClient {
   private lastPingId: string | null = null;
   private serverLimits: WelcomeLimits | null = null;
   private userRequestedClose = false;
+  // [LAW:one-source-of-truth] Unified ConnectionState lives here; the legacy
+  // `currentState` (WebSocketTmuxClientState) maps onto it via mapToUnified
+  // and stays available through the @deprecated `state` getter for one minor.
+  private currentConnectionState: ConnectionState = { status: "connecting" };
+  private hasReachedReadyOnce = false;
+  private lastError: Error | undefined = undefined;
 
   constructor(private readonly opts: WebSocketTmuxClientOptions) {
     if (opts.autoConnect ?? true) {
@@ -139,8 +153,18 @@ export class WebSocketTmuxClient {
   // -------------------------------------------------------------------------
   // Public state
   // -------------------------------------------------------------------------
+  /**
+   * @deprecated Use `connectionState` instead. The legacy
+   * `WebSocketTmuxClientState` exposes connector-internal state names that
+   * differ across transports; `ConnectionState` is the unified shape every
+   * `TmuxClient`-shaped class produces. Will be removed in the next minor.
+   */
   get state(): WebSocketTmuxClientState {
     return this.currentState;
+  }
+
+  get connectionState(): ConnectionState {
+    return this.currentConnectionState;
   }
 
   // -------------------------------------------------------------------------
@@ -186,7 +210,7 @@ export class WebSocketTmuxClient {
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  on(event: "*", handler: (ev: TmuxMessage) => void): void;
+  on(event: "*", handler: (ev: EmitterMessage) => void): void;
   on(event: string, handler: (ev: never) => void): void {
     (this.emitter as unknown as EmitterImpl).on(event, handler);
   }
@@ -195,7 +219,7 @@ export class WebSocketTmuxClient {
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  off(event: "*", handler: (ev: TmuxMessage) => void): void;
+  off(event: "*", handler: (ev: EmitterMessage) => void): void;
   off(event: string, handler: (ev: never) => void): void {
     (this.emitter as unknown as EmitterImpl).off(event, handler);
   }
@@ -632,10 +656,71 @@ export class WebSocketTmuxClient {
     if (this.currentState === next) return;
     this.currentState = next;
     this.opts.onState?.(next);
+    this.publishUnified();
   }
 
   emitError(err: BridgeError): void {
+    this.lastError = err;
     this.opts.onError?.(err);
+    // Re-publish so a reconnecting state's lastError reflects the latest error
+    // even when the legacy state didn't change.
+    this.publishUnified();
+  }
+
+  // [LAW:one-source-of-truth] Single mapping from the legacy state machine
+  // onto the unified ConnectionState. Called after every legacy transition
+  // and after every emitError so the unified shape stays in lock-step.
+  private publishUnified(): void {
+    const next = this.mapToUnified();
+    if (sameConnectionState(this.currentConnectionState, next)) return;
+    const wasReady = this.currentConnectionState.status === "ready";
+    this.currentConnectionState = next;
+    this.emitter.emit({ type: "connection-state", state: next });
+    if (next.status === "ready") {
+      // [LAW:one-source-of-truth] 'reconnected' fires on every transition into
+      // ready AFTER the first such transition — not just from "reconnecting".
+      // Manual close→connect cycles count as a reconnect.
+      if (this.hasReachedReadyOnce) {
+        this.emitter.emit({ type: "reconnected" });
+      } else {
+        this.hasReachedReadyOnce = true;
+      }
+    }
+    // Leaving ready clears the previously sticky lastError when we land on
+    // a status that doesn't carry it; reconnecting with no recent error
+    // shouldn't surface an error from a prior session.
+    if (next.status !== "reconnecting" && wasReady) {
+      this.lastError = undefined;
+    }
+  }
+
+  private mapToUnified(): ConnectionState {
+    switch (this.currentState) {
+      case "idle":
+      case "connecting":
+      case "open":
+        return { status: "connecting" };
+      case "ready":
+        return { status: "ready" };
+      case "reconnecting":
+        return this.lastError !== undefined
+          ? {
+              status: "reconnecting",
+              attempt: this.attempts,
+              lastError: this.lastError,
+            }
+          : { status: "reconnecting", attempt: this.attempts };
+      case "draining":
+      case "closed":
+        return {
+          status: "closed",
+          reason: this.userRequestedClose
+            ? "disposed"
+            : this.lastError !== undefined
+              ? "transport-error"
+              : "exit",
+        };
+    }
   }
 }
 

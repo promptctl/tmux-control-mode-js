@@ -8,15 +8,18 @@
 // alternative to TmuxClient's push-based `on()` callbacks.
 
 import type { TmuxClient } from "../../client.js";
+import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import type { TmuxMessage } from "../../protocol/types.js";
 
 /**
  * Adapt a TmuxClient's event stream as a `ReadableStream<TmuxMessage>`.
  *
- * Every notification the client emits is enqueued. The `exit` message
- * (synthetic, emitted when the underlying transport closes) is enqueued
- * AND closes the stream — so consumers awaiting end-of-stream see the
- * reason before EOF.
+ * Every parsed tmux notification is enqueued. The `exit` message is
+ * enqueued AND closes the stream — so consumers awaiting end-of-stream see
+ * the reason before EOF. Synthetic lifecycle events (connection-state /
+ * reconnected) are NOT enqueued — they belong on the typed
+ * `client.on('connection-state', …)` channel and would otherwise arrive
+ * after the stream is already closed.
  *
  * Cancelling the reader unsubscribes from the client. The TmuxClient itself
  * is not closed — the adapter is a non-owning projection.
@@ -28,10 +31,11 @@ import type { TmuxMessage } from "../../protocol/types.js";
 export function toReadableStream(
   client: TmuxClient,
 ): ReadableStream<TmuxMessage> {
-  let handler: ((event: TmuxMessage) => void) | null = null;
+  let handler: ((event: EmitterMessage) => void) | null = null;
   return new ReadableStream<TmuxMessage>({
     start(controller) {
-      handler = (event: TmuxMessage): void => {
+      handler = (event: EmitterMessage): void => {
+        if (!isTmuxMessage(event)) return;
         controller.enqueue(event);
         if (event.type === "exit") controller.close();
       };
