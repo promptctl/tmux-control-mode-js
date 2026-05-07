@@ -24,6 +24,14 @@ import {
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
 
+// [LAW:behavior-not-structure] The RpcProxyApi conformance gate below is a
+// purely type-level assertion. Importing the proxy classes via `import type`
+// keeps the check compile-time only — no module evaluation, no transitive
+// dependency on browser-targeted (or Electron-renderer) module top-level code
+// being safe to load under Node.
+import type { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import type { TmuxClientProxy } from "../../src/connectors/electron/renderer.js";
+
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
 // ---------------------------------------------------------------------------
@@ -355,14 +363,11 @@ describe("dispatchRpcRequest — error propagation", () => {
 // ---------------------------------------------------------------------------
 
 describe("RpcProxyApi conformance — compile-time", () => {
-  it("WebSocketTmuxClient and TmuxClientProxy structurally implement RpcProxyApi", async () => {
-    // Lazy-import so the dispatch-test fakes above don't pay the cost.
-    const { WebSocketTmuxClient } = await import(
-      "../../src/connectors/websocket/client.js"
-    );
-    const { TmuxClientProxy } = await import(
-      "../../src/connectors/electron/renderer.js"
-    );
+  it("WebSocketTmuxClient and TmuxClientProxy structurally implement RpcProxyApi", () => {
+    // Type-only check: classes are imported via `import type` at the top of
+    // this file, so the assertion is fully erased. If either class drifts
+    // from RpcProxyApi the type-checker rejects this file at build time —
+    // no runtime module evaluation needed (and none happens here).
     type _CheckWS = InstanceType<typeof WebSocketTmuxClient> extends RpcProxyApi
       ? true
       : never;
