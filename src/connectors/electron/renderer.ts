@@ -19,6 +19,7 @@
 import type { ConnectionState } from "../../connection-state.js";
 import {
   TypedEmitter,
+  isTmuxMessage,
   type EmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
@@ -126,7 +127,8 @@ export class TmuxClientProxy implements RpcProxyApi {
       }
       // account() requires a parsed TmuxMessage; non-tmux events have no
       // pane bytes and contribute nothing to the credit accumulator.
-      if (msg.type !== "connection-state" && msg.type !== "reconnected") {
+      // [LAW:single-enforcer] discriminator lives in src/emitter.ts.
+      if (isTmuxMessage(msg)) {
         this.account(msg);
       }
       this.emitter.emit(msg);
@@ -251,7 +253,15 @@ export class TmuxClientProxy implements RpcProxyApi {
     // The proxy's lifecycle is over even though main keeps running. Report
     // `closed{disposed}` so consumers know this proxy will not emit again
     // (and emit a final synthetic event so registered listeners observe it).
-    if (this.currentConnectionState.status !== "closed") {
+    // [LAW:one-source-of-truth] close() is the proxy-side terminator: even if
+    // main already broadcast closed{exit|transport-error}, the proxy reports
+    // closed{disposed} so the proxy's lifecycle reflects *its* termination
+    // cause, not main's. The only suppression is when we already reported
+    // closed{disposed} (idempotent close()).
+    const alreadyDisposed =
+      this.currentConnectionState.status === "closed" &&
+      this.currentConnectionState.reason === "disposed";
+    if (!alreadyDisposed) {
       this.currentConnectionState = { status: "closed", reason: "disposed" };
       this.emitter.emit({
         type: "connection-state",

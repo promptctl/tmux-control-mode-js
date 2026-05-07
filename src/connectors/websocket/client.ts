@@ -469,6 +469,11 @@ export class WebSocketTmuxClient {
   onWelcome(frame: WelcomeFrame): void {
     this.serverLimits = frame.limits;
     this.attempts = 0;
+    // [LAW:one-source-of-truth] lastError describes the current reconnecting
+    // episode only. Wiping it on entry into ready means any *subsequent* close
+    // maps from a clean slate — a clean exit can't be misreported as
+    // transport-error because of a stale error from before the last reconnect.
+    this.lastError = undefined;
     this.transition("ready");
     this.startHeartbeat();
     this.flushOutbox();
@@ -673,7 +678,6 @@ export class WebSocketTmuxClient {
   private publishUnified(): void {
     const next = this.mapToUnified();
     if (sameConnectionState(this.currentConnectionState, next)) return;
-    const wasReady = this.currentConnectionState.status === "ready";
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
     if (next.status === "ready") {
@@ -686,12 +690,9 @@ export class WebSocketTmuxClient {
         this.hasReachedReadyOnce = true;
       }
     }
-    // Leaving ready clears the previously sticky lastError when we land on
-    // a status that doesn't carry it; reconnecting with no recent error
-    // shouldn't surface an error from a prior session.
-    if (next.status !== "reconnecting" && wasReady) {
-      this.lastError = undefined;
-    }
+    // lastError lifetime is owned by onWelcome (cleared on entry into ready).
+    // Any error while in ready/reconnecting is the cause of the *current*
+    // episode and is consumed by mapToUnified for closed-reason disambiguation.
   }
 
   private mapToUnified(): ConnectionState {

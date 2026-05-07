@@ -383,4 +383,85 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
       reason: "disposed",
     });
   });
+
+  it("proxy.close() overrides main's closed{exit} with closed{disposed}", () => {
+    // Pins the contract documented at renderer.ts (close() is the proxy-side
+    // terminator: even if main already broadcast closed{exit}, the proxy
+    // reports closed{disposed} so the proxy's lifecycle reflects *its*
+    // termination cause, not main's).
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const main = new TmuxClient(t);
+    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    createMainBridge(main, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const states: ConnectionState[] = [];
+    proxy.on("connection-state", (ev) => states.push(ev.state));
+
+    // Drive main to closed{exit}; proxy mirrors it.
+    t.triggerClose();
+    expect(proxy.connectionState).toEqual({
+      status: "closed",
+      reason: "exit",
+    });
+
+    // proxy.close() must still terminate the proxy lifecycle as disposed.
+    proxy.close();
+
+    expect(proxy.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+    expect(states.at(-1)).toEqual({ status: "closed", reason: "disposed" });
+  });
+
+  it("proxy.close() overrides main's closed{transport-error} with closed{disposed}", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const main = new TmuxClient(t);
+    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    createMainBridge(main, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    t.triggerClose("EPIPE");
+    expect(proxy.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+
+    proxy.close();
+
+    expect(proxy.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+  });
+
+  it("proxy.close() is idempotent on closed{disposed} (no duplicate emit)", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const main = new TmuxClient(t);
+    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    createMainBridge(main, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const states: ConnectionState[] = [];
+    proxy.on("connection-state", (ev) => states.push(ev.state));
+
+    proxy.close();
+    proxy.close();
+
+    expect(
+      states.filter(
+        (s) => s.status === "closed" && s.reason === "disposed",
+      ),
+    ).toHaveLength(1);
+  });
 });
