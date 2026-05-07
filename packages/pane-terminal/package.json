@@ -1,0 +1,53 @@
+{
+  "name": "@promptctl/pane-terminal",
+  "version": "0.1.0",
+  "description": "Portable, optimization-first xterm.js renderer for tmux panes — built on @promptctl/tmux-control-mode-js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./stream": {
+      "types": "./dist/stream/index.d.ts",
+      "default": "./dist/stream/index.js"
+    },
+    "./sink": {
+      "types": "./dist/sink/index.d.ts",
+      "default": "./dist/sink/index.js"
+    },
+    "./xterm-sink": {
+      "types": "./dist/xterm-sink/index.d.ts",
+      "default": "./dist/xterm-sink/index.js"
+    },
+    "./react": {
+      "types": "./dist/react/index.d.ts",
+      "default": "./dist/react/index.js"
+    },
+    "./vanilla": {
+      "types": "./dist/vanilla/index.d.ts",
+      "default": "./dist/vanilla/index.js"
+    }
+  },
+  "peerDependencies": {
+    "@promptctl/tmux-control-mode-js": "^0.1.0",
+    "@xterm/xterm": "^5.5.0",
+    "react": ">=18 <20"
+  },
+  "peerDependenciesMeta": {
+    "@xterm/xterm": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean",
+    "test": "vitest run --passWithNoTests"
+  }
+}
