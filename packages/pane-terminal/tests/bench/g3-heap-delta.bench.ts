@@ -11,10 +11,11 @@
 // V8 has no public allocation counter per function, and a long-running heap
 // trace cannot prove a *specific* function never allocates.
 //
-// Status: GREEN as of 8w9.4 — when run with `node --expose-gc`. Falls back to
-// "skip with reason" otherwise; CI's `bench:gate` script wires --expose-gc in
-// 8w9.5+ when BufferingSink lands. Without explicit GC the heap delta
-// measurement is too noisy to gate on.
+// Status: GREEN as of 8w9.4 — `bench:gate` sets `NODE_OPTIONS=--expose-gc`
+// in this package's package.json, so CI gets the explicit GC the heap-delta
+// measurement needs. Manual `vitest run` against this file falls back to
+// "skip with reason" if --expose-gc is absent; without it, generational
+// behaviour makes the comparison too noisy to gate on.
 
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";

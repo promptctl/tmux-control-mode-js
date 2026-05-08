@@ -248,11 +248,16 @@ export class PaneStream implements ReseedTarget {
       full.on("subscription-changed", this.onSubscriptionChanged);
       // Per-pane width;height in one subscription (single message,
       // semicolon-separated) so tmux performs the layout walk for us.
-      void full.subscribe(
-        this.subscriptionName,
-        `%${this.paneId}`,
-        "#{pane_width};#{pane_height}",
-      );
+      // .catch keeps construction safe — if the client is already closed or
+      // tmux rejects the subscribe, swallowing here matches the symmetrical
+      // unsubscribe() in dispose(), which can't surface as a usable error.
+      void full
+        .subscribe(
+          this.subscriptionName,
+          `%${this.paneId}`,
+          "#{pane_width};#{pane_height}",
+        )
+        .catch(() => undefined);
     } else {
       this.onSubscriptionChanged = null;
     }

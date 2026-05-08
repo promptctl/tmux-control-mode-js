@@ -104,8 +104,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
       const earliestOther = Math.min(...otherSeedTimes);
       expect(
         visibleAt,
-        `visible reseed (${visibleAt.toFixed(3)}ms) " +
-        "must precede earliest other (${earliestOther.toFixed(3)}ms)`,
+        `visible reseed (${visibleAt.toFixed(3)}ms) must precede earliest other (${earliestOther.toFixed(3)}ms)`,
       ).toBeLessThanOrEqual(earliestOther);
 
       const firstPaintMs = visibleAt - burstStart;
