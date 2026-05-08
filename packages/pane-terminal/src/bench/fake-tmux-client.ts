@@ -6,12 +6,13 @@
 // lifecycle, byte-output subscription, and capture-pane execution — plus
 // test-only knobs to drive those inputs from a benchmark.
 //
-// [LAW:one-source-of-truth] FakeTmuxClient does not duplicate ConnectionState
-//   shape; it imports the union from the library so drift is impossible.
+// [LAW:one-source-of-truth] Event/message and CommandResponse shapes come
+//   from the library — `OutputMessage`/`ExtendedOutputMessage`/`CommandResponse`
+//   are re-used as-is, never re-declared. PaneStream consuming a real
+//   TmuxClient or a FakeTmuxClient sees structurally identical data.
 // [LAW:behavior-not-structure] The fake exposes the *behaviors* PaneStream
 //   needs (state changes, byte arrivals, capture-pane round-trips) — not the
-//   internal structure of TmuxClient. Real TmuxClient and FakeTmuxClient are
-//   substitutable through these behaviors only.
+//   internal structure of TmuxClient.
 //
 // Real TmuxClient surface NOT modeled here (out of scope for the gate
 // harness, expanded as later steps need them):
@@ -21,6 +22,11 @@
 // its own private fake.
 
 import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
+import type {
+  OutputMessage,
+  ExtendedOutputMessage,
+  CommandResponse,
+} from "@promptctl/tmux-control-mode-js/protocol";
 
 // Ambient `setTimeout` — `tsconfig.core.json` deliberately ships no DOM or
 // Node types so core stays environment-agnostic. The fake's `execute()` needs
@@ -29,21 +35,11 @@ import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
 // without dragging in `@types/node` or `lib.dom`.
 declare const setTimeout: (handler: () => void, ms?: number) => unknown;
 
-// Local mirror of the EmitterMessage shape — re-declared loosely here so the
-// bench package does not depend on the library's internal emitter types.
-// The fake only emits the subset of events PaneStream subscribes to.
-export interface FakeOutputMessage {
-  readonly type: "output";
-  readonly paneId: number;
-  readonly bytes: Uint8Array;
-}
-
-export interface FakeExtendedOutputMessage {
-  readonly type: "extended-output";
-  readonly paneId: number;
-  readonly bytes: Uint8Array;
-  readonly age: number;
-}
+// The fake emits the subset of events PaneStream subscribes to. Pane-output
+// events use the library's exact shape (paneId + `data: Uint8Array`) so
+// PaneStream does not need a real-vs-fake adapter.
+export type FakeOutputMessage = OutputMessage;
+export type FakeExtendedOutputMessage = ExtendedOutputMessage;
 
 export interface FakeConnectionStateMessage {
   readonly type: "connection-state";
@@ -86,10 +82,11 @@ export class FakeTmuxClient {
   // gates may script the response payload.
   private readonly captureLog: string[] = [];
   private captureHandler: (target: string) => string = () => "";
+  private commandCounter = 0;
 
   // Round-trip latency injected into `execute()`. Gates 1 and 7 vary this to
   // measure the visibility-toggle / reconnect-burst timings against a known
-  // simulated tmux response time. Default 0 = synchronous.
+  // simulated tmux response time. Default 0 = next-macrotask resolution.
   private roundTripMs = 0;
 
   // -------------------------------------------------------------------------
@@ -111,6 +108,11 @@ export class FakeTmuxClient {
     this.listeners.set(type as FakeMessageType, set);
   }
 
+  off<T extends FakeMessageType>(
+    type: T,
+    handler: Handler<Extract<FakeMessage, { type: T }>>,
+  ): void;
+  off(type: "*", handler: Handler<FakeMessage>): void;
   off(type: string, handler: Handler<never>): void {
     this.listeners
       .get(type as FakeMessageType)
@@ -119,19 +121,26 @@ export class FakeTmuxClient {
 
   /**
    * Mimics `TmuxClient.execute(cmd)` — used by PaneStream for capture-pane.
-   * The captureHandler is the seam tests use to script payloads (e.g. a fake
-   * scrollback dump). Round-trip latency is honoured via `setTimeout(..., 0)`
-   * when `roundTripMs === 0` to preserve "next-microtask" semantics, or
-   * `setTimeout` with the configured delay otherwise.
+   * The `captureHandler` is the seam tests use to script payloads (e.g. a
+   * fake scrollback dump). Resolution is scheduled via `setTimeout(...,
+   * roundTripMs)` for every value (including 0) so gates 1/7 get a single,
+   * deterministic macrotask boundary between the call site and the response.
    */
-  execute(command: string): Promise<{ output: string; error: false }> {
+  execute(command: string): Promise<CommandResponse> {
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
     const payload = this.captureHandler(command);
+    const commandNumber = ++this.commandCounter;
     return new Promise((resolve) => {
       setTimeout(
-        () => resolve({ output: payload, error: false }),
+        () =>
+          resolve({
+            commandNumber,
+            timestamp: Date.now(),
+            output: payload === "" ? [] : payload.split("\n"),
+            success: true,
+          }),
         this.roundTripMs,
       );
     });
@@ -159,16 +168,21 @@ export class FakeTmuxClient {
   }
 
   /** Push a byte chunk as if tmux had emitted it for the given pane. */
-  injectOutput(paneId: number, bytes: Uint8Array): void {
-    this.dispatch({ type: "output", paneId, bytes });
+  injectOutput(paneId: number, data: Uint8Array): void {
+    this.dispatch({ type: "output", paneId, data });
   }
 
   /** Push an extended-output (paused-pane catch-up) chunk. */
-  injectExtendedOutput(paneId: number, bytes: Uint8Array, age: number): void {
-    this.dispatch({ type: "extended-output", paneId, bytes, age });
+  injectExtendedOutput(paneId: number, data: Uint8Array, age: number): void {
+    this.dispatch({ type: "extended-output", paneId, age, data });
   }
 
-  /** Script the response body for the next capture-pane call. */
+  /**
+   * Persistently script the response body for *all subsequent* capture-pane
+   * calls. Gates 1/4/7 set this once and call execute() many times — the
+   * persistent shape is intentional. To change the response mid-bench, call
+   * this method again.
+   */
   setCapturePaneResponse(handler: (target: string) => string): void {
     this.captureHandler = handler;
   }
