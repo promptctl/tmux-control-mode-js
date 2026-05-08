@@ -17,6 +17,15 @@ jobs:
           node-version: 20
           cache: npm
 
+      # npm 10 (Node 20 default) strict-checks optional platform-binding
+      # dependencies in package-lock.json; vite's transitive
+      # `@rolldown/binding-wasm32-wasi` references `@emnapi/core@1.10.0`/
+      # `@emnapi/runtime@1.10.0` that npm 11 omits as platform-irrelevant.
+      # Upgrading npm in CI matches what every contributor's local install
+      # produces, so `npm ci` accepts the lock without a brittle manual
+      # patch. Engine floor stays Node 20 (this only changes npm).
+      - run: npm install -g npm@latest
+
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: tmux -V
 
