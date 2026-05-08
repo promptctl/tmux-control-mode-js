@@ -66,18 +66,10 @@ export interface PaneActivity {
   readonly bytesSinceLastAttach: number;
 }
 
-/**
- * Visibility hint a consumer feeds the stream so the per-client
- * `ReseedScheduler` can dispatch in priority order on reconnect (O6).
- *
- * - `visible`: the sink is on screen and has a non-zero box; reseed first.
- * - `hidden`:  attached but offscreen (other tab, minimized window); reseed
- *              after every visible stream completes.
- *
- * Detached streams (no sink) are skipped entirely — tmux re-emits live
- * bytes once reconnected, and the next attach issues a fresh capture-pane.
- */
-export type Visibility = "visible" | "hidden";
+// Per the design doc (O6), visibility is owned by the *sink* — the sink
+// knows its own DOM container's IntersectionObserver / document.visibilityState
+// state. PaneStream delegates to `sink.isVisible()` when computing reseed
+// priority. There is no stream-side `Visibility` type or setter.
 
 /**
  * Subset of `TmuxClient` surface PaneStream consumes. The real
@@ -154,8 +146,6 @@ export interface PaneStreamOptions {
    * fires at most once per window.
    */
   readonly activityThrottleMs?: number;
-  /** Initial visibility. Default `"visible"`. */
-  readonly visibility?: Visibility;
 }
 
 type EventName = "state-changed" | "activity-changed" | "reconnected";
@@ -191,14 +181,18 @@ export class PaneStream implements ReseedTarget {
   // Buffer for live bytes that arrive during seeding. Drained synchronously
   // inside finishSeed() so no live byte interleaves the seed write.
   private buffer: Uint8Array[] = [];
+  // Last successful seed payload — kept so subsequent re-attaches can hand
+  // the new sink the same starting picture WITHOUT a fresh capture-pane
+  // round-trip (gate #4: re-mount ×100 → exactly one capture). Set inside
+  // seed(); cleared by reconnect (the underlying pane state has moved).
+  private lastSeed: { captured: string; cursor: SeedCursor | null } | null =
+    null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
   private currentLastByteAt = 0;
   private currentBytesSinceAttach = 0;
   private flushTimerId: unknown = null;
-
-  private currentVisibility: Visibility;
 
   // Listener registries. Per-event Sets so add/remove is O(1).
   private readonly stateListeners = new Set<Listener<"state-changed">>();
@@ -220,12 +214,15 @@ export class PaneStream implements ReseedTarget {
     this.paneId = opts.paneId;
     this.historyLines = opts.historyLines ?? 0;
     this.activityThrottleMs = opts.activityThrottleMs ?? 100;
-    this.currentVisibility = opts.visibility ?? "visible";
     this.subscriptionName = `pane-terminal-size-${opts.paneId}`;
 
     this.onOutput = (ev) => this.handlePaneOutput(ev.paneId, ev.data);
     this.onExtendedOutput = (ev) => this.handlePaneOutput(ev.paneId, ev.data);
     this.onReconnected = () => {
+      // The cached seed is now stale — the underlying pane state has
+      // moved while we were disconnected. Drop it so the ReseedScheduler's
+      // upcoming reseed() (or the next attach()) issues a fresh capture-pane.
+      this.lastSeed = null;
       // ReseedScheduler owns dispatch; we just notify our own listeners
       // so consumers (e.g. status badges) can react.
       for (const h of this.reconnectedListeners) h();
@@ -286,19 +283,19 @@ export class PaneStream implements ReseedTarget {
     });
   }
 
-  get visibility(): Visibility {
-    return this.currentVisibility;
-  }
-
-  setVisibility(v: Visibility): void {
-    this.currentVisibility = v;
-  }
-
   /**
-   * Attach a sink. First attach (state === 'idle' | 'detached') triggers a
-   * capture-pane + cursor query and seeds the sink synchronously when both
-   * resolve. Re-attaching after detach reuses the existing PaneStream
-   * lifecycle but issues a fresh seed (the visible state may have moved).
+   * Attach a sink.
+   *
+   * - **First attach** (no cached seed) — issues capture-pane + cursor query,
+   *   buffers any live bytes that arrive in the meantime, and synchronously
+   *   seeds + drains the buffer once both responses resolve. State path:
+   *   `idle → seeding → live`.
+   * - **Re-attach** (a prior attach already seeded successfully) — replays
+   *   the cached seed to the new sink synchronously, no tmux round-trip.
+   *   State path: `detached → live`. This is gate #4's contract: mount churn
+   *   (visibility flicker, React strict-mode, tab restore) must not multiply
+   *   tmux load. The cached seed is invalidated on `reconnected`, where the
+   *   `ReseedScheduler` re-issues capture-pane in priority order.
    */
   attach(sink: TerminalSink): void {
     if (this.currentState === "disposed") return;
@@ -311,6 +308,14 @@ export class PaneStream implements ReseedTarget {
     // Reset attach-scoped activity counter so consumers see "since I started
     // looking", not "since the universe began."
     this.currentBytesSinceAttach = 0;
+
+    if (this.lastSeed !== null) {
+      // Re-attach fast path. Synchronous: hand the new sink the cached
+      // payload and flip straight to live. No capture-pane is issued.
+      sink.seed(this.lastSeed.captured, this.lastSeed.cursor);
+      this.setState("live");
+      return;
+    }
 
     this.setState("seeding");
     void this.seed();
@@ -384,7 +389,9 @@ export class PaneStream implements ReseedTarget {
   priority(): ReseedPriority {
     if (this.currentState === "disposed") return 2;
     if (this.sink === null) return 2;
-    return this.currentVisibility === "visible" ? 0 : 1;
+    // O6: visibility is owned by the sink. Visible-attached comes first;
+    // attached-but-hidden is second. The scheduler skips priority>=2.
+    return this.sink.isVisible() ? 0 : 1;
   }
 
   async reseed(): Promise<void> {
@@ -415,7 +422,14 @@ export class PaneStream implements ReseedTarget {
     //   live:     forward to sink (sink.write must be allocation-free per O3).
     //   seeding:  push into the seed buffer (Array.push doesn't allocate
     //             unless the backing store grows; bounded by seed time).
-    //   idle/detached: only the activity counter updated above.
+    //   idle:     only the activity counter is updated above (no cached seed
+    //             yet, so nothing to invalidate).
+    //   detached: counter, plus null out lastSeed so the next attach() takes
+    //             the slow path (capture-pane). Without this, a re-attach
+    //             would paint a stale screen and silently miss the bytes
+    //             that arrived during detach. Cheap (single property write
+    //             to null) and allocation-free, so the [HOT-PATH] rule
+    //             still holds.
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
@@ -423,6 +437,8 @@ export class PaneStream implements ReseedTarget {
       this.sink!.write(data);
     } else if (this.currentState === "seeding") {
       this.buffer.push(data);
+    } else if (this.currentState === "detached") {
+      this.lastSeed = null;
     }
 
     // Schedule the activity-changed flush at most once per window.
@@ -461,6 +477,7 @@ export class PaneStream implements ReseedTarget {
 
     let captureOutput: readonly string[] = [];
     let cursorLine = "";
+    let captureSucceeded = false;
     try {
       const [captureResp, cursorResp] = await Promise.all([
         this.client.execute(captureCmd),
@@ -468,10 +485,13 @@ export class PaneStream implements ReseedTarget {
       ]);
       captureOutput = captureResp.output;
       cursorLine = cursorResp.output[0] ?? "";
+      captureSucceeded = true;
     } catch {
       // Capture failed (e.g. connection closed). Fall through to live mode
       // with an empty seed; better to render nothing than to wedge in
-      // 'seeding' forever. Activity events keep flowing.
+      // 'seeding' forever. Activity events keep flowing. We deliberately
+      // do NOT cache this empty payload below — a transient failure must
+      // not become "sticky" and prevent the next attach from retrying.
     }
 
     // Re-check liveness after the await; consumer may have detached or
@@ -483,6 +503,15 @@ export class PaneStream implements ReseedTarget {
     // No `await` from here to the state flip — no live byte can interleave.
     const captured = captureOutput.join("\r\n");
     const cursor = parseCursor(cursorLine);
+
+    // Cache for the next attach() — gate #4 reuses this without a fresh
+    // capture-pane round-trip. Only cached on success: a failed seed left
+    // in the cache would let subsequent re-attaches paint a blank screen
+    // forever, and the next attach is the natural recovery point.
+    // Invalidated by the reconnect handler and by detached-mode bytes.
+    if (captureSucceeded) {
+      this.lastSeed = { captured, cursor };
+    }
 
     sinkAtStart.seed(captured, cursor);
 
@@ -526,9 +555,12 @@ export class PaneStream implements ReseedTarget {
 // ---------------------------------------------------------------------------
 
 function parseCursor(line: string): SeedCursor | null {
+  // tmux's `display-message -p '#{cursor_x};#{cursor_y}'` reply: cursor_x is
+  // 0-indexed from the left (column), cursor_y is 0-indexed from the top
+  // (row). Map them onto the renderer-natural {col, row} vocabulary.
   const m = line.match(/^(\d+);(\d+)$/);
   if (m === null) return null;
-  return { x: Number(m[1]), y: Number(m[2]) };
+  return { col: Number(m[1]), row: Number(m[2]) };
 }
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {

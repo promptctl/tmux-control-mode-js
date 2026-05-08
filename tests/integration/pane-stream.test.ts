@@ -139,8 +139,8 @@ describe.skipIf(!RUN_INTEGRATION)(
       // Cursor should be present and inside the 80x24 viewport.
       const cursor = sink.seedCalls[0].cursor;
       expect(cursor).not.toBeNull();
-      expect(cursor!.x).toBeGreaterThanOrEqual(0);
-      expect(cursor!.y).toBeGreaterThanOrEqual(0);
+      expect(cursor!.col).toBeGreaterThanOrEqual(0);
+      expect(cursor!.row).toBeGreaterThanOrEqual(0);
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
