@@ -11,39 +11,33 @@
 // every capture-pane request — not real tmux throughput, which is gate 1's
 // domain.
 //
-// Status: GREEN as of 8w9.4. PaneStream registers with the per-client
-// `ReseedScheduler`; on the fake's `'reconnected'` event the scheduler
-// dispatches sequentially by priority. We count the first sink to receive
-// a *fresh* seed after reconnect for the first-paint metric.
+// Status: GREEN as of 8w9.4. Updated in 8w9.5 to use BufferingSink as the
+// canonical fixture; visibility is now owned by the sink (per design doc
+// O6) rather than the stream, which is why we model offscreen panes as
+// `new BufferingSink({ visible: false })`.
 
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient, TerminalSink } from "../../src/stream/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
+import type { PaneStreamClient } from "../../src/stream/index.js";
+import { BufferingSink } from "../../src/sink/index.js";
 
 const FIRST_PAINT_BUDGET_MS = 100;
 const TOTAL_BURST_BUDGET_MS = 50;
 const ATTACHED_STREAM_COUNT = 8;
-// One stream marked 'visible' so the priority lane is meaningfully
-// exercised; the rest are 'hidden' (still attached, lower priority).
+// One stream's sink is `visible:true` so the priority lane is meaningfully
+// exercised; the rest are `visible:false` (still attached, lower priority).
 const VISIBLE_INDEX = 3;
 
-class TimingSink implements TerminalSink {
-  seedCount = 0;
+// Wrap BufferingSink to record the wall-clock time of each seed() call so
+// the gate can assert ordering and first-paint latency. Subclassing keeps
+// the byte/text contract with the canonical sink — only the timing field
+// is local.
+class TimedBufferingSink extends BufferingSink {
   lastSeedAt = 0;
-  seed(_t: string, _c: SeedCursor | null): void {
-    this.seedCount += 1;
+  override seed(...args: Parameters<BufferingSink["seed"]>): void {
+    super.seed(...args);
     this.lastSeedAt = performance.now();
-  }
-  write(_bytes: Uint8Array): void {
-    /* no-op */
-  }
-  resize(_c: number, _r: number): void {
-    /* no-op */
-  }
-  dispose(): void {
-    /* no-op */
   }
 }
 
@@ -58,27 +52,26 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
       `${ATTACHED_STREAM_COUNT} attached streams`,
     async () => {
       const client = new FakeTmuxClient();
-      // Ten lines per capture-pane response — enough to be non-trivial,
-      // small enough to not skew timing.
+      // Four lines per capture-pane response — non-trivial, won't skew timing.
       client.setCapturePaneResponse(() => "row-0\nrow-1\nrow-2\nrow-3\n");
 
-      const sinks: TimingSink[] = [];
+      const sinks: TimedBufferingSink[] = [];
       const streams: PaneStream[] = [];
       for (let i = 0; i < ATTACHED_STREAM_COUNT; i++) {
-        const sink = new TimingSink();
+        const sink = new TimedBufferingSink({
+          visible: i === VISIBLE_INDEX,
+        });
         const stream = new PaneStream({
           client: client as unknown as PaneStreamClient,
           paneId: i + 1,
-          visibility: i === VISIBLE_INDEX ? "visible" : "hidden",
         });
         stream.attach(sink);
         sinks.push(sink);
         streams.push(stream);
       }
-      // Drain initial seed so seedCount baselines at 1 per sink.
+      // Drain initial seed so each sink baselines at exactly 1 seed call.
       for (let i = 0; i < ATTACHED_STREAM_COUNT * 2; i++) await tick();
-      const baselineSeedCounts = sinks.map((s) => s.seedCount);
-      expect(baselineSeedCounts.every((c) => c === 1)).toBe(true);
+      expect(sinks.every((s) => s.seedCalls.length === 1)).toBe(true);
 
       // Drive the reconnect. FakeTmuxClient must transition through
       // 'reconnecting' first so the next 'ready' synthesizes 'reconnected'.
@@ -93,7 +86,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
 
       // Every attached sink should have one ADDITIONAL seed call.
       for (let i = 0; i < ATTACHED_STREAM_COUNT; i++) {
-        expect(sinks[i].seedCount).toBe(2);
+        expect(sinks[i].seedCalls.length).toBe(2);
       }
 
       // Visible-priority sink should be the first to be reseeded.

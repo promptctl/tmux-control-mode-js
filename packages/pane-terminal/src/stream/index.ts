@@ -10,7 +10,6 @@ export type {
   PaneStreamOptions,
   PaneStreamClient,
   PaneActivity,
-  Visibility,
 } from "./pane-stream.js";
 export { ReseedScheduler, getScheduler } from "./reseed-scheduler.js";
 export type {
