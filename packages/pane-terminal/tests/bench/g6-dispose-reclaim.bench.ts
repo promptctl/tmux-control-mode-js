@@ -156,11 +156,14 @@ describe("Gate 6 — dispose() reclaim", () => {
       const after = process.memoryUsage().heapUsed;
       const delta = after - baseline;
 
+      // The ticket says "within 1MB" — read inclusively (a delta of
+      // exactly the budget meets the threshold). toBeLessThanOrEqual mirrors
+      // that wording.
       expect(
         delta,
         `heap delta ${delta} bytes (budget ${RECLAIM_BUDGET_BYTES}). ` +
           `Likely a retained listener/observer/timer in PaneStream or XtermSink dispose().`,
-      ).toBeLessThan(RECLAIM_BUDGET_BYTES);
+      ).toBeLessThanOrEqual(RECLAIM_BUDGET_BYTES);
     },
   );
 

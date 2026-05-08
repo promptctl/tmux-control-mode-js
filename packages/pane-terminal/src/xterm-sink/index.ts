@@ -27,9 +27,14 @@
 //  5. `dispose()` releases every observer/listener/timer and disposes the
 //     `Terminal`. After dispose, every public method is a no-op.
 //
-// [LAW:locality-or-seam] All xterm/DOM details live behind the
-//   `TerminalSink` interface declared in ../sink/index.ts. PaneStream calls
-//   only those methods.
+// [LAW:locality-or-seam] PaneStream (the producer side of the seam) sees
+//   only the `TerminalSink` interface declared in ../sink/index.ts; it has
+//   no access to xterm or the DOM. Direct consumers of XtermSink — which
+//   already bundle `@xterm/xterm` and the DOM by virtue of choosing this
+//   sink — get an explicit escape hatch via the `terminal` field below
+//   (xterm-addon mounting, custom decorators, viewport queries). The seam
+//   that matters for the architecture is producer↔renderer, not
+//   consumer↔renderer; the latter is intentionally permeable.
 // [LAW:single-enforcer] One ResizeObserver per sink, one rAF coalescing
 //   pending, one IntersectionObserver, one document-visibility listener.
 //   No duplicate paths.
@@ -70,6 +75,14 @@ export interface XtermSinkOptions {
 }
 
 export class XtermSink implements TerminalSink {
+  /**
+   * Documented escape hatch for advanced consumers — addon mounting
+   * (`@xterm/addon-search`, custom decorators), viewport queries, theme
+   * inspection. The producer-side seam is `TerminalSink`; PaneStream never
+   * sees this field. Touching it bypasses the wrapper's invariants
+   * (rAF-coalesced resize, in-place option mutation), so reach for it
+   * only when the wrapper genuinely doesn't expose what you need.
+   */
   readonly terminal: Terminal;
 
   private readonly container: HTMLElement;
@@ -267,13 +280,11 @@ export class XtermSink implements TerminalSink {
     this.firstResizeQueued = false;
 
     // xterm.dispose() detaches DOM nodes and releases its internal listeners.
-    // Wrap in a try because re-disposing inside a dispose-is-idempotent test
-    // would otherwise need to coordinate xterm internals.
-    try {
-      this.terminal.dispose();
-    } catch {
-      // Already disposed (e.g. xterm inserted a guard since 5.x); fine.
-    }
+    // Our own `isDisposed` guard at the top of this method already prevents a
+    // second call here, so any throw from xterm reflects a real disposal
+    // failure (corrupt internal state, double-dispose from outside our
+    // wrapper) — surfacing it is more useful than swallowing it.
+    this.terminal.dispose();
   }
 
   // ---------------------------------------------------------------------------
