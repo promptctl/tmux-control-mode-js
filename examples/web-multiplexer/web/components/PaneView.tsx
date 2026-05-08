@@ -1,17 +1,34 @@
 // examples/web-multiplexer/web/components/PaneView.tsx
 //
-// Thin view layer over PaneTerminal. The grid lays out one cell per pane
-// in the active window; each cell mounts a PaneTerminal instance in its
-// container div. All xterm / capture-pane / seeding logic lives inside
-// PaneTerminal — this file only does React wiring.
+// Thin view layer over the @promptctl/pane-terminal package.
+// PaneView lays out one cell per pane in the active window. Each PaneCell:
+//   1. Creates one `ObservablePaneStream` per pane id (stable across re-renders).
+//   2. Uses `mountPaneTerminal` (vanilla adapter) to wire `XtermSink` to the
+//      stream in an effect — giving us direct `sink.focus()` access.
+//   3. Renders `<PaneToolbar>` with the observable stream for the activity badge.
+//
+// [LAW:single-enforcer] `store.paneStreamClient` is the one adapter per
+//   bridge — not re-created per pane. All pane streams share it.
+// [LAW:dataflow-not-control-flow] Focus is a derived side-effect of
+//   `pane.active` changing; an effect declares the dependency and the MobX
+//   observer invalidates the component when the flag changes.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper } from "@mantine/core";
+import { mountPaneTerminal } from "@promptctl/pane-terminal/vanilla";
+import type { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
+import { ObservablePaneStream } from "../pane-stream-bridge.ts";
 import type { DemoStore, PaneInfo } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import { PaneTerminal } from "../pane-terminal.ts";
 import { PaneToolbar } from "./PaneToolbar.tsx";
+
+// [LAW:one-source-of-truth] The same font family string is used both as the
+// xterm.js fontFamily option and as the font-load probe in the XtermSink's
+// font cache. Keeping it in one place prevents the cache from measuring the
+// wrong font if the two strings drifted.
+const FONT_FAMILY =
+  '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
 
 interface Props {
   readonly store: DemoStore;
@@ -75,24 +92,49 @@ interface CellProps {
 
 const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const sinkRef = useRef<XtermSink | null>(null);
 
-  // PaneTerminal lifecycle is tied to the mount effect, NOT to useMemo.
-  // React StrictMode double-invokes effects in dev (mount → cleanup →
-  // mount). Creating a fresh instance on each effect run makes StrictMode
-  // safe at the cost of one extra capture-pane in dev only.
-  const [terminal, setTerminal] = useState<PaneTerminal | null>(null);
+  // [LAW:single-enforcer] One `ObservablePaneStream` per pane id. The stream
+  // subscribes to byte events at construction (O2) and lives until the pane
+  // leaves the tree. `useMemo` keeps identity stable across re-renders so
+  // `<PaneTerminal>` never tears down and rebuilds the xterm sink on a prop
+  // change that doesn't change the stream (O10).
+  const obs = useMemo(
+    () => new ObservablePaneStream({ client: store.paneStreamClient, paneId: pane.id }),
+    // pane.id and paneStreamClient are both stable within a window's lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pane.id],
+  );
+  // Dispose the stream when the pane unmounts or pane.id changes.
+  useEffect(() => () => obs.dispose(), [obs]);
 
+  // Capture the initial font size in a ref so the mount effect doesn't
+  // depend on it (preventing a remount on every font-size change).
+  const initialFontSize = useRef(uiStore.terminalFontSize);
+
+  // [LAW:single-enforcer] The ONLY place that constructs an XtermSink and
+  // attaches it to the stream. The cleanup is the ONLY place that disposes
+  // the mount. React StrictMode's double-invoke runs attach → detach →
+  // attach; `PaneStream.attach()` replays the cached seed on the second
+  // attach — no second capture-pane (gate #4).
   useEffect(() => {
     const container = containerRef.current;
-    if (container === null) return;
-    const t = new PaneTerminal(pane.id, store, uiStore);
-    t.mount(container);
-    setTerminal(t);
+    if (container === null) return undefined;
+    const mount = mountPaneTerminal(obs.stream, container, {
+      fontFamily: FONT_FAMILY,
+      fontSize: initialFontSize.current,
+    });
+    sinkRef.current = mount.sink;
     return () => {
-      t.dispose();
-      setTerminal(null);
+      mount.dispose();
+      sinkRef.current = null;
     };
-  }, [pane.id, store, uiStore]);
+  }, [obs.stream]);
+
+  // Live font-size updates — in-place setter, no remount (O10).
+  useEffect(() => {
+    sinkRef.current?.setFontSize(uiStore.terminalFontSize);
+  }, [uiStore.terminalFontSize]);
 
   // When this pane becomes the active pane (window switch, keymap
   // select-pane, click), pull keyboard focus into its xterm. Without
@@ -101,11 +143,11 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
   // C-b chord would never reach a keymap handler.
   //
   // [LAW:dataflow-not-control-flow] Derived effect: "the focused pane's
-  // xterm must have DOM focus" is a property of (pane.active, terminal).
-  // React re-runs the effect whenever either changes.
+  // xterm must have DOM focus" is a property of (pane.active). React
+  // re-runs the effect whenever pane.active changes.
   useEffect(() => {
-    if (pane.active && terminal !== null) terminal.focus();
-  }, [pane.active, terminal]);
+    if (pane.active) sinkRef.current?.focus();
+  }, [pane.active]);
 
   // Visual signal for the keymap prefix state: when the user has pressed
   // C-b, the focused pane's border switches to a warning color so the next
@@ -136,7 +178,7 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
       }}
       onClick={() => store.selectPane(pane)}
     >
-      <PaneToolbar pane={pane} uiStore={uiStore} terminal={terminal} />
+      <PaneToolbar pane={pane} uiStore={uiStore} obs={obs} />
       <div
         ref={containerRef}
         style={{
