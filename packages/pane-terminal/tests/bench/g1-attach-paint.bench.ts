@@ -114,7 +114,13 @@ function p99(samples: number[]): number {
 describe.skipIf(!integrationOn)(
   "Gate 1 — visibility toggle → first paint",
   () => {
-    let socket: string;
+    // Initialise to a sentinel so a beforeEach that throws BEFORE the
+    // socket assignment doesn't make afterEach run
+    // `tmux -L undefined kill-server` against an unrelated tmux server
+    // (one literally named `undefined`). Today `uniqueSocket()` can't
+    // fail, but a future edit that slips a throwing line above it would
+    // expose this footgun without the sentinel.
+    let socket = "";
     let session: string;
     let client: TmuxClient;
     let paneId: number;
@@ -128,7 +134,7 @@ describe.skipIf(!integrationOn)(
 
     afterEach(() => {
       client?.close();
-      killServer(socket);
+      if (socket !== "") killServer(socket);
     });
 
     it(`p99 attach → first sink seed < ${P99_BUDGET_MS}ms across ${ITERATIONS} iterations`, async () => {

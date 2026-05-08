@@ -116,14 +116,17 @@ export function getMetrics(family: string, weight = "normal"): FontMetrics {
   cache.set(k, measured);
 
   // Kick off a font-load refresh once per key. The inflight Map prevents
-  // a flurry of concurrent loads if N panes share a family.
-  if (
-    !inflightLoads.has(k) &&
-    typeof document !== "undefined" &&
-    "fonts" in document
-  ) {
-    const fonts = document.fonts as FontFaceSet;
-    if (typeof fonts.load === "function") {
+  // a flurry of concurrent loads if N panes share a family. Hoisting
+  // `document.fonts` into a local before reading `.load` is deliberate:
+  // some DOM shims expose `fonts` as a present-but-null property, which
+  // would make `typeof fonts.load` throw TypeError on the property
+  // access — the `"fonts" in document` test only confirms presence, not
+  // value validity. The null check is at a real trust boundary
+  // (DOM-API availability across browsers/shims/SSR), not a defensive
+  // null guard in the [LAW:no-defensive-null-guards] sense.
+  if (!inflightLoads.has(k) && typeof document !== "undefined") {
+    const fonts = (document as { fonts?: FontFaceSet | null }).fonts;
+    if (fonts != null && typeof fonts.load === "function") {
       const promise = fonts
         .load(`${weight} ${PROBE_FONT_SIZE}px ${family}`)
         .then(() => {
