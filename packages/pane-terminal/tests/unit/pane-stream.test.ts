@@ -96,21 +96,44 @@ describe("PaneStream — state machine", () => {
     expect(sink.writes.map((w) => w[0])).toEqual([0x41, 0x42]);
   });
 
-  it("detach() → 'detached'; attach() again re-seeds", async () => {
-    const { client, stream } = makeStream();
+  it("detach() → 'detached'; attach() again replays the cached seed without a fresh capture-pane", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
     const sink1 = new RecordingSink();
     stream.attach(sink1);
     await flushTicks();
     expect(client.capturePaneCount()).toBe(1);
+    expect(sink1.events.some((e) => e.startsWith("seed"))).toBe(true);
 
     stream.detach();
     expect(stream.state).toBe("detached");
 
+    // Gate #4 contract: re-attach hands the new sink the cached seed
+    // payload synchronously, no tmux round-trip.
     const sink2 = new RecordingSink();
     stream.attach(sink2);
+    expect(stream.state).toBe("live"); // synchronous transition
+    expect(client.capturePaneCount()).toBe(1); // no new capture
+    expect(sink2.events.some((e) => e.startsWith("seed"))).toBe(true);
+  });
+
+  it("'reconnected' invalidates the cached seed; the next attach re-issues capture-pane", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    const sink1 = new RecordingSink();
+    stream.attach(sink1);
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
+    stream.detach();
+
+    // Drive a reconnect — PaneStream's onReconnected drops the cached seed.
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+
+    const sink2 = new RecordingSink();
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding");
     await flushTicks();
     expect(stream.state).toBe("live");
-    expect(client.capturePaneCount()).toBe(2);
+    expect(client.capturePaneCount()).toBe(2); // fresh capture after reconnect
   });
 
   it("dispose() → 'disposed' and is idempotent", () => {

@@ -8,40 +8,23 @@
 // would replace high-bytes with U+FFFD (`0xEF 0xBF 0xBD`) and corrupt mouse
 // input — this gate ensures O3 ("zero decoding in pipeline") is honoured.
 //
-// Status: GREEN as of 8w9.4. PaneStream forwards `OutputMessage.data` to
-// `TerminalSink.write` without copy or decode; the inline `CapturingSink`
-// below records each call's `Uint8Array` reference and asserts byte-identity.
+// Status: GREEN as of 8w9.4 (interface). Migrated in 8w9.5 to use the
+// canonical `BufferingSink` instead of an inline collector — same
+// assertions, but now the gate exercises the same fixture every other test
+// uses, so a regression in BufferingSink's byte-handling would also
+// surface here.
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient, TerminalSink } from "../../src/stream/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
-
-// Minimal collector — gate 5's contract is "what arrived at the sink",
-// nothing else. BufferingSink (8w9.5) will replace this in tests that need
-// scrollback semantics; gate 5 needs only the byte capture.
-class CapturingSink implements TerminalSink {
-  readonly writes: Uint8Array[] = [];
-  seed(_text: string, _cursor: SeedCursor | null): void {
-    /* no-op for this gate */
-  }
-  write(bytes: Uint8Array): void {
-    this.writes.push(bytes);
-  }
-  resize(_cols: number, _rows: number): void {
-    /* no-op */
-  }
-  dispose(): void {
-    /* no-op */
-  }
-}
+import type { PaneStreamClient } from "../../src/stream/index.js";
+import { BufferingSink } from "../../src/sink/index.js";
 
 const PANE_ID = 1;
 
 function attachLiveStream(
   client: FakeTmuxClient,
-  sink: CapturingSink,
+  sink: BufferingSink,
 ): PaneStream {
   // Empty capture-pane response so seed completes immediately. After
   // attach, the stream flushes the buffer and flips to live; subsequent
@@ -56,20 +39,18 @@ function attachLiveStream(
 }
 
 async function flushSeed(): Promise<void> {
-  // FakeTmuxClient.execute resolves on next macrotask; await two ticks so
-  // both Promise.all branches settle and PaneStream's seed() resumes.
   await new Promise((r) => setTimeout(r, 0));
   await new Promise((r) => setTimeout(r, 0));
 }
 
 describe("Gate 5 — non-UTF8 byte fidelity", () => {
   let client: FakeTmuxClient;
-  let sink: CapturingSink;
+  let sink: BufferingSink;
   let stream: PaneStream;
 
   beforeEach(async () => {
     client = new FakeTmuxClient();
-    sink = new CapturingSink();
+    sink = new BufferingSink();
     stream = attachLiveStream(client, sink);
     await flushSeed();
   });
@@ -134,6 +115,14 @@ describe("Gate 5 — non-UTF8 byte fidelity", () => {
     for (let i = 0; i < chunks.length; i++) {
       expect(sink.writes[i]).toBe(chunks[i]);
     }
+    // BufferingSink.concatBytes() is the convenient "full byte stream"
+    // assertion shape — equivalent to per-chunk equality in this case
+    // because we passed disjoint chunks, but is what real callers use to
+    // diff snapshots.
+    const flat = new Uint8Array([
+      0x1b, 0x5b, 0x33, 0x31, 0x6d, 0xff, 0x80, 0xc2,
+    ]);
+    expect(sink.concatBytes()).toEqual(flat);
 
     stream.dispose();
   });
