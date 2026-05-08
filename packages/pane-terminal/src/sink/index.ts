@@ -86,8 +86,10 @@ export interface TerminalSink {
    * purposes (the per-client `ReseedScheduler` pulls visible-attached
    * streams to the front of the dispatch queue).
    *
-   * BufferingSink hard-codes `true`; XtermSink consults its container's
-   * `IntersectionObserver`/`document.visibilityState` state.
+   * `BufferingSink` defaults to `true` and exposes a `visible` constructor
+   * option + `setVisible()` so tests/benches can model an attached-but-
+   * hidden sink. `XtermSink` consults its container's
+   * `IntersectionObserver`/`document.visibilityState` state directly.
    */
   isVisible(): boolean;
 

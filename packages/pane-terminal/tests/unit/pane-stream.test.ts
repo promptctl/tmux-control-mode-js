@@ -116,6 +116,60 @@ describe("PaneStream — state machine", () => {
     expect(sink2.events.some((e) => e.startsWith("seed"))).toBe(true);
   });
 
+  it("output arriving while detached invalidates the cached seed", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    const sink1 = new RecordingSink();
+    stream.attach(sink1);
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
+
+    stream.detach();
+    expect(stream.state).toBe("detached");
+
+    // Bytes arrive for our pane while detached. PaneStream cannot buffer
+    // them (would blow gate-3 memory budgets), but it can — and must —
+    // mark the cached seed as stale so the next attach issues a fresh
+    // capture-pane instead of painting a screen that's missing the
+    // intervening output.
+    client.injectOutput(7, new Uint8Array([0x41, 0x42]));
+
+    const sink2 = new RecordingSink();
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding"); // slow path, not the cached fast path
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
+    const { client, stream } = makeStream();
+    // Make execute() reject so the seed Promise.all throws.
+    client.setCapturePaneResponse(() => {
+      throw new Error("simulated capture failure");
+    });
+
+    const sink1 = new RecordingSink();
+    stream.attach(sink1);
+    await flushTicks();
+    // State still flips to live (better than wedging), but with empty seed.
+    expect(stream.state).toBe("live");
+    stream.detach();
+
+    // Now wire a working capture, re-attach. The cache must be empty so
+    // attach takes the slow path and recovers.
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message") ? "0;0" : "recovered",
+    );
+    const baselineCaptures = client.capturePaneCount();
+
+    const sink2 = new RecordingSink();
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding"); // slow path proves cache was empty
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBeGreaterThan(baselineCaptures);
+  });
+
   it("'reconnected' invalidates the cached seed; the next attach re-issues capture-pane", async () => {
     const { client, stream } = makeStream({ capture: "first-screen" });
     const sink1 = new RecordingSink();

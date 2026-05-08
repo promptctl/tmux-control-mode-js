@@ -422,7 +422,13 @@ export class PaneStream implements ReseedTarget {
     //   live:     forward to sink (sink.write must be allocation-free per O3).
     //   seeding:  push into the seed buffer (Array.push doesn't allocate
     //             unless the backing store grows; bounded by seed time).
-    //   idle/detached: only the activity counter updated above.
+    //   idle/detached: only the activity counter is updated above. We also
+    //                  null out lastSeed so the next attach() takes the slow
+    //                  path (capture-pane). Without this, a re-attach would
+    //                  paint a stale screen and silently miss the bytes that
+    //                  arrived during detach. Cheap (single property write
+    //                  to null) and allocation-free, so the [HOT-PATH] rule
+    //                  still holds.
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
@@ -430,6 +436,8 @@ export class PaneStream implements ReseedTarget {
       this.sink!.write(data);
     } else if (this.currentState === "seeding") {
       this.buffer.push(data);
+    } else if (this.currentState === "detached") {
+      this.lastSeed = null;
     }
 
     // Schedule the activity-changed flush at most once per window.
@@ -468,6 +476,7 @@ export class PaneStream implements ReseedTarget {
 
     let captureOutput: readonly string[] = [];
     let cursorLine = "";
+    let captureSucceeded = false;
     try {
       const [captureResp, cursorResp] = await Promise.all([
         this.client.execute(captureCmd),
@@ -475,10 +484,13 @@ export class PaneStream implements ReseedTarget {
       ]);
       captureOutput = captureResp.output;
       cursorLine = cursorResp.output[0] ?? "";
+      captureSucceeded = true;
     } catch {
       // Capture failed (e.g. connection closed). Fall through to live mode
       // with an empty seed; better to render nothing than to wedge in
-      // 'seeding' forever. Activity events keep flowing.
+      // 'seeding' forever. Activity events keep flowing. We deliberately
+      // do NOT cache this empty payload below — a transient failure must
+      // not become "sticky" and prevent the next attach from retrying.
     }
 
     // Re-check liveness after the await; consumer may have detached or
@@ -492,8 +504,13 @@ export class PaneStream implements ReseedTarget {
     const cursor = parseCursor(cursorLine);
 
     // Cache for the next attach() — gate #4 reuses this without a fresh
-    // capture-pane round-trip. Invalidated by the reconnect handler.
-    this.lastSeed = { captured, cursor };
+    // capture-pane round-trip. Only cached on success: a failed seed left
+    // in the cache would let subsequent re-attaches paint a blank screen
+    // forever, and the next attach is the natural recovery point.
+    // Invalidated by the reconnect handler and by detached-mode bytes.
+    if (captureSucceeded) {
+      this.lastSeed = { captured, cursor };
+    }
 
     sinkAtStart.seed(captured, cursor);
 
