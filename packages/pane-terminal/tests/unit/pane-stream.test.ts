@@ -208,6 +208,38 @@ describe("PaneStream — state machine", () => {
     expect(stream.state).toBe("disposed");
   });
 
+  it("attach during in-flight seed coalesces — second attach reuses the same capture-pane", async () => {
+    // Models the React StrictMode mount→cleanup→remount sequence: the
+    // second attach lands BEFORE the first capture-pane resolves. PaneStream
+    // must not issue a second RPC.
+    const { client, stream } = makeStream({ capture: "scrollback" });
+    const sink1 = new RecordingSink();
+    const sink2 = new RecordingSink();
+
+    stream.attach(sink1);
+    expect(stream.state).toBe("seeding");
+    expect(client.capturePaneCount()).toBe(1);
+
+    // Detach before the seed RPC resolves — its setTimeout(0) hasn't fired yet.
+    stream.detach();
+    expect(stream.state).toBe("detached");
+
+    // Re-attach with a different sink. PaneStream must NOT issue a second
+    // capture-pane: the in-flight one will pick up `this.sink` when it
+    // resolves and seed sink2 directly.
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding");
+    expect(client.capturePaneCount()).toBe(1); // still 1 — coalesced
+
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(1);
+    // sink1 was orphaned by detach() before the seed resolved; only sink2
+    // ever received the snapshot.
+    expect(sink1.events.filter((e) => e.startsWith("seed("))).toHaveLength(0);
+    expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
+  });
+
   it("dispose() during seeding cleans up without flipping to live", async () => {
     const { stream } = makeStream();
     const sink = new RecordingSink();
