@@ -26,6 +26,7 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
 import type { TmuxMessage } from "../../../src/protocol/types.js";
+import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 import {
   INITIAL_STATE,
   defaultTmuxKeymap,
@@ -210,6 +211,8 @@ export class DemoStore {
   pendingConfirm: PendingConfirm | null = null;
 
   readonly client: TmuxBridge;
+  /** Shared `PaneStreamClient` adapter — one per bridge, used by all `PaneStream` instances. */
+  readonly paneStreamClient: BridgePaneStreamClient;
 
   // [LAW:one-source-of-truth] One keymap engine per client session. The
   // engine's state (root vs. prefix) is shared across all PaneTerminal
@@ -229,6 +232,7 @@ export class DemoStore {
 
   constructor(client: TmuxBridge, hooks: DemoStoreHooks = {}) {
     this.client = client;
+    this.paneStreamClient = new BridgePaneStreamClient(client);
     this.hooks = hooks;
     // [LAW:single-enforcer] `keyof T` excludes private fields, so the
     // overrides argument can only constrain public members by default.
@@ -237,6 +241,7 @@ export class DemoStore {
     // honest while still telling MobX not to wrap it.
     makeAutoObservable<this, "hooks">(this, {
       client: false,
+      paneStreamClient: false,
       hooks: false,
       // engineState is a non-observable plumbing detail — the UI observes
       // `prefixActive` instead, which is set whenever the engine transitions.

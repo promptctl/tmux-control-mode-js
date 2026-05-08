@@ -11,7 +11,9 @@ import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { TmuxClient } from "../../../src/client.js";
 import { spawnTmux } from "../../../src/transport/spawn.js";
+import { isTmuxMessage } from "../../../src/emitter.js";
 import type { TmuxMessage } from "../../../src/protocol/types.js";
+import type { EmitterMessage } from "../../../src/emitter.js";
 import type {
   ClientToServer,
   ServerToClient,
@@ -100,7 +102,10 @@ function handleConnection(ws: WebSocket): void {
 
   // [LAW:dataflow-not-control-flow] Forward every message through the same
   // pipeline. The `*` wildcard is the single enforcement point.
-  client.on("*", (msg: TmuxMessage) => {
+  // ConnectionStateMessage / ReconnectedMessage are lifecycle signals for
+  // local consumers; they are not serialized over the wire.
+  client.on("*", (msg: EmitterMessage) => {
+    if (!isTmuxMessage(msg)) return;
     send({ kind: "event", event: serialize(msg) });
   });
 
