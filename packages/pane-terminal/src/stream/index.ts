@@ -1,6 +1,20 @@
 // packages/pane-terminal/src/stream/index.ts
-// Subpath placeholder — real exports land in subsequent steps of the
-// tmux-pane-terminal-8w9 epic. Empty re-export so the TS project builds
-// cleanly while the package skeleton is in place.
+//
+// Public subpath: `@promptctl/pane-terminal/stream`. The data carrier — no
+// DOM, no xterm. Consumers pair this with a sink (BufferingSink in 8w9.5,
+// XtermSink in 8w9.6, or a custom one).
 
-export {};
+export { PaneStream } from "./pane-stream.js";
+export type {
+  PaneStreamState,
+  PaneStreamOptions,
+  PaneStreamClient,
+  PaneActivity,
+  Visibility,
+} from "./pane-stream.js";
+export { ReseedScheduler, getScheduler } from "./reseed-scheduler.js";
+export type {
+  ReseedPriority,
+  ReseedTarget,
+  ReseedSchedulerClient,
+} from "./reseed-scheduler.js";
