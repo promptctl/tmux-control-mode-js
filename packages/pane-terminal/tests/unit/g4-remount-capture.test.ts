@@ -53,14 +53,13 @@ describe("Gate 4 — re-mount on the same stream", () => {
 
     // Mounts 2..N — re-attach with a fresh sink each time. Per the ticket
     // contract, none of these add another capture-pane call: the stream
-    // re-issues capture only on first attach (idle → seeding). Once the
-    // stream has cached its seed payload, subsequent attaches reuse it.
-    //
-    // NOTE: The current PaneStream implementation re-seeds on every
-    // attach (idle/detached → seeding). The cache-and-reuse behaviour
-    // requires PaneStream to remember the most recent capture and replay
-    // it without round-tripping tmux. This test pins the contract; the
-    // implementation enhancement lands as part of this ticket.
+    // re-issues capture only on first attach (idle → seeding). On every
+    // subsequent attach from `detached`, PaneStream replays its cached
+    // `lastSeed` synchronously — see the cache-and-reuse fast path in
+    // `src/stream/pane-stream.ts attach()`. The cache is invalidated by
+    // 'reconnected' and by output arriving while detached (which would
+    // make the cached screen stale); neither happens in this loop, so
+    // the count stays at 1.
     for (let i = 2; i <= REMOUNT_COUNT; i++) {
       const sink = new BufferingSink();
       stream.attach(sink);
