@@ -187,6 +187,19 @@ export class PaneStream implements ReseedTarget {
   // seed(); cleared by reconnect (the underlying pane state has moved).
   private lastSeed: { captured: string; cursor: SeedCursor | null } | null =
     null;
+  // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a
+  // time. attach() short-circuits when this is non-null (the resolution
+  // will pick up `this.sink` whatever it is then). Required by gate #4 under
+  // React StrictMode, where mount→cleanup→mount happens synchronously
+  // *inside* one rendered frame — both attaches land before the first
+  // capture-pane resolves.
+  private pendingSeed: Promise<void> | null = null;
+  // Flips true when reconnect or a byte-during-detached event invalidates
+  // the snapshot the in-flight capture-pane is fetching. Checked at the end
+  // of seed(); when set, the result is dropped (no cache, no seed) and a
+  // fresh capture is issued if anyone is still attached. Reset to false at
+  // the start of every seed() call.
+  private seedStaleMidFlight = false;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -223,6 +236,9 @@ export class PaneStream implements ReseedTarget {
       // moved while we were disconnected. Drop it so the ReseedScheduler's
       // upcoming reseed() (or the next attach()) issues a fresh capture-pane.
       this.lastSeed = null;
+      // Any in-flight capture-pane is now fetching pre-reconnect data —
+      // mark it stale so seed() drops the result on resolution.
+      this.seedStaleMidFlight = true;
       // ReseedScheduler owns dispatch; we just notify our own listeners
       // so consumers (e.g. status badges) can react.
       for (const h of this.reconnectedListeners) h();
@@ -317,8 +333,18 @@ export class PaneStream implements ReseedTarget {
       return;
     }
 
+    if (this.pendingSeed !== null) {
+      // A capture-pane is already in flight from a previous attach (e.g.
+      // React StrictMode's mount→cleanup→remount happens before the first
+      // RPC resolves). Don't issue a second capture — when the in-flight
+      // one resolves, it will read `this.sink` and seed it. Gate #4 under
+      // StrictMode depends on this short-circuit.
+      this.setState("seeding");
+      return;
+    }
+
     this.setState("seeding");
-    void this.seed();
+    void this.startSeedCycle();
   }
 
   /**
@@ -397,10 +423,14 @@ export class PaneStream implements ReseedTarget {
   async reseed(): Promise<void> {
     if (this.currentState === "disposed") return;
     if (this.sink === null) return;
+    // [LAW:single-enforcer] One in-flight capture-pane per stream. If a seed
+    // is already running (the reconnect handler set seedStaleMidFlight, so
+    // it'll auto-re-issue on resolution), there's nothing for reseed() to do.
+    if (this.pendingSeed !== null) return;
     // Re-enter seeding so any byte arriving during the new capture is
     // buffered, not interleaved with the previous live frame.
     this.setState("seeding");
-    await this.seed();
+    await this.startSeedCycle();
   }
 
   // -------------------------------------------------------------------------
@@ -439,6 +469,9 @@ export class PaneStream implements ReseedTarget {
       this.buffer.push(data);
     } else if (this.currentState === "detached") {
       this.lastSeed = null;
+      // If a capture-pane is in flight, its snapshot is now older than the
+      // bytes that just arrived — the result must not become the cache.
+      this.seedStaleMidFlight = true;
     }
 
     // Schedule the activity-changed flush at most once per window.
@@ -463,11 +496,42 @@ export class PaneStream implements ReseedTarget {
     for (const h of this.activityListeners) h(snap);
   }
 
+  /**
+   * Begin a new seed cycle. Owns every write to `this.pendingSeed`; the
+   * inner `seed()` body never touches the field.
+   *
+   * Bookkeeping order: invoke `seed()` (which, as an async function, runs
+   * its body synchronously until the first `await` and then yields a
+   * promise), assign the returned promise to `this.pendingSeed`, attach a
+   * `.finally` that clears the field iff it still points at *this* cycle.
+   * That last clause matters because the body may chain a stale-re-issue
+   * (`if (seedStaleMidFlight) startSeedCycle()`), in which case the new
+   * cycle's promise has already replaced ours and our `.finally` must
+   * leave it alone.
+   *
+   * Why the wrapper exists: an earlier version assigned `pendingSeed`
+   * from inside `seed()` itself. When `execute()` threw synchronously the
+   * body ran fully sync — and the outer caller's assignment then
+   * overwrote the body's `null`, leaving `pendingSeed` pointing at a
+   * resolved promise forever. Lifting the assignment out of the async
+   * body fixes the race.
+   *
+   * [LAW:single-enforcer] All `this.pendingSeed` writes live here.
+   */
+  private startSeedCycle(): Promise<void> {
+    const p = this.seed();
+    this.pendingSeed = p;
+    void p.finally(() => {
+      if (this.pendingSeed === p) this.pendingSeed = null;
+    });
+    return p;
+  }
+
   private async seed(): Promise<void> {
-    // Capture the sink at call time. If detach() runs before the responses
-    // arrive, we abort cleanly without writing into a stale sink.
-    const sinkAtStart = this.sink;
-    if (sinkAtStart === null) return;
+    // Reset the staleness flag at the start of each seed cycle. If reconnect
+    // or a detached-mode byte arrives between here and the resolution below,
+    // these handlers flip the flag back to true and we drop the result.
+    this.seedStaleMidFlight = false;
 
     const captureCmd =
       this.historyLines > 0
@@ -494,10 +558,20 @@ export class PaneStream implements ReseedTarget {
       // not become "sticky" and prevent the next attach from retrying.
     }
 
-    // Re-check liveness after the await; consumer may have detached or
-    // disposed in the meantime.
+    // Re-check liveness after the await; consumer may have disposed in the
+    // meantime.
     if (this.currentState === "disposed") return;
-    if (this.sink !== sinkAtStart) return;
+
+    // Stale mid-flight: a reconnect or a detached-mode byte arrived between
+    // RPC issue and now, so the snapshot is older than the current pane
+    // state. Drop it. If anyone is still attached, kick off a fresh seed —
+    // through `startSeedCycle` so `this.pendingSeed` follows the new cycle.
+    if (this.seedStaleMidFlight) {
+      if (this.sink !== null && this.lastSeed === null) {
+        void this.startSeedCycle();
+      }
+      return;
+    }
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — no live byte can interleave.
@@ -513,11 +587,18 @@ export class PaneStream implements ReseedTarget {
       this.lastSeed = { captured, cursor };
     }
 
-    sinkAtStart.seed(captured, cursor);
+    // If no sink is attached at resolution (e.g. detach() after the RPC was
+    // issued), the cache above will serve the next attach() — no extra
+    // capture-pane round-trip. The buffer is empty in that case because
+    // detach() drains it.
+    const liveSink = this.sink;
+    if (liveSink === null) return;
+
+    liveSink.seed(captured, cursor);
 
     // Drain buffered live bytes synchronously, then flip state.
     for (const bytes of this.buffer) {
-      sinkAtStart.write(bytes);
+      liveSink.write(bytes);
     }
     this.buffer = [];
     this.setState("live");
