@@ -14,6 +14,7 @@ import type { SeedCursor } from "../../src/sink/index.js";
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
   readonly writes: Uint8Array[] = [];
+  private visible = true;
   seed(text: string, cursor: SeedCursor | null): void {
     this.events.push(
       `seed(${text.length} chars, cursor=${JSON.stringify(cursor)})`,
@@ -25,6 +26,15 @@ class RecordingSink implements TerminalSink {
   }
   resize(cols: number, rows: number): void {
     this.events.push(`resize(${cols}x${rows})`);
+  }
+  clear(): void {
+    this.events.push("clear");
+  }
+  isVisible(): boolean {
+    return this.visible;
+  }
+  setVisible(v: boolean): void {
+    this.visible = v;
   }
   dispose(): void {
     this.events.push("dispose");

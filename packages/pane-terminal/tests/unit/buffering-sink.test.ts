@@ -110,6 +110,15 @@ describe("BufferingSink — visibility", () => {
     sink.dispose();
     expect(sink.isVisible()).toBe(false);
   });
+
+  it("setVisible() is a no-op after dispose() (matches the post-dispose contract)", () => {
+    const sink = new BufferingSink({ visible: false });
+    sink.dispose();
+    sink.setVisible(true);
+    // dispose locks the sink into "not visible" — setVisible cannot
+    // resurrect a disposed sink back into the scheduler's visible lane.
+    expect(sink.isVisible()).toBe(false);
+  });
 });
 
 describe("BufferingSink — concatBytes", () => {

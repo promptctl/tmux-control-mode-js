@@ -126,9 +126,12 @@ export class BufferingSink implements TerminalSink {
 
   /**
    * Mutate visibility — used by the reseed-priority bench (gate 7) to
-   * model "this sink is on the offscreen tab right now."
+   * model "this sink is on the offscreen tab right now." No-op after
+   * `dispose()` to honour the post-dispose contract documented at the top
+   * of this file (every method becomes a no-op).
    */
   setVisible(v: boolean): void {
+    if (this.isDisposed) return;
     this.visible = v;
   }
 

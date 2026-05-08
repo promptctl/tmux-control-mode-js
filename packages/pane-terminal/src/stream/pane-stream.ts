@@ -422,13 +422,14 @@ export class PaneStream implements ReseedTarget {
     //   live:     forward to sink (sink.write must be allocation-free per O3).
     //   seeding:  push into the seed buffer (Array.push doesn't allocate
     //             unless the backing store grows; bounded by seed time).
-    //   idle/detached: only the activity counter is updated above. We also
-    //                  null out lastSeed so the next attach() takes the slow
-    //                  path (capture-pane). Without this, a re-attach would
-    //                  paint a stale screen and silently miss the bytes that
-    //                  arrived during detach. Cheap (single property write
-    //                  to null) and allocation-free, so the [HOT-PATH] rule
-    //                  still holds.
+    //   idle:     only the activity counter is updated above (no cached seed
+    //             yet, so nothing to invalidate).
+    //   detached: counter, plus null out lastSeed so the next attach() takes
+    //             the slow path (capture-pane). Without this, a re-attach
+    //             would paint a stale screen and silently miss the bytes
+    //             that arrived during detach. Cheap (single property write
+    //             to null) and allocation-free, so the [HOT-PATH] rule
+    //             still holds.
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
