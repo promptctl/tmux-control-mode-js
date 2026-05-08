@@ -43,7 +43,11 @@ export function mountPaneTerminal(
 ): PaneTerminalMount {
   const sink = new XtermSink({ ...opts, container });
   const offKeys = sink.onData((data) => {
-    void stream.sendKeys(data);
+    // Fire-and-forget. Transport-level failures (closed connection,
+    // dropped pane) surface through the client's `connectionState`, not
+    // per-keystroke — so swallow rejections here to avoid noisy
+    // unhandled-rejection warnings in apps that treat them as fatal.
+    stream.sendKeys(data).catch(() => undefined);
   });
   stream.attach(sink);
 

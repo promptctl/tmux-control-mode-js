@@ -79,7 +79,11 @@ export function PaneTerminal(props: PaneTerminalProps): ReactElement {
     sinkRef.current = sink;
 
     const offKeys = sink.onData((data) => {
-      void props.stream.sendKeys(data);
+      // Fire-and-forget. Transport-level failures (closed connection,
+      // dropped pane) surface through the client's `connectionState`, not
+      // per-keystroke — so swallow rejections here to avoid noisy
+      // unhandled-rejection warnings in apps that treat them as fatal.
+      props.stream.sendKeys(data).catch(() => undefined);
     });
     props.stream.attach(sink);
 

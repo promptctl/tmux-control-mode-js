@@ -497,15 +497,26 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Begin a new seed cycle. Sets `this.pendingSeed` to the running RPC
-   * promise BEFORE the body executes (so the body's synchronous failure
-   * path — when `execute()` throws synchronously — cannot leak a stale
-   * reference into `pendingSeed`). The `.finally()` clears the field iff
-   * the field still points at *this* cycle's promise (a stale-re-issue
-   * inside the body may have replaced it).
-   *
-   * [LAW:single-enforcer] All `this.pendingSeed` writes live here. The
+   * Begin a new seed cycle. Owns every write to `this.pendingSeed`; the
    * inner `seed()` body never touches the field.
+   *
+   * Bookkeeping order: invoke `seed()` (which, as an async function, runs
+   * its body synchronously until the first `await` and then yields a
+   * promise), assign the returned promise to `this.pendingSeed`, attach a
+   * `.finally` that clears the field iff it still points at *this* cycle.
+   * That last clause matters because the body may chain a stale-re-issue
+   * (`if (seedStaleMidFlight) startSeedCycle()`), in which case the new
+   * cycle's promise has already replaced ours and our `.finally` must
+   * leave it alone.
+   *
+   * Why the wrapper exists: an earlier version assigned `pendingSeed`
+   * from inside `seed()` itself. When `execute()` threw synchronously the
+   * body ran fully sync — and the outer caller's assignment then
+   * overwrote the body's `null`, leaving `pendingSeed` pointing at a
+   * resolved promise forever. Lifting the assignment out of the async
+   * body fixes the race.
+   *
+   * [LAW:single-enforcer] All `this.pendingSeed` writes live here.
    */
   private startSeedCycle(): Promise<void> {
     const p = this.seed();
