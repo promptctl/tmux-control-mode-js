@@ -16,10 +16,19 @@
 //   }
 //
 // Detected allocation node kinds:
-//   NewExpression, ObjectExpression, ArrayExpression, TemplateLiteral with
-//   expressions, SpreadElement, ArrayPattern/ObjectPattern in destructuring
-//   assignments (creates an iterator), and CallExpression for known
+//   NewExpression, ObjectExpression, ArrayExpression, SpreadElement,
+//   TemplateLiteral with expressions, and CallExpression for known
 //   array-allocating Array.prototype methods.
+//
+// Bare destructuring (`const {x} = obj`, `const [a] = tuple`) is intentionally
+// NOT flagged: V8 does not allocate an iterator for object destructuring, and
+// array destructuring of well-known array-shaped iterables is also elided in
+// practice. Spreads inside the destructuring (`const [...rest] = arr`) are
+// caught via SpreadElement.
+//
+// Expression-bodied arrows are analyzed by treating the expression as the
+// function body — `// [HOT-PATH] const f = () => new Map()` is correctly
+// flagged.
 //
 // [LAW:behavior-not-structure] The marker declares a behavior (no allocation
 // here) that the rule mechanically enforces. Renaming a function or moving
@@ -91,15 +100,15 @@ const rule: Rule.RuleModule = {
         anchor = (anchor as { parent: ESTreeNode }).parent;
       }
       const leading = sourceCode.getCommentsBefore(anchor);
-      const insideBody = bodyOf(fn);
-      const inside = insideBody
-        ? sourceCode.getCommentsInside(insideBody as ESTreeNode).filter((c) => {
+      const block = blockBodyOf(fn);
+      const inside = block
+        ? sourceCode.getCommentsInside(block as ESTreeNode).filter((c) => {
             // only the first-statement leading comments, not later ones
             return (
-              insideBody.body.length > 0 &&
+              block.body.length > 0 &&
               c.range !== undefined &&
-              insideBody.body[0].range !== undefined &&
-              c.range[1] <= insideBody.body[0].range[0]
+              block.body[0].range !== undefined &&
+              c.range[1] <= block.body[0].range[0]
             );
           })
         : [];
@@ -108,7 +117,39 @@ const rule: Rule.RuleModule = {
       );
     }
 
-    function bodyOf(
+    /**
+     * The function's analysis surface — either a list of block statements or
+     * a single expression (for expression-bodied arrows). Returning both
+     * shapes lets `check()` walk every marked function uniformly.
+     */
+    function analysisTargets(
+      fn: FunctionLike | MethodDefinition | Property,
+    ): ESTreeNode[] {
+      if (fn.type === "MethodDefinition" || fn.type === "Property") {
+        const value = fn.value;
+        if (
+          value &&
+          (value.type === "FunctionExpression" ||
+            value.type === "ArrowFunctionExpression")
+        ) {
+          if (value.body.type === "BlockStatement") {
+            return value.body.body as ESTreeNode[];
+          }
+          return [value.body as ESTreeNode];
+        }
+        return [];
+      }
+      if (fn.body) {
+        if (fn.body.type === "BlockStatement") {
+          return fn.body.body as ESTreeNode[];
+        }
+        return [fn.body as ESTreeNode];
+      }
+      return [];
+    }
+
+    /** Block body if any — used only for comment lookup, not for analysis. */
+    function blockBodyOf(
       fn: FunctionLike | MethodDefinition | Property,
     ): { body: ESTreeNode[] } | null {
       if (fn.type === "MethodDefinition" || fn.type === "Property") {
@@ -199,10 +240,8 @@ const rule: Rule.RuleModule = {
 
     function check(fn: FunctionLike): void {
       if (!isMarked(fn)) return;
-      const body = bodyOf(fn);
-      if (!body) return;
-      for (const stmt of body.body) {
-        reportAllocations(stmt as ESTreeNode, (n, kind) => {
+      for (const target of analysisTargets(fn)) {
+        reportAllocations(target, (n, kind) => {
           context.report({
             node: n as Rule.Node,
             messageId: "allocation",

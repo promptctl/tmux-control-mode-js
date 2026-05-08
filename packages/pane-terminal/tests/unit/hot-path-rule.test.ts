@@ -9,6 +9,13 @@ import { describe, it } from "vitest";
 import { RuleTester } from "eslint";
 import rule from "../../eslint/no-allocation-in-hot-path.js";
 
+// RuleTester drives its case-loop via `describe`/`it`. Vitest globals are
+// disabled in this package (deliberate — explicit imports), so hand the
+// imported helpers to RuleTester before any cases run.
+RuleTester.describe = describe;
+RuleTester.it = it;
+RuleTester.itOnly = it;
+
 const tester = new RuleTester({
   languageOptions: {
     ecmaVersion: 2022,
@@ -16,9 +23,10 @@ const tester = new RuleTester({
   },
 });
 
-describe("no-allocation-in-hot-path", () => {
-  it("accepts non-allocating bodies and rejects allocations in marked ones", () => {
-    tester.run("no-allocation-in-hot-path", rule, {
+// RuleTester.run() must be called at the top level (it spins up its own
+// describe/it tree internally). Wrapping it inside another it() throws
+// "Calling the suite function inside test function is not allowed".
+tester.run("no-allocation-in-hot-path", rule, {
       valid: [
         // No marker → rule does not apply.
         {
@@ -94,7 +102,13 @@ describe("no-allocation-in-hot-path", () => {
           `,
           errors: [{ messageId: "allocation" }],
         },
+        // Expression-bodied arrow — must be analyzed, not silently skipped.
+        {
+          code: `
+            // [HOT-PATH]
+            const bad = () => new Map();
+          `,
+          errors: [{ messageId: "allocation" }],
+        },
       ],
     });
-  });
-});
