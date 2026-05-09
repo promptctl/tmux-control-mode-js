@@ -1,11 +1,12 @@
 // examples/web-multiplexer/tests/bench/demo-bridge.bench.ts
 //
-// DEMO BRIDGE GATES — gates 1, 2, 7 exercised through BridgePaneStreamClient.
+// DEMO BRIDGE GATES — gates 1 and 2 exercised through DirectPaneStreamClient.
 //
-// These tests validate that the `BridgePaneStreamClient` adapter does not
-// add measurable overhead to `PaneStream`'s existing gate guarantees. The
-// adapter is tested by constructing a minimal `TmuxBridge`-shaped shim
-// backed by a real tmux child (same approach as the package bench tests).
+// `DirectPaneStreamClient` is a structural equivalent to `BridgePaneStreamClient`
+// that skips the WebSocket serialisation layer so this bench isolates adapter
+// logic from network variance. Gate 7 (reconnect) is out of scope here —
+// spawn-mode TmuxClient never emits `reconnected`, so reconnect gates belong
+// in a separate bench that uses a multiplexed/WebSocket transport.
 //
 // Gate targets (from the parent epic):
 //   G1 — attach → first paint (seed delivered to sink) < 100ms p99
@@ -89,6 +90,8 @@ class DirectPaneStreamClient implements PaneStreamClient {
         handler as (ev: ExtendedOutputMessage) => void,
       );
     }
+    // 'reconnected' is a no-op: spawn-mode TmuxClient never emits it
+    // (no second 'ready' transition). G7 reconnect gates are out of scope.
   }
 
   off(
@@ -103,6 +106,7 @@ class DirectPaneStreamClient implements PaneStreamClient {
         handler as (ev: ExtendedOutputMessage) => void,
       );
     }
+    // 'reconnected' is a no-op: see on() above.
   }
 
   execute(command: string): Promise<CommandResponse> {
