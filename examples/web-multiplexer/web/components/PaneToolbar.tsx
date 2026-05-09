@@ -11,9 +11,6 @@ import type { PaneInfo } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { ObservablePaneStream } from "../pane-stream-bridge.ts";
 
-// Activity badge shows for ACTIVITY_TTL_MS after the last byte.
-const ACTIVITY_TTL_MS = 2000;
-
 interface Props {
   readonly pane: PaneInfo;
   readonly uiStore: UiStore;
@@ -27,11 +24,7 @@ export const PaneToolbar = observer(function PaneToolbar({
   obs,
 }: Props) {
   const font = uiStore.terminalFontSize;
-  const now = Date.now();
-  const isActive =
-    obs !== null &&
-    obs.activity.lastByteAt > 0 &&
-    now - obs.activity.lastByteAt < ACTIVITY_TTL_MS;
+  const isActive = obs !== null && obs.isActive;
 
   return (
     <Group gap="xs" justify="space-between" pb={4} wrap="nowrap">

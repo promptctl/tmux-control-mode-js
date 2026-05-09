@@ -131,6 +131,10 @@ export class BridgePaneStreamClient implements PaneStreamClient {
   }
 }
 
+// [LAW:one-source-of-truth] Duration after the last byte for which `isActive`
+// stays true. Lives here (activity model) not in the display layer.
+const ACTIVITY_TTL_MS = 2000;
+
 // ---------------------------------------------------------------------------
 // ObservablePaneStream
 // ---------------------------------------------------------------------------
@@ -148,19 +152,36 @@ export class BridgePaneStreamClient implements PaneStreamClient {
 export class ObservablePaneStream {
   state: PaneStreamState;
   activity: PaneActivity = { lastByteAt: 0, bytesSinceLastAttach: 0 };
+  // [LAW:dataflow-not-control-flow] `isActive` is a value with an explicit
+  // lifetime, not a `Date.now()` computation in render. The timer is the sole
+  // authority that clears it; MobX propagates the change to the UI.
+  isActive: boolean = false;
 
   /** The underlying data carrier — pass to `<PaneTerminal stream={...} />`. */
   readonly stream: PaneStream;
+  private _activityTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: PaneStreamOptions) {
     this.stream = new PaneStream(opts);
     this.state = this.stream.state;
-    makeAutoObservable<this, "stream">(this, { stream: false });
+    makeAutoObservable<this, "stream" | "_activityTimer">(this, {
+      stream: false,
+      _activityTimer: false,
+    });
     this.stream.on("state-changed", (s) => runInAction(() => { this.state = s; }));
-    this.stream.on("activity-changed", (a) => runInAction(() => { this.activity = a; }));
+    this.stream.on("activity-changed", (a) => runInAction(() => {
+      this.activity = a;
+      this.isActive = true;
+      if (this._activityTimer !== null) clearTimeout(this._activityTimer);
+      this._activityTimer = setTimeout(
+        () => runInAction(() => { this.isActive = false; }),
+        ACTIVITY_TTL_MS,
+      );
+    }));
   }
 
   dispose(): void {
+    if (this._activityTimer !== null) clearTimeout(this._activityTimer);
     this.stream.dispose();
   }
 }
