@@ -568,6 +568,13 @@ export class PaneStream implements ReseedTarget {
     // through `startSeedCycle` so `this.pendingSeed` follows the new cycle.
     if (this.seedStaleMidFlight) {
       if (this.sink !== null && this.lastSeed === null) {
+        // [LAW:one-source-of-truth] Clear the buffer before issuing the new
+        // capture-pane. Bytes buffered during the stale seeding window arrived
+        // before the new capture is issued and will be included in the new
+        // snapshot — draining them after would duplicate. seed() issues the
+        // RPC synchronously before its first await, so bytes arriving after
+        // this clear are correctly post-capture and belong in the buffer.
+        this.buffer = [];
         void this.startSeedCycle();
       }
       return;
