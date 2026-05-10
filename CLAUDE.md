@@ -9,21 +9,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Build / typecheck (both are the same — TypeScript project references require emit):
 
 ```
-npm run build        # tsc --build across protocol, transport, src
-npm run dev          # tsc --build --watch
-npm run clean        # tsc --build --clean
-npm run typecheck    # alias for build; do NOT add --noEmit (breaks project refs)
+pnpm run build        # tsc --build across protocol, transport, src
+pnpm run dev          # tsc --build --watch
+pnpm run clean        # tsc --build --clean
+pnpm run typecheck    # alias for build; do NOT add --noEmit (breaks project refs)
 ```
 
-Tests — **agents MUST run the full suite with tmux integration**. `npm test` (unit-only) exists for CI hosts without tmux; agents never run in CI, and every agent environment has tmux available, so the canonical command is `test:all`:
+Tests — **agents MUST run the full suite with tmux integration**. `pnpm test` (unit-only) exists for CI hosts without tmux; agents never run in CI, and every agent environment has tmux available, so the canonical command is `test:all`:
 
 ```
-npm run test:all              # unit + integration — USE THIS as an agent
-npm run test:integration      # integration only; sets TMUX_INTEGRATION=1
-npm test                      # unit only — CI-skip path, do NOT use to verify work
-npm run test:watch            # vitest watch
-TMUX_INTEGRATION=1 npx vitest run <path>    # single file
-TMUX_INTEGRATION=1 npx vitest run -t "<name>"  # single test by name
+pnpm run test:all              # unit + integration — USE THIS as an agent
+pnpm run test:integration      # integration only; sets TMUX_INTEGRATION=1
+pnpm test                      # unit only — CI-skip path, do NOT use to verify work
+pnpm run test:watch            # vitest watch
+TMUX_INTEGRATION=1 pnpm exec vitest run <path>    # single file
+TMUX_INTEGRATION=1 pnpm exec vitest run -t "<name>"  # single test by name
 ```
 
 Integration tests are gated behind `TMUX_INTEGRATION=1`; individual tests may also probe `tmux -V` and skip if the running tmux lacks a feature they exercise (e.g. `requestReport` needs tmux ≥ 3.5 for `refresh-client -r`). If tmux is missing from an agent's environment, that's a setup bug — stop and report, do not fall back to unit-only.
@@ -31,17 +31,17 @@ Integration tests are gated behind `TMUX_INTEGRATION=1`; individual tests may al
 Lint / format / deps:
 
 ```
-npm run lint           # eslint src/
-npm run lint:fix
-npm run format         # prettier --write 'src/**/*.ts'
-npm run format:check
-npm run check:deps     # fails if root "dependencies" is non-empty
+pnpm run lint           # eslint src/
+pnpm run lint:fix
+pnpm run format         # prettier --write 'src/**/*.ts'
+pnpm run format:check
+pnpm run check:deps     # fails if root "dependencies" is non-empty
 ```
 
 Demo (web-multiplexer workspace):
 
 ```
-npm run demo           # starts bridge + Vite; needs at least one local tmux session
+pnpm run demo           # starts bridge + Vite; needs at least one local tmux session
 ```
 
 ## Architecture

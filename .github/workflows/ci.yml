@@ -12,32 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-
-      # npm 10 (Node 20 default) strict-checks optional platform-binding
-      # dependencies in package-lock.json; vite's transitive
-      # `@rolldown/binding-wasm32-wasi` references `@emnapi/core@1.10.0`/
-      # `@emnapi/runtime@1.10.0` that npm 11 omits as platform-irrelevant.
-      # Upgrading npm in CI matches what every contributor's local install
-      # produces, so `npm ci` accepts the lock without a brittle manual
-      # patch. Engine floor stays Node 20 (this only changes npm).
-      - run: npm install -g npm@latest
+          cache: pnpm
 
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: tmux -V
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run typecheck
-      - run: npm run build
+      - run: pnpm run lint
+      - run: pnpm run format:check
+      - run: pnpm run typecheck
+      - run: pnpm run build
 
-      - run: npm test
-      - run: npm run test:integration
+      - run: pnpm test
+      - run: pnpm run test:integration
         env:
           TMUX_INTEGRATION: "1"
 
@@ -48,7 +43,7 @@ jobs:
       # blocking merges of intermediate epic steps. Flip to `false` once 8w9.6
       # lands and all 7 are green.
       - name: pane-terminal — bench/test gates (red while 8w9.5/6 land)
-        run: npm run -w @promptctl/pane-terminal bench:gate
+        run: pnpm --filter @promptctl/pane-terminal run bench:gate
         env:
           TMUX_INTEGRATION: "1"
         continue-on-error: true

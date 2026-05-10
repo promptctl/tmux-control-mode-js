@@ -79,15 +79,18 @@
     "test:watch": "vitest",
     "test:integration": "TMUX_INTEGRATION=1 vitest run tests/integration/",
     "test:all": "TMUX_INTEGRATION=1 vitest run",
-    "test:e2e": "npm --workspace tmux-control-mode-js-demo-web-multiplexer run build:electron && playwright test --config tests/e2e/playwright.config.ts",
-    "demo": "npm --workspace tmux-control-mode-js-demo-web-multiplexer run dev",
+    "test:e2e": "pnpm --filter tmux-control-mode-js-demo-web-multiplexer run build:electron && playwright test --config tests/e2e/playwright.config.ts",
+    "demo": "pnpm --filter tmux-control-mode-js-demo-web-multiplexer run dev",
     "lint": "eslint src/ packages/pane-terminal/src/",
     "lint:fix": "eslint src/ packages/pane-terminal/src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
     "typecheck": "tsc --build",
     "check:deps": "node scripts/check-no-deps.mjs",
-    "prepublishOnly": "npm run check:deps && npm run build"
+    "prepublishOnly": "pnpm run check:deps && pnpm run build"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild"]
   },
   "keywords": [
     "tmux",
