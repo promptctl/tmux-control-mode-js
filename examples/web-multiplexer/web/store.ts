@@ -215,9 +215,8 @@ export class DemoStore {
   readonly paneStreamClient: BridgePaneStreamClient;
 
   // [LAW:one-source-of-truth] One keymap engine per client session. The
-  // engine's state (root vs. prefix) is shared across all PaneTerminal
-  // instances so pressing C-b in one pane doesn't leave the others in a
-  // stale mode. The demo drives the engine manually (rather than using
+  // engine's state (root vs. prefix) is shared across all pane mounts so
+  // pressing C-b in one pane doesn't leave the others in a stale mode. The demo drives the engine manually (rather than using
   // bindKeymap) so it can intercept destructive actions for confirmation
   // and tunnel the prefix-active signal into the UI.
   private readonly keymapConfig: Keymap = defaultTmuxKeymap();
