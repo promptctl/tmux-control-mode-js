@@ -52,17 +52,25 @@ async function createSession(socket: string, session: string): Promise<TmuxClien
   execSync(tmuxCmd(socket, `new-session -d -s ${session} -x 80 -y 24`), {
     stdio: "ignore",
   });
-  const transport = spawnTmux({ socketName: socket, session });
+  const transport = spawnTmux(["attach-session", "-t", session], {
+    socketPath: socket,
+  });
   const client = new TmuxClient(transport);
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("client ready timeout")), 5000);
-    const unsub = client.on("connection-state", (msg) => {
-      if (msg.state.status === "ready") {
-        clearTimeout(timeout);
-        unsub();
-        resolve();
-      }
-    });
+    // `TmuxClient.on()` returns void — register with `on`, unregister with
+    // a named handler reference via `off`, on both branches, so the
+    // listener never leaks past the awaited promise.
+    const handler = (msg: { state: ConnectionState }): void => {
+      if (msg.state.status !== "ready") return;
+      clearTimeout(timeout);
+      client.off("connection-state", handler);
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      client.off("connection-state", handler);
+      reject(new Error("client ready timeout"));
+    }, 5000);
+    client.on("connection-state", handler);
   });
   return client;
 }
@@ -139,7 +147,7 @@ describe.skipIf(!integrationOn)("demo bridge — G1 attach-paint", () => {
   });
 
   afterEach(() => {
-    client.dispose();
+    client.close();
     killServer(socket);
   });
 
