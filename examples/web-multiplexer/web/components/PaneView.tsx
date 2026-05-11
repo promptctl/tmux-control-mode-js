@@ -101,9 +101,7 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
   // change that doesn't change the stream (O10).
   const obs = useMemo(
     () => new ObservablePaneStream({ client: store.paneStreamClient, paneId: pane.id }),
-    // pane.id and paneStreamClient are both stable within a window's lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pane.id],
+    [pane.id, store.paneStreamClient],
   );
   // Dispose the stream when the pane unmounts or pane.id changes.
   useEffect(() => () => obs.dispose(), [obs]);

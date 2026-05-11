@@ -26,6 +26,7 @@ import type {
 import type {
   OutputMessage,
   ExtendedOutputMessage,
+  SubscriptionChangedMessage,
   CommandResponse,
 } from "../../../src/protocol/types.js";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
@@ -64,6 +65,9 @@ export class BridgePaneStreamClient implements PaneStreamClient {
   private readonly outputSet = new Set<(ev: OutputMessage) => void>();
   private readonly extOutputSet = new Set<(ev: ExtendedOutputMessage) => void>();
   private readonly reconnectedSet = new Set<(ev: ReconnectedMessage) => void>();
+  private readonly subChangedSet = new Set<
+    (ev: SubscriptionChangedMessage) => void
+  >();
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -75,6 +79,8 @@ export class BridgePaneStreamClient implements PaneStreamClient {
         for (const h of this.outputSet) h(ev as unknown as OutputMessage);
       } else if (ev.type === "extended-output") {
         for (const h of this.extOutputSet) h(ev as unknown as ExtendedOutputMessage);
+      } else if (ev.type === "subscription-changed") {
+        for (const h of this.subChangedSet) h(ev);
       }
     });
 
@@ -102,6 +108,10 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     handler: (ev: ExtendedOutputMessage) => void,
   ): void;
   on(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
+  on(
+    event: "subscription-changed",
+    handler: (ev: SubscriptionChangedMessage) => void,
+  ): void;
   on(event: string, handler: (ev: never) => void): void {
     if (event === "output")
       this.outputSet.add(handler as (ev: OutputMessage) => void);
@@ -109,6 +119,8 @@ export class BridgePaneStreamClient implements PaneStreamClient {
       this.extOutputSet.add(handler as (ev: ExtendedOutputMessage) => void);
     else if (event === "reconnected")
       this.reconnectedSet.add(handler as (ev: ReconnectedMessage) => void);
+    else if (event === "subscription-changed")
+      this.subChangedSet.add(handler as (ev: SubscriptionChangedMessage) => void);
   }
 
   off(event: "output", handler: (ev: OutputMessage) => void): void;
@@ -117,6 +129,10 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     handler: (ev: ExtendedOutputMessage) => void,
   ): void;
   off(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
+  off(
+    event: "subscription-changed",
+    handler: (ev: SubscriptionChangedMessage) => void,
+  ): void;
   off(event: string, handler: (ev: never) => void): void {
     if (event === "output")
       this.outputSet.delete(handler as (ev: OutputMessage) => void);
@@ -124,10 +140,32 @@ export class BridgePaneStreamClient implements PaneStreamClient {
       this.extOutputSet.delete(handler as (ev: ExtendedOutputMessage) => void);
     else if (event === "reconnected")
       this.reconnectedSet.delete(handler as (ev: ReconnectedMessage) => void);
+    else if (event === "subscription-changed")
+      this.subChangedSet.delete(
+        handler as (ev: SubscriptionChangedMessage) => void,
+      );
   }
 
   execute(command: string): Promise<CommandResponse> {
     return this.bridge.execute(command);
+  }
+
+  // PaneStream consumes this via the optional `subscribe?` capability on
+  // `PaneStreamClient`. Without it, `PaneStream.subscribeToSize()` short-
+  // circuits and `XtermSink.resize(cols, rows)` is never driven — terminals
+  // stay at xterm's default 80x24 regardless of actual tmux pane size.
+  // The format value is single-quoted so tmux preserves the literal
+  // semicolon separator inside the delivered value.
+  subscribe(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    return this.bridge.execute(`refresh-client -B ${name}:${what}:'${format}'`);
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return this.bridge.execute(`refresh-client -B ${name}`);
   }
 }
 
