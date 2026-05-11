@@ -36,6 +36,10 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm test
 
-      - run: pnpm publish --provenance --no-git-checks
+      # `--filter` names the target package explicitly so this stays correct
+      # if the workspace grows additional publishable packages, and avoids
+      # depending on pnpm's cwd-as-package implicit selection at the
+      # workspace root (a known footgun across pnpm versions).
+      - run: pnpm --filter @promptctl/tmux-control-mode-js publish --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
