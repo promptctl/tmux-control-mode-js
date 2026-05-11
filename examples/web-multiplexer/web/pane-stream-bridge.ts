@@ -29,6 +29,7 @@ import type {
   SubscriptionChangedMessage,
   CommandResponse,
 } from "../../../src/protocol/types.js";
+import { tmuxEscape } from "../../../src/protocol/encoder.js";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
 
 // Local structural match for the synthetic reconnect event shape that
@@ -154,18 +155,25 @@ export class BridgePaneStreamClient implements PaneStreamClient {
   // `PaneStreamClient`. Without it, `PaneStream.subscribeToSize()` short-
   // circuits and `XtermSink.resize(cols, rows)` is never driven — terminals
   // stay at xterm's default 80x24 regardless of actual tmux pane size.
-  // The format value is single-quoted so tmux preserves the literal
-  // semicolon separator inside the delivered value.
+  //
+  // [LAW:single-enforcer] Each segment is escaped via `tmuxEscape` from
+  // `src/protocol/encoder.ts`, the canonical quoting authority for tmux
+  // command arguments. Callers today pass only library-controlled values
+  // (literal subscription name + `%<paneId>` + literal format), but reusing
+  // the encoder's escaping discipline prevents drift if untrusted input
+  // ever flows through here.
   subscribe(
     name: string,
     what: string,
     format: string,
   ): Promise<CommandResponse> {
-    return this.bridge.execute(`refresh-client -B ${name}:${what}:'${format}'`);
+    return this.bridge.execute(
+      `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`,
+    );
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {
-    return this.bridge.execute(`refresh-client -B ${name}`);
+    return this.bridge.execute(`refresh-client -B ${tmuxEscape(name)}`);
   }
 }
 
