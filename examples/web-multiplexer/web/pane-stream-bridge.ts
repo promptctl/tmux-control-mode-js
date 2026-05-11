@@ -76,10 +76,13 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     // mount/unmount — the bridge subscription is stable for the adapter's
     // lifetime; the per-type sets grow/shrink as PaneStream instances attach.
     bridge.onEvent((ev) => {
+      // [LAW:types-are-the-program] `ev` is the canonical `TmuxMessage`
+      // discriminated union; narrowing on `ev.type` produces the exact
+      // variant the per-type handler set expects, with no cast needed.
       if (ev.type === "output") {
-        for (const h of this.outputSet) h(ev as unknown as OutputMessage);
+        for (const h of this.outputSet) h(ev);
       } else if (ev.type === "extended-output") {
-        for (const h of this.extOutputSet) h(ev as unknown as ExtendedOutputMessage);
+        for (const h of this.extOutputSet) h(ev);
       } else if (ev.type === "subscription-changed") {
         for (const h of this.subChangedSet) h(ev);
       }
