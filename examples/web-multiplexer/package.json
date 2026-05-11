@@ -15,7 +15,7 @@
     "build:electron": "ELECTRON_BUILD=1 vite build && node electron/build.mjs",
     "demo:electron": "pnpm run build:electron && electron .",
     "typecheck": "tsc --noEmit",
-    "start:web": "npm run dev"
+    "start:web": "pnpm run dev"
   },
   "dependencies": {
     "@mantine/core": "^7.14.0",
