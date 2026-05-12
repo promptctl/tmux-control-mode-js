@@ -17,21 +17,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
 
       # Full CI gate before publishing — if tests fail, the release tag is
       # created but nothing ships.
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run typecheck
-      - run: npm test
+      - run: pnpm run lint
+      - run: pnpm run format:check
+      - run: pnpm run typecheck
+      - run: pnpm test
 
-      - run: npm publish --provenance
+      # `--filter` names the target package explicitly so this stays correct
+      # if the workspace grows additional publishable packages, and avoids
+      # depending on pnpm's cwd-as-package implicit selection at the
+      # workspace root (a known footgun across pnpm versions).
+      - run: pnpm --filter @promptctl/tmux-control-mode-js publish --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

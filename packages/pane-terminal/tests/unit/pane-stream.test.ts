@@ -251,6 +251,51 @@ describe("PaneStream — state machine", () => {
     // Sink must NOT have been seeded after dispose.
     expect(sink.events.some((e) => e.startsWith("seed"))).toBe(false);
   });
+
+  it("stale mid-flight seed clears the buffer before reissuing capture-pane", async () => {
+    // Regression: detach while seed1 is pending → bytes arrive while detached
+    // (lastSeed dropped, seedStaleMidFlight = true) → reattach (state →
+    // seeding under the still-pending seed1) → more bytes arrive and are
+    // pushed to the seed buffer → seed1 resolves stale and starts seed cycle 2.
+    // Those buffered bytes are also in seed2's snapshot, so the buffer MUST be
+    // cleared before the new capture-pane is issued — otherwise they get
+    // replayed after seed2 and duplicate the on-screen output.
+    const { client, stream } = makeStream({ capture: "second-screen" });
+    const sink1 = new RecordingSink();
+    const sink2 = new RecordingSink();
+
+    stream.attach(sink1);
+    expect(stream.state).toBe("seeding");
+    expect(client.capturePaneCount()).toBe(1);
+
+    // Detach before seed1 resolves; inject bytes to mark the seed stale.
+    stream.detach();
+    expect(stream.state).toBe("detached");
+    client.injectOutput(PANE_ID, new Uint8Array([0x41, 0x42]));
+
+    // Reattach — seed1 is still in flight, so PaneStream short-circuits to
+    // 'seeding' without issuing a second RPC yet.
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding");
+    expect(client.capturePaneCount()).toBe(1);
+
+    // These bytes arrive during the second seeding window and would be
+    // pushed to the buffer. seed2's snapshot will also contain them, so
+    // replaying the buffer after seed2 would duplicate them on screen.
+    client.injectOutput(PANE_ID, new Uint8Array([0x43, 0x44]));
+
+    // Let seed1 resolve (sees stale → clears buffer → starts seed2) and then
+    // seed2 resolve (drains the now-empty buffer → seeds sink2 → goes live).
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(2);
+
+    // sink2 received exactly one seed (from seed2's snapshot) and ZERO writes
+    // — the bytes that landed during the second seeding window were not
+    // replayed, because seed2's capture already includes them.
+    expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
+    expect(sink2.writes).toHaveLength(0);
+  });
 });
 
 describe("PaneStream — paneId filter & dataflow", () => {

@@ -6,3 +6,4 @@ dist-electron/
 test-results/
 playwright-report/
 .claude/*.lock
+package-lock.json

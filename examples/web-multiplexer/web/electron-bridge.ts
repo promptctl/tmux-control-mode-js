@@ -19,6 +19,8 @@ import {
   type IpcRendererLike,
   type TmuxClientProxy,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
+import { isTmuxMessage } from "../../../src/emitter.js";
+import type { EmitterMessage } from "../../../src/emitter.js";
 import type {
   CommandResponse,
   TmuxMessage,
@@ -36,7 +38,7 @@ import type {
 
 export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
-  private readonly proxyEventHandler: (msg: TmuxMessage) => void;
+  private readonly proxyEventHandler: (msg: EmitterMessage) => void;
   private proxy: TmuxClientProxy | null = null;
   private state: ConnState = "connecting";
   private nextId = 0;
@@ -167,7 +169,8 @@ export class ElectronBridge implements TmuxBridge {
   // Internals
   // ---------------------------------------------------------------------------
 
-  private fanOutEvent(msg: TmuxMessage): void {
+  private fanOutEvent(msg: EmitterMessage): void {
+    if (!isTmuxMessage(msg)) return;
     this.emitWire({ dir: "in-event", ts: Date.now(), event: msg });
     this.eventHandlers.forEach((h) => h(msg));
   }
