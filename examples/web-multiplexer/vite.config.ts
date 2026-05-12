@@ -7,8 +7,8 @@ import { BRIDGE_PORT, WEB_PORT } from "./shared/config";
 //   dist/index.html             (web entry, web/main.tsx → WebSocketBridge)
 //   dist/electron/index.html    (electron entry, web/main-electron.tsx → ElectronBridge)
 //
-// `npm run dev:web` keeps serving the web entry from the project root for
-// fast iteration; the Electron path is build-only (npm run demo:electron).
+// `pnpm run dev:web` keeps serving the web entry from the project root for
+// fast iteration; the Electron path is build-only (pnpm run demo:electron).
 //
 // Asset path policy: the web target loads over http(s) from a Vite server,
 // so absolute paths (/assets/...) are correct. The Electron target loads

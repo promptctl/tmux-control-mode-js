@@ -1,28 +1,30 @@
 // examples/web-multiplexer/web/components/PaneToolbar.tsx
 //
-// Per-pane toolbar shown above each xterm. Displays current pane dimensions
-// + font size, and exposes manual font-size controls (− / + buttons) that
-// affect ALL pane terminals simultaneously via the UiStore. Font size is
-// persisted across reloads.
+// Per-pane toolbar shown above each xterm. Displays current pane dimensions,
+// font size, an activity badge (pulses when bytes arrive), and manual
+// font-size controls (− / + buttons) that affect ALL pane terminals
+// simultaneously via UiStore.
 
 import { observer } from "mobx-react-lite";
 import { Group, Text, Badge, ActionIcon, Tooltip } from "@mantine/core";
 import type { PaneInfo } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import type { PaneTerminal } from "../pane-terminal.ts";
+import type { ObservablePaneStream } from "../pane-stream-bridge.ts";
 
 interface Props {
   readonly pane: PaneInfo;
   readonly uiStore: UiStore;
-  readonly terminal: PaneTerminal | null;
+  /** Observable stream wrapper — provides state + activity for the badge. */
+  readonly obs: ObservablePaneStream | null;
 }
 
 export const PaneToolbar = observer(function PaneToolbar({
   pane,
   uiStore,
-  terminal,
+  obs,
 }: Props) {
-  const font = terminal?.status.currentFontSize ?? uiStore.terminalFontSize;
+  const font = uiStore.terminalFontSize;
+  const isActive = obs !== null && obs.isActive;
 
   return (
     <Group gap="xs" justify="space-between" pb={4} wrap="nowrap">
@@ -33,6 +35,11 @@ export const PaneToolbar = observer(function PaneToolbar({
         {pane.active && (
           <Badge size="xs" color="teal" variant="light">
             active
+          </Badge>
+        )}
+        {isActive && (
+          <Badge size="xs" color="orange" variant="dot">
+            live
           </Badge>
         )}
       </Group>
