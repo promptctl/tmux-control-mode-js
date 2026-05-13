@@ -13,7 +13,6 @@
 export {
   BridgeError,
   BridgeProtocolError,
-  PROTOCOL_VERSION,
   PANE_OUTPUT_MAGIC,
   isPaneOutputFrame,
   encodePaneOutput,

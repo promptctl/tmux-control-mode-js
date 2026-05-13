@@ -10,7 +10,7 @@
 // proxied — those stay server-side by design.
 //
 // Production-oriented behaviors baked in:
-//   - hello/welcome handshake, protocol version check
+//   - hello/welcome handshake
 //   - request timeouts (per-call deadline surfaced as typed BridgeError)
 //   - app-level ping/pong heartbeats (complements transport-level WS pings,
 //     which browsers hide from userland)
@@ -52,7 +52,6 @@ import type { SplitOptions } from "../../client.js";
 import type { RpcProxyApi } from "../rpc.js";
 import {
   BridgeError,
-  PROTOCOL_VERSION,
   decodePaneOutput,
   encodeClientFrame,
   isPaneOutputFrame,
@@ -194,7 +193,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     }
     if (this.ws !== null && this.ws.readyState === WEBSOCKET_OPEN) {
       try {
-        this.ws.send(encodeClientFrame({ v: 1, k: "bye" }));
+        this.ws.send(encodeClientFrame({ k: "bye" }));
       } catch {
         // ignore
       }
@@ -326,7 +325,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
       (timer as unknown as { unref?: () => void }).unref?.();
 
       this.pending.set(id, { method, resolve, reject, timer });
-      this.send(encodeClientFrame({ v: 1, k: "call", id, method, args }));
+      this.send(encodeClientFrame({ k: "call", id, method, args }));
     });
   }
 
@@ -388,13 +387,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
 
   private onOpen(): void {
     this.transition("open");
-    this.send(
-      encodeClientFrame({
-        v: 1,
-        k: "hello",
-        protocol: PROTOCOL_VERSION,
-      }),
-    );
+    this.send(encodeClientFrame({ k: "hello" }));
   }
 
   private onMessage(data: unknown): void {
@@ -631,7 +624,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     if (this.pongTimer !== null) return;
     const id = this.id();
     this.lastPingId = id;
-    this.send(encodeClientFrame({ v: 1, k: "ping", id }));
+    this.send(encodeClientFrame({ k: "ping", id }));
     const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
     this.pongTimer = setTimeout(() => {
       // No pong — kill the socket and let the close/reconnect path run.

@@ -415,7 +415,7 @@ The connector source files stay focused on transport-specific concerns:
     resumes. On Electron the ack arrives via a `tmux:ack` IPC frame; on
     WebSocket the helper's `clearPeerOutstanding` is driven by
     `ws.bufferedAmount` reaching the low watermark (the only "in-flight
-    bytes" signal protocol v1 exposes without a dedicated ack frame).
+    bytes" signal the WS protocol exposes without a dedicated ack frame).
 
   **Scope: per-connection on WebSocket.** The Electron bridge installs ONE
   `BridgeConnection` and treats every renderer as a peer in it (sum-across-
