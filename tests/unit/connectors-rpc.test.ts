@@ -19,9 +19,18 @@ import {
   parseRpcRequest,
   RpcError,
   type RpcMethod,
+  type RpcProxyApi,
   type RpcRequest,
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
+
+// [LAW:behavior-not-structure] The RpcProxyApi conformance gate below is a
+// purely type-level assertion. Importing the proxy classes via `import type`
+// keeps the check compile-time only — no module evaluation, no transitive
+// dependency on browser-targeted (or Electron-renderer) module top-level code
+// being safe to load under Node.
+import type { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import type { TmuxClientProxy } from "../../src/connectors/electron/renderer.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
@@ -115,7 +124,7 @@ describe("parseRpcRequest — allowlist", () => {
       { method: "splitWindow", args: [] }, // optional arg
       { method: "setSize", args: [80, 24] },
       { method: "setPaneAction", args: [1, PaneAction.Pause] },
-      { method: "subscribe", args: ["sub", "%0", "#{pane_pid}"] },
+      { method: "subscribeRaw", args: ["sub", "%0", "#{pane_pid}"] },
       { method: "unsubscribe", args: ["sub"] },
       { method: "setFlags", args: [["pause-after=2"]] },
       { method: "clearFlags", args: [["pause-after"]] },
@@ -172,8 +181,8 @@ describe("parseRpcRequest — arg shape", () => {
     [{ method: "setPaneAction", args: ["1", PaneAction.Pause] }],
     [{ method: "setPaneAction", args: [-3, PaneAction.Pause] }],
     [{ method: "setPaneAction", args: [3.7, PaneAction.Pause] }],
-    [{ method: "subscribe", args: ["a", "b"] }],
-    [{ method: "subscribe", args: ["", "b", "c"] }],
+    [{ method: "subscribeRaw", args: ["a", "b"] }],
+    [{ method: "subscribeRaw", args: ["", "b", "c"] }],
     [{ method: "unsubscribe", args: [""] }],
     [{ method: "requestReport", args: [-1, "report"] }],
     [{ method: "requestReport", args: [3.5, "report"] }],
@@ -265,11 +274,11 @@ describe("dispatchRpcRequest — routing", () => {
     await p;
   });
 
-  it("subscribe forwards name+what+format", async () => {
+  it("subscribeRaw forwards name+what+format", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     const p = dispatchRpcRequest(client, {
-      method: "subscribe",
+      method: "subscribeRaw",
       args: ["sub", "%0", "#{pane_pid}"],
     });
     expect(t.sent[0]).toContain("refresh-client");
@@ -304,7 +313,7 @@ describe("dispatchRpcRequest — admin-only", () => {
       "splitWindow",
       "setSize",
       "setPaneAction",
-      "subscribe",
+      "subscribeRaw",
       "unsubscribe",
       "setFlags",
       "clearFlags",
@@ -343,6 +352,35 @@ describe("dispatchRpcRequest — error propagation", () => {
 // Type-level exhaustiveness sanity check
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Compile-time gate: every proxy must structurally satisfy RpcProxyApi.
+//
+// [LAW:one-source-of-truth] Adding a new RpcRequest variant must surface as a
+// new required method on every bridge proxy. These assignments are the
+// compile-time enforcement — runtime body is irrelevant. If WebSocketTmuxClient
+// or TmuxClientProxy ever drift from RpcProxyApi, the type-checker rejects
+// this file.
+// ---------------------------------------------------------------------------
+
+describe("RpcProxyApi conformance — compile-time", () => {
+  it("WebSocketTmuxClient and TmuxClientProxy structurally implement RpcProxyApi", () => {
+    // Type-only check: classes are imported via `import type` at the top of
+    // this file, so the assertion is fully erased. If either class drifts
+    // from RpcProxyApi the type-checker rejects this file at build time —
+    // no runtime module evaluation needed (and none happens here).
+    type _CheckWS = InstanceType<typeof WebSocketTmuxClient> extends RpcProxyApi
+      ? true
+      : never;
+    type _CheckIPC = InstanceType<typeof TmuxClientProxy> extends RpcProxyApi
+      ? true
+      : never;
+    const _wsOk: _CheckWS = true;
+    const _ipcOk: _CheckIPC = true;
+    expect(_wsOk).toBe(true);
+    expect(_ipcOk).toBe(true);
+  });
+});
+
 describe("RpcRequest exhaustiveness", () => {
   it("RpcMethod covers every variant", () => {
     // If RpcMethod ever drifts from RpcRequest['method'], this assignment
@@ -356,7 +394,7 @@ describe("RpcRequest exhaustiveness", () => {
       "splitWindow",
       "setSize",
       "setPaneAction",
-      "subscribe",
+      "subscribeRaw",
       "unsubscribe",
       "setFlags",
       "clearFlags",

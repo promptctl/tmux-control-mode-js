@@ -523,7 +523,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         ]);
 
         // A subscribes "qz5-focus".
-        const aSub = await a.client.subscribe(
+        const aSub = await a.client.subscribeRaw(
           "qz5-focus",
           "",
           "#{pane_id}",

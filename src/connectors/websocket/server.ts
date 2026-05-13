@@ -510,7 +510,7 @@ class Connection {
     // signal). It does NOT close the cross-WS analog of C1: when two WS
     // connections share a TmuxClient and subscribe the same name with
     // divergent (what, format), each Connection's helper has its own
-    // record, both call client.subscribe, and tmux's last-write-wins
+    // record, both call client.subscribeRaw, and tmux's last-write-wins
     // semantics overwrite the first binding's format. A future lift to
     // factory-scope (Map<TmuxClient, BridgeConnection> with refcount)
     // would close this gap; the qz5.5 ticket scoped C1 to Electron and
@@ -733,7 +733,7 @@ class Connection {
     state: RunningState,
     req: RpcRequest,
   ): Promise<CommandResponse> {
-    if (req.method === "subscribe") {
+    if (req.method === "subscribeRaw") {
       const [name, what, format] = req.args;
       return state.bridge.subscribeForPeer(state.peer, name, what, format);
     }
