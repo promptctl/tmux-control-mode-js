@@ -272,8 +272,8 @@ class TmuxClient {
   // Control-mode-specific
   setSize(width: number, height: number): Promise<CommandResponse>;
   setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse>;
-  subscribe(name: string, what: string, format: string): void;
-  unsubscribe(name: string): void;
+  subscribeRaw(name: string, what: string, format: string): Promise<CommandResponse>;
+  unsubscribe(name: string): Promise<CommandResponse>;
 
   // Lifecycle
   close(): void;
@@ -301,7 +301,7 @@ class TmuxCommandError extends Error {
 ```
 
 **Rejection contract:** all command-shaped methods (`execute`, `sendKeys`,
-`splitWindow`, `setSize`, `setPaneAction`, `subscribe`, `unsubscribe`,
+`splitWindow`, `setSize`, `setPaneAction`, `subscribeRaw`, `unsubscribe`,
 `setFlags`, `clearFlags`, `requestReport`, `queryClipboard`) reject with a
 `TmuxCommandError` instance carrying the original `CommandResponse` on
 `.response`. Callers should `instanceof TmuxCommandError` rather than
@@ -424,7 +424,7 @@ The connector source files stay focused on transport-specific concerns:
   connection's `createClient` hook may return a different `TmuxClient`. A
   consequence: when multiple WS connections share a TmuxClient and both
   subscribe the same name with divergent `(what, format)`, both
-  `client.subscribe` calls reach tmux and the second overwrites the
+  `client.subscribeRaw` calls reach tmux and the second overwrites the
   first's binding — the cross-WS analog of the audit's C1 hazard. This is
   a known follow-up (lift the helper to factory scope keyed on TmuxClient
   with refcount); the qz5.5 ticket scoped C1 to Electron. Tracked as

@@ -1,10 +1,13 @@
 // src/connectors/websocket/client.ts
 // WebSocket bridge — browser side.
 //
-// `WebSocketTmuxClient` presents the same public surface as `TmuxClient` but
-// every method is a Promise that rides the bridge. Consumers written against
-// `TmuxClient` move to the browser by swapping the constructor — no other
-// code changes.
+// `WebSocketTmuxClient` exposes the bridged subset of `TmuxClient` — every
+// method on `RpcProxyApi` (derived from `RpcRequest`) is implemented as a
+// Promise that rides the bridge. The class declares `implements RpcProxyApi`
+// so adding a new RpcRequest variant on the wire is a compile error here
+// until the proxy method is added too. The full TmuxClient surface (e.g.
+// admin operations like `detach()` and any non-bridged helpers) is NOT
+// proxied — those stay server-side by design.
 //
 // Production-oriented behaviors baked in:
 //   - hello/welcome handshake, protocol version check
@@ -46,6 +49,7 @@ import type {
 } from "../../protocol/types.js";
 import type { SplitOptions } from "../../client.js";
 
+import type { RpcProxyApi } from "../rpc.js";
 import {
   BridgeError,
   PROTOCOL_VERSION,
@@ -122,7 +126,7 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
-export class WebSocketTmuxClient {
+export class WebSocketTmuxClient implements RpcProxyApi {
   private readonly emitter = new TypedEmitter();
   private readonly pending = new Map<string, Pending>();
   private readonly outbox: string[] = [];
@@ -255,12 +259,12 @@ export class WebSocketTmuxClient {
     return this.call("setPaneAction", [paneId, action]);
   }
 
-  subscribe(
+  subscribeRaw(
     name: string,
     what: string,
     format: string,
   ): Promise<CommandResponse> {
-    return this.call("subscribe", [name, what, format]);
+    return this.call("subscribeRaw", [name, what, format]);
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {
