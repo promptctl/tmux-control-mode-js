@@ -593,9 +593,13 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — protocol", () => {
   );
 
   it(
-    "hello with wrong protocol version closes with BRIDGE_PROTOCOL_ERROR",
+    "hello with wrong frame envelope version (v != 1) closes with BRIDGE_PROTOCOL_ERROR",
     async () => {
-      const fx = await startFixture("proto-bad");
+      // Envelope-level rejection: `v: 999` fails `assertFrameEnvelope` before
+      // the parser ever looks at `protocol`. This and the application-protocol
+      // test below cover the two independent version checks (envelope = wire
+      // shape; protocol = application semantics).
+      const fx = await startFixture("env-bad");
       try {
         const ws = new WsClient(fx.url);
         const frame = await new Promise<{
@@ -605,6 +609,51 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — protocol", () => {
           const timer = setTimeout(() => reject(new Error("no frame")), 3_000);
           ws.on("open", () => {
             ws.send(JSON.stringify({ v: 999, k: "hello", protocol: 999 }));
+          });
+          ws.on("message", (data) => {
+            clearTimeout(timer);
+            resolve(JSON.parse(data.toString()));
+          });
+          ws.on("error", (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+        });
+        expect(frame.k).toBe("error");
+        expect(frame.error?.code).toBe("BRIDGE_PROTOCOL_ERROR");
+        ws.close();
+      } finally {
+        await fx.shutdown();
+      }
+    },
+    10_000,
+  );
+
+  it(
+    "hello with mismatched application protocol version closes with BRIDGE_PROTOCOL_ERROR",
+    async () => {
+      // Application-protocol-level rejection: envelope is correct (v: 1) so
+      // the frame parses, but `protocol` is one less than the current
+      // PROTOCOL_VERSION — i.e. an older client trying to connect to a newer
+      // server. The handshake must reject up front, not let the connection
+      // proceed and fail later as `UNKNOWN_METHOD`. This is the property
+      // PROTOCOL_VERSION bumps are supposed to guarantee.
+      const fx = await startFixture("proto-bad");
+      try {
+        const ws = new WsClient(fx.url);
+        const frame = await new Promise<{
+          k: string;
+          error?: { code: string };
+        }>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("no frame")), 3_000);
+          ws.on("open", () => {
+            ws.send(
+              JSON.stringify({
+                v: 1,
+                k: "hello",
+                protocol: PROTOCOL_VERSION - 1,
+              }),
+            );
           });
           ws.on("message", (data) => {
             clearTimeout(timer);

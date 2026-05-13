@@ -8,6 +8,7 @@ import { websocketTransport } from "../../src/connectors/websocket/transport.js"
 import {
   parseServerFrame,
   BridgeProtocolError,
+  PROTOCOL_VERSION,
 } from "../../src/connectors/websocket/protocol.js";
 import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
 
@@ -202,7 +203,7 @@ describe("parseServerFrame — event type validation", () => {
   const welcomeFrame = JSON.stringify({
     v: 1,
     k: "welcome",
-    protocol: 2,
+    protocol: PROTOCOL_VERSION,
     limits: { requestTimeoutMs: 5000, heartbeatIntervalMs: 30000, maxInflight: 4 },
   });
 
