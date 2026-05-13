@@ -34,8 +34,14 @@ export type { PaneOutputMessage } from "../../protocol/types.js";
 /**
  * Protocol version. Bumped whenever wire compatibility breaks. The server
  * refuses `hello` frames whose `protocol` field does not equal this constant.
+ *
+ * History:
+ *   1 — initial; RPC method `subscribe` for format subscriptions.
+ *   2 — RPC method `subscribe` renamed to `subscribeRaw` (qz5.3) to match
+ *       `TmuxClient.subscribeRaw`. A v=1 client connecting to a v=2 server
+ *       is rejected at handshake, not later as `UNKNOWN_METHOD`.
  */
-export const PROTOCOL_VERSION = 1 as const;
+export const PROTOCOL_VERSION = 2 as const;
 
 // ---------------------------------------------------------------------------
 // Error taxonomy
@@ -351,14 +357,22 @@ function safeJsonParse(raw: string): unknown {
   }
 }
 
+// [LAW:one-source-of-truth] `v` is the wire-envelope discriminator (frame
+// shape), distinct from `PROTOCOL_VERSION` (application protocol semantics).
+// Every frame interface in this module declares `readonly v: 1`, so the
+// envelope check is against the literal 1 — not against PROTOCOL_VERSION,
+// which advances independently when application-level wire compat breaks
+// (method names, payload shapes) without changing the envelope.
+const FRAME_ENVELOPE_VERSION = 1 as const;
+
 function assertFrameEnvelope(x: unknown): void {
   if (typeof x !== "object" || x === null || Array.isArray(x)) {
     throw new BridgeProtocolError("frame must be a JSON object");
   }
   const obj = x as { v?: unknown };
-  if (obj.v !== PROTOCOL_VERSION) {
+  if (obj.v !== FRAME_ENVELOPE_VERSION) {
     throw new BridgeProtocolError(
-      `unsupported protocol version: ${String(obj.v)} (expected ${PROTOCOL_VERSION})`,
+      `unsupported frame envelope version: ${String(obj.v)} (expected ${FRAME_ENVELOPE_VERSION})`,
     );
   }
 }

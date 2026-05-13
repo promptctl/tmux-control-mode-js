@@ -202,7 +202,7 @@ describe("parseServerFrame — event type validation", () => {
   const welcomeFrame = JSON.stringify({
     v: 1,
     k: "welcome",
-    protocol: 1,
+    protocol: 2,
     limits: { requestTimeoutMs: 5000, heartbeatIntervalMs: 30000, maxInflight: 4 },
   });
 
