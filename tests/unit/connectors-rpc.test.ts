@@ -365,15 +365,14 @@ describe("dispatchRpcRequest — error propagation", () => {
 describe("RpcProxyApi conformance — compile-time", () => {
   it("WebSocketTmuxClient and TmuxClientProxy structurally implement RpcProxyApi", () => {
     // Type-only check: classes are imported via `import type` at the top of
-    // this file, so the assertion is fully erased. If either class drifts
-    // from RpcProxyApi the type-checker rejects this file at build time —
-    // no runtime module evaluation needed (and none happens here).
-    type _CheckWS = InstanceType<typeof WebSocketTmuxClient> extends RpcProxyApi
-      ? true
-      : never;
-    type _CheckIPC = InstanceType<typeof TmuxClientProxy> extends RpcProxyApi
-      ? true
-      : never;
+    // this file, so a class name in type position already IS the instance
+    // type. No `InstanceType<typeof ...>` wrapper is needed — that form is
+    // for getting the instance type from a *value* reference, which we
+    // deliberately don't have here. If either class drifts from RpcProxyApi
+    // the type-checker rejects this file at build time, no runtime module
+    // evaluation needed (and none happens here).
+    type _CheckWS = WebSocketTmuxClient extends RpcProxyApi ? true : never;
+    type _CheckIPC = TmuxClientProxy extends RpcProxyApi ? true : never;
     const _wsOk: _CheckWS = true;
     const _ipcOk: _CheckIPC = true;
     expect(_wsOk).toBe(true);
