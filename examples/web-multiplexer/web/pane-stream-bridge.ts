@@ -154,7 +154,7 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     return this.bridge.execute(command);
   }
 
-  // PaneStream consumes this via the optional `subscribeRaw?` capability on
+  // PaneStream consumes this via the optional `subscribe?` capability on
   // `PaneStreamClient`. Without it, `PaneStream.subscribeToSize()` short-
   // circuits and `XtermSink.resize(cols, rows)` is never driven — terminals
   // stay at xterm's default 80x24 regardless of actual tmux pane size.
@@ -165,7 +165,7 @@ export class BridgePaneStreamClient implements PaneStreamClient {
   // (literal subscription name + `%<paneId>` + literal format), but reusing
   // the encoder's escaping discipline prevents drift if untrusted input
   // ever flows through here.
-  subscribeRaw(
+  subscribe(
     name: string,
     what: string,
     format: string,

@@ -87,7 +87,7 @@ interface SubscriptionRecord {
   /** Peers currently holding this name (refcount = owners.size). */
   readonly owners: Set<Peer>;
   /**
-   * The in-flight `client.subscribeRaw` promise for the FIRST subscriber that
+   * The in-flight `client.subscribe` promise for the FIRST subscriber that
    * created this record. Cleared to `undefined` once the call settles.
    * While present, concurrent subscribers with a matching `(what, format)`
    * AWAIT this promise before claiming ownership — never short-circuit to
@@ -114,12 +114,12 @@ export interface BridgeConnection {
   removePeer(peer: Peer): void;
 
   /**
-   * Forward a `subscribeRaw` RPC through the bridge. Every helper-managed peer
-   * subscribes through here, never directly through `client.subscribeRaw`.
+   * Forward a `subscribe` RPC through the bridge. Every helper-managed peer
+   * subscribes through here, never directly through `client.subscribe`.
    *
    * Behavior:
    *   - First peer to claim `name` writes the canonical `(what, format)`
-   *     and forwards `client.subscribeRaw(name, what, format)` to tmux.
+   *     and forwards `client.subscribe(name, what, format)` to tmux.
    *   - Subsequent peers claiming the same name with MATCHING `(what, format)`
    *     just bump the refcount; the helper synthesizes a success response so
    *     tmux is not asked twice.
@@ -261,7 +261,7 @@ export function createBridgeConnection(
 
   // [LAW:dataflow-not-control-flow] Concurrent subscribes to the same
   // name share fate via a single `inflight` promise stored on the record.
-  // The first subscriber installs the record + issues client.subscribeRaw;
+  // The first subscriber installs the record + issues client.subscribe;
   // subsequent peers with a matching (what, format) AWAIT that promise
   // before claiming ownership. If tmux rejects, every queued peer sees
   // the same rejection — no peer is left holding a phantom subscription.
@@ -306,7 +306,7 @@ export function createBridgeConnection(
       return synthesizeOk();
     }
 
-    const inflight = client.subscribeRaw(name, what, format);
+    const inflight = client.subscribe(name, what, format);
     const record: SubscriptionRecord = {
       what,
       format,
