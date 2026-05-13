@@ -255,7 +255,17 @@ export class PaneStream implements ReseedTarget {
     // Layout-change handling — only when the client supports tmux format
     // subscriptions. The FakeTmuxClient deliberately doesn't, so benches
     // skip this path.
-    if (typeof this.client.subscribeRaw === "function") {
+    // [LAW:no-defensive-null-guards] `subscribeRaw` and `unsubscribe` are
+    // paired capabilities: dispose() calls `unsubscribe` unconditionally
+    // when `onSubscriptionChanged` is set, so a client offering only
+    // `subscribeRaw` (or only `unsubscribe`) would either crash at dispose
+    // or leak the subscription. Require both together — the narrow then
+    // matches the cast to `SubscriptionAwareClient`, which declares both
+    // as non-optional.
+    if (
+      typeof this.client.subscribeRaw === "function" &&
+      typeof this.client.unsubscribe === "function"
+    ) {
       const full = this.client as unknown as SubscriptionAwareClient;
       this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
       full.on("subscription-changed", this.onSubscriptionChanged);
