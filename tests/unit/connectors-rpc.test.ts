@@ -19,18 +19,9 @@ import {
   parseRpcRequest,
   RpcError,
   type RpcMethod,
-  type RpcProxyApi,
   type RpcRequest,
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
-
-// [LAW:behavior-not-structure] The RpcProxyApi conformance gate below is a
-// purely type-level assertion. Importing the proxy classes via `import type`
-// keeps the check compile-time only — no module evaluation, no transitive
-// dependency on browser-targeted (or Electron-renderer) module top-level code
-// being safe to load under Node.
-import type { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
-import type { TmuxClientProxy } from "../../src/connectors/electron/renderer.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
@@ -353,32 +344,17 @@ describe("dispatchRpcRequest — error propagation", () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Compile-time gate: every proxy must structurally satisfy RpcProxyApi.
+// On RpcProxyApi conformance enforcement
 //
-// [LAW:one-source-of-truth] Adding a new RpcRequest variant must surface as a
-// new required method on every bridge proxy. These assignments are the
-// compile-time enforcement — runtime body is irrelevant. If WebSocketTmuxClient
-// or TmuxClientProxy ever drift from RpcProxyApi, the type-checker rejects
-// this file.
+// `WebSocketTmuxClient` and `TmuxClientProxy` both declare `implements
+// RpcProxyApi` in their source files (`src/connectors/websocket/client.ts`
+// and `src/connectors/electron/renderer.ts`). Those source files are in the
+// `tsc --build` graph, so any drift between a class and `RpcProxyApi` (e.g.
+// adding a new `RpcRequest` variant without implementing the corresponding
+// method on every proxy) is caught at build time at the `implements` site.
+// No additional gate is needed here — and tests are NOT in the build graph,
+// so a type-only assertion in this file would be erased without checking.
 // ---------------------------------------------------------------------------
-
-describe("RpcProxyApi conformance — compile-time", () => {
-  it("WebSocketTmuxClient and TmuxClientProxy structurally implement RpcProxyApi", () => {
-    // Type-only check: classes are imported via `import type` at the top of
-    // this file, so a class name in type position already IS the instance
-    // type. No `InstanceType<typeof ...>` wrapper is needed — that form is
-    // for getting the instance type from a *value* reference, which we
-    // deliberately don't have here. If either class drifts from RpcProxyApi
-    // the type-checker rejects this file at build time, no runtime module
-    // evaluation needed (and none happens here).
-    type _CheckWS = WebSocketTmuxClient extends RpcProxyApi ? true : never;
-    type _CheckIPC = TmuxClientProxy extends RpcProxyApi ? true : never;
-    const _wsOk: _CheckWS = true;
-    const _ipcOk: _CheckIPC = true;
-    expect(_wsOk).toBe(true);
-    expect(_ipcOk).toBe(true);
-  });
-});
 
 describe("RpcRequest exhaustiveness", () => {
   it("RpcMethod covers every variant", () => {
