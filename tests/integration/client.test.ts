@@ -247,11 +247,11 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   );
 
   it(
-    "subscribeRaw and unsubscribe each resolve with success",
+    "subscribe and unsubscribe each resolve with success",
     async () => {
       sessionName = uniqueSession("test-sub");
       client = await createSession(socketName, sessionName);
-      const sub = await client.subscribeRaw(
+      const sub = await client.subscribe(
         "test-sub-1",
         "",
         "#{pane_current_command}",

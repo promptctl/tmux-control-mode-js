@@ -437,7 +437,7 @@ export function createMainBridge(
     state: SenderState,
     req: RpcRequest,
   ): Promise<CommandResponse> => {
-    if (req.method === "subscribeRaw") {
+    if (req.method === "subscribe") {
       const [name, what, format] = req.args;
       return bridge.subscribeForPeer(state.peer, name, what, format);
     }
