@@ -213,7 +213,7 @@ export class TmuxClient {
   // independently of the subscribe/unsubscribe acknowledgement.
   // ---------------------------------------------------------------------------
 
-  subscribeRaw(
+  subscribe(
     name: string,
     what: string,
     format: string,
