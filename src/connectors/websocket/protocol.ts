@@ -1,5 +1,5 @@
 // src/connectors/websocket/protocol.ts
-// Wire protocol v1 for the tmux-control-mode-js WebSocket bridge.
+// Wire protocol for the tmux-control-mode-js WebSocket bridge.
 //
 // One WebSocket carries two channels:
 //   - Control plane: JSON text frames (versioned, discriminated).
@@ -26,16 +26,6 @@ import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 // own it — moving the definition home means the four connector consumers all
 // reach the same name through a single declaration.
 export type { PaneOutputMessage } from "../../protocol/types.js";
-
-// ---------------------------------------------------------------------------
-// Version
-// ---------------------------------------------------------------------------
-
-/**
- * Protocol version. Bumped whenever wire compatibility breaks. The server
- * refuses `hello` frames whose `protocol` field does not equal this constant.
- */
-export const PROTOCOL_VERSION = 1 as const;
 
 // ---------------------------------------------------------------------------
 // Error taxonomy
@@ -93,13 +83,10 @@ export type SerializedEventMessage = Exclude<
 // ---------------------------------------------------------------------------
 
 export interface HelloFrame {
-  readonly v: 1;
   readonly k: "hello";
-  readonly protocol: typeof PROTOCOL_VERSION;
 }
 
 export interface CallFrame {
-  readonly v: 1;
   readonly k: "call";
   readonly id: string;
   readonly method: RpcMethod;
@@ -107,13 +94,11 @@ export interface CallFrame {
 }
 
 export interface PingFrame {
-  readonly v: 1;
   readonly k: "ping";
   readonly id: string;
 }
 
 export interface ByeFrame {
-  readonly v: 1;
   readonly k: "bye";
 }
 
@@ -133,20 +118,16 @@ export interface WelcomeLimits {
 }
 
 export interface WelcomeFrame {
-  readonly v: 1;
   readonly k: "welcome";
-  readonly protocol: typeof PROTOCOL_VERSION;
   readonly limits: WelcomeLimits;
 }
 
 export interface EventFrame {
-  readonly v: 1;
   readonly k: "event";
   readonly msg: SerializedEventMessage;
 }
 
 export interface ResultOkFrame {
-  readonly v: 1;
   readonly k: "result";
   readonly id: string;
   readonly ok: true;
@@ -154,7 +135,6 @@ export interface ResultOkFrame {
 }
 
 export interface ResultErrFrame {
-  readonly v: 1;
   readonly k: "result";
   readonly id: string;
   readonly ok: false;
@@ -164,20 +144,17 @@ export interface ResultErrFrame {
 export type ResultFrame = ResultOkFrame | ResultErrFrame;
 
 export interface PongFrame {
-  readonly v: 1;
   readonly k: "pong";
   readonly id: string;
 }
 
 export interface DrainingFrame {
-  readonly v: 1;
   readonly k: "draining";
   /** Absolute ms-since-epoch deadline for existing calls to finish. */
   readonly deadlineMs: number;
 }
 
 export interface FatalErrorFrame {
-  readonly v: 1;
   readonly k: "error";
   readonly fatal: true;
   readonly error: BridgeErrorPayload;
@@ -302,7 +279,7 @@ const CLIENT_FRAME_PARSERS: FrameParserTable<ClientFrame> = Object.assign(
     hello: parseHello,
     call: parseCall,
     ping: parsePing,
-    bye: () => ({ v: 1, k: "bye" }) as const,
+    bye: () => ({ k: "bye" }) as const,
   } satisfies FrameParserTable<ClientFrame>,
 );
 
@@ -332,7 +309,9 @@ function parseFrame<F extends { readonly k: string }>(
   side: "client" | "server",
 ): F {
   const parsed = safeJsonParse(raw);
-  assertFrameEnvelope(parsed);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new BridgeProtocolError("frame must be a JSON object");
+  }
   const k = (parsed as { k: unknown }).k as F["k"];
   const fn = parsers[k];
   if (fn === undefined) {
@@ -351,26 +330,8 @@ function safeJsonParse(raw: string): unknown {
   }
 }
 
-function assertFrameEnvelope(x: unknown): void {
-  if (typeof x !== "object" || x === null || Array.isArray(x)) {
-    throw new BridgeProtocolError("frame must be a JSON object");
-  }
-  const obj = x as { v?: unknown };
-  if (obj.v !== PROTOCOL_VERSION) {
-    throw new BridgeProtocolError(
-      `unsupported protocol version: ${String(obj.v)} (expected ${PROTOCOL_VERSION})`,
-    );
-  }
-}
-
-function parseHello(x: unknown): HelloFrame {
-  const o = x as { protocol?: unknown };
-  if (o.protocol !== PROTOCOL_VERSION) {
-    throw new BridgeProtocolError(
-      `hello.protocol must equal ${PROTOCOL_VERSION}`,
-    );
-  }
-  return { v: 1, k: "hello", protocol: PROTOCOL_VERSION };
+function parseHello(_x: unknown): HelloFrame {
+  return { k: "hello" };
 }
 
 function parseCall(x: unknown): CallFrame {
@@ -393,7 +354,6 @@ function parseCall(x: unknown): CallFrame {
   // Validating here would close the connection on every unknown method,
   // which over-reacts to client/server version skew.
   return {
-    v: 1,
     k: "call",
     id: o.id,
     method: o.method as RpcMethod,
@@ -406,16 +366,11 @@ function parsePing(x: unknown): PingFrame {
   if (typeof o.id !== "string" || o.id.length === 0) {
     throw new BridgeProtocolError("ping.id must be a non-empty string");
   }
-  return { v: 1, k: "ping", id: o.id };
+  return { k: "ping", id: o.id };
 }
 
 function parseWelcome(x: unknown): WelcomeFrame {
-  const o = x as { protocol?: unknown; limits?: unknown };
-  if (o.protocol !== PROTOCOL_VERSION) {
-    throw new BridgeProtocolError(
-      `welcome.protocol must equal ${PROTOCOL_VERSION}`,
-    );
-  }
+  const o = x as { limits?: unknown };
   const l = o.limits as Partial<WelcomeLimits> | undefined;
   if (
     l === undefined ||
@@ -426,9 +381,7 @@ function parseWelcome(x: unknown): WelcomeFrame {
     throw new BridgeProtocolError("welcome.limits missing or malformed");
   }
   return {
-    v: 1,
     k: "welcome",
-    protocol: PROTOCOL_VERSION,
     limits: {
       requestTimeoutMs: l.requestTimeoutMs,
       heartbeatIntervalMs: l.heartbeatIntervalMs,
@@ -448,7 +401,7 @@ function parseEvent(x: unknown): EventFrame {
       `event.msg.type must be a known TmuxMessage discriminator, got ${JSON.stringify(msg.type)}`,
     );
   }
-  return { v: 1, k: "event", msg: o.msg as SerializedEventMessage };
+  return { k: "event", msg: o.msg as SerializedEventMessage };
 }
 
 function parseResult(x: unknown): ResultFrame {
@@ -466,7 +419,6 @@ function parseResult(x: unknown): ResultFrame {
       throw new BridgeProtocolError("result.response must be an object");
     }
     return {
-      v: 1,
       k: "result",
       id: o.id,
       ok: true,
@@ -475,7 +427,6 @@ function parseResult(x: unknown): ResultFrame {
   }
   if (o.ok === false) {
     return {
-      v: 1,
       k: "result",
       id: o.id,
       ok: false,
@@ -490,7 +441,7 @@ function parsePong(x: unknown): PongFrame {
   if (typeof o.id !== "string" || o.id.length === 0) {
     throw new BridgeProtocolError("pong.id must be a non-empty string");
   }
-  return { v: 1, k: "pong", id: o.id };
+  return { k: "pong", id: o.id };
 }
 
 function parseDraining(x: unknown): DrainingFrame {
@@ -498,7 +449,7 @@ function parseDraining(x: unknown): DrainingFrame {
   if (typeof o.deadlineMs !== "number") {
     throw new BridgeProtocolError("draining.deadlineMs must be a number");
   }
-  return { v: 1, k: "draining", deadlineMs: o.deadlineMs };
+  return { k: "draining", deadlineMs: o.deadlineMs };
 }
 
 function parseFatal(x: unknown): FatalErrorFrame {
@@ -506,7 +457,7 @@ function parseFatal(x: unknown): FatalErrorFrame {
   if (o.fatal !== true) {
     throw new BridgeProtocolError("error.fatal must be true");
   }
-  return { v: 1, k: "error", fatal: true, error: parseErrorPayload(o.error) };
+  return { k: "error", fatal: true, error: parseErrorPayload(o.error) };
 }
 
 function parseErrorPayload(x: unknown): BridgeErrorPayload {

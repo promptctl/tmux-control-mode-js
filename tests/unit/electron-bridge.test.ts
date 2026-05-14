@@ -1108,7 +1108,7 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
     const r = hub.createRenderer();
     const proxy = createRendererBridge(r.ipcRenderer);
 
-    const sub = proxy.subscribe("focus", "", "#{pane_id}");
+    const sub = proxy.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await sub;
 
@@ -1476,7 +1476,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pb = createRendererBridge(b.ipcRenderer);
 
     // A subscribes — bridge forwards the subscribe to tmux.
-    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await aSub;
     expect(t.sent.some((c) => isSubscribeWire(c, "focus"))).toBe(true);
@@ -1503,10 +1503,10 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pa = createRendererBridge(a.ipcRenderer);
     const pb = createRendererBridge(b.ipcRenderer);
 
-    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await aSub;
-    const bSub = pb.subscribe("focus", "", "#{pane_id}");
+    const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 2, []);
     await bSub;
 
@@ -1540,7 +1540,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const a = hub.createRenderer();
     const pa = createRendererBridge(a.ipcRenderer);
 
-    const sub = pa.subscribe("focus", "", "#{pane_id}");
+    const sub = pa.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await sub;
 
@@ -1563,10 +1563,10 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pa = createRendererBridge(a.ipcRenderer);
     const pb = createRendererBridge(b.ipcRenderer);
 
-    const aSub = pa.subscribe("focus", "", "#{pane_id}");
+    const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await aSub;
-    const bSub = pb.subscribe("focus", "", "#{pane_id}");
+    const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 2, []);
     await bSub;
 
@@ -1592,10 +1592,10 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const a = hub.createRenderer();
     const pa = createRendererBridge(a.ipcRenderer);
 
-    const aSub1 = pa.subscribe("focus", "", "#{pane_id}");
+    const aSub1 = pa.subscribeRaw("focus", "", "#{pane_id}");
     feedCommandResponse(t, 1, []);
     await aSub1;
-    const aSub2 = pa.subscribe("layout", "", "#{window_id}");
+    const aSub2 = pa.subscribeRaw("layout", "", "#{window_id}");
     feedCommandResponse(t, 2, []);
     await aSub2;
 
@@ -1614,7 +1614,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
   // qz5.5 / C1 — divergent re-subscribe across senders.
   //
   // Pre-qz5.5 (electron/main.ts:316-331), `subscribeForSender` always
-  // forwarded `client.subscribe(name, what, format)` to tmux. When sender A
+  // forwarded `client.subscribeRaw(name, what, format)` to tmux. When sender A
   // held name=foo with format='#{a}' and sender B subscribed name=foo with
   // format='#{b}', tmux's binding for "foo" was overwritten to '#{b}' but
   // A's per-sender record still claimed it owned "foo" — so A's events
@@ -1641,13 +1641,13 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const pb = createRendererBridge(b.ipcRenderer);
 
       // A claims (foo, '', '#{a}'); bridge forwards to tmux with '#{a}'.
-      const aSub = pa.subscribe("foo", "", "#{a}");
+      const aSub = pa.subscribeRaw("foo", "", "#{a}");
       feedCommandResponse(t, 1, []);
       await aSub;
 
       // B attempts to claim (foo, '', '#{b}') — different format.
       // Bridge MUST reject so A's binding is preserved.
-      await expect(pb.subscribe("foo", "", "#{b}")).rejects.toMatchObject({
+      await expect(pb.subscribeRaw("foo", "", "#{b}")).rejects.toMatchObject({
         code: "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT",
       });
 
@@ -1672,7 +1672,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const pa = createRendererBridge(a.ipcRenderer);
       const pb = createRendererBridge(b.ipcRenderer);
 
-      const aSub = pa.subscribe("foo", "", "#{x}");
+      const aSub = pa.subscribeRaw("foo", "", "#{x}");
       feedCommandResponse(t, 1, []);
       await aSub;
 
@@ -1680,7 +1680,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       // does NOT issue a second tmux subscribe (refcount bumps to 2). The
       // synthesized response is observable as success without a wire send.
       const sentBefore = t.sent.length;
-      const bSub = pb.subscribe("foo", "", "#{x}");
+      const bSub = pb.subscribeRaw("foo", "", "#{x}");
       const resp = await bSub;
       expect(resp.success).toBe(true);
       expect(t.sent.slice(sentBefore)).toEqual([]);
@@ -1688,7 +1688,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     it("rolls back the entire record (and every concurrent joiner) when tmux rejects the first subscribe", async () => {
       // Race the bloodhound caught in the qz5.5 review: the helper
-      // optimistically installed a record before `client.subscribe`
+      // optimistically installed a record before `client.subscribeRaw`
       // resolved, so a concurrent peer with the matching (what, format)
       // could short-circuit to a synthesized OK. If tmux then rejected the
       // first call, the second peer was left holding a phantom
@@ -1705,13 +1705,13 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const pb = createRendererBridge(b.ipcRenderer);
 
       // A initiates the subscribe; B races in with the same (what, format).
-      const aSub = pa.subscribe("foo", "", "#{x}");
-      // Yield once so A's subscribe call reaches client.subscribe (the
+      const aSub = pa.subscribeRaw("foo", "", "#{x}");
+      // Yield once so A's subscribe call reaches client.subscribeRaw (the
       // bridge dispatch path is async). Then B's call observes the
       // record and queues on inflight.
       await Promise.resolve();
       await Promise.resolve();
-      const bSub = pb.subscribe("foo", "", "#{x}");
+      const bSub = pb.subscribeRaw("foo", "", "#{x}");
 
       // tmux rejects A's subscribe. Both A and B must reject — B was
       // queued on the inflight promise, not optimistically resolved.
@@ -1747,7 +1747,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const a = hub.createRenderer();
       const pa = createRendererBridge(a.ipcRenderer);
 
-      const sub1 = pa.subscribe("foo", "", "#{a}");
+      const sub1 = pa.subscribeRaw("foo", "", "#{a}");
       feedCommandResponse(t, 1, []);
       await sub1;
 
@@ -1758,7 +1758,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       // Now re-subscribe with a different format — refcount is 0 again, so
       // the new (what, format) becomes the canonical record without a
       // conflict.
-      const sub2 = pa.subscribe("foo", "", "#{b}");
+      const sub2 = pa.subscribeRaw("foo", "", "#{b}");
       feedCommandResponse(t, 3, []);
       const resp2 = await sub2;
       expect(resp2.success).toBe(true);

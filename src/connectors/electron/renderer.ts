@@ -205,12 +205,12 @@ export class TmuxClientProxy implements RpcProxyApi {
     return this.invoke({ method: "setPaneAction", args: [paneId, action] });
   }
 
-  subscribe(
+  subscribeRaw(
     name: string,
     what: string,
     format: string,
   ): Promise<CommandResponse> {
-    return this.invoke({ method: "subscribe", args: [name, what, format] });
+    return this.invoke({ method: "subscribeRaw", args: [name, what, format] });
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {

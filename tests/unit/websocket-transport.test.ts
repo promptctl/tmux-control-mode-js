@@ -200,15 +200,13 @@ describe("websocketTransport", () => {
 
 describe("parseServerFrame — event type validation", () => {
   const welcomeFrame = JSON.stringify({
-    v: 1,
     k: "welcome",
-    protocol: 1,
     limits: { requestTimeoutMs: 5000, heartbeatIntervalMs: 30000, maxInflight: 4 },
   });
 
   it("accepts a valid event frame with known type", () => {
     const frame = parseServerFrame(
-      JSON.stringify({ v: 1, k: "event", msg: { type: "layout-change" } }),
+      JSON.stringify({ k: "event", msg: { type: "layout-change" } }),
     );
     expect(frame.k).toBe("event");
   });
@@ -216,7 +214,7 @@ describe("parseServerFrame — event type validation", () => {
   it("rejects event frame with unknown msg.type", () => {
     const fn = (): unknown =>
       parseServerFrame(
-        JSON.stringify({ v: 1, k: "event", msg: { type: "bogus" } }),
+        JSON.stringify({ k: "event", msg: { type: "bogus" } }),
       );
     expect(fn).toThrow(BridgeProtocolError);
     expect(fn).toThrow(/known TmuxMessage discriminator/);
@@ -225,7 +223,7 @@ describe("parseServerFrame — event type validation", () => {
   it("rejects event frame with non-string msg.type", () => {
     const fn = (): unknown =>
       parseServerFrame(
-        JSON.stringify({ v: 1, k: "event", msg: { type: 42 } }),
+        JSON.stringify({ k: "event", msg: { type: 42 } }),
       );
     expect(fn).toThrow(BridgeProtocolError);
     expect(fn).toThrow(/known TmuxMessage discriminator/);
@@ -233,7 +231,7 @@ describe("parseServerFrame — event type validation", () => {
 
   it("rejects event frame with missing msg.type", () => {
     const fn = (): unknown =>
-      parseServerFrame(JSON.stringify({ v: 1, k: "event", msg: {} }));
+      parseServerFrame(JSON.stringify({ k: "event", msg: {} }));
     expect(fn).toThrow(BridgeProtocolError);
     expect(fn).toThrow(/known TmuxMessage discriminator/);
   });

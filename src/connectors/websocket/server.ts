@@ -6,7 +6,7 @@
 // TmuxClient and speaks the wire protocol defined in `./protocol.ts`.
 //
 // Library responsibilities:
-//   - Negotiate `hello`/`welcome` handshake; reject wrong protocol versions.
+//   - Run the `hello`/`welcome` handshake (auth + client setup gate).
 //   - Route RPC calls from the browser into TmuxClient methods.
 //   - Fan out TmuxClient events back to the browser (pane output as binary).
 //   - Enforce request timeouts, max in-flight, rate limits, heartbeats.
@@ -42,7 +42,6 @@ import {
 import {
   BridgeError,
   BridgeProtocolError,
-  PROTOCOL_VERSION,
   encodePaneOutput,
   encodeServerFrame,
   parseClientFrame,
@@ -451,7 +450,7 @@ class Connection {
   }
 
   replyPong(id: string): void {
-    this.sendFrame({ v: 1, k: "pong", id });
+    this.sendFrame({ k: "pong", id });
   }
 
   closeBye(): void {
@@ -510,7 +509,7 @@ class Connection {
     // signal). It does NOT close the cross-WS analog of C1: when two WS
     // connections share a TmuxClient and subscribe the same name with
     // divergent (what, format), each Connection's helper has its own
-    // record, both call client.subscribe, and tmux's last-write-wins
+    // record, both call client.subscribeRaw, and tmux's last-write-wins
     // semantics overwrite the first binding's format. A future lift to
     // factory-scope (Map<TmuxClient, BridgeConnection> with refcount)
     // would close this gap; the qz5.5 ticket scoped C1 to Electron and
@@ -545,9 +544,7 @@ class Connection {
     this.state = { kind: "running", client, ctx, bridge, peer };
 
     this.sendFrame({
-      v: 1,
       k: "welcome",
-      protocol: PROTOCOL_VERSION,
       limits: {
         requestTimeoutMs: this.defaults.requestTimeoutMs,
         heartbeatIntervalMs: this.defaults.heartbeatIntervalMs,
@@ -733,7 +730,7 @@ class Connection {
     state: RunningState,
     req: RpcRequest,
   ): Promise<CommandResponse> {
-    if (req.method === "subscribe") {
+    if (req.method === "subscribeRaw") {
       const [name, what, format] = req.args;
       return state.bridge.subscribeForPeer(state.peer, name, what, format);
     }
@@ -828,7 +825,7 @@ class Connection {
       return;
     }
 
-    const encoded = encodeServerFrame({ v: 1, k: "event", msg });
+    const encoded = encodeServerFrame({ k: "event", msg });
     this.wsSend(encoded);
     this.emit({
       kind: "event-out",
@@ -927,7 +924,7 @@ class Connection {
       peer: this.state.peer,
       deadlineMs,
     };
-    this.sendFrame({ v: 1, k: "draining", deadlineMs });
+    this.sendFrame({ k: "draining", deadlineMs });
   }
 
   terminate(): void {
@@ -947,12 +944,11 @@ class Connection {
   // Reply helpers
   // -------------------------------------------------------------------------
   private replyOk(id: string, response: CommandResponse): void {
-    this.sendFrame({ v: 1, k: "result", id, ok: true, response });
+    this.sendFrame({ k: "result", id, ok: true, response });
   }
 
   private replyError(id: string, code: BridgeErrorCode, message: string): void {
     this.sendFrame({
-      v: 1,
       k: "result",
       id,
       ok: false,
@@ -1108,7 +1104,6 @@ function sendFatal(
   try {
     ws.send(
       encodeServerFrame({
-        v: 1,
         k: "error",
         fatal: true,
         error: { code, message },
