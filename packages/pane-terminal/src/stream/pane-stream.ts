@@ -76,7 +76,7 @@ export interface PaneActivity {
  * `@promptctl/tmux-control-mode-js` `TmuxClient` and the bench
  * `FakeTmuxClient` both satisfy this structurally.
  *
- * `subscribe`/`unsubscribe` are optional because (a) the FakeTmuxClient
+ * `subscribeRaw`/`unsubscribe` are optional because (a) the FakeTmuxClient
  * deliberately models only the byte-output + reconnect surface for benches,
  * and (b) the spawn-mode TmuxClient may be used without per-pane size
  * subscriptions in headless contexts.
@@ -96,7 +96,7 @@ export interface PaneStreamClient {
   ): void;
   off(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
   execute(command: string): Promise<CommandResponse>;
-  subscribe?(
+  subscribeRaw?(
     name: string,
     what: string,
     format: string,
@@ -106,7 +106,7 @@ export interface PaneStreamClient {
 
 /**
  * Internal narrowing helper used by `subscribeToSize()`/`dispose()` after we
- * confirm at runtime that the client implements `subscribe`. Independent
+ * confirm at runtime that the client implements `subscribeRaw`. Independent
  * (NOT `extends`) of `PaneStreamClient` so TypeScript doesn't reject the
  * widened `on` overloads as incompatible with the narrower base type.
  *
@@ -123,7 +123,7 @@ interface SubscriptionAwareClient {
     event: "subscription-changed",
     handler: (ev: SubscriptionChangedMessage) => void,
   ): void;
-  subscribe(
+  subscribeRaw(
     name: string,
     what: string,
     format: string,
@@ -255,7 +255,17 @@ export class PaneStream implements ReseedTarget {
     // Layout-change handling — only when the client supports tmux format
     // subscriptions. The FakeTmuxClient deliberately doesn't, so benches
     // skip this path.
-    if (typeof this.client.subscribe === "function") {
+    // [LAW:no-defensive-null-guards] `subscribeRaw` and `unsubscribe` are
+    // paired capabilities: dispose() calls `unsubscribe` unconditionally
+    // when `onSubscriptionChanged` is set, so a client offering only
+    // `subscribeRaw` (or only `unsubscribe`) would either crash at dispose
+    // or leak the subscription. Require both together — the narrow then
+    // matches the cast to `SubscriptionAwareClient`, which declares both
+    // as non-optional.
+    if (
+      typeof this.client.subscribeRaw === "function" &&
+      typeof this.client.unsubscribe === "function"
+    ) {
       const full = this.client as unknown as SubscriptionAwareClient;
       this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
       full.on("subscription-changed", this.onSubscriptionChanged);
@@ -265,7 +275,7 @@ export class PaneStream implements ReseedTarget {
       // tmux rejects the subscribe, swallowing here matches the symmetrical
       // unsubscribe() in dispose(), which can't surface as a usable error.
       void full
-        .subscribe(
+        .subscribeRaw(
           this.subscriptionName,
           `%${this.paneId}`,
           "#{pane_width};#{pane_height}",

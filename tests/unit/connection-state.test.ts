@@ -14,7 +14,6 @@ import { createMainBridge } from "../../src/connectors/electron/main.js";
 import { createRendererBridge } from "../../src/connectors/electron/renderer.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import {
-  PROTOCOL_VERSION,
   encodeServerFrame,
   type ServerFrame,
   type WelcomeFrame,
@@ -212,9 +211,7 @@ class MockWebSocketHub {
     const ws = idx === -1 ? this.latest() : this.sockets[idx];
     if (!ws) return;
     const welcome: WelcomeFrame = {
-      v: 1,
       k: "welcome",
-      protocol: PROTOCOL_VERSION,
       limits: {
         requestTimeoutMs: 30_000,
         heartbeatIntervalMs: 30_000,

@@ -59,7 +59,7 @@ export type RpcRequest =
       readonly args: readonly [paneId: number, action: PaneAction];
     }
   | {
-      readonly method: "subscribe";
+      readonly method: "subscribeRaw";
       readonly args: readonly [name: string, what: string, format: string];
     }
   | {
@@ -135,7 +135,7 @@ export const RPC_METHOD_NAMES: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   "splitWindow",
   "setSize",
   "setPaneAction",
-  "subscribe",
+  "subscribeRaw",
   "unsubscribe",
   "setFlags",
   "clearFlags",
@@ -227,7 +227,7 @@ const VALIDATORS: Validators = Object.assign(
         requireNonNegativeInteger(args, 0, "paneId"),
         requirePaneAction(args, 1),
       ] as const,
-    subscribe: (args) =>
+    subscribeRaw: (args) =>
       [
         requireNonEmptyString(args, 0, "name"),
         requireString(args, 1, "what"),
