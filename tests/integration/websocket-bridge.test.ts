@@ -24,10 +24,7 @@ import {
   WebSocketTmuxClient,
   type WebSocketTmuxClientState,
 } from "../../src/connectors/websocket/client.js";
-import {
-  BridgeError,
-  PROTOCOL_VERSION,
-} from "../../src/connectors/websocket/protocol.js";
+import { BridgeError } from "../../src/connectors/websocket/protocol.js";
 import type {
   BridgeObservabilityEvent,
   ServerWebSocketLike,
@@ -523,7 +520,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         ]);
 
         // A subscribes "qz5-focus".
-        const aSub = await a.client.subscribe(
+        const aSub = await a.client.subscribeRaw(
           "qz5-focus",
           "",
           "#{pane_id}",
@@ -553,75 +550,3 @@ describe.skipIf(!RUN_INTEGRATION)(
   },
 );
 
-describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — protocol", () => {
-  it(
-    "welcome.protocol matches PROTOCOL_VERSION",
-    async () => {
-      const fx = await startFixture("proto");
-      try {
-        // Open a raw ws client and parse the welcome ourselves.
-        const ws = new WsClient(fx.url);
-        const welcome = await new Promise<{
-          v: number;
-          k: string;
-          protocol: number;
-        }>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("no welcome")), 3_000);
-          ws.on("open", () => {
-            ws.send(
-              JSON.stringify({ v: 1, k: "hello", protocol: PROTOCOL_VERSION }),
-            );
-          });
-          ws.on("message", (data) => {
-            clearTimeout(timer);
-            const frame = JSON.parse(data.toString());
-            resolve(frame);
-          });
-          ws.on("error", (err) => {
-            clearTimeout(timer);
-            reject(err);
-          });
-        });
-        expect(welcome.k).toBe("welcome");
-        expect(welcome.protocol).toBe(PROTOCOL_VERSION);
-        ws.close();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
-
-  it(
-    "hello with wrong protocol version closes with BRIDGE_PROTOCOL_ERROR",
-    async () => {
-      const fx = await startFixture("proto-bad");
-      try {
-        const ws = new WsClient(fx.url);
-        const frame = await new Promise<{
-          k: string;
-          error?: { code: string };
-        }>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error("no frame")), 3_000);
-          ws.on("open", () => {
-            ws.send(JSON.stringify({ v: 999, k: "hello", protocol: 999 }));
-          });
-          ws.on("message", (data) => {
-            clearTimeout(timer);
-            resolve(JSON.parse(data.toString()));
-          });
-          ws.on("error", (err) => {
-            clearTimeout(timer);
-            reject(err);
-          });
-        });
-        expect(frame.k).toBe("error");
-        expect(frame.error?.code).toBe("BRIDGE_PROTOCOL_ERROR");
-        ws.close();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
-});

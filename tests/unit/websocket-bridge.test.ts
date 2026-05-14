@@ -22,7 +22,6 @@ import { createWebSocketBridge } from "../../src/connectors/websocket/server.js"
 import {
   encodeClientFrame,
   parseServerFrame,
-  PROTOCOL_VERSION,
   type ResultErrFrame,
   type ResultOkFrame,
   type ServerFrame,
@@ -188,21 +187,20 @@ describe("WebSocket bridge — qz5.5 C2 subscription scoping", () => {
     // Connection A (the only owner of "focus").
     const wsA = createFakeWs();
     void bridge.handleConnection(wsA);
-    wsA.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    wsA.feedClient({ k: "hello" });
     // Hello processing is async (authenticate → createClient → state
     // transition). Without this drain the next call frame would race the
     // state being still "pending-hello" and the bridge would send a fatal.
     await flush();
     // Drive A's subscribe through and complete the tmux round-trip.
     wsA.feedClient({
-      v: 1,
       k: "call",
       id: "a-sub",
-      method: "subscribe",
+      method: "subscribeRaw",
       args: ["focus", "", "#{pane_id}"],
     });
     // Drain microtasks so the bridge reaches the point where it has called
-    // client.subscribe (which writes to the transport). Only then can the
+    // client.subscribeRaw (which writes to the transport). Only then can the
     // fake transport feed the matching tmux response.
     await flush();
     feedCommandResponse(t, 1);
@@ -218,11 +216,10 @@ describe("WebSocket bridge — qz5.5 C2 subscription scoping", () => {
     // tmux never sees a second call (A's subscription is preserved).
     const wsB = createFakeWs();
     void bridge.handleConnection(wsB);
-    wsB.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    wsB.feedClient({ k: "hello" });
     await flush();
     const sentBefore = t.sent.length;
     wsB.feedClient({
-      v: 1,
       k: "call",
       id: "b-unsub",
       method: "unsubscribe",
@@ -260,7 +257,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
 
     const ws = createFakeWs();
     void bridge.handleConnection(ws);
-    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    ws.feedClient({ k: "hello" });
     await flush();
     // Hold bufferedAmount above the low watermark so the bridge does NOT
     // immediately clear outstanding on every send. (Without this, every
@@ -295,7 +292,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
 
     const ws = createFakeWs();
     void bridge.handleConnection(ws);
-    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    ws.feedClient({ k: "hello" });
     await flush();
     ws.setBuffered(80);
 
@@ -339,7 +336,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
 
     const ws = createFakeWs();
     void bridge.handleConnection(ws);
-    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    ws.feedClient({ k: "hello" });
     await flush();
     ws.setBuffered(80);
 
@@ -377,7 +374,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
 
     const ws = createFakeWs();
     void bridge.handleConnection(ws);
-    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    ws.feedClient({ k: "hello" });
     await flush();
     // Default bufferedAmount=0 — every send drains immediately.
 
@@ -402,17 +399,16 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
 
     const ws = createFakeWs();
     void bridge.handleConnection(ws);
-    ws.feedClient({ v: 1, k: "hello", protocol: PROTOCOL_VERSION });
+    ws.feedClient({ k: "hello" });
     await flush();
 
     // First subscribe — proxied to tmux. Drain microtasks first so the
-    // bridge has actually issued client.subscribe before we feed the
+    // bridge has actually issued client.subscribeRaw before we feed the
     // matching response.
     ws.feedClient({
-      v: 1,
       k: "call",
       id: "s1",
-      method: "subscribe",
+      method: "subscribeRaw",
       args: ["foo", "", "#{a}"],
     });
     await flush();
@@ -432,10 +428,9 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
     // the Electron path gets, exact same error code, because the
     // BridgeConnection helper is the single source of truth.
     ws.feedClient({
-      v: 1,
       k: "call",
       id: "s2",
-      method: "subscribe",
+      method: "subscribeRaw",
       args: ["foo", "", "#{b}"],
     });
     await flush();

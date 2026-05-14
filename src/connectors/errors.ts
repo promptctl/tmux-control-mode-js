@@ -38,7 +38,7 @@
 export type BridgeErrorCode =
   /** tmux replied with %error (a tmux-level command failure). */
   | "TMUX_ERROR"
-  /** Malformed wire frame, unknown discriminator, wrong protocol version. */
+  /** Malformed wire frame, unknown discriminator. */
   | "BRIDGE_PROTOCOL_ERROR"
   /** RPC envelope was missing/non-object/lacking method or args. */
   | "BRIDGE_INVALID_REQUEST"
