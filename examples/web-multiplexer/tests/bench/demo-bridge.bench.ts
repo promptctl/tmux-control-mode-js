@@ -1,12 +1,12 @@
 // examples/web-multiplexer/tests/bench/demo-bridge.bench.ts
 //
-// DEMO BRIDGE GATES — gates 1 and 2 exercised through DirectPaneStreamClient.
+// DEMO BRIDGE GATES — exercise PaneStream against a spawn-mode TmuxClient so
+// adapter logic is measured in isolation from any network/serialisation layer.
 //
-// `DirectPaneStreamClient` is a structural equivalent to `BridgePaneStreamClient`
-// that skips the WebSocket serialisation layer so this bench isolates adapter
-// logic from network variance. Gate 7 (reconnect) is out of scope here —
-// spawn-mode TmuxClient never emits `reconnected`, so reconnect gates belong
-// in a separate bench that uses a multiplexed/WebSocket transport.
+// `TmuxClient` structurally satisfies `TmuxClientLike`, so it's passed to
+// `new PaneStream({ client })` directly — no shim. Gate 7 (reconnect) is out
+// of scope here — spawn-mode `TmuxClient` never emits `reconnected`, so
+// reconnect gates belong in a separate bench that uses a WebSocket transport.
 //
 // Gate targets (from the parent epic):
 //   G1 — attach → first paint (seed delivered to sink) < 100ms p99
@@ -19,11 +19,9 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../../../src/transport/spawn.js";
 import { TmuxClient } from "../../../../src/client.js";
-import { PaneStream, type PaneStreamClient } from "../../../../packages/pane-terminal/src/stream/index.js";
+import { PaneStream } from "../../../../packages/pane-terminal/src/stream/index.js";
 import { BufferingSink } from "../../../../packages/pane-terminal/src/sink/index.js";
-import type { CommandResponse } from "../../../../src/protocol/types.js";
 import type { ConnectionState } from "../../../../src/connection-state.js";
-import type { OutputMessage, ExtendedOutputMessage } from "../../../../src/protocol/types.js";
 
 const integrationOn = process.env.TMUX_INTEGRATION === "1";
 
@@ -75,53 +73,6 @@ async function createSession(socket: string, session: string): Promise<TmuxClien
   return client;
 }
 
-/**
- * Thin shim that turns a real `TmuxClient` into a `PaneStreamClient`
- * directly (no WebSocket layer — this bench isolates the adapter logic).
- */
-class DirectPaneStreamClient implements PaneStreamClient {
-  constructor(private readonly client: TmuxClient) {}
-
-  get connectionState(): ConnectionState {
-    return this.client.connectionState;
-  }
-
-  on(
-    event: "output" | "extended-output" | "reconnected",
-    handler: (ev: OutputMessage | ExtendedOutputMessage | { type: "reconnected" }) => void,
-  ): void {
-    if (event === "output") {
-      this.client.on("output", handler as (ev: OutputMessage) => void);
-    } else if (event === "extended-output") {
-      this.client.on(
-        "extended-output",
-        handler as (ev: ExtendedOutputMessage) => void,
-      );
-    }
-    // 'reconnected' is a no-op: spawn-mode TmuxClient never emits it
-    // (no second 'ready' transition). G7 reconnect gates are out of scope.
-  }
-
-  off(
-    event: "output" | "extended-output" | "reconnected",
-    handler: (ev: OutputMessage | ExtendedOutputMessage | { type: "reconnected" }) => void,
-  ): void {
-    if (event === "output") {
-      this.client.off("output", handler as (ev: OutputMessage) => void);
-    } else if (event === "extended-output") {
-      this.client.off(
-        "extended-output",
-        handler as (ev: ExtendedOutputMessage) => void,
-      );
-    }
-    // 'reconnected' is a no-op: see on() above.
-  }
-
-  execute(command: string): Promise<CommandResponse> {
-    return this.client.execute(command);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // G1 — Attach → first paint (seed delivered) < 100ms p99
 // ---------------------------------------------------------------------------
@@ -132,14 +83,12 @@ const G1_ITERATIONS = 30;
 describe.skipIf(!integrationOn)("demo bridge — G1 attach-paint", () => {
   let socket: string;
   let client: TmuxClient;
-  let streamClient: DirectPaneStreamClient;
   let paneId: number;
 
   beforeEach(async () => {
     socket = uniqueSocket();
     const session = uniqueSession();
     client = await createSession(socket, session);
-    streamClient = new DirectPaneStreamClient(client);
 
     const resp = await client.execute("display-message -p '#{pane_id}'");
     const raw = resp.output[0] ?? "%0";
@@ -155,7 +104,7 @@ describe.skipIf(!integrationOn)("demo bridge — G1 attach-paint", () => {
     const latencies: number[] = [];
 
     for (let i = 0; i < G1_ITERATIONS; i++) {
-      const stream = new PaneStream({ client: streamClient, paneId });
+      const stream = new PaneStream({ client, paneId });
       const sink = new BufferingSink();
       const t0 = performance.now();
       const seedDone = new Promise<void>((resolve) => {

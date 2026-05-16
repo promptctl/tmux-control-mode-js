@@ -14,7 +14,6 @@
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 import { BufferingSink } from "../../src/sink/index.js";
 
 const PANE_ID = 1;
@@ -34,7 +33,7 @@ describe("Gate 4 — re-mount on the same stream", () => {
       cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
     );
     const stream = new PaneStream({
-      client: client as unknown as PaneStreamClient,
+      client,
       paneId: PANE_ID,
     });
     expect(client.capturePaneCount()).toBe(0); // baseline

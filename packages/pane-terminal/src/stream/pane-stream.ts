@@ -21,22 +21,15 @@
 //   External views (`get state()`) read from `currentState` directly.
 
 import type { TerminalSink, SeedCursor } from "../sink/index.js";
-import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
 import type {
-  CommandResponse,
-  OutputMessage,
-  ExtendedOutputMessage,
-  SubscriptionChangedMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+  TmuxClientLike,
+  TmuxEventMap,
+} from "@promptctl/tmux-control-mode-js";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 
-// `ReconnectedMessage` is a synthetic-event shape emitted by every
-// TmuxClient-shaped class (see src/connection-state.ts in the parent
-// package). It is intentionally tiny — duplicating the shape locally avoids
-// pulling a non-public symbol into our typed surface, and the cost of one
-// breakage if the library ever widens this type is negligible.
-interface ReconnectedMessage {
-  readonly type: "reconnected";
-}
+// Re-exported so `@promptctl/pane-terminal/stream` consumers don't have to
+// dual-import `TmuxClientLike` from the library separately.
+export type { TmuxClientLike };
 import {
   getScheduler,
   type ReseedPriority,
@@ -71,68 +64,8 @@ export interface PaneActivity {
 // state. PaneStream delegates to `sink.isVisible()` when computing reseed
 // priority. There is no stream-side `Visibility` type or setter.
 
-/**
- * Subset of `TmuxClient` surface PaneStream consumes. The real
- * `@promptctl/tmux-control-mode-js` `TmuxClient` and the bench
- * `FakeTmuxClient` both satisfy this structurally.
- *
- * `subscribeRaw`/`unsubscribe` are optional because (a) the FakeTmuxClient
- * deliberately models only the byte-output + reconnect surface for benches,
- * and (b) the spawn-mode TmuxClient may be used without per-pane size
- * subscriptions in headless contexts.
- */
-export interface PaneStreamClient {
-  readonly connectionState: ConnectionState;
-  on(event: "output", handler: (ev: OutputMessage) => void): void;
-  on(
-    event: "extended-output",
-    handler: (ev: ExtendedOutputMessage) => void,
-  ): void;
-  on(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-  off(event: "output", handler: (ev: OutputMessage) => void): void;
-  off(
-    event: "extended-output",
-    handler: (ev: ExtendedOutputMessage) => void,
-  ): void;
-  off(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-  execute(command: string): Promise<CommandResponse>;
-  subscribeRaw?(
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse>;
-  unsubscribe?(name: string): Promise<CommandResponse>;
-}
-
-/**
- * Internal narrowing helper used by `subscribeToSize()`/`dispose()` after we
- * confirm at runtime that the client implements `subscribeRaw`. Independent
- * (NOT `extends`) of `PaneStreamClient` so TypeScript doesn't reject the
- * widened `on` overloads as incompatible with the narrower base type.
- *
- * The `as unknown as` cast at the call site is the [LAW:locality-or-seam]
- * boundary — one place that knows the bench fake doesn't model
- * `'subscription-changed'`, instead of every callsite.
- */
-interface SubscriptionAwareClient {
-  on(
-    event: "subscription-changed",
-    handler: (ev: SubscriptionChangedMessage) => void,
-  ): void;
-  off(
-    event: "subscription-changed",
-    handler: (ev: SubscriptionChangedMessage) => void,
-  ): void;
-  subscribeRaw(
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse>;
-  unsubscribe(name: string): Promise<CommandResponse>;
-}
-
 export interface PaneStreamOptions {
-  readonly client: PaneStreamClient;
+  readonly client: TmuxClientLike;
   readonly paneId: number;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
@@ -171,7 +104,7 @@ type Unsubscribe = () => void;
 export class PaneStream implements ReseedTarget {
   readonly paneId: number;
 
-  private readonly client: PaneStreamClient;
+  private readonly client: TmuxClientLike;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
   private readonly subscriptionName: string;
@@ -214,13 +147,15 @@ export class PaneStream implements ReseedTarget {
 
   // Pre-bound handlers so the [HOT-PATH] byte callback never allocates a
   // closure per byte and so off() can find the same reference we used for on().
-  private readonly onOutput: (ev: OutputMessage) => void;
-  private readonly onExtendedOutput: (ev: ExtendedOutputMessage) => void;
-  private readonly onReconnected: (ev: ReconnectedMessage) => void;
+  private readonly onOutput: (ev: TmuxEventMap["output"]) => void;
+  private readonly onExtendedOutput: (
+    ev: TmuxEventMap["extended-output"],
+  ) => void;
+  private readonly onReconnected: (ev: TmuxEventMap["reconnected"]) => void;
   private readonly boundFlushActivity: () => void;
-  private readonly onSubscriptionChanged:
-    | ((ev: SubscriptionChangedMessage) => void)
-    | null;
+  private readonly onSubscriptionChanged: (
+    ev: TmuxEventMap["subscription-changed"],
+  ) => void;
 
   constructor(opts: PaneStreamOptions) {
     this.client = opts.client;
@@ -252,38 +187,24 @@ export class PaneStream implements ReseedTarget {
     this.client.on("extended-output", this.onExtendedOutput);
     this.client.on("reconnected", this.onReconnected);
 
-    // Layout-change handling — only when the client supports tmux format
-    // subscriptions. The FakeTmuxClient deliberately doesn't, so benches
-    // skip this path.
-    // [LAW:no-defensive-null-guards] `subscribeRaw` and `unsubscribe` are
-    // paired capabilities: dispose() calls `unsubscribe` unconditionally
-    // when `onSubscriptionChanged` is set, so a client offering only
-    // `subscribeRaw` (or only `unsubscribe`) would either crash at dispose
-    // or leak the subscription. Require both together — the narrow then
-    // matches the cast to `SubscriptionAwareClient`, which declares both
-    // as non-optional.
-    if (
-      typeof this.client.subscribeRaw === "function" &&
-      typeof this.client.unsubscribe === "function"
-    ) {
-      const full = this.client as unknown as SubscriptionAwareClient;
-      this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
-      full.on("subscription-changed", this.onSubscriptionChanged);
-      // Per-pane width;height in one subscription (single message,
-      // semicolon-separated) so tmux performs the layout walk for us.
-      // .catch keeps construction safe — if the client is already closed or
-      // tmux rejects the subscribe, swallowing here matches the symmetrical
-      // unsubscribe() in dispose(), which can't surface as a usable error.
-      void full
-        .subscribeRaw(
-          this.subscriptionName,
-          `%${this.paneId}`,
-          "#{pane_width};#{pane_height}",
-        )
-        .catch(() => undefined);
-    } else {
-      this.onSubscriptionChanged = null;
-    }
+    // [LAW:dataflow-not-control-flow] subscribeRaw/unsubscribe are mandatory
+    // on TmuxClientLike, so the subscription path always runs. Earlier shapes
+    // gated this on a runtime `typeof === "function"` probe; making the
+    // capability part of the type erased the branch.
+    this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
+    this.client.on("subscription-changed", this.onSubscriptionChanged);
+    // Per-pane width;height in one subscription (single message,
+    // semicolon-separated) so tmux performs the layout walk for us.
+    // .catch keeps construction safe — if the client is already closed or
+    // tmux rejects the subscribe, swallowing here matches the symmetrical
+    // unsubscribe() in dispose(), which can't surface as a usable error.
+    void this.client
+      .subscribeRaw(
+        this.subscriptionName,
+        `%${this.paneId}`,
+        "#{pane_width};#{pane_height}",
+      )
+      .catch(() => undefined);
 
     // [LAW:one-source-of-truth] Per-client reseed scheduler. Registering at
     // construction means the scheduler can include this stream in its very
@@ -398,13 +319,10 @@ export class PaneStream implements ReseedTarget {
     this.client.off("extended-output", this.onExtendedOutput);
     this.client.off("reconnected", this.onReconnected);
 
-    if (this.onSubscriptionChanged !== null) {
-      const full = this.client as unknown as SubscriptionAwareClient;
-      full.off("subscription-changed", this.onSubscriptionChanged);
-      // Best-effort unsubscribe — if the client is already closed, this
-      // rejects; we swallow because dispose() must not throw.
-      void full.unsubscribe(this.subscriptionName).catch(() => undefined);
-    }
+    this.client.off("subscription-changed", this.onSubscriptionChanged);
+    // Best-effort unsubscribe — if the client is already closed, this
+    // rejects; we swallow because dispose() must not throw.
+    void this.client.unsubscribe(this.subscriptionName).catch(() => undefined);
 
     if (this.flushTimerId !== null) {
       clearTimeout(this.flushTimerId);
@@ -621,7 +539,9 @@ export class PaneStream implements ReseedTarget {
     this.setState("live");
   }
 
-  private handleSubscriptionChanged(ev: SubscriptionChangedMessage): void {
+  private handleSubscriptionChanged(
+    ev: TmuxEventMap["subscription-changed"],
+  ): void {
     if (ev.name !== this.subscriptionName) return;
     if (ev.paneId !== this.paneId) return;
     if (this.currentState === "disposed") return;

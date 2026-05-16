@@ -8,12 +8,8 @@ export { PaneStream } from "./pane-stream.js";
 export type {
   PaneStreamState,
   PaneStreamOptions,
-  PaneStreamClient,
+  TmuxClientLike,
   PaneActivity,
 } from "./pane-stream.js";
 export { ReseedScheduler, getScheduler } from "./reseed-scheduler.js";
-export type {
-  ReseedPriority,
-  ReseedTarget,
-  ReseedSchedulerClient,
-} from "./reseed-scheduler.js";
+export type { ReseedPriority, ReseedTarget } from "./reseed-scheduler.js";

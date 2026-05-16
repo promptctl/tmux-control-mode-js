@@ -32,7 +32,6 @@ import { execSync } from "node:child_process";
 import { spawnTmux } from "../../../../src/transport/spawn.js";
 import { TmuxClient } from "../../../../src/client.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
 
 const P99_BUDGET_MS = 100;
@@ -142,7 +141,7 @@ describe.skipIf(!integrationOn)(
       for (let i = 0; i < ITERATIONS; i++) {
         const sink = new TimingSink();
         const stream = new PaneStream({
-          client: client as unknown as PaneStreamClient,
+          client,
           paneId,
         });
         const t0 = performance.now();

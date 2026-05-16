@@ -20,7 +20,6 @@
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 
 const HEAP_BUDGET_BYTES = 2 * 1024 * 1024;
 const STREAM_COUNT = 24;
@@ -62,7 +61,7 @@ describe("Gate 3 — heap delta over 60s of detached output", () => {
       for (let i = 0; i < STREAM_COUNT; i++) {
         streams.push(
           new PaneStream({
-            client: client as unknown as PaneStreamClient,
+            client,
             paneId: i + 1,
           }),
         );

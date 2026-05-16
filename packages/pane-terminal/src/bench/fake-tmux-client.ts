@@ -1,18 +1,20 @@
 // packages/pane-terminal/src/bench/fake-tmux-client.ts
 //
 // Deterministic stand-in for `TmuxClient` used by every gate that does not
-// need a real tmux process. Implements the surface PaneStream is documented
-// to consume in design-docs/pane-session-v2.md (O2/O3/O6) — connection-state
-// lifecycle, byte-output subscription, and capture-pane execution — plus
-// test-only knobs to drive those inputs from a benchmark.
+// need a real tmux process. Structurally satisfies `TmuxClientLike` — the
+// PaneStream-shaped projection of the library's `TmuxClient` — so benches and
+// unit tests can pass a `FakeTmuxClient` to `new PaneStream({ client })` with
+// no cast.
 //
 // [LAW:one-source-of-truth] Event/message and CommandResponse shapes come
-//   from the library — `OutputMessage`/`ExtendedOutputMessage`/`CommandResponse`
-//   are re-used as-is, never re-declared. PaneStream consuming a real
-//   TmuxClient or a FakeTmuxClient sees structurally identical data.
+//   from the library — `OutputMessage`/`ExtendedOutputMessage`/`CommandResponse`/
+//   `SubscriptionChangedMessage` are re-used as-is, never re-declared.
+//   PaneStream consuming a real TmuxClient or a FakeTmuxClient sees
+//   structurally identical data.
 // [LAW:behavior-not-structure] The fake exposes the *behaviors* PaneStream
-//   needs (state changes, byte arrivals, capture-pane round-trips) — not the
-//   internal structure of TmuxClient.
+//   needs (state changes, byte arrivals, capture-pane round-trips,
+//   subscribe/unsubscribe round-trips, subscription-changed delivery) — not
+//   the internal structure of TmuxClient.
 //
 // Real TmuxClient surface NOT modeled here (out of scope for the gate
 // harness, expanded as later steps need them):
@@ -21,10 +23,14 @@
 // If a future gate needs one of these, add it here — never let a bench grow
 // its own private fake.
 
-import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
+import type {
+  ConnectionState,
+  TmuxEventMap,
+} from "@promptctl/tmux-control-mode-js";
 import type {
   OutputMessage,
   ExtendedOutputMessage,
+  SubscriptionChangedMessage,
   CommandResponse,
 } from "@promptctl/tmux-control-mode-js/protocol";
 
@@ -54,7 +60,8 @@ export type FakeMessage =
   | FakeOutputMessage
   | FakeExtendedOutputMessage
   | FakeConnectionStateMessage
-  | FakeReconnectedMessage;
+  | FakeReconnectedMessage
+  | SubscriptionChangedMessage;
 
 export type FakeMessageType = FakeMessage["type"];
 
@@ -84,6 +91,14 @@ export class FakeTmuxClient {
   private captureHandler: (target: string) => string = () => "";
   private commandCounter = 0;
 
+  // Subscription RPC log. PaneStream calls `subscribeRaw` at construction and
+  // `unsubscribe` at dispose; the layout-change integration test inspects
+  // these entries to verify the wiring.
+  private readonly subscriptionLog: (
+    | { kind: "subscribe"; name: string; what: string; format: string }
+    | { kind: "unsubscribe"; name: string }
+  )[] = [];
+
   // Round-trip latency injected into `execute()`. Gates 1 and 7 vary this to
   // measure the visibility-toggle / reconnect-burst timings against a known
   // simulated tmux response time. Default 0 = next-macrotask resolution.
@@ -97,9 +112,14 @@ export class FakeTmuxClient {
     return this.currentState;
   }
 
-  on<T extends FakeMessageType>(
-    type: T,
-    handler: Handler<Extract<FakeMessage, { type: T }>>,
+  // The `on`/`off` overloads accept any `keyof TmuxEventMap` (matching the
+  // library's `TmuxClient.on`/`off`) so a `FakeTmuxClient` structurally
+  // satisfies `TmuxClientLike`. The fake never dispatches event types outside
+  // `FakeMessage`, so listeners registered for unmodeled events simply never
+  // fire — a behavior-correct no-op for any test that doesn't `inject*` them.
+  on<K extends keyof TmuxEventMap>(
+    type: K,
+    handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   on(type: "*", handler: Handler<FakeMessage>): void;
   on(type: string, handler: Handler<never>): void {
@@ -108,9 +128,9 @@ export class FakeTmuxClient {
     this.listeners.set(type as FakeMessageType, set);
   }
 
-  off<T extends FakeMessageType>(
-    type: T,
-    handler: Handler<Extract<FakeMessage, { type: T }>>,
+  off<K extends keyof TmuxEventMap>(
+    type: K,
+    handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   off(type: "*", handler: Handler<FakeMessage>): void;
   off(type: string, handler: Handler<never>): void {
@@ -146,6 +166,27 @@ export class FakeTmuxClient {
     });
   }
 
+  /**
+   * Models `TmuxClient.subscribeRaw` — appended to `subscriptionLog` and
+   * resolved via the same `setTimeout(..., roundTripMs)` ladder as
+   * `execute()`, so gate timing stays deterministic across both call sites.
+   * No-op behaviorally: the fake does not auto-emit `subscription-changed`
+   * messages. Use `injectSubscriptionChanged()` to drive the listener.
+   */
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    this.subscriptionLog.push({ kind: "subscribe", name, what, format });
+    return this.resolveAck();
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    this.subscriptionLog.push({ kind: "unsubscribe", name });
+    return this.resolveAck();
+  }
+
   close(): void {
     this.setConnectionState({ status: "closed", reason: "disposed" });
     this.listeners.clear();
@@ -178,6 +219,32 @@ export class FakeTmuxClient {
   }
 
   /**
+   * Push a `subscription-changed` event matching `SubscriptionChangedMessage`
+   * exactly. Test code drives layout/size changes through this path; the fake
+   * does not auto-emit on `subscribeRaw`.
+   */
+  injectSubscriptionChanged(
+    name: string,
+    paneId: number,
+    value: string,
+    opts: {
+      readonly sessionId?: number;
+      readonly windowId?: number;
+      readonly windowIndex?: number;
+    } = {},
+  ): void {
+    this.dispatch({
+      type: "subscription-changed",
+      name,
+      sessionId: opts.sessionId ?? -1,
+      windowId: opts.windowId ?? -1,
+      windowIndex: opts.windowIndex ?? -1,
+      paneId,
+      value,
+    });
+  }
+
+  /**
    * Persistently script the response body for *all subsequent* capture-pane
    * calls. Gates 1/4/7 set this once and call execute() many times — the
    * persistent shape is intentional. To change the response mid-bench, call
@@ -192,6 +259,19 @@ export class FakeTmuxClient {
     return this.captureLog.length;
   }
 
+  /**
+   * Frozen snapshot of the subscribe/unsubscribe RPC log in arrival order.
+   * The integration-test path for layout subscriptions reads this to assert
+   * "PaneStream issues exactly one `subscribeRaw` per pane and one matching
+   * `unsubscribe` at dispose."
+   */
+  subscriptionLogEntries(): readonly (
+    | { kind: "subscribe"; name: string; what: string; format: string }
+    | { kind: "unsubscribe"; name: string }
+  )[] {
+    return this.subscriptionLog;
+  }
+
   /** Set round-trip latency (ms) for `execute()`. Used by attach + reconnect benches. */
   setRoundTripLatencyMs(ms: number): void {
     this.roundTripMs = ms;
@@ -204,6 +284,22 @@ export class FakeTmuxClient {
   private dispatch(msg: FakeMessage): void {
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
     this.listeners.get("*")?.forEach((h) => h(msg));
+  }
+
+  private resolveAck(): Promise<CommandResponse> {
+    const commandNumber = ++this.commandCounter;
+    return new Promise((resolve) => {
+      setTimeout(
+        () =>
+          resolve({
+            commandNumber,
+            timestamp: Date.now(),
+            output: [],
+            success: true,
+          }),
+        this.roundTripMs,
+      );
+    });
   }
 }
 
