@@ -498,6 +498,125 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
 // preserves the contract end-to-end.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// qz5.4 — WebSocketTmuxClient outbox/pending lifecycle across reconnect/close.
+//
+// The unit-test sibling (tests/unit/websocket-client-lifecycle.test.ts)
+// pins the structural invariants against a fake browser WebSocket: pending
+// IS the queue (no separate outbox to drift), close() settles pending
+// synchronously, finalize is idempotent. These integration tests pin the
+// same contract against the REAL `ws` package + a real tmux process so a
+// future regression in the actual socket lifecycle (e.g. `ws` upgrading
+// its close semantics) is caught end-to-end.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — qz5.4 outbox/pending lifecycle (real socket)",
+  () => {
+    let fx: Fixture;
+    beforeEach(async () => {
+      fx = await startFixture("qz5-4");
+    });
+    afterEach(async () => {
+      await fx.shutdown();
+    });
+
+    it(
+      "call queued during reconnecting completes through the new connection",
+      async () => {
+        // Capture the underlying ws so the test can terminate it on demand
+        // to simulate a transport failure.
+        let lastWs: WsClient | null = null;
+        const client = new WebSocketTmuxClient({
+          url: fx.url,
+          createWebSocket: (u) => {
+            const ws = new WsClient(u);
+            lastWs = ws;
+            return ws as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike;
+          },
+          reconnect: {
+            maxAttempts: 5,
+            initialDelayMs: 25,
+            maxDelayMs: 50,
+            factor: 1,
+            jitterMs: 0,
+          },
+          heartbeatIntervalMs: 0,
+        });
+
+        try {
+          await waitForState(client, "ready");
+          // Baseline: confirm normal call/result round-trips before we
+          // break the socket.
+          const before = await client.execute("list-windows");
+          expect(before.success).toBe(true);
+
+          // Forcibly close the live socket. ws.terminate() sends no close
+          // frame; the bridge sees an abnormal close, finalize runs, the
+          // reconnect timer fires.
+          expect(lastWs).not.toBeNull();
+          (lastWs as unknown as WsClient).terminate();
+
+          // Wait until the terminate's close has been OBSERVED by the
+          // client — i.e. state has left "ready". Otherwise we'd race the
+          // async close event and fire the call while the client still
+          // thinks the socket is live, which would just reject through
+          // the old connection's finalize with "close 1006".
+          const leftReady = Date.now() + 2_000;
+          while (client.state === "ready" && Date.now() < leftReady) {
+            await new Promise<void>((r) => setTimeout(r, 5));
+          }
+          expect(client.state).not.toBe("ready");
+
+          // Fire a call while the client is mid-flux. With the fix the
+          // call is added to pending; flushOutbox transmits it on the
+          // NEW connection after welcome, and the result routes back to
+          // this same promise. The pre-fix bug would have surfaced as
+          // the queued frame riding the new connection with a stale id
+          // whose pending entry was already rejected — silent drop.
+          const after = await client.execute("list-windows");
+          expect(after.success).toBe(true);
+        } finally {
+          await client.close();
+        }
+      },
+      15_000,
+    );
+
+    it(
+      "close() settles in-flight call before resolving (M3 over real ws)",
+      async () => {
+        const { client } = createWsBackedClient(fx.url);
+        try {
+          await waitForState(client, "ready");
+
+          // Fire a call but immediately close — the only observable answer
+          // for the caller must be BRIDGE_CLOSED, not "pending forever".
+          const callPromise = client.execute("list-windows");
+          let settled = false;
+          callPromise.catch(() => {
+            settled = true;
+          });
+
+          await client.close();
+          // Microtask flush so the .catch handler runs after rejection.
+          await Promise.resolve();
+          await Promise.resolve();
+
+          expect(settled).toBe(true);
+          await expect(callPromise).rejects.toMatchObject({
+            code: "BRIDGE_CLOSED",
+          });
+        } finally {
+          // Idempotent.
+          await client.close();
+        }
+      },
+      10_000,
+    );
+  },
+);
+
 describe.skipIf(!RUN_INTEGRATION)(
   "WebSocket bridge — qz5.5 subscription scoping (real socket)",
   () => {
