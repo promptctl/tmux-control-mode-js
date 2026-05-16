@@ -55,6 +55,7 @@ import type {
 import type { SplitOptions } from "../../client.js";
 
 import type { RpcProxyApi } from "../rpc.js";
+import type { TmuxClientLike } from "../../client.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -138,7 +139,7 @@ interface Pending {
   transmitted: boolean;
 }
 
-export class WebSocketTmuxClient implements RpcProxyApi {
+export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   private readonly emitter = new TypedEmitter();
   private readonly pending = new Map<string, Pending>();
 

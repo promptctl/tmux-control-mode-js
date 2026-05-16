@@ -19,7 +19,6 @@
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 import { BufferingSink } from "../../src/sink/index.js";
 
 const FIRST_PAINT_BUDGET_MS = 100;
@@ -62,7 +61,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
           visible: i === VISIBLE_INDEX,
         });
         const stream = new PaneStream({
-          client: client as unknown as PaneStreamClient,
+          client,
           paneId: i + 1,
         });
         stream.attach(sink);

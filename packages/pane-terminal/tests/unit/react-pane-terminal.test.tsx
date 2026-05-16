@@ -72,7 +72,6 @@ vi.mock("@xterm/xterm", () => {
 import type { TerminalSink } from "../../src/sink/index.js";
 import type { PaneStream } from "../../src/stream/index.js";
 import { PaneStream as RealPaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneTerminal } from "../../src/react/index.js";
 
@@ -248,7 +247,7 @@ describe("<PaneTerminal> (React adapter)", () => {
         cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
       );
       const stream = new RealPaneStream({
-        client: client as unknown as PaneStreamClient,
+        client,
         paneId: 1,
       });
 

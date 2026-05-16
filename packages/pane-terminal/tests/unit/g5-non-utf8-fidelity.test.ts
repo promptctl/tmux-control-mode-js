@@ -17,7 +17,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 import { BufferingSink } from "../../src/sink/index.js";
 
 const PANE_ID = 1;
@@ -31,7 +30,7 @@ function attachLiveStream(
   // injectOutput chunks land in sink.write directly.
   client.setCapturePaneResponse(() => "");
   const stream = new PaneStream({
-    client: client as unknown as PaneStreamClient,
+    client,
     paneId: PANE_ID,
   });
   stream.attach(sink);
