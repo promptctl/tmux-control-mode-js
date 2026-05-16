@@ -20,8 +20,13 @@
 //   - graceful `draining` handling: no new calls accepted after drain signal
 //
 // [LAW:one-source-of-truth] Request correlation lives in `pending`, period.
+// The same `pending` Map is also the queue of un-transmitted call frames —
+// each Pending carries its encoded frame and a `transmitted` flag. No
+// separate outbox exists, because two structures that must agree are an
+// invariant the type cannot enforce; one structure makes drift impossible.
 // [LAW:single-enforcer] `finalizeConnection` is the only cleanup site; every
-// close/error/reconnect flows through it.
+// close/error/reconnect flows through it. Teardown timers + pending rejection
+// live there together so callers cannot observe a half-closed client.
 
 import {
   sameConnectionState,
@@ -118,17 +123,24 @@ const DEFAULTS = Object.freeze({
 // WebSocketTmuxClient
 // ---------------------------------------------------------------------------
 
+// [LAW:one-source-of-truth] A Pending entry IS the queue entry. `frame` is
+// the encoded wire frame, re-sendable on reconnect; `transmitted` flips to
+// true the moment the underlying ws accepts the frame. flushOutbox iterates
+// pending in insertion order (FIFO) and re-tries any entry still untransmitted.
+// finalizeConnection clears the whole Map in one operation — there is no
+// second structure that can drift out of sync.
 interface Pending {
   readonly method: RpcMethod;
+  readonly frame: string;
   resolve(r: CommandResponse): void;
   reject(e: BridgeError): void;
   timer: ReturnType<typeof setTimeout>;
+  transmitted: boolean;
 }
 
 export class WebSocketTmuxClient implements RpcProxyApi {
   private readonly emitter = new TypedEmitter();
   private readonly pending = new Map<string, Pending>();
-  private readonly outbox: string[] = [];
 
   private ws: BrowserWebSocketLike | null = null;
   private nextId = 0;
@@ -186,24 +198,33 @@ export class WebSocketTmuxClient implements RpcProxyApi {
   }
 
   async close(): Promise<void> {
+    // [LAW:one-source-of-truth] Contract: when this resolves, no pending
+    // promise remains in flight. The pre-fix bug (M3) left pending alive
+    // until the async ws.onclose fired, giving callers a window where
+    // `await client.close()` returned but their promises were unsettled.
+    // Driving finalize inline closes that window; the later ws.onclose hits
+    // finalize's idempotency guard and returns.
     this.userRequestedClose = true;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws !== null && this.ws.readyState === WEBSOCKET_OPEN) {
-      try {
-        this.ws.send(encodeClientFrame({ k: "bye" }));
-      } catch {
-        // ignore
-      }
+    // rawSend gates on OPEN internally — bye only goes on a live socket.
+    this.rawSend(encodeClientFrame({ k: "bye" }));
+    // [LAW:single-enforcer] Abort the underlying socket regardless of
+    // readyState. ws.close() on a CONNECTING socket aborts the handshake
+    // per the WebSocket spec; without this, a close() during CONNECTING
+    // left the underlying socket alive, and its eventual open event would
+    // still fire — the per-socket stale guard in openSocket() catches it
+    // defensively, but freeing the underlying resource is the right move.
+    if (this.ws !== null) {
       try {
         this.ws.close(1000, "client close");
       } catch {
         // ignore
       }
     }
-    this.transition("closed");
+    this.finalizeConnection(new BridgeError("BRIDGE_CLOSED", "client close"));
   }
 
   // -------------------------------------------------------------------------
@@ -309,6 +330,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     }
 
     const id = this.id();
+    const frame = encodeClientFrame({ k: "call", id, method, args });
     const timeoutMs = this.effectiveTimeoutMs();
     return new Promise<CommandResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -324,8 +346,16 @@ export class WebSocketTmuxClient implements RpcProxyApi {
       }, timeoutMs);
       (timer as unknown as { unref?: () => void }).unref?.();
 
-      this.pending.set(id, { method, resolve, reject, timer });
-      this.send(encodeClientFrame({ k: "call", id, method, args }));
+      const entry: Pending = {
+        method,
+        frame,
+        resolve,
+        reject,
+        timer,
+        transmitted: false,
+      };
+      this.pending.set(id, entry);
+      this.transmit(entry);
     });
   }
 
@@ -371,14 +401,32 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
-    ws.addEventListener("open", () => this.onOpen());
-    ws.addEventListener("message", (event: { data: unknown }) =>
-      this.onMessage(event.data),
-    );
-    ws.addEventListener("close", (event: { code?: number; reason?: string }) =>
-      this.onClose(event),
+    // [LAW:one-source-of-truth] Per-socket stale guard. `this.ws === ws`
+    // is the canonical "this event belongs to the current connection"
+    // predicate. Without it, an orphaned socket (e.g. close() called
+    // while CONNECTING — the ws.close() abort is async, so the original
+    // handshake may still complete) can fire `open` or `message` after
+    // finalizeConnection nulled `this.ws`, and the handler would re-
+    // transition a closed client back to "open"/"ready" through the
+    // closure-bound `this`. Capturing `ws` in the closure means each
+    // listener set only acts for its own socket.
+    ws.addEventListener("open", () => {
+      if (this.ws !== ws) return;
+      this.onOpen();
+    });
+    ws.addEventListener("message", (event: { data: unknown }) => {
+      if (this.ws !== ws) return;
+      this.onMessage(event.data);
+    });
+    ws.addEventListener(
+      "close",
+      (event: { code?: number; reason?: string }) => {
+        if (this.ws !== ws) return;
+        this.onClose(event);
+      },
     );
     ws.addEventListener("error", () => {
+      if (this.ws !== ws) return;
       // Error events in the browser are opaque. Treat as a connection error;
       // the 'close' that follows will drive the actual teardown.
       this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error"));
@@ -387,7 +435,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
 
   private onOpen(): void {
     this.transition("open");
-    this.send(encodeClientFrame({ k: "hello" }));
+    this.rawSend(encodeClientFrame({ k: "hello" }));
   }
 
   private onMessage(data: unknown): void {
@@ -507,7 +555,6 @@ export class WebSocketTmuxClient implements RpcProxyApi {
   }
 
   private onClose(event: { code?: number; reason?: string }): void {
-    this.teardownTimers();
     const reason =
       event.reason !== undefined && event.reason.length > 0
         ? event.reason
@@ -519,7 +566,21 @@ export class WebSocketTmuxClient implements RpcProxyApi {
   }
 
   private finalizeConnection(err: BridgeError): void {
-    // Reject all pending calls.
+    // [LAW:single-enforcer] Idempotency guard. close() calls finalize
+    // synchronously to settle pending before returning; the async ws.onclose
+    // that follows hits this guard and returns. Also makes finalize safe to
+    // call from any state without checking "did the socket already close".
+    if (this.currentState === "closed") return;
+
+    // [LAW:single-enforcer] Teardown lives here, not split between onClose
+    // and finalize. Every termination path — error, close event, drain,
+    // user close — flows through this method.
+    this.teardownTimers();
+
+    // [LAW:one-source-of-truth] pending is the only structure holding
+    // in-flight calls or queued frames; clearing it drops both. The
+    // pre-fix bug (M2) was a separate outbox surviving this loop, then
+    // re-sending frames whose pending was already rejected.
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
       try {
@@ -574,34 +635,64 @@ export class WebSocketTmuxClient implements RpcProxyApi {
   }
 
   // -------------------------------------------------------------------------
-  // Internal: send + outbox
+  // Internal: send paths
+  //
+  // Two send paths exist because frames have different lifecycles:
+  //   - Call frames carry a pending caller. They must persist across
+  //     reconnect attempts until either delivered or finalized. They live
+  //     on the Pending entry and are transmitted via `transmit()`.
+  //   - Hello / ping / bye are connection-scoped fire-and-forget. They
+  //     make no sense across a connection boundary (a stale hello on a new
+  //     socket would be a protocol error; a stale ping would corrupt the
+  //     pong correlation). They go through `rawSend()` and are dropped if
+  //     the socket is not OPEN — the next reconnect emits fresh ones.
   // -------------------------------------------------------------------------
-  private send(frame: string): void {
-    if (this.ws !== null && this.ws.readyState === WEBSOCKET_OPEN) {
-      try {
-        this.ws.send(frame);
-        return;
-      } catch {
-        // fall through to outbox
-      }
+
+  // [LAW:single-enforcer] Sole transmitter of call frames. transmitted=true
+  // means the ws has accepted the frame; finalize will still reject the
+  // pending caller if the server never replies, but the frame is not
+  // re-sent on reconnect because the caller is already gone by then.
+  //
+  // [LAW:one-source-of-truth] The gate is `state === "ready"`, not just
+  // `ws.readyState === OPEN`. The ws may be OPEN in the brief window
+  // between onOpen (transition to "open") and onWelcome (transition to
+  // "ready"), but the server rejects any non-hello frame while it is
+  // pending-hello (server.ts:423) and would close the connection with a
+  // protocol error. "ready" is the canonical "handshake complete, server
+  // accepting calls" predicate; checking ws.readyState is a belt-and-
+  // suspenders sanity check after that.
+  private transmit(p: Pending): void {
+    if (p.transmitted) return;
+    if (this.currentState !== "ready") return;
+    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
+    try {
+      this.ws.send(p.frame);
+      p.transmitted = true;
+    } catch {
+      // Stays untransmitted; flushOutbox will retry on next ready transition.
     }
-    this.outbox.push(frame);
   }
 
+  // [LAW:dataflow-not-control-flow] flushOutbox always runs the same loop;
+  // entries with transmitted=true are skipped by `transmit`. A throw breaks
+  // the loop so the next ready-transition retries from the same point.
   private flushOutbox(): void {
-    if (this.ws === null) return;
-    if (this.ws.readyState !== WEBSOCKET_OPEN) return;
-    while (this.outbox.length > 0) {
-      const frame = this.outbox.shift();
-      if (frame === undefined) break;
-      try {
-        this.ws.send(frame);
-      } catch {
-        // Put the frame back at the head and stop draining; the next
-        // open/ready transition will retry.
-        this.outbox.unshift(frame);
-        return;
-      }
+    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
+    for (const p of this.pending.values()) {
+      this.transmit(p);
+      if (!p.transmitted) return;
+    }
+  }
+
+  // Fire-and-forget for hello/ping/bye. No retry, no queue — if the socket
+  // is not OPEN the frame is simply dropped. The caller (onOpen / sendPing /
+  // close) treats success as best-effort.
+  private rawSend(frame: string): void {
+    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
+    try {
+      this.ws.send(frame);
+    } catch {
+      // ignore — connection-scoped failure surfaces via onClose.
     }
   }
 
@@ -624,7 +715,7 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     if (this.pongTimer !== null) return;
     const id = this.id();
     this.lastPingId = id;
-    this.send(encodeClientFrame({ k: "ping", id }));
+    this.rawSend(encodeClientFrame({ k: "ping", id }));
     const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
     this.pongTimer = setTimeout(() => {
       // No pong — kill the socket and let the close/reconnect path run.
