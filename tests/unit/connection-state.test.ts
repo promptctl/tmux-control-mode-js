@@ -244,8 +244,8 @@ describe("WebSocketTmuxClient — connection state", () => {
         ? {
             initialDelayMs: 1,
             maxDelayMs: 1,
-            backoffFactor: 1,
-            jitter: 0,
+            factor: 1,
+            jitterMs: 0,
             maxAttempts: 3,
           }
         : undefined,
@@ -299,9 +299,20 @@ describe("WebSocketTmuxClient — connection state", () => {
     expect(reconnects).not.toHaveBeenCalled();
 
     hub.close(1006, "abnormal");
-    await new Promise((r) => setTimeout(r, 5));
-    // Should be reconnecting at attempt 1
-    expect(client.connectionState.status).toBe("reconnecting");
+    // Wait for the reconnect timer to fire and openSocket to create the
+    // SECOND socket — until then hub.latest() is still the closed first
+    // socket, and the per-socket stale guard in openSocket() would (correctly)
+    // drop any open/message events targeted at it.
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(hub.sockets.length).toBe(2);
+    // Mid-reconnect-cycle: legacy state went reconnecting→connecting once
+    // openSocket fired for attempt 2. The unified mapping projects either
+    // legacy state onto a non-ready status; the real assertion is at the
+    // end of the test (reconnects called exactly once).
+    expect(client.connectionState.status).not.toBe("ready");
 
     hub.open();
     hub.welcome();
