@@ -284,6 +284,104 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
     });
   });
 
+  describe("PR #29 review findings — post-open-pre-welcome window", () => {
+    it("call frame is NOT transmitted between ws OPEN and server welcome", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+
+      // Open the socket but DO NOT send welcome yet. State transitions
+      // to "open" via onOpen; hello is sent via rawSend (immediate). The
+      // server in this state is pending-hello and would reject any
+      // non-hello frame with a protocol error.
+      hub.open();
+      await new Promise((r) => setImmediate(r));
+      expect(client.state).toBe("open");
+
+      // Sanity: hello is on the wire, nothing else.
+      const beforeCall = sentFrames(hub.latest()).filter((f) => f.k !== "hello");
+      expect(beforeCall).toEqual([]);
+
+      // Fire a call while in "open" (pre-welcome).
+      const callPromise = client.execute("list-windows");
+      // Microtask flush — transmit would have run synchronously if it
+      // were going to fire.
+      await Promise.resolve();
+
+      // No call frame leaked to the wire yet — the state guard kept it
+      // queued in pending.
+      const duringOpen = sentFrames(hub.latest()).filter((f) => f.k === "call");
+      expect(duringOpen).toEqual([]);
+
+      // Now deliver welcome. flushOutbox runs, transmits the queued call.
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      const afterWelcome = sentFrames(hub.latest()).filter(
+        (f) => f.k === "call",
+      );
+      expect(afterWelcome.length).toBe(1);
+      const id = afterWelcome[0].id;
+      expect(id).toBeDefined();
+
+      // Resolve the call so the test doesn't dangle a promise.
+      const result: ResultFrame = {
+        k: "result",
+        id: id as string,
+        ok: true,
+        response: { success: true, output: "" },
+      };
+      hub.latest().fire("message", {
+        data: encodeServerFrame(result satisfies ServerFrame),
+      });
+      await expect(callPromise).resolves.toMatchObject({ success: true });
+    });
+  });
+
+  describe("PR #29 review findings — close() during CONNECTING", () => {
+    it("orphaned CONNECTING ws cannot re-transition a closed client", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      // ws exists but is CONNECTING; close() called here previously left
+      // the socket alive and its open/message handlers could move the
+      // client back to "open"/"ready" through the closure-bound `this`.
+      expect(hub.latest().readyState).toBe(0); // CONNECTING
+
+      await client.close();
+      expect(client.state).toBe("closed");
+
+      // Now simulate the orphaned socket completing its handshake AFTER
+      // close() — open arrives first, then welcome. With the per-socket
+      // stale guard, both events are dropped because `this.ws` was set
+      // to null by finalize during close().
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // State stayed closed; no resurrection.
+      expect(client.state).toBe("closed");
+    });
+
+    it("close() during CONNECTING aborts the underlying socket", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      const ws = hub.latest();
+      expect(ws.readyState).toBe(0); // CONNECTING
+
+      let closeCalled = false;
+      const realClose = ws.close;
+      ws.close = (code, reason) => {
+        closeCalled = true;
+        realClose(code, reason);
+      };
+
+      await client.close();
+      // The fix: close() unconditionally calls ws.close() to abort the
+      // handshake, regardless of readyState. Pre-fix the OPEN-only guard
+      // would have left a leaked socket alive.
+      expect(closeCalled).toBe(true);
+    });
+  });
+
   describe("M11: post-close calls reject; no queued frames survive", () => {
     it("queued call rejects and a subsequent call rejects immediately", async () => {
       const { client, hub } = makeClient();

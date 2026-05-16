@@ -209,8 +209,15 @@ export class WebSocketTmuxClient implements RpcProxyApi {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    // rawSend gates on OPEN internally — bye only goes on a live socket.
     this.rawSend(encodeClientFrame({ k: "bye" }));
-    if (this.ws !== null && this.ws.readyState === WEBSOCKET_OPEN) {
+    // [LAW:single-enforcer] Abort the underlying socket regardless of
+    // readyState. ws.close() on a CONNECTING socket aborts the handshake
+    // per the WebSocket spec; without this, a close() during CONNECTING
+    // left the underlying socket alive, and its eventual open event would
+    // still fire — the per-socket stale guard in openSocket() catches it
+    // defensively, but freeing the underlying resource is the right move.
+    if (this.ws !== null) {
       try {
         this.ws.close(1000, "client close");
       } catch {
@@ -394,14 +401,29 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
-    ws.addEventListener("open", () => this.onOpen());
-    ws.addEventListener("message", (event: { data: unknown }) =>
-      this.onMessage(event.data),
-    );
-    ws.addEventListener("close", (event: { code?: number; reason?: string }) =>
-      this.onClose(event),
-    );
+    // [LAW:one-source-of-truth] Per-socket stale guard. `this.ws === ws`
+    // is the canonical "this event belongs to the current connection"
+    // predicate. Without it, an orphaned socket (e.g. close() called
+    // while CONNECTING — the ws.close() abort is async, so the original
+    // handshake may still complete) can fire `open` or `message` after
+    // finalizeConnection nulled `this.ws`, and the handler would re-
+    // transition a closed client back to "open"/"ready" through the
+    // closure-bound `this`. Capturing `ws` in the closure means each
+    // listener set only acts for its own socket.
+    ws.addEventListener("open", () => {
+      if (this.ws !== ws) return;
+      this.onOpen();
+    });
+    ws.addEventListener("message", (event: { data: unknown }) => {
+      if (this.ws !== ws) return;
+      this.onMessage(event.data);
+    });
+    ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
+      if (this.ws !== ws) return;
+      this.onClose(event);
+    });
     ws.addEventListener("error", () => {
+      if (this.ws !== ws) return;
       // Error events in the browser are opaque. Treat as a connection error;
       // the 'close' that follows will drive the actual teardown.
       this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error"));
@@ -627,14 +649,24 @@ export class WebSocketTmuxClient implements RpcProxyApi {
   // means the ws has accepted the frame; finalize will still reject the
   // pending caller if the server never replies, but the frame is not
   // re-sent on reconnect because the caller is already gone by then.
+  //
+  // [LAW:one-source-of-truth] The gate is `state === "ready"`, not just
+  // `ws.readyState === OPEN`. The ws may be OPEN in the brief window
+  // between onOpen (transition to "open") and onWelcome (transition to
+  // "ready"), but the server rejects any non-hello frame while it is
+  // pending-hello (server.ts:423) and would close the connection with a
+  // protocol error. "ready" is the canonical "handshake complete, server
+  // accepting calls" predicate; checking ws.readyState is a belt-and-
+  // suspenders sanity check after that.
   private transmit(p: Pending): void {
     if (p.transmitted) return;
+    if (this.currentState !== "ready") return;
     if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
     try {
       this.ws.send(p.frame);
       p.transmitted = true;
     } catch {
-      // Stays untransmitted; flushOutbox will retry on next open/ready.
+      // Stays untransmitted; flushOutbox will retry on next ready transition.
     }
   }
 
