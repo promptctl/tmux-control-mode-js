@@ -347,3 +347,29 @@ export class TmuxClient {
     this.emitter.emit(msg);
   }
 }
+
+// ---------------------------------------------------------------------------
+// TmuxClientLike — transport-agnostic projection of the TmuxClient surface.
+//
+// The slice every PaneStream-style consumer needs from a TmuxClient-shaped
+// object: connection state, event subscription, command execution, and the
+// subscribe/unsubscribe pair for tmux format subscriptions.
+//
+// [LAW:one-source-of-truth] Derived via `Pick<TmuxClient, …>` so adding or
+//   renaming a member here propagates from `TmuxClient` automatically and
+//   surfaces as a compile error at every consumer's call site — no hand-typed
+//   mirror, no drift.
+// [LAW:types-are-the-program] subscribe/unsubscribe are mandatory because
+//   they are a paired capability: a consumer that subscribes must be able to
+//   unsubscribe at dispose. Optionality on either method would force a runtime
+//   probe at every callsite; making them mandatory eliminates the probe.
+//
+// Both bridge classes (`WebSocketTmuxClient`, `TmuxClientProxy`) declare
+// `implements TmuxClientLike` so the overload set on `on`/`off` is checked at
+// compile time even if a future `Pick` change erased an overload.
+// ---------------------------------------------------------------------------
+
+export type TmuxClientLike = Pick<
+  TmuxClient,
+  "connectionState" | "on" | "off" | "execute" | "subscribeRaw" | "unsubscribe"
+>;

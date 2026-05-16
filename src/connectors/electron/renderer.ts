@@ -32,6 +32,7 @@ import {
   type TmuxMessage,
 } from "../../protocol/types.js";
 import type { RpcProxyApi } from "../rpc.js";
+import type { TmuxClientLike } from "../../client.js";
 import {
   BridgeError,
   DEFAULT_ACK_BATCH_BYTES,
@@ -74,7 +75,7 @@ import {
  * work) will starve itself of new output — the same shape as tmux's own
  * `%pause`-when-the-client-falls-behind contract.
  */
-export class TmuxClientProxy implements RpcProxyApi {
+export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
   private readonly eventHandler: IpcRendererOnListener;

@@ -29,7 +29,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient } from "../../src/stream/index.js";
 
 interface MockTerminal {
   options: { fontSize: number; theme: object; [k: string]: unknown };
@@ -102,7 +101,7 @@ describe("Gate 6 — dispose() reclaim", () => {
           const container = makeContainer();
           const sink = new XtermSink({ container });
           const stream = new PaneStream({
-            client: c as unknown as PaneStreamClient,
+            client: c,
             paneId: i + 1,
           });
           stream.attach(sink);
@@ -128,7 +127,7 @@ describe("Gate 6 — dispose() reclaim", () => {
         const container = makeContainer();
         const sink = new XtermSink({ container });
         const stream = new PaneStream({
-          client: client as unknown as PaneStreamClient,
+          client,
           paneId: i + 1,
         });
         stream.attach(sink);

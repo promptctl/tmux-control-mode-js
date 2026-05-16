@@ -17,10 +17,7 @@ import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
-import type {
-  PaneStreamClient,
-  TerminalSink,
-} from "../../packages/pane-terminal/src/stream/index.js";
+import type { TerminalSink } from "../../packages/pane-terminal/src/stream/index.js";
 import type { SeedCursor } from "../../packages/pane-terminal/src/sink/index.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
@@ -124,7 +121,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       const sink = new CollectorSink();
       stream = new PaneStream({
-        client: client as unknown as PaneStreamClient,
+        client,
         paneId,
       });
       stream.attach(sink);
@@ -150,7 +147,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       const sink = new CollectorSink();
       stream = new PaneStream({
-        client: client as unknown as PaneStreamClient,
+        client,
         paneId,
       });
       stream.attach(sink);

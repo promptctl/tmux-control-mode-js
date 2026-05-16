@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient, TerminalSink } from "../../src/stream/index.js";
+import type { TerminalSink } from "../../src/stream/index.js";
 import type { SeedCursor } from "../../src/sink/index.js";
 
 class RecordingSink implements TerminalSink {
@@ -60,7 +60,7 @@ function makeStream(
     return opts.capture ?? "";
   });
   const stream = new PaneStream({
-    client: client as unknown as PaneStreamClient,
+    client,
     paneId: opts.paneId ?? PANE_ID,
   });
   return { client, stream };

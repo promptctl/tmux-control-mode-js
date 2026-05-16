@@ -1250,8 +1250,15 @@ describe("Electron IPC bridge — renderer import graph", () => {
       if (files.has(f)) continue;
       files.add(f);
       const src = await readFile(f, "utf-8");
+      // Match value/side-effect imports only. `import type { ... } from "..."`
+      // is fully erased at compile time and produces no runtime edge, so it is
+      // safe even when the target lives in Node-only code (e.g. an
+      // `implements TmuxClientLike` clause whose declaration lives in
+      // `src/client.ts`). The negative lookahead after `import` rejects the
+      // `import type` statement form while still flagging
+      // `import { type X, Y } from "..."` (Y is a value).
       const re =
-        /(?<!\/\/[^\n]*)import\s+(?:type\s+)?(?:[^'"]+?\s+from\s+)?["']([^"']+)["']/g;
+        /(?<!\/\/[^\n]*)\bimport\b(?!\s+type\b)\s+(?:[^'"]+?\s+from\s+)?["']([^"']+)["']/g;
       for (const m of src.matchAll(re)) {
         const spec = m[1]!;
         allImports.push({ from: f, spec });
