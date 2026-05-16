@@ -18,13 +18,7 @@
 // → detached. Detached streams need nothing (tmux re-emits live bytes once
 // reconnected; the next attach will trigger a fresh capture-pane).
 
-// `ReconnectedMessage` is the synthetic event emitted by every
-// TmuxClient-shaped class (see src/connection-state.ts in the parent
-// package). Tiny shape; duplicated locally to avoid importing a non-public
-// symbol — see the matching note in pane-stream.ts.
-interface ReconnectedMessage {
-  readonly type: "reconnected";
-}
+import type { TmuxClientLike } from "./pane-stream.js";
 
 // Ambient `Promise` is part of ES2022 lib (already in tsconfig.core.json).
 // Nothing else here needs DOM/Node globals.
@@ -50,20 +44,10 @@ export interface ReseedTarget {
   reseed(): Promise<void>;
 }
 
-/**
- * Minimum surface the scheduler needs from a `TmuxClient`-shaped object —
- * just the `reconnected` event subscription. Both the real `TmuxClient` and
- * the bench `FakeTmuxClient` satisfy this structurally.
- */
-export interface ReseedSchedulerClient {
-  on(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-  off(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-}
-
 export class ReseedScheduler {
   private readonly registered = new Set<ReseedTarget>();
   private currentRun: Promise<void> | null = null;
-  private readonly client: ReseedSchedulerClient;
+  private readonly client: TmuxClientLike;
 
   // Pre-bound reconnect handler — created once at construction so the
   // scheduler can `off()` itself if a future API ever needs to (e.g. when
@@ -72,7 +56,7 @@ export class ReseedScheduler {
     void this.runReseed();
   };
 
-  constructor(client: ReseedSchedulerClient) {
+  constructor(client: TmuxClientLike) {
     this.client = client;
     // O6: subscribe ONCE per client. PaneStreams register themselves with
     // *us*; the client doesn't see N handlers for one event.
@@ -136,9 +120,9 @@ export class ReseedScheduler {
 // `getScheduler(sameClient)` always returns the same scheduler — the
 // reconnect handler is therefore registered exactly once per client over
 // the client's lifetime.
-const SCHEDULERS = new WeakMap<ReseedSchedulerClient, ReseedScheduler>();
+const SCHEDULERS = new WeakMap<TmuxClientLike, ReseedScheduler>();
 
-export function getScheduler(client: ReseedSchedulerClient): ReseedScheduler {
+export function getScheduler(client: TmuxClientLike): ReseedScheduler {
   const existing = SCHEDULERS.get(client);
   if (existing !== undefined) return existing;
   const created = new ReseedScheduler(client);

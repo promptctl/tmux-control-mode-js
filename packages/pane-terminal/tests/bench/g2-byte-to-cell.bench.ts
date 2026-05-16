@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamClient, TerminalSink } from "../../src/stream/index.js";
+import type { TerminalSink } from "../../src/stream/index.js";
 import type { SeedCursor } from "../../src/sink/index.js";
 
 const P99_BUDGET_MS = 16;
@@ -52,7 +52,7 @@ describe("Gate 2 — live byte → cell on screen", () => {
     client.setCapturePaneResponse(() => "");
     const sink = new TimingSink();
     const stream = new PaneStream({
-      client: client as unknown as PaneStreamClient,
+      client,
       paneId: 1,
     });
     stream.attach(sink);

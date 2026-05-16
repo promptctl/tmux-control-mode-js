@@ -1,12 +1,13 @@
 // examples/web-multiplexer/web/pane-stream-bridge.ts
 //
 // Two adapters that wire the demo's `TmuxBridge` pub/sub API to the
-// `@promptctl/pane-terminal` package's `PaneStreamClient` + `PaneStream`.
+// `@promptctl/pane-terminal` package's `TmuxClientLike` surface, plus a MobX
+// observable wrapper around `PaneStream`.
 //
 // [LAW:locality-or-seam] The seam is here — not scattered across every
 //   component. `BridgePaneStreamClient` is the only place that knows the
 //   difference between `TmuxBridge.onEvent(handler)` (push-subscription,
-//   unsubscribe-via-return) and `PaneStreamClient.on/off` (explicit registry).
+//   unsubscribe-via-return) and `TmuxClientLike.on/off` (explicit registry).
 //   One class absorbs the impedance mismatch; nothing downstream sees it.
 // [LAW:one-source-of-truth] One `BridgePaneStreamClient` per bridge.
 //   All `PaneStream` instances share it; no duplicate bridge subscriptions.
@@ -15,10 +16,13 @@
 //   never subscribes to `PaneStream.on()` directly.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
+import type {
+  ConnectionState,
+  TmuxClientLike,
+  TmuxEventMap,
+} from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
-  PaneStreamClient,
   PaneStreamOptions,
   PaneActivity,
   PaneStreamState,
@@ -29,14 +33,12 @@ import type {
   SubscriptionChangedMessage,
   CommandResponse,
 } from "../../../src/protocol/types.js";
+
+// `reconnected` event payload — derived from the library's TmuxEventMap so
+// any future shape change at the source propagates here automatically.
+type ReconnectedMessage = TmuxEventMap["reconnected"];
 import { tmuxEscape } from "../../../src/protocol/encoder.js";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
-
-// Local structural match for the synthetic reconnect event shape that
-// `PaneStream` expects from its client. Not exported from the package.
-interface ReconnectedMessage {
-  readonly type: "reconnected";
-}
 
 function mapConnState(s: ConnState): ConnectionState {
   if (s === "ready") return { status: "ready" };
@@ -50,14 +52,14 @@ function mapConnState(s: ConnState): ConnectionState {
 
 /**
  * Adapts a `TmuxBridge` (demo's push-subscription interface) to the
- * `PaneStreamClient` interface that `PaneStream` consumes. Create one per
- * bridge; share across all `PaneStream` instances for the same session.
+ * `TmuxClientLike` surface that `PaneStream` consumes. Create one per bridge;
+ * share across all `PaneStream` instances for the same session.
  *
  * The adapter subscribes to `bridge.onEvent` and `bridge.onState` in its
  * constructor. These subscriptions live for the adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
-export class BridgePaneStreamClient implements PaneStreamClient {
+export class BridgePaneStreamClient implements TmuxClientLike {
   private _connectionState: ConnectionState = { status: "connecting" };
   // Becomes true on the first `ready` transition; subsequent `ready`
   // transitions are reconnects and fire the registered handlers.
@@ -106,15 +108,13 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     return this._connectionState;
   }
 
-  on(event: "output", handler: (ev: OutputMessage) => void): void;
-  on(
-    event: "extended-output",
-    handler: (ev: ExtendedOutputMessage) => void,
-  ): void;
-  on(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-  on(
-    event: "subscription-changed",
-    handler: (ev: SubscriptionChangedMessage) => void,
+  // The generic `on`/`off` overloads accept any `keyof TmuxEventMap` so this
+  // adapter structurally satisfies `TmuxClientLike`. The bridge only routes
+  // events for the four types this adapter cares about; listeners registered
+  // for any other event type sit in no set and are correctly never fired.
+  on<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   on(event: string, handler: (ev: never) => void): void {
     if (event === "output")
@@ -127,15 +127,9 @@ export class BridgePaneStreamClient implements PaneStreamClient {
       this.subChangedSet.add(handler as (ev: SubscriptionChangedMessage) => void);
   }
 
-  off(event: "output", handler: (ev: OutputMessage) => void): void;
-  off(
-    event: "extended-output",
-    handler: (ev: ExtendedOutputMessage) => void,
-  ): void;
-  off(event: "reconnected", handler: (ev: ReconnectedMessage) => void): void;
-  off(
-    event: "subscription-changed",
-    handler: (ev: SubscriptionChangedMessage) => void,
+  off<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   off(event: string, handler: (ev: never) => void): void {
     if (event === "output")
@@ -154,11 +148,6 @@ export class BridgePaneStreamClient implements PaneStreamClient {
     return this.bridge.execute(command);
   }
 
-  // PaneStream consumes this via the optional `subscribeRaw?` capability on
-  // `PaneStreamClient`. Without it, `PaneStream.subscribeToSize()` short-
-  // circuits and `XtermSink.resize(cols, rows)` is never driven — terminals
-  // stay at xterm's default 80x24 regardless of actual tmux pane size.
-  //
   // [LAW:single-enforcer] Each segment is escaped via `tmuxEscape` from
   // `src/protocol/encoder.ts`, the canonical quoting authority for tmux
   // command arguments. Callers today pass only library-controlled values

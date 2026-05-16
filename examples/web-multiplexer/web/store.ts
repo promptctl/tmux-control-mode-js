@@ -211,7 +211,7 @@ export class DemoStore {
   pendingConfirm: PendingConfirm | null = null;
 
   readonly client: TmuxBridge;
-  /** Shared `PaneStreamClient` adapter — one per bridge, used by all `PaneStream` instances. */
+  /** Shared `TmuxClientLike` adapter — one per bridge, used by all `PaneStream` instances. */
   readonly paneStreamClient: BridgePaneStreamClient;
 
   // [LAW:one-source-of-truth] One keymap engine per client session. The
