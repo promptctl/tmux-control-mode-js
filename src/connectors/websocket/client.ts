@@ -418,10 +418,13 @@ export class WebSocketTmuxClient implements RpcProxyApi {
       if (this.ws !== ws) return;
       this.onMessage(event.data);
     });
-    ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
-      if (this.ws !== ws) return;
-      this.onClose(event);
-    });
+    ws.addEventListener(
+      "close",
+      (event: { code?: number; reason?: string }) => {
+        if (this.ws !== ws) return;
+        this.onClose(event);
+      },
+    );
     ws.addEventListener("error", () => {
       if (this.ws !== ws) return;
       // Error events in the browser are opaque. Treat as a connection error;
