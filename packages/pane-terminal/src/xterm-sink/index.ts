@@ -63,6 +63,17 @@ const FONT_WEIGHT = "normal";
 
 export interface XtermSinkOptions {
   readonly container: HTMLElement;
+  /**
+   * Grid width in cells. Required: xterm.js defaults to 80 if omitted, but
+   * that default competes with tmux's authoritative pane geometry —
+   * writing capture-pane content into a wrong-sized grid scrolls the
+   * content and leaves the prompt midway through the eventual viewport.
+   * The type makes the wrong-size-at-mount state unrepresentable: the
+   * caller cannot construct a sink without committing to a geometry.
+   */
+  readonly cols: number;
+  /** Grid height in cells. Same rationale as `cols`. */
+  readonly rows: number;
   readonly fontFamily?: string;
   readonly fontSize?: number;
   readonly fontMin?: number;
@@ -90,9 +101,10 @@ export class XtermSink implements TerminalSink {
   private readonly fontMin: number;
   private readonly fontMax: number;
 
-  // Tmux-reported pane geometry. Updated only by `resize()`.
-  private cols = 0;
-  private rows = 0;
+  // Tmux-reported pane geometry. Initialised from `XtermSinkOptions`
+  // (xterm is constructed at this size); updated thereafter by `resize()`.
+  private cols: number;
+  private rows: number;
   // Container-pixel box. Updated by the ResizeObserver.
   private boxW = 0;
   private boxH = 0;
@@ -116,6 +128,8 @@ export class XtermSink implements TerminalSink {
 
   constructor(opts: XtermSinkOptions) {
     this.container = opts.container;
+    this.cols = opts.cols;
+    this.rows = opts.rows;
     this.fontFamily = opts.fontFamily ?? DEFAULT_FONT_FAMILY;
     this.fontMin = opts.fontMin ?? DEFAULT_FONT_MIN;
     this.fontMax = opts.fontMax ?? DEFAULT_FONT_MAX;
@@ -126,17 +140,23 @@ export class XtermSink implements TerminalSink {
     // [LAW:single-enforcer] Terminal constructed once, disposed once. Style
     // mutations go through `terminal.options` setters below — never another
     // `new Terminal()`.
+    // [LAW:one-source-of-truth] cols/rows are supplied by the caller (who
+    // got them from tmux); we never accept xterm's 80×24 default because
+    // that default would silently shadow tmux's authority over geometry.
     this.terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
       fontFamily: this.fontFamily,
       fontSize,
+      cols: this.cols,
+      rows: this.rows,
       scrollback,
       theme,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
-      // `resize()`; the container only drives font fit.
+      // the constructor (initial) and `resize()` (live updates); the
+      // container only drives font fit.
     });
     this.terminal.open(this.container);
 

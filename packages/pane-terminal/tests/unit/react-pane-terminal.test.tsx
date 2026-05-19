@@ -132,7 +132,7 @@ describe("<PaneTerminal> (React adapter)", () => {
 
   it("constructs the sink once and attaches the stream", () => {
     const stream = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(stream)} fontSize={14} />);
+    const h = render(<PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} fontSize={14} />);
 
     expect(allTerms).toHaveLength(1);
     expect(stream.attach).toHaveBeenCalledOnce();
@@ -145,13 +145,13 @@ describe("<PaneTerminal> (React adapter)", () => {
 
   it("changing fontSize calls setFontSize and does NOT call xterm.dispose() (O10)", () => {
     const stream = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(stream)} fontSize={14} />);
+    const h = render(<PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} fontSize={14} />);
 
     expect(allTerms).toHaveLength(1);
     const term = allTerms[0]!;
     expect(term.options.fontSize).toBe(14);
 
-    h.rerender(<PaneTerminal stream={asPaneStream(stream)} fontSize={18} />);
+    h.rerender(<PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} fontSize={18} />);
 
     // Only one Terminal was ever constructed; the size flipped in place.
     expect(allTerms).toHaveLength(1);
@@ -166,7 +166,7 @@ describe("<PaneTerminal> (React adapter)", () => {
     const stream = new StubStream();
     const initialTheme = { background: "#000000" };
     const h = render(
-      <PaneTerminal stream={asPaneStream(stream)} theme={initialTheme} />,
+      <PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} theme={initialTheme} />,
     );
 
     expect(allTerms).toHaveLength(1);
@@ -175,6 +175,8 @@ describe("<PaneTerminal> (React adapter)", () => {
     h.rerender(
       <PaneTerminal
         stream={asPaneStream(stream)}
+        cols={80}
+        rows={24}
         theme={{ background: "#101820" }}
       />,
     );
@@ -191,13 +193,13 @@ describe("<PaneTerminal> (React adapter)", () => {
   it("changing the stream prop tears down and reconstructs the sink", () => {
     const streamA = new StubStream();
     const streamB = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(streamA)} />);
+    const h = render(<PaneTerminal stream={asPaneStream(streamA)} cols={80} rows={24} />);
 
     expect(allTerms).toHaveLength(1);
     const termA = allTerms[0]!;
     expect(streamA.attach).toHaveBeenCalledOnce();
 
-    h.rerender(<PaneTerminal stream={asPaneStream(streamB)} />);
+    h.rerender(<PaneTerminal stream={asPaneStream(streamB)} cols={80} rows={24} />);
 
     expect(allTerms).toHaveLength(2);
     const termB = allTerms[1]!;
@@ -214,7 +216,7 @@ describe("<PaneTerminal> (React adapter)", () => {
   it("autoFocus calls sink.focus() exactly once after attach", () => {
     const stream = new StubStream();
     const h = render(
-      <PaneTerminal stream={asPaneStream(stream)} autoFocus={true} />,
+      <PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} autoFocus={true} />,
     );
     expect(allTerms[0]?.focus).toHaveBeenCalledOnce();
     h.unmount();
@@ -222,7 +224,7 @@ describe("<PaneTerminal> (React adapter)", () => {
 
   it("forwards xterm onData to stream.sendKeys", () => {
     const stream = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(stream)} />);
+    const h = render(<PaneTerminal stream={asPaneStream(stream)} cols={80} rows={24} />);
 
     const handler = allTerms[0]!.onData.mock.calls[0]?.[0] as (
       d: string,
@@ -253,7 +255,7 @@ describe("<PaneTerminal> (React adapter)", () => {
 
       const h = render(
         <StrictMode>
-          <PaneTerminal stream={stream} />
+          <PaneTerminal stream={stream} cols={80} rows={24} />
         </StrictMode>,
       );
 

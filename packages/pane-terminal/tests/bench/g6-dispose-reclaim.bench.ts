@@ -99,7 +99,7 @@ describe("Gate 6 — dispose() reclaim", () => {
         const streams: PaneStream[] = [];
         for (let i = 0; i < STREAM_COUNT; i++) {
           const container = makeContainer();
-          const sink = new XtermSink({ container });
+          const sink = new XtermSink({ container, cols: 80, rows: 24 });
           const stream = new PaneStream({
             client: c,
             paneId: i + 1,
@@ -125,7 +125,7 @@ describe("Gate 6 — dispose() reclaim", () => {
       const streams: PaneStream[] = [];
       for (let i = 0; i < STREAM_COUNT; i++) {
         const container = makeContainer();
-        const sink = new XtermSink({ container });
+        const sink = new XtermSink({ container, cols: 80, rows: 24 });
         const stream = new PaneStream({
           client,
           paneId: i + 1,

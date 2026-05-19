@@ -35,11 +35,15 @@ export interface PaneTerminalMount {
  * attaches the sink to the stream. The returned `dispose()` reverses
  * everything in safe order: stop forwarding keystrokes, detach the stream
  * (no more bytes flow through the sink), then dispose the sink.
+ *
+ * `opts.cols` and `opts.rows` are required (inherited from XtermSinkOptions):
+ * they pin xterm's grid to tmux's authoritative geometry at mount time, so
+ * the first seed cannot land in a wrong-sized grid.
  */
 export function mountPaneTerminal(
   stream: PaneStream,
   container: HTMLElement,
-  opts: Omit<XtermSinkOptions, "container"> = {},
+  opts: Omit<XtermSinkOptions, "container">,
 ): PaneTerminalMount {
   const sink = new XtermSink({ ...opts, container });
   const offKeys = sink.onData((data) => {

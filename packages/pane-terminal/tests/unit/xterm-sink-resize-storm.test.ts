@@ -137,7 +137,7 @@ function fakeEntries(width: number, height: number): ResizeObserverEntry[] {
 describe("XtermSink: resize storm coalescing (O9)", () => {
   it("100 ResizeObserver callbacks within one tick → at most one rAF flush", () => {
     const container = makeContainer();
-    const sink = new XtermSink({ container });
+    const sink = new XtermSink({ container, cols: 80, rows: 24 });
     if (lastTerm === null) throw new Error("Terminal mock not constructed");
     if (resizeCallback === null)
       throw new Error("ResizeObserver not registered");
@@ -184,7 +184,7 @@ describe("XtermSink: resize storm coalescing (O9)", () => {
 
   it("disposed sink does not flush a queued rAF after disposal", () => {
     const container = makeContainer();
-    const sink = new XtermSink({ container });
+    const sink = new XtermSink({ container, cols: 80, rows: 24 });
     if (lastTerm === null) throw new Error("Terminal mock not constructed");
     if (resizeCallback === null)
       throw new Error("ResizeObserver not registered");

@@ -118,9 +118,17 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
     };
   }, [pane.id, store.paneStreamClient]);
 
-  // Capture the initial font size in a ref so the mount effect doesn't
-  // depend on it (preventing a remount on every font-size change).
+  // Capture initial font size + initial pane geometry in refs so the mount
+  // effect doesn't depend on them. Font size is then driven live by a
+  // dedicated setter effect (no remount on font change, O10); pane
+  // geometry is driven live by tmux's subscription-changed → PaneStream
+  // → sink.resize. PaneView keys PaneCell on pane.id, so a *new* pane id
+  // mounts a fresh PaneCell whose refs capture the new pane's dims —
+  // there is no "stale ref across pane id change" risk.
+  // [LAW:one-source-of-truth] pane.width/height come from tmux via the
+  // store's list-panes feed; xterm's 80×24 default is never the source.
   const initialFontSize = useRef(uiStore.terminalFontSize);
+  const initialDims = useRef({ cols: pane.width, rows: pane.height });
 
   // [LAW:single-enforcer] The ONLY place that constructs an XtermSink and
   // attaches it to the stream. The cleanup is the ONLY place that disposes
@@ -132,6 +140,8 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
     const container = containerRef.current;
     if (container === null) return undefined;
     const mount = mountPaneTerminal(obs.stream, container, {
+      cols: initialDims.current.cols,
+      rows: initialDims.current.rows,
       fontFamily: FONT_FAMILY,
       fontSize: initialFontSize.current,
     });

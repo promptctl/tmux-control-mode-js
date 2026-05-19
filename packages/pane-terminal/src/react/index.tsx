@@ -34,6 +34,16 @@ export interface PaneTerminalProps {
    */
   readonly stream: PaneStream;
   /**
+   * Initial grid width in cells (required). Pinned to tmux's authoritative
+   * pane geometry at mount time so xterm never starts at its 80×24 default
+   * — which would race the first `subscription-changed` event and cause
+   * the seed to land in a wrong-sized grid. Live geometry updates flow
+   * through `PaneStream`'s subscription handler.
+   */
+  readonly cols: number;
+  /** Initial grid height in cells (required). Same rationale as `cols`. */
+  readonly rows: number;
+  /**
    * Construction-time only. xterm.js exposes no live setter for the font
    * family, so changing this prop after mount has no effect. To switch
    * fonts, pass a different `stream` (forces remount) or rebuild the
@@ -71,6 +81,8 @@ export function PaneTerminal(props: PaneTerminalProps): ReactElement {
 
     const sink = new XtermSink({
       container,
+      cols: props.cols,
+      rows: props.rows,
       fontFamily: props.fontFamily,
       fontSize: props.fontSize,
       scrollback: props.scrollback,

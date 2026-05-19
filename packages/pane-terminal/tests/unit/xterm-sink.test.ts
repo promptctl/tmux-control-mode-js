@@ -103,7 +103,11 @@ function newSink(): {
   term: MockTerminal;
 } {
   const container = makeContainer();
-  const sink = new XtermSink({ container });
+  // 80×24 mirrors the historical xterm default — fine for tests that
+  // don't exercise resize behaviour. The point of the now-required
+  // `cols`/`rows` props is that the caller is forced to commit to a
+  // geometry; tests commit to one explicitly.
+  const sink = new XtermSink({ container, cols: 80, rows: 24 });
   if (lastTerm === null) throw new Error("Terminal mock not constructed");
   return { sink, container, term: lastTerm };
 }

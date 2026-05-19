@@ -119,6 +119,18 @@ export class PaneStream implements ReseedTarget {
   // round-trip (gate #4: re-mount ×100 → exactly one capture). Set inside
   // seed(); cleared by reconnect (the underlying pane state has moved).
   private lastSeed: { captured: string } | null = null;
+  // [LAW:one-source-of-truth] Latest tmux-reported pane geometry. Cached on
+  // every subscription-changed (whether or not a sink is attached) so that
+  // attach() can replay the current dimensions onto a fresh sink. Without
+  // this, an event arriving in the window between PaneStream construction
+  // and the first attach() (a common race — refresh-client -B emits an
+  // initial value almost immediately, which can outrun the consumer's
+  // mount lifecycle) would be silently dropped, leaving the sink wedged at
+  // whatever defaults it was constructed with until the next change. The
+  // sink is the authoritative renderer; tmux is the authoritative geometry
+  // source; PaneStream is the bridge — caching here ensures the bridge
+  // does not lose information.
+  private lastDims: { cols: number; rows: number } | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a
   // time. attach() short-circuits when this is non-null (the resolution
   // will pick up `this.sink` whatever it is then). Required by gate #4 under
@@ -254,6 +266,15 @@ export class PaneStream implements ReseedTarget {
     // Reset attach-scoped activity counter so consumers see "since I started
     // looking", not "since the universe began."
     this.currentBytesSinceAttach = 0;
+
+    // [LAW:one-source-of-truth] Apply the most recent tmux-reported geometry
+    // BEFORE seeding or transitioning to live. Without this, a sink that
+    // missed the early subscription-changed event would stay at whatever
+    // it was constructed with, and the captured content would render into
+    // a wrong-sized grid (the symptom: prompt midway down the viewport).
+    if (this.lastDims !== null) {
+      sink.resize(this.lastDims.cols, this.lastDims.rows);
+    }
 
     if (this.lastSeed !== null) {
       // Re-attach fast path. Synchronous: hand the new sink the cached
@@ -539,16 +560,22 @@ export class PaneStream implements ReseedTarget {
     this.setState("live");
   }
 
+  // [LAW:dataflow-not-control-flow] The cache update is unconditional —
+  // whether or not a sink is currently attached. The earlier shape gated
+  // the entire handler on `sink !== null`, which silently lost early
+  // events; the new shape *always* updates the cache, and *additionally*
+  // forwards to the sink when one is attached. Same code runs every event;
+  // only the side effect varies with the value of `this.sink`.
   private handleSubscriptionChanged(
     ev: TmuxEventMap["subscription-changed"],
   ): void {
     if (ev.name !== this.subscriptionName) return;
     if (ev.paneId !== this.paneId) return;
     if (this.currentState === "disposed") return;
-    if (this.sink === null) return;
     const dims = parseDimensions(ev.value);
     if (dims === null) return;
-    this.sink.resize(dims.cols, dims.rows);
+    this.lastDims = dims;
+    if (this.sink !== null) this.sink.resize(dims.cols, dims.rows);
   }
 
   private setState(next: PaneStreamState): void {

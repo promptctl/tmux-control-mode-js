@@ -315,6 +315,57 @@ describe("PaneStream — paneId filter & dataflow", () => {
   });
 });
 
+describe("PaneStream — subscription-changed dimension cache", () => {
+  // Regression for the "prompt midway through viewport" bug: a
+  // subscription-changed event arriving BEFORE the consumer's attach()
+  // must not be silently dropped. PaneStream caches the latest dims and
+  // replays them onto the sink at attach time, so the seed lands in a
+  // correctly-sized grid every time.
+  it("caches dims arriving before attach and replays them at attach time", () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    const sink = new RecordingSink();
+
+    // Dimension event arrives FIRST. No sink is attached yet — under the
+    // old code path this event was lost.
+    client.injectSubscriptionChanged(
+      `pane-terminal-size-${PANE_ID}`,
+      PANE_ID,
+      "120;40",
+    );
+
+    expect(sink.events.filter((e) => e.startsWith("resize"))).toHaveLength(0);
+
+    // Now the consumer attaches. The cached dims must be replayed BEFORE
+    // any seed write, so the order is resize → seed → (live).
+    stream.attach(sink);
+    const order = sink.events.filter(
+      (e) => e.startsWith("resize") || e.startsWith("seed"),
+    );
+    expect(order[0]).toBe("resize(120x40)");
+  });
+
+  it("updates the cache on every subscription-changed (live updates still flow through)", async () => {
+    const { client, stream } = makeStream();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+
+    client.injectSubscriptionChanged(
+      `pane-terminal-size-${PANE_ID}`,
+      PANE_ID,
+      "80;24",
+    );
+    client.injectSubscriptionChanged(
+      `pane-terminal-size-${PANE_ID}`,
+      PANE_ID,
+      "200;50",
+    );
+
+    const resizes = sink.events.filter((e) => e.startsWith("resize"));
+    expect(resizes).toEqual(["resize(80x24)", "resize(200x50)"]);
+  });
+});
+
 describe("PaneStream — activity counter coalescing", () => {
   beforeEach(() => {
     vi.useFakeTimers();

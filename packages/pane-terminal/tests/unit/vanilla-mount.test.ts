@@ -97,6 +97,8 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
   it("constructs an XtermSink and attaches it to the stream exactly once", () => {
     const stream = new StubStream();
     const handle = mountPaneTerminal(asPaneStream(stream), container, {
+      cols: 80,
+      rows: 24,
       fontSize: 14,
     });
 
@@ -110,7 +112,7 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
 
   it("forwards xterm onData to stream.sendKeys", () => {
     const stream = new StubStream();
-    mountPaneTerminal(asPaneStream(stream), container);
+    mountPaneTerminal(asPaneStream(stream), container, { cols: 80, rows: 24 });
 
     // Pull the registered onData handler from the mock and invoke it as
     // xterm would when the user types.
@@ -125,7 +127,7 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
 
   it("dispose tears down in safe order (offKeys → detach → sink.dispose)", () => {
     const stream = new StubStream();
-    const handle = mountPaneTerminal(asPaneStream(stream), container);
+    const handle = mountPaneTerminal(asPaneStream(stream), container, { cols: 80, rows: 24 });
 
     const callOrder: string[] = [];
     lastTerm!.onDataDispose.mockImplementation(() => callOrder.push("offKeys"));
@@ -139,7 +141,7 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
 
   it("dispose is idempotent — a second call is a no-op", () => {
     const stream = new StubStream();
-    const handle = mountPaneTerminal(asPaneStream(stream), container);
+    const handle = mountPaneTerminal(asPaneStream(stream), container, { cols: 80, rows: 24 });
 
     handle.dispose();
     handle.dispose();
@@ -153,6 +155,8 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
   it("exposes the live sink for advanced consumers (focus, setFontSize, setTheme)", () => {
     const stream = new StubStream();
     const handle = mountPaneTerminal(asPaneStream(stream), container, {
+      cols: 80,
+      rows: 24,
       fontSize: 12,
     });
 
