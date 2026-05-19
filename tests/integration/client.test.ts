@@ -396,7 +396,7 @@ function nextMessage<K extends keyof import("../../src/emitter.js").TmuxEventMap
 
 describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
@@ -406,7 +406,8 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
+    socketName = "";
   });
 
   it(
