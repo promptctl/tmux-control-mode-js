@@ -115,7 +115,12 @@ function createSession(
 
 describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   let sessionName: string;
-  let socketName: string;
+  // Initialise to a sentinel so a beforeEach that throws BEFORE the socket
+  // assignment doesn't make afterEach run `tmux -L undefined kill-server`
+  // against an unrelated tmux server (one literally named `undefined`).
+  // Today `uniqueSocket()` can't fail, but a future edit that slips a
+  // throwing line above it would expose this footgun without the sentinel.
+  let socketName = "";
   let client: TmuxClient;
 
   beforeEach(() => {
@@ -124,7 +129,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   afterEach(() => {
     client?.close();
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
   });
 
   it(
@@ -202,7 +207,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
 describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
@@ -212,7 +217,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
   });
 
   it(
@@ -330,14 +335,14 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
 describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
 
   beforeEach(() => {
     socketName = uniqueSocket("life");
   });
 
   afterEach(() => {
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
   });
 
   it(

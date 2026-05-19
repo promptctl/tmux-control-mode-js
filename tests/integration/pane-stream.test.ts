@@ -92,7 +92,12 @@ class CollectorSink implements TerminalSink {
 describe.skipIf(!RUN_INTEGRATION)(
   "PaneStream — integration (tmux ≥3.2)",
   () => {
-    let socket: string;
+    // Initialise socket to a sentinel so a beforeEach that throws BEFORE the
+    // assignment doesn't make afterEach run `tmux -L undefined kill-server`
+    // against an unrelated tmux server (one literally named `undefined`).
+    // Today `uniqueSocket()` can't fail, but a future edit that slips a
+    // throwing line above it would expose this footgun without the sentinel.
+    let socket = "";
     let session: string;
     let client: TmuxClient;
     let stream: PaneStream | null;
@@ -105,7 +110,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     afterEach(() => {
       stream?.dispose();
       client?.close();
-      killServer(socket);
+      if (socket !== "") killServer(socket);
     });
 
     it("attach() seeds with capture-pane output + cursor", async () => {
