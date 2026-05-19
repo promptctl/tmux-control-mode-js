@@ -13,7 +13,7 @@
 //   `pane.active` changing; an effect declares the dependency and the MobX
 //   observer invalidates the component when the flag changes.
 
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper } from "@mantine/core";
 import { mountPaneTerminal } from "@promptctl/pane-terminal/vanilla";
@@ -94,17 +94,29 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
   const containerRef = useRef<HTMLDivElement>(null);
   const sinkRef = useRef<XtermSink | null>(null);
 
-  // [LAW:single-enforcer] One `ObservablePaneStream` per pane id. The stream
-  // subscribes to byte events at construction (O2) and lives until the pane
-  // leaves the tree. `useMemo` keeps identity stable across re-renders so
-  // `<PaneTerminal>` never tears down and rebuilds the xterm sink on a prop
-  // change that doesn't change the stream (O10).
-  const obs = useMemo(
-    () => new ObservablePaneStream({ client: store.paneStreamClient, paneId: pane.id }),
-    [pane.id, store.paneStreamClient],
-  );
-  // Dispose the stream when the pane unmounts or pane.id changes.
-  useEffect(() => () => obs.dispose(), [obs]);
+  // [LAW:dataflow-not-control-flow] Render is a pure projection of state;
+  // it cannot perform lifecycle side effects. `ObservablePaneStream`'s
+  // constructor subscribes to the bridge synchronously (subscribeRaw →
+  // bridge.execute → outbox mutation → wire emission), and any observable
+  // mutated during render risks scheduling a React update on another
+  // component mid-render. Construction therefore lives in useEffect; the
+  // reference is surfaced to JSX via useState. First render shows the
+  // pane chrome with obs=null (toolbar handles this); the effect commits,
+  // setObs flips, the second render mounts the terminal sink.
+  // [LAW:single-enforcer] One `ObservablePaneStream` per (pane.id, client)
+  // pair. The construct/dispose pair lives only here.
+  const [obs, setObs] = useState<ObservablePaneStream | null>(null);
+  useEffect(() => {
+    const o = new ObservablePaneStream({
+      client: store.paneStreamClient,
+      paneId: pane.id,
+    });
+    setObs(o);
+    return () => {
+      setObs(null);
+      o.dispose();
+    };
+  }, [pane.id, store.paneStreamClient]);
 
   // Capture the initial font size in a ref so the mount effect doesn't
   // depend on it (preventing a remount on every font-size change).
@@ -116,6 +128,7 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
   // attach; `PaneStream.attach()` replays the cached seed on the second
   // attach — no second capture-pane (gate #4).
   useEffect(() => {
+    if (obs === null) return undefined;
     const container = containerRef.current;
     if (container === null) return undefined;
     const mount = mountPaneTerminal(obs.stream, container, {
@@ -127,7 +140,7 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
       mount.dispose();
       sinkRef.current = null;
     };
-  }, [obs.stream]);
+  }, [obs]);
 
   // Live font-size updates — in-place setter, no remount (O10).
   useEffect(() => {
