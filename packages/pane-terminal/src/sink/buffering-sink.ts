@@ -17,12 +17,11 @@
 //   dispose they no-op (the call is silently dropped). The dispose-after-use
 //   contract is on the caller.
 
-import type { TerminalSink, SeedCursor } from "./index.js";
+import type { TerminalSink } from "./index.js";
 
 /** A recorded `seed()` call. */
 export interface SeedCall {
   readonly captured: string;
-  readonly cursor: SeedCursor | null;
 }
 
 /** A recorded `resize()` call. */
@@ -63,9 +62,9 @@ export class BufferingSink implements TerminalSink {
   // TerminalSink
   // ---------------------------------------------------------------------------
 
-  seed(captured: string, cursor: SeedCursor | null): void {
+  seed(captured: string): void {
     if (this.isDisposed) return;
-    this.seedCalls.push({ captured, cursor });
+    this.seedCalls.push({ captured });
   }
 
   write(data: Uint8Array): void {

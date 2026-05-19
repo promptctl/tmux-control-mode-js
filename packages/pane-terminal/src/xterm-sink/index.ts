@@ -45,7 +45,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import type { ITheme, IDisposable } from "@xterm/xterm";
-import type { TerminalSink, SeedCursor } from "../sink/index.js";
+import type { TerminalSink } from "../sink/index.js";
 import { fitFont as computeFitFont } from "./font-cache.js";
 
 /**
@@ -182,19 +182,18 @@ export class XtermSink implements TerminalSink {
   // TerminalSink contract
   // ---------------------------------------------------------------------------
 
-  seed(captured: string, cursor: SeedCursor | null): void {
+  // [LAW:one-source-of-truth] Cursor position is owned by tmux's byte stream —
+  // any program inside the pane that cares about cursor placement emits its
+  // own CUP in the live %output bytes (and does so on every redraw). This
+  // sink never synthesises one. The cursor naturally lands wherever the
+  // captured text rendering ended; for an idle shell that is the typing
+  // column at the bottom of the prompt — exactly where the user expects.
+  seed(captured: string): void {
     if (this.isDisposed) return;
     // xterm.write accepts string here (capture-pane output is already UTF-8
     // text). The live path uses Uint8Array via `write()` below — gate 5
     // depends on that distinction.
     this.terminal.write(captured);
-    if (cursor !== null) {
-      // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
-      // `SeedCursor.col`/`row` are 0-indexed (see ../sink/index.ts). Adding
-      // 1 here is the only translation; sinks that don't position a hardware
-      // cursor (BufferingSink) ignore the cursor entirely.
-      this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`);
-    }
   }
 
   // [HOT-PATH] live byte forwarding — must not allocate per call.

@@ -3,8 +3,9 @@
 // Integration coverage for `PaneStream` against a real tmux process.
 // Verifies the load-bearing pieces that the bench/unit suites cannot:
 //
-//  1. capture-pane + display-message round-trip during seed produces
-//     a non-empty seed payload at the sink.
+//  1. capture-pane round-trip during seed produces a non-empty seed payload
+//     at the sink (cursor positioning is owned by tmux's live byte stream,
+//     not synthesised by the sink — there's no second RPC to test here).
 //  2. Per-pane format subscription (`pane_width;pane_height`) emits
 //     a `subscription-changed` event whose value the stream parses into
 //     a `sink.resize(cols, rows)` call when the pane geometry changes.
@@ -18,7 +19,6 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
 import type { TerminalSink } from "../../packages/pane-terminal/src/stream/index.js";
-import type { SeedCursor } from "../../packages/pane-terminal/src/sink/index.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -72,17 +72,23 @@ async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
 }
 
 class CollectorSink implements TerminalSink {
-  seedCalls: { text: string; cursor: SeedCursor | null }[] = [];
+  seedCalls: { text: string }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
-  seed(text: string, cursor: SeedCursor | null): void {
-    this.seedCalls.push({ text, cursor });
+  seed(text: string): void {
+    this.seedCalls.push({ text });
   }
   write(_bytes: Uint8Array): void {
     this.writeCount += 1;
   }
   resize(cols: number, rows: number): void {
     this.resizeCalls.push({ cols, rows });
+  }
+  clear(): void {
+    /* no-op */
+  }
+  isVisible(): boolean {
+    return true;
   }
   dispose(): void {
     /* no-op */
@@ -108,7 +114,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       killServer(socket);
     });
 
-    it("attach() seeds with capture-pane output + cursor", async () => {
+    it("attach() seeds with capture-pane output", async () => {
       session = uniqueSession("seed");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
@@ -126,18 +132,13 @@ describe.skipIf(!RUN_INTEGRATION)(
       });
       stream.attach(sink);
 
-      // Wait for capture + cursor responses + state transition.
+      // Wait for capture response + state transition.
       for (let i = 0; i < 20 && stream.state !== "live"; i++) {
         await new Promise((r) => setTimeout(r, 50));
       }
       expect(stream.state).toBe("live");
       expect(sink.seedCalls).toHaveLength(1);
       expect(sink.seedCalls[0].text.length).toBeGreaterThan(0);
-      // Cursor should be present and inside the 80x24 viewport.
-      const cursor = sink.seedCalls[0].cursor;
-      expect(cursor).not.toBeNull();
-      expect(cursor!.col).toBeGreaterThanOrEqual(0);
-      expect(cursor!.row).toBeGreaterThanOrEqual(0);
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {

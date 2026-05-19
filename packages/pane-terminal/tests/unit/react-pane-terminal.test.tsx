@@ -243,9 +243,7 @@ describe("<PaneTerminal> (React adapter)", () => {
     "StrictMode mount/unmount/remount issues exactly 1 capture-pane (gate #4)",
     async () => {
       const client = new FakeTmuxClient();
-      client.setCapturePaneResponse((cmd) =>
-        cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
-      );
+      client.setCapturePaneResponse(() => "row-0\nrow-1\n");
       const stream = new RealPaneStream({
         client,
         paneId: 1,
@@ -259,11 +257,9 @@ describe("<PaneTerminal> (React adapter)", () => {
         </StrictMode>,
       );
 
-      // capture-pane + cursor display-message both resolve via FakeTmuxClient
-      // on the next macrotasks (see g4-remount-capture.test.ts for the
-      // canonical pattern).
+      // capture-pane resolves via FakeTmuxClient on the next macrotask (see
+      // g4-remount-capture.test.ts for the canonical pattern).
       await act(async () => {
-        await new Promise((r) => setTimeout(r, 0));
         await new Promise((r) => setTimeout(r, 0));
       });
 

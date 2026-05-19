@@ -4,8 +4,8 @@
 // performs against a (mocked) xterm `Terminal`, and the lifecycle invariants
 // it owes its callers. Covers:
 //
-//   - seed(captured, cursor): writes captured text + ANSI CUP escape exactly
-//     when cursor is non-null. (Gate 4 fast-path correctness.)
+//   - seed(captured): writes captured text only. Cursor positioning is
+//     owned by tmux's live byte stream — sinks never manufacture a CUP.
 //   - write(Uint8Array): forwards by reference; never decodes (Gate 5).
 //   - resize(cols, rows): first call is deferred by one rAF; subsequent
 //     calls are synchronous. (Demo's "Cannot read properties of undefined
@@ -151,28 +151,20 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("XtermSink: seed", () => {
-  it("writes captured text and a CUP escape when cursor is provided", () => {
+  it("writes the captured text exactly once — no synthesised CUP escape", () => {
     const { sink, term } = newSink();
-    sink.seed("hello\r\nworld", { col: 4, row: 1 });
-    // Two writes: captured text, then the cursor escape. 1-indexed in CUP.
-    expect(term.write).toHaveBeenCalledTimes(2);
-    expect(term.write).toHaveBeenNthCalledWith(1, "hello\r\nworld");
-    expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[2;5H");
-    sink.dispose();
-  });
-
-  it("writes captured text without the CUP escape when cursor is null", () => {
-    const { sink, term } = newSink();
-    sink.seed("only text", null);
+    sink.seed("hello\r\nworld");
+    // ONE write — captured text only. tmux's live %output stream owns
+    // cursor positioning; the sink does not manufacture a CUP.
     expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith("only text");
+    expect(term.write).toHaveBeenCalledWith("hello\r\nworld");
     sink.dispose();
   });
 
   it("seed after dispose is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed("late", { col: 0, row: 0 });
+    sink.seed("late");
     expect(term.write).not.toHaveBeenCalled();
   });
 });
@@ -311,7 +303,7 @@ describe("XtermSink: dispose lifecycle", () => {
   it("post-dispose: write, seed, resize, setFontSize all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed("x", null);
+    sink.seed("x");
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     flushRaf();

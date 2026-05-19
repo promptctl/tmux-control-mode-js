@@ -32,7 +32,7 @@ import { execSync } from "node:child_process";
 import { spawnTmux } from "../../../../src/transport/spawn.js";
 import { TmuxClient } from "../../../../src/client.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
+import type { TerminalSink } from "../../src/sink/index.js";
 
 const P99_BUDGET_MS = 100;
 const ITERATIONS = 50; // Real tmux RTT × 50 keeps the bench under ~3 s wall time.
@@ -83,7 +83,7 @@ async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
 class TimingSink implements TerminalSink {
   seedAt = 0;
   hasSeed = false;
-  seed(_t: string, _c: SeedCursor | null): void {
+  seed(_t: string): void {
     this.seedAt = performance.now();
     this.hasSeed = true;
   }
@@ -146,9 +146,9 @@ describe.skipIf(!integrationOn)(
         });
         const t0 = performance.now();
         stream.attach(sink);
-        // The seed promise resolves once capture-pane + display-message
-        // round-trip; the sink's seed() callback is the visible event.
-        // Poll on a microtask boundary until the sink has been seeded.
+        // The seed promise resolves once capture-pane round-trips; the
+        // sink's seed() callback is the visible event. Poll on a microtask
+        // boundary until the sink has been seeded.
         while (!sink.hasSeed) {
           await new Promise<void>((r) => setTimeout(r, 0));
         }

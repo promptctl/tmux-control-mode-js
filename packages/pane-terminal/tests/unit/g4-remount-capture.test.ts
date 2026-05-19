@@ -20,27 +20,22 @@ const PANE_ID = 1;
 const REMOUNT_COUNT = 100;
 
 async function flushSeed(): Promise<void> {
-  // Two ticks: capture-pane + cursor display-message both resolve via
-  // FakeTmuxClient.execute() on the next macrotask each.
-  await new Promise((r) => setTimeout(r, 0));
+  // One macrotask is enough: PaneStream issues a single capture-pane RPC
+  // per seed cycle. FakeTmuxClient.execute resolves on the next tick.
   await new Promise((r) => setTimeout(r, 0));
 }
 
 describe("Gate 4 — re-mount on the same stream", () => {
   it(`first mount = 1 capture-pane; mounts 2..${REMOUNT_COUNT} = 0 (re-attach reuses stream state)`, async () => {
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
-    );
+    client.setCapturePaneResponse(() => "row-0\nrow-1\n");
     const stream = new PaneStream({
       client,
       paneId: PANE_ID,
     });
     expect(client.capturePaneCount()).toBe(0); // baseline
 
-    // FIRST attach — triggers capture-pane (and a paired display-message,
-    // which is NOT a capture-pane invocation; the count tracks only the
-    // capture).
+    // FIRST attach — triggers exactly one capture-pane RPC.
     const firstSink = new BufferingSink();
     stream.attach(firstSink);
     await flushSeed();

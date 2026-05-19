@@ -15,7 +15,6 @@ import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
 import type { TerminalSink } from "../../src/stream/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
 
 const P99_BUDGET_MS = 16;
 const ITERATIONS = 1000;
@@ -26,7 +25,7 @@ const CHUNK_SIZES = [11, 64, 256, 1024];
 class TimingSink implements TerminalSink {
   // Most recent write timestamp; gate reads + clears between iterations.
   lastWriteAt = 0;
-  seed(_t: string, _c: SeedCursor | null): void {
+  seed(_t: string): void {
     /* no-op */
   }
   write(_bytes: Uint8Array): void {

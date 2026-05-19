@@ -9,16 +9,13 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
 import type { TerminalSink } from "../../src/stream/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
 
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
   readonly writes: Uint8Array[] = [];
   private visible = true;
-  seed(text: string, cursor: SeedCursor | null): void {
-    this.events.push(
-      `seed(${text.length} chars, cursor=${JSON.stringify(cursor)})`,
-    );
+  seed(text: string): void {
+    this.events.push(`seed(${text.length} chars)`);
   }
   write(bytes: Uint8Array): void {
     this.events.push(`write(${bytes.byteLength}B)`);
@@ -48,17 +45,13 @@ function makeStream(
     client?: FakeTmuxClient;
     paneId?: number;
     capture?: string;
-    cursor?: string;
   } = {},
 ): {
   client: FakeTmuxClient;
   stream: PaneStream;
 } {
   const client = opts.client ?? new FakeTmuxClient();
-  client.setCapturePaneResponse((cmd) => {
-    if (cmd.startsWith("display-message")) return opts.cursor ?? "0;0";
-    return opts.capture ?? "";
-  });
+  client.setCapturePaneResponse(() => opts.capture ?? "");
   const stream = new PaneStream({
     client,
     paneId: opts.paneId ?? PANE_ID,
@@ -167,9 +160,7 @@ describe("PaneStream — state machine", () => {
 
     // Now wire a working capture, re-attach. The cache must be empty so
     // attach takes the slow path and recovers.
-    client.setCapturePaneResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "recovered",
-    );
+    client.setCapturePaneResponse(() => "recovered");
     const baselineCaptures = client.capturePaneCount();
 
     const sink2 = new RecordingSink();

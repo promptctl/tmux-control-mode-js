@@ -20,7 +20,7 @@
 // [LAW:one-source-of-truth] State transitions live in `setState` only.
 //   External views (`get state()`) read from `currentState` directly.
 
-import type { TerminalSink, SeedCursor } from "../sink/index.js";
+import type { TerminalSink } from "../sink/index.js";
 import type {
   TmuxClientLike,
   TmuxEventMap,
@@ -118,8 +118,7 @@ export class PaneStream implements ReseedTarget {
   // the new sink the same starting picture WITHOUT a fresh capture-pane
   // round-trip (gate #4: re-mount ×100 → exactly one capture). Set inside
   // seed(); cleared by reconnect (the underlying pane state has moved).
-  private lastSeed: { captured: string; cursor: SeedCursor | null } | null =
-    null;
+  private lastSeed: { captured: string } | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a
   // time. attach() short-circuits when this is non-null (the resolution
   // will pick up `this.sink` whatever it is then). Required by gate #4 under
@@ -259,7 +258,7 @@ export class PaneStream implements ReseedTarget {
     if (this.lastSeed !== null) {
       // Re-attach fast path. Synchronous: hand the new sink the cached
       // payload and flip straight to live. No capture-pane is issued.
-      sink.seed(this.lastSeed.captured, this.lastSeed.cursor);
+      sink.seed(this.lastSeed.captured);
       this.setState("live");
       return;
     }
@@ -461,22 +460,24 @@ export class PaneStream implements ReseedTarget {
     // these handlers flip the flag back to true and we drop the result.
     this.seedStaleMidFlight = false;
 
+    // [LAW:one-source-of-truth] Single capture-pane RPC — the seed is the
+    // visible cells; cursor position is owned exclusively by tmux's live
+    // %output byte stream. Programs that care about cursor placement (vim,
+    // less, shells with multi-line prompts) emit their own CUP escapes on
+    // every redraw, so the cursor self-corrects within microseconds of the
+    // next byte. Querying #{cursor_x};#{cursor_y} as a parallel source and
+    // synthesising a CUP escape on top of the captured content was the bug
+    // it created two competing cursor authorities that did not agree.
     const captureCmd =
       this.historyLines > 0
         ? `capture-pane -e -p -S -${this.historyLines} -t %${this.paneId}`
         : `capture-pane -e -p -t %${this.paneId}`;
-    const cursorCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y}'`;
 
     let captureOutput: readonly string[] = [];
-    let cursorLine = "";
     let captureSucceeded = false;
     try {
-      const [captureResp, cursorResp] = await Promise.all([
-        this.client.execute(captureCmd),
-        this.client.execute(cursorCmd),
-      ]);
+      const captureResp = await this.client.execute(captureCmd);
       captureOutput = captureResp.output;
-      cursorLine = cursorResp.output[0] ?? "";
       captureSucceeded = true;
     } catch {
       // Capture failed (e.g. connection closed). Fall through to live mode
@@ -511,7 +512,6 @@ export class PaneStream implements ReseedTarget {
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — no live byte can interleave.
     const captured = captureOutput.join("\r\n");
-    const cursor = parseCursor(cursorLine);
 
     // Cache for the next attach() — gate #4 reuses this without a fresh
     // capture-pane round-trip. Only cached on success: a failed seed left
@@ -519,7 +519,7 @@ export class PaneStream implements ReseedTarget {
     // forever, and the next attach is the natural recovery point.
     // Invalidated by the reconnect handler and by detached-mode bytes.
     if (captureSucceeded) {
-      this.lastSeed = { captured, cursor };
+      this.lastSeed = { captured };
     }
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
@@ -529,7 +529,7 @@ export class PaneStream implements ReseedTarget {
     const liveSink = this.sink;
     if (liveSink === null) return;
 
-    liveSink.seed(captured, cursor);
+    liveSink.seed(captured);
 
     // Drain buffered live bytes synchronously, then flip state.
     for (const bytes of this.buffer) {
@@ -571,15 +571,6 @@ export class PaneStream implements ReseedTarget {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-function parseCursor(line: string): SeedCursor | null {
-  // tmux's `display-message -p '#{cursor_x};#{cursor_y}'` reply: cursor_x is
-  // 0-indexed from the left (column), cursor_y is 0-indexed from the top
-  // (row). Map them onto the renderer-natural {col, row} vocabulary.
-  const m = line.match(/^(\d+);(\d+)$/);
-  if (m === null) return null;
-  return { col: Number(m[1]), row: Number(m[2]) };
-}
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {
   const m = value.match(/^(\d+);(\d+)$/);

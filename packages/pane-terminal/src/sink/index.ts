@@ -10,32 +10,18 @@
 //   pulling in xterm/jsdom.
 // [LAW:one-source-of-truth] One declaration of the producer↔renderer
 //   contract; concrete sinks (BufferingSink, XtermSink) implement it without
-//   re-declaring the shape.
+//   re-declaring the shape. tmux's byte stream is the SOLE authority for
+//   cursor position — sinks never manufacture cursor-positioning escapes.
 // [LAW:no-mode-explosion] Two distinct methods for the two genuinely
-//   different data sources (`seed` text + cursor; `write` raw bytes). No
-//   "mode" parameter; no shared union type.
-
-/**
- * Cursor coordinates as reported by tmux's `#{cursor_x};#{cursor_y}` format
- * variables, normalised to a renderer-natural axis vocabulary:
- *
- * - `col`: column index (0-indexed from the left edge of the visible pane).
- * - `row`: row index    (0-indexed from the top edge of the visible pane).
- *
- * Sinks that need to position a hardware cursor are responsible for any
- * 1-indexing translation (e.g. xterm's ANSI CUP escape is 1-indexed).
- */
-export interface SeedCursor {
-  readonly col: number;
-  readonly row: number;
-}
+//   different data sources (`seed` text from capture-pane; `write` raw bytes
+//   from %output). No "mode" parameter; no shared union type.
 
 /**
  * Renderer-side seam consumed by `PaneStream`.
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.seed(captured, cursor)
+ *   stream.attach(sink)  →  sink.seed(captured)
  *                        →  sink.write(data) ×N          (live byte stream)
  *                        →  sink.resize(cols, rows) ×M   (layout changes)
  *                        →  stream.detach()              (no further calls)
@@ -53,11 +39,12 @@ export interface TerminalSink {
    * (`\r\n` between rows) — already normalised to UTF-8 by tmux, so
    * `string` is the accurate type. Live binary bytes go through `write()`.
    *
-   * `cursor` is `null` when tmux did not return a parsable cursor reply;
-   * sinks should leave the cursor at the natural end of the captured text
-   * in that case.
+   * The cursor lands wherever the captured text naturally ends. Cursor
+   * positioning is tmux's responsibility — any program that cares about
+   * cursor placement emits its own CUP escape in the live byte stream;
+   * sinks never synthesise one from a side-channel query.
    */
-  seed(captured: string, cursor: SeedCursor | null): void;
+  seed(captured: string): void;
 
   /**
    * Forward a chunk of live bytes to the renderer. Bytes are byte-identical
