@@ -682,9 +682,10 @@ export class WebSocketTmuxClient implements RpcProxyApi {
     }
   }
 
-  // [LAW:dataflow-not-control-flow] flushOutbox always runs the same loop;
-  // entries with transmitted=true are skipped by `transmit`. A throw breaks
-  // the loop so the next ready-transition retries from the same point.
+  // [LAW:dataflow-not-control-flow] Same loop every call: walk pending in
+  // FIFO order, ask `transmit` to send each entry. If `transmit` cannot
+  // deliver (send threw inside its own try/catch, so p.transmitted stays
+  // false), stop — preserving FIFO ordering for the next ready transition.
   private flushOutbox(): void {
     if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
     for (const p of this.pending.values()) {

@@ -205,8 +205,14 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         code: "BRIDGE_CLOSED",
       });
 
-      // Wait for the reconnect timer (1ms). A second socket should appear.
-      await new Promise((r) => setTimeout(r, 5));
+      // [LAW:verifiable-goals] Poll until the reconnect timer has fired
+      // and openSocket created the second socket. A fixed sleep would be
+      // a guess about timer scheduling on the runner; this predicate is
+      // exact. Matches the pattern in connection-state.test.ts.
+      const deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
       expect(hub.sockets.length).toBe(2);
 
       // Drive the second connection to ready. The fix: flushOutbox iterates
