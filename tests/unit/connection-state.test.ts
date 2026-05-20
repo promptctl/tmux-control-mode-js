@@ -155,7 +155,13 @@ interface MockWS {
   readyState: number;
   send: (data: string | ArrayBufferLike | Uint8Array) => void;
   close: (code?: number, reason?: string) => void;
-  addEventListener: (event: string, listener: Listener) => void;
+  // Match the real DOM: addEventListener accepts `{ signal }`, and the
+  // listener is atomically removed when the signal aborts.
+  addEventListener: (
+    event: string,
+    listener: Listener,
+    options?: { signal?: AbortSignal },
+  ) => void;
   removeEventListener: (event: string, listener: Listener) => void;
   fire(event: string, payload: unknown): void;
 }
@@ -173,13 +179,27 @@ class MockWebSocketHub {
         ws.readyState = 3; // CLOSED
         ws.fire("close", { code, reason });
       },
-      addEventListener(event, listener) {
+      addEventListener(event, listener, options) {
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
         set.add(listener);
+        if (options?.signal !== undefined) {
+          const signal = options.signal;
+          if (signal.aborted) {
+            set.delete(listener);
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              listeners.get(event)?.delete(listener);
+            },
+            { once: true },
+          );
+        }
       },
       removeEventListener(event, listener) {
         listeners.get(event)?.delete(listener);
@@ -467,9 +487,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     proxy.close();
 
     expect(
-      states.filter(
-        (s) => s.status === "closed" && s.reason === "disposed",
-      ),
+      states.filter((s) => s.status === "closed" && s.reason === "disposed"),
     ).toHaveLength(1);
   });
 });
