@@ -144,6 +144,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;
+  // [LAW:single-enforcer] One controller per connection scopes the lifetime
+  // of every listener attached to its ws. finalizeConnection aborts it; the
+  // ws library removes all listeners in one operation. No per-listener
+  // staleness check exists or is needed.
+  private connectionAbort: AbortController | null = null;
   private nextId = 0;
   private currentState: WebSocketTmuxClientState = "idle";
   private attempts = 0;
@@ -401,37 +406,35 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
+    // [LAW:locality-or-seam] AbortSignal IS the seam binding listener
+    // lifetime to connection lifetime. Aborted by finalizeConnection;
+    // the ws library removes every listener atomically.
+    // [LAW:dataflow-not-control-flow] No `if (stale) return` guard in any
+    // listener — the variability ("is this socket still attached") lives
+    // in the AbortSignal's state, not in branching inside each handler.
+    const abort = new AbortController();
+    this.connectionAbort = abort;
+    const opts = { signal: abort.signal };
 
-    // [LAW:one-source-of-truth] Per-socket stale guard. `this.ws === ws`
-    // is the canonical "this event belongs to the current connection"
-    // predicate. Without it, an orphaned socket (e.g. close() called
-    // while CONNECTING — the ws.close() abort is async, so the original
-    // handshake may still complete) can fire `open` or `message` after
-    // finalizeConnection nulled `this.ws`, and the handler would re-
-    // transition a closed client back to "open"/"ready" through the
-    // closure-bound `this`. Capturing `ws` in the closure means each
-    // listener set only acts for its own socket.
-    ws.addEventListener("open", () => {
-      if (this.ws !== ws) return;
-      this.onOpen();
-    });
-    ws.addEventListener("message", (event: { data: unknown }) => {
-      if (this.ws !== ws) return;
-      this.onMessage(event.data);
-    });
+    ws.addEventListener("open", () => this.onOpen(), opts);
+    ws.addEventListener(
+      "message",
+      (event: { data: unknown }) => this.onMessage(event.data),
+      opts,
+    );
     ws.addEventListener(
       "close",
-      (event: { code?: number; reason?: string }) => {
-        if (this.ws !== ws) return;
-        this.onClose(event);
-      },
+      (event: { code?: number; reason?: string }) => this.onClose(event),
+      opts,
     );
-    ws.addEventListener("error", () => {
-      if (this.ws !== ws) return;
+    ws.addEventListener(
+      "error",
       // Error events in the browser are opaque. Treat as a connection error;
       // the 'close' that follows will drive the actual teardown.
-      this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error"));
-    });
+      () =>
+        this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error")),
+      opts,
+    );
   }
 
   private onOpen(): void {
@@ -573,9 +576,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     // call from any state without checking "did the socket already close".
     if (this.currentState === "closed") return;
 
-    // [LAW:single-enforcer] Teardown lives here, not split between onClose
-    // and finalize. Every termination path — error, close event, drain,
-    // user close — flows through this method.
+    // [LAW:single-enforcer] One operation tears down everything connection-
+    // scoped: listeners (via AbortController), timers, pending, ws ref.
+    // The abort happens first because it severs the inbound event stream
+    // — no late event can re-enter the client through the closure-bound
+    // `this` after this line.
+    if (this.connectionAbort !== null) {
+      this.connectionAbort.abort();
+      this.connectionAbort = null;
+    }
     this.teardownTimers();
 
     // [LAW:one-source-of-truth] pending is the only structure holding
