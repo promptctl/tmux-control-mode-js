@@ -38,7 +38,16 @@ interface MockWS {
   readonly sent: string[];
   send(data: string | ArrayBufferLike | Uint8Array): void;
   close(code?: number, reason?: string): void;
-  addEventListener(event: string, listener: Listener): void;
+  // Match the real DOM signature: when options.signal aborts, the
+  // listener is atomically removed from the EventTarget's registry.
+  // A mock that ignored `signal` would silently leak the staleness
+  // bug back in — defeating the whole point of binding listener
+  // lifetime to connection lifetime.
+  addEventListener(
+    event: string,
+    listener: Listener,
+    options?: { signal?: AbortSignal },
+  ): void;
   removeEventListener(event: string, listener: Listener): void;
   fire(event: string, payload: unknown): void;
 }
@@ -60,13 +69,29 @@ class MockWebSocketHub {
         ws.readyState = 3; // CLOSED
         ws.fire("close", { code, reason });
       },
-      addEventListener(event, listener) {
+      addEventListener(event, listener, options) {
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
         set.add(listener);
+        // Honor the AbortSignal option exactly as the real DOM does:
+        // on abort, remove this listener from the registry.
+        if (options?.signal !== undefined) {
+          const signal = options.signal;
+          if (signal.aborted) {
+            set.delete(listener);
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => {
+              listeners.get(event)?.delete(listener);
+            },
+            { once: true },
+          );
+        }
       },
       removeEventListener(event, listener) {
         listeners.get(event)?.delete(listener);
@@ -176,7 +201,9 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       // still contain the call frame; with the fix, pending IS the queue,
       // so clearing pending clears the queue.
       hub.fireClose(0, 1006, "abnormal");
-      await expect(callPromise).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+      await expect(callPromise).rejects.toMatchObject({
+        code: "BRIDGE_CLOSED",
+      });
 
       // Wait for the reconnect timer (1ms). A second socket should appear.
       await new Promise((r) => setTimeout(r, 5));
@@ -253,7 +280,9 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       await Promise.resolve();
 
       expect(settled).toBe(true);
-      await expect(callPromise).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+      await expect(callPromise).rejects.toMatchObject({
+        code: "BRIDGE_CLOSED",
+      });
     });
 
     it("a subsequent ws.onclose after close() is a no-op (finalize idempotent)", async () => {
@@ -298,7 +327,9 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect(client.state).toBe("open");
 
       // Sanity: hello is on the wire, nothing else.
-      const beforeCall = sentFrames(hub.latest()).filter((f) => f.k !== "hello");
+      const beforeCall = sentFrames(hub.latest()).filter(
+        (f) => f.k !== "hello",
+      );
       expect(beforeCall).toEqual([]);
 
       // Fire a call while in "open" (pre-welcome).
@@ -341,18 +372,21 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
     it("orphaned CONNECTING ws cannot re-transition a closed client", async () => {
       const { client, hub } = makeClient();
       void client.connect();
-      // ws exists but is CONNECTING; close() called here previously left
-      // the socket alive and its open/message handlers could move the
-      // client back to "open"/"ready" through the closure-bound `this`.
+      // ws exists but is CONNECTING. Previously close() in this state
+      // left the socket alive and its open/message handlers could move
+      // the client back to "open"/"ready" through the closure-bound
+      // `this`.
       expect(hub.latest().readyState).toBe(0); // CONNECTING
 
       await client.close();
       expect(client.state).toBe("closed");
 
       // Now simulate the orphaned socket completing its handshake AFTER
-      // close() — open arrives first, then welcome. With the per-socket
-      // stale guard, both events are dropped because `this.ws` was set
-      // to null by finalize during close().
+      // close(): open arrives first, then welcome. The AbortController
+      // bound to the connection was aborted in finalizeConnection, so
+      // the DOM/`ws`-library removed every listener atomically. The
+      // mock honors `{ signal }` the same way — these `fire` calls find
+      // an empty listener set and invoke nothing.
       hub.open();
       hub.welcome();
       await new Promise((r) => setImmediate(r));
