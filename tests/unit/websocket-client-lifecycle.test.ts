@@ -255,7 +255,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         k: "result",
         id: id as string,
         ok: true,
-        response: { success: true, output: "" },
+        response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
       };
       hub.latest().fire("message", {
         data: encodeServerFrame(result satisfies ServerFrame),
@@ -365,7 +365,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         k: "result",
         id: id as string,
         ok: true,
-        response: { success: true, output: "" },
+        response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
       };
       hub.latest().fire("message", {
         data: encodeServerFrame(result satisfies ServerFrame),
