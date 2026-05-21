@@ -1,0 +1,26 @@
+// Typecheck-only project for the root vitest suite (tests/unit + tests/integration).
+//
+// [LAW:single-enforcer] vitest runs these files through esbuild, which strips
+// types without checking them, and the project-reference build under
+// tsconfig.json only covers src/ + packages. Without this config the test
+// suite sits outside every typecheck graph and silently drifts from the
+// library types it imports. `pnpm run typecheck:tests` is the single gate that
+// holds tests to the same contracts the source exposes.
+//
+// Source files are pulled into the program transitively via the tests'
+// imports, so they are typechecked against these settings too — no separate
+// include needed. e2e (tests/e2e) is intentionally excluded: it imports the
+// package by name (dist-coupled) and runs under Playwright with a DOM/Electron
+// environment, so it is checked by its own tooling, not here.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["tests/unit/**/*.ts", "tests/integration/**/*.ts"]
+}

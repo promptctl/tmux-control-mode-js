@@ -18,6 +18,7 @@ import {
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
+import type { EmitterMessage } from "../../src/emitter.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import {
@@ -284,7 +285,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
       await waitForState(client, "ready");
 
       const seen: TmuxMessage[] = [];
-      const handler = (msg: TmuxMessage): void => {
+      const handler = (msg: EmitterMessage): void => {
         if (msg.type === "output") seen.push(msg);
       };
       client.on("*", handler);

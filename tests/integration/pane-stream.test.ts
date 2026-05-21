@@ -17,8 +17,10 @@ import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
-import type { TerminalSink } from "../../packages/pane-terminal/src/stream/index.js";
-import type { SeedCursor } from "../../packages/pane-terminal/src/sink/index.js";
+import type {
+  TerminalSink,
+  SeedCursor,
+} from "../../packages/pane-terminal/src/sink/index.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -83,6 +85,14 @@ class CollectorSink implements TerminalSink {
   }
   resize(cols: number, rows: number): void {
     this.resizeCalls.push({ cols, rows });
+  }
+  clear(): void {
+    this.seedCalls.length = 0;
+    this.resizeCalls.length = 0;
+    this.writeCount = 0;
+  }
+  isVisible(): boolean {
+    return true;
   }
   dispose(): void {
     /* no-op */
