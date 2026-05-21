@@ -103,6 +103,11 @@ export class XtermSink implements TerminalSink {
   private rafResizePending = false;
   private rafResizeId: number | null = null;
   private rafFirstResizeId: number | null = null;
+  // Seed content buffered when seed() arrives before the first terminal.resize().
+  // Applied immediately after the first resize fires in its rAF, guaranteeing
+  // that content is always written at the correct terminal dimensions.
+  private pendingSeed: { captured: string; cursor: SeedCursor | null } | null =
+    null;
 
   private ro: ResizeObserver | null = null;
   private io: IntersectionObserver | null = null;
@@ -184,16 +189,43 @@ export class XtermSink implements TerminalSink {
 
   seed(captured: string, cursor: SeedCursor | null): void {
     if (this.isDisposed) return;
+    if (!this.firstResizeDone) {
+      // terminal.resize() is deferred to the first rAF. Writing content
+      // before resize means xterm renders at wrong dimensions, then reflows
+      // when resize fires — breaking the scroll area and misaligning the
+      // CUP. Buffer instead; the first-resize rAF will call applySeed().
+      // A second seed() call before the rAF fires simply overwrites (newer
+      // content wins, same as any re-seed).
+      this.pendingSeed = { captured, cursor };
+      return;
+    }
+    this.applySeed(captured, cursor);
+  }
+
+  private applySeed(captured: string, cursor: SeedCursor | null): void {
     // xterm.write accepts string here (capture-pane output is already UTF-8
     // text). The live path uses Uint8Array via `write()` below — gate 5
     // depends on that distinction.
-    this.terminal.write(captured);
+    //
+    // scrollToBottom via the write callback: terminal.write() is internally
+    // async (processes data in chunks across frames). The callback fires after
+    // the data is fully parsed, ensuring the viewport scrolls to the current
+    // screen AFTER the seed content is rendered — not before.
     if (cursor !== null) {
+      this.terminal.write(captured);
       // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
       // `SeedCursor.col`/`row` are 0-indexed (see ../sink/index.ts). Adding
       // 1 here is the only translation; sinks that don't position a hardware
       // cursor (BufferingSink) ignore the cursor entirely.
-      this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`);
+      this.terminal.write(
+        `\x1b[${cursor.row + 1};${cursor.col + 1}H`,
+        () => { if (!this.isDisposed) this.terminal.scrollToBottom(); },
+      );
+    } else {
+      this.terminal.write(
+        captured,
+        () => { if (!this.isDisposed) this.terminal.scrollToBottom(); },
+      );
     }
   }
 
@@ -227,6 +259,14 @@ export class XtermSink implements TerminalSink {
         if (this.cols <= 0 || this.rows <= 0) return;
         this.firstResizeDone = true;
         this.terminal.resize(this.cols, this.rows);
+        // Apply any seed that arrived while the first resize was deferred.
+        // Resize must precede the write so content is laid out at the correct
+        // dimensions from the start (no reflow, no broken scroll area).
+        if (this.pendingSeed !== null) {
+          const { captured, cursor } = this.pendingSeed;
+          this.pendingSeed = null;
+          this.applySeed(captured, cursor);
+        }
       });
       return;
     }
@@ -253,6 +293,7 @@ export class XtermSink implements TerminalSink {
   dispose(): void {
     if (this.isDisposed) return;
     this.isDisposed = true;
+    this.pendingSeed = null;
 
     if (this.ro !== null) {
       this.ro.disconnect();
