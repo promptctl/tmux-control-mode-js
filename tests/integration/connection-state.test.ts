@@ -69,15 +69,20 @@ describe.skipIf(!RUN_INTEGRATION)(
         const seen: ConnectionState[] = [];
         client.on("connection-state", (ev) => seen.push(ev.state));
 
+        // [LAW:no-defensive-null-guards] client is non-null once constructed
+        // above; bind it so the Promise-executor closure keeps that fact
+        // instead of widening back to `TmuxClient | null` and forcing a
+        // defensive `?.` on a value that cannot be null here.
+        const activeClient = client;
         // Wait for tmux's handshake byte.
         await new Promise<void>((resolve) => {
           const onState = (ev: { state: ConnectionState }) => {
             if (ev.state.status === "ready") {
-              client?.off("connection-state", onState);
+              activeClient.off("connection-state", onState);
               resolve();
             }
           };
-          client.on("connection-state", onState);
+          activeClient.on("connection-state", onState);
         });
         expect(client.connectionState).toEqual({ status: "ready" });
 

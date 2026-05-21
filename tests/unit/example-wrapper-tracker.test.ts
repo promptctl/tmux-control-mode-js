@@ -103,6 +103,6 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
     while ((next = t.remove("ch", fn)) !== null) popped.push(next);
 
     // Order is LIFO; the SET of recovered wrappers must match all three.
-    expect(popped.toReversed()).toEqual(wrappers);
+    expect([...popped].reverse()).toEqual(wrappers);
   });
 });
