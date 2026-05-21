@@ -2,40 +2,11 @@
 // Minimal typed event emitter for TmuxClient.
 // No Node.js dependencies — works in any JS environment.
 
-// [LAW:one-source-of-truth] TmuxEventMap is derived from the TmuxMessage union.
+// [LAW:one-source-of-truth] TmuxEventMap's wire events are mechanically derived
+// from the TmuxMessage union; its synthetic events come from connection-state.ts.
 // [LAW:one-type-per-behavior] Single emitter type parameterized by the event map.
 
-import type {
-  BeginMessage,
-  EndMessage,
-  ErrorMessage,
-  OutputMessage,
-  ExtendedOutputMessage,
-  PauseMessage,
-  ContinueMessage,
-  PaneModeChangedMessage,
-  WindowAddMessage,
-  WindowCloseMessage,
-  WindowRenamedMessage,
-  WindowPaneChangedMessage,
-  UnlinkedWindowAddMessage,
-  UnlinkedWindowCloseMessage,
-  UnlinkedWindowRenamedMessage,
-  LayoutChangeMessage,
-  SessionChangedMessage,
-  SessionRenamedMessage,
-  SessionsChangedMessage,
-  SessionWindowChangedMessage,
-  ClientSessionChangedMessage,
-  ClientDetachedMessage,
-  PasteBufferChangedMessage,
-  PasteBufferDeletedMessage,
-  SubscriptionChangedMessage,
-  MessageMessage,
-  ConfigErrorMessage,
-  ExitMessage,
-  TmuxMessage,
-} from "./protocol/types.js";
+import type { TmuxMessage } from "./protocol/types.js";
 import type {
   ConnectionStateMessage,
   ReconnectedMessage,
@@ -64,45 +35,25 @@ export function isTmuxMessage(ev: EmitterMessage): ev is TmuxMessage {
 }
 
 /**
- * Maps each tmux notification type string to its corresponding message interface.
- * Finite and known at compile time — gives autocomplete on event names and
- * type-safe handler argument types.
+ * Maps each event-type string to its corresponding message variant, giving
+ * per-event listeners autocomplete on names and type-safe handler arguments.
+ *
+ * The wire arm projects `TmuxMessage` by its discriminator — adding a variant
+ * in `protocol/types.ts` produces the right entry here with no second edit.
+ * The synthetic arm names the lifecycle events that client classes emit but
+ * tmux never sends; their shapes live in `connection-state.ts`, so they cannot
+ * be derived from the wire union.
+ *
+ * [LAW:one-source-of-truth] Each arm derives from its own single source: the
+ * wire union for parsed events, `connection-state.ts` for synthetic ones. The
+ * split is visible here rather than hidden, mirroring `EmitterMessage`.
  */
-export interface TmuxEventMap {
-  begin: BeginMessage;
-  end: EndMessage;
-  error: ErrorMessage;
-  output: OutputMessage;
-  "extended-output": ExtendedOutputMessage;
-  pause: PauseMessage;
-  continue: ContinueMessage;
-  "pane-mode-changed": PaneModeChangedMessage;
-  "window-add": WindowAddMessage;
-  "window-close": WindowCloseMessage;
-  "window-renamed": WindowRenamedMessage;
-  "window-pane-changed": WindowPaneChangedMessage;
-  "unlinked-window-add": UnlinkedWindowAddMessage;
-  "unlinked-window-close": UnlinkedWindowCloseMessage;
-  "unlinked-window-renamed": UnlinkedWindowRenamedMessage;
-  "layout-change": LayoutChangeMessage;
-  "session-changed": SessionChangedMessage;
-  "session-renamed": SessionRenamedMessage;
-  "sessions-changed": SessionsChangedMessage;
-  "session-window-changed": SessionWindowChangedMessage;
-  "client-session-changed": ClientSessionChangedMessage;
-  "client-detached": ClientDetachedMessage;
-  "paste-buffer-changed": PasteBufferChangedMessage;
-  "paste-buffer-deleted": PasteBufferDeletedMessage;
-  "subscription-changed": SubscriptionChangedMessage;
-  message: MessageMessage;
-  "config-error": ConfigErrorMessage;
-  exit: ExitMessage;
-  // [LAW:one-source-of-truth] Synthetic lifecycle events emitted by client
-  // classes (TmuxClient, WebSocketTmuxClient, TmuxClientProxy). Not parsed
-  // from tmux output. The ConnectionState shape lives in connection-state.ts.
+export type TmuxEventMap = {
+  [M in TmuxMessage as M["type"]]: M;
+} & {
   "connection-state": ConnectionStateMessage;
   reconnected: ReconnectedMessage;
-}
+};
 
 // Internal handler type — erases the event payload for storage.
 // Public API preserves full type safety via overloads.
