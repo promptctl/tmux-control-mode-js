@@ -92,7 +92,14 @@ class CollectorSink implements TerminalSink {
 describe.skipIf(!RUN_INTEGRATION)(
   "PaneStream — integration (tmux ≥3.2)",
   () => {
-    let socket: string;
+    // Sentinel + per-test reset: socket is "" between tests so a beforeEach
+    // that throws BEFORE assignment never makes afterEach run
+    // `tmux -L <stale-or-undefined> kill-server` against an unrelated tmux
+    // server (worst case: the user's real server, one literally named
+    // `undefined`). The reset in afterEach below restores the invariant per
+    // test — without it, a successful test would leave the previous socket
+    // name visible to the next test's afterEach.
+    let socket = "";
     let session: string;
     let client: TmuxClient;
     let stream: PaneStream | null;
@@ -105,7 +112,8 @@ describe.skipIf(!RUN_INTEGRATION)(
     afterEach(() => {
       stream?.dispose();
       client?.close();
-      killServer(socket);
+      if (socket !== "") killServer(socket);
+      socket = "";
     });
 
     it("attach() seeds with capture-pane output + cursor", async () => {
