@@ -6,4 +6,5 @@ dist-electron/
 test-results/
 playwright-report/
 .claude/*.lock
+.claude/worktrees/
 package-lock.json
