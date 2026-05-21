@@ -122,28 +122,6 @@ export class RpcError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Method allowlist — derived from RpcRequest so the union is the single
-// source of truth. Any new variant must also be listed here, and TypeScript
-// catches drift via the `Set<RpcMethod>` constraint.
-// ---------------------------------------------------------------------------
-
-export const RPC_METHOD_NAMES: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
-  "execute",
-  "listWindows",
-  "listPanes",
-  "sendKeys",
-  "splitWindow",
-  "setSize",
-  "setPaneAction",
-  "subscribeRaw",
-  "unsubscribe",
-  "setFlags",
-  "clearFlags",
-  "requestReport",
-  "queryClipboard",
-]);
-
-// ---------------------------------------------------------------------------
 // Per-method arg validators.
 //
 // Each validator takes `unknown[]` and returns the typed args tuple for its
@@ -243,6 +221,20 @@ const VALIDATORS: Validators = Object.assign(
       ] as const,
     queryClipboard: (args) => requireNoArgs(args),
   } satisfies Validators,
+);
+
+// ---------------------------------------------------------------------------
+// Method allowlist — projected from VALIDATORS so the validator map is the
+// single runtime source of truth for the bridged method set. `satisfies
+// Validators` already forces one entry per RpcRequest variant at compile time,
+// so a new method flows into the allowlist with no extra edit site.
+//
+// [LAW:one-source-of-truth] VALIDATORS enumerates the methods; the allowlist
+// derives from it rather than restating the list.
+// ---------------------------------------------------------------------------
+
+export const RPC_METHOD_NAMES: ReadonlySet<RpcMethod> = new Set(
+  Object.keys(VALIDATORS) as readonly RpcMethod[],
 );
 
 /**
