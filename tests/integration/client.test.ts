@@ -115,7 +115,14 @@ function createSession(
 
 describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   let sessionName: string;
-  let socketName: string;
+  // Sentinel + per-test reset: socketName is "" between tests so a beforeEach
+  // that throws BEFORE assignment never makes afterEach run
+  // `tmux -L <stale-or-undefined> kill-server` against an unrelated tmux
+  // server (worst case: the user's real server, one literally named
+  // `undefined`). The reset in afterEach below restores the invariant per
+  // test — without it, a successful test would leave the previous socket
+  // name visible to the next test's afterEach.
+  let socketName = "";
   let client: TmuxClient;
 
   beforeEach(() => {
@@ -124,7 +131,8 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   afterEach(() => {
     client?.close();
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
+    socketName = "";
   });
 
   it(
@@ -202,7 +210,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
 describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
@@ -212,7 +220,8 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
+    socketName = "";
   });
 
   it(
@@ -330,14 +339,15 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
 describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
 
   beforeEach(() => {
     socketName = uniqueSocket("life");
   });
 
   afterEach(() => {
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
+    socketName = "";
   });
 
   it(
@@ -386,7 +396,7 @@ function nextMessage<K extends keyof import("../../src/emitter.js").TmuxEventMap
 
 describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   let sessionName: string;
-  let socketName: string;
+  let socketName = "";
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
@@ -396,7 +406,8 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    if (socketName !== "") killServer(socketName);
+    socketName = "";
   });
 
   it(
