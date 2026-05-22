@@ -83,7 +83,7 @@ async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
 class TimingSink implements TerminalSink {
   seedAt = 0;
   hasSeed = false;
-  seed(_t: string, _c: SeedCursor | null): void {
+  seed(_captured: Uint8Array, _c: SeedCursor | null): void {
     this.seedAt = performance.now();
     this.hasSeed = true;
   }
