@@ -34,12 +34,17 @@ export function NavbarResizer({ uiStore }: Props) {
         const end = (): void => {
           window.removeEventListener("pointermove", onMove);
           window.removeEventListener("pointerup", end);
+          window.removeEventListener("pointercancel", end);
           document.body.style.cursor = "";
           document.body.style.userSelect = "";
           endDragRef.current = null;
         };
         window.addEventListener("pointermove", onMove);
         window.addEventListener("pointerup", end);
+        // pointercancel terminates a drag too (touch/pen gestures, OS-level
+        // cancellation) — route it through the same teardown so listeners and
+        // body styles never get stuck.
+        window.addEventListener("pointercancel", end);
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
         endDragRef.current = end;
