@@ -14,8 +14,10 @@ import type { SeedCursor } from "../../src/sink/index.js";
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
   readonly writes: Uint8Array[] = [];
+  readonly seedTexts: string[] = [];
   private visible = true;
   seed(text: string, cursor: SeedCursor | null): void {
+    this.seedTexts.push(text);
     this.events.push(
       `seed(${text.length} chars, cursor=${JSON.stringify(cursor)})`,
     );
@@ -198,6 +200,22 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(client.capturePaneCount()).toBe(2); // fresh capture after reconnect
+  });
+
+  it("capture-pane trailing newline does not produce a trailing \\r\\n in the seed text", async () => {
+    // capture-pane -p always appends a trailing \n after the last row. The
+    // parser splits on \n, producing a spurious "" tail. Joining with that
+    // element emits a trailing \r\n that scrolls xterm up one line, putting
+    // the subsequent CUP one row too low. Stripping the trailer is the fix;
+    // this test locks it in place.
+    const { stream } = makeStream({ capture: "row-0\nrow-1\n" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.seedTexts[0]).toBe("row-0\r\nrow-1");
+    expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
   });
 
   it("dispose() → 'disposed' and is idempotent", () => {
