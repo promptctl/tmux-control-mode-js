@@ -10,10 +10,11 @@ interface Props {
 }
 
 export function NavbarResizer({ uiStore }: Props) {
-  if (uiStore.navbarCollapsed) {
-    return null;
-  }
-
+  // [LAW:dataflow-not-control-flow] Hooks run unconditionally every render —
+  // the collapsed/expanded variability lives in the returned value below, not
+  // in whether the hooks execute. An early return before these hooks would
+  // change the hook count between renders and corrupt React's positional hook
+  // state ("Expected static flag was missing").
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWRef = useRef(0);
@@ -37,6 +38,10 @@ export function NavbarResizer({ uiStore }: Props) {
       window.removeEventListener("pointerup", onUp);
     };
   }, [uiStore]);
+
+  if (uiStore.navbarCollapsed) {
+    return null;
+  }
 
   return (
     <div
