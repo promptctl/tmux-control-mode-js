@@ -16,8 +16,10 @@ function tmuxEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
-// [LAW:dataflow-not-control-flow] Every function builds a string and appends LF.
-// No conditional paths — variability is in the values, not whether we build.
+// [LAW:dataflow-not-control-flow] The command builders take values and emit a
+// wire string via buildCommand; variability lives in the values, not in whether
+// we build. The lone exception is sendKeys, which returns null for empty input
+// — the single case with no valid wire form at all (a precondition, not a mode).
 
 function buildCommand(cmd: string): string {
   return cmd + "\n";
