@@ -77,8 +77,9 @@ class CollectorSink implements TerminalSink {
   seedCalls: { text: string; cursor: SeedCursor | null }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
-  seed(text: string, cursor: SeedCursor | null): void {
-    this.seedCalls.push({ text, cursor });
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    // seed carries raw bytes; decode for the human-readable assertions below.
+    this.seedCalls.push({ text: new TextDecoder().decode(captured), cursor });
   }
   write(_bytes: Uint8Array): void {
     this.writeCount += 1;
