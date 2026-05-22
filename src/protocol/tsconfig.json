@@ -2,6 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "../../dist/protocol",
+    // [LAW:one-source-of-truth] dist/ is the published artifact and ships
+    // whole (files: ["dist"]); keep the build cache out of it so dist holds
+    // only consumer output.
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "rootDir": ".",
     "types": []
   },

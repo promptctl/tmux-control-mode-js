@@ -79,7 +79,7 @@
 - TypeScript compiles to ES modules (`.js` files)
 - Entry point exports:
   - Default: `dist/index.js` (types: `dist/index.d.ts`)
-  - Named exports: `./protocol`, `./terminal` subpath exports
+  - Named exports: `./protocol`, `./keymap`, and explicit connector entry points (`./websocket`, `./websocket/server`, `./electron/main`, `./streams/web`, etc. — no pattern exports). The `exports` map in package.json is the canonical list.
 - Side effects: false (tree-shakeable)
 
 ## Build Process

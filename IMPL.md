@@ -49,13 +49,12 @@ tmux-control-mode-js/
 │   │   ├── types.ts       # Transport interface
 │   │   └── index.ts       # Re-exports
 │   │
-│   ├── terminal/          # Terminal integration layer (no hard deps)
-│   │   ├── types.ts       # TerminalEmulator interface
-│   │   ├── pane-manager.ts # Routes output/input between client and terminals
-│   │   └── index.ts       # Re-exports
-│   │
 │   ├── client.ts          # High-level TmuxClient combining both layers
 │   └── index.ts           # Package root
+│
+│   (additional subtrees — keymap/, connectors/, model/ — exist in the
+│    repo but are not enumerated here; see the source for the current
+│    layout, and package.json `exports` for what ships.)
 │
 ├── examples/
 │   └── web-multiplexer/   # Reference React/MobX + xterm.js demo (web + Electron entry paths) — see Section 10
@@ -83,12 +82,10 @@ tmux-control-mode-js/
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
     },
-    "./terminal": {
-      // Terminal integration — TerminalEmulator interface + PaneManager
-      // Works anywhere (no Node.js or xterm.js dependency)
-      "types": "./dist/terminal/index.d.ts",
-      "default": "./dist/terminal/index.js"
-    }
+    // ...plus ./keymap and explicit connector entry points under
+    // ./websocket, ./electron, and ./streams (no pattern exports — each
+    // subpath is named individually). See the `exports` map in
+    // package.json for the canonical list.
   }
 }
 ```
@@ -98,9 +95,6 @@ Consumers pick what they need:
 ```ts
 // Electron main process — full client with spawn transport
 import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
-
-// Renderer process — terminal integration (PaneManager + interface)
-import { PaneManager } from "@promptctl/tmux-control-mode-js/terminal";
 
 // Browser or anywhere — protocol only
 import { TmuxParser, decode } from "@promptctl/tmux-control-mode-js/protocol";
