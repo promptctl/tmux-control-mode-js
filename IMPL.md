@@ -49,13 +49,12 @@ tmux-control-mode-js/
 │   │   ├── types.ts       # Transport interface
 │   │   └── index.ts       # Re-exports
 │   │
-│   ├── terminal/          # Terminal integration layer (no hard deps)
-│   │   ├── types.ts       # TerminalEmulator interface
-│   │   ├── pane-manager.ts # Routes output/input between client and terminals
-│   │   └── index.ts       # Re-exports
-│   │
 │   ├── client.ts          # High-level TmuxClient combining both layers
 │   └── index.ts           # Package root
+│
+│   (additional subtrees — keymap/, connectors/, model/ — exist in the
+│    repo but are not enumerated here; see the source for the current
+│    layout, and package.json `exports` for what ships.)
 │
 ├── examples/
 │   └── web-multiplexer/   # Reference React/MobX + xterm.js demo (web + Electron entry paths) — see Section 10
