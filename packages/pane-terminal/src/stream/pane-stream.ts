@@ -305,17 +305,17 @@ export class PaneStream implements ReseedTarget {
    * Convenience wrapper so consumers don't need to format pane targets.
    */
   sendKeys(data: string): Promise<CommandResponse> {
-    // [LAW:no-defensive-null-guards] Trust boundary: `data` is caller input.
-    // Zero keys has no valid wire form (`send-keys -H` with no bytes errors),
-    // so an empty send is a no-op resolving without a round-trip.
-    if (data === "") return Promise.resolve(emptyKeysResponse());
-    // [LAW:one-source-of-truth] The send-keys wire format lives in the library
-    // encoder (send -H hex bytes), shared with TmuxClient.sendKeys. encodeSendKeys
-    // returns a full wire line (trailing LF); execute() re-adds the LF via
-    // buildCommand, so strip the encoder's trailing LF to avoid emitting a bare
-    // empty line (which tmux treats as the detach signal).
+    // [LAW:one-source-of-truth] The send-keys wire format AND its empty-input
+    // precondition live in the library encoder (send -H hex bytes), shared with
+    // TmuxClient.sendKeys. encodeSendKeys returns null for empty input (no
+    // command to send) → no-op response, or a full wire line (trailing LF) for
+    // a real send; execute() re-adds the LF via buildCommand, so strip the
+    // encoder's trailing LF to avoid emitting a bare empty line (which tmux
+    // treats as the detach signal).
     const wire = encodeSendKeys(`%${this.paneId}`, data);
-    return this.client.execute(wire.slice(0, -1));
+    return wire === null
+      ? Promise.resolve(emptyKeysResponse())
+      : this.client.execute(wire.slice(0, -1));
   }
 
   on<E extends EventName>(event: E, handler: Listener<E>): Unsubscribe {

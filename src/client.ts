@@ -185,12 +185,12 @@ export class TmuxClient {
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
-    // [LAW:no-defensive-null-guards] Trust boundary: `keys` is caller input.
-    // Zero keys has no valid wire form — `send-keys -H` with no bytes errors
-    // ("no key specified") — so an empty send is a no-op that resolves without
-    // a round-trip rather than a malformed command.
-    if (keys === "") return Promise.resolve(emptyKeysResponse());
-    return this.sendRaw(encodeSendKeys(target, keys));
+    // The encoder owns the empty-input precondition (returns null = no command
+    // to send); an empty send is a no-op resolving without a round-trip.
+    const cmd = encodeSendKeys(target, keys);
+    return cmd === null
+      ? Promise.resolve(emptyKeysResponse())
+      : this.sendRaw(cmd);
   }
 
   splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {
