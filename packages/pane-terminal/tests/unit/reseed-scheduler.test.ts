@@ -5,7 +5,7 @@
 // one reconnect handler, sequential dispatch in priority order. Bench gate
 // 7 measures the same code from a timing angle; this file pins the order.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import {
   ReseedScheduler,
@@ -132,6 +132,8 @@ describe("ReseedScheduler — dispatch order", () => {
 });
 
 describe("ReseedScheduler — reconnect wiring", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("subscribes to 'reconnected' exactly once per client", () => {
     const client = new FakeTmuxClient();
     const spy = vi.spyOn(client, "on");
@@ -141,7 +143,6 @@ describe("ReseedScheduler — reconnect wiring", () => {
     // Two constructions → two on() calls. Sharing is via getScheduler, not
     // by skipping the subscription in the constructor.
     expect(spy.mock.calls).toHaveLength(2);
-    vi.restoreAllMocks();
   });
 
   it("getScheduler() across many calls only adds one reconnect handler", () => {
@@ -153,6 +154,5 @@ describe("ReseedScheduler — reconnect wiring", () => {
     // getScheduler is idempotent: only the first call creates a scheduler
     // (and its single on("reconnected") subscription).
     expect(spy.mock.calls).toHaveLength(1);
-    vi.restoreAllMocks();
   });
 });

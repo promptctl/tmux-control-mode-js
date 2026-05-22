@@ -9,9 +9,10 @@
 // source exposes.
 //
 // DOM lib is required (xterm-sink.test.ts uses document, HTMLElement,
-// requestAnimationFrame, ResizeObserver, IntersectionObserver). The root
-// tsconfig.tests.json omits DOM because it only covers Node-side tests;
-// this config overrides lib accordingly.
+// requestAnimationFrame, ResizeObserver, IntersectionObserver). Setting
+// lib explicitly ensures the DOM surface is intentional and stable across
+// TypeScript version changes, rather than relying on the target-derived
+// default which could shift.
 //
 // [LAW:one-way-deps] Tests may import from src/ (and transitively from the
 // library package). They never export — noEmit enforces this boundary.
