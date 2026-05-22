@@ -510,7 +510,20 @@ export class PaneStream implements ReseedTarget {
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — no live byte can interleave.
-    const captured = captureOutput.join("\r\n");
+    //
+    // capture-pane -p appends a trailing \n after the last row, which the
+    // parser turns into an extra "" element. Joining WITH that element
+    // produces a trailing \r\n that forces xterm to scroll up one line —
+    // shifting all content and putting the subsequent CUP one row off,
+    // causing live bytes to land at the wrong row (the "first char replaced
+    // with 'o'" class of bugs). Strip the trailer so the join ends cleanly
+    // at the last row's content, no scroll.
+    const rawLines = captureOutput;
+    const lines =
+      rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
+        ? rawLines.slice(0, -1)
+        : rawLines;
+    const captured = lines.join("\r\n");
     const cursor = parseCursor(cursorLine);
 
     // Cache for the next attach() — gate #4 reuses this without a fresh
