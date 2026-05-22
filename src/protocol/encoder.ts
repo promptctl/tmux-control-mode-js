@@ -75,7 +75,15 @@ function utf8HexBytes(s: string): string {
 //     raw control bytes;
 //   - every byte 0x00-0xFF round-trips to the pane unchanged regardless of
 //     pane mode; UTF-8 input is sent as its exact byte sequence.
-function sendKeys(target: string, keys: string): string {
+// [LAW:single-enforcer] The empty-input precondition is enforced HERE, in the
+// one place that owns the wire format. Zero keys has no valid wire form
+// (`send-keys -H` with no hex args errors), so empty input returns null — "no
+// command to send" — which every caller (including direct consumers of this
+// exported helper) must handle by structure rather than emitting a malformed
+// command. [LAW:types-are-the-program] the `string | null` return carries the
+// command/no-command variability.
+function sendKeys(target: string, keys: string): string | null {
+  if (keys === "") return null;
   return buildCommand(
     `send-keys -H -t ${tmuxEscape(target)} ${utf8HexBytes(keys)}`,
   );

@@ -168,6 +168,12 @@ describe("sendKeys", () => {
     expect(sendKeys("it's", "x")).toBe("send-keys -H -t 'it'\\''s' 78\n");
   });
 
+  it("empty keys returns null (no valid wire form — caller no-ops)", () => {
+    // `send-keys -H` with zero hex args errors ("no key specified"), so the
+    // encoder enforces the precondition: empty input has no command.
+    expect(sendKeys("%1", "")).toBeNull();
+  });
+
   it("keys containing $(cmd) become inert hex bytes", () => {
     expect(sendKeys("%2", "$(rm -rf /)")).toBe(
       "send-keys -H -t '%2' 24 28 72 6d 20 2d 72 66 20 2f 29\n",
@@ -192,6 +198,7 @@ describe("sendKeys", () => {
 
   it("ends with exactly one trailing newline", () => {
     const result = sendKeys("%1", "x");
+    if (result === null) throw new Error("non-empty keys must produce a command");
     expect(result.endsWith("\n")).toBe(true);
     expect(result.split("\n").length).toBe(2);
   });
