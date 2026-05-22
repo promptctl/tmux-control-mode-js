@@ -94,10 +94,12 @@ const rule: Rule.RuleModule = {
         "ExpressionStatement",
       ]);
       while (
-        (anchor as { parent?: ESTreeNode }).parent &&
-        carrierTypes.has((anchor as { parent: ESTreeNode }).parent.type)
+        (anchor as unknown as { parent?: ESTreeNode }).parent &&
+        carrierTypes.has(
+          (anchor as unknown as { parent: ESTreeNode }).parent.type,
+        )
       ) {
-        anchor = (anchor as { parent: ESTreeNode }).parent;
+        anchor = (anchor as unknown as { parent: ESTreeNode }).parent;
       }
       const leading = sourceCode.getCommentsBefore(anchor);
       const block = blockBodyOf(fn);

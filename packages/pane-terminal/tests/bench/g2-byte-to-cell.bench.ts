@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { TerminalSink } from "../../src/stream/index.js";
+import type { TerminalSink } from "../../src/sink/index.js";
 import type { SeedCursor } from "../../src/sink/index.js";
 
 const P99_BUDGET_MS = 16;
@@ -34,6 +34,12 @@ class TimingSink implements TerminalSink {
   }
   resize(_c: number, _r: number): void {
     /* no-op */
+  }
+  clear(): void {
+    /* no-op */
+  }
+  isVisible(): boolean {
+    return true;
   }
   dispose(): void {
     /* no-op */
