@@ -344,6 +344,16 @@ describe("PaneStream — state machine", () => {
     expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
     expect(sink2.writes).toHaveLength(0);
   });
+
+  it("sendKeys('') is a no-op: resolves success without issuing a command", async () => {
+    // Zero keys has no valid wire form (send-keys -H with no bytes errors).
+    // The empty send must short-circuit to the synthetic no-op response
+    // (commandNumber -1) rather than building a malformed command.
+    const { stream } = makeStream();
+    const res = await stream.sendKeys("");
+    expect(res.success).toBe(true);
+    expect(res.commandNumber).toBe(-1);
+  });
 });
 
 describe("PaneStream — paneId filter & dataflow", () => {
