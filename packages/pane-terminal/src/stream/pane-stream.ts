@@ -668,8 +668,11 @@ interface SeedState {
 // tmux flag values are "1"/"0"; map each to its DEC private-mode set/reset
 // sequence. [LAW:dataflow-not-control-flow] The escape is selected by the
 // flag VALUE through a table — no per-flag branching beyond the lookup.
+// A missing OR empty field is a no-op (leave terminal state unchanged): an
+// older tmux that doesn't expand a format yields "", which must NOT be read as
+// "0" and actively force the mode off. Degrades like pane_height/history_size.
 function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
-  if (flag === undefined) return "";
+  if (flag === undefined || flag === "") return "";
   return flag === "1" ? onSeq : offSeq;
 }
 
