@@ -13,16 +13,19 @@
 import { describe, it, expect } from "vitest";
 import { BufferingSink } from "../../src/sink/index.js";
 
+// seed() carries raw bytes (same kind as write()); these fixtures are ASCII.
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
 describe("BufferingSink — recorder behaviour", () => {
   it("records seed/write/resize calls in order", () => {
     const sink = new BufferingSink();
-    sink.seed("hello", { col: 2, row: 3 });
+    sink.seed(enc("hello"), { col: 2, row: 3 });
     sink.write(new Uint8Array([1, 2]));
     sink.resize(80, 24);
     sink.write(new Uint8Array([3]));
 
     expect(sink.seedCalls).toEqual([
-      { captured: "hello", cursor: { col: 2, row: 3 } },
+      { captured: enc("hello"), cursor: { col: 2, row: 3 } },
     ]);
     expect(sink.writes.map((w) => Array.from(w))).toEqual([[1, 2], [3]]);
     expect(sink.resizeCalls).toEqual([{ cols: 80, rows: 24 }]);
@@ -37,7 +40,7 @@ describe("BufferingSink — recorder behaviour", () => {
 
   it("seed() accepts null cursor", () => {
     const sink = new BufferingSink();
-    sink.seed("x", null);
+    sink.seed(enc("x"), null);
     expect(sink.seedCalls[0].cursor).toBeNull();
   });
 
@@ -47,7 +50,7 @@ describe("BufferingSink — recorder behaviour", () => {
     const writesRef = sink.writes;
     const resizeRef = sink.resizeCalls;
 
-    sink.seed("x", null);
+    sink.seed(enc("x"), null);
     sink.write(new Uint8Array([1]));
     sink.resize(10, 10);
 
@@ -64,11 +67,11 @@ describe("BufferingSink — recorder behaviour", () => {
 
   it("dispose() makes subsequent calls no-ops", () => {
     const sink = new BufferingSink();
-    sink.seed("x", null);
+    sink.seed(enc("x"), null);
     sink.dispose();
     expect(sink.disposed).toBe(true);
 
-    sink.seed("y", null); // no-op
+    sink.seed(enc("y"), null); // no-op
     sink.write(new Uint8Array([1])); // no-op
     sink.resize(80, 24); // no-op
     sink.clear(); // no-op

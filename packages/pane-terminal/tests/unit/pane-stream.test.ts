@@ -16,10 +16,13 @@ class RecordingSink implements TerminalSink {
   readonly writes: Uint8Array[] = [];
   readonly seedTexts: string[] = [];
   private visible = true;
-  seed(text: string, cursor: SeedCursor | null): void {
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    // seed carries raw bytes (same kind as write); decode Latin-1 (lossless
+    // for the ASCII fixtures these tests use) for human-readable assertions.
+    const text = new TextDecoder("latin1").decode(captured);
     this.seedTexts.push(text);
     this.events.push(
-      `seed(${text.length} chars, cursor=${JSON.stringify(cursor)})`,
+      `seed(${captured.byteLength} bytes, cursor=${JSON.stringify(cursor)})`,
     );
   }
   write(bytes: Uint8Array): void {

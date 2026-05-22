@@ -121,8 +121,10 @@ export class PaneStream implements ReseedTarget {
   // the new sink the same starting picture WITHOUT a fresh capture-pane
   // round-trip (gate #4: re-mount ×100 → exactly one capture). Set inside
   // seed(); cleared by reconnect (the underlying pane state has moved).
-  private lastSeed: { captured: string; cursor: SeedCursor | null } | null =
-    null;
+  private lastSeed: {
+    captured: Uint8Array;
+    cursor: SeedCursor | null;
+  } | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a
   // time. attach() short-circuits when this is non-null (the resolution
   // will pick up `this.sink` whatever it is then). Required by gate #4 under
@@ -545,7 +547,13 @@ export class PaneStream implements ReseedTarget {
     // before drawing (they affect layout), input/cursor modes after. The CUP
     // the sink appends from `cursor` lands last, so it reflects the final
     // restored state.
-    const captured = preamble + screen + epilogue;
+    //
+    // The capture text arrives as Latin-1 (one code unit per raw byte — see the
+    // transport). Convert back to the exact byte sequence so the sink receives
+    // RAW BYTES, identical in kind to the live `write()` path; the renderer is
+    // the single decoding authority. We never UTF-8-decode terminal data. The
+    // mode escapes are ASCII, so they encode 1:1.
+    const captured = latin1ToBytes(preamble + screen + epilogue);
 
     // Cache for the next attach() — gate #4 reuses this without a fresh
     // capture-pane round-trip. Only cached on success: a failed seed left
@@ -605,6 +613,16 @@ export class PaneStream implements ReseedTarget {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+// Inverse of the transport's Latin-1 byte container: each code unit (0x00-0xFF)
+// becomes exactly one byte. Lossless — NOT a semantic decode. UTF-8 multibyte
+// sequences in the captured screen survive as their original consecutive bytes,
+// to be decoded by the renderer.
+function latin1ToBytes(s: string): Uint8Array {
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
+  return bytes;
+}
 
 interface SeedState {
   readonly cursor: SeedCursor | null;
