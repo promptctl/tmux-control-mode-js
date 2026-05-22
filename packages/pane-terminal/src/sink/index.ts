@@ -51,10 +51,13 @@ export interface SeedCursor {
 export interface TerminalSink {
   /**
    * Seed the view with a snapshot captured from tmux. Called exactly once per
-   * `attach()`, BEFORE any `write()`. `captured` is RAW BYTES — the joined
-   * `capture-pane` rows (with mode-restore escapes) exactly as tmux produced
-   * them. It is the same byte stream `write()` carries, so the renderer is the
-   * single decoding authority; the library never interprets these bytes.
+   * `attach()`, BEFORE any `write()`. `captured` is RAW BYTES: the joined
+   * `capture-pane` rows as tmux produced them, wrapped by library-synthesized
+   * mode-restore escapes (alt-screen/autowrap before the grid, cursor/keypad/
+   * insert after) that PaneStream derives from `display-message` state — those
+   * escapes are injected by the library, not emitted by `capture-pane`. The
+   * stream is the same kind `write()` carries, so the renderer is the single
+   * decoding authority; the library never interprets the captured grid bytes.
    *
    * `cursor` is `null` when tmux did not return a parsable cursor reply;
    * sinks should leave the cursor at the natural end of the captured bytes

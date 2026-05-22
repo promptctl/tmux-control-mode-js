@@ -238,14 +238,19 @@ describe("PaneStream — state machine", () => {
     stream.attach(sink);
     await flushTicks();
     expect(stream.state).toBe("live");
-    // The seed must carry exactly 8 rows: AA, BB, then 6 padded blank rows.
-    // Row 0 carries the autowrap preamble prefix and the final row carries the
-    // mode epilogue; the row COUNT is the invariant the cursor alignment needs.
+    // The seed must carry exactly 8 rows — AA, BB, then 6 padded blank rows
+    // (rows 2–7). The row COUNT is the invariant the cursor alignment needs.
+    // Row 0 carries the autowrap preamble prefix; the 6th padded blank (row 7)
+    // carries the trailing mode epilogue, so only rows 2–6 are asserted as
+    // pure empties and row 7 is asserted to be blank-but-for the epilogue.
     const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
     expect(rows).toHaveLength(8);
     expect(rows[0]?.endsWith("AA")).toBe(true);
     expect(rows[1]).toBe("BB");
     expect(rows.slice(2, 7)).toEqual(["", "", "", "", ""]);
+    // Row 7 is the final padded blank; its only content is the mode epilogue
+    // (an ESC sequence), never seeded grid text.
+    expect(rows[7]?.startsWith("\x1b")).toBe(true);
   });
 
   it("dispose() → 'disposed' and is idempotent", () => {

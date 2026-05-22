@@ -74,12 +74,13 @@ async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
 }
 
 class CollectorSink implements TerminalSink {
-  seedCalls: { text: string; cursor: SeedCursor | null }[] = [];
+  seedCalls: { byteLength: number; cursor: SeedCursor | null }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
   seed(captured: Uint8Array, cursor: SeedCursor | null): void {
-    // seed carries raw bytes; decode for the human-readable assertions below.
-    this.seedCalls.push({ text: new TextDecoder().decode(captured), cursor });
+    // seed carries raw terminal bytes (may include 0x80-0xFF / invalid UTF-8),
+    // so assert on byteLength rather than a lossy UTF-8 decode.
+    this.seedCalls.push({ byteLength: captured.byteLength, cursor });
   }
   write(_bytes: Uint8Array): void {
     this.writeCount += 1;
@@ -151,7 +152,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       }
       expect(stream.state).toBe("live");
       expect(sink.seedCalls).toHaveLength(1);
-      expect(sink.seedCalls[0].text.length).toBeGreaterThan(0);
+      expect(sink.seedCalls[0].byteLength).toBeGreaterThan(0);
       // Cursor should be present and inside the 80x24 viewport.
       const cursor = sink.seedCalls[0].cursor;
       expect(cursor).not.toBeNull();
