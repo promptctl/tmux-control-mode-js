@@ -133,7 +133,9 @@
 - Purpose: Single, curated public API surface (LAW:one-source-of-truth)
 - Non-exported but available via subpath:
   - `@promptctl/tmux-control-mode-js/protocol` → parser, encoder, types
-  - `@promptctl/tmux-control-mode-js/terminal` → planned future terminal layer (not yet implemented)
+  - `@promptctl/tmux-control-mode-js/keymap` → key-event engine and default bindings
+  - `@promptctl/tmux-control-mode-js/websocket/*`, `./electron/*`, `./streams/*` → connector entry points
+  - (Terminal rendering lives in the separate `@promptctl/pane-terminal` package.)
 
 **Application Entry Points:**
 - User code: `import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js"`

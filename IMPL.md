@@ -82,13 +82,9 @@ tmux-control-mode-js/
       // Pure protocol — works in browser, Deno, Bun, anywhere
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
-    },
-    "./terminal": {
-      // Terminal integration — TerminalEmulator interface + PaneManager
-      // Works anywhere (no Node.js or xterm.js dependency)
-      "types": "./dist/terminal/index.d.ts",
-      "default": "./dist/terminal/index.js"
     }
+    // ...plus connector subpaths (./websocket/*, ./electron/*, ./streams/*)
+    // and ./keymap. The `exports` map in package.json is the source of truth.
   }
 }
 ```
@@ -98,9 +94,6 @@ Consumers pick what they need:
 ```ts
 // Electron main process — full client with spawn transport
 import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
-
-// Renderer process — terminal integration (PaneManager + interface)
-import { PaneManager } from "@promptctl/tmux-control-mode-js/terminal";
 
 // Browser or anywhere — protocol only
 import { TmuxParser, decode } from "@promptctl/tmux-control-mode-js/protocol";

@@ -2,13 +2,12 @@
 
 **Analysis Date:** 2026-04-05
 
-## Missing Terminal Export
+## Missing Terminal Export — RESOLVED (2026-05-22)
 
-**Issue:** Package.json declares an export for `"./terminal"` but no corresponding implementation exists.
+**Issue:** Package.json declared an export for `"./terminal"` but no corresponding implementation existed.
 
-- Files: `package.json` line 15-18
-- Impact: Consumers attempting to import from `"tmux-control-mode-js/terminal"` will fail at runtime with a 404 error. This is a breaking API contract.
-- Fix approach: Either implement `src/terminal/index.ts` with the promised API, or remove the export declaration from package.json to match the actual codebase structure.
+- Impact: Consumers importing from `"tmux-control-mode-js/terminal"` would fail at runtime with a 404. A clean build never emitted `dist/terminal/`, so the published export was dead.
+- Resolution: Removed the `./terminal` export entry (terminal rendering lives in the separate `@promptctl/pane-terminal` package). The release audit verified all remaining subpath exports resolve from a real install.
 
 ## Uncaught Handler Errors in Event Emitter
 
