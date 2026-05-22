@@ -26,6 +26,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+// seed() carries raw bytes (same kind as write()). These fixtures are ASCII,
+// so UTF-8 encoding is a 1:1 byte mapping; the helper keeps the assertions
+// readable while exercising the byte contract.
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
 // ---------------------------------------------------------------------------
 // xterm.js mock — must be hoisted before importing XtermSink so the import
 // resolves to this stub. The mock keeps the methods XtermSink calls and
@@ -156,10 +161,10 @@ describe("XtermSink: seed", () => {
     // Advance past the first-resize gate so seed() is applied immediately.
     sink.resize(80, 24);
     flushRaf();
-    sink.seed("hello\r\nworld", { col: 4, row: 1 });
-    // Two writes: captured text, then the cursor escape + scrollToBottom cb.
+    sink.seed(enc("hello\r\nworld"), { col: 4, row: 1 });
+    // Two writes: captured bytes, then the cursor escape + scrollToBottom cb.
     expect(term.write).toHaveBeenCalledTimes(2);
-    expect(term.write).toHaveBeenNthCalledWith(1, "hello\r\nworld");
+    expect(term.write).toHaveBeenNthCalledWith(1, enc("hello\r\nworld"));
     expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[2;5H", expect.any(Function));
     sink.dispose();
   });
@@ -168,22 +173,22 @@ describe("XtermSink: seed", () => {
     const { sink, term } = newSink();
     sink.resize(80, 24);
     flushRaf();
-    sink.seed("only text", null);
+    sink.seed(enc("only text"), null);
     expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith("only text", expect.any(Function));
+    expect(term.write).toHaveBeenCalledWith(enc("only text"), expect.any(Function));
     sink.dispose();
   });
 
   it("seed after dispose is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed("late", { col: 0, row: 0 });
+    sink.seed(enc("late"), { col: 0, row: 0 });
     expect(term.write).not.toHaveBeenCalled();
   });
 
   it("seed before first resize is buffered; applied in the first-resize rAF", () => {
     const { sink, term } = newSink();
-    sink.seed("buffered", { col: 2, row: 0 });
+    sink.seed(enc("buffered"), { col: 2, row: 0 });
     // rAF not yet fired — seed must be held, not applied.
     expect(term.write).not.toHaveBeenCalled();
     sink.resize(80, 24);
@@ -192,20 +197,20 @@ describe("XtermSink: seed", () => {
     flushRaf();
     expect(term.resize).toHaveBeenCalledWith(80, 24);
     expect(term.write).toHaveBeenCalledTimes(2);
-    expect(term.write).toHaveBeenNthCalledWith(1, "buffered");
+    expect(term.write).toHaveBeenNthCalledWith(1, enc("buffered"));
     expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[1;3H", expect.any(Function));
     sink.dispose();
   });
 
   it("a second seed() before the first rAF overwrites the first (latest wins)", () => {
     const { sink, term } = newSink();
-    sink.seed("first", null);
-    sink.seed("second", null);
+    sink.seed(enc("first"), null);
+    sink.seed(enc("second"), null);
     sink.resize(80, 24);
     flushRaf();
     // Only the second seed must reach xterm.
     expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith("second", expect.any(Function));
+    expect(term.write).toHaveBeenCalledWith(enc("second"), expect.any(Function));
     sink.dispose();
   });
 });
@@ -229,7 +234,7 @@ describe("XtermSink: write (live byte path)", () => {
     const { sink, term } = newSink();
     const bytes1 = new Uint8Array([0x41]);
     const bytes2 = new Uint8Array([0x42]);
-    sink.seed("snap", null);
+    sink.seed(enc("snap"), null);
     sink.write(bytes1);
     sink.write(bytes2);
     // Nothing forwarded to xterm yet.
@@ -238,7 +243,7 @@ describe("XtermSink: write (live byte path)", () => {
     flushRaf();
     // Order: seed (with scrollToBottom cb), then live bytes.
     expect(term.write).toHaveBeenCalledTimes(3);
-    expect(term.write).toHaveBeenNthCalledWith(1, "snap", expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(1, enc("snap"), expect.any(Function));
     expect(term.write).toHaveBeenNthCalledWith(2, bytes1);
     expect(term.write).toHaveBeenNthCalledWith(3, bytes2);
     sink.dispose();
@@ -366,7 +371,7 @@ describe("XtermSink: dispose lifecycle", () => {
   it("post-dispose: write, seed, resize, setFontSize all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed("x", null);
+    sink.seed(enc("x"), null);
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     flushRaf();

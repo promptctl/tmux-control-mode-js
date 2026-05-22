@@ -321,7 +321,15 @@ export class TmuxParser {
     // the processing step runs.
     let newlineIdx = this.buffer.indexOf("\n");
     while (newlineIdx !== -1) {
-      const line = this.buffer.slice(0, newlineIdx);
+      // Drop a trailing \r so CRLF transports parse identically to LF ones.
+      // The reference treats \r as line-driver noise; protocol lines and
+      // command-response text never depend on it (real \r in pane output is
+      // octal-escaped and handled in decodeOctalEscapes).
+      const end =
+        newlineIdx > 0 && this.buffer.charCodeAt(newlineIdx - 1) === 0x0d
+          ? newlineIdx - 1
+          : newlineIdx;
+      const line = this.buffer.slice(0, end);
       this.buffer = this.buffer.slice(newlineIdx + 1);
       this.processLine(line);
       newlineIdx = this.buffer.indexOf("\n");
@@ -369,6 +377,11 @@ export class TmuxParser {
     // (inResponseBlock, isBlockTerminator) tuple — the same `processLine`
     // operation runs every call; only the data decides which side effect.
     if (treatAsOutput) {
+      // Command-response lines pass through raw (Latin-1 byte-faithful). The
+      // library never re-interprets bytes as UTF-8 — capture-pane content is
+      // terminal data the renderer decodes, and other command output (list-*,
+      // display-message) is ASCII or consumer-decoded. One byte pipe, no lossy
+      // decode.
       this.onOutputLine?.(this.activeCommandNumber, line);
       return;
     }
