@@ -155,25 +155,42 @@ describe("refreshClientUnsubscribe", () => {
 });
 
 describe("sendKeys", () => {
-  it("simple target and keys → exact wire string", () => {
-    expect(sendKeys("%1", "hello")).toBe("send-keys -t '%1' -l 'hello'\n");
-  });
-
-  it("target with single quote is properly escaped", () => {
-    expect(sendKeys("it's", "x")).toBe("send-keys -t 'it'\\''s' -l 'x'\n");
-  });
-
-  it("keys containing $(cmd) pass through inert in single quotes", () => {
-    expect(sendKeys("%2", "$(rm -rf /)")).toBe(
-      "send-keys -t '%2' -l '$(rm -rf /)'\n"
+  // Keys are sent as raw UTF-8 bytes in hex via `send -H` (mirrors the
+  // canonical client). No key byte ever appears literally in the command
+  // line, so control bytes and shell metacharacters are inert by construction.
+  it("simple target and keys → hex-byte wire string", () => {
+    expect(sendKeys("%1", "hello")).toBe(
+      "send-keys -H -t '%1' 68 65 6c 6c 6f\n",
     );
   });
 
-  it("keys with single quote are properly escaped", () => {
-    expect(sendKeys("%0", "a'b")).toBe("send-keys -t '%0' -l 'a'\\''b'\n");
+  it("target with single quote is properly escaped", () => {
+    expect(sendKeys("it's", "x")).toBe("send-keys -H -t 'it'\\''s' 78\n");
   });
 
-  it("always ends with exactly one newline", () => {
+  it("keys containing $(cmd) become inert hex bytes", () => {
+    expect(sendKeys("%2", "$(rm -rf /)")).toBe(
+      "send-keys -H -t '%2' 24 28 72 6d 20 2d 72 66 20 2f 29\n",
+    );
+  });
+
+  it("control bytes (Enter, Ctrl-C) and a literal LF encode as hex, not raw", () => {
+    // CR (0x0d), Ctrl-C (0x03), then a multi-line paste with an embedded LF
+    // (0x0a) — none may appear raw in the command line.
+    expect(sendKeys("%0", "\r")).toBe("send-keys -H -t '%0' 0d\n");
+    expect(sendKeys("%0", "\x03")).toBe("send-keys -H -t '%0' 03\n");
+    expect(sendKeys("%0", "a\nb")).toBe("send-keys -H -t '%0' 61 0a 62\n");
+  });
+
+  it("multibyte UTF-8 keys send their exact byte sequence", () => {
+    // 'é' is 0xC3 0xA9; '😀' (U+1F600) is 0xF0 0x9F 0x98 0x80.
+    expect(sendKeys("%0", "é")).toBe("send-keys -H -t '%0' c3 a9\n");
+    expect(sendKeys("%0", "\u{1F600}")).toBe(
+      "send-keys -H -t '%0' f0 9f 98 80\n",
+    );
+  });
+
+  it("ends with exactly one trailing newline", () => {
     const result = sendKeys("%1", "x");
     expect(result.endsWith("\n")).toBe(true);
     expect(result.split("\n").length).toBe(2);

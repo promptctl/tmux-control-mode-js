@@ -47,6 +47,7 @@ export { decodeOctalEscapes } from "./decode.js";
 export {
   tmuxEscape,
   buildCommand,
+  sendKeys,
   refreshClientSize,
   refreshClientPaneAction,
   refreshClientSubscribe,

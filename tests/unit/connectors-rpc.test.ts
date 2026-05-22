@@ -247,7 +247,8 @@ describe("dispatchRpcRequest — routing", () => {
     });
     expect(t.sent[0]).toContain("send-keys");
     expect(t.sent[0]).toContain("%0");
-    expect(t.sent[0]).toContain("hi");
+    // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hi" → "68 69".
+    expect(t.sent[0]).toContain("68 69");
     feedOk(t.feed, 1);
     await p;
   });
