@@ -46,7 +46,7 @@ pnpm run demo           # starts bridge + Vite; needs at least one local tmux se
 
 ## Architecture
 
-Three layers, built as three TS project references and shipped as subpath exports (`.`, `./protocol`, `./terminal` — the last currently planned in `IMPL.md`; verify before referencing):
+Three layers, built as TS project references and shipped as subpath exports (`.`, `./protocol`, plus connector/keymap subpaths — the `exports` map in `package.json` is the source of truth for what ships):
 
 - `src/protocol/` — **pure**, zero Node.js deps. Parses tmux control-mode lines into a discriminated-union `TmuxMessage`, encodes outbound commands, decodes octal escapes. Usable in browser/Deno/Bun. Declared `"sideEffects": false`.
 - `src/transport/` — Node-only. `spawnTmux()` forks `tmux -C` via `child_process`; `TmuxTransport` is the interface every consumer writes against (so tests can substitute a fake transport).
