@@ -106,8 +106,10 @@ export class XtermSink implements TerminalSink {
   // Seed content buffered when seed() arrives before the first terminal.resize().
   // Applied immediately after the first resize fires in its rAF, guaranteeing
   // that content is always written at the correct terminal dimensions.
-  private pendingSeed: { captured: string; cursor: SeedCursor | null } | null =
-    null;
+  private pendingSeed: {
+    captured: Uint8Array;
+    cursor: SeedCursor | null;
+  } | null = null;
   // Live bytes buffered before the first resize rAF. PaneStream drains its
   // seeding-window buffer synchronously immediately after seed() returns —
   // those write() calls must land *after* the seed in the xterm write queue.
@@ -194,7 +196,7 @@ export class XtermSink implements TerminalSink {
   // TerminalSink contract
   // ---------------------------------------------------------------------------
 
-  seed(captured: string, cursor: SeedCursor | null): void {
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
     if (this.isDisposed) return;
     if (!this.firstResizeDone) {
       // terminal.resize() is deferred to the first rAF. Writing content
@@ -209,10 +211,10 @@ export class XtermSink implements TerminalSink {
     this.applySeed(captured, cursor);
   }
 
-  private applySeed(captured: string, cursor: SeedCursor | null): void {
-    // xterm.write accepts string here (capture-pane output is already UTF-8
-    // text). The live path uses Uint8Array via `write()` below — gate 5
-    // depends on that distinction.
+  private applySeed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    // xterm.write accepts Uint8Array; the seed is raw bytes (same as the live
+    // path) and xterm is the single decoding authority. The CUP below is an
+    // ASCII string — xterm.write accepts either form.
     //
     // scrollToBottom via the write callback: terminal.write() is internally
     // async (processes data in chunks across frames). The callback fires after

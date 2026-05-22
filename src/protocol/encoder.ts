@@ -16,8 +16,10 @@ function tmuxEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
-// [LAW:dataflow-not-control-flow] Every function builds a string and appends LF.
-// No conditional paths — variability is in the values, not whether we build.
+// [LAW:dataflow-not-control-flow] The command builders take values and emit a
+// wire string via buildCommand; variability lives in the values, not in whether
+// we build. The lone exception is sendKeys, which returns null for empty input
+// — the single case with no valid wire form at all (a precondition, not a mode).
 
 function buildCommand(cmd: string): string {
   return cmd + "\n";
@@ -50,10 +52,42 @@ function refreshClientUnsubscribe(name: string): string {
   return buildCommand(`refresh-client -B ${tmuxEscape(name)}`);
 }
 
-// [LAW:one-source-of-truth] send-keys wire format lives here only.
-function sendKeys(target: string, keys: string): string {
+const utf8Encoder = new TextEncoder();
+
+// Encode a string as space-separated 2-digit hex of its UTF-8 bytes.
+// Accumulate into an array and join once — repeated string concatenation is
+// quadratic-ish for large pastes.
+function utf8HexBytes(s: string): string {
+  const bytes = utf8Encoder.encode(s);
+  const hex = new Array<string>(bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    hex[i] = bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex.join(" ");
+}
+
+// [LAW:one-source-of-truth] send-keys wire format lives here only — used by
+// both TmuxClient.sendKeys and PaneStream.sendKeys.
+//
+// Mirrors the canonical client's `send -H` (literal-hex-byte) path, generalized
+// to every byte. Each key is sent as a raw byte in hex, so:
+//   - control bytes (Enter, Ctrl-C, ESC sequences) and a literal LF from a
+//     multi-line paste never enter the line-terminated command stream, where
+//     they would split/corrupt the protocol — the failure mode of `-l` with
+//     raw control bytes;
+//   - every byte 0x00-0xFF round-trips to the pane unchanged regardless of
+//     pane mode; UTF-8 input is sent as its exact byte sequence.
+// [LAW:single-enforcer] The empty-input precondition is enforced HERE, in the
+// one place that owns the wire format. Zero keys has no valid wire form
+// (`send-keys -H` with no hex args errors), so empty input returns null — "no
+// command to send" — which every caller (including direct consumers of this
+// exported helper) must handle by structure rather than emitting a malformed
+// command. [LAW:types-are-the-program] the `string | null` return carries the
+// command/no-command variability.
+function sendKeys(target: string, keys: string): string | null {
+  if (keys === "") return null;
   return buildCommand(
-    `send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`,
+    `send-keys -H -t ${tmuxEscape(target)} ${utf8HexBytes(keys)}`,
   );
 }
 

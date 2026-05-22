@@ -11,9 +11,11 @@
 // [LAW:one-source-of-truth] One declaration of the producer↔renderer
 //   contract; concrete sinks (BufferingSink, XtermSink) implement it without
 //   re-declaring the shape.
-// [LAW:no-mode-explosion] Two distinct methods for the two genuinely
-//   different data sources (`seed` text + cursor; `write` raw bytes). No
-//   "mode" parameter; no shared union type.
+// [LAW:one-source-of-truth] Both `seed` and `write` carry RAW BYTES. The seed
+//   is just a snapshot of the same terminal byte stream the live path delivers,
+//   so it has the same type — and the terminal emulator is the single decoding
+//   authority for both. `seed` adds a cursor because the snapshot also restores
+//   a position; that is the only difference.
 
 /**
  * Cursor coordinates as reported by tmux's `#{cursor_x};#{cursor_y}` format
@@ -35,7 +37,7 @@ export interface SeedCursor {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.seed(captured, cursor)
+ *   stream.attach(sink)  →  sink.seed(captured, cursor)   (snapshot bytes)
  *                        →  sink.write(data) ×N          (live byte stream)
  *                        →  sink.resize(cols, rows) ×M   (layout changes)
  *                        →  stream.detach()              (no further calls)
@@ -48,16 +50,20 @@ export interface SeedCursor {
  */
 export interface TerminalSink {
   /**
-   * Seed the view with rendered cells captured from tmux. Called exactly
-   * once per `attach()`. The text is the joined output of `capture-pane`
-   * (`\r\n` between rows) — already normalised to UTF-8 by tmux, so
-   * `string` is the accurate type. Live binary bytes go through `write()`.
+   * Seed the view with a snapshot captured from tmux. Called exactly once per
+   * `attach()`, BEFORE any `write()`. `captured` is RAW BYTES: the joined
+   * `capture-pane` rows as tmux produced them, wrapped by library-synthesized
+   * mode-restore escapes (alt-screen/autowrap before the grid, cursor/keypad/
+   * insert after) that PaneStream derives from `display-message` state — those
+   * escapes are injected by the library, not emitted by `capture-pane`. The
+   * stream is the same kind `write()` carries, so the renderer is the single
+   * decoding authority; the library never interprets the captured grid bytes.
    *
    * `cursor` is `null` when tmux did not return a parsable cursor reply;
-   * sinks should leave the cursor at the natural end of the captured text
+   * sinks should leave the cursor at the natural end of the captured bytes
    * in that case.
    */
-  seed(captured: string, cursor: SeedCursor | null): void;
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void;
 
   /**
    * Forward a chunk of live bytes to the renderer. Bytes are byte-identical

@@ -16,10 +16,13 @@ class RecordingSink implements TerminalSink {
   readonly writes: Uint8Array[] = [];
   readonly seedTexts: string[] = [];
   private visible = true;
-  seed(text: string, cursor: SeedCursor | null): void {
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    // seed carries raw bytes (same kind as write); decode Latin-1 (lossless
+    // for the ASCII fixtures these tests use) for human-readable assertions.
+    const text = new TextDecoder("latin1").decode(captured);
     this.seedTexts.push(text);
     this.events.push(
-      `seed(${text.length} chars, cursor=${JSON.stringify(cursor)})`,
+      `seed(${captured.byteLength} bytes, cursor=${JSON.stringify(cursor)})`,
     );
   }
   write(bytes: Uint8Array): void {
@@ -218,6 +221,38 @@ describe("PaneStream — state machine", () => {
     expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
   });
 
+  it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
+    // Regression: tmux's capture-pane elides trailing blank rows, and the
+    // boundary between a real blank bottom row and the trailing-\n artifact is
+    // ambiguous. A short seed leaves xterm's bottom-anchored viewport pulling
+    // a scrollback row into view, rendering the cursor one row above its true
+    // position. PaneStream pads trailing blank rows back up to the true grid
+    // height (history rows + pane_height) so the visible screen is exactly
+    // pane_height rows. State line: cursor_x;cursor_y;...flags;pane_height;
+    // history_size — here 8 rows, no scrollback, cursor on visible row 1.
+    const { stream } = makeStream({
+      capture: "AA\nBB", // two content rows; trailing 6 blanks elided by tmux
+      cursor: "0;1;0;1;0;0;0;1;8;0",
+    });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    // The seed must carry exactly 8 rows — AA, BB, then 6 padded blank rows
+    // (rows 2–7). The row COUNT is the invariant the cursor alignment needs.
+    // Row 0 carries the autowrap preamble prefix; the 6th padded blank (row 7)
+    // carries the trailing mode epilogue, so only rows 2–6 are asserted as
+    // pure empties and row 7 is asserted to be blank-but-for the epilogue.
+    const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
+    expect(rows).toHaveLength(8);
+    expect(rows[0]?.endsWith("AA")).toBe(true);
+    expect(rows[1]).toBe("BB");
+    expect(rows.slice(2, 7)).toEqual(["", "", "", "", ""]);
+    // Row 7 is the final padded blank; its only content is the mode epilogue
+    // (an ESC sequence), never seeded grid text.
+    expect(rows[7]?.startsWith("\x1b")).toBe(true);
+  });
+
   it("dispose() → 'disposed' and is idempotent", () => {
     const { stream } = makeStream();
     stream.dispose();
@@ -313,6 +348,16 @@ describe("PaneStream — state machine", () => {
     // replayed, because seed2's capture already includes them.
     expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
     expect(sink2.writes).toHaveLength(0);
+  });
+
+  it("sendKeys('') is a no-op: resolves success without issuing a command", async () => {
+    // Zero keys has no valid wire form (send-keys -H with no bytes errors).
+    // The empty send must short-circuit to the synthetic no-op response
+    // (commandNumber -1) rather than building a malformed command.
+    const { stream } = makeStream();
+    const res = await stream.sendKeys("");
+    expect(res.success).toBe(true);
+    expect(res.commandNumber).toBe(-1);
   });
 });
 

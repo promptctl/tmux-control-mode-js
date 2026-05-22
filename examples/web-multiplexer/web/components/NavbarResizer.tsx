@@ -10,42 +10,48 @@ interface Props {
 }
 
 export function NavbarResizer({ uiStore }: Props) {
+  // [LAW:dataflow-not-control-flow] Window drag-listeners live exactly as long
+  // as a drag does — attached on pointer-down, detached on pointer-up — so
+  // there are no idle global listeners in any state (collapsed or expanded).
+  // The ref holds the active drag's teardown so an unmount mid-drag can't leak
+  // listeners. This hook runs unconditionally before the early return below:
+  // gating it on `navbarCollapsed` would change the hook count between renders
+  // and corrupt React's positional hook state.
+  const endDragRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => endDragRef.current?.(), []);
+
   if (uiStore.navbarCollapsed) {
     return null;
   }
 
-  const draggingRef = useRef(false);
-  const startXRef = useRef(0);
-  const startWRef = useRef(0);
-
-  useEffect(() => {
-    function onMove(e: PointerEvent): void {
-      if (!draggingRef.current) return;
-      const dx = e.clientX - startXRef.current;
-      uiStore.setNavbarWidth(startWRef.current + dx);
-    }
-    function onUp(): void {
-      if (!draggingRef.current) return;
-      draggingRef.current = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    }
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [uiStore]);
-
   return (
     <div
       onPointerDown={(e) => {
-        draggingRef.current = true;
-        startXRef.current = e.clientX;
-        startWRef.current = uiStore.navbarWidth;
+        // Tear down any still-active drag first — a prior drag that didn't
+        // terminate cleanly (e.g. multi-pointer interaction) must not stack a
+        // second set of window listeners.
+        endDragRef.current?.();
+        const startX = e.clientX;
+        const startW = uiStore.navbarWidth;
+        const onMove = (ev: PointerEvent): void =>
+          uiStore.setNavbarWidth(startW + (ev.clientX - startX));
+        const end = (): void => {
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", end);
+          window.removeEventListener("pointercancel", end);
+          document.body.style.cursor = "";
+          document.body.style.userSelect = "";
+          endDragRef.current = null;
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", end);
+        // pointercancel terminates a drag too (touch/pen gestures, OS-level
+        // cancellation) — route it through the same teardown so listeners and
+        // body styles never get stuck.
+        window.addEventListener("pointercancel", end);
         document.body.style.cursor = "col-resize";
         document.body.style.userSelect = "none";
+        endDragRef.current = end;
       }}
       title="Drag to resize"
       style={{
