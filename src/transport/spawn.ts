@@ -143,8 +143,10 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // is a lossless byte↔code-unit mapping: every byte becomes exactly one code
   // unit (0x00-0xFF), the line/space splitting in the parser still works (those
   // delimiters are ASCII), and decodeOctalEscapes recovers the exact bytes.
-  // Human-readable text fields (names, messages) are UTF-8-decoded downstream
-  // in the parser via latin1ToUtf8.
+  // This is a lossless byte container, NOT a semantic decode: the library never
+  // re-interprets bytes as UTF-8. Pane output reaches the renderer as raw bytes
+  // (the renderer decodes); consumers that need text from a metadata field
+  // decode it themselves.
   child.stdout.setEncoding("latin1");
   child.stdout.on("data", (chunk: string) => {
     if (stripper === null) {

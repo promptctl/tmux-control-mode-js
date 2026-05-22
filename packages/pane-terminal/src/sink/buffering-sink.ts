@@ -21,7 +21,7 @@ import type { TerminalSink, SeedCursor } from "./index.js";
 
 /** A recorded `seed()` call. */
 export interface SeedCall {
-  readonly captured: string;
+  readonly captured: Uint8Array;
   readonly cursor: SeedCursor | null;
 }
 
@@ -63,7 +63,7 @@ export class BufferingSink implements TerminalSink {
   // TerminalSink
   // ---------------------------------------------------------------------------
 
-  seed(captured: string, cursor: SeedCursor | null): void {
+  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
     if (this.isDisposed) return;
     this.seedCalls.push({ captured, cursor });
   }

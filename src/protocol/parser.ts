@@ -3,7 +3,7 @@
 // Pure TypeScript — no Node.js dependencies. Works in browser, Deno, Bun.
 
 import type { TmuxMessage } from "./types.js";
-import { decodeOctalEscapes, latin1ToUtf8 } from "./decode.js";
+import { decodeOctalEscapes } from "./decode.js";
 
 // ---------------------------------------------------------------------------
 // ID helpers — one parser per prefix convention
@@ -119,7 +119,7 @@ function parseWindowRenamed(
     return {
       type,
       windowId: parseWindowId(args.slice(0, spaceIdx)),
-      name: latin1ToUtf8(args.slice(spaceIdx + 1)),
+      name: args.slice(spaceIdx + 1),
     } as TmuxMessage;
   };
 }
@@ -155,7 +155,7 @@ function parseSessionWithName(
     return {
       type,
       sessionId: parseSessionId(args.slice(0, spaceIdx)),
-      name: latin1ToUtf8(args.slice(spaceIdx + 1)),
+      name: args.slice(spaceIdx + 1),
     } as TmuxMessage;
   };
 }
@@ -184,7 +184,7 @@ function parseClientSessionChanged(args: string): TmuxMessage | null {
     type: "client-session-changed",
     clientName: args.slice(0, spaceIdx),
     sessionId: parseSessionId(rest.slice(0, spaceIdx2)),
-    name: latin1ToUtf8(rest.slice(spaceIdx2 + 1)),
+    name: rest.slice(spaceIdx2 + 1),
   };
 }
 
@@ -219,16 +219,16 @@ function parseSubscriptionChanged(args: string): TmuxMessage | null {
     windowId: parseOptionalId(parts[2], parseWindowId),
     windowIndex: parseOptionalInt(parts[3]),
     paneId: parseOptionalId(parts[4], parsePaneId),
-    value: latin1ToUtf8(value),
+    value,
   };
 }
 
 function parseMessageMsg(args: string): TmuxMessage {
-  return { type: "message", message: latin1ToUtf8(args) };
+  return { type: "message", message: args };
 }
 
 function parseConfigError(args: string): TmuxMessage {
-  return { type: "config-error", error: latin1ToUtf8(args) };
+  return { type: "config-error", error: args };
 }
 
 function parseExit(args: string): TmuxMessage {
@@ -377,11 +377,12 @@ export class TmuxParser {
     // (inResponseBlock, isBlockTerminator) tuple — the same `processLine`
     // operation runs every call; only the data decides which side effect.
     if (treatAsOutput) {
-      // Command-response lines are text (e.g. capture-pane content with SGR
-      // escapes, list-* output). The transport delivers raw bytes as Latin-1
-      // code units; decode to UTF-8 so non-ASCII content (box-drawing,
-      // accents) reaches consumers — and the seed path — as proper text.
-      this.onOutputLine?.(this.activeCommandNumber, latin1ToUtf8(line));
+      // Command-response lines pass through raw (Latin-1 byte-faithful). The
+      // library never re-interprets bytes as UTF-8 — capture-pane content is
+      // terminal data the renderer decodes, and other command output (list-*,
+      // display-message) is ASCII or consumer-decoded. One byte pipe, no lossy
+      // decode.
+      this.onOutputLine?.(this.activeCommandNumber, line);
       return;
     }
 

@@ -77,28 +77,3 @@ export function decodeOctalEscapes(encoded: string): Uint8Array {
 
   return result.subarray(0, writePos);
 }
-
-const utf8Decoder = new TextDecoder("utf-8");
-
-/**
- * Re-interpret a Latin-1 string (one code unit per raw byte, as produced by
- * the byte-preserving transport) as UTF-8 text. Used for human-readable
- * notification fields (window/session names, messages, subscription values)
- * which tmux emits as UTF-8 byte sequences. Pane *output* is NOT routed
- * through here — it stays raw bytes via `decodeOctalEscapes`.
- */
-export function latin1ToUtf8(s: string): string {
-  // Fast path: pure ASCII needs no reinterpretation.
-  let hasHighByte = false;
-  for (let i = 0; i < s.length; i++) {
-    if (s.charCodeAt(i) > 0x7f) {
-      hasHighByte = true;
-      break;
-    }
-  }
-  if (!hasHighByte) return s;
-
-  const bytes = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xff;
-  return utf8Decoder.decode(bytes);
-}
