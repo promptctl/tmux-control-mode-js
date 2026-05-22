@@ -283,7 +283,12 @@ export interface CommandResponse {
 // tmux command (empty `sendKeys` input). commandNumber -1 marks "no command
 // was correlated" — there is no FIFO entry because nothing was sent.
 export function emptyKeysResponse(): CommandResponse {
-  return { commandNumber: -1, timestamp: Date.now(), output: [], success: true };
+  return {
+    commandNumber: -1,
+    timestamp: Date.now(),
+    output: [],
+    success: true,
+  };
 }
 
 // [LAW:one-type-per-behavior] Single enum for all pane actions — instances differ by value, not type.
