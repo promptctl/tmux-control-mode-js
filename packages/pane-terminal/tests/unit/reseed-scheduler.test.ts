@@ -12,7 +12,7 @@ import {
   getScheduler,
   type ReseedTarget,
   type ReseedPriority,
-  type ReseedSchedulerClient,
+  type TmuxClientLike,
 } from "../../src/stream/index.js";
 
 class FakeTarget implements ReseedTarget {
@@ -40,16 +40,16 @@ class FakeTarget implements ReseedTarget {
 describe("ReseedScheduler — module-scope per-client registry", () => {
   it("returns the same scheduler for the same client", () => {
     const client = new FakeTmuxClient();
-    const a = getScheduler(client as unknown as ReseedSchedulerClient);
-    const b = getScheduler(client as unknown as ReseedSchedulerClient);
+    const a = getScheduler(client);
+    const b = getScheduler(client);
     expect(a).toBe(b);
   });
 
   it("returns distinct schedulers for distinct clients", () => {
     const c1 = new FakeTmuxClient();
     const c2 = new FakeTmuxClient();
-    const a = getScheduler(c1 as unknown as ReseedSchedulerClient);
-    const b = getScheduler(c2 as unknown as ReseedSchedulerClient);
+    const a = getScheduler(c1);
+    const b = getScheduler(c2);
     expect(a).not.toBe(b);
   });
 });
@@ -57,10 +57,9 @@ describe("ReseedScheduler — module-scope per-client registry", () => {
 describe("ReseedScheduler — dispatch order", () => {
   it("dispatches in priority order: visible (0) → other-attached (1)", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler({
-      on: () => undefined,
-      off: () => undefined,
-    });
+    const sched = new ReseedScheduler(
+      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
+    );
     sched.register(new FakeTarget("h1", 1, log));
     sched.register(new FakeTarget("v", 0, log));
     sched.register(new FakeTarget("h2", 1, log));
@@ -76,10 +75,9 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("skips detached (priority 2) targets entirely", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler({
-      on: () => undefined,
-      off: () => undefined,
-    });
+    const sched = new ReseedScheduler(
+      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
+    );
     sched.register(new FakeTarget("v", 0, log));
     sched.register(new FakeTarget("d", 2, log));
 
@@ -90,10 +88,9 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("dispatches sequentially: never overlaps in-flight reseeds", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler({
-      on: () => undefined,
-      off: () => undefined,
-    });
+    const sched = new ReseedScheduler(
+      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
+    );
     sched.register(new FakeTarget("a", 0, log, 10));
     sched.register(new FakeTarget("b", 0, log, 5));
 
@@ -110,10 +107,9 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("coalesces overlapping reseed requests onto the in-flight run", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler({
-      on: () => undefined,
-      off: () => undefined,
-    });
+    const sched = new ReseedScheduler(
+      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
+    );
     sched.register(new FakeTarget("a", 0, log, 10));
     sched.register(new FakeTarget("b", 0, log, 0));
 
@@ -129,10 +125,9 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("skips a target that unregisters mid-sweep", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler({
-      on: () => undefined,
-      off: () => undefined,
-    });
+    const sched = new ReseedScheduler(
+      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
+    );
     const t1 = new FakeTarget("first", 0, log, 5);
     const t2 = new FakeTarget("second", 0, log);
     sched.register(t1);
@@ -150,14 +145,12 @@ describe("ReseedScheduler — dispatch order", () => {
 describe("ReseedScheduler — reconnect wiring", () => {
   it("subscribes to 'reconnected' exactly once per client", () => {
     const handlers: Array<(...args: unknown[]) => void> = [];
-    const fakeClient: ReseedSchedulerClient = {
-      on(_event, handler) {
-        handlers.push(handler as (...args: unknown[]) => void);
+    const fakeClient = {
+      on(_event: string, handler: (...args: unknown[]) => void) {
+        handlers.push(handler);
       },
-      off() {
-        /* no-op */
-      },
-    };
+      off(_event: string, _handler: unknown) { /* no-op */ },
+    } as unknown as TmuxClientLike;
     new ReseedScheduler(fakeClient);
     new ReseedScheduler(fakeClient); // separate scheduler, separate handler
     // Each scheduler installs ONE handler; sharing should be by getScheduler,
@@ -167,14 +160,14 @@ describe("ReseedScheduler — reconnect wiring", () => {
 
   it("getScheduler() across many calls only adds one reconnect handler", () => {
     const handlers: Array<(...args: unknown[]) => void> = [];
-    const fakeClient: ReseedSchedulerClient = {
-      on(_e, h) {
-        handlers.push(h as (...args: unknown[]) => void);
+    const fakeClient = {
+      on(_e: string, h: (...args: unknown[]) => void) {
+        handlers.push(h);
       },
-      off() {
+      off(_e: string, _h: unknown) {
         /* no-op */
       },
-    };
+    } as unknown as TmuxClientLike;
     getScheduler(fakeClient);
     getScheduler(fakeClient);
     getScheduler(fakeClient);
