@@ -1,0 +1,21 @@
+// Typecheck-only project for the Playwright e2e suite (tests/e2e/**).
+//
+// [LAW:single-enforcer] This config is the single gate that holds the e2e
+// tests to the library types. It must be run AFTER `tsc --build` because
+// the e2e tests import @promptctl/tmux-control-mode-js by package name,
+// which resolves to dist/ declaration files rather than src/.
+//
+// DOM lib is required for page/element APIs used in the Playwright specs.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["tests/e2e/**/*.ts"]
+}

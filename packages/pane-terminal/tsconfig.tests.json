@@ -1,0 +1,31 @@
+// Typecheck-only project for the pane-terminal test suite.
+//
+// [LAW:single-enforcer] vitest runs these files through esbuild, which strips
+// types without checking them. Without this config the pane-terminal tests sit
+// outside every typecheck graph and silently drift from the library types they
+// import (the same gap that tmux-testing-wyu fixed for the root suite).
+// `pnpm run typecheck:tests` in the package — wired into the root typecheck
+// script — is the single gate that holds these tests to the same contracts the
+// source exposes.
+//
+// DOM lib is required (xterm-sink.test.ts uses document, HTMLElement,
+// requestAnimationFrame, ResizeObserver, IntersectionObserver). The root
+// tsconfig.tests.json omits DOM because it only covers Node-side tests;
+// this config overrides lib accordingly.
+//
+// [LAW:one-way-deps] Tests may import from src/ (and transitively from the
+// library package). They never export — noEmit enforces this boundary.
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["tests/**/*.ts", "tests/**/*.tsx"]
+}
