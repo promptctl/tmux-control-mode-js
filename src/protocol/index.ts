@@ -38,7 +38,7 @@ export type {
   CommandResponse,
 } from "./types.js";
 
-export { PaneAction } from "./types.js";
+export { PaneAction, emptyKeysResponse } from "./types.js";
 
 export { TmuxParser } from "./parser.js";
 

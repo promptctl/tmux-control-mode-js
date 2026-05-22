@@ -27,6 +27,7 @@ import type {
 } from "@promptctl/tmux-control-mode-js";
 import {
   sendKeys as encodeSendKeys,
+  emptyKeysResponse,
   type CommandResponse,
 } from "@promptctl/tmux-control-mode-js/protocol";
 
@@ -304,6 +305,10 @@ export class PaneStream implements ReseedTarget {
    * Convenience wrapper so consumers don't need to format pane targets.
    */
   sendKeys(data: string): Promise<CommandResponse> {
+    // [LAW:no-defensive-null-guards] Trust boundary: `data` is caller input.
+    // Zero keys has no valid wire form (`send-keys -H` with no bytes errors),
+    // so an empty send is a no-op resolving without a round-trip.
+    if (data === "") return Promise.resolve(emptyKeysResponse());
     // [LAW:one-source-of-truth] The send-keys wire format lives in the library
     // encoder (send -H hex bytes), shared with TmuxClient.sendKeys. encodeSendKeys
     // returns a full wire line (trailing LF); execute() re-adds the LF via
