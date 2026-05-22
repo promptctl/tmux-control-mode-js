@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
-import type { TerminalSink } from "../../src/stream/index.js";
+import type { TerminalSink } from "../../src/sink/index.js";
 import type { SeedCursor } from "../../src/sink/index.js";
 
 class RecordingSink implements TerminalSink {
