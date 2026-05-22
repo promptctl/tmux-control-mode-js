@@ -108,6 +108,13 @@ export class XtermSink implements TerminalSink {
   // that content is always written at the correct terminal dimensions.
   private pendingSeed: { captured: string; cursor: SeedCursor | null } | null =
     null;
+  // Live bytes buffered before the first resize rAF. PaneStream drains its
+  // seeding-window buffer synchronously immediately after seed() returns —
+  // those write() calls must land *after* the seed in the xterm write queue.
+  // pendingWrites holds them until the first-resize rAF fires and applies both
+  // the seed and the trailing live bytes in the correct order. Nulled after
+  // drain so subsequent write() calls bypass the buffer entirely.
+  private pendingWrites: Uint8Array[] | null = [];
 
   private ro: ResizeObserver | null = null;
   private io: IntersectionObserver | null = null;
@@ -235,6 +242,14 @@ export class XtermSink implements TerminalSink {
   // TextDecoder on this path.
   write(data: Uint8Array): void {
     if (this.isDisposed) return;
+    // [LAW:single-enforcer] pendingWrites is the sole gate for pre-first-resize
+    // writes. PaneStream drains its seeding-window buffer synchronously after
+    // seed() returns — those bytes must land after the seed in xterm's write
+    // queue. We hold them here until the first-resize rAF applies both.
+    if (this.pendingWrites !== null) {
+      this.pendingWrites.push(data);
+      return;
+    }
     this.terminal.write(data);
   }
 
@@ -267,6 +282,16 @@ export class XtermSink implements TerminalSink {
           this.pendingSeed = null;
           this.applySeed(captured, cursor);
         }
+        // Drain any live bytes that arrived before the first resize completed.
+        // These were buffered in pendingWrites to preserve ordering: seed
+        // content always precedes live bytes in the xterm write queue.
+        const writes = this.pendingWrites;
+        this.pendingWrites = null;
+        if (writes !== null) {
+          for (const chunk of writes) {
+            this.terminal.write(chunk);
+          }
+        }
       });
       return;
     }
@@ -294,6 +319,7 @@ export class XtermSink implements TerminalSink {
     if (this.isDisposed) return;
     this.isDisposed = true;
     this.pendingSeed = null;
+    this.pendingWrites = null;
 
     if (this.ro !== null) {
       this.ro.disconnect();
