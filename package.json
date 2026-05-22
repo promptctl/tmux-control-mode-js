@@ -2,6 +2,14 @@
   "name": "@promptctl/tmux-control-mode-js",
   "version": "0.1.0",
   "description": "Node.js client for tmux control mode protocol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/promptctl/tmux-control-mode-js.git"
+  },
+  "homepage": "https://github.com/promptctl/tmux-control-mode-js#readme",
+  "bugs": {
+    "url": "https://github.com/promptctl/tmux-control-mode-js/issues"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -14,10 +22,6 @@
     "./protocol": {
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
-    },
-    "./terminal": {
-      "types": "./dist/terminal/index.d.ts",
-      "default": "./dist/terminal/index.js"
     },
     "./keymap": {
       "types": "./dist/keymap/index.d.ts",
