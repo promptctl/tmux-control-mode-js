@@ -6,7 +6,7 @@
 
 **Issue:** Package.json declared an export for `"./terminal"` but no corresponding implementation existed.
 
-- Impact: Consumers importing from `"tmux-control-mode-js/terminal"` would fail at runtime with a module-not-found error (Node's ESM resolver raises `ERR_MODULE_NOT_FOUND`; bundlers surface an equivalent resolution failure). A clean build never emitted `dist/terminal/`, so the published export was dead.
+- Impact: Consumers importing from `"@promptctl/tmux-control-mode-js/terminal"` would fail at runtime with a module-not-found error (Node's ESM resolver raises `ERR_MODULE_NOT_FOUND`; bundlers surface an equivalent resolution failure). A clean build never emitted `dist/terminal/`, so the published export was dead.
 - Resolution: Removed the `./terminal` export entry (terminal rendering lives in the separate `@promptctl/pane-terminal` package). The release audit verified all remaining subpath exports resolve from a real install.
 
 ## Uncaught Handler Errors in Event Emitter
