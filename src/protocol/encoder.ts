@@ -50,10 +50,32 @@ function refreshClientUnsubscribe(name: string): string {
   return buildCommand(`refresh-client -B ${tmuxEscape(name)}`);
 }
 
-// [LAW:one-source-of-truth] send-keys wire format lives here only.
+const utf8Encoder = new TextEncoder();
+
+// Encode a string as space-separated 2-digit hex of its UTF-8 bytes.
+function utf8HexBytes(s: string): string {
+  const bytes = utf8Encoder.encode(s);
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) {
+    out += (i === 0 ? "" : " ") + bytes[i].toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+// [LAW:one-source-of-truth] send-keys wire format lives here only — used by
+// both TmuxClient.sendKeys and PaneStream.sendKeys.
+//
+// Mirrors the canonical client's `send -H` (literal-hex-byte) path, generalized
+// to every byte. Each key is sent as a raw byte in hex, so:
+//   - control bytes (Enter, Ctrl-C, ESC sequences) and a literal LF from a
+//     multi-line paste never enter the line-terminated command stream, where
+//     they would split/corrupt the protocol — the failure mode of `-l` with
+//     raw control bytes;
+//   - every byte 0x00-0xFF round-trips to the pane unchanged regardless of
+//     pane mode; UTF-8 input is sent as its exact byte sequence.
 function sendKeys(target: string, keys: string): string {
   return buildCommand(
-    `send-keys -t ${tmuxEscape(target)} -l ${tmuxEscape(keys)}`,
+    `send-keys -H -t ${tmuxEscape(target)} ${utf8HexBytes(keys)}`,
   );
 }
 

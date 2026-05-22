@@ -25,7 +25,10 @@ import type {
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import {
+  sendKeys as encodeSendKeys,
+  type CommandResponse,
+} from "@promptctl/tmux-control-mode-js/protocol";
 
 // Re-exported so `@promptctl/pane-terminal/stream` consumers don't have to
 // dual-import `TmuxClientLike` from the library separately.
@@ -296,11 +299,13 @@ export class PaneStream implements ReseedTarget {
    * Convenience wrapper so consumers don't need to format pane targets.
    */
   sendKeys(data: string): Promise<CommandResponse> {
-    // The protocol-level `send-keys` requires a literal-flag for safety;
-    // we wrap with -l (literal) and quote with surrounding "" — tmux's
-    // command parser handles backslash escaping inside double quotes.
-    const escaped = data.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    return this.client.execute(`send-keys -t %${this.paneId} -l "${escaped}"`);
+    // [LAW:one-source-of-truth] The send-keys wire format lives in the library
+    // encoder (send -H hex bytes), shared with TmuxClient.sendKeys. encodeSendKeys
+    // returns a full wire line (trailing LF); execute() re-adds the LF via
+    // buildCommand, so strip the encoder's trailing LF to avoid emitting a bare
+    // empty line (which tmux treats as the detach signal).
+    const wire = encodeSendKeys(`%${this.paneId}`, data);
+    return this.client.execute(wire.slice(0, -1));
   }
 
   on<E extends EventName>(event: E, handler: Listener<E>): Unsubscribe {
@@ -461,22 +466,33 @@ export class PaneStream implements ReseedTarget {
     // these handlers flip the flag back to true and we drop the result.
     this.seedStaleMidFlight = false;
 
+    // [LAW:one-source-of-truth] Capture flags mirror the canonical client
+    // (TmuxWindowOpener): -p stdout, -e SGR escapes, -q quiet (no error if the
+    // pane is in copy/view mode), -J join wrapped lines (so xterm re-wraps them
+    // correctly on resize instead of carrying hard breaks), -N preserve
+    // trailing spaces. Without -J/-N a wrapped or padded line seeds as the
+    // wrong shape and reflows incorrectly later.
     const captureCmd =
       this.historyLines > 0
-        ? `capture-pane -e -p -S -${this.historyLines} -t %${this.paneId}`
-        : `capture-pane -e -p -t %${this.paneId}`;
-    const cursorCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y}'`;
+        ? `capture-pane -peqJN -S -${this.historyLines} -t %${this.paneId}`
+        : `capture-pane -peqJN -t %${this.paneId}`;
+    // Cursor position AND the terminal modes the captured grid content cannot
+    // carry (alt screen, autowrap, cursor visibility, application cursor/keypad,
+    // insert). capture-pane -e emits only SGR colour/attrs, never DEC private
+    // modes — so a TUI pane (vim/less) would seed with the wrong input modes
+    // unless we restore them explicitly. Mirrors TmuxStateParser's field set.
+    const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag}'`;
 
     let captureOutput: readonly string[] = [];
-    let cursorLine = "";
+    let stateLine = "";
     let captureSucceeded = false;
     try {
-      const [captureResp, cursorResp] = await Promise.all([
+      const [captureResp, stateResp] = await Promise.all([
         this.client.execute(captureCmd),
-        this.client.execute(cursorCmd),
+        this.client.execute(stateCmd),
       ]);
       captureOutput = captureResp.output;
-      cursorLine = cursorResp.output[0] ?? "";
+      stateLine = stateResp.output[0] ?? "";
       captureSucceeded = true;
     } catch {
       // Capture failed (e.g. connection closed). Fall through to live mode
@@ -523,8 +539,13 @@ export class PaneStream implements ReseedTarget {
       rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
         ? rawLines.slice(0, -1)
         : rawLines;
-    const captured = lines.join("\r\n");
-    const cursor = parseCursor(cursorLine);
+    const screen = lines.join("\r\n");
+    const { cursor, preamble, epilogue } = parseSeedState(stateLine);
+    // Restore terminal modes around the screen content: alt-screen + wrap
+    // before drawing (they affect layout), input/cursor modes after. The CUP
+    // the sink appends from `cursor` lands last, so it reflects the final
+    // restored state.
+    const captured = preamble + screen + epilogue;
 
     // Cache for the next attach() — gate #4 reuses this without a fresh
     // capture-pane round-trip. Only cached on success: a failed seed left
@@ -585,13 +606,50 @@ export class PaneStream implements ReseedTarget {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-function parseCursor(line: string): SeedCursor | null {
-  // tmux's `display-message -p '#{cursor_x};#{cursor_y}'` reply: cursor_x is
-  // 0-indexed from the left (column), cursor_y is 0-indexed from the top
-  // (row). Map them onto the renderer-natural {col, row} vocabulary.
-  const m = line.match(/^(\d+);(\d+)$/);
-  if (m === null) return null;
-  return { col: Number(m[1]), row: Number(m[2]) };
+interface SeedState {
+  readonly cursor: SeedCursor | null;
+  /** Mode-setting escapes applied BEFORE the screen content (layout-affecting). */
+  readonly preamble: string;
+  /** Mode-setting escapes applied AFTER the screen content (input/cursor). */
+  readonly epilogue: string;
+}
+
+// tmux flag values are "1"/"0"; map each to its DEC private-mode set/reset
+// sequence. [LAW:dataflow-not-control-flow] The escape is selected by the
+// flag VALUE through a table — no per-flag branching beyond the lookup.
+function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
+  if (flag === undefined) return "";
+  return flag === "1" ? onSeq : offSeq;
+}
+
+const ESC = "\x1b";
+
+function parseSeedState(line: string): SeedState {
+  // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
+  // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag. cursor_x/y are
+  // 0-indexed; everything after is a 0/1 mode flag.
+  const f = line.split(";");
+  const cx = Number(f[0]);
+  const cy = Number(f[1]);
+  const cursor =
+    f.length >= 2 && Number.isInteger(cx) && Number.isInteger(cy) && f[0] !== ""
+      ? { col: cx, row: cy }
+      : null;
+
+  // Before content: enter alt screen (if active) then set autowrap — both
+  // change how the subsequent screen content lays out.
+  const preamble =
+    (f[2] === "1" ? `${ESC}[?1049h` : "") +
+    mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
+
+  // After content: input/cursor modes that the captured grid can't carry.
+  const epilogue =
+    mode(f[3], `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM cursor visibility
+    mode(f[4], `${ESC}[4h`, `${ESC}[4l`) + // IRM insert mode
+    mode(f[5], `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM application cursor keys
+    mode(f[6], `${ESC}=`, `${ESC}>`); // DECKPAM/DECKPNM keypad mode
+
+  return { cursor, preamble, epilogue };
 }
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {
