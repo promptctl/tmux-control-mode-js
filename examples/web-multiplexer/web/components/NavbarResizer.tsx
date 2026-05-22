@@ -27,6 +27,10 @@ export function NavbarResizer({ uiStore }: Props) {
   return (
     <div
       onPointerDown={(e) => {
+        // Tear down any still-active drag first — a prior drag that didn't
+        // terminate cleanly (e.g. multi-pointer interaction) must not stack a
+        // second set of window listeners.
+        endDragRef.current?.();
         const startX = e.clientX;
         const startW = uiStore.navbarWidth;
         const onMove = (ev: PointerEvent): void =>
