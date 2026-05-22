@@ -136,7 +136,16 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // identical; only the values differ.
   const stripper = controlControl ? createDcsStripper() : null;
 
-  child.stdout.setEncoding("utf8");
+  // [LAW:one-source-of-truth] The byte stream is the source of truth. tmux
+  // emits pane output bytes 0x80-0xFF (UTF-8, raw) UNescaped; decoding the
+  // stream as UTF-8 here would collapse multi-byte sequences into code points
+  // the octal decoder then truncates, corrupting all non-ASCII output. Latin-1
+  // is a lossless byte↔code-unit mapping: every byte becomes exactly one code
+  // unit (0x00-0xFF), the line/space splitting in the parser still works (those
+  // delimiters are ASCII), and decodeOctalEscapes recovers the exact bytes.
+  // Human-readable text fields (names, messages) are UTF-8-decoded downstream
+  // in the parser via latin1ToUtf8.
+  child.stdout.setEncoding("latin1");
   child.stdout.on("data", (chunk: string) => {
     if (stripper === null) {
       dataCallbacks.forEach((cb) => cb(chunk));

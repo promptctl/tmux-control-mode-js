@@ -66,27 +66,43 @@ describe("decodeOctalEscapes", () => {
     );
   });
 
-  it("non-octal backslash: \\xyz → raw bytes (x is not 0-7)", () => {
-    // 'x' (120) is not an octal digit, so backslash passes through as raw byte
+  it("non-octal backslash: \\xyz → '?' then x,y,z (matches reference)", () => {
+    // 'x' is not an octal digit. Per the canonical decoder, a malformed
+    // escape becomes '?' and the non-digit byte is reconsidered as input.
     const result = decodeOctalEscapes("\\xyz");
-    expect(result[0]).toBe(0x5c); // backslash
-    expect(result[1]).toBe(0x78); // 'x'
+    expect(result).toEqual(new Uint8Array([0x3f, 0x78, 0x79, 0x7a]));
   });
 
-  it("incomplete escape at end: \\13 (only 2 digits) → raw bytes", () => {
-    // readPos + 3 < len requires 4 chars for an escape; \\13 is only 3 chars total
-    // so backslash passes through as raw byte
-    const result = decodeOctalEscapes("\\13");
-    expect(result[0]).toBe(0x5c); // backslash
-    expect(result[1]).toBe(0x31); // '1'
-    expect(result[2]).toBe(0x33); // '3'
+  it("incomplete escape at end: \\13 → '?' (digits consumed by the attempt)", () => {
+    // An escape that runs off the end yields '?', matching the reference.
+    // Cannot occur on real data: the parser buffers whole lines, so a
+    // %output value's escapes are always complete.
+    expect(decodeOctalEscapes("\\13")).toEqual(new Uint8Array([0x3f]));
   });
 
-  it("incomplete at end: abc\\13 — the trailing \\13 are raw bytes", () => {
-    const result = decodeOctalEscapes("abc\\13");
-    expect(result).toEqual(
-      new Uint8Array([97, 98, 99, 0x5c, 0x31, 0x33])
+  it("incomplete at end: abc\\13 → abc + '?'", () => {
+    expect(decodeOctalEscapes("abc\\13")).toEqual(
+      new Uint8Array([97, 98, 99, 0x3f]),
     );
+  });
+
+  it("literal control bytes are dropped (tmux escapes real ones as octal)", () => {
+    // A raw \r / \x01 in the payload is line-driver noise, not pane data.
+    expect(decodeOctalEscapes("a\rb")).toEqual(new Uint8Array([0x61, 0x62]));
+    expect(decodeOctalEscapes("a\x01b")).toEqual(new Uint8Array([0x61, 0x62]));
+  });
+
+  it("escaped control bytes are KEPT (only literal ones drop)", () => {
+    // \015 (escaped CR) survives; a literal trailing \r is dropped.
+    expect(decodeOctalEscapes("a\\015\r")).toEqual(
+      new Uint8Array([0x61, 0x0d]),
+    );
+  });
+
+  it("\\r interleaved inside an octal escape is skipped", () => {
+    // The line driver may sprinkle \r between the digits; the reference
+    // skips them. "\<CR>012" decodes to a single 0x0a.
+    expect(decodeOctalEscapes("\\\r012")).toEqual(new Uint8Array([0x0a]));
   });
 
   it("ANSI escape sequence: \\033[1;32m → correct bytes", () => {

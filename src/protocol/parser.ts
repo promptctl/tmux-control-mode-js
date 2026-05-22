@@ -3,7 +3,7 @@
 // Pure TypeScript — no Node.js dependencies. Works in browser, Deno, Bun.
 
 import type { TmuxMessage } from "./types.js";
-import { decodeOctalEscapes } from "./decode.js";
+import { decodeOctalEscapes, latin1ToUtf8 } from "./decode.js";
 
 // ---------------------------------------------------------------------------
 // ID helpers — one parser per prefix convention
@@ -119,7 +119,7 @@ function parseWindowRenamed(
     return {
       type,
       windowId: parseWindowId(args.slice(0, spaceIdx)),
-      name: args.slice(spaceIdx + 1),
+      name: latin1ToUtf8(args.slice(spaceIdx + 1)),
     } as TmuxMessage;
   };
 }
@@ -155,7 +155,7 @@ function parseSessionWithName(
     return {
       type,
       sessionId: parseSessionId(args.slice(0, spaceIdx)),
-      name: args.slice(spaceIdx + 1),
+      name: latin1ToUtf8(args.slice(spaceIdx + 1)),
     } as TmuxMessage;
   };
 }
@@ -184,7 +184,7 @@ function parseClientSessionChanged(args: string): TmuxMessage | null {
     type: "client-session-changed",
     clientName: args.slice(0, spaceIdx),
     sessionId: parseSessionId(rest.slice(0, spaceIdx2)),
-    name: rest.slice(spaceIdx2 + 1),
+    name: latin1ToUtf8(rest.slice(spaceIdx2 + 1)),
   };
 }
 
@@ -219,16 +219,16 @@ function parseSubscriptionChanged(args: string): TmuxMessage | null {
     windowId: parseOptionalId(parts[2], parseWindowId),
     windowIndex: parseOptionalInt(parts[3]),
     paneId: parseOptionalId(parts[4], parsePaneId),
-    value,
+    value: latin1ToUtf8(value),
   };
 }
 
 function parseMessageMsg(args: string): TmuxMessage {
-  return { type: "message", message: args };
+  return { type: "message", message: latin1ToUtf8(args) };
 }
 
 function parseConfigError(args: string): TmuxMessage {
-  return { type: "config-error", error: args };
+  return { type: "config-error", error: latin1ToUtf8(args) };
 }
 
 function parseExit(args: string): TmuxMessage {
@@ -321,7 +321,15 @@ export class TmuxParser {
     // the processing step runs.
     let newlineIdx = this.buffer.indexOf("\n");
     while (newlineIdx !== -1) {
-      const line = this.buffer.slice(0, newlineIdx);
+      // Drop a trailing \r so CRLF transports parse identically to LF ones.
+      // The reference treats \r as line-driver noise; protocol lines and
+      // command-response text never depend on it (real \r in pane output is
+      // octal-escaped and handled in decodeOctalEscapes).
+      const end =
+        newlineIdx > 0 && this.buffer.charCodeAt(newlineIdx - 1) === 0x0d
+          ? newlineIdx - 1
+          : newlineIdx;
+      const line = this.buffer.slice(0, end);
       this.buffer = this.buffer.slice(newlineIdx + 1);
       this.processLine(line);
       newlineIdx = this.buffer.indexOf("\n");
@@ -369,7 +377,11 @@ export class TmuxParser {
     // (inResponseBlock, isBlockTerminator) tuple — the same `processLine`
     // operation runs every call; only the data decides which side effect.
     if (treatAsOutput) {
-      this.onOutputLine?.(this.activeCommandNumber, line);
+      // Command-response lines are text (e.g. capture-pane content with SGR
+      // escapes, list-* output). The transport delivers raw bytes as Latin-1
+      // code units; decode to UTF-8 so non-ASCII content (box-drawing,
+      // accents) reaches consumers — and the seed path — as proper text.
+      this.onOutputLine?.(this.activeCommandNumber, latin1ToUtf8(line));
       return;
     }
 
