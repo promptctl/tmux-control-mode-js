@@ -82,7 +82,7 @@ tmux-control-mode-js/
       // Pure protocol — works in browser, Deno, Bun, anywhere
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
-    }
+    },
     // ...plus connector subpaths (./websocket/*, ./electron/*, ./streams/*)
     // and ./keymap. The `exports` map in package.json is the source of truth.
   }
