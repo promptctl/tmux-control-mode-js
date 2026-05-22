@@ -134,7 +134,7 @@
 - Non-exported but available via subpath:
   - `@promptctl/tmux-control-mode-js/protocol` → parser, encoder, types
   - `@promptctl/tmux-control-mode-js/keymap` → key-event engine and default bindings
-  - `@promptctl/tmux-control-mode-js/websocket/*`, `./electron/*`, `./streams/*` → connector entry points
+  - explicit connector entry points under `@promptctl/tmux-control-mode-js/websocket/...`, `.../electron/main`, `.../electron/renderer`, `.../streams/web`, `.../streams/node` (no pattern exports — each subpath is enumerated in package.json's `exports` map)
   - (Terminal rendering lives in the separate `@promptctl/pane-terminal` package.)
 
 **Application Entry Points:**

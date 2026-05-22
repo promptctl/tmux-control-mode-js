@@ -83,8 +83,10 @@ tmux-control-mode-js/
       "types": "./dist/protocol/index.d.ts",
       "default": "./dist/protocol/index.js"
     },
-    // ...plus connector subpaths (./websocket/*, ./electron/*, ./streams/*)
-    // and ./keymap. The `exports` map in package.json is the source of truth.
+    // ...plus ./keymap and explicit connector entry points under
+    // ./websocket, ./electron, and ./streams (no pattern exports — each
+    // subpath is named individually). See the `exports` map in
+    // package.json for the canonical list.
   }
 }
 ```
