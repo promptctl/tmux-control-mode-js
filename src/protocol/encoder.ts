@@ -53,13 +53,15 @@ function refreshClientUnsubscribe(name: string): string {
 const utf8Encoder = new TextEncoder();
 
 // Encode a string as space-separated 2-digit hex of its UTF-8 bytes.
+// Accumulate into an array and join once — repeated string concatenation is
+// quadratic-ish for large pastes.
 function utf8HexBytes(s: string): string {
   const bytes = utf8Encoder.encode(s);
-  let out = "";
+  const hex = new Array<string>(bytes.length);
   for (let i = 0; i < bytes.length; i++) {
-    out += (i === 0 ? "" : " ") + bytes[i].toString(16).padStart(2, "0");
+    hex[i] = bytes[i].toString(16).padStart(2, "0");
   }
-  return out;
+  return hex.join(" ");
 }
 
 // [LAW:one-source-of-truth] send-keys wire format lives here only — used by
