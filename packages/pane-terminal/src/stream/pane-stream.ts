@@ -72,8 +72,11 @@ export interface PaneStreamOptions {
   readonly paneId: number;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
-   * Default 0 — visible-screen-only seed (O1). Higher values trade attach
-   * latency for history depth.
+   * Default 2000 — matches tmux's default `history-limit`, so a freshly
+   * attached pane can scroll back through its existing history (a pane with
+   * no seeded scrollback has nothing to scroll into). Set 0 for a
+   * visible-screen-only seed when minimum attach latency matters more than
+   * history; higher values capture deeper history at more attach cost.
    */
   readonly historyLines?: number;
   /**
@@ -165,7 +168,7 @@ export class PaneStream implements ReseedTarget {
   constructor(opts: PaneStreamOptions) {
     this.client = opts.client;
     this.paneId = opts.paneId;
-    this.historyLines = opts.historyLines ?? 0;
+    this.historyLines = opts.historyLines ?? 2000;
     this.activityThrottleMs = opts.activityThrottleMs ?? 100;
     this.subscriptionName = `pane-terminal-size-${opts.paneId}`;
 
