@@ -5,14 +5,13 @@
 // one reconnect handler, sequential dispatch in priority order. Bench gate
 // 7 measures the same code from a timing angle; this file pins the order.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import {
   ReseedScheduler,
   getScheduler,
   type ReseedTarget,
   type ReseedPriority,
-  type TmuxClientLike,
 } from "../../src/stream/index.js";
 
 class FakeTarget implements ReseedTarget {
@@ -57,9 +56,7 @@ describe("ReseedScheduler — module-scope per-client registry", () => {
 describe("ReseedScheduler — dispatch order", () => {
   it("dispatches in priority order: visible (0) → other-attached (1)", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler(
-      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
-    );
+    const sched = new ReseedScheduler(new FakeTmuxClient());
     sched.register(new FakeTarget("h1", 1, log));
     sched.register(new FakeTarget("v", 0, log));
     sched.register(new FakeTarget("h2", 1, log));
@@ -75,9 +72,7 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("skips detached (priority 2) targets entirely", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler(
-      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
-    );
+    const sched = new ReseedScheduler(new FakeTmuxClient());
     sched.register(new FakeTarget("v", 0, log));
     sched.register(new FakeTarget("d", 2, log));
 
@@ -88,9 +83,7 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("dispatches sequentially: never overlaps in-flight reseeds", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler(
-      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
-    );
+    const sched = new ReseedScheduler(new FakeTmuxClient());
     sched.register(new FakeTarget("a", 0, log, 10));
     sched.register(new FakeTarget("b", 0, log, 5));
 
@@ -107,9 +100,7 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("coalesces overlapping reseed requests onto the in-flight run", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler(
-      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
-    );
+    const sched = new ReseedScheduler(new FakeTmuxClient());
     sched.register(new FakeTarget("a", 0, log, 10));
     sched.register(new FakeTarget("b", 0, log, 0));
 
@@ -125,9 +116,7 @@ describe("ReseedScheduler — dispatch order", () => {
 
   it("skips a target that unregisters mid-sweep", async () => {
     const log: string[] = [];
-    const sched = new ReseedScheduler(
-      { on: () => undefined, off: () => undefined } as unknown as TmuxClientLike,
-    );
+    const sched = new ReseedScheduler(new FakeTmuxClient());
     const t1 = new FakeTarget("first", 0, log, 5);
     const t2 = new FakeTarget("second", 0, log);
     sched.register(t1);
@@ -144,33 +133,26 @@ describe("ReseedScheduler — dispatch order", () => {
 
 describe("ReseedScheduler — reconnect wiring", () => {
   it("subscribes to 'reconnected' exactly once per client", () => {
-    const handlers: Array<(...args: unknown[]) => void> = [];
-    const fakeClient = {
-      on(_event: string, handler: (...args: unknown[]) => void) {
-        handlers.push(handler);
-      },
-      off(_event: string, _handler: unknown) { /* no-op */ },
-    } as unknown as TmuxClientLike;
-    new ReseedScheduler(fakeClient);
-    new ReseedScheduler(fakeClient); // separate scheduler, separate handler
-    // Each scheduler installs ONE handler; sharing should be by getScheduler,
-    // not by re-construction. This test pins that constructor adds one.
-    expect(handlers).toHaveLength(2);
+    const client = new FakeTmuxClient();
+    const spy = vi.spyOn(client, "on");
+    new ReseedScheduler(client);
+    new ReseedScheduler(client); // separate scheduler, separate handler
+    // ReseedScheduler only ever calls client.on once (for "reconnected").
+    // Two constructions → two on() calls. Sharing is via getScheduler, not
+    // by skipping the subscription in the constructor.
+    expect(spy.mock.calls).toHaveLength(2);
+    vi.restoreAllMocks();
   });
 
   it("getScheduler() across many calls only adds one reconnect handler", () => {
-    const handlers: Array<(...args: unknown[]) => void> = [];
-    const fakeClient = {
-      on(_e: string, h: (...args: unknown[]) => void) {
-        handlers.push(h);
-      },
-      off(_e: string, _h: unknown) {
-        /* no-op */
-      },
-    } as unknown as TmuxClientLike;
-    getScheduler(fakeClient);
-    getScheduler(fakeClient);
-    getScheduler(fakeClient);
-    expect(handlers).toHaveLength(1);
+    const client = new FakeTmuxClient();
+    const spy = vi.spyOn(client, "on");
+    getScheduler(client);
+    getScheduler(client);
+    getScheduler(client);
+    // getScheduler is idempotent: only the first call creates a scheduler
+    // (and its single on("reconnected") subscription).
+    expect(spy.mock.calls).toHaveLength(1);
+    vi.restoreAllMocks();
   });
 });

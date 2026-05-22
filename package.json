@@ -85,8 +85,8 @@
     "lint:fix": "eslint src/ packages/pane-terminal/src/ --fix",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
-    "typecheck": "tsc --build && pnpm run typecheck:tests",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json && tsc --noEmit -p tsconfig.e2e.json && pnpm -F @promptctl/pane-terminal run typecheck:tests",
+    "typecheck": "tsc --build && pnpm run typecheck:tests && tsc --noEmit -p tsconfig.e2e.json",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json && pnpm -F @promptctl/pane-terminal run typecheck:tests",
     "check:deps": "node scripts/check-no-deps.mjs",
     "prepublishOnly": "pnpm run check:deps && pnpm run build"
   },
