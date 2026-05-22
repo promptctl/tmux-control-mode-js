@@ -30,6 +30,7 @@ import type {
   PaneAction,
   TmuxMessage,
 } from "./protocol/types.js";
+import { emptyKeysResponse } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import type { TmuxTransport } from "./transport/types.js";
@@ -184,7 +185,12 @@ export class TmuxClient {
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
-    return this.sendRaw(encodeSendKeys(target, keys));
+    // The encoder owns the empty-input precondition (returns null = no command
+    // to send); an empty send is a no-op resolving without a round-trip.
+    const cmd = encodeSendKeys(target, keys);
+    return cmd === null
+      ? Promise.resolve(emptyKeysResponse())
+      : this.sendRaw(cmd);
   }
 
   splitWindow(options: SplitOptions = {}): Promise<CommandResponse> {

@@ -580,7 +580,8 @@ describe("Electron IPC bridge — method dispatch", () => {
     const pending = proxy.sendKeys("%0", "hello");
     expect(t.sent[0]).toContain("send-keys");
     expect(t.sent[0]).toContain("%0");
-    expect(t.sent[0]).toContain("hello");
+    // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hello".
+    expect(t.sent[0]).toContain("68 65 6c 6c 6f");
 
     feedCommandResponse(t, 1, []);
     await pending;

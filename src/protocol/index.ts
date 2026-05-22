@@ -38,7 +38,7 @@ export type {
   CommandResponse,
 } from "./types.js";
 
-export { PaneAction } from "./types.js";
+export { PaneAction, emptyKeysResponse } from "./types.js";
 
 export { TmuxParser } from "./parser.js";
 
@@ -47,6 +47,7 @@ export { decodeOctalEscapes } from "./decode.js";
 export {
   tmuxEscape,
   buildCommand,
+  sendKeys,
   refreshClientSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
