@@ -678,8 +678,16 @@ function parseSeedState(line: string): SeedState {
   const f = line.split(";");
   const cx = Number(f[0]);
   const cy = Number(f[1]);
+  // Both coordinate fields must be present: Number("") is 0, so a missing
+  // cursor_y (e.g. "5;") would otherwise pass Number.isInteger and emit a
+  // bogus {col:5,row:0}, misplacing the CUP.
   const cursor =
-    f.length >= 2 && Number.isInteger(cx) && Number.isInteger(cy) && f[0] !== ""
+    f[0] !== undefined &&
+    f[0] !== "" &&
+    f[1] !== undefined &&
+    f[1] !== "" &&
+    Number.isInteger(cx) &&
+    Number.isInteger(cy)
       ? { col: cx, row: cy }
       : null;
   // NaN when absent (e.g. a fake/older tmux) — the seed normalization treats
