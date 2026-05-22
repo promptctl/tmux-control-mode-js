@@ -221,6 +221,33 @@ describe("PaneStream — state machine", () => {
     expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
   });
 
+  it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
+    // Regression: tmux's capture-pane elides trailing blank rows, and the
+    // boundary between a real blank bottom row and the trailing-\n artifact is
+    // ambiguous. A short seed leaves xterm's bottom-anchored viewport pulling
+    // a scrollback row into view, rendering the cursor one row above its true
+    // position. PaneStream pads trailing blank rows back up to the true grid
+    // height (history rows + pane_height) so the visible screen is exactly
+    // pane_height rows. State line: cursor_x;cursor_y;...flags;pane_height;
+    // history_size — here 8 rows, no scrollback, cursor on visible row 1.
+    const { stream } = makeStream({
+      capture: "AA\nBB", // two content rows; trailing 6 blanks elided by tmux
+      cursor: "0;1;0;1;0;0;0;1;8;0",
+    });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    // The seed must carry exactly 8 rows: AA, BB, then 6 padded blank rows.
+    // Row 0 carries the autowrap preamble prefix and the final row carries the
+    // mode epilogue; the row COUNT is the invariant the cursor alignment needs.
+    const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
+    expect(rows).toHaveLength(8);
+    expect(rows[0]?.endsWith("AA")).toBe(true);
+    expect(rows[1]).toBe("BB");
+    expect(rows.slice(2, 7)).toEqual(["", "", "", "", ""]);
+  });
+
   it("dispose() → 'disposed' and is idempotent", () => {
     const { stream } = makeStream();
     stream.dispose();

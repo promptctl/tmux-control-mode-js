@@ -471,22 +471,25 @@ export class PaneStream implements ReseedTarget {
     // these handlers flip the flag back to true and we drop the result.
     this.seedStaleMidFlight = false;
 
-    // [LAW:one-source-of-truth] Capture flags mirror the canonical client
-    // (TmuxWindowOpener): -p stdout, -e SGR escapes, -q quiet (no error if the
-    // pane is in copy/view mode), -J join wrapped lines (so xterm re-wraps them
-    // correctly on resize instead of carrying hard breaks), -N preserve
-    // trailing spaces. Without -J/-N a wrapped or padded line seeds as the
-    // wrong shape and reflows incorrectly later.
+    // Capture flags: -p stdout, -e SGR escapes, -q quiet (no error if the pane
+    // is in copy/view mode), -N preserve trailing spaces. We deliberately do
+    // NOT pass -J (join wrapped lines): -J collapses a wrapped line into one
+    // output line, so the captured line count no longer equals the screen row
+    // count — which breaks the row-exact normalization below that the cursor
+    // alignment depends on. The trade-off (seeded scrollback carries hard
+    // breaks and won't reflow on a later resize) is cosmetic and confined to
+    // history; live output after the seed is unaffected.
     const captureCmd =
       this.historyLines > 0
-        ? `capture-pane -peqJN -S -${this.historyLines} -t %${this.paneId}`
-        : `capture-pane -peqJN -t %${this.paneId}`;
-    // Cursor position AND the terminal modes the captured grid content cannot
+        ? `capture-pane -peqN -S -${this.historyLines} -t %${this.paneId}`
+        : `capture-pane -peqN -t %${this.paneId}`;
+    // Cursor position, the terminal modes the captured grid content cannot
     // carry (alt screen, autowrap, cursor visibility, application cursor/keypad,
-    // insert). capture-pane -e emits only SGR colour/attrs, never DEC private
-    // modes — so a TUI pane (vim/less) would seed with the wrong input modes
-    // unless we restore them explicitly. Mirrors TmuxStateParser's field set.
-    const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag}'`;
+    // insert), plus pane_height + history_size which size the row-exact
+    // normalization below. capture-pane -e emits only SGR colour/attrs, never
+    // DEC private modes — so a TUI pane (vim/less) would seed with the wrong
+    // input modes unless we restore them explicitly.
+    const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag};#{pane_height};#{history_size}'`;
 
     let captureOutput: readonly string[] = [];
     let stateLine = "";
@@ -531,21 +534,39 @@ export class PaneStream implements ReseedTarget {
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — no live byte can interleave.
+    const { cursor, height, historySize, preamble, epilogue } =
+      parseSeedState(stateLine);
+
+    // [LAW:dataflow-not-control-flow] The cursor lands correctly by making the
+    // seed the exact shape tmux's grid has — not by adjusting the CUP. The sink
+    // writes the seed, then a viewport-relative CUP. xterm anchors its viewport
+    // to the bottom of the buffer, so the viewport's top aligns with tmux's
+    // visible-screen top ONLY when the seed ends with exactly `pane_height`
+    // rows. capture-pane (no -J) emits one line per screen row plus a trailing
+    // \n after the last row, which the parser turns into a spurious "" tail.
+    // But tmux also elides trailing blank rows ambiguously: a genuine blank
+    // bottom row is indistinguishable from that artifact. Stripping one "" can
+    // therefore drop a real blank row, leaving the seed a row short — then the
+    // bottom-anchored viewport pulls a scrollback row up into view and the
+    // cursor renders one row above its true position.
     //
-    // capture-pane -p appends a trailing \n after the last row, which the
-    // parser turns into an extra "" element. Joining WITH that element
-    // produces a trailing \r\n that forces xterm to scroll up one line —
-    // shifting all content and putting the subsequent CUP one row off,
-    // causing live bytes to land at the wrong row (the "first char replaced
-    // with 'o'" class of bugs). Strip the trailer so the join ends cleanly
-    // at the last row's content, no scroll.
-    const rawLines = captureOutput;
+    // Fix: strip the single trailing artifact, then PAD trailing blank rows
+    // back up to the true grid height — `min(historyLines, history_size)`
+    // history rows plus `pane_height` visible rows. The visible screen is then
+    // exactly `pane_height` rows by construction and the CUP is correct.
+    const stripped =
+      captureOutput.length > 0 && captureOutput[captureOutput.length - 1] === ""
+        ? captureOutput.slice(0, -1)
+        : captureOutput.slice();
+    const historyRows = Number.isFinite(historySize)
+      ? Math.min(this.historyLines, historySize)
+      : 0;
+    const targetRows = Number.isFinite(height) ? historyRows + height : 0;
     const lines =
-      rawLines.length > 0 && rawLines[rawLines.length - 1] === ""
-        ? rawLines.slice(0, -1)
-        : rawLines;
+      stripped.length < targetRows
+        ? stripped.concat(new Array(targetRows - stripped.length).fill(""))
+        : stripped;
     const screen = lines.join("\r\n");
-    const { cursor, preamble, epilogue } = parseSeedState(stateLine);
     // Restore terminal modes around the screen content: alt-screen + wrap
     // before drawing (they affect layout), input/cursor modes after. The CUP
     // the sink appends from `cursor` lands last, so it reflects the final
@@ -629,6 +650,10 @@ function latin1ToBytes(s: string): Uint8Array {
 
 interface SeedState {
   readonly cursor: SeedCursor | null;
+  /** Visible grid height (`pane_height`); `NaN` if tmux didn't report it. */
+  readonly height: number;
+  /** Scrollback line count (`history_size`); `NaN` if not reported. */
+  readonly historySize: number;
   /** Mode-setting escapes applied BEFORE the screen content (layout-affecting). */
   readonly preamble: string;
   /** Mode-setting escapes applied AFTER the screen content (input/cursor). */
@@ -647,8 +672,9 @@ const ESC = "\x1b";
 
 function parseSeedState(line: string): SeedState {
   // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
-  // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag. cursor_x/y are
-  // 0-indexed; everything after is a 0/1 mode flag.
+  // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag;pane_height;
+  // history_size. cursor_x/y are 0-indexed; the middle fields are 0/1 mode
+  // flags; the trailing two are grid dimensions.
   const f = line.split(";");
   const cx = Number(f[0]);
   const cy = Number(f[1]);
@@ -656,6 +682,10 @@ function parseSeedState(line: string): SeedState {
     f.length >= 2 && Number.isInteger(cx) && Number.isInteger(cy) && f[0] !== ""
       ? { col: cx, row: cy }
       : null;
+  // NaN when absent (e.g. a fake/older tmux) — the seed normalization treats
+  // NaN as "skip", degrading to the strip-only behaviour rather than padding.
+  const height = f[8] !== undefined && f[8] !== "" ? Number(f[8]) : NaN;
+  const historySize = f[9] !== undefined && f[9] !== "" ? Number(f[9]) : NaN;
 
   // Before content: enter alt screen (if active) then set autowrap — both
   // change how the subsequent screen content lays out.
@@ -670,7 +700,7 @@ function parseSeedState(line: string): SeedState {
     mode(f[5], `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM application cursor keys
     mode(f[6], `${ESC}=`, `${ESC}>`); // DECKPAM/DECKPNM keypad mode
 
-  return { cursor, preamble, epilogue };
+  return { cursor, height, historySize, preamble, epilogue };
 }
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {
