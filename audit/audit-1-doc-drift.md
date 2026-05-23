@@ -110,13 +110,13 @@ Across the audit, prefer structural fixes that **delegate to canonical source** 
 ### P1-3 — IMPL.md §6 says "the relay server is intentionally NOT part of this package"
 - **File:** `IMPL.md:336-341`
 - **Claim:** "The relay server is intentionally **not** part of this package. It's a simple bridge … A reference implementation or example could live in an `examples/` directory."
-- **Reality:** The relay server **is** part of the package. `package.json:42-44` exports `./websocket/server` which resolves to `dist/connectors/websocket/server.js`. `src/connectors/websocket/server.js:createWebSocketBridge` is the relay. Verified by v0.1.0 publish smoke test.
-- **Suggested fix:** Replace with a short description of `createWebSocketBridge` (one paragraph), pointing at `src/connectors/websocket/server.ts` and `./websocket/server` export. The "could live in examples/" sentence is the obsolete bit — the relay was promoted into the library.
+- **Reality:** The relay server **is** part of the package. `package.json:42-44` exports `./websocket/server` which resolves at runtime to `dist/connectors/websocket/server.js` (built from `src/connectors/websocket/server.ts`). `createWebSocketBridge` is the relay. Verified by v0.1.0 publish smoke test.
+- **Suggested fix:** Replace with a short description of `createWebSocketBridge` (one paragraph), pointing at `src/connectors/websocket/server.ts` and the `./websocket/server` export. The "could live in examples/" sentence is the obsolete bit — the relay was promoted into the library.
 
 ### P1-4 — IMPL.md §10.1 example tree omits / misnames demo files
 - **File:** `IMPL.md:800-821`
 - **Claim:** Lists `web/main.tsx, main-electron.tsx, App.tsx, store.ts, pane-terminal.ts, ws-client.ts, electron-bridge.ts, components/` and `server/bridge.ts`, `electron/main.ts, preload.ts, build.mjs`, plus a top-level `shared/`.
-- **Reality (per `ls examples/web-multiplexer/web/`):** there is no `pane-terminal.ts`; actual extras are `bridge.ts`, `demo-ipc.ts`, `heatmap-store.ts`, `inspector-store.ts`, `pane-stream-bridge.ts`, `ui-store.ts`, `fonts.css`, `format-bytes.ts`. `electron/` does not have a `preload.ts` (verify via `ls examples/web-multiplexer/electron`). The top-level also has `tests/`, `index.html`, `dist/`, `dist-electron/`, `vite.config.ts`.
+- **Reality (per `ls examples/web-multiplexer/web/` and `…/electron/`):** `web/` has no `pane-terminal.ts`; actual extras are `bridge.ts`, `demo-ipc.ts`, `heatmap-store.ts`, `inspector-store.ts`, `pane-stream-bridge.ts`, `ui-store.ts`, `fonts.css`, `format-bytes.ts`. `electron/` has `main.ts`, `preload.ts`, `build.mjs` (all in the IMPL.md tree) plus `index.html` and `wrapper-tracker.ts` (both missing from the IMPL.md tree). Top-level also has `tests/`, `index.html`, `dist/`, `dist-electron/`, `vite.config.ts`.
 - **Suggested fix:** Either (a) regenerate the tree from `ls`, OR (b) replace the file-by-file tree with one sentence — "See `examples/web-multiplexer/` for the actual layout." This is the structural fix: enumeration of a directory in prose is a self-replicating drift source.
 - **Structural opportunity:** Option (b). The filesystem is the source of truth; trees in prose are copies that always drift.
 
