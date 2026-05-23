@@ -78,7 +78,7 @@ Across the audit, prefer structural fixes that **delegate to canonical source** 
 ### P0-6 — STACK.md says "Package manager: npm" — repo migrated to pnpm
 - **File:** `.planning/codebase/STACK.md:18-21`
 - **Claim:** "Package Manager: npm (lockfile: `package-lock.json` present)"
-- **Reality:** `pnpm-lock.yaml` is canonical (commit 4d380df migrated to pnpm; `package-lock.json` is gitignored, see `.gitignore:9`). CLAUDE.md and CI both use `pnpm`. An onboarding contributor who follows STACK.md will create `package-lock.json` drift and run the wrong commands.
+- **Reality:** `pnpm-lock.yaml` is canonical (commit 4d380df migrated to pnpm; `package-lock.json` is gitignored — see `.gitignore`). CLAUDE.md and CI both use `pnpm`. An onboarding contributor who follows STACK.md will create `package-lock.json` drift and run the wrong commands.
 - **Suggested fix:** Replace npm → pnpm throughout STACK.md, point lockfile entry at `pnpm-lock.yaml`, fix all `npm test` / `npm run …` commands (lines 97, 102-105, 116, 211 of STACK.md).
 - **Structural opportunity:** None for the package-manager statement (it must live in prose), but the command list in STACK.md duplicates `package.json:scripts` — replace the enumeration with a "see `package.json` scripts" delegation.
 
