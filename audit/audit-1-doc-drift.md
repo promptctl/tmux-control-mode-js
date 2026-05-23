@@ -6,7 +6,7 @@
 **Scope:** Repo prose (README, AGENTS, CLAUDE, IMPL, KEYMAP, CHANGELOG, PROMPT-ONE-SHOT, examples/SHOWCASE, design-docs/, .planning/) versus canonical source-of-truth (package.json, src/, tsconfig*, workflows, lockfile).
 **Out of scope:** SPEC.md / SPEC_MANIFEST.md (audit 2/4), in-code comments + `[LAW:]` markers (audit 3/4), code structure (audit 4/4).
 
-This is a read-only report. No prose edits were made during the audit. Findings feed into the remediation epic [`tmux-docs-ay0`](#) — one child ticket per actionable finding, ranked. Child tickets are `tmux-docs-ay0.1` … `tmux-docs-ay0.30`; numbering matches the headings below (P0-1 → `.1`, P0-2 → `.2`, etc.) except where a finding was retracted (P0-5; see below).
+This is a read-only report. No prose edits were made during the audit. Findings feed into the remediation epic `tmux-docs-ay0` — one child ticket per actionable finding, ranked. Child tickets are `tmux-docs-ay0.1` … `tmux-docs-ay0.30`; numbering matches the headings below (P0-1 → `.1`, P0-2 → `.2`, etc.) except where a finding was retracted (P0-5; see below).
 
 ---
 
