@@ -6,7 +6,7 @@
 **Scope:** Repo prose (README, AGENTS, CLAUDE, IMPL, KEYMAP, CHANGELOG, PROMPT-ONE-SHOT, examples/SHOWCASE, design-docs/, .planning/) versus canonical source-of-truth (package.json, src/, tsconfig*, workflows, lockfile).
 **Out of scope:** SPEC.md / SPEC_MANIFEST.md (audit 2/4), in-code comments + `[LAW:]` markers (audit 3/4), code structure (audit 4/4).
 
-This is a read-only report. No prose edits were made during the audit. Findings feed into the remediation epic `tmux-audit-drift-{slug}` — one child ticket per actionable finding, ranked.
+This is a read-only report. No prose edits were made during the audit. Findings feed into the remediation epic [`tmux-docs-ay0`](#) — one child ticket per actionable finding, ranked. Child tickets are `tmux-docs-ay0.1` … `tmux-docs-ay0.30`; numbering matches the headings below (P0-1 → `.1`, P0-2 → `.2`, etc.) except where a finding was retracted (P0-5; see below).
 
 ---
 
@@ -20,15 +20,15 @@ This is a read-only report. No prose edits were made during the audit. Findings 
 | `pnpm-lock.yaml` | canonical lockfile; `package-lock.json` gitignored — package manager is **pnpm** |
 | `tsconfig.json` | project refs: protocol, transport, src, keymap, connectors, packages/pane-terminal (**6**) |
 | `src/index.ts` | root public API: TmuxClient, TmuxCommandError, PaneAction, ConnectionState, TmuxEventMap, spawnTmux, tmuxSocketDir, listTmuxSocketNames, isTmuxServerAlive, types |
-| `src/protocol/index.ts` | protocol subpath: 27 message types + TmuxMessage union + CommandResponse + PaneAction/emptyKeysResponse + TmuxParser + decodeOctalEscapes + 7 encoder fns |
+| `src/protocol/index.ts` | protocol subpath: 28 message types + TmuxMessage union + CommandResponse + PaneAction/emptyKeysResponse + TmuxParser + decodeOctalEscapes + 7 encoder fns |
 | `src/keymap/index.ts` | keymap subpath: Action/KeyEvent/Keymap/etc + INITIAL_STATE/handleKey/defaultTmuxKeymap/bindKeymap/dispatchAction |
-| `src/client.ts` | `subscribeRaw` and `unsubscribe` both return `Promise<CommandResponse>`. No `subscribe`, `listWindows`, `listPanes`, `splitWindow` methods |
+| `src/client.ts` | `subscribeRaw` and `unsubscribe` both return `Promise<CommandResponse>`. `listWindows`/`listPanes`/`splitWindow`/`sendKeys` exist as convenience methods (lines 179, 183, 187, 196); `splitWindow` consumes `SplitOptions` |
 | `src/protocol/decode.ts` | actual filename — there is NO `src/protocol/decoder.ts` |
 | `src/connectors/`, `src/keymap/` | exist as real subtrees; `src/model/` and `src/terminal/` do NOT exist |
 | `packages/pane-terminal/src/` | stream, sink, xterm-sink, react, vanilla, bench subdirs |
 | `examples/web-multiplexer/shared/config.ts` | `WEB_PORT = 44173`, `BRIDGE_PORT = 44174` |
 | `examples/web-multiplexer/web/` | actual files: App.tsx, bridge.ts, demo-ipc.ts, electron-bridge.ts, fonts.css, format-bytes.ts, heatmap-store.ts, inspector-store.ts, main-electron.tsx, main.tsx, pane-stream-bridge.ts, store.ts, ui-store.ts, ws-client.ts + components/, fonts/ |
-| `tests/` | unit/ (16 test files), integration/ (5), e2e/ (5), fixtures/ (17) — **32 test files total** |
+| `tests/` + `packages/pane-terminal/tests/` | tests/unit/ (17 `.test.ts`), tests/integration/ (5), tests/e2e/ (0 `.test.ts`; 2 `.spec.ts` — Playwright), packages/pane-terminal/tests/unit/ (10), tests/fixtures/ (17) — **32 `.test.ts` files** (`find tests packages -name '*.test.ts'`) |
 | `.github/workflows/ci.yml` | pnpm + node 20 + tmux apt-get; runs lint/format:check/typecheck/build/test/test:integration + pane-terminal bench:gate (continue-on-error) |
 | `.github/workflows/publish.yml` | publishes `@promptctl/tmux-control-mode-js` with `--provenance` on GitHub Release published |
 | `justfile` | exposes `just demo` → `npm run demo` → `pnpm --filter ... run dev` |
@@ -72,12 +72,8 @@ Across the audit, prefer structural fixes that **delegate to canonical source** 
 - **Reality:** `src/protocol/index.ts:45` exports `decodeOctalEscapes`, not `decode`. Following this snippet yields "no exported member 'decode'" at compile time and `undefined` at runtime.
 - **Suggested fix:** Change `decode` → `decodeOctalEscapes`. (Optionally: remove the example since IMPL.md is a design doc, not consumer docs — KEYMAP/README cover consumer-facing imports.)
 
-### P0-5 — IMPL.md §5 declares TmuxClient methods that do not exist
-- **File:** `IMPL.md:261-263`
-- **Claim:** `listWindows(): Promise<CommandResponse>; listPanes(): Promise<CommandResponse>; splitWindow(options?: SplitOptions): Promise<CommandResponse>;`
-- **Reality:** None of `listWindows`, `listPanes`, `splitWindow` exist on `TmuxClient` (`grep -nE 'splitWindow|listWindows|listPanes' src/client.ts` returns nothing). The library uses `execute("list-windows")`, etc. `SplitOptions` is exported from `src/index.ts:5` but no method consumes it.
-- **Suggested fix:** Replace the convenience-method block with the actual public surface (`execute`, `sendKeys`, `setSize`, `setPaneAction`, `subscribeRaw`, `unsubscribe`, `setFlags`, `clearFlags`, `requestReport`, `queryClipboard`, `detach`, `close`), OR delete those lines and link to the source. Note: `SplitOptions` is exported but unused — either route it through a real `splitWindow` method or remove the export; that decision belongs to audit 4/4 (dead-export check).
-- **Structural opportunity:** The Rejection contract paragraph immediately below already enumerates the methods correctly. The two lists in the same section should agree by construction — pick one and have the other point to it.
+### ~~P0-5 — IMPL.md §5 declares TmuxClient methods that do not exist~~ — RETRACTED
+**Retracted on review of PR #40.** This finding was wrong. `listWindows`, `listPanes`, `splitWindow`, and `sendKeys` all exist as TmuxClient methods at `src/client.ts:179, 183, 187, 196`, and `splitWindow` consumes `SplitOptions`. IMPL.md §5 is accurate; my original grep was over-restrictive (it required a `public`/`async` prefix that TypeScript class methods do not need) and I quoted a simplified grep in the report that I had not actually re-run. This is exactly the failure mode the audit was meant to catch, not produce. The corresponding lit ticket `tmux-docs-ay0.5` has been deleted, and the cross-cut note about `SplitOptions` being a dead-export candidate has also been removed (see cross-audit notes below). The numbering of subsequent findings is unchanged so existing ticket-to-finding traceability holds; P0-5 is intentionally left as a tombstone.
 
 ### P0-6 — STACK.md says "Package manager: npm" — repo migrated to pnpm
 - **File:** `.planning/codebase/STACK.md:18-21`
@@ -350,18 +346,19 @@ These are not worth individual tickets but should be captured in one cleanup tic
 
 - **For audit 2/4 (specs):** This audit found that README, CHANGELOG, and IMPL all assert the number `28` message types. Verify against `src/protocol/types.ts` and SPEC.md §23 — if the number disagrees, P3-4 above becomes a P1.
 - **For audit 3/4 (comments + [LAW:] markers):** CLAUDE.md (and probably IMPL.md) tag prose with `[LAW:]` markers (e.g. `[LAW:one-source-of-truth] dist/ should contain ONLY shippable output`). These prose-level markers are not in source, but if any in-code `[LAW:]` marker repeats a claim from a prose doc, the prose copy is the drift source — flag it back here.
-- **For audit 4/4 (code structure):** `SplitOptions` is exported from `src/index.ts:5` but no method takes it (P0-5 above) — likely a dead-export candidate.
-- **For audit 4/4 (dead-export check):** All 12 entries in the exports map were verified to import + type-resolve from a throwaway-dir install during `tmux-release-nhn` audit (PR #39 + close note). The dead-export check should re-run on the next clean build; nothing is dead today.
+- **For audit 4/4 (dead-export check):** All 12 entries in the exports map were verified to import + type-resolve from a throwaway-dir install during `tmux-release-nhn` audit (PR #39 + close note). The dead-export check should re-run on the next clean build; nothing is dead today. (An earlier draft of this audit flagged `SplitOptions` as a dead-export candidate; that was wrong — `splitWindow` consumes it.)
 
 ---
 
 ## Tally
 
-- **P0 broken contract:** 7
-- **P1 wrong:** 17
-- **P2 stale:** 14
-- **P3 drift-prone:** 6
-- **Cosmetic bucket:** 1 batched ticket covering ~5 small items
-- **Total actionable tickets in remediation epic:** ~45 (P0+P1+P2+P3+cosmetic-batch)
+After the P0-5 retraction noted above:
+
+- **P0 broken contract:** 6 (one retracted)
+- **P1 wrong:** 17 in this report; landed as 14 child tickets after merging adjacent findings (CLAUDE.md script-comments, STRUCTURE.md cleanup, STACK.md cleanup, IMPL §11)
+- **P2 stale:** 14 in this report; landed as 7 child tickets after merging adjacent findings (line-number bulk strip, .planning/ historical banner, etc.)
+- **P3 drift-prone:** 6 in this report; landed as 2 child tickets (others folded into broader fixes)
+- **Cosmetic bucket:** 1 batched ticket
+- **Total child tickets in the remediation epic:** **30** (after retracting `tmux-docs-ay0.5`)
 
 A meaningful share of the wrong/stale findings (P1-10/11/14/16/17, P2-3/4/5/11/12/14, P3-3/5) collapse into a single structural fix: stop enumerating source-derived facts in prose and start delegating to the canonical file. Tickets are still written individually because removing the enumeration is one ticket per file — they share a shape but not a touch site.
