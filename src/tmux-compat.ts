@@ -47,7 +47,10 @@ export function parseTmuxVersion(versionString: string): TmuxVersion | null {
 /**
  * True if `have` is at least `need` (major-then-minor comparison).
  */
-export function meetsTmuxVersion(have: TmuxVersion, need: TmuxVersion): boolean {
+export function meetsTmuxVersion(
+  have: TmuxVersion,
+  need: TmuxVersion,
+): boolean {
   if (have.major !== need.major) return have.major > need.major;
   return have.minor >= need.minor;
 }
