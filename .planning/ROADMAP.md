@@ -1,6 +1,6 @@
 # Roadmap: tmux-control-mode-js
 
-> **Historical snapshot — last regenerated 2026-04-05. Treat as design rationale, not current state. Authoritative: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+> **Historical snapshot — treat as design rationale, not current state. Targeted corrections may have shipped via audit-driven PRs since the original analysis date below; see `git log` for the file's actual history. Authoritative for current state: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
 
 **Created:** 2026-04-05
 **Granularity:** Coarse (5 phases)
