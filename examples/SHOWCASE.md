@@ -42,7 +42,7 @@ A demo that hits 3+ axes is gold. A demo that hits 1 is fine if that axis is oth
 
 #### Observability / introspection
 
-> The protocol inspector ("Wireshark for tmux control mode") and the pane activity heatmap are no longer ideas — both ship today as modes of `examples/web-multiplexer/` (see `CHANGELOG.md` and the README). The remaining idea in this category:
+> The protocol inspector ("Wireshark for tmux control mode") and the pane activity heatmap are no longer ideas — both ship today as modes of `examples/web-multiplexer/` (see `CHANGELOG.md` and `README.md`). The remaining idea in this category:
 
 - **"Who wrote this byte?" attribution** — hover any cell in the rendered terminal and see the exact `%output` chunk + timestamp + offset that produced it. Forces tight integration between the parser, the grid, and the raw stream.
 
