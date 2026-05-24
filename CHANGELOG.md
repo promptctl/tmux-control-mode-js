@@ -14,7 +14,9 @@ in [`SPEC.md`](./SPEC.md), targeting tmux 3.2 or later.
 ### Added
 
 - `TmuxClient` with FIFO command/response correlation and a typed event emitter
-  for all 28 server→client message types (`src/client.ts`, `src/emitter.ts`).
+  for every server→client message type the parser emits — see the `TmuxMessage`
+  union in `src/protocol/types.ts` for the authoritative list (`src/client.ts`,
+  `src/emitter.ts`).
 - Streaming line-oriented parser with full response-block tracking
   (`src/protocol/parser.ts`).
 - Wire-format encoder as the single source of truth for every client→server
