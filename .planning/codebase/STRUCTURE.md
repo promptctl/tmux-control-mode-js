@@ -73,7 +73,7 @@ tmux-control-mode-js/
 - Purpose: Pure TypeScript protocol parsing, encoding, and type definitions
 - Contains: 28 message type definitions, streaming parser, octal decoder, command encoder
 - Key invariant: **Zero Node.js dependencies** — works in browser, Deno, Bun, Node
-- Exported subpath: `tmux-control-mode-js/protocol`
+- Exported subpath: `@promptctl/tmux-control-mode-js/protocol`
 - Key files:
   - `types.ts` — Discriminated union `TmuxMessage`, individual message interfaces, `CommandResponse`, `PaneAction` enum
   - `parser.ts` — `TmuxParser` class (streaming, line-buffered, push-based)
