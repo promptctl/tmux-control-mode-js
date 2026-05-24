@@ -697,13 +697,12 @@ The on-disk inventory is the source of truth:
   `TMUX_INTEGRATION=1` (see §11.2). These are not Playwright tests; they
   exercise the library against a live `tmux -C` and never touch xterm.js.
 
-**CI setup:**
+**CI status:**
 
-- Linux CI runners with `tmux` installed (standard in most CI images).
-- `xvfb-run` for headless Electron (Playwright handles this automatically).
-- macOS CI runners for Electron-on-Mac verification.
-- Tests can run without a display server using Playwright's headless Electron
-  mode.
+End-to-end tests are not currently part of CI — `.github/workflows/ci.yml`
+runs unit and real-tmux integration only (Linux, `pnpm run test:integration`).
+Run E2E locally with `pnpm run test:e2e` (Playwright drives `electron.launch()`;
+on headless Linux you may need `xvfb-run`).
 
 ### 11.4 Testing Pyramid
 
