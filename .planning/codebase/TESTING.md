@@ -206,28 +206,23 @@ it("execute(list-windows) resolves with output", async () => {
   const response = await client.execute("list-windows");
   expect(response.success).toBe(true);
 }, 15000);  // 15 second timeout
-
-// Promise chains for error handling
-const response = await client
-  .execute("invalid-command")
-  .then(
-    (r) => r,  // Success case
-    (r: CommandResponse) => r,  // Error case (rejection caught as value)
-  );
-expect(response.success).toBe(false);
 ```
 
 **Error Testing:**
+
+tmux command failures reject with `TmuxCommandError`; the underlying
+`CommandResponse` is available on `.response`. See IMPL.md §5 for the
+rationale and the migration note covering earlier rejection shapes.
+
 ```typescript
-// Errors are treated as resolved CommandResponse objects with success: false
-const response = await client
-  .execute("invalid-command-xyz")
-  .then(
-    (r) => r,
-    (r: CommandResponse) => r,  // Rejection is caught and inspected
-  );
-expect(response.success).toBe(false);
-expect(response.output.length).toBeGreaterThan(0);  // Error message is in output
+import { TmuxCommandError } from "../../src/errors.js";
+
+// One failing call — assert it rejects with TmuxCommandError, then
+// inspect .response for the underlying CommandResponse.
+const err = await client.execute("invalid-command-xyz").catch((e) => e);
+expect(err).toBeInstanceOf(TmuxCommandError);
+expect(err.response.success).toBe(false);
+expect(err.response.output.length).toBeGreaterThan(0);
 ```
 
 **Fixture-Driven Testing:**

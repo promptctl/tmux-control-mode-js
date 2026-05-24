@@ -92,10 +92,11 @@
 ## Event Stream
 
 **Subscription System:**
-- Fire-and-forget subscriptions (no state tracking)
-  - `client.subscribe(name, what, format)` → sends `%refresh-client-subscribe` command
-  - `client.unsubscribe(name)` → sends `%refresh-client-unsubscribe` command
-  - Events emitted on `TmuxEventMap` as they arrive from tmux
+- Subscriptions are awaitable (REQUIREMENTS.md SUB-01/02):
+  - `client.subscribeRaw(name, what, format): Promise<CommandResponse>` resolves with the
+    response to the underlying `refresh-client -B` command.
+  - `client.unsubscribe(name): Promise<CommandResponse>` mirrors.
+- `%subscription-changed` notifications arrive independently on `TmuxEventMap`.
 
 **Supported Events (28 message types):**
 - Command responses: `begin`, `end`, `error`

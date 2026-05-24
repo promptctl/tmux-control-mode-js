@@ -31,7 +31,7 @@
 
 **Build/Dev:**
 - TypeScript Compiler (tsc) - Build and type-checking
-  - Project references: `src/protocol`, `src/transport`, `src`
+  - Project references: see `tsconfig.json` (`tsc --build` walks them in dependency order)
   - ES modules (type: "module" in package.json)
 
 ## Key Dependencies
@@ -53,10 +53,10 @@
   - Strict mode: enabled
   - Declaration maps: enabled (for IDE support)
   - Source maps: enabled
-- Project references in root `tsconfig.json`:
-  - `src/protocol` (protocol/types definitions only)
-  - `src/transport` (Node.js-dependent spawn implementation)
-  - `src` (main entry point and client)
+- Project references: see `tsconfig.json` for the current list (one
+  reference per layer / workspace package; `tsc --build` walks them in
+  dependency order). Enumerating them in prose drifts when a new
+  workspace package or subtree is added.
 
 **Code Quality:**
 - Prettier (3.8.1) - Code formatting
