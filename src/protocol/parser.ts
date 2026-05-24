@@ -286,10 +286,11 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  * objects through the `onMessage` callback. Handles line buffering for chunks
  * that split across line boundaries.
  *
- * Response block tracking: lines between `%begin` and `%end`/`%error` that do
- * not start with `%` are command output lines. These are forwarded via the
- * optional `onOutputLine` callback with the associated command number, allowing
- * the client layer to aggregate them into `CommandResponse` objects.
+ * Response block tracking: every non-terminator line that arrives while a
+ * `%begin` is active — regardless of leading byte — is a command output line
+ * (see SPEC_MANIFEST §4 Invariant 4.1, Block Purity). These are forwarded via
+ * the optional `onOutputLine` callback with the associated command number,
+ * allowing the client layer to aggregate them into `CommandResponse` objects.
  */
 export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
@@ -298,9 +299,10 @@ export class TmuxParser {
   private activeCommandNumber = -1;
 
   /**
-   * Optional callback for command output lines (lines between %begin and
-   * %end/%error that do not start with %). The client layer sets this to
-   * aggregate output into CommandResponse objects.
+   * Optional callback for command output lines — every non-terminator line
+   * that arrives between %begin and %end/%error, including ones that happen
+   * to begin with %. The client layer sets this to aggregate output into
+   * CommandResponse objects.
    */
   onOutputLine: ((commandNumber: number, line: string) => void) | null = null;
 
