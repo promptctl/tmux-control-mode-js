@@ -1,6 +1,6 @@
 # Keymap
 
-`tmux-control-mode-js` ships a headless keymap engine that turns raw key events into tmux actions. It lets UI consumers hand off the "user pressed `C-b c`, so create a window" boilerplate to the library without forcing any particular UI stack (xterm, Electron, React, plain DOM) onto everyone.
+`@promptctl/tmux-control-mode-js` ships a headless keymap engine that turns raw key events into tmux actions. It lets UI consumers hand off the "user pressed `C-b c`, so create a window" boilerplate to the library without forcing any particular UI stack (xterm, Electron, React, plain DOM) onto everyone.
 
 The module is exported at a separate subpath:
 
@@ -10,7 +10,7 @@ import {
   defaultTmuxKeymap,
   handleKey,
   parseChord,
-} from "tmux-control-mode-js/keymap";
+} from "@promptctl/tmux-control-mode-js/keymap";
 ```
 
 It is pure, has no runtime dependencies, and does not import the transport layer — so it is safe to use in the browser, in Deno/Bun, or in a worker. The only thing that ever touches `TmuxClient` is the thin dispatcher in `bindKeymap`, which takes a structural `TmuxCommander` interface that many clients (including the WebSocket bridge in `examples/web-multiplexer`) already satisfy.
@@ -214,8 +214,8 @@ interface TmuxCommander {
 ### Node / CLI / headless scripts
 
 ```ts
-import { spawnTmux, TmuxClient } from "tmux-control-mode-js";
-import { bindKeymap, defaultTmuxKeymap, parseChord } from "tmux-control-mode-js/keymap";
+import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
+import { bindKeymap, defaultTmuxKeymap, parseChord } from "@promptctl/tmux-control-mode-js/keymap";
 
 const transport = spawnTmux(["attach-session", "-t", "main"]);
 const client = new TmuxClient(transport);
@@ -382,7 +382,7 @@ These are the bindings tmux ships with, minus copy-mode. Prefix is `C-b`.
 The default is `C-b`. For `C-a` (screen-style):
 
 ```ts
-import { defaultTmuxKeymap, parseChord } from "tmux-control-mode-js/keymap";
+import { defaultTmuxKeymap, parseChord } from "@promptctl/tmux-control-mode-js/keymap";
 
 const keymap = {
   ...defaultTmuxKeymap(),
@@ -396,7 +396,7 @@ const bound = bindKeymap(client, keymap);
 The `Keymap` is plain data. Start from the default, filter/append, pass it to `bindKeymap`:
 
 ```ts
-import { defaultTmuxKeymap, parseChord } from "tmux-control-mode-js/keymap";
+import { defaultTmuxKeymap, parseChord } from "@promptctl/tmux-control-mode-js/keymap";
 
 const base = defaultTmuxKeymap();
 
@@ -417,8 +417,8 @@ Later bindings in the array win over earlier ones for the same chord, so you can
 ### Build a keymap from scratch
 
 ```ts
-import { parseChord } from "tmux-control-mode-js/keymap";
-import type { Keymap } from "tmux-control-mode-js/keymap";
+import { parseChord } from "@promptctl/tmux-control-mode-js/keymap";
+import type { Keymap } from "@promptctl/tmux-control-mode-js/keymap";
 
 const minimal: Keymap = {
   prefix: parseChord("C-Space"),
@@ -445,7 +445,7 @@ import {
   defaultTmuxKeymap,
   type Action,
   type KeymapState,
-} from "tmux-control-mode-js/keymap";
+} from "@promptctl/tmux-control-mode-js/keymap";
 
 const keymap = defaultTmuxKeymap();
 let state: KeymapState = INITIAL_STATE;
@@ -518,7 +518,7 @@ The engine stays pure; the variability is in the dispatcher.
 If you want actions that aren't tmux commands — show a modal, open a devtools panel, trigger an app feature — extend the `Action` union in your own code:
 
 ```ts
-import type { Action as BaseAction } from "tmux-control-mode-js/keymap";
+import type { Action as BaseAction } from "@promptctl/tmux-control-mode-js/keymap";
 
 type AppAction =
   | BaseAction
@@ -582,7 +582,7 @@ An earlier design emitted a `forward` action for unbound prefix-mode keys. We dr
 
 ## Complete API reference
 
-Module: `tmux-control-mode-js/keymap`
+Module: `@promptctl/tmux-control-mode-js/keymap`
 
 ### Types
 

@@ -14,7 +14,7 @@ tmux-control-mode-js/
 │   │   ├── index.ts           # Barrel export (re-exports only)
 │   │   ├── types.ts           # 28 message types + CommandResponse
 │   │   ├── parser.ts          # Streaming line-oriented parser
-│   │   ├── decoder.ts         # Octal escape decoder (Uint8Array)
+│   │   ├── decode.ts          # Octal escape decoder (Uint8Array)
 │   │   └── encoder.ts         # Command formatters + escaper
 │   └── transport/             # Process spawning and I/O abstraction
 │       ├── index.ts           # Barrel export (re-exports only)
@@ -73,11 +73,11 @@ tmux-control-mode-js/
 - Purpose: Pure TypeScript protocol parsing, encoding, and type definitions
 - Contains: 28 message type definitions, streaming parser, octal decoder, command encoder
 - Key invariant: **Zero Node.js dependencies** — works in browser, Deno, Bun, Node
-- Exported subpath: `tmux-control-mode-js/protocol`
+- Exported subpath: `@promptctl/tmux-control-mode-js/protocol`
 - Key files:
   - `types.ts` — Discriminated union `TmuxMessage`, individual message interfaces, `CommandResponse`, `PaneAction` enum
   - `parser.ts` — `TmuxParser` class (streaming, line-buffered, push-based)
-  - `decoder.ts` — Octal escape sequence decoder (returns `Uint8Array`)
+  - `decode.ts` — Octal escape sequence decoder (returns `Uint8Array`)
   - `encoder.ts` — Command builders and argument escaper (`tmuxEscape`)
 
 **`src/transport/`:**
@@ -124,7 +124,7 @@ tmux-control-mode-js/
 - `src/client.ts` — Command correlation (FIFO pending queue + inflight slot)
 - `src/protocol/parser.ts` — Wire format parsing (dispatch table, response block state machine)
 - `src/protocol/encoder.ts` — Command formatting and argument escaping
-- `src/protocol/decoder.ts` — Octal escape decoding (performance-optimized)
+- `src/protocol/decode.ts` — Octal escape decoding (performance-optimized)
 - `src/emitter.ts` — Minimal typed event emitter (not Node.js EventEmitter)
 
 **Testing:**
