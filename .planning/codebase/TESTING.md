@@ -212,8 +212,7 @@ it("execute(list-windows) resolves with output", async () => {
 
 tmux command failures reject with `TmuxCommandError`; the underlying
 `CommandResponse` is available on `.response`. See IMPL.md §5 for the
-rationale (pre-0.2 the rejection value was the raw `CommandResponse` —
-that shape is a breaking change).
+rationale and the migration note covering earlier rejection shapes.
 
 ```typescript
 import { TmuxCommandError } from "../../src/errors.js";
