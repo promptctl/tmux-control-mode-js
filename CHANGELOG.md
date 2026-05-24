@@ -27,11 +27,11 @@ in [`SPEC.md`](./SPEC.md), targeting tmux 3.2 or later.
   `requestReport`, `queryClipboard`, plus `detach` and `close`.
 - 157 unit tests and 19 integration tests. The integration suite runs against a
   real tmux process and is gated by `TMUX_INTEGRATION=1`.
-- Subpath exports beyond the default `.`: `./protocol`, `./keymap`,
-  `./electron/main`, `./electron/renderer`, `./websocket`,
-  `./websocket/server`, `./websocket/client`, `./websocket/protocol`,
-  `./websocket/transport`, `./streams/web`, `./streams/node` — see the
-  `exports` map in `package.json` for the authoritative list.
+- Subpath imports take the form `@promptctl/tmux-control-mode-js/<subpath>`
+  where `<subpath>` is one of: `protocol`, `keymap`, `electron/main`,
+  `electron/renderer`, `websocket`, `websocket/server`, `websocket/client`,
+  `websocket/protocol`, `websocket/transport`, `streams/web`, `streams/node` —
+  see the `exports` map in `package.json` for the authoritative list.
 - Reference `examples/web-multiplexer/` demo with three modes: a full pane
   multiplexer, a protocol inspector (Wireshark for control mode), and an
   activity heatmap across every pane in every session.
