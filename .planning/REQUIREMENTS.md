@@ -100,8 +100,8 @@ A reference consumer app in `examples/web-multiplexer/`. Proves the library inte
 
 **Run experience:**
 
-- [x] **DEMO-10**: `npm run demo` from repo root runs `npm --prefix examples/web-multiplexer run dev`, which uses `concurrently` to start the bridge (`tsx server/bridge.ts`) and Vite (`vite`). Vite proxies `/ws` to the bridge port. Open http://localhost:5173 in a browser. `npm run demo:install` is provided as a one-time install helper.
-- [x] **DEMO-11**: README "Demo" section documents `npm run demo:install` + `npm run demo`, explains the bridge architecture, and states clearly that it is not production code.
+- [x] **DEMO-10**: `pnpm run demo` from repo root runs `pnpm --filter tmux-control-mode-js-demo-web-multiplexer run dev`, which uses `concurrently` to start the bridge (`tsx server/bridge.ts`) and Vite (`vite`). Vite proxies `/ws` to the bridge port. Open http://localhost:44173 in a browser. (Workspace install is handled by `pnpm install` at the repo root — there is no separate `demo:install` step.)
+- [x] **DEMO-11**: README "Demo" section documents `pnpm run demo`, explains the bridge architecture, and states clearly that it is not production code.
 
 ## v2 Requirements
 
