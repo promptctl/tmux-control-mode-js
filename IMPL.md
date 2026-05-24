@@ -597,11 +597,12 @@ output buffer.
 ## 9. Terminal Rendering with xterm.js
 
 The xterm.js integration ships as a separate workspace package,
-`@promptctl/pane-terminal` (`packages/pane-terminal/`). The shipping API is
-`PaneSession` / `TerminalSink` / `XtermSink` plus a `<PaneTerminal>` React
-component; the design rationale (dimensions ownership, backpressure,
-scrollback restore, the renderer/seam split) lives in
-`design-docs/pane-session-v2.md`.
+`@promptctl/pane-terminal` (`packages/pane-terminal/`). Its subpath
+exports — `./stream`, `./sink`, `./xterm-sink`, `./react`, `./vanilla` —
+are the source of truth for the public surface; see
+`packages/pane-terminal/package.json#exports`. The design rationale
+(dimensions ownership, backpressure, scrollback restore, the
+renderer/seam split) lives in `design-docs/pane-session-v2.md`.
 
 Keeping the renderer in its own package preserves this library's
 zero-runtime-dependency contract (xterm.js, MobX, and React are pulled in

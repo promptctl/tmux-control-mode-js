@@ -218,19 +218,12 @@ that shape is a breaking change).
 ```typescript
 import { TmuxCommandError } from "@promptctl/tmux-control-mode-js";
 
-await expect(client.execute("invalid-command-xyz")).rejects.toThrow(
-  TmuxCommandError,
-);
-
-try {
-  await client.execute("invalid-command-xyz");
-} catch (err) {
-  expect(err).toBeInstanceOf(TmuxCommandError);
-  if (err instanceof TmuxCommandError) {
-    expect(err.response.success).toBe(false);
-    expect(err.response.output.length).toBeGreaterThan(0);
-  }
-}
+// One failing call — assert it rejects with TmuxCommandError, then
+// inspect .response for the underlying CommandResponse.
+const err = await client.execute("invalid-command-xyz").catch((e) => e);
+expect(err).toBeInstanceOf(TmuxCommandError);
+expect(err.response.success).toBe(false);
+expect(err.response.output.length).toBeGreaterThan(0);
 ```
 
 **Fixture-Driven Testing:**
