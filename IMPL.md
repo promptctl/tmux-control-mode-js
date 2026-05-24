@@ -52,8 +52,7 @@ tmux-control-mode-js/
 │   ├── client.ts          # High-level TmuxClient combining both layers
 │   └── index.ts           # Package root
 │
-│   (additional subtrees — keymap/, connectors/, model/ — exist in the
-│    repo but are not enumerated here; see the source for the current
+│   (additional subtrees exist in the repo — see `src/` for the current
 │    layout, and package.json `exports` for what ships.)
 │
 ├── examples/
@@ -333,11 +332,18 @@ This adapter is platform-agnostic — it works with the browser `WebSocket` API,
 
 ### Relay Server
 
-The relay server is intentionally **not** part of this package. It's a simple
-bridge (spawn tmux, pipe stdin/stdout to WebSocket) that is
-deployment-specific. A reference implementation or example could live in an
-`examples/` directory. The relay is ~30 lines of code with `ws` +
-`child_process`.
+The relay server **does** ship with the package — `createWebSocketBridge` is
+exported at the `./websocket/server` subpath (`src/connectors/websocket/server.ts`).
+It accepts a `ServerWebSocketLike` connection, obtains a `TmuxClient` for
+the connection via the caller-supplied `createClient(ctx)` hook (which may
+spawn a fresh client per connection or return a shared one — the default
+`disposeClient` is a no-op so shared clients work), and routes RPC through
+the shared dispatcher in §7. Deployment shape (which `ws` server, auth,
+draining, client-lifetime policy) is the caller's; the bridge itself is
+the library's.
+
+See `package.json#exports['./websocket/server']` for the consumer entry
+point. The PR-#39 v0.1.0 publish smoke test exercises this path.
 
 ---
 
@@ -593,196 +599,18 @@ output buffer.
 
 ## 9. Terminal Rendering with xterm.js
 
-### 9.1 Why xterm.js
+The xterm.js integration ships as a separate workspace package,
+`@promptctl/pane-terminal` (`packages/pane-terminal/`). Its subpath
+exports — `./stream`, `./sink`, `./xterm-sink`, `./react`, `./vanilla` —
+are the source of truth for the public surface; see
+`packages/pane-terminal/package.json#exports`. The design rationale
+(dimensions ownership, backpressure, scrollback restore, the
+renderer/seam split) lives in `design-docs/pane-session-v2.md`.
 
-xterm.js is the standard embeddable terminal for Electron and browser
-environments. VS Code, Hyper, Theia, and dozens of production apps use it. It
-handles the hard parts we don't want to reimplement: VT escape sequence
-interpretation, grid state, cursor tracking, selection, scrollback, GPU
-rendering, ligatures, and accessibility.
-
-Alternatives considered:
-
-- **Hyper** — built *on* xterm.js. Forking it adds an application shell we
-  don't need.
-- **Warp** — closed source, not embeddable.
-- **Custom terminal** — unjustifiable effort. The terminal emulator problem is
-  solved; our value is in the tmux integration.
-
-### 9.2 Integration Architecture
-
-Each tmux pane maps to one xterm.js `Terminal` instance. The data flow:
-
-```
-tmux server
-  │
-  │  %output %5 \033[1;32mhello\033[0m\012
-  ▼
-TmuxClient (main process)
-  │  parses → { type: "output", paneId: 5, data: Uint8Array }
-  │
-  │  IPC (Electron) or direct call
-  ▼
-PaneManager (renderer)
-  │  looks up Terminal instance for pane %5
-  │  calls terminal.write(data)
-  ▼
-xterm.js Terminal
-  │  interprets escape sequences, updates grid
-  ▼
-Canvas/WebGL render
-```
-
-User input flows in reverse:
-
-```
-xterm.js Terminal
-  │  terminal.onData(data)   // user typed "ls\r"
-  ▼
-PaneManager
-  │  builds: send-keys -t %5 "ls" Enter
-  │  or: send-keys -t %5 -l "ls\r" (literal mode)
-  ▼
-TmuxClient
-  │  sends command over transport
-  ▼
-tmux server
-```
-
-### 9.3 Terminal Interface
-
-We define a minimal interface that xterm.js satisfies, rather than depending
-on xterm.js directly in the core library. This keeps the core decoupled and
-allows other terminal implementations:
-
-```ts
-/**
- * Minimal terminal interface. xterm.js Terminal satisfies this out of the box.
- */
-interface TerminalEmulator {
-  /** Write data to the terminal for rendering */
-  write(data: string | Uint8Array): void;
-
-  /** Register callback for user input */
-  onData(callback: (data: string) => void): { dispose(): void };
-
-  /** Register callback for terminal resize */
-  onResize(callback: (size: { cols: number; rows: number }) => void): { dispose(): void };
-
-  /** Resize the terminal grid */
-  resize(cols: number, rows: number): void;
-
-  /** Current dimensions */
-  readonly cols: number;
-  readonly rows: number;
-}
-```
-
-xterm.js `Terminal` already implements all of these methods with the same
-signatures — no adapter needed.
-
-### 9.4 PaneManager
-
-The `PaneManager` is the glue between `TmuxClient` and terminal instances.
-It manages the lifecycle of per-pane terminals:
-
-```ts
-class PaneManager {
-  constructor(client: TmuxClient, terminalFactory: () => TerminalEmulator);
-
-  /** Get or create a terminal for a pane */
-  getTerminal(paneId: number): TerminalEmulator;
-
-  /** Attach a terminal to a DOM element (xterm.js .open()) */
-  attach(paneId: number, element: HTMLElement): void;
-
-  /** Detach and dispose a terminal */
-  detach(paneId: number): void;
-
-  /** Handle all routing automatically */
-  start(): void;
-  stop(): void;
-}
-```
-
-Responsibilities:
-
-- **Output routing:** Listens for `output` / `extended-output` events,
-  decodes octal escapes, calls `terminal.write(data)` on the correct instance.
-- **Input routing:** Listens for `terminal.onData()`, sends `send-keys`
-  commands to the correct pane.
-- **Resize propagation:** Listens for `terminal.onResize()`, sends
-  `refresh-client -C` with the new size. Handles per-window sizing if
-  multiple panes have different dimensions.
-- **Lifecycle:** Creates terminals on `%window-add` / first output, disposes
-  on `%window-close`.
-- **Pause/continue:** When `%pause` arrives, optionally shows a visual
-  indicator. When the user scrolls back to the bottom or interacts, sends
-  `refresh-client -A %<id>:continue`.
-
-### 9.5 Initial Pane Sync
-
-When a control mode client attaches to an existing session, the panes already
-have content. tmux does **not** replay historical output over control mode.
-The control client only receives new output from the point of attachment.
-
-To get the current pane content for initial display:
-
-1. Use `capture-pane -p -t %<id>` to capture the current visible grid content
-   as text (no escape sequences — just the rendered text).
-2. Or use `capture-pane -p -t %<id> -e` to include escape sequences (colors,
-   attributes).
-3. Write the captured content to the xterm.js instance before starting the
-   live output stream.
-
-```ts
-async function syncPane(client: TmuxClient, terminal: TerminalEmulator, paneId: number) {
-  const response = await client.execute(`capture-pane -p -t %${paneId} -e`);
-  if (response.success) {
-    terminal.write(response.output.join("\r\n"));
-  }
-  // Now live output will append naturally
-}
-```
-
-Limitations: `capture-pane` returns the visible grid only, not scrollback.
-For scrollback, use `capture-pane -p -t %<id> -e -S -<lines>`. This is a
-design choice — capturing huge scrollback on attach is slow and usually
-unnecessary.
-
-### 9.6 Recommended xterm.js Addons
-
-| Addon | Purpose |
-|-------|---------|
-| `@xterm/addon-fit` | Auto-resize terminal to fill container; triggers `onResize` |
-| `@xterm/addon-webgl` | GPU-accelerated rendering; significant performance improvement |
-| `@xterm/addon-web-links` | Clickable URLs in terminal output |
-| `@xterm/addon-search` | Find-in-terminal (complements tmux's own copy-mode search) |
-| `@xterm/addon-unicode11` | Proper width calculation for CJK and emoji characters |
-| `@xterm/addon-clipboard` | System clipboard integration |
-
-### 9.7 Key Considerations
-
-**Encoding:** xterm.js `write()` accepts both `string` and `Uint8Array`. Our
-octal decoder returns `Uint8Array`. Pass it directly — xterm.js handles UTF-8
-decoding internally, including incomplete multi-byte sequences across chunks.
-
-**Flow control:** Use `pause-after=1` so tmux pauses panes that the client
-can't keep up with. xterm.js `write()` returns a Promise when buffering is
-full — we can use this as a signal to defer processing more `%output` events.
-xterm.js also exposes a `write()` callback overload that fires when the chunk
-has been processed, which can be used for backpressure signaling.
-
-**`send-keys` escaping:** User keystrokes from `terminal.onData()` are UTF-8
-strings or control sequences. Use `send-keys -l` (literal mode) for most input
-to avoid tmux interpreting key names. For special keys (arrow keys, function
-keys), map the xterm.js escape sequences back to tmux key names.
-
-**Resize coordination:** When xterm.js resizes (via `addon-fit` or manual
-resize), send `refresh-client -C <cols>x<rows>` for the overall client size,
-or per-window sizes if panes in different windows have different dimensions.
-Debounce resize events — rapid resizing during window drag generates many
-events.
+Keeping the renderer in its own package preserves this library's
+zero-runtime-dependency contract (xterm.js and React are pulled in only
+by consumers that opt into `@promptctl/pane-terminal` — see its
+`peerDependencies` for the authoritative list).
 
 ---
 
@@ -798,27 +626,11 @@ the library, and the e2e suite runs against it.
 
 ### 10.1 Structure
 
-```
-examples/web-multiplexer/
-├── package.json            # React, MobX, xterm.js, Mantine, ws, electron
-├── server/
-│   └── bridge.ts           # WebSocket relay → spawnTmux + TmuxClient
-├── electron/
-│   ├── main.ts             # Electron main: spawnTmux + createMainBridge
-│   ├── preload.ts          # contextBridge → window.tmuxIpc
-│   └── build.mjs           # esbuild orchestration for main + preload
-├── web/
-│   ├── main.tsx            # Web entry — instantiates WebSocketBridge
-│   ├── main-electron.tsx   # Electron entry — instantiates ElectronBridge
-│   ├── App.tsx             # Layout, tab bar, pane grid
-│   ├── store.ts            # MobX store: sessions, windows, panes, layout
-│   ├── pane-terminal.ts    # Per-pane xterm.js Terminal + lifecycle
-│   ├── ws-client.ts        # WebSocketBridge — TmuxBridge over WebSocket
-│   ├── electron-bridge.ts  # ElectronBridge — TmuxBridge over Electron IPC
-│   └── components/         # Tab bar, status, inspector, heatmap, etc.
-├── shared/                 # Types crossing the bridge boundary
-└── index.html              # Vite shell
-```
+See `examples/web-multiplexer/` for the actual layout. The shape is a
+top-level Vite project (`web/` renderer, `server/` Node bridge, `electron/`
+desktop shell, `shared/` cross-boundary types, `tests/` e2e). Enumerating
+the per-file tree in prose drifts on every demo edit; the directory itself
+is the source of truth.
 
 ### 10.2 What It Demonstrates
 
