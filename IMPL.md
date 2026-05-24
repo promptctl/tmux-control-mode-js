@@ -129,7 +129,7 @@ type TmuxMessage =
   | { type: "window-add"; windowId: number }
   | { type: "window-close"; windowId: number }
   | { type: "window-renamed"; windowId: number; name: string }
-  // ... all 28 message types
+  // ... remaining variants in `src/protocol/types.ts` (the `TmuxMessage` union)
   ;
 ```
 

@@ -49,7 +49,7 @@
 
 **Logging:**
 - None in library — consumers implement logging via event listeners
-- Available events: `TmuxEventMap` includes all 28+ message types from tmux
+- Available events: `TmuxEventMap` includes every message type the parser emits — see the `TmuxMessage` union in `src/protocol/types.ts`
   - Use `client.on("*", handler)` to observe all messages
   - Use typed `client.on("window-add", handler)` for specific events
 
@@ -70,7 +70,7 @@
 
 - Response: Multi-line text with specific message guards
   - Guard format: `%begin <timestamp> <commandNumber> <flags>`
-  - Message types: 28 distinct server-to-client message types (see `TmuxMessage` union)
+  - Message types: every server-to-client variant defined in `src/protocol/types.ts`'s `TmuxMessage` union
   - Examples: `%window-add <id>`, `%subscription-changed ...`, `%output <paneId> ...`
   - Decoded by `src/protocol/parser.ts` and `src/protocol/decode.ts`
 
@@ -100,7 +100,7 @@
   - `client.unsubscribe(name): Promise<CommandResponse>` mirrors.
 - `%subscription-changed` notifications arrive independently on `TmuxEventMap`.
 
-**Supported Events (28 message types):**
+**Supported Events** (see `TmuxMessage` union in `src/protocol/types.ts` for the authoritative list):
 - Command responses: `begin`, `end`, `error`
 - Pane I/O: `output`, `extended-output`, `pause`, `continue`, `pane-mode-changed`
 - Window lifecycle: `window-add`, `window-close`, `window-renamed`, `window-pane-changed`
