@@ -15,7 +15,7 @@ npm install @promptctl/tmux-control-mode-js
 
 ## Compatibility
 
-> Canonical source for the version constants below: [`src/tmux-compat.ts`](https://github.com/promptctl/tmux-control-mode-js/blob/master/src/tmux-compat.ts).
+> Canonical source for the version constants below: [`src/tmux-compat.ts`](https://github.com/promptctl/tmux-control-mode-js/blob/HEAD/src/tmux-compat.ts).
 > This section is the human-readable rationale; the constants there are the
 > machine-readable single source of truth (tests import from them).
 
