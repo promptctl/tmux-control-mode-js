@@ -11,7 +11,7 @@
 
 ## No Handler Unsubscription Mechanism — RESOLVED (2026-05-24)
 
-**Issue:** The `subscribe()` and `unsubscribe()` methods in `TmuxClient` were fire-and-forget with no confirmation.
+**Issue:** The subscription methods on `TmuxClient` (then `subscribe()`, since renamed to `subscribeRaw()`) and `unsubscribe()` were fire-and-forget with no confirmation.
 
 - Impact: No way to confirm whether a subscription was actually removed. If the unsubscribe command failed silently, the client kept receiving updates with no signal.
 - Resolution: `subscribeRaw(name, what, format)` and `unsubscribe(name)` both return `Promise<CommandResponse>` (src/client.ts:222, 230). REQUIREMENTS.md SUB-01/02 mark this resolved. Callers `await` the response (and on tmux rejection, the promise rejects with `TmuxCommandError`).
