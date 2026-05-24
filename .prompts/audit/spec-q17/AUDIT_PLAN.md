@@ -40,10 +40,7 @@ SPEC.md is downstream of SPEC_MANIFEST.md, so the manifest is audited first and 
   - Source-level bugs surfaced (go to issue tracker, NOT remediation epic).
   - Coverage gaps.
 
-- [ ] **4. Remediation epic** (per ticket Acceptance) — created via `lit`, with:
-  - One parent ticket invoking `/spec-remediate`.
-  - One child ticket per non-trivial finding, ranked P0 → P1 → P2 → P3.
-  - Epic AND every child ranked to top of backlog via `lit rank <id> --top` (in reverse so the intended #1 lands at the top).
+- [x] **4. Remediation epic** (per ticket Acceptance) — `tmux-audit-x5u` (parent invokes `/spec-remediate`), with 6 grouped children `tmux-audit-x5u.1` (P0) … `.6` (P3). Epic + all children ranked to top of backlog via `lit rank … --top` in reverse order. Per-finding granularity was collapsed into per-concern groups (audit reports remain the canonical finding catalogue — [LAW:one-source-of-truth]). Two source-level bugs surfaced are tracked OUTSIDE the epic per skill Phase 6: `tmux-lint-64s`, `tmux-lint-2ee`.
 
 ## Validation gates (after each report lands)
 1. Spot-check 2–3 findings against the cited source lines.

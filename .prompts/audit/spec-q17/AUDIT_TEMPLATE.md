@@ -1,7 +1,7 @@
-# Audit: <spec file path>
+# Audit: <repo-relative spec path>
 
 ## Scope
-- Spec file: <path>
+- Spec file: `<repo-relative path, e.g. SPEC.md>` — use repo-relative paths only; do not include absolute filesystem prefixes.
 - Source modules in scope: <list>
 - Source commit SHA: 1fe97c59058e6dcb1de7e47969f3d06529610cfe
 - Audit date: 2026-05-24
@@ -11,7 +11,8 @@
 - Modules read end-to-end: <list>
 - Modules grep-sampled only: <list with reason and grep patterns used>
 - Modules not examined: <list with reason>
-- Spec sections not examined: <list with reason — empty findings is NOT the same as unchecked>
+- Spec sections examined: <list — record every numbered section reviewed, with one-line per-section outcome>
+- Spec sections NOT examined: <list with reason — empty findings is NOT the same as unchecked. If every section was examined, write "none">.
 
 ## Findings
 
