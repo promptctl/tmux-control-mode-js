@@ -16,7 +16,7 @@
 - Node.js 20+ (specified in `engines`)
 
 **Package Manager:**
-- npm (lockfile: `package-lock.json` present)
+- pnpm (canonical lockfile: `pnpm-lock.yaml`; `package-lock.json` is gitignored)
 
 ## Frameworks
 
@@ -94,15 +94,11 @@
 **Cleaning:** `tsc --build --clean`
 - Removes generated dist files
 
-**Pre-publish:** `npm run build` executed automatically before publishing
+**Pre-publish:** `pnpm run check:deps && pnpm run build` (see `prepublishOnly` in `package.json`) — the deps-guard is load-bearing (enforces zero runtime dependencies)
 
 ## Testing
 
-**Test Commands:**
-```bash
-npm test              # Run all tests once
-npm run test:watch   # Watch mode
-```
+**Test Commands:** see `package.json` `scripts` (`test`, `test:integration`, `test:all`, `test:watch`); `test:all` is canonical for agents per `CLAUDE.md`.
 
 **Test Files Location:**
 - Unit tests: `tests/unit/**/*.test.ts` and `src/**/*.test.ts`
@@ -113,7 +109,7 @@ npm run test:watch   # Watch mode
 
 **Development:**
 - Node.js 20+
-- npm (any recent version)
+- pnpm (any recent version; see [pnpm.io](https://pnpm.io))
 - Bash/shell for scripts
 
 **Production:**
