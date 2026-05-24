@@ -1,5 +1,7 @@
 # tmux-control-mode-js
 
+> **Historical snapshot — last regenerated 2026-04-05. Treat as design rationale, not current state. Authoritative: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+
 ## What This Is
 
 A JavaScript/TypeScript library that implements the tmux control mode protocol — a faithful, contract-defined wrapper around the wire protocol documented in `SPEC.md`. It lets any Node.js application drive a tmux server (spawn panes, route input, receive structured notifications) without reinventing the parser/encoder. The protocol layer is pure TypeScript and runs in any JS runtime; the transport layer wraps Node's `child_process`.
