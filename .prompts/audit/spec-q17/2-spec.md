@@ -1,7 +1,7 @@
 # Audit: /Users/bmf/code/tmux-control-mode-js/SPEC.md
 
 ## Scope
-- Spec file: /Users/bmf/code/tmux-control-mode-js/SPEC.md
+- Spec file: `SPEC.md`
 - Source modules in scope: src/index.ts, src/client.ts, src/protocol/**, src/transport/spawn.ts, src/transport/types.ts, src/transport/sockets.ts, src/tmux-compat.ts, src/emitter.ts, src/connection-state.ts, src/errors.ts
 - Source commit SHA: 1fe97c59058e6dcb1de7e47969f3d06529610cfe
 - Audit date: 2026-05-24

@@ -1,7 +1,7 @@
 # Audit: /Users/bmf/code/tmux-control-mode-js/SPEC_MANIFEST.md
 
 ## Scope
-- Spec file: /Users/bmf/code/tmux-control-mode-js/SPEC_MANIFEST.md
+- Spec file: `SPEC_MANIFEST.md`
 - Source modules in scope: src/protocol/**, src/transport/**, src/client.ts, src/tmux-compat.ts, src/emitter.ts, src/connection-state.ts, src/errors.ts, src/index.ts
 - Source commit SHA: 1fe97c59058e6dcb1de7e47969f3d06529610cfe
 - Audit date: 2026-05-24
@@ -32,7 +32,9 @@
 
 - Modules not examined: none (every source path under `src/**` was at least grep-sampled).
 
-- Spec sections not examined:
+- Spec sections not examined: none — every numbered section of SPEC_MANIFEST.md was examined; per-section outcomes are listed below under "Spec sections examined."
+
+- Spec sections examined:
   - §1 Entry Points and Initialization — examined. Manifest only describes the upstream tmux C source (`control.c`, `server-client.c`); the library does not implement these C entry points, it consumes the wire output. No library-side claim to verify; citations are upstream C source per the SPECIAL RULE.
   - §2 DCS Wrapping (-CC Mode) — examined against src/transport/spawn.ts.
   - §3 Command Input Protocol — examined against src/protocol/encoder.ts and src/transport/spawn.ts (LF framing, empty-line detach).
