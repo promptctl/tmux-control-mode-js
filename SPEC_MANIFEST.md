@@ -96,8 +96,6 @@ repository (version next-3.7, commit 5c30b145).
   - `cmd-queue.c:619` (begin, before command execution)
   - `cmd-queue.c:677` (error, on command failure)
   - `cmd-queue.c:679` (end, on command success)
-- A notification will never occur inside a response block
-  - `tmux.1:7896-7897`
 - Command output (lines between `%begin` and `%end`/`%error`) is written via
   `control_write()` from multiple callsites:
   - `server_client_print()` writes command output; sanitizes non-UTF8 if needed
@@ -108,6 +106,34 @@ repository (version next-3.7, commit 5c30b145).
     - `cmd-capture-pane.c:241-242`
   - `control_error()` writes parse error messages
     - `control.c:527-529`
+
+### Invariant 4.1 — Block Purity
+
+tmux never interleaves an asynchronous notification (`%output`,
+`%window-add`, `%client-detached`, etc.) into a response block. Between a
+`%begin` guard and its matching `%end` / `%error` terminator, every line
+is either the block terminator itself or command output produced by the
+running command — regardless of whether that command output happens to
+begin with `%`.
+
+- Upstream citation: `tmux.1:7896-7897` — "a notification will never occur
+  inside a response block"
+- Rationale: this invariant is what lets a parser route every byte arriving
+  inside a block to "command output" without ambiguity. Without it, a
+  payload line whose first byte happened to be `%` (e.g. the output of
+  `list-panes -F '#{pane_id}'`, which prints lines like `%5`) would be
+  indistinguishable from a real notification, and the parser would have to
+  guess by content.
+- Library reliance: `src/protocol/parser.ts` (`processLine`) treats every
+  non-terminator line inside an active response block as command output and
+  forwards it to `onOutputLine`, regardless of its leading byte. That branch
+  is annotated `[LAW:one-source-of-truth]` and names this invariant as its
+  sole justification.
+- Why named: any future tmux change that violated Invariant 4.1 would
+  silently miscategorise output as events (or vice versa) in every
+  control-mode consumer. Naming the invariant — rather than burying it in
+  prose — makes such a change a discoverable spec edit instead of a silent
+  parser regression.
 
 ---
 
