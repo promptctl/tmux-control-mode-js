@@ -9,9 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Build / typecheck (both are the same — TypeScript project references require emit):
 
 ```
-pnpm run build        # tsc --build across protocol, transport, src
-pnpm run dev          # tsc --build --watch
-pnpm run clean        # tsc --build --clean
+pnpm run build
+pnpm run dev
+pnpm run clean
 pnpm run typecheck    # alias for build; do NOT add --noEmit (breaks project refs)
 ```
 
@@ -19,9 +19,9 @@ Tests — **agents MUST run the full suite with tmux integration**. `pnpm test` 
 
 ```
 pnpm run test:all              # unit + integration — USE THIS as an agent
-pnpm run test:integration      # integration only; sets TMUX_INTEGRATION=1
+pnpm run test:integration      # sets TMUX_INTEGRATION=1 so the gate opens
 pnpm test                      # unit only — CI-skip path, do NOT use to verify work
-pnpm run test:watch            # vitest watch
+pnpm run test:watch
 TMUX_INTEGRATION=1 pnpm exec vitest run <path>    # single file
 TMUX_INTEGRATION=1 pnpm exec vitest run -t "<name>"  # single test by name
 ```
@@ -31,9 +31,9 @@ Integration tests are gated behind `TMUX_INTEGRATION=1`; individual tests may al
 Lint / format / deps:
 
 ```
-pnpm run lint           # eslint src/
+pnpm run lint
 pnpm run lint:fix
-pnpm run format         # prettier --write 'src/**/*.ts'
+pnpm run format
 pnpm run format:check
 pnpm run check:deps     # fails if root "dependencies" is non-empty
 ```
@@ -46,7 +46,7 @@ pnpm run demo           # starts bridge + Vite; needs at least one local tmux se
 
 ## Architecture
 
-Three layers, built as TS project references and shipped as subpath exports (`.`, `./protocol`, plus connector/keymap subpaths — the `exports` map in `package.json` is the source of truth for what ships):
+Layered architecture, built as TS project references and shipped as subpath exports — `tsconfig.json` lists the references; the `exports` map in `package.json` is the source of truth for what ships. The conceptual layering:
 
 - `src/protocol/` — **pure**, zero Node.js deps. Parses tmux control-mode lines into a discriminated-union `TmuxMessage`, encodes outbound commands, decodes octal escapes. Usable in browser/Deno/Bun. Declared `"sideEffects": false`.
 - `src/transport/` — Node-only. `spawnTmux()` forks `tmux -C` via `child_process`; `TmuxTransport` is the interface every consumer writes against (so tests can substitute a fake transport).
