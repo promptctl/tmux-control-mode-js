@@ -41,9 +41,9 @@ from).
 ## Testing
 
 ```bash
-npm test                # unit tests only (fast, no tmux required)
-npm run test:integration # integration tests against real tmux
-npm run test:all         # everything
+pnpm test                 # unit tests only (fast, no tmux required)
+pnpm run test:integration # integration tests against real tmux
+pnpm run test:all         # everything
 ```
 
 Integration tests are gated behind `TMUX_INTEGRATION=1` so the default test
@@ -60,9 +60,9 @@ spawns your local tmux) plus a browser frontend (React + Mantine + xterm.js)
 that talks to the bridge over WebSocket.
 
 ```bash
-npm install   # once at the repo root — workspaces install demo deps too,
-              # still zero runtime deps on this library's package.json
-just demo     # starts bridge + Vite dev server; open http://localhost:44173
+pnpm install   # once at the repo root — workspaces install demo deps too,
+               # still zero runtime deps on this library's package.json
+pnpm run demo  # starts bridge + Vite dev server; open http://localhost:44173
 ```
 
 The demo connects to your **existing host tmux server** and shows every
