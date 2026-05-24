@@ -9,6 +9,13 @@
 - Impact: Consumers importing from `"@promptctl/tmux-control-mode-js/terminal"` would fail at runtime with a module-not-found error (Node's ESM resolver raises `ERR_MODULE_NOT_FOUND`; bundlers surface an equivalent resolution failure). A clean build never emitted `dist/terminal/`, so the published export was dead.
 - Resolution: Removed the `./terminal` export entry (terminal rendering lives in the separate `@promptctl/pane-terminal` package). The release audit verified all remaining subpath exports resolve from a real install.
 
+## No Handler Unsubscription Mechanism — RESOLVED (2026-05-24)
+
+**Issue:** The `subscribe()` and `unsubscribe()` methods in `TmuxClient` were fire-and-forget with no confirmation.
+
+- Impact: No way to confirm whether a subscription was actually removed. If the unsubscribe command failed silently, the client kept receiving updates with no signal.
+- Resolution: `subscribeRaw(name, what, format)` and `unsubscribe(name)` both return `Promise<CommandResponse>` (src/client.ts:222, 230). REQUIREMENTS.md SUB-01/02 mark this resolved. Callers `await` the response (and on tmux rejection, the promise rejects with `TmuxCommandError`).
+
 ## Uncaught Handler Errors in Event Emitter
 
 **Issue:** Event handlers in `TypedEmitter` are invoked without error boundaries. If a handler throws, it will propagate unchecked.
@@ -40,15 +47,6 @@
 - Current behavior: `const entry = this.pending.shift()` may return undefined, and the guard silently returns without emitting an error event.
 - Impact: Malformed or out-of-order protocol state is hidden. If tmux sends an unexpected %begin, there's no observable failure—the client silently drops the correlation. This makes debugging protocol issues difficult.
 - Fix approach: Emit a warning or error event when a %begin arrives with no pending entry, allowing callers to detect protocol violations or connection corruption.
-
-## No Handler Unsubscription Mechanism
-
-**Issue:** The `subscribe()` and `unsubscribe()` methods in `TmuxClient` are fire-and-forget with no confirmation.
-
-- Files: `src/client.ts` lines 144-150
-- Current behavior: `unsubscribe()` sends a command but does not wait for or verify the response.
-- Impact: There's no way to confirm whether a subscription was actually removed. If the unsubscribe command fails silently, the client continues receiving updates but the caller has no way to know.
-- Fix approach: Make `unsubscribe()` return a Promise<CommandResponse> so callers can verify success. This also allows the API to detect and report failures.
 
 ## Handler Invocation Not Isolated from Parser Feed
 
