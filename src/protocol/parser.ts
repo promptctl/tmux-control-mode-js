@@ -362,15 +362,15 @@ export class TmuxParser {
       !isNotification || spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
 
     // [LAW:one-source-of-truth] SPEC_MANIFEST §4 Invariant 4.1 (Block
-    // Purity): a notification never occurs inside a response block. The
-    // only %-prefixed lines that legitimately appear between %begin and
-    // %end/%error are the block terminators themselves (`%end` and
-    // `%error`). Anything else inside a block — including `%`-prefixed
-    // lines that happen to look like notifications, e.g. `%5` from
-    // `list-panes -F '#{pane_id}'` — is command output, not a notification.
-    // Treating those as unknown notifications was the bug the example used
-    // to paper over with an `id=` prefix; the parser now follows the spec
-    // invariant directly.
+    // Purity): tmux never interleaves an asynchronous notification into a
+    // response block. Between %begin and %end/%error, every line is
+    // either the block terminator itself or command output produced by
+    // the running command — even if that output happens to begin with
+    // `%`, e.g. `%5` from `list-panes -F '#{pane_id}'`. The parser routes
+    // by position (in-block + not-terminator → output), not by content.
+    // Treating in-block `%5`-style lines as unknown notifications was the
+    // bug the example used to paper over with an `id=` prefix; the parser
+    // now follows the spec invariant directly.
     const isBlockTerminator = typeStr === "end" || typeStr === "error";
     const treatAsOutput = inResponseBlock && !isBlockTerminator;
 

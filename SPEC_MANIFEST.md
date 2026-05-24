@@ -109,10 +109,12 @@ repository (version next-3.7, commit 5c30b145).
 
 ### Invariant 4.1 — Block Purity
 
-Between a `%begin` guard and its matching `%end` / `%error` terminator, the
-only `%`-prefixed lines tmux emits are the block terminators themselves.
-Asynchronous notifications (`%output`, `%window-add`, `%client-detached`,
-etc.) are never interleaved into a response block.
+tmux never interleaves an asynchronous notification (`%output`,
+`%window-add`, `%client-detached`, etc.) into a response block. Between a
+`%begin` guard and its matching `%end` / `%error` terminator, every line
+is either the block terminator itself or command output produced by the
+running command — regardless of whether that command output happens to
+begin with `%`.
 
 - Upstream citation: `tmux.1:7896-7897` — "a notification will never occur
   inside a response block"
