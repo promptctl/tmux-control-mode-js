@@ -1,4 +1,4 @@
-# Audit: /Users/bmf/code/tmux-control-mode-js/SPEC_MANIFEST.md
+# Audit: `SPEC_MANIFEST.md`
 
 ## Scope
 - Spec file: `SPEC_MANIFEST.md`
@@ -287,4 +287,4 @@
 
 ## Source-level bugs surfaced (separate from spec findings)
 
-- src/protocol/types.ts:237 contains the comment "// Discriminated Union — all 28 server-to-client message types". A count was deleted across the codebase recently (per recent commit a01fadf "docs: strip '28 message types' count across 5 sites"), but this in-source comment on line 237 still reads "all 28 server-to-client message types". Counting the union members on lines 241-269 yields 27 (Begin/End/Error/Output/ExtendedOutput/Pause/Continue/PaneModeChanged/WindowAdd/WindowClose/WindowRenamed/WindowPaneChanged/UnlinkedWindowAdd/UnlinkedWindowClose/UnlinkedWindowRenamed/LayoutChange/SessionChanged/SessionRenamed/SessionsChanged/SessionWindowChanged/ClientSessionChanged/ClientDetached/PasteBufferChanged/PasteBufferDeleted/SubscriptionChanged/Message/ConfigError/Exit = 28 actually). The comment count is currently accurate, but is the kind of WHAT-comment that drifts on the next addition/removal — flag for the issue tracker per the userspace rule against count comments in CLAUDE.md (`FORBIDDEN in comments: enumerations of callers, counts, etc.`).
+- src/protocol/types.ts:237 contains the comment `// Discriminated Union — all 28 server-to-client message types`. A count was deleted across the codebase recently (per recent commit a01fadf "docs: strip '28 message types' count across 5 sites"), but this in-source comment was missed. Counting the union members on lines 241-269 yields 28 (Begin/End/Error/Output/ExtendedOutput/Pause/Continue/PaneModeChanged/WindowAdd/WindowClose/WindowRenamed/WindowPaneChanged/UnlinkedWindowAdd/UnlinkedWindowClose/UnlinkedWindowRenamed/LayoutChange/SessionChanged/SessionRenamed/SessionsChanged/SessionWindowChanged/ClientSessionChanged/ClientDetached/PasteBufferChanged/PasteBufferDeleted/SubscriptionChanged/Message/ConfigError/Exit). The comment count is currently accurate, but is exactly the WHAT-comment that drifts on the next addition/removal — flag for the issue tracker per the project rule against count comments in CLAUDE.md (`FORBIDDEN in comments: enumerations of callers, counts, etc.`).

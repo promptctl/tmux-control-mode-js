@@ -1,4 +1,4 @@
-# Audit: /Users/bmf/code/tmux-control-mode-js/SPEC.md
+# Audit: `SPEC.md`
 
 ## Scope
 - Spec file: `SPEC.md`
