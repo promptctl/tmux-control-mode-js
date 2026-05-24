@@ -14,7 +14,7 @@ tmux-control-mode-js/
 │   │   ├── index.ts           # Barrel export (re-exports only)
 │   │   ├── types.ts           # 28 message types + CommandResponse
 │   │   ├── parser.ts          # Streaming line-oriented parser
-│   │   ├── decode.ts         # Octal escape decoder (Uint8Array)
+│   │   ├── decode.ts          # Octal escape decoder (Uint8Array)
 │   │   └── encoder.ts         # Command formatters + escaper
 │   └── transport/             # Process spawning and I/O abstraction
 │       ├── index.ts           # Barrel export (re-exports only)
