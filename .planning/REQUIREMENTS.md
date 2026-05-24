@@ -1,5 +1,7 @@
 # Requirements: tmux-control-mode-js
 
+> **Historical snapshot — treat as design rationale, not current state. Targeted corrections may have shipped via audit-driven PRs since the original analysis date below; see `git log` for the file's actual history. Authoritative for current state: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+
 **Defined:** 2026-04-05
 **Core Value:** Faithfully implement the tmux control mode protocol as documented in `SPEC.md`.
 

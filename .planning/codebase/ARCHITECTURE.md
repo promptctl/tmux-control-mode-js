@@ -1,5 +1,7 @@
 # Architecture
 
+> **Historical snapshot — treat as design rationale, not current state. Targeted corrections may have shipped via audit-driven PRs since the original analysis date below; see `git log` for the file's actual history. Authoritative for current state: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+
 **Analysis Date:** 2026-04-05
 
 ## Pattern Overview
@@ -88,7 +90,7 @@
 - Purpose: Single, exhaustive type for all server-to-client messages (28 variants)
 - Examples: `OutputMessage`, `WindowAddMessage`, `SessionChangedMessage`, `CommandResponse`
 - Pattern: Discriminated union by `type` field; pattern match on `type` determines available properties
-- Location: `src/protocol/types.ts` (lines 230–258)
+- Location: `src/protocol/types.ts`
 
 **TmuxTransport Interface:**
 - Purpose: Minimal callback contract for any transport (spawn, WebSocket, IPC, etc.)
@@ -117,7 +119,7 @@
   - Unlimited `pending` queue (unbounded user calls)
   - `%begin` pops from pending; `%end`/`%error` resolves inflight
   - If `%begin` arrives with empty pending queue, it's dropped (misalignment)
-- Location: `src/client.ts` (lines 56–57, correlation state; lines 165–202, transitions)
+- Location: `src/client.ts`
 
 **TypedEmitter:**
 - Purpose: Type-safe, generic event emitter without Node.js dependencies

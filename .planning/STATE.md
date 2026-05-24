@@ -20,7 +20,7 @@ See: `.planning/PROJECT.md` (updated 2026-04-05)
 | 1 | Encoder Consolidation | ✓ Shipped |
 | 2 | `-CC` DCS Mode | ✓ Shipped (CC-01 fail-fast, CC-02 DCS stripper; live -CC deferred per CC-04) |
 | 3 | refresh-client Surface | ✓ Shipped |
-| 4 | Integration Test Pass | ✓ Shipped (19/19 against real tmux 3.6a) |
+| 4 | Integration Test Pass | ✓ Shipped |
 | 5 | Demo Web Multiplexer | ✓ Shipped (multiplexer + protocol inspector + activity heatmap) |
 
 Per-phase artifacts live in `.planning/phases/<NN>-<slug>/`.
