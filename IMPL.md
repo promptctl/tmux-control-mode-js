@@ -621,27 +621,11 @@ the library, and the e2e suite runs against it.
 
 ### 10.1 Structure
 
-```
-examples/web-multiplexer/
-├── package.json            # React, MobX, xterm.js, Mantine, ws, electron
-├── server/
-│   └── bridge.ts           # WebSocket relay → spawnTmux + TmuxClient
-├── electron/
-│   ├── main.ts             # Electron main: spawnTmux + createMainBridge
-│   ├── preload.ts          # contextBridge → window.tmuxIpc
-│   └── build.mjs           # esbuild orchestration for main + preload
-├── web/
-│   ├── main.tsx            # Web entry — instantiates WebSocketBridge
-│   ├── main-electron.tsx   # Electron entry — instantiates ElectronBridge
-│   ├── App.tsx             # Layout, tab bar, pane grid
-│   ├── store.ts            # MobX store: sessions, windows, panes, layout
-│   ├── pane-terminal.ts    # Per-pane xterm.js Terminal + lifecycle
-│   ├── ws-client.ts        # WebSocketBridge — TmuxBridge over WebSocket
-│   ├── electron-bridge.ts  # ElectronBridge — TmuxBridge over Electron IPC
-│   └── components/         # Tab bar, status, inspector, heatmap, etc.
-├── shared/                 # Types crossing the bridge boundary
-└── index.html              # Vite shell
-```
+See `examples/web-multiplexer/` for the actual layout. The shape is a
+top-level Vite project (`web/` renderer, `server/` Node bridge, `electron/`
+desktop shell, `shared/` cross-boundary types, `tests/` e2e). Enumerating
+the per-file tree in prose drifts on every demo edit; the directory itself
+is the source of truth.
 
 ### 10.2 What It Demonstrates
 
