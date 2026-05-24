@@ -11,6 +11,11 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import {
+  REQUEST_REPORT_MIN_VERSION,
+  meetsTmuxVersion,
+  parseTmuxVersion,
+} from "../../src/tmux-compat.js";
 
 // [LAW:verifiable-goals] Gate every test behind the env var so the suite is
 // opt-in only; skipping rather than failing keeps the default test run green
@@ -20,17 +25,14 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // [LAW:verifiable-goals] Some refresh-client flags are newer than the
 // library's 3.2 minimum: `-r` (requestReport) is rejected by tmux <3.5 as
 // an unknown flag. Skip the feature test rather than asserting a contract
-// the running tmux cannot honor — README Compatibility documents the floor.
+// the running tmux cannot honor.
+// [LAW:one-source-of-truth] Version constants live in src/tmux-compat.ts;
+// this gate imports them rather than restating the numbers.
 const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
   if (!RUN_INTEGRATION) return false;
   try {
-    const out = execSync("tmux -V", { encoding: "utf8" }).trim();
-    const m = out.match(/tmux\s+(\d+)\.(\d+)/);
-    if (!m) return false;
-    const [, majStr, minStr] = m;
-    const major = parseInt(majStr, 10);
-    const minor = parseInt(minStr, 10);
-    return major > 3 || (major === 3 && minor >= 5);
+    const version = parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim());
+    return version !== null && meetsTmuxVersion(version, REQUEST_REPORT_MIN_VERSION);
   } catch {
     return false;
   }

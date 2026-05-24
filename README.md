@@ -15,6 +15,10 @@ npm install @promptctl/tmux-control-mode-js
 
 ## Compatibility
 
+> Canonical source for the version constants below: [`src/tmux-compat.ts`](https://github.com/promptctl/tmux-control-mode-js/blob/HEAD/src/tmux-compat.ts).
+> This section is the human-readable rationale; the constants there are the
+> machine-readable single source of truth (tests import from them).
+
 Supports **tmux 3.2 and later**. The 3.2 floor is load-bearing: the library
 depends on features introduced in that release and cannot function on older
 tmux:
@@ -60,8 +64,7 @@ spawns your local tmux) plus a browser frontend (React + Mantine + xterm.js)
 that talks to the bridge over WebSocket.
 
 ```bash
-pnpm install   # once at the repo root — workspaces install demo deps too,
-               # still zero runtime deps on this library's package.json
+pnpm install   # once at the repo root — workspaces install demo deps; library itself still has zero runtime deps
 pnpm run demo  # starts bridge + Vite dev server; open http://localhost:44173
 ```
 
