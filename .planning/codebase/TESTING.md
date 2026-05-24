@@ -216,7 +216,7 @@ rationale (pre-0.2 the rejection value was the raw `CommandResponse` —
 that shape is a breaking change).
 
 ```typescript
-import { TmuxCommandError } from "@promptctl/tmux-control-mode-js";
+import { TmuxCommandError } from "../../src/errors.js";
 
 // One failing call — assert it rejects with TmuxCommandError, then
 // inspect .response for the underlying CommandResponse.
