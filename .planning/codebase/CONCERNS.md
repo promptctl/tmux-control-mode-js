@@ -1,5 +1,7 @@
 # Codebase Concerns
 
+> **Historical snapshot — last regenerated 2026-04-05. Treat as design rationale, not current state. Authoritative: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+
 **Analysis Date:** 2026-04-05
 
 ## Missing Terminal Export — RESOLVED (2026-05-22)
