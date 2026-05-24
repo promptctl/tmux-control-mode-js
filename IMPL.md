@@ -332,11 +332,15 @@ This adapter is platform-agnostic — it works with the browser `WebSocket` API,
 
 ### Relay Server
 
-The relay server is intentionally **not** part of this package. It's a simple
-bridge (spawn tmux, pipe stdin/stdout to WebSocket) that is
-deployment-specific. A reference implementation or example could live in an
-`examples/` directory. The relay is ~30 lines of code with `ws` +
-`child_process`.
+The relay server **does** ship with the package — `createWebSocketBridge` is
+exported at the `./websocket/server` subpath (`src/connectors/websocket/server.ts`).
+It accepts a `ServerWebSocketLike` connection, spawns a `TmuxClient` per
+connection via the caller-supplied `createClient` hook, and routes RPC
+through the shared dispatcher in §7. Deployment shape (which `ws` server,
+auth, draining) is the caller's; the bridge itself is the library's.
+
+See `package.json#exports['./websocket/server']` for the consumer entry
+point. The PR-#39 v0.1.0 publish smoke test exercises this path.
 
 ---
 
