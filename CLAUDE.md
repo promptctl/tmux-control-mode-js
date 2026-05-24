@@ -6,14 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Build / typecheck (both are the same — TypeScript project references require emit):
+Build / typecheck:
 
 ```
-pnpm run build
-pnpm run dev
+pnpm run build       # fast iteration loop
+pnpm run dev         # watch mode
 pnpm run clean
-pnpm run typecheck    # alias for build; do NOT add --noEmit (breaks project refs)
+pnpm run typecheck   # full check: build + tests + e2e typecheck (see package.json)
 ```
+
+Project references require `tsc --build` (or `--build --watch`) — emit is non-optional, so don't reach for `--noEmit` when adapting these.
 
 Tests — **agents MUST run the full suite with tmux integration**. `pnpm test` (unit-only) exists for CI hosts without tmux; agents never run in CI, and every agent environment has tmux available, so the canonical command is `test:all`:
 
