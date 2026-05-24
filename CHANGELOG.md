@@ -39,5 +39,5 @@ in [`SPEC.md`](./SPEC.md), targeting tmux 3.2 or later.
 - tmux ≥ 3.2. The 3.2 floor is load-bearing; see the Compatibility section of
   [`README.md`](./README.md) for details.
 
-[Unreleased]: https://github.com/brandon-fryslie/tmux-control-mode-js/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/brandon-fryslie/tmux-control-mode-js/releases/tag/v0.1.0
+[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/promptctl/tmux-control-mode-js/releases/tag/v0.1.0
