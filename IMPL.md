@@ -681,73 +681,21 @@ These are fast, pure, no-IO tests. They run on every commit.
   that floods output, confirm `%pause` is received, send `continue`, confirm
   `%continue` arrives and output resumes.
 
-### 11.3 xterm.js Integration Tests (Playwright)
+### 11.3 End-to-End Tests (Playwright + Electron)
 
-These are the integration tests that run against the reference example
-(`examples/web-multiplexer/`, Electron entry path). They exercise the full
-stack: spawn tmux → parse protocol → render in xterm.js → capture terminal
-state → verify.
+End-to-end coverage drives the reference example (`examples/web-multiplexer/`)
+through Playwright, including its Electron entry path. The full stack runs
+unmodified: spawn tmux → parse protocol → bridge to the renderer → render in
+xterm.js → assert on terminal state.
 
-**Test runner:** Playwright with Electron support (`electron.launch()`).
-Playwright can drive the Electron app, interact with the xterm.js terminals,
-and assert on rendered content.
+The on-disk inventory is the source of truth:
 
-**Test categories:**
-
-```
-tests/integration/
-├── connection.test.ts       # Attach/new-session, %exit on detach
-├── output-rendering.test.ts # Run "echo hello", verify xterm.js shows it
-├── input.test.ts            # Type in xterm.js, verify command executes
-├── pane-lifecycle.test.ts   # Split pane, close pane, verify DOM updates
-├── window-lifecycle.test.ts # New window, rename, close, verify tab bar
-├── resize.test.ts           # Resize Electron window, verify refresh-client -C
-├── layout.test.ts           # Split panes, verify %layout-change updates
-├── session.test.ts          # Switch session, verify %session-changed
-├── backpressure.test.ts     # Flood output, verify pause/continue cycle
-├── initial-sync.test.ts     # Attach to existing session, verify capture-pane
-└── escape-sequences.test.ts # Colors, cursor movement, verify xterm.js grid
-```
-
-**How the tests work:**
-
-1. Playwright launches the Electron example app.
-2. The app spawns `tmux -C new-session` (or attaches to a fixture session).
-3. Tests send tmux commands via the app's IPC bridge (Playwright can call
-   `electron.evaluate()` in the main process).
-4. Tests read xterm.js terminal state by querying the `Terminal.buffer` API
-   from the renderer (Playwright can evaluate in the renderer context).
-5. Assertions compare expected terminal content against actual grid state.
-
-**Example test:**
-
-```ts
-test("echo renders in terminal", async ({ electronApp }) => {
-  const page = await electronApp.firstWindow();
-
-  // Send a command to the active pane via IPC
-  await electronApp.evaluate(async ({ ipcMain }) => {
-    // TmuxClient is in main process
-    await globalThis.tmuxClient.execute("send-keys 'echo hello' Enter");
-  });
-
-  // Wait for xterm.js to render
-  await page.waitForTimeout(500);
-
-  // Read terminal buffer from renderer
-  const content = await page.evaluate(() => {
-    const terminal = globalThis.paneManager.getActiveTerminal();
-    const buffer = terminal.buffer.active;
-    const lines = [];
-    for (let i = 0; i < buffer.length; i++) {
-      lines.push(buffer.getLine(i)?.translateToString().trimEnd());
-    }
-    return lines.filter(Boolean).join("\n");
-  });
-
-  expect(content).toContain("hello");
-});
-```
+- `tests/e2e/` — Playwright specs (DOM and Electron entry points) plus their
+  shared `global-setup.ts` / `socket-naming.ts` helpers and
+  `playwright.config.ts`.
+- `tests/integration/` — real-tmux integration suite, gated by
+  `TMUX_INTEGRATION=1` (see §11.2). These are not Playwright tests; they
+  exercise the library against a live `tmux -C` and never touch xterm.js.
 
 **CI setup:**
 
@@ -760,20 +708,24 @@ test("echo renders in terminal", async ({ electronApp }) => {
 ### 11.4 Testing Pyramid
 
 ```
-     ╱╲        Playwright + Electron + xterm.js
-    ╱  ╲       (10-15 tests, slow, full stack)
+     ╱╲        End-to-end (Playwright + Electron + xterm.js)
+    ╱  ╲       Slow, full-stack
    ╱────╲
   ╱      ╲     Integration with real tmux
- ╱        ╲    (20-30 tests, medium speed)
+ ╱        ╲    Medium speed, gated by TMUX_INTEGRATION=1
 ╱──────────╲
 ╱            ╲   Protocol unit tests
-╱              ╲  (100+ tests, fast, pure)
+╱              ╲  Fast, pure
 ╱────────────────╲
 ```
 
-The protocol unit tests catch the vast majority of bugs. The integration
-tests catch transport issues. The Playwright tests catch rendering and
-wiring issues. Together, they de-risk the entire integration.
+The unit base catches the vast majority of bugs (parser, encoder, decoder,
+correlation, keymap engine). The integration layer catches anything that only
+shows up against a live tmux. The end-to-end layer catches rendering and
+wiring issues across the bridge. Together, they de-risk the entire
+integration. Current counts are whatever `pnpm run test:all` reports; the
+shape — broad base, narrowing as the stack widens — is what the pyramid
+asserts, not specific numbers.
 
 ---
 
