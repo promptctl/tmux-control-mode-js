@@ -16,7 +16,7 @@ The library faithfully implements the **tmux control mode protocol** as specifie
 
 - ✓ All 28 server→client message types defined as discriminated union (`src/protocol/types.ts`) — existing
 - ✓ Streaming line-oriented parser with response-block tracking (`src/protocol/parser.ts`) — existing
-- ✓ Octal escape decoder for `%output` data (`src/protocol/decoder.ts`) — existing
+- ✓ Octal escape decoder for `%output` data (`src/protocol/decode.ts`) — existing
 - ✓ Argument escaper (`tmuxEscape`) and partial command encoder (`src/protocol/encoder.ts`) — existing
 - ✓ Node.js spawn transport for `tmux -C` (`src/transport/spawn.ts`) — existing
 - ✓ `TmuxClient` with FIFO command/response correlation and typed event emitter (`src/client.ts`) — existing

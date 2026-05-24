@@ -97,7 +97,7 @@ Consumers pick what they need:
 import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 
 // Browser or anywhere — protocol only
-import { TmuxParser, decode } from "@promptctl/tmux-control-mode-js/protocol";
+import { TmuxParser, decodeOctalEscapes } from "@promptctl/tmux-control-mode-js/protocol";
 ```
 
 ### Why One Package, Not Two
