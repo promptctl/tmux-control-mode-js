@@ -52,8 +52,7 @@ tmux-control-mode-js/
 │   ├── client.ts          # High-level TmuxClient combining both layers
 │   └── index.ts           # Package root
 │
-│   (additional subtrees — keymap/, connectors/, model/ — exist in the
-│    repo but are not enumerated here; see the source for the current
+│   (additional subtrees exist in the repo — see `src/` for the current
 │    layout, and package.json `exports` for what ships.)
 │
 ├── examples/
