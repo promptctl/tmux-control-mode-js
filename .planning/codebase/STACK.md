@@ -31,7 +31,7 @@
 
 **Build/Dev:**
 - TypeScript Compiler (tsc) - Build and type-checking
-  - Project references: `src/protocol`, `src/transport`, `src`
+  - Project references: see `tsconfig.json` (`tsc --build` walks them in dependency order)
   - ES modules (type: "module" in package.json)
 
 ## Key Dependencies

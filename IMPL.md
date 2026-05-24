@@ -608,8 +608,9 @@ are the source of truth for the public surface; see
 renderer/seam split) lives in `design-docs/pane-session-v2.md`.
 
 Keeping the renderer in its own package preserves this library's
-zero-runtime-dependency contract (xterm.js, MobX, and React are pulled in
-only by consumers that opt into `@promptctl/pane-terminal`).
+zero-runtime-dependency contract (xterm.js and React are pulled in only
+by consumers that opt into `@promptctl/pane-terminal` — see its
+`peerDependencies` for the authoritative list).
 
 ---
 
