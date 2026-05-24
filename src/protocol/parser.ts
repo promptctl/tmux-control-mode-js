@@ -286,10 +286,11 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  * objects through the `onMessage` callback. Handles line buffering for chunks
  * that split across line boundaries.
  *
- * Response block tracking: lines between `%begin` and `%end`/`%error` that do
- * not start with `%` are command output lines. These are forwarded via the
- * optional `onOutputLine` callback with the associated command number, allowing
- * the client layer to aggregate them into `CommandResponse` objects.
+ * Response block tracking: every non-terminator line that arrives while a
+ * `%begin` is active — regardless of leading byte — is a command output line
+ * (see SPEC_MANIFEST §4 Invariant 4.1, Block Purity). These are forwarded via
+ * the optional `onOutputLine` callback with the associated command number,
+ * allowing the client layer to aggregate them into `CommandResponse` objects.
  */
 export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
@@ -298,9 +299,10 @@ export class TmuxParser {
   private activeCommandNumber = -1;
 
   /**
-   * Optional callback for command output lines (lines between %begin and
-   * %end/%error that do not start with %). The client layer sets this to
-   * aggregate output into CommandResponse objects.
+   * Optional callback for command output lines — every non-terminator line
+   * that arrives between %begin and %end/%error, including ones that happen
+   * to begin with %. The client layer sets this to aggregate output into
+   * CommandResponse objects.
    */
   onOutputLine: ((commandNumber: number, line: string) => void) | null = null;
 
@@ -361,15 +363,16 @@ export class TmuxParser {
     const argsStr =
       !isNotification || spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
 
-    // [LAW:one-source-of-truth] SPEC_MANIFEST §4 invariant: a notification
-    // never occurs inside a response block. The only %-prefixed lines that
-    // legitimately appear between %begin and %end/%error are the block
-    // terminators themselves (`%end` and `%error`). Anything else inside a
-    // block — including `%`-prefixed lines that happen to look like
-    // notifications, e.g. `%5` from `list-panes -F '#{pane_id}'` — is
-    // command output, not a notification. Treating those as unknown
-    // notifications was the bug the example used to paper over with an
-    // `id=` prefix; the parser now follows the spec invariant directly.
+    // [LAW:one-source-of-truth] SPEC_MANIFEST §4 Invariant 4.1 (Block
+    // Purity): tmux never interleaves an asynchronous notification into a
+    // response block. Between %begin and %end/%error, every line is
+    // either the block terminator itself or command output produced by
+    // the running command — even if that output happens to begin with
+    // `%`, e.g. `%5` from `list-panes -F '#{pane_id}'`. The parser routes
+    // by position (in-block + not-terminator → output), not by content.
+    // Treating in-block `%5`-style lines as unknown notifications was the
+    // bug the example used to paper over with an `id=` prefix; the parser
+    // now follows the spec invariant directly.
     const isBlockTerminator = typeStr === "end" || typeStr === "error";
     const treatAsOutput = inResponseBlock && !isBlockTerminator;
 
