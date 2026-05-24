@@ -15,6 +15,10 @@ npm install @promptctl/tmux-control-mode-js
 
 ## Compatibility
 
+> Canonical source for the version constants below: [`src/tmux-compat.ts`](./src/tmux-compat.ts).
+> This section is the human-readable rationale; the constants there are the
+> machine-readable single source of truth (tests import from them).
+
 Supports **tmux 3.2 and later**. The 3.2 floor is load-bearing: the library
 depends on features introduced in that release and cannot function on older
 tmux:
