@@ -4,10 +4,10 @@ default:
   @just --list
 
 demo:
-  npm run demo
+  pnpm run demo
 
 demo-watch:
-  npm --workspace tmux-control-mode-js-demo-web-multiplexer run dev:watch
+  pnpm --filter tmux-control-mode-js-demo-web-multiplexer run dev:watch
 
 demo-electron:
-  npm --workspace tmux-control-mode-js-demo-web-multiplexer run demo:electron
+  pnpm --filter tmux-control-mode-js-demo-web-multiplexer run demo:electron
