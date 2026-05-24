@@ -1,5 +1,7 @@
 # Roadmap: tmux-control-mode-js
 
+> **Historical snapshot — treat as design rationale, not current state. Targeted corrections may have shipped via audit-driven PRs since the original analysis date below; see `git log` for the file's actual history. Authoritative for current state: `src/`, `tests/`, `package.json`, `tsconfig.json`, `.planning/STATE.md`.**
+
 **Created:** 2026-04-05
 **Granularity:** Coarse (5 phases)
 **Goal:** Achieve full `SPEC.md` compliance and ship a reference web-multiplexer demo that proves the integration pattern — without dragging UI dependencies into the library.

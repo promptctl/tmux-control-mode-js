@@ -41,8 +41,9 @@ A demo that hits 3+ axes is gold. A demo that hits 1 is fine if that axis is oth
 ### New ideas
 
 #### Observability / introspection
-- **Live "tmux protocol inspector"** — a devtools-style panel showing every `%notification` flowing across the control-mode wire, with filters, timing, and a request/response correlation view for `command` calls. This is the *Wireshark for tmux control mode* — invaluable for debugging the library itself, and a perfect tutorial surface.
-- **Pane activity heatmap** — grid view of all panes in all sessions, each cell pulsing with output rate. Click to focus. Demonstrates that the library can sustain many concurrent subscriptions cheaply.
+
+> The protocol inspector ("Wireshark for tmux control mode") and the pane activity heatmap are no longer ideas — both ship today as modes of `examples/web-multiplexer/` (see `CHANGELOG.md` and `README.md`). The remaining idea in this category:
+
 - **"Who wrote this byte?" attribution** — hover any cell in the rendered terminal and see the exact `%output` chunk + timestamp + offset that produced it. Forces tight integration between the parser, the grid, and the raw stream.
 
 #### Time travel / history
