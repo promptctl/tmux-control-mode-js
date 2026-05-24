@@ -64,8 +64,7 @@ spawns your local tmux) plus a browser frontend (React + Mantine + xterm.js)
 that talks to the bridge over WebSocket.
 
 ```bash
-pnpm install   # once at the repo root — workspaces install demo deps too,
-               # still zero runtime deps on this library's package.json
+pnpm install   # once at the repo root — workspaces install demo deps; library itself still has zero runtime deps
 pnpm run demo  # starts bridge + Vite dev server; open http://localhost:44173
 ```
 
