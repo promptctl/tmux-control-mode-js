@@ -22,7 +22,7 @@
 
 **Issue:** Event handlers in `TypedEmitter` are invoked without error boundaries. If a handler throws, it will propagate unchecked.
 
-- Files: `src/emitter.ts` lines 130-136
+- Files: `src/emitter.ts`
 - Current behavior:
   ```typescript
   for (const handler of set) {
@@ -36,7 +36,7 @@
 
 **Issue:** The `execute()` method in `TmuxClient` creates promises that may never resolve if tmux crashes or becomes unresponsive.
 
-- Files: `src/client.ts` lines 96-101
+- Files: `src/client.ts`
 - Current behavior: A pending command entry sits in the queue indefinitely if the transport closes before a %begin/end pair arrives.
 - Impact: Callers can hang indefinitely with no way to timeout. In long-running applications or CI environments, hung promises leak resources and create zombie operations.
 - Fix approach: Implement a configurable timeout per command (default: reasonable value like 30s). On timeout, auto-reject the promise with a clear error. Consider exposing timeout via `SpawnOptions` or `TmuxClient` constructor.
@@ -45,7 +45,7 @@
 
 **Issue:** If a %begin message arrives without a corresponding pending entry (e.g., tmux sends unsolicited commands), the begin is silently skipped.
 
-- Files: `src/client.ts` lines 166-178
+- Files: `src/client.ts`
 - Current behavior: `const entry = this.pending.shift()` may return undefined, and the guard silently returns without emitting an error event.
 - Impact: Malformed or out-of-order protocol state is hidden. If tmux sends an unexpected %begin, there's no observable failure—the client silently drops the correlation. This makes debugging protocol issues difficult.
 - Fix approach: Emit a warning or error event when a %begin arrives with no pending entry, allowing callers to detect protocol violations or connection corruption.
@@ -54,7 +54,7 @@
 
 **Issue:** Calling `parser.feed()` may trigger event handlers synchronously, which can call back into TmuxClient.
 
-- Files: `src/client.ts` line 70 and `src/emitter.ts` lines 127-137
+- Files: `src/client.ts` and `src/emitter.ts`
 - Current behavior: Handlers are invoked during `handleMessage()`, which is called from `parser.feed()`. A handler calling `client.execute()` will synchronously modify the pending queue while the parser is still active.
 - Impact: Re-entrant calls to `execute()` from handlers can corrupt the FIFO queue order if multiple commands are added before the parser finishes processing. While the current code structure may prevent this in practice, it's a fragile synchronous re-entrancy hazard.
 - Fix approach: Defer handler invocation via microtask queue (e.g., `queueMicrotask()`) to decouple event dispatch from parser feed. This ensures handlers always run after parser state is stable.
@@ -63,7 +63,7 @@
 
 **Issue:** The `decodeOctalEscapes()` function silently passes through malformed escape sequences.
 
-- Files: `src/protocol/decode.ts` lines 46-56
+- Files: `src/protocol/decode.ts`
 - Current behavior: If `\` is followed by fewer than 3 digits or non-octal digits, the backslash is treated as a raw byte and passed through as-is.
 - Impact: Malformed octal sequences from tmux are not detected or reported. If tmux sends `\999` (invalid octal), it's decoded as raw characters instead of failing. This could mask protocol corruption or tmux bugs.
 - Fix approach: Add strict mode flag or validation function that rejects malformed escapes. At minimum, add clear documentation about the lenient behavior.
@@ -72,8 +72,8 @@
 
 **Issue:** When `transport.close()` is called, any pending command promises never resolve or reject.
 
-- Files: `src/client.ts` lines 156-158 and `src/transport/spawn.ts` lines 51-55
-- Current behavior: Transport emits "close" event, which sets `inflight` to null (line 72), but does not reject pending entries in the queue.
+- Files: `src/client.ts` and `src/transport/spawn.ts`
+- Current behavior: Transport emits "close" event, which sets `inflight` to null, but does not reject pending entries in the queue.
 - Impact: Any promise returned by `execute()` that hasn't yet been matched to a %begin will hang forever. Callers must implement their own timeout or will leak resources when the client closes.
 - Fix approach: On transport close, iterate through the pending queue and reject all outstanding promises with a "connection closed" error.
 
@@ -87,7 +87,7 @@
    - Priority: HIGH
 
 2. **Malformed input recovery** (`src/protocol/parser.ts`): Parser gracefully skips unknown types and malformed lines, but there are no tests verifying this robustness or documenting the expectations.
-   - Files: `src/protocol/parser.ts` lines 352-362
+   - Files: `src/protocol/parser.ts`
    - Risk: Undocumented behavior may be accidentally changed, reducing protocol robustness.
    - Priority: MEDIUM
 
@@ -101,8 +101,8 @@
    - Risk: Command correlation could be silently corrupted under load.
    - Priority: MEDIUM
 
-5. **Edge case: Empty pending queue on %begin** (`src/client.ts`): Current test only verifies happy path; missing explicit tests for the guard at line 170.
-   - Files: `src/client.ts` lines 166-178
+5. **Edge case: Empty pending queue on %begin** (`src/client.ts`): Current test only verifies happy path; missing explicit tests for the guard.
+   - Files: `src/client.ts`
    - Risk: Mishandling of out-of-sync protocol state goes undetected.
    - Priority: MEDIUM
 
@@ -110,7 +110,7 @@
 
 **Component:** Command correlation in `src/client.ts`
 
-- Files: `src/client.ts` lines 55-57, 165-202
+- Files: `src/client.ts`
 - Why fragile: The FIFO queue and inflight state are modified by `handleMessage()`, which is invoked synchronously during `feed()`. If an event handler (registered via `.on()`) calls `execute()`, it will push a new pending entry while `handleMessage()` is still unwinding. This creates a window of re-entrancy.
 - Safe modification: Do not invoke event handlers until after the current `feed()` call completes. Use `queueMicrotask()` to defer handler dispatch.
 - Test coverage: Add explicit re-entrancy test: register a handler that calls `execute()`, then feed a complete command response block. Verify that the new command is queued after the current one in FIFO order.
@@ -119,7 +119,7 @@
 
 **Issue:** The `spawnTmux()` function is the only way to instantiate a `TmuxTransport`. It's tightly coupled to Node.js `child_process`.
 
-- Files: `src/transport/spawn.ts` lines 29-84
+- Files: `src/transport/spawn.ts`
 - Impact: `TmuxClient` claims to be environment-agnostic ("works in browser, Deno, Bun"), but the only transport implementation is Node-only. Trying to use TmuxClient in a browser fails at runtime.
 - Fix approach: The interface `TmuxTransport` is portable, but the lack of documented alternatives makes the claim misleading. Either: (a) document that spawn transport is Node-only and that custom transports must implement the interface, or (b) provide a WebSocket transport implementation and document both as supported options.
 
@@ -127,7 +127,7 @@
 
 **Issue:** Protocol-level errors (malformed messages, OOB correlation) have no user-observable signal path.
 
-- Files: `src/protocol/parser.ts` lines 352-362, `src/client.ts` lines 166-178
+- Files: `src/protocol/parser.ts`, `src/client.ts`
 - Current behavior: Malformed or unexpected messages are silently dropped with no event emitted.
 - Impact: Users cannot detect when the protocol stream is corrupted or out of sync. Debugging becomes extremely difficult because failures are invisible.
 - Fix approach: Add an "error" or "protocol-error" event type to `TmuxEventMap` and emit it when: (1) an unknown message type is encountered, (2) a %begin arrives with no pending entry, (3) malformed escape sequences are detected. This gives users visibility into protocol issues.
