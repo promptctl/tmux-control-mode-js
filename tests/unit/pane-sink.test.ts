@@ -19,19 +19,39 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
+  triggerClose(reason?: string): void;
+  sentCommands: readonly string[];
 }
 
+// Faithful TmuxTransport double: stores the close-callback registrations so
+// `triggerClose` can fire them, records every `send`, and replays `feed`
+// chunks to every registered onData handler. Mirrors the reference fake in
+// tests/unit/connection-state.test.ts — keeps these unit tests honest about
+// the transport contract even when the suite doesn't exercise close/send
+// today.
 function createFakeTransport(): FakeTransport {
   const dataCallbacks: ((chunk: string) => void)[] = [];
+  const closeCallbacks: ((reason?: string) => void)[] = [];
+  const sent: string[] = [];
   return {
-    send(): void {},
+    send(command: string): void {
+      sent.push(command);
+    },
     onData(cb): void {
       dataCallbacks.push(cb);
     },
-    onClose(): void {},
+    onClose(cb): void {
+      closeCallbacks.push(cb);
+    },
     close(): void {},
     feed(chunk): void {
       dataCallbacks.forEach((cb) => cb(chunk));
+    },
+    triggerClose(reason): void {
+      closeCallbacks.forEach((cb) => cb(reason));
+    },
+    get sentCommands(): readonly string[] {
+      return sent;
     },
   };
 }
