@@ -63,10 +63,11 @@ repository (version next-3.7, commit 5c30b145).
 
 The raw-mode configuration above is what tmux *applies* at `-CC` startup.
 To do so, tmux first calls `tcgetattr(stdin)` (`tmux.c:343-362`) to capture
-the current terminal attributes — which fails unless stdin is PTY-backed.
-The library's default transport `spawnTmux` (`src/transport/spawn.ts`)
-uses `child_process.spawn`, which supplies pipe stdio rather than a PTY,
-so it cannot host `-CC`. `spawnTmux` short-circuits this by throwing
+the current terminal attributes — which fails unless stdin is a tty (a
+PTY is the typical kind; a real terminal device also qualifies). The
+library's default transport `spawnTmux` (`src/transport/spawn.ts`) uses
+`child_process.spawn`, which supplies pipe stdio rather than a tty, so it
+cannot host `-CC`. `spawnTmux` short-circuits this by throwing
 synchronously when constructed with `controlControl: true`, refusing the
 configuration before tmux is launched. This resolves audit finding
 MANIFEST F10.

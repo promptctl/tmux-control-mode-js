@@ -780,13 +780,14 @@ In `-CC` mode, the terminal is configured in raw mode (`tmux.c:343-362`):
 §12's raw-mode terminal configuration is the upstream contract for `-CC`
 mode. To apply it, tmux calls `tcgetattr(stdin)` at startup
 (`tmux.c:343-362`) to read the current terminal attributes — which
-requires a PTY-backed file descriptor. The library's default transport
-`spawnTmux` (`src/transport/spawn.ts`) uses `child_process.spawn`, which
-supplies pipe stdio; `tcgetattr` would fail and tmux would exit with
-`"tcgetattr failed: Inappropriate ioctl for device"`. `spawnTmux`
-therefore throws synchronously when constructed with `controlControl:
-true`, so consumers fail at construction rather than at tmux exit time.
-This resolves audit finding SPEC.md F4.
+requires stdin to be a tty (a PTY is the typical kind; a real terminal
+device also qualifies). The library's default transport `spawnTmux`
+(`src/transport/spawn.ts`) uses `child_process.spawn`, which supplies
+pipe stdio; `tcgetattr` would fail and tmux would exit before the
+control-mode protocol begins. `spawnTmux` therefore throws synchronously
+when constructed with `controlControl: true`, so consumers fail at
+construction rather than at tmux exit time. This resolves audit finding
+SPEC.md F4.
 
 Programmatic consumers should use `-C` instead — it carries the identical
 protocol minus the DCS framing of §12. For terminal-emulator use cases
