@@ -36,17 +36,36 @@
  *   provides no backpressure on this path — flow control lives on the
  *   `PaneAction` / `%pause`/`%continue` API.
  *
- * - `end?()` is optional. The library calls it exactly once when the sink
- *   stops receiving bytes (consumer-initiated dispose via the function
- *   returned from `attachPaneSink`). Sinks that hold cross-chunk state
- *   (like a streaming UTF-8 decoder) use this to flush.
+ * - **`bytes` is read-only and not retained by the library after `write`
+ *   returns.** The same `Uint8Array` instance is passed to every sink
+ *   attached to the pane — one sink mutating it would corrupt every other
+ *   sink's view of the chunk. Sinks that need to retain or modify the
+ *   payload MUST copy first (`bytes.slice()` or `new Uint8Array(bytes)`).
+ *   The library never reads `bytes` again after dispatch, so a sink may
+ *   forward the same reference downstream — but every forwarder MUST agree
+ *   on the same read-only discipline.
  *
- * ## Per-attachment discipline
+ * - `end?()` is optional. The library calls it exactly once when an
+ *   attachment is disposed (the function returned from `attachPaneSink`
+ *   is invoked). Sinks that hold cross-chunk state — like a streaming
+ *   UTF-8 decoder — use this to flush.
  *
- * A sink is *per-attachment*. Two `attachPaneSink` calls — whether on the
- * same pane or different panes — must use independent sink instances if the
- * sink carries state. Sharing one stateful sink across two attachments
- * interleaves their byte streams and corrupts both.
+ * ## Per-attachment lifecycle
+ *
+ * Every `attachPaneSink` call is an **independent attachment** with its
+ * own disposer. The same sink instance MAY be attached to multiple panes,
+ * or to the same pane multiple times: each attachment is tracked
+ * separately, the sink's `write` runs once per attachment per chunk, and
+ * `end?()` fires once per disposer call. There is no de-duplication and
+ * no shared lifecycle — a disposer ends only the attachment it was
+ * returned for.
+ *
+ * For sinks that carry per-stream state (a streaming UTF-8 decoder, a
+ * regex matcher), pairing one fresh sink instance with one attachment is
+ * the cleanest shape — that way the state matches the byte stream
+ * one-to-one and there's no ambiguity about when `end()` flushes. Sinks
+ * that are genuinely stateless (an IPC forwarder, a binary-frame
+ * encoder) MAY be shared safely.
  *
  * @see TmuxClient.attachPaneSink
  */
@@ -54,10 +73,12 @@ export interface PaneByteSink {
   /**
    * Called synchronously for every pane chunk this sink is attached to.
    *
-   * `bytes` is the post-octal-decode byte payload. The library makes no
-   * guarantee about chunk boundaries — sinks that need cross-chunk state
-   * (multi-byte UTF-8 sequences, ANSI escape sequences) must carry it
-   * across calls themselves.
+   * `bytes` is the post-octal-decode byte payload, owned by the caller —
+   * it MUST be treated as read-only and MUST NOT be retained past the
+   * synchronous `write` call (copy first if either is needed). The library
+   * makes no guarantee about chunk boundaries — sinks that need
+   * cross-chunk state (multi-byte UTF-8 sequences, ANSI escape sequences)
+   * must carry it across calls themselves.
    *
    * MUST NOT block. MUST NOT throw — a throwing sink will surface as an
    * unhandled error on the next message in the parser loop and may detach
@@ -66,14 +87,17 @@ export interface PaneByteSink {
   write(bytes: Uint8Array): void;
 
   /**
-   * Called at most once when the sink stops receiving bytes. Sinks holding
-   * cross-chunk state use this to flush.
+   * Called at most once per attachment when the disposer returned from
+   * `attachPaneSink` is invoked. Sinks holding cross-chunk state use this
+   * to flush.
    *
-   * The library's contract: `end` fires when the disposer returned from
-   * `attachPaneSink` is invoked. Pane-close auto-`end` is NOT in scope for
-   * the foundation API — tmux's control protocol has no pane-close
-   * notification (only topology shifts via `window-pane-changed` and
-   * `layout-change`); deriving a clean signal from those is a follow-up.
+   * Per-attachment scoped: if the same sink instance is attached twice,
+   * its `end` fires once per disposer call (i.e. up to twice). The library
+   * never calls `end` for any other reason. Pane-close auto-`end` is NOT
+   * in scope for the foundation API — tmux's control protocol has no
+   * pane-close notification (only topology shifts via
+   * `window-pane-changed` and `layout-change`); deriving a clean signal
+   * from those is a follow-up.
    */
   end?(): void;
 }

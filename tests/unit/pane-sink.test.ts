@@ -145,16 +145,43 @@ describe("TmuxClient.attachPaneSink", () => {
     expect(sink.endCount.value).toBe(1);
   });
 
-  it("calls sink.end() exactly once on dispose even when end is the only optional method consumer provides", () => {
+  it("tolerates sinks that omit the optional end() method", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);
     // PaneByteSink.end is optional — verify the library tolerates an
-    // implementation that omits it (no throw).
+    // implementation that omits it (no throw on dispose).
     const sinkNoEnd: PaneByteSink = {
       write(): void {},
     };
     const dispose = client.attachPaneSink(1, sinkNoEnd);
     expect(() => dispose()).not.toThrow();
+  });
+
+  it("treats each attachPaneSink call as an independent attachment — same sink twice, same pane", () => {
+    // The per-attachment-token registry guarantees that attaching the same
+    // sink instance twice produces two independent attachments: each receives
+    // every chunk (so write fires twice per chunk), and each disposer ends
+    // only its own attachment (so end fires once per disposer call).
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const sink = createRecordingSink();
+
+    const disposeA = client.attachPaneSink(1, sink);
+    const disposeB = client.attachPaneSink(1, sink);
+
+    t.feed("%output %1 once\n");
+    // Two attachments — same sink — so two writes per chunk.
+    expect(sink.chunks).toHaveLength(2);
+
+    disposeA();
+    expect(sink.endCount.value).toBe(1);
+
+    t.feed("%output %1 twice\n");
+    // disposeB still active; one write per chunk now.
+    expect(sink.chunks).toHaveLength(3);
+
+    disposeB();
+    expect(sink.endCount.value).toBe(2);
   });
 
   it("isolates panes — bytes on pane B do not reach pane A's sinks", () => {
