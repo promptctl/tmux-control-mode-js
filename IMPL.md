@@ -253,9 +253,15 @@ class TmuxClient {
   on<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
   off<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
 
-  // Pane-byte subscription — the canonical surface (preferred over
-  // client.on('output' | 'extended-output', …), which will be deprecated).
-  // Multiple sinks per pane; returns a per-attachment idempotent disposer.
+  // Pane-byte subscription — the canonical surface. `client.on('output', …)`
+  // and `client.on('extended-output', …)` carry `@deprecated` JSDoc tags
+  // pointing here; they continue to fire and will be removed in the next
+  // minor. Use `attachPaneSink` directly with a built-in sink
+  // (`createTextStreamSink`, `attachWebContentsSink`, `attachWebSocketSink`,
+  // or the xterm `XtermSink` in `@promptctl/pane-terminal`) — sinks fire
+  // synchronously before the deprecated event and are fail-isolated from a
+  // throwing event listener. Multiple sinks per pane; returns a per-
+  // attachment idempotent disposer.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void;
 
   // Command execution with response tracking

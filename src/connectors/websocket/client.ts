@@ -241,8 +241,28 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   // -------------------------------------------------------------------------
-  // Event subscription — matches TmuxClient.on / off exactly
+  // Event subscription — matches TmuxClient.on / off exactly, including the
+  // deprecated literal overloads for `'output'` and `'extended-output'`.
   // -------------------------------------------------------------------------
+
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead;
+   * `attachWebSocketSink` is the matching server-side helper for WS-relay
+   * authors. The `'output'` event continues to fire and will be removed in
+   * the next minor.
+   */
+  on(
+    event: "output",
+    handler: (ev: TmuxEventMap["output"]) => void,
+  ): void;
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
+   * Will be removed in the next minor.
+   */
+  on(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -252,6 +272,22 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     (this.emitter as unknown as EmitterImpl).on(event, handler);
   }
 
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(
+    event: "output",
+    handler: (ev: TmuxEventMap["output"]) => void,
+  ): void;
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
