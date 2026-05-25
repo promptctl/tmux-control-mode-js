@@ -145,8 +145,41 @@ export class TmuxClient {
 
   // ---------------------------------------------------------------------------
   // Event delegation — preserve overloads for type safety
+  //
+  // The literal-event overloads for `'output'` and `'extended-output'` come
+  // first so the language service matches them ahead of the generic
+  // `keyof TmuxEventMap` signature, surfacing `@deprecated` on the senior
+  // pane-byte path. Every other event flows through the generic overload
+  // unchanged. [LAW:one-source-of-truth] The handler argument type is
+  // referenced as `TmuxEventMap['output']` / `TmuxEventMap['extended-output']`
+  // so the deprecation overload re-uses the same derivation as the generic
+  // one — renaming the wire variant in `protocol/types.ts` cannot leave the
+  // deprecated overload behind.
   // ---------------------------------------------------------------------------
 
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
+   * The sink surface is the canonical pane-byte subscription: it runs
+   * synchronously before this event, fail-isolates from a throwing handler,
+   * and forbids the `Uint8Array → string` misdecode that this event invites
+   * (see `src/pane-sink.ts` and the built-in sinks in `src/sinks/`). The
+   * `'output'` event continues to fire and will be removed in the next
+   * minor.
+   */
+  on(
+    event: "output",
+    handler: (ev: TmuxEventMap["output"]) => void,
+  ): void;
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
+   * Both `%output` and `%extended-output` route through the sink path; the
+   * `age` field is dropped because the sink contract is bytes-only. Will be
+   * removed in the next minor.
+   */
+  on(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -156,6 +189,22 @@ export class TmuxClient {
     this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(
+    event: "output",
+    handler: (ev: TmuxEventMap["output"]) => void,
+  ): void;
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
