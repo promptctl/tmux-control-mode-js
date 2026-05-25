@@ -48,7 +48,13 @@ function createRecordingSink(): RecordingSink {
     chunks,
     endCount,
     write(bytes): void {
-      chunks.push(bytes);
+      // Follow the PaneByteSink contract: `bytes` is read-only and not
+      // retained past the synchronous call. The recording sink retains
+      // its observations, so it copies first. Without this copy the test
+      // would rely on an implementation detail (the library not reusing
+      // the buffer across chunks), turning a contract assertion into a
+      // structural one.
+      chunks.push(bytes.slice());
     },
     end(): void {
       endCount.value += 1;
@@ -217,6 +223,60 @@ describe("TmuxClient.attachPaneSink", () => {
     expect(sink.chunks).toHaveLength(1);
     expect(Array.from(sink.chunks[0])).toEqual([
       ..."seen".split("").map((c) => c.charCodeAt(0)),
+    ]);
+  });
+
+  it("attaching from inside a deprecated 'output' event handler does not back-fill the current chunk", () => {
+    // The deprecated `client.on('output', …)` surface and the sink path
+    // coexist for one minor. An event handler that decides to attach a
+    // sink in response to a chunk must NOT receive that same chunk — the
+    // per-chunk dispatch snapshot is taken BEFORE emit, so handler-side
+    // attach calls only affect subsequent chunks.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const lateSink = createRecordingSink();
+
+    client.on("output", (msg) => {
+      if (msg.paneId === 1 && lateSink.chunks.length === 0) {
+        client.attachPaneSink(1, lateSink);
+      }
+    });
+
+    t.feed("%output %1 first\n");
+    t.feed("%output %1 second\n");
+
+    // The handler attached lateSink during the FIRST chunk's emit. lateSink
+    // must not see "first" (snapshot was taken pre-emit) but must see
+    // "second".
+    expect(lateSink.chunks).toHaveLength(1);
+    expect(Array.from(lateSink.chunks[0])).toEqual([
+      ..."second".split("").map((c) => c.charCodeAt(0)),
+    ]);
+  });
+
+  it("attaching from inside a sink's own write() does not back-fill the current chunk", () => {
+    // Same guarantee, different mutation source: a sink's `write` body
+    // calls `attachPaneSink` for a sibling sink. The pre-emit snapshot
+    // means the new sink starts receiving from the next chunk, not this
+    // one.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const lateSink = createRecordingSink();
+    const triggerSink: PaneByteSink = {
+      write(): void {
+        if (lateSink.chunks.length === 0) {
+          client.attachPaneSink(1, lateSink);
+        }
+      },
+    };
+    client.attachPaneSink(1, triggerSink);
+
+    t.feed("%output %1 first\n");
+    t.feed("%output %1 second\n");
+
+    expect(lateSink.chunks).toHaveLength(1);
+    expect(Array.from(lateSink.chunks[0])).toEqual([
+      ..."second".split("").map((c) => c.charCodeAt(0)),
     ]);
   });
 });
