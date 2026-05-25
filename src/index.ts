@@ -12,6 +12,7 @@ export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 export type { TmuxEventMap } from "./emitter.js";
 
 export type { PaneByteSink } from "./pane-sink.js";
+export { createTextStreamSink } from "./sinks/text-stream.js";
 
 export { spawnTmux } from "./transport/spawn.js";
 export type { TmuxTransport, SpawnOptions } from "./transport/types.js";
