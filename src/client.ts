@@ -94,10 +94,7 @@ export class TmuxClient {
   //   per-attachment lifecycle structural: there is no "is this sink already
   //   attached" check anywhere, because there can't be — every attachment
   //   has its own key by construction.
-  private readonly paneSinks = new Map<
-    number,
-    Map<symbol, PaneByteSink>
-  >();
+  private readonly paneSinks = new Map<number, Map<symbol, PaneByteSink>>();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
