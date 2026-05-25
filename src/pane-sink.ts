@@ -36,14 +36,19 @@
  *   provides no backpressure on this path — flow control lives on the
  *   `PaneAction` / `%pause`/`%continue` API.
  *
- * - **`bytes` is read-only and not retained by the library after `write`
- *   returns.** The same `Uint8Array` instance is passed to every sink
- *   attached to the pane — one sink mutating it would corrupt every other
- *   sink's view of the chunk. Sinks that need to retain or modify the
- *   payload MUST copy first (`bytes.slice()` or `new Uint8Array(bytes)`).
- *   The library never reads `bytes` again after dispatch, so a sink may
- *   forward the same reference downstream — but every forwarder MUST agree
- *   on the same read-only discipline.
+ * - **`bytes` is read-only.** The same `Uint8Array` instance is passed to
+ *   every sink attached to the pane and to every `client.on('output', …)`
+ *   listener on the deprecated event path — one sink (or listener)
+ *   mutating it would corrupt every other consumer's view of the chunk.
+ *   The library retains a reference for the duration of the chunk's
+ *   synchronous processing frame (during which it fans the buffer out to
+ *   every attached sink and then emits the deprecated event), but never
+ *   beyond — once that frame returns, no library reference remains.
+ *   Sinks that need to retain or modify the payload past their own
+ *   `write` call MUST copy first (`bytes.slice()` or
+ *   `new Uint8Array(bytes)`). A sink MAY forward the same reference
+ *   downstream, but every forwarder MUST agree on the same read-only
+ *   discipline.
  *
  * - `end?()` is optional. The library calls it exactly once when an
  *   attachment is disposed (the function returned from `attachPaneSink`
@@ -73,12 +78,16 @@ export interface PaneByteSink {
   /**
    * Called synchronously for every pane chunk this sink is attached to.
    *
-   * `bytes` is the post-octal-decode byte payload, owned by the caller —
-   * it MUST be treated as read-only and MUST NOT be retained past the
-   * synchronous `write` call (copy first if either is needed). The library
-   * makes no guarantee about chunk boundaries — sinks that need
-   * cross-chunk state (multi-byte UTF-8 sequences, ANSI escape sequences)
-   * must carry it across calls themselves.
+   * `bytes` is the post-octal-decode byte payload, owned by the caller.
+   * It MUST be treated as read-only — other sinks attached to the same
+   * pane will see the same instance via subsequent `write` calls, and
+   * `client.on('output', …)` listeners will see the same instance via
+   * the deprecated event path. To retain or modify the payload past
+   * this `write` call, copy first (`bytes.slice()` or
+   * `new Uint8Array(bytes)`). The library makes no guarantee about
+   * chunk boundaries — sinks that need cross-chunk state (multi-byte
+   * UTF-8 sequences, ANSI escape sequences) must carry it across calls
+   * themselves.
    *
    * MUST NOT block. MUST NOT throw — the library does not catch sink
    * errors. A throwing sink propagates the exception synchronously up
