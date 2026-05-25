@@ -425,16 +425,20 @@ export class TmuxClient {
     //   handler attaching a new sink, or from inside a sink's own `write`
     //   call disposing or attaching) cannot back-fill or skip the current
     //   chunk. "Who sees this chunk" is fixed to who was attached when the
-    //   chunk arrived. `null` for non-output messages — the dispatch is a
-    //   no-op then. [LAW:types-are-the-program] the null|Some shape carries
-    //   "this message has bytes to fan out" as a value, not a re-checked
+    //   chunk arrived.
+    //
+    //   `null` for: non-output messages AND output messages on panes with
+    //   zero attached sinks. Both cases mean "no bytes to fan out," so
+    //   they share the same shape and the hot path (no sinks attached
+    //   anywhere) pays zero per-message allocation.
+    //
+    // [LAW:types-are-the-program] the null|Some shape carries "this
+    //   message has bytes to fan out" as a value, not a re-checked
     //   discriminator at the dispatch site.
-    const dispatch: PendingPaneDispatch = isPaneOutput(msg)
-      ? {
-          sinks: Array.from(this.paneSinks.get(msg.paneId)?.values() ?? []),
-          data: msg.data,
-        }
-      : null;
+    const dispatch: PendingPaneDispatch = computePaneDispatch(
+      msg,
+      this.paneSinks,
+    );
 
     // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages flow
     // through the emitter regardless of type.
@@ -453,6 +457,20 @@ type PendingPaneDispatch = {
   readonly sinks: readonly PaneByteSink[];
   readonly data: Uint8Array;
 } | null;
+
+// Hot-path snapshot helper. Returns `null` whenever there's nothing to
+// dispatch — either the message has no pane bytes, or the pane has no
+// attached sinks. Both arms reach the `null` arm of `PendingPaneDispatch`,
+// so the dispatch site doesn't care which case caused the skip.
+function computePaneDispatch(
+  msg: TmuxMessage,
+  paneSinks: ReadonlyMap<number, ReadonlyMap<symbol, PaneByteSink>>,
+): PendingPaneDispatch {
+  if (!isPaneOutput(msg)) return null;
+  const attachments = paneSinks.get(msg.paneId);
+  if (attachments === undefined || attachments.size === 0) return null;
+  return { sinks: Array.from(attachments.values()), data: msg.data };
+}
 
 // ---------------------------------------------------------------------------
 // TmuxClientLike — transport-agnostic projection of the TmuxClient surface.
