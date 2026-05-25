@@ -658,10 +658,9 @@ const ACTIVE_WEBCONTENTS_SINKS = new WeakMap<WebContentsLike, Set<number>>();
  * already has an active attachment throws
  * `BridgeError("BRIDGE_PANE_SINK_ALREADY_ATTACHED")` — the wire envelope
  * is paneId-scoped and cannot disambiguate two concurrent attachments.
- * The slot is freed when the returned disposer is called (or when the
- * library fires `end()` for any other reason). Hosts that want to
- * "rotate" the forwarder for a pane MUST dispose the prior attachment
- * first.
+ * The slot is freed when the returned disposer is called. Hosts that
+ * want to "rotate" the forwarder for a pane MUST dispose the prior
+ * attachment first.
  *
  * ## Lifecycle
  *
