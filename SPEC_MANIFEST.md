@@ -358,6 +358,28 @@ Not all notifications are sent to all control clients. The filtering rules are:
 - Encoding loop in `control_append_data()`
   - `control.c:631-642`
 
+### 9.1 Decoder corollaries
+
+The encoding rule above describes what tmux *emits*. The library's decoder
+(`src/protocol/decode.ts`, `decodeOctalEscapes`) implements three additional
+recovery rules that follow from the encoding rule plus the assumption that
+transports may introduce line-driver noise. These rules resolve audit finding
+MANIFEST F8 and mirror the canonical iTerm2 reference
+(`TmuxGateway -decodeEscapedOutput`):
+
+1. **Literal control-byte drop.** Because real control output is always
+   octal-escaped per §9, any literal byte `< 0x20` appearing unescaped in the
+   stream must be transport noise — and is dropped.
+2. **Mid-escape `\r` skip.** Stray `\r` between the three digits of a `\NNN`
+   escape is skipped; the escape still decodes to one byte.
+3. **Malformed-escape recovery.** A `\` not followed by three octal digits
+   decodes to `?` (0x3F); the non-digit byte is reconsidered on the next
+   pass.
+
+A consumer who reads §9 alone cannot predict these behaviors — the rules
+follow logically from §9 but are not stated by it. SPEC.md §10.1 carries the
+mirror statement on the outer-spec side.
+
 ---
 
 ## 10. Client Flags
