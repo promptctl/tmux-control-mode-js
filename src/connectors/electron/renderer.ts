@@ -24,7 +24,10 @@ import {
   type TmuxEventMap,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import type { PaneByteSink } from "../../pane-sink.js";
+import {
+  attachPaneSinkViaEmitter,
+  type PaneByteSink,
+} from "../../pane-sink.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   asPaneOutput,
@@ -235,6 +238,24 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
 
   queryClipboard(): Promise<CommandResponse> {
     return this.invoke({ method: "queryClipboard", args: [] });
+  }
+
+  // [LAW:locality-or-seam] The proxy receives parsed `output` /
+  //   `extended-output` events from main over IPC; its emitter is the
+  //   byte fan-out point. `attachPaneSinkViaEmitter` is the canonical adapter
+  //   from that emitter onto the `PaneByteSink` seam — the same one used by
+  //   every other bridge-shaped client (WebSocketTmuxClient,
+  //   BridgePaneStreamClient, FakeTmuxClient).
+  // [LAW:single-enforcer] One implementation across all emitter-backed
+  //   clients — the proxy does not maintain a parallel paneSink registry.
+  //
+  // Note: this routes through the proxy's per-event emitter, not through the
+  // `createPaneBytesReceiver` (paneBytes IPC channel) path. The latter is
+  // driven by a main-side `attachWebContentsSink` call and is a separate
+  // opt-in optimization that bypasses the regular event channel; it is the
+  // renderer-side counterpart of `WebContentsSink`, not of `attachPaneSink`.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return attachPaneSinkViaEmitter(this, paneId, sink);
   }
 
   /**

@@ -495,6 +495,9 @@ function computePaneDispatch(
 //   they are a paired capability: a consumer that subscribes must be able to
 //   unsubscribe at dispose. Optionality on either method would force a runtime
 //   probe at every callsite; making them mandatory eliminates the probe.
+//   `attachPaneSink` is mandatory for the same reason — pane-byte consumption
+//   is the canonical surface, so every TmuxClient-shaped object must offer it
+//   and every consumer (PaneStream is the in-repo one) routes through it.
 //
 // Both bridge classes (`WebSocketTmuxClient`, `TmuxClientProxy`) declare
 // `implements TmuxClientLike` so the overload set on `on`/`off` is checked at
@@ -503,5 +506,11 @@ function computePaneDispatch(
 
 export type TmuxClientLike = Pick<
   TmuxClient,
-  "connectionState" | "on" | "off" | "execute" | "subscribeRaw" | "unsubscribe"
+  | "connectionState"
+  | "on"
+  | "off"
+  | "execute"
+  | "subscribeRaw"
+  | "unsubscribe"
+  | "attachPaneSink"
 >;

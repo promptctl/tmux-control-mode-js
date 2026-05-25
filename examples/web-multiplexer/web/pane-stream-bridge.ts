@@ -18,9 +18,11 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import type {
   ConnectionState,
+  PaneByteSink,
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
+import { attachPaneSinkViaEmitter } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
@@ -166,6 +168,16 @@ export class BridgePaneStreamClient implements TmuxClientLike {
 
   unsubscribe(name: string): Promise<CommandResponse> {
     return this.bridge.execute(`refresh-client -B ${tmuxEscape(name)}`);
+  }
+
+  // [LAW:locality-or-seam] Bridge events flow through this adapter's per-type
+  //   handler sets (the `outputSet` / `extOutputSet` above). `attachPaneSink`
+  //   adapts that emitter shape to the `PaneByteSink` seam via the shared
+  //   library helper — same shape as every other emitter-backed bridge.
+  // [LAW:single-enforcer] One implementation, shared with the library's
+  //   bridge classes.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return attachPaneSinkViaEmitter(this, paneId, sink);
   }
 }
 

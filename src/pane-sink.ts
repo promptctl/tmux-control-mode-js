@@ -19,6 +19,8 @@
 // (TmuxClient) and any consumer. Consumers depend only on `PaneByteSink`,
 // never on TmuxClient's emitter shape for pane bytes.
 
+import type { TmuxEventMap } from "./emitter.js";
+
 /**
  * Sink for pane bytes.
  *
@@ -120,4 +122,92 @@ export interface PaneByteSink {
    * from those is a follow-up.
    */
   end?(): void;
+}
+
+// ---------------------------------------------------------------------------
+// attachPaneSinkViaEmitter — bridge-class implementation primitive
+//
+// `TmuxClient` dispatches bytes directly from its parser into a per-pane
+// registry (sinks fire *before* `emit('output', …)`). Bridge classes —
+// `TmuxClientProxy`, `WebSocketTmuxClient`, `BridgePaneStreamClient`, and the
+// in-tree `FakeTmuxClient` — receive *already-parsed* `output` /
+// `extended-output` events over their wire and dispatch them through an
+// internal `TypedEmitter`. For those classes the emitter IS the byte fan-out
+// point, so their `attachPaneSink` implementation is structurally an
+// emitter-filter that satisfies the same per-attachment contract.
+//
+// [LAW:single-enforcer] One implementation shared by every emitter-backed
+//   bridge. The semantics — per-attachment independence, idempotent disposer,
+//   single `end()` invocation — match `TmuxClient.attachPaneSink` at the
+//   per-call boundary so downstream consumers (PaneStream) cannot observe
+//   which backing the client uses.
+// [LAW:locality-or-seam] The seam is the `PaneByteSink` contract. This helper
+//   is the adapter between that contract and the legacy event-emitter surface
+//   bridges use to receive bytes. Bridge consumers compose the sink; the
+//   emitter is an implementation detail behind this seam.
+// [LAW:dataflow-not-control-flow] Both handlers run every chunk. The paneId
+//   check is data filtering, not control flow that skips the operation —
+//   the operation (filter and conditionally forward) executes uniformly on
+//   every byte event.
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimum emitter shape `attachPaneSinkViaEmitter` consumes: typed
+ * `on`/`off` for `output` and `extended-output`. Every `TmuxClientLike`
+ * implementation in the monorepo already satisfies this — the helper does
+ * not constrain the rest of the client surface.
+ */
+export interface PaneByteEmitter {
+  on<K extends "output" | "extended-output">(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
+  off<K extends "output" | "extended-output">(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
+}
+
+/**
+ * Wire a `PaneByteSink` to a bridge-class emitter that already dispatches
+ * pre-parsed `output` / `extended-output` events. Registers two filtered
+ * handlers and returns an idempotent disposer that removes them and invokes
+ * `sink.end?.()` exactly once.
+ *
+ * Use this from a bridge class's `attachPaneSink` implementation; the result
+ * is structurally identical (from any caller's perspective) to
+ * `TmuxClient.attachPaneSink`, which is registry-backed because TmuxClient
+ * runs the parser itself.
+ *
+ * Per-attachment lifecycle: every call yields fresh handlers and an
+ * independent disposer. Attaching the same sink instance N times to the
+ * same pane registers 2N handlers (one `output` + one `extended-output` per
+ * attachment) and yields N disposers; each disposer ends only its own
+ * attachment, and `sink.end?.()` fires once per disposer call.
+ */
+export function attachPaneSinkViaEmitter(
+  client: PaneByteEmitter,
+  paneId: number,
+  sink: PaneByteSink,
+): () => void {
+  const onOutput = (ev: TmuxEventMap["output"]): void => {
+    if (ev.paneId === paneId) sink.write(ev.data);
+  };
+  const onExtendedOutput = (ev: TmuxEventMap["extended-output"]): void => {
+    if (ev.paneId === paneId) sink.write(ev.data);
+  };
+  client.on("output", onOutput);
+  client.on("extended-output", onExtendedOutput);
+
+  // [LAW:dataflow-not-control-flow] Idempotency carried as a value (`disposed`)
+  //   instead of branching on whether to re-execute. The second invocation
+  //   runs the same closure and returns at the data-driven early exit.
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    client.off("output", onOutput);
+    client.off("extended-output", onExtendedOutput);
+    sink.end?.();
+  };
 }
