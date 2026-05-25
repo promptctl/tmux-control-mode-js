@@ -166,9 +166,25 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   }
 
   // ---------------------------------------------------------------------------
-  // Event delegation — same overload set as TmuxClient.
+  // Event delegation — same overload set as TmuxClient, including the
+  // deprecated literal overloads for `'output'` and `'extended-output'`.
   // ---------------------------------------------------------------------------
 
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead;
+   * `attachWebContentsSink` is the matching main-side helper for Electron
+   * renderer-byte forwarding. The `'output'` event continues to fire and
+   * will be removed in the next minor.
+   */
+  on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
+  /**
+   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
+   * Will be removed in the next minor.
+   */
+  on(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -178,6 +194,19 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
+  /**
+   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
+   * pane-byte consumer. Will be removed in the next minor.
+   */
+  off(
+    event: "extended-output",
+    handler: (ev: TmuxEventMap["extended-output"]) => void,
+  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
