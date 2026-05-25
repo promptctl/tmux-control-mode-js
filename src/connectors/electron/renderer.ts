@@ -397,10 +397,7 @@ export function createRendererBridge(
 // torn-down preload's slot is GC-eligible alongside it.
 // ---------------------------------------------------------------------------
 
-const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<
-  IpcRendererLike,
-  Set<number>
->();
+const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<IpcRendererLike, Set<number>>();
 
 /**
  * Subscribe to the pane-byte stream emitted by a main-side
