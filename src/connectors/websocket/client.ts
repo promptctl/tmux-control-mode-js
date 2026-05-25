@@ -57,6 +57,10 @@ import type { SplitOptions } from "../../client.js";
 import type { RpcProxyApi } from "../rpc.js";
 import type { TmuxClientLike } from "../../client.js";
 import {
+  attachPaneSinkViaEmitter,
+  type PaneByteSink,
+} from "../../pane-sink.js";
+import {
   BridgeError,
   decodePaneOutput,
   encodeClientFrame,
@@ -311,6 +315,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
 
   queryClipboard(): Promise<CommandResponse> {
     return this.call("queryClipboard", []);
+  }
+
+  // [LAW:locality-or-seam] WS pane-output frames arrive as parsed
+  //   `output` / `extended-output` messages dispatched through the emitter
+  //   (see `onBinary` → `dispatchEvent`). The emitter is therefore the byte
+  //   fan-out point and `attachPaneSinkViaEmitter` is the canonical adapter
+  //   onto the `PaneByteSink` seam — the same one every emitter-backed
+  //   bridge uses.
+  // [LAW:single-enforcer] One implementation across all emitter-backed
+  //   clients. No parallel registry.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return attachPaneSinkViaEmitter(this, paneId, sink);
   }
 
   // detach() is intentionally NOT exposed: it tears down the tmux client for

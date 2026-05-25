@@ -25,8 +25,10 @@
 
 import type {
   ConnectionState,
+  PaneByteSink,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
+import { attachPaneSinkViaEmitter } from "@promptctl/tmux-control-mode-js";
 import type {
   OutputMessage,
   ExtendedOutputMessage,
@@ -185,6 +187,18 @@ export class FakeTmuxClient {
   unsubscribe(name: string): Promise<CommandResponse> {
     this.subscriptionLog.push({ kind: "unsubscribe", name });
     return this.resolveAck();
+  }
+
+  // [LAW:locality-or-seam] The fake dispatches injected `output` /
+  //   `extended-output` messages through its listener registry; the registry
+  //   IS the byte fan-out point. `attachPaneSinkViaEmitter` wires that
+  //   emitter shape onto the `PaneByteSink` seam — identical shape to every
+  //   other emitter-backed bridge.
+  // [LAW:single-enforcer] The shared library helper does the bookkeeping;
+  //   the fake never grows a private per-pane sink registry that could drift
+  //   from the production bridges' semantics.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return attachPaneSinkViaEmitter(this, paneId, sink);
   }
 
   close(): void {
