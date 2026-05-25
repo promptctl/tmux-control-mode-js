@@ -419,35 +419,40 @@ export class TmuxClient {
       );
     }
 
+    // [LAW:dataflow-not-control-flow] Capture the per-chunk dispatch as a
+    //   single value BEFORE emit. The snapshot flows through this frame —
+    //   subsequent mutations to `paneSinks` (whether from an `output` event
+    //   handler attaching a new sink, or from inside a sink's own `write`
+    //   call disposing or attaching) cannot back-fill or skip the current
+    //   chunk. "Who sees this chunk" is fixed to who was attached when the
+    //   chunk arrived. `null` for non-output messages — the dispatch is a
+    //   no-op then. [LAW:types-are-the-program] the null|Some shape carries
+    //   "this message has bytes to fan out" as a value, not a re-checked
+    //   discriminator at the dispatch site.
+    const dispatch: PendingPaneDispatch = isPaneOutput(msg)
+      ? {
+          sinks: Array.from(this.paneSinks.get(msg.paneId)?.values() ?? []),
+          data: msg.data,
+        }
+      : null;
+
     // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages flow
     // through the emitter regardless of type.
     this.emitter.emit(msg);
 
-    // [LAW:dataflow-not-control-flow] Sink dispatch also runs for every
-    //   message; the discriminator check is type narrowing (only some message
-    //   variants carry `paneId`+`data`), not a control-flow branch. The
-    //   per-pane loop body is identical regardless of how many sinks are
-    //   attached — a missing or empty registry yields zero iterations.
-    this.dispatchToPaneSinks(msg);
-  }
-
-  // [LAW:single-enforcer] Sole dispatcher for pane-byte fan-out. Lives next
-  // to handleMessage so both correlation transitions and sink dispatch share
-  // one synchronous frame — no consumer can observe `%end` before its sinks
-  // have seen the preceding `%output`.
-  private dispatchToPaneSinks(msg: TmuxMessage): void {
-    if (!isPaneOutput(msg)) return;
-    const attachments = this.paneSinks.get(msg.paneId);
-    if (attachments === undefined) return;
-    // Snapshot before iterating. Per-chunk dispatch membership is fixed to
-    // "what was attached when this chunk arrived" — a sink's `write` that
-    // calls `attachPaneSink` or its own disposer must not change who sees
-    // this chunk. Without the snapshot, JS Map iteration would expose
-    // mid-write registry mutations into the current loop, breaking the
-    // contract.
-    for (const sink of Array.from(attachments.values())) sink.write(msg.data);
+    // [LAW:single-enforcer] Sole dispatch site for pane-byte fan-out.
+    //   Iterates the pre-emit snapshot; the loop body is identical
+    //   regardless of how many sinks were attached.
+    if (dispatch !== null) {
+      for (const sink of dispatch.sinks) sink.write(dispatch.data);
+    }
   }
 }
+
+type PendingPaneDispatch = {
+  readonly sinks: readonly PaneByteSink[];
+  readonly data: Uint8Array;
+} | null;
 
 // ---------------------------------------------------------------------------
 // TmuxClientLike — transport-agnostic projection of the TmuxClient surface.
