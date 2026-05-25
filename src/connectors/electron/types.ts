@@ -40,6 +40,22 @@ export const IPC = {
    * low-watermark trigger a resume. See AckMessage.
    */
   ack: "tmux:ack",
+  /**
+   * main → renderer: one chunk of pane bytes from a `WebContentsSink`. Payload
+   * is `PaneBytesEnvelope`. Distinct from `event` so a renderer's pane-byte
+   * receiver does not have to filter the broadcast event stream — only sinks
+   * that the host explicitly attached on the main side reach this channel.
+   * `Uint8Array` rides Electron's structured-clone IPC; no base64 hop.
+   */
+  paneBytes: "tmux:pane-bytes",
+  /**
+   * main → renderer: terminator for a `WebContentsSink` attachment. Fired
+   * once when the disposer returned from `attachPaneSink` runs. Payload is
+   * `PaneEndEnvelope`. The renderer-side receiver auto-detaches on this
+   * frame — no further `paneBytes` will arrive for the (sink, paneId)
+   * attachment that emitted it.
+   */
+  paneEnd: "tmux:pane-end",
 } as const;
 
 /**
@@ -173,6 +189,29 @@ export type InvokeResultEnvelope =
 export interface AckMessage {
   readonly paneId: number;
   readonly bytes: number;
+}
+
+// ---------------------------------------------------------------------------
+// Main → renderer: WebContentsSink envelopes.
+//
+// [LAW:one-source-of-truth] One declaration for each envelope shape; both
+// `createWebContentsSink` (main.ts) and `createPaneBytesReceiver` (renderer.ts)
+// import it so the wire shape cannot drift across the IPC hop.
+// [LAW:types-are-the-program] The envelope is the seam type that carries
+// `(paneId, bytes)` end-to-end. Holding a `Uint8Array` on the renderer is
+// only possible inside the receiver's filter-and-forward frame; the value
+// leaves the consumer's reach the moment it lands in the receiver's `sink`.
+// ---------------------------------------------------------------------------
+
+/** Payload for `IPC.paneBytes`. `data` survives Electron's structured clone. */
+export interface PaneBytesEnvelope {
+  readonly paneId: number;
+  readonly data: Uint8Array;
+}
+
+/** Payload for `IPC.paneEnd`. */
+export interface PaneEndEnvelope {
+  readonly paneId: number;
 }
 
 // ---------------------------------------------------------------------------
