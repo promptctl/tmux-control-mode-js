@@ -220,11 +220,11 @@ export class PaneSinkRegistry {
     //   so its return value decides whether `end?()` fires. No closure-
     //   scoped `disposed` flag is needed.
     return () => {
-      const set = this.attachments.get(paneId);
-      if (set === undefined) return;
-      const removed = set.delete(token);
+      const perPaneNow = this.attachments.get(paneId);
+      if (perPaneNow === undefined) return;
+      const removed = perPaneNow.delete(token);
       if (!removed) return;
-      if (set.size === 0) {
+      if (perPaneNow.size === 0) {
         this.attachments.delete(paneId);
       }
       sink.end?.();
@@ -243,14 +243,14 @@ export class PaneSinkRegistry {
     const snapshot = this.computeSnapshot(msg);
     if (snapshot === null) return;
     // [LAW:dataflow-not-control-flow] Iterate the snapshot array, not the
-    //   live Set. Mutations to `this.attachments` from a sink's own `write`
-    //   (e.g. a sink calling `attach` or invoking a sibling's disposer)
-    //   cannot back-fill or skip the current chunk.
+    //   live per-pane attachments. Mutations to `this.attachments` from
+    //   a sink's own `write` (e.g. a sink calling `attach` or invoking
+    //   a sibling's disposer) cannot back-fill or skip the current chunk.
     for (const sink of snapshot.sinks) sink.write(snapshot.data);
   }
 
-  // [LAW:single-enforcer] Sole reader of the per-pane Set's *iteration
-  //   order*. Materializing the iterable here, once, is what makes the
+  // [LAW:single-enforcer] Sole reader of the per-pane attachments' iteration
+  //   order. Materializing the iterable here, once, is what makes the
   //   dispatch above robust to re-entrant attach/detach inside a sink's
   //   `write` call.
   private computeSnapshot(msg: TmuxMessage): PaneDispatchSnapshot {
