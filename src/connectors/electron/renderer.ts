@@ -360,7 +360,7 @@ export function createRendererBridge(
 }
 
 // ---------------------------------------------------------------------------
-// Renderer-side companion to `createWebContentsSink` (main.ts).
+// Renderer-side companion to `attachWebContentsSink` (main.ts).
 //
 // Subscribes to `IPC.paneBytes` + `IPC.paneEnd`, filters by paneId, and
 // forwards each chunk into a caller-supplied `PaneByteSink`. The seam type
@@ -443,7 +443,7 @@ const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<
  * the sink itself.
  *
  * @see PaneByteSink for the sink contract.
- * @see createWebContentsSink (main.ts) for the main-side producer.
+ * @see attachWebContentsSink (main.ts) for the main-side producer.
  */
 export function createPaneBytesReceiver(
   ipcRenderer: IpcRendererLike,
