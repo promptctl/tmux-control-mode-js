@@ -160,13 +160,15 @@ export class TmuxClient {
   /**
    * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
    * The sink surface is the canonical pane-byte subscription: it runs
-   * synchronously before this event, fail-isolates from a throwing handler,
-   * and forbids the `Uint8Array → string` misdecode that this event invites.
-   * Compose a built-in sink: `createTextStreamSink` (from this package's
-   * root export), `attachWebContentsSink` (from `/electron/main`),
+   * synchronously before this event and fail-isolates from a throwing
+   * handler. Compose a built-in sink — `createTextStreamSink` (from this
+   * package's root export), `attachWebContentsSink` (from `/electron/main`),
    * `attachWebSocketSink` (from `/websocket`), or `XtermSink` (from
-   * `@promptctl/pane-terminal/xterm-sink`). The `'output'` event continues
-   * to fire and will be removed in the next minor.
+   * `@promptctl/pane-terminal/xterm-sink`) — and the bytes never reach a
+   * code path that could mis-decode them. (A consumer who writes a *custom*
+   * `PaneByteSink` is responsible for its own decoding; the built-ins cover
+   * every legitimate downstream need.) The `'output'` event continues to
+   * fire and will be removed in the next minor.
    */
   on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
   /**
