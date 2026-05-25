@@ -101,6 +101,21 @@ statement on the library-spec side.
   tmux command-line syntax
   - `tmux.1:7870`
 
+### 3.1 Library parser note: CRLF tolerance
+
+§3 above describes tmux's *input* side (the rule tmux applies to lines it
+reads from the client). The library's parser consumes tmux's *output* and
+goes the opposite direction: `TmuxParser.feed()` (`src/protocol/parser.ts`)
+strips a trailing `\r` before each `\n` so transports that introduce CRLF
+between tmux and the parser are tolerated and parse identically to LF-only
+ones.
+
+This is safe because tmux always octal-escapes literal control bytes in
+pane output (see §9) — any unescaped `\r` adjacent to LF must therefore be
+transport line-driver noise, not data. The behavior is library-side
+defensive code, not a tmux rule. SPEC.md §4.3.1 carries the mirror
+statement on the outer-spec side. Resolves audit finding MANIFEST F7.
+
 ---
 
 ## 4. Command Response Protocol (`%begin` / `%end` / `%error`)
