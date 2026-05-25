@@ -24,6 +24,7 @@ import {
   type TmuxEventMap,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
+import type { PaneByteSink } from "../../pane-sink.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   asPaneOutput,
@@ -42,6 +43,8 @@ import {
   type InvokeResultEnvelope,
   type IpcRendererLike,
   type IpcRendererOnListener,
+  type PaneBytesEnvelope,
+  type PaneEndEnvelope,
   type RendererBridgeOptions,
 } from "./types.js";
 
@@ -356,9 +359,108 @@ export function createRendererBridge(
   return new TmuxClientProxy(ipcRenderer, options);
 }
 
+// ---------------------------------------------------------------------------
+// Renderer-side companion to `createWebContentsSink` (main.ts).
+//
+// Subscribes to `IPC.paneBytes` + `IPC.paneEnd`, filters by paneId, and
+// forwards each chunk into a caller-supplied `PaneByteSink`. The seam type
+// is identical on both sides of the IPC hop: bytes leave the main-side sink,
+// cross structured-clone IPC, and land in the renderer-side sink — at no
+// point does the consumer hold a raw `Uint8Array` as a value the type system
+// would let them decode the wrong way.
+//
+// [LAW:single-enforcer] One Electron byte-receiver lives here only. Hosts
+// stop writing `ipcRenderer.on('pane-bytes', ...)` ad hoc and stop choosing
+// channel names or envelope shapes.
+// [LAW:locality-or-seam] The seam shape is `PaneByteSink`. Renderer consumers
+// compose a sink (an xterm.js feeder, `createTextStreamSink(...)`, or any
+// other implementation) and hand it in — the receiver is a wire-to-sink
+// adapter, nothing more.
+// [LAW:dataflow-not-control-flow] Every inbound frame runs the same path
+// (filter → sink call). The auto-detach on `paneEnd` is data flow on the
+// attachment-terminated state, not a control-flow guard.
+// ---------------------------------------------------------------------------
+
+/**
+ * Subscribe to the pane-byte stream emitted by a main-side
+ * `WebContentsSink` and forward each chunk into `sink`.
+ *
+ * Listens on `IPC.paneBytes` and `IPC.paneEnd`, filters every inbound
+ * envelope by `paneId`, and calls `sink.write(bytes)` / `sink.end?.()` for
+ * matching frames. `Uint8Array` payloads survive Electron's structured
+ * clone — the receiver does not copy.
+ *
+ * ## Lifecycle
+ *
+ * - `paneEnd` for the matching `paneId` calls `sink.end?.()` and **auto-
+ *   detaches** both IPC listeners. After that, no further frames will
+ *   reach this `sink` even if main keeps sending; the disposer returned
+ *   to the caller is idempotent and safe to call afterwards.
+ * - The returned disposer detaches both listeners explicitly. It does
+ *   NOT call `sink.end?.()` — the disposer is the renderer's "I don't
+ *   want this anymore" signal, not a stream-terminated signal. Sinks
+ *   that need to flush on local teardown should call their own `end()`
+ *   from the caller's side.
+ *
+ * ## Typical pairing
+ *
+ * One receiver per `(ipcRenderer, paneId)` to match the natural
+ * one-`WebContentsSink`-per-`(wc, paneId)` shape on main. Attaching two
+ * receivers for the same paneId is well-defined (both `sink.write`s
+ * fire), but rarely what's wanted.
+ *
+ * ## Sink contract
+ *
+ * `sink.write` runs synchronously inside the IPC event handler and MUST
+ * NOT throw — same constraint as the underlying `PaneByteSink` contract
+ * on main. A throwing sink propagates through the IPC dispatch loop with
+ * unpredictable cleanup semantics; wrap risky work in try/catch inside
+ * the sink itself.
+ *
+ * @see PaneByteSink for the sink contract.
+ * @see createWebContentsSink (main.ts) for the main-side producer.
+ */
+export function createPaneBytesReceiver(
+  ipcRenderer: IpcRendererLike,
+  paneId: number,
+  sink: PaneByteSink,
+): () => void {
+  let detached = false;
+
+  const detach = (): void => {
+    if (detached) return;
+    detached = true;
+    ipcRenderer.removeListener(IPC.paneBytes, onBytes);
+    ipcRenderer.removeListener(IPC.paneEnd, onEnd);
+  };
+
+  const onBytes: IpcRendererOnListener = (_event, ...args) => {
+    const envelope = args[0] as PaneBytesEnvelope;
+    if (envelope.paneId !== paneId) return;
+    sink.write(envelope.data);
+  };
+
+  const onEnd: IpcRendererOnListener = (_event, ...args) => {
+    const envelope = args[0] as PaneEndEnvelope;
+    if (envelope.paneId !== paneId) return;
+    // [LAW:dataflow-not-control-flow] `end` is a terminal signal: the
+    // attachment is over. Detach first so a sink whose `end()` throws or
+    // re-enters cannot fire `write` again from this receiver.
+    detach();
+    sink.end?.();
+  };
+
+  ipcRenderer.on(IPC.paneBytes, onBytes);
+  ipcRenderer.on(IPC.paneEnd, onEnd);
+
+  return detach;
+}
+
 // Re-export the types a renderer consumer might need without a second import.
 export type {
   IpcRendererLike,
   IpcRendererEventLike,
+  PaneBytesEnvelope,
+  PaneEndEnvelope,
   RendererBridgeOptions,
 } from "./types.js";

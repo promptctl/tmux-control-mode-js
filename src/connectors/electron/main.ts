@@ -34,6 +34,7 @@
 import type { TmuxClient } from "../../client.js";
 import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
+import type { PaneByteSink } from "../../pane-sink.js";
 import {
   asPaneOutput,
   type CommandResponse,
@@ -63,6 +64,8 @@ import {
   type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
+  type PaneBytesEnvelope,
+  type PaneEndEnvelope,
   type WebContentsLike,
 } from "./types.js";
 
@@ -578,6 +581,110 @@ function byteAccount(
     : { paneId: out.paneId, bytes: out.data.byteLength };
 }
 
+// ---------------------------------------------------------------------------
+// WebContentsSink — Electron main → renderer byte forwarder.
+//
+// The library's `client.attachPaneSink(paneId, sink)` API hands every pane
+// chunk to `sink.write(bytes)`. `WebContentsSink` is the sink shape an Electron
+// host composes when it wants those bytes to land in a specific renderer:
+// each `write` becomes one `wc.send(IPC.paneBytes, { paneId, data })` frame,
+// and `end()` (fired by the library when the attach disposer runs) becomes
+// one `wc.send(IPC.paneEnd, { paneId })` frame. `Uint8Array` payloads ride
+// Electron's structured-clone IPC — no base64 hop, no decode site.
+//
+// [LAW:single-enforcer] One Electron byte-forwarder lives here only.
+// Consumers used to reach for `client.on('output', ...)` and then call
+// `wc.send` themselves; the first downstream that did this also reached for
+// `new TextDecoder('latin1').decode(...)` on the way through, corrupting
+// every multi-byte sequence. The sink is the answer: composers don't pick a
+// channel name, don't shape a payload, and never hold the bytes.
+//
+// [LAW:locality-or-seam] The seam between "pane bytes" and "Electron IPC" is
+// this factory + its renderer-side `createPaneBytesReceiver` counterpart.
+// Both ends speak `PaneByteSink`; the wire shape (`PaneBytesEnvelope`,
+// `PaneEndEnvelope`) is owned by `./types.ts` and never reaches the consumer.
+//
+// [LAW:dataflow-not-control-flow] `write` and `end` always run the same path —
+// the trust-boundary `wc.isDestroyed()` guard is data flow on Electron's
+// lifecycle (a state the type system genuinely cannot encode), not a missing
+// invariant compensated for in the body.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a `PaneByteSink` that forwards pane bytes to a specific Electron
+ * `WebContents` over IPC.
+ *
+ * Each call to the returned sink's `write(bytes)` sends one frame on
+ * `IPC.paneBytes` carrying `{ paneId, data: bytes }`. The library's
+ * `PaneByteSink` contract guarantees `bytes` is the post-octal-decode
+ * payload; Electron's structured-clone serializer preserves the
+ * `Uint8Array` exactly, so the renderer-side receiver sees the same
+ * bytes, byte-for-byte. No copy at this site — structured-clone is the
+ * trust-boundary copy.
+ *
+ * `end()` (fired by the library once when the attach disposer runs) sends
+ * one frame on `IPC.paneEnd` carrying `{ paneId }`. The renderer-side
+ * receiver uses this to detach its listeners; the sink has no further
+ * obligation.
+ *
+ * ## Lifecycle
+ *
+ * The sink's `wc.isDestroyed()` guard is a trust-boundary check on
+ * Electron's `WebContents` lifecycle. Calling `wc.send` on a destroyed
+ * `WebContents` is a native crash in some Electron versions and a silent
+ * no-op in others; the guard makes the outcome consistent and observable
+ * (a no-op `write` on a dead receiver, not a crash). The sink remains
+ * attached; the host is expected to call the attach disposer when the
+ * renderer goes away (typically from `wc.once('destroyed', ...)`).
+ *
+ * ## Typical pairing
+ *
+ * One `WebContentsSink` per `(wc, paneId)` attachment, paired with one
+ * `createPaneBytesReceiver(ipcRenderer, paneId, ...)` on the renderer side.
+ * `attachPaneSink` is callable multiple times for the same pane (the
+ * library does not dedupe), but the natural mode is 1:1 — extra
+ * attachments simply broadcast the same bytes more than once.
+ *
+ * ## Contract notes
+ *
+ * - `PaneByteSink.write` MUST NOT throw — the library does not catch sink
+ *   errors. The native `wc.send` call can throw if the `WebContents` is
+ *   destroyed between the `isDestroyed()` check and the send (a TOCTOU
+ *   window Electron's API does not close). This is a real-but-rare path
+ *   that the host's `wc.once('destroyed', ...)` cleanup ordinarily
+ *   forecloses; a host that disposes the attach handle in that listener
+ *   keeps the window vanishingly small. Wrapping the send in try/catch
+ *   would silently swallow a genuine misconfiguration (a wrong channel
+ *   name, a serializer rejection on a non-cloneable payload — which
+ *   `Uint8Array` is not, but a misuse with a non-byte payload would be),
+ *   so the sink prefers loud failure over hidden bugs.
+ *
+ * @see PaneByteSink for the underlying sink contract.
+ * @see createPaneBytesReceiver (renderer.ts) for the matching consumer.
+ * @see TmuxClient.attachPaneSink for the attach API.
+ */
+export function createWebContentsSink(
+  wc: WebContentsLike,
+  paneId: number,
+): PaneByteSink {
+  return {
+    write(bytes): void {
+      // [LAW:no-defensive-null-guards] `isDestroyed` is a trust-boundary
+      // check on Electron's WebContents lifecycle — the same guard the
+      // `createMainBridge` forward loop uses for the same reason. Not a
+      // workaround for a missing invariant; the lifecycle is external.
+      if (wc.isDestroyed()) return;
+      const envelope: PaneBytesEnvelope = { paneId, data: bytes };
+      wc.send(IPC.paneBytes, envelope);
+    },
+    end(): void {
+      if (wc.isDestroyed()) return;
+      const envelope: PaneEndEnvelope = { paneId };
+      wc.send(IPC.paneEnd, envelope);
+    },
+  };
+}
+
 // Re-export the types a main-process consumer might need without forcing a
 // second import site.
 export type {
@@ -586,6 +693,8 @@ export type {
   IpcMainLike,
   MainBridgeHandle,
   MainBridgeOptions,
+  PaneBytesEnvelope,
+  PaneEndEnvelope,
   WebContentsLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";
