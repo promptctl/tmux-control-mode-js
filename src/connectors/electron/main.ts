@@ -34,6 +34,7 @@
 import type { TmuxClient } from "../../client.js";
 import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
+import type { PaneByteSink } from "../../pane-sink.js";
 import {
   asPaneOutput,
   type CommandResponse,
@@ -63,6 +64,8 @@ import {
   type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
+  type PaneBytesEnvelope,
+  type PaneEndEnvelope,
   type WebContentsLike,
 } from "./types.js";
 
@@ -578,6 +581,175 @@ function byteAccount(
     : { paneId: out.paneId, bytes: out.data.byteLength };
 }
 
+// ---------------------------------------------------------------------------
+// attachWebContentsSink — Electron main → renderer byte forwarder.
+//
+// Internally creates a `PaneByteSink` that forwards each chunk to
+// `wc.send(IPC.paneBytes, { paneId, data })`, calls
+// `client.attachPaneSink(paneId, sink)`, and returns a disposer wrapping
+// the attach-side disposer. The sink reference NEVER escapes this
+// closure — by construction, the same wire stream cannot be
+// double-attached, refcount-corrupted, or terminated by a stale `end()`.
+//
+// [LAW:types-are-the-program] The earlier shape exposed a `PaneByteSink`
+// the caller could pass to `attachPaneSink` more than once. The
+// `PaneByteSink` contract explicitly permits multi-attach (each
+// attachment fires its own `end()`), but the wire envelope is
+// `paneId`-scoped — there's no stream identifier — so a second
+// attachment of the same sink races the first `paneEnd` to land. The
+// strongest true theorem about this surface is "exactly one attachment
+// per `(wc, paneId)`," and the way to make that theorem hold is to
+// remove the value the caller could misuse. Returning the disposer
+// only — never the sink — is that move.
+//
+// [LAW:single-enforcer] One Electron byte-forwarder lives here only.
+// Consumers used to reach for `client.on('output', ...)` and then call
+// `wc.send` themselves; the first downstream that did this also reached for
+// `new TextDecoder('latin1').decode(...)` on the way through, corrupting
+// every multi-byte sequence. The factory is the answer: composers don't
+// pick a channel name, don't shape a payload, and never hold the bytes.
+//
+// [LAW:locality-or-seam] The seam between "pane bytes" and "Electron IPC"
+// is this factory + its renderer-side `createPaneBytesReceiver` counterpart.
+// The wire shape (`PaneBytesEnvelope`, `PaneEndEnvelope`) is owned by
+// `./types.ts` and never reaches the consumer; on the main side the sink
+// itself doesn't reach the consumer either.
+//
+// [LAW:dataflow-not-control-flow] `write` and `end` always run the same
+// path — the trust-boundary `wc.isDestroyed()` guard is data flow on
+// Electron's lifecycle (a state the type system genuinely cannot encode),
+// not a missing invariant compensated for in the body.
+// ---------------------------------------------------------------------------
+
+// Active-attachment registry — exactly one `attachWebContentsSink` per
+// `(wc, paneId)` pair.
+//
+// Two independent attachments for the same pair would each fire their own
+// wire `paneEnd` frame at disposer-time, and the first one to land would
+// auto-detach the renderer-side receiver — orphaning byte flow for the
+// other attachment. The registry refuses the second call loudly instead
+// of silently corrupting the stream.
+//
+// [LAW:no-shared-mutable-globals] Module-level `WeakMap` keyed by `wc` so
+// the registry never outlives its targets. The constructor and the
+// disposer are the explicit API.
+
+const ACTIVE_WEBCONTENTS_SINKS = new WeakMap<WebContentsLike, Set<number>>();
+
+/**
+ * Forward pane bytes for `paneId` to the given `WebContents` over IPC.
+ *
+ * Internally constructs a sink that turns each `attachPaneSink`-delivered
+ * chunk into one `wc.send(IPC.paneBytes, { paneId, data })` frame and
+ * the once-per-attachment `end()` into one
+ * `wc.send(IPC.paneEnd, { paneId })` frame, calls
+ * `client.attachPaneSink(paneId, sink)`, and returns a disposer that
+ * unwinds the attachment. `Uint8Array` payloads ride Electron's
+ * structured-clone IPC — no base64 hop, no decode site, no copy at the
+ * sink itself (structured-clone is the trust-boundary copy).
+ *
+ * The sink instance is never exposed: the closure owns it, so it cannot
+ * be attached more than once. The wire's `paneId`-scoped lifecycle and
+ * the attachment's lifecycle are 1:1 by construction.
+ *
+ * ## Exclusivity (one attachment per `(wc, paneId)`)
+ *
+ * A second `attachWebContentsSink(client, wc, paneId)` for a pair that
+ * already has an active attachment throws
+ * `BridgeError("BRIDGE_PANE_SINK_ALREADY_ATTACHED")` — the wire envelope
+ * is paneId-scoped and cannot disambiguate two concurrent attachments.
+ * The slot is freed when the returned disposer is called. Hosts that
+ * want to "rotate" the forwarder for a pane MUST dispose the prior
+ * attachment first.
+ *
+ * ## Lifecycle
+ *
+ * The internal sink's `wc.isDestroyed()` guard is a trust-boundary check
+ * on Electron's `WebContents` lifecycle. Calling `wc.send` on a destroyed
+ * `WebContents` is a native crash in some Electron versions and a silent
+ * no-op in others; the guard makes the outcome consistent and observable
+ * (a no-op `write` on a dead receiver, not a crash). The host is
+ * expected to call the disposer returned here from
+ * `wc.once('destroyed', ...)`.
+ *
+ * The returned disposer is idempotent. Calling it from a `destroyed`
+ * handler and then again from an unrelated teardown path is safe.
+ *
+ * ## Contract notes
+ *
+ * - The internal sink's `write` MUST NOT throw — the library does not
+ *   catch sink errors. The native `wc.send` call can throw if the
+ *   `WebContents` is destroyed between the `isDestroyed()` check and the
+ *   send (a TOCTOU window Electron's API does not close). This is a
+ *   real-but-rare path that the host's `wc.once('destroyed', ...)`
+ *   cleanup ordinarily forecloses. Wrapping the send in try/catch would
+ *   silently swallow a genuine misconfiguration (a serializer rejection
+ *   on a non-cloneable payload, for instance), so the forwarder prefers
+ *   loud failure over hidden bugs.
+ *
+ * @returns A disposer that unwinds the attachment and frees the
+ *   `(wc, paneId)` slot. Idempotent.
+ * @see PaneByteSink for the underlying sink contract.
+ * @see createPaneBytesReceiver (renderer.ts) for the matching consumer.
+ * @see TmuxClient.attachPaneSink for the attach API the disposer wraps.
+ */
+export function attachWebContentsSink(
+  client: TmuxClient,
+  wc: WebContentsLike,
+  paneId: number,
+): () => void {
+  let active = ACTIVE_WEBCONTENTS_SINKS.get(wc);
+  if (active === undefined) {
+    active = new Set<number>();
+    ACTIVE_WEBCONTENTS_SINKS.set(wc, active);
+  }
+  if (active.has(paneId)) {
+    throw new BridgeError(
+      "BRIDGE_PANE_SINK_ALREADY_ATTACHED",
+      `attachWebContentsSink already active for paneId=${paneId} on this WebContents; dispose the prior attachment before attaching a new one`,
+    );
+  }
+  active.add(paneId);
+  const registrySet = active;
+
+  const sink: PaneByteSink = {
+    write(bytes): void {
+      // [LAW:no-defensive-null-guards] `isDestroyed` is a trust-boundary
+      // check on Electron's WebContents lifecycle — the same guard the
+      // `createMainBridge` forward loop uses for the same reason. Not a
+      // workaround for a missing invariant; the lifecycle is external.
+      if (wc.isDestroyed()) return;
+      const envelope: PaneBytesEnvelope = { paneId, data: bytes };
+      wc.send(IPC.paneBytes, envelope);
+    },
+    end(): void {
+      // [LAW:one-source-of-truth] `end()` is the library's once-per-
+      // attachment terminator. The wire frame fires only when the
+      // WebContents is still alive; the registry slot is freed
+      // unconditionally below in the disposer, which is the path that
+      // also invokes this `end()` via the attach disposer.
+      if (wc.isDestroyed()) return;
+      const envelope: PaneEndEnvelope = { paneId };
+      wc.send(IPC.paneEnd, envelope);
+    },
+  };
+
+  const attachDispose = client.attachPaneSink(paneId, sink);
+
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    // Free the slot BEFORE invoking attachDispose: `attachDispose` calls
+    // `sink.end()`, and the wire frame it sends is the renderer's signal
+    // to detach. Freeing the slot first means a rotated attachment
+    // constructed from inside (e.g.) a synchronous downstream effect can
+    // succeed without false-positive duplicate detection.
+    registrySet.delete(paneId);
+    attachDispose();
+  };
+}
+
 // Re-export the types a main-process consumer might need without forcing a
 // second import site.
 export type {
@@ -586,6 +758,8 @@ export type {
   IpcMainLike,
   MainBridgeHandle,
   MainBridgeOptions,
+  PaneBytesEnvelope,
+  PaneEndEnvelope,
   WebContentsLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";
