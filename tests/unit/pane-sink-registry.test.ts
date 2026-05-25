@@ -7,9 +7,24 @@
 // there is exactly one implementation, so behavioral equivalence across
 // transports follows from "they all use this class."
 //
-// [LAW:behavior-not-structure] Tests assert WHAT the registry promises
-//   (pre-emit snapshot, per-attachment lifecycle, no throw-poisoning across
-//   sinks attached at dispatch time), not HOW it stores attachments.
+// [LAW:behavior-not-structure] Tests assert WHAT the registry promises:
+//   pre-emit snapshot (no back-fill on re-entrant attach), iteration-safe
+//   detach inside a sink's write, per-pane isolation, per-attachment
+//   lifecycle, disposer idempotency, and no-op on non-pane-output. None
+//   of these assert HOW attachments are stored.
+//
+// Out of scope here (and out of scope per the `PaneByteSink` contract
+// itself): error isolation across sinks. A throwing sink propagates and
+// aborts the rest of the per-chunk dispatch — that's by design, and the
+// registry is not responsible for catching. What the registry DOES
+// provide is isolation between the canonical sink path and the
+// deprecated emit-listener path: sinks fire BEFORE `emit(msg)` in every
+// TmuxClientLike implementation, so a throwing `on('output', …)`
+// listener cannot poison sink delivery for the same chunk. That
+// property lives in the per-client message-receive path (see
+// `TmuxClient.handleMessage`, `TmuxClientProxy.eventHandler`,
+// `WebSocketTmuxClient.dispatchEvent`, etc.), not in the registry.
+//
 // [LAW:single-enforcer] These assertions sit on the canonical class. Every
 //   TmuxClientLike-shaped object that owns a `PaneSinkRegistry` is covered
 //   without needing N parallel test suites.
