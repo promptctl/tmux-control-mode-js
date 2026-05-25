@@ -30,9 +30,10 @@ import type {
   PaneAction,
   TmuxMessage,
 } from "./protocol/types.js";
-import { emptyKeysResponse } from "./protocol/types.js";
+import { emptyKeysResponse, isPaneOutput } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
+import type { PaneByteSink } from "./pane-sink.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
 
@@ -79,6 +80,15 @@ export class TmuxClient {
   // mutates this field.
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
+
+  // [LAW:single-enforcer] Fan-out for pane bytes lives here, not in consumer
+  //   code. Without this, every multi-consumer codebase rebuilds its own
+  //   `MulticastSink` wrapper and the sink contract drifts caller-to-caller.
+  // [LAW:one-source-of-truth] Map+Set is the sole registry; `attachPaneSink`
+  //   is the sole writer; the returned disposer is the sole deleter. Iteration
+  //   order is insertion order (Set semantics in JS), which matches the
+  //   public contract that sinks see bytes in attachment order.
+  private readonly paneSinks = new Map<number, Set<PaneByteSink>>();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -151,6 +161,63 @@ export class TmuxClient {
   off(event: "*", handler: (ev: EmitterMessage) => void): void;
   off(event: string, handler: (ev: never) => void): void {
     this.emitter.off(event as "*", handler as (ev: EmitterMessage) => void);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pane-byte subscriptions — the canonical surface
+  //
+  // [LAW:one-source-of-truth] `attachPaneSink` is the canonical pane-byte
+  //   subscription. The `client.on('output', …)` and `client.on('extended-
+  //   output', …)` event emitters become the deprecated underlying mechanism
+  //   (see sibling deprecate ticket); they remain functional through one
+  //   minor for external consumers we don't own.
+  // [LAW:dataflow-not-control-flow] Variability lives in *which sink is
+  //   attached* (a value of `PaneByteSink` type), never in *how a caller
+  //   decodes bytes* (control flow scattered across every consumer).
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Attach a sink to receive post-octal-decode bytes for one pane.
+   *
+   * Multiple sinks may be attached to the same pane; they receive every
+   * chunk in attachment order. Returns a disposer that detaches *this
+   * specific* sink (other sinks for the same pane keep receiving bytes)
+   * and invokes `sink.end?.()` exactly once. The disposer is idempotent —
+   * a second call is a no-op.
+   *
+   * Both `%output` and `%extended-output` route through this path. The
+   * `extended-output` `age` field is dropped — the sink contract is
+   * bytes-only. If a consumer needs the age, surface it via a separate
+   * variant once a real consumer requires it; speculative variants belong
+   * to no ticket.
+   *
+   * @see PaneByteSink for the contract sinks must satisfy.
+   */
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    let sinks = this.paneSinks.get(paneId);
+    if (sinks === undefined) {
+      sinks = new Set();
+      this.paneSinks.set(paneId, sinks);
+    }
+    sinks.add(sink);
+
+    let disposed = false;
+    return () => {
+      // [LAW:dataflow-not-control-flow] Idempotency lives in a boolean flag,
+      // not in a "did this sink end already" check on the sink itself —
+      // the flag is the value that decides; the operations always run the
+      // same way against the registry.
+      if (disposed) return;
+      disposed = true;
+      const set = this.paneSinks.get(paneId);
+      if (set !== undefined) {
+        set.delete(sink);
+        if (set.size === 0) {
+          this.paneSinks.delete(paneId);
+        }
+      }
+      sink.end?.();
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -351,6 +418,24 @@ export class TmuxClient {
     // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages flow
     // through the emitter regardless of type.
     this.emitter.emit(msg);
+
+    // [LAW:dataflow-not-control-flow] Sink dispatch also runs for every
+    //   message; the discriminator check is type narrowing (only some message
+    //   variants carry `paneId`+`data`), not a control-flow branch. The
+    //   per-pane loop body is identical regardless of how many sinks are
+    //   attached — a missing or empty registry yields zero iterations.
+    this.dispatchToPaneSinks(msg);
+  }
+
+  // [LAW:single-enforcer] Sole dispatcher for pane-byte fan-out. Lives next
+  // to handleMessage so both correlation transitions and sink dispatch share
+  // one synchronous frame — no consumer can observe `%end` before its sinks
+  // have seen the preceding `%output`.
+  private dispatchToPaneSinks(msg: TmuxMessage): void {
+    if (!isPaneOutput(msg)) return;
+    const sinks = this.paneSinks.get(msg.paneId);
+    if (sinks === undefined) return;
+    for (const sink of sinks) sink.write(msg.data);
   }
 }
 
