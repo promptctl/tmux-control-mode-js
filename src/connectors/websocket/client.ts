@@ -56,6 +56,7 @@ import type { SplitOptions } from "../../client.js";
 
 import type { RpcProxyApi } from "../rpc.js";
 import type { TmuxClientLike } from "../../client.js";
+import { PaneSinkRegistry, type PaneByteSink } from "../../pane-sink.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -141,6 +142,12 @@ interface Pending {
 
 export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   private readonly emitter = new TypedEmitter();
+  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation as
+  //   `TmuxClient`. `attachPaneSink` delegates to it; `dispatchEvent`
+  //   calls `paneSinks.dispatch(msg)` before `emitter.emit(msg)` so
+  //   canonical sink delivery is snapshot-protected against re-entrant
+  //   attach/detach and isolated from throwing `on('output', …)` listeners.
+  private readonly paneSinks = new PaneSinkRegistry();
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;
@@ -311,6 +318,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
 
   queryClipboard(): Promise<CommandResponse> {
     return this.call("queryClipboard", []);
+  }
+
+  // [LAW:locality-or-seam] WS pane-output frames arrive as parsed
+  //   `output` / `extended-output` messages routed through
+  //   `dispatchEvent`. `paneSinks.dispatch(msg)` is where bytes fan out
+  //   to sinks (same shape as `TmuxClient.handleMessage`);
+  //   `attachPaneSink` is the public entry into that registry.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return this.paneSinks.attach(paneId, sink);
   }
 
   // detach() is intentionally NOT exposed: it tears down the tmux client for
@@ -553,6 +569,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   dispatchEvent(msg: TmuxMessage): void {
+    // [LAW:single-enforcer] Sinks fire BEFORE emit, matching
+    //   `TmuxClient.handleMessage`. The registry's per-chunk snapshot
+    //   isolates the attachment set from re-entrant attach/detach inside
+    //   `sink.write`, and running it before emit keeps canonical sink
+    //   delivery resilient to throws on the deprecated `on('output', …)`
+    //   event path.
+    this.paneSinks.dispatch(msg);
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
