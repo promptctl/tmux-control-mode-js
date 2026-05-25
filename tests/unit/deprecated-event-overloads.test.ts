@@ -53,18 +53,26 @@ const SURFACES: ReadonlyArray<{ name: string; srcFile: string }> = [
 
 /**
  * For each `on(...)` or `off(...)` overload whose first parameter is the
- * literal `"output"` (or `"extended-output"`), walk backwards to the nearest
- * `/** … *‍/` JSDoc block and assert it contains `@deprecated` and names
- * `attachPaneSink`. The parameter identifier is left open (`\w+`) so
- * harmless renames (`event` → `eventName`, `type` → `name`) don't break the
- * assertion — that would be a structural check, not a behavior check.
+ * literal `"output"` (or `"extended-output"`), find the doc-block that is
+ * *directly adjacent* to the overload and assert it contains `@deprecated`
+ * and names `attachPaneSink`. The parameter identifier is left open (`\w+`)
+ * so harmless renames (`event` → `eventName`, `type` → `name`) don't break
+ * the assertion — that would be a structural check, not a behavior check.
  *
- * Anchoring on `on(` / `off(` (not just any `:\s*"output"` literal) is what
+ * Anchoring on `on(` / `off(` (not just any colon-quoted literal) is what
  * keeps the regex honest: object literals like `dispatch({ type: "output",
  * ... })` inside method bodies must NOT match. Source files contain both the
  * overload signatures and the implementation signatures for `on`/`off`; the
  * implementation signatures are typed `event: string`, so the literal-event
  * pattern naturally selects only the overload rows we care about.
+ *
+ * Adjacency check: a doc-block "belongs" to an overload only if its closing
+ * marker appears immediately before the signature with nothing but
+ * whitespace between them. Without this constraint, `lastIndexOf("/**", …)`
+ * could walk past a missing-JSDoc overload and grab an earlier overload's
+ * deprecation block — a false positive. The adjacency invariant kills that
+ * leak: if the overload lacks its own JSDoc, the nearest closing marker
+ * belongs to something else and the gap fails the whitespace-only check.
  */
 function expectAllOverloadsDeprecated(
   source: string,
@@ -85,22 +93,42 @@ function expectAllOverloadsDeprecated(
 
   for (const m of matches) {
     const sigStart = m.index!;
-    const docStart = source.lastIndexOf("/**", sigStart);
+
+    // Find the nearest doc-block closing marker before this overload.
+    const docEndMarker = source.lastIndexOf("*/", sigStart);
+    expect(
+      docEndMarker,
+      `${surfaceName}: no doc-block precedes the '"${eventName}"' overload at offset ${sigStart}`,
+    ).toBeGreaterThan(-1);
+
+    // Adjacency: everything between the doc-block's closing `*/` and the
+    // overload signature must be whitespace only. If there's any other
+    // token (another overload signature, a method body, a `private` member,
+    // etc.) then that JSDoc belongs to whatever sits in the gap, not to
+    // our overload — fail rather than walk further back.
+    const gap = source.slice(docEndMarker + 2, sigStart);
+    expect(
+      gap.trim(),
+      `${surfaceName}: the '"${eventName}"' overload at offset ${sigStart} is not immediately preceded by a doc-block (gap contained non-whitespace: ${JSON.stringify(gap.slice(0, 80))}…). Each overload must carry its own JSDoc.`,
+    ).toBe("");
+
+    // Walk back from the closing marker to the matching opener. With the
+    // adjacency check passing, this opener is unambiguous: the doc-block
+    // ending at `docEndMarker` is the one attached to the overload.
+    const docStart = source.lastIndexOf("/**", docEndMarker);
     expect(
       docStart,
-      `${surfaceName}: no JSDoc precedes the '"${eventName}"' overload at offset ${sigStart}`,
+      `${surfaceName}: malformed doc-block before the '"${eventName}"' overload at offset ${sigStart} (closing marker has no opener)`,
     ).toBeGreaterThan(-1);
-    const docBlock = source.slice(docStart, sigStart);
-    // The JSDoc immediately preceding a literal-event overload is its
-    // doc-block — `tsc` declaration emit attaches it to the overload, so
-    // language-service tooling reads it as the overload's deprecation hint.
+
+    const docBlock = source.slice(docStart, docEndMarker + 2);
     expect(
       docBlock.includes("@deprecated"),
-      `${surfaceName}: JSDoc preceding the '"${eventName}"' overload at offset ${sigStart} is missing @deprecated. Found:\n${docBlock}`,
+      `${surfaceName}: doc-block on the '"${eventName}"' overload at offset ${sigStart} is missing @deprecated. Found:\n${docBlock}`,
     ).toBe(true);
     expect(
       docBlock.includes("attachPaneSink"),
-      `${surfaceName}: JSDoc preceding the '"${eventName}"' overload at offset ${sigStart} should name attachPaneSink as the replacement. Found:\n${docBlock}`,
+      `${surfaceName}: doc-block on the '"${eventName}"' overload at offset ${sigStart} should name attachPaneSink as the replacement. Found:\n${docBlock}`,
     ).toBe(true);
   }
 }
