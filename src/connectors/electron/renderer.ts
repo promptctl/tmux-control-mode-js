@@ -381,6 +381,27 @@ export function createRendererBridge(
 // attachment-terminated state, not a control-flow guard.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Active-receiver registry — exactly one receiver per
+// `(ipcRenderer, paneId)` pair.
+//
+// Symmetric to the main-side `ACTIVE_PANE_SINK_ATTACHMENTS` in `main.ts`,
+// for the same reason: `paneEnd` carries only `paneId`, so a second
+// receiver for the same pair would either race the auto-detach (the
+// first to handle `paneEnd` tears every receiver down) or split the byte
+// stream across two sinks with no way to distinguish them. The
+// constructor refuses loudly.
+//
+// [LAW:single-enforcer] One constructor-time check, one registry, one API.
+// [LAW:no-shared-mutable-globals] WeakMap keyed by `ipcRenderer` so a
+// torn-down preload's slot is GC-eligible alongside it.
+// ---------------------------------------------------------------------------
+
+const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<
+  IpcRendererLike,
+  Set<number>
+>();
+
 /**
  * Subscribe to the pane-byte stream emitted by a main-side
  * `WebContentsSink` and forward each chunk into `sink`.
@@ -389,6 +410,17 @@ export function createRendererBridge(
  * envelope by `paneId`, and calls `sink.write(bytes)` / `sink.end?.()` for
  * matching frames. `Uint8Array` payloads survive Electron's structured
  * clone — the receiver does not copy.
+ *
+ * ## Exclusivity (one receiver per `(ipcRenderer, paneId)`)
+ *
+ * The wire envelope is `paneId`-scoped — there is no stream identifier.
+ * A second `createPaneBytesReceiver` for a pair that already has an
+ * active receiver throws
+ * `BridgeError("BRIDGE_PANE_SINK_ALREADY_ATTACHED")` rather than letting
+ * a future `paneEnd` race the auto-detach across two receivers. The slot
+ * is freed when the receiver detaches (either auto-detach on `paneEnd`
+ * or the caller's disposer). Renderers that want to "rotate" the sink
+ * for a pane MUST call the prior disposer first.
  *
  * ## Lifecycle
  *
@@ -401,13 +433,6 @@ export function createRendererBridge(
  *   want this anymore" signal, not a stream-terminated signal. Sinks
  *   that need to flush on local teardown should call their own `end()`
  *   from the caller's side.
- *
- * ## Typical pairing
- *
- * One receiver per `(ipcRenderer, paneId)` to match the natural
- * one-`WebContentsSink`-per-`(wc, paneId)` shape on main. Attaching two
- * receivers for the same paneId is well-defined (both `sink.write`s
- * fire), but rarely what's wanted.
  *
  * ## Sink contract
  *
@@ -425,11 +450,26 @@ export function createPaneBytesReceiver(
   paneId: number,
   sink: PaneByteSink,
 ): () => void {
+  let active = ACTIVE_PANE_BYTES_RECEIVERS.get(ipcRenderer);
+  if (active === undefined) {
+    active = new Set<number>();
+    ACTIVE_PANE_BYTES_RECEIVERS.set(ipcRenderer, active);
+  }
+  if (active.has(paneId)) {
+    throw new BridgeError(
+      "BRIDGE_PANE_SINK_ALREADY_ATTACHED",
+      `PaneBytesReceiver already attached for paneId=${paneId} on this ipcRenderer; dispose the prior attachment before constructing a new one`,
+    );
+  }
+  active.add(paneId);
+  const registrySet = active;
+
   let detached = false;
 
   const detach = (): void => {
     if (detached) return;
     detached = true;
+    registrySet.delete(paneId);
     ipcRenderer.removeListener(IPC.paneBytes, onBytes);
     ipcRenderer.removeListener(IPC.paneEnd, onEnd);
   };

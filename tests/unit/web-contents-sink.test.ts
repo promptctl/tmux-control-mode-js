@@ -34,6 +34,7 @@ import {
 } from "../../src/connectors/electron/main.js";
 import { createPaneBytesReceiver } from "../../src/connectors/electron/renderer.js";
 import {
+  BridgeError,
   IPC,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
@@ -167,6 +168,38 @@ describe("createWebContentsSink", () => {
       expect(env.paneId).toBe(99);
     }
   });
+
+  it("refuses a second concurrent sink for the same (wc, paneId)", () => {
+    // The wire envelope is paneId-scoped: a second sink for the same pair
+    // would let the first `paneEnd` to land tear down the other's
+    // receiver (orphaning byte flow). The constructor throws loudly
+    // instead of silently corrupting the stream.
+    const fake = createFakeWebContents();
+    createWebContentsSink(fake.wc, 11);
+
+    expect(() => createWebContentsSink(fake.wc, 11)).toThrow(BridgeError);
+    expect(() => createWebContentsSink(fake.wc, 11)).toThrow(
+      /BRIDGE_PANE_SINK_ALREADY_ATTACHED/,
+    );
+  });
+
+  it("frees the (wc, paneId) slot on end() so a rotated sink can attach", () => {
+    const fake = createFakeWebContents();
+    const first = createWebContentsSink(fake.wc, 12);
+
+    first.end?.();
+
+    // Slot is free — a second sink for the same pair must construct cleanly.
+    expect(() => createWebContentsSink(fake.wc, 12)).not.toThrow();
+  });
+
+  it("allows concurrent sinks for the same wc on different paneIds", () => {
+    const fake = createFakeWebContents();
+
+    expect(() => createWebContentsSink(fake.wc, 21)).not.toThrow();
+    expect(() => createWebContentsSink(fake.wc, 22)).not.toThrow();
+    expect(() => createWebContentsSink(fake.wc, 23)).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -280,6 +313,53 @@ describe("createPaneBytesReceiver", () => {
     expect(sink.endCalls).toBe(0);
     expect(sink.writes).toHaveLength(1);
     expect(Array.from(sink.writes[0])).toEqual([0x42]);
+  });
+
+  it("refuses a second concurrent receiver for the same (ipcRenderer, paneId)", () => {
+    // Symmetric to the main-side check: the wire's `paneEnd` is
+    // paneId-scoped, so two receivers for one pair would race the
+    // auto-detach. The second constructor throws.
+    const hub = createIpcHub();
+    const renderer = hub.createRenderer();
+    const sink = createRecordingSink();
+    createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink);
+
+    expect(() =>
+      createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink),
+    ).toThrow(BridgeError);
+    expect(() =>
+      createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink),
+    ).toThrow(/BRIDGE_PANE_SINK_ALREADY_ATTACHED/);
+  });
+
+  it("frees the (ipcRenderer, paneId) slot on disposer so a rotated receiver can attach", () => {
+    const hub = createIpcHub();
+    const renderer = hub.createRenderer();
+    const sink = createRecordingSink();
+    const dispose = createPaneBytesReceiver(
+      renderer.ipcRenderer,
+      31,
+      sink.sink,
+    );
+
+    dispose();
+
+    expect(() =>
+      createPaneBytesReceiver(renderer.ipcRenderer, 31, sink.sink),
+    ).not.toThrow();
+  });
+
+  it("frees the (ipcRenderer, paneId) slot on auto-detach (paneEnd)", () => {
+    const hub = createIpcHub();
+    const renderer = hub.createRenderer();
+    const sink = createRecordingSink();
+    createPaneBytesReceiver(renderer.ipcRenderer, 32, sink.sink);
+
+    renderer.sender.send(IPC.paneEnd, { paneId: 32 } satisfies PaneEndEnvelope);
+
+    expect(() =>
+      createPaneBytesReceiver(renderer.ipcRenderer, 32, sink.sink),
+    ).not.toThrow();
   });
 });
 

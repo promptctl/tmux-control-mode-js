@@ -610,6 +610,30 @@ function byteAccount(
 // invariant compensated for in the body.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Active-attachment registry — exactly one `WebContentsSink` per
+// `(wc, paneId)` pair.
+//
+// [LAW:single-enforcer] The wire envelope is `paneId`-scoped: there is no
+// stream identifier that would let the renderer-side receiver distinguish
+// "attachment A ended" from "attachment B ended" for the same pane. The
+// constructor refuses the second registration loudly instead of silently
+// corrupting byte flow on the first `paneEnd` to land.
+// [LAW:types-are-the-program] The illegal state ("two concurrent sinks for
+// one pair") is unrepresentable: the second `createWebContentsSink` call
+// throws before returning a value the caller could attach.
+// [LAW:no-shared-mutable-globals] Module-level WeakMap is the registry; the
+// constructor + `end()` are the explicit API. `WeakMap<WebContents, ...>`
+// means a destroyed `WebContents` is eligible for GC along with its
+// per-pane set, so the registry never leaks past the lifecycle of the
+// targets it tracks.
+// ---------------------------------------------------------------------------
+
+const ACTIVE_PANE_SINK_ATTACHMENTS = new WeakMap<
+  WebContentsLike,
+  Set<number>
+>();
+
 /**
  * Create a `PaneByteSink` that forwards pane bytes to a specific Electron
  * `WebContents` over IPC.
@@ -627,6 +651,22 @@ function byteAccount(
  * receiver uses this to detach its listeners; the sink has no further
  * obligation.
  *
+ * ## Exclusivity (one sink per `(wc, paneId)`)
+ *
+ * The wire envelope is `paneId`-scoped — there is no stream identifier.
+ * A second `createWebContentsSink(wc, paneId)` for a pair that already
+ * has an active sink throws `BridgeError("BRIDGE_PANE_SINK_ALREADY_ATTACHED")`
+ * rather than letting a future `paneEnd` race the lifecycle of two
+ * attachments. The slot is freed when `end()` runs (the library fires it
+ * exactly once per attachment, when the `attachPaneSink` disposer is
+ * invoked). Hosts that want to "rotate" the sink for a pane MUST dispose
+ * the prior attachment first.
+ *
+ * This is a tightening of the underlying `PaneByteSink` multi-attach
+ * contract: the library allows multiple sinks per pane in general, but
+ * the wire shape of *this* sink ties lifecycle to `paneId` alone, so
+ * the constraint is structurally enforced here.
+ *
  * ## Lifecycle
  *
  * The sink's `wc.isDestroyed()` guard is a trust-boundary check on
@@ -636,14 +676,6 @@ function byteAccount(
  * (a no-op `write` on a dead receiver, not a crash). The sink remains
  * attached; the host is expected to call the attach disposer when the
  * renderer goes away (typically from `wc.once('destroyed', ...)`).
- *
- * ## Typical pairing
- *
- * One `WebContentsSink` per `(wc, paneId)` attachment, paired with one
- * `createPaneBytesReceiver(ipcRenderer, paneId, ...)` on the renderer side.
- * `attachPaneSink` is callable multiple times for the same pane (the
- * library does not dedupe), but the natural mode is 1:1 — extra
- * attachments simply broadcast the same bytes more than once.
  *
  * ## Contract notes
  *
@@ -667,6 +699,22 @@ export function createWebContentsSink(
   wc: WebContentsLike,
   paneId: number,
 ): PaneByteSink {
+  let active = ACTIVE_PANE_SINK_ATTACHMENTS.get(wc);
+  if (active === undefined) {
+    active = new Set<number>();
+    ACTIVE_PANE_SINK_ATTACHMENTS.set(wc, active);
+  }
+  if (active.has(paneId)) {
+    throw new BridgeError(
+      "BRIDGE_PANE_SINK_ALREADY_ATTACHED",
+      `WebContentsSink already attached for paneId=${paneId} on this WebContents; dispose the prior attachment before constructing a new one`,
+    );
+  }
+  active.add(paneId);
+  // Capture the set in the closure so `end()` always operates on the same
+  // registry slot, even if the module-level WeakMap evolves elsewhere.
+  const registrySet = active;
+
   return {
     write(bytes): void {
       // [LAW:no-defensive-null-guards] `isDestroyed` is a trust-boundary
@@ -678,6 +726,13 @@ export function createWebContentsSink(
       wc.send(IPC.paneBytes, envelope);
     },
     end(): void {
+      // [LAW:one-source-of-truth] `end()` is the library's once-per-
+      // attachment terminator; freeing the registry slot here means a
+      // subsequent `createWebContentsSink(wc, paneId)` can succeed. The
+      // wire frame fires only when the WebContents is still alive — the
+      // registry slot is freed unconditionally so the destroyed-wc path
+      // still cleans up.
+      registrySet.delete(paneId);
       if (wc.isDestroyed()) return;
       const envelope: PaneEndEnvelope = { paneId };
       wc.send(IPC.paneEnd, envelope);
