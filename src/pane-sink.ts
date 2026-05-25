@@ -80,9 +80,20 @@ export interface PaneByteSink {
    * cross-chunk state (multi-byte UTF-8 sequences, ANSI escape sequences)
    * must carry it across calls themselves.
    *
-   * MUST NOT block. MUST NOT throw — a throwing sink will surface as an
-   * unhandled error on the next message in the parser loop and may detach
-   * silently from the perspective of other sinks attached to the same pane.
+   * MUST NOT block. MUST NOT throw — the library does not catch sink
+   * errors. A throwing sink propagates the exception synchronously up
+   * through the per-chunk dispatch loop, the parser's message callback,
+   * and into the transport's data handler; sinks dispatched later in the
+   * same chunk's snapshot will not receive that chunk, and the chunk's
+   * processing frame may be partially aborted. The throwing sink remains
+   * attached — there is no automatic detachment on error. If a sink needs
+   * to handle errors internally, wrap its own work in try/catch and surface
+   * the error through its own channel (a status callback, an event, etc.).
+   *
+   * Error isolation across sinks is intentionally out of scope for the
+   * foundation API; building it in would require the library to choose
+   * what to do with caught errors (log? event? rethrow async?) which is
+   * a downstream policy decision.
    */
   write(bytes: Uint8Array): void;
 
