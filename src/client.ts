@@ -419,13 +419,15 @@ export class TmuxClient {
       );
     }
 
-    // [LAW:dataflow-not-control-flow] Capture the per-chunk dispatch as a
-    //   single value BEFORE emit. The snapshot flows through this frame —
-    //   subsequent mutations to `paneSinks` (whether from an `output` event
-    //   handler attaching a new sink, or from inside a sink's own `write`
-    //   call disposing or attaching) cannot back-fill or skip the current
-    //   chunk. "Who sees this chunk" is fixed to who was attached when the
-    //   chunk arrived.
+    // Capture the per-chunk dispatch as a single value before sinks fire,
+    // and before emit runs.
+    //
+    // [LAW:dataflow-not-control-flow] The snapshot flows through this
+    //   frame — subsequent mutations to `paneSinks` (from a sink's own
+    //   `write` calling attach/dispose, or from an event handler doing
+    //   the same once emit runs) cannot back-fill or skip the current
+    //   chunk. "Who sees this chunk" is fixed to who was attached when
+    //   the chunk arrived.
     //
     //   `null` for: non-output messages AND output messages on panes with
     //   zero attached sinks. Both cases mean "no bytes to fan out," so
@@ -440,16 +442,22 @@ export class TmuxClient {
       this.paneSinks,
     );
 
-    // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages flow
-    // through the emitter regardless of type.
-    this.emitter.emit(msg);
-
-    // [LAW:single-enforcer] Sole dispatch site for pane-byte fan-out.
-    //   Iterates the pre-emit snapshot; the loop body is identical
-    //   regardless of how many sinks were attached.
+    // [LAW:single-enforcer] Sinks fire FIRST — they are the canonical
+    //   pane-byte subscription surface. The deprecated event-emitter path
+    //   (`client.on('output', …)`) is the senior surface in time only;
+    //   the sink path is the senior surface in primacy. Running dispatch
+    //   before emit makes sink delivery resilient to a throwing event
+    //   handler: the canonical path cannot be poisoned by a misbehaving
+    //   listener on the deprecated path.
     if (dispatch !== null) {
       for (const sink of dispatch.sinks) sink.write(dispatch.data);
     }
+
+    // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages
+    //   flow through the emitter regardless of type. A throwing listener
+    //   here propagates up through `handleMessage`; sinks have already
+    //   received this chunk by the time that can happen.
+    this.emitter.emit(msg);
   }
 }
 

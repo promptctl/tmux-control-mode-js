@@ -254,6 +254,28 @@ describe("TmuxClient.attachPaneSink", () => {
     ]);
   });
 
+  it("sink dispatch is resilient to a throwing deprecated 'output' event handler", () => {
+    // The canonical sink surface fires BEFORE the deprecated event-emitter
+    // path. A misbehaving `client.on('output', …)` listener that throws
+    // must not be able to poison the sink path — by the time the throw
+    // happens, sinks have already received this chunk.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const sink = createRecordingSink();
+    client.attachPaneSink(1, sink);
+    client.on("output", () => {
+      throw new Error("buggy handler");
+    });
+
+    expect(() => t.feed("%output %1 hello\n")).toThrow("buggy handler");
+    // The throw propagates from the deprecated path, but the sink got
+    // its chunk first.
+    expect(sink.chunks).toHaveLength(1);
+    expect(Array.from(sink.chunks[0])).toEqual([
+      ..."hello".split("").map((c) => c.charCodeAt(0)),
+    ]);
+  });
+
   it("attaching from inside a sink's own write() does not back-fill the current chunk", () => {
     // Same guarantee, different mutation source: a sink's `write` body
     // calls `attachPaneSink` for a sibling sink. The pre-emit snapshot
