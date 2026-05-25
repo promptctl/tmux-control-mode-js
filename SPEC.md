@@ -114,6 +114,21 @@ Lines are read using `EVBUFFER_EOL_LF` (LF-terminated, no CR stripping).
 
 **Source:** `control.c:557`
 
+#### 4.3.1 Library parser note: CRLF tolerance
+
+§4.3 above documents tmux's *input* side — what tmux reads from the client.
+The library's parser sits on tmux's *output* side and goes the opposite
+direction: `TmuxParser.feed()` (`src/protocol/parser.ts`) strips a trailing
+`\r` before each `\n`, so transports that introduce CRLF between tmux and
+the parser are tolerated and parse identically to LF-only ones.
+
+This is safe because tmux always octal-escapes literal control bytes in
+pane output (see [§10. Data Encoding](#10-data-encoding)) — any unescaped
+`\r` adjacent to LF must therefore be transport line-driver noise, not
+data. The behavior is library-side defensive code, not a tmux rule.
+SPEC_MANIFEST §3.1 carries the mirror statement on the inner-spec side.
+Resolves audit finding SPEC.md F6.
+
 ### 4.4 Bufferevent Error
 
 If the bufferevent encounters an I/O error, `control_error_callback()` sets
