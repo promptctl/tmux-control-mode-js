@@ -18,9 +18,11 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import type {
   ConnectionState,
+  PaneByteSink,
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
+import { PaneSinkRegistry } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
@@ -71,6 +73,12 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   private readonly subChangedSet = new Set<
     (ev: SubscriptionChangedMessage) => void
   >();
+  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation every
+  //   `TmuxClientLike` in the monorepo uses. `attachPaneSink` delegates to
+  //   it; the bridge.onEvent handler calls `paneSinks.dispatch(ev)` before
+  //   the per-type fan-out so canonical sink delivery is snapshot-protected
+  //   and isolated from throws in the per-type listener sets.
+  private readonly paneSinks = new PaneSinkRegistry();
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -78,6 +86,13 @@ export class BridgePaneStreamClient implements TmuxClientLike {
     // mount/unmount — the bridge subscription is stable for the adapter's
     // lifetime; the per-type sets grow/shrink as PaneStream instances attach.
     bridge.onEvent((ev) => {
+      // [LAW:single-enforcer] Sinks fire BEFORE the per-type listener
+      //   fan-out, matching `TmuxClient.handleMessage`. The registry's
+      //   per-chunk snapshot isolates the attachment set from re-entrant
+      //   attach/detach inside `sink.write`, and running it before the
+      //   per-type sets keeps canonical sink delivery resilient to throws
+      //   in any deprecated `on('output', …)` listener.
+      this.paneSinks.dispatch(ev);
       // [LAW:types-are-the-program] `ev` is the canonical `TmuxMessage`
       // discriminated union; narrowing on `ev.type` produces the exact
       // variant the per-type handler set expects, with no cast needed.
@@ -166,6 +181,14 @@ export class BridgePaneStreamClient implements TmuxClientLike {
 
   unsubscribe(name: string): Promise<CommandResponse> {
     return this.bridge.execute(`refresh-client -B ${tmuxEscape(name)}`);
+  }
+
+  // [LAW:locality-or-seam] Pane bytes fan out to sinks from the
+  //   `paneSinks.dispatch(ev)` call in the bridge.onEvent handler above —
+  //   the same shape as every other `TmuxClientLike` implementation.
+  //   `attachPaneSink` is the public entry into that registry.
+  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
+    return this.paneSinks.attach(paneId, sink);
   }
 }
 

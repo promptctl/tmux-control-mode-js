@@ -30,10 +30,10 @@ import type {
   PaneAction,
   TmuxMessage,
 } from "./protocol/types.js";
-import { emptyKeysResponse, isPaneOutput } from "./protocol/types.js";
+import { emptyKeysResponse } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
-import type { PaneByteSink } from "./pane-sink.js";
+import { PaneSinkRegistry, type PaneByteSink } from "./pane-sink.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
 
@@ -81,20 +81,16 @@ export class TmuxClient {
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
 
-  // [LAW:single-enforcer] Fan-out for pane bytes lives here, not in consumer
-  //   code. Without this, every multi-consumer codebase rebuilds its own
-  //   `MulticastSink` wrapper and the sink contract drifts caller-to-caller.
-  // [LAW:one-source-of-truth] Map<paneId, Map<token, sink>> is the sole
-  //   registry; `attachPaneSink` is the sole writer; the returned disposer
-  //   is the sole deleter. Per-attachment tokens (a fresh symbol per call)
-  //   keep each attachment independent — attaching the same sink twice
-  //   yields two distinct attachments with two independent disposers, so
-  //   `end?()` fires per-attachment, not per-sink-instance.
-  // [LAW:types-are-the-program] The token-keyed Map makes the
-  //   per-attachment lifecycle structural: there is no "is this sink already
-  //   attached" check anywhere, because there can't be — every attachment
-  //   has its own key by construction.
-  private readonly paneSinks = new Map<number, Map<symbol, PaneByteSink>>();
+  // [LAW:single-enforcer] Fan-out for pane bytes lives in `PaneSinkRegistry`
+  //   (see src/pane-sink.ts). The same registry implementation is owned by
+  //   every emitter-backed bridge (TmuxClientProxy, WebSocketTmuxClient,
+  //   BridgePaneStreamClient, FakeTmuxClient), so all `TmuxClientLike`
+  //   implementations enforce the same per-attachment lifecycle, pre-emit
+  //   snapshot, and throw-isolation from event-emitter listeners.
+  // [LAW:one-source-of-truth] `attachPaneSink` delegates to
+  //   `paneSinks.attach`; `handleMessage` delegates pane-byte dispatch to
+  //   `paneSinks.dispatch`. No second per-pane attachment state exists.
+  private readonly paneSinks = new PaneSinkRegistry();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -200,28 +196,7 @@ export class TmuxClient {
    * @see PaneByteSink for the contract sinks must satisfy.
    */
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    const token = Symbol("PaneByteSink");
-    let attachments = this.paneSinks.get(paneId);
-    if (attachments === undefined) {
-      attachments = new Map();
-      this.paneSinks.set(paneId, attachments);
-    }
-    attachments.set(token, sink);
-
-    // [LAW:dataflow-not-control-flow] Idempotency is structural — `delete`
-    //   returns `true` only on the first successful removal of the token,
-    //   so the boolean return value is the value that decides whether
-    //   `end?()` fires. No closure-scoped `disposed` flag is needed.
-    return () => {
-      const set = this.paneSinks.get(paneId);
-      if (set === undefined) return;
-      const removed = set.delete(token);
-      if (!removed) return;
-      if (set.size === 0) {
-        this.paneSinks.delete(paneId);
-      }
-      sink.end?.();
-    };
+    return this.paneSinks.attach(paneId, sink);
   }
 
   // ---------------------------------------------------------------------------
@@ -419,29 +394,6 @@ export class TmuxClient {
       );
     }
 
-    // Capture the per-chunk dispatch as a single value before sinks fire,
-    // and before emit runs.
-    //
-    // [LAW:dataflow-not-control-flow] The snapshot flows through this
-    //   frame — subsequent mutations to `paneSinks` (from a sink's own
-    //   `write` calling attach/dispose, or from an event handler doing
-    //   the same once emit runs) cannot back-fill or skip the current
-    //   chunk. "Who sees this chunk" is fixed to who was attached when
-    //   the chunk arrived.
-    //
-    //   `null` for: non-output messages AND output messages on panes with
-    //   zero attached sinks. Both cases mean "no bytes to fan out," so
-    //   they share the same shape and the hot path (no sinks attached
-    //   anywhere) pays zero per-message allocation.
-    //
-    // [LAW:types-are-the-program] the null|Some shape carries "this
-    //   message has bytes to fan out" as a value, not a re-checked
-    //   discriminator at the dispatch site.
-    const dispatch: PendingPaneDispatch = computePaneDispatch(
-      msg,
-      this.paneSinks,
-    );
-
     // [LAW:single-enforcer] Sinks fire FIRST — they are the canonical
     //   pane-byte subscription surface. The deprecated event-emitter path
     //   (`client.on('output', …)`) is the senior surface in time only;
@@ -449,9 +401,14 @@ export class TmuxClient {
     //   before emit makes sink delivery resilient to a throwing event
     //   handler: the canonical path cannot be poisoned by a misbehaving
     //   listener on the deprecated path.
-    if (dispatch !== null) {
-      for (const sink of dispatch.sinks) sink.write(dispatch.data);
-    }
+    //
+    // [LAW:dataflow-not-control-flow] `paneSinks.dispatch` internally
+    //   snapshots the per-chunk attachment set before iterating, so
+    //   mutations to `paneSinks` (a sink's `write` calling attach/dispose,
+    //   or an event handler doing the same once emit runs) cannot
+    //   back-fill or skip the current chunk. "Who sees this chunk" is
+    //   fixed to who was attached when the chunk arrived.
+    this.paneSinks.dispatch(msg);
 
     // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages
     //   flow through the emitter regardless of type. A throwing listener
@@ -459,25 +416,6 @@ export class TmuxClient {
     //   received this chunk by the time that can happen.
     this.emitter.emit(msg);
   }
-}
-
-type PendingPaneDispatch = {
-  readonly sinks: readonly PaneByteSink[];
-  readonly data: Uint8Array;
-} | null;
-
-// Hot-path snapshot helper. Returns `null` whenever there's nothing to
-// dispatch — either the message has no pane bytes, or the pane has no
-// attached sinks. Both arms reach the `null` arm of `PendingPaneDispatch`,
-// so the dispatch site doesn't care which case caused the skip.
-function computePaneDispatch(
-  msg: TmuxMessage,
-  paneSinks: ReadonlyMap<number, ReadonlyMap<symbol, PaneByteSink>>,
-): PendingPaneDispatch {
-  if (!isPaneOutput(msg)) return null;
-  const attachments = paneSinks.get(msg.paneId);
-  if (attachments === undefined || attachments.size === 0) return null;
-  return { sinks: Array.from(attachments.values()), data: msg.data };
 }
 
 // ---------------------------------------------------------------------------
@@ -495,6 +433,9 @@ function computePaneDispatch(
 //   they are a paired capability: a consumer that subscribes must be able to
 //   unsubscribe at dispose. Optionality on either method would force a runtime
 //   probe at every callsite; making them mandatory eliminates the probe.
+//   `attachPaneSink` is mandatory for the same reason — pane-byte consumption
+//   is the canonical surface, so every TmuxClient-shaped object must offer it
+//   and every consumer (PaneStream is the in-repo one) routes through it.
 //
 // Both bridge classes (`WebSocketTmuxClient`, `TmuxClientProxy`) declare
 // `implements TmuxClientLike` so the overload set on `on`/`off` is checked at
@@ -503,5 +444,11 @@ function computePaneDispatch(
 
 export type TmuxClientLike = Pick<
   TmuxClient,
-  "connectionState" | "on" | "off" | "execute" | "subscribeRaw" | "unsubscribe"
+  | "connectionState"
+  | "on"
+  | "off"
+  | "execute"
+  | "subscribeRaw"
+  | "unsubscribe"
+  | "attachPaneSink"
 >;
