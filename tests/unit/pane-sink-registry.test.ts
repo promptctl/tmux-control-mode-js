@@ -67,11 +67,13 @@ describe("PaneSinkRegistry.dispatch", () => {
     const a = recorder();
     const lateAttached = recorder();
 
-    // `a` attaches a SIBLING sink mid-dispatch. Per the contract, the
-    // sibling MUST NOT see the current chunk — the dispatch operates on a
-    // snapshot taken before iteration. This is the "no back-fill"
-    // invariant `TmuxClient.attachPaneSink` documents and that every
-    // bridge owning a `PaneSinkRegistry` inherits.
+    // `trigger`'s `write` attaches a SIBLING sink (`lateAttached`) mid-
+    // dispatch. Per the contract, the sibling MUST NOT see the current
+    // chunk — the dispatch operates on a snapshot taken before iteration.
+    // This is the "no back-fill" invariant `TmuxClient.attachPaneSink`
+    // documents and that every bridge owning a `PaneSinkRegistry` inherits.
+    // `a` is the second snapshotted sink and serves as the proof that the
+    // snapshot remains complete after the re-entrant `attach`.
     const trigger: PaneByteSink = {
       write(): void {
         reg.attach(1, lateAttached);
