@@ -168,9 +168,9 @@ export interface PaneByteSink {
 
 /**
  * Snapshot of "who sees this chunk" produced at chunk-arrival time. The
- * dispatch site iterates the snapshot, not the live attachment Set, so
- * sinks attached or detached mid-iteration cannot back-fill or skip the
- * current chunk.
+ * dispatch site iterates the snapshot, not the live per-pane attachments,
+ * so sinks attached or detached mid-iteration cannot back-fill or skip
+ * the current chunk.
  *
  * `null` covers both "message has no pane bytes" and "pane has no attached
  * sinks." The downstream dispatch site treats both the same.
