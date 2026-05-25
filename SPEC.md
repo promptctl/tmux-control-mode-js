@@ -288,6 +288,8 @@ Sent instead of `%output` when `pause-after` flag **is** set.
 
 **Source:** `control.c:621-623`, `tmux.1:7935-7944`
 
+**Library note (resolves audit finding SPEC.md F2):** The parsed `OutputMessage.data` and `ExtendedOutputMessage.data` fields are `Uint8Array` carrying the *decoded* bytes — not the raw octal-escaped wire string. The decoder also tolerates transport noise (literal control bytes, mid-escape `\r`, malformed escapes); see [§10.1 Decoder behavior (library)](#101-decoder-behavior-library).
+
 ---
 
 ### 7.2 Pane Flow Control
@@ -709,6 +711,29 @@ To decode: scan for `\` followed by exactly 3 octal digits, and replace with
 the corresponding byte value.
 
 **Source:** `control.c:631-642` (`control_append_data`)
+
+### 10.1 Decoder behavior (library)
+
+The "scan for `\` + 3 octal digits" instruction above is the rule for *clean*
+streams. The library's decoder (`src/protocol/decode.ts`, `decodeOctalEscapes`)
+applies three additional recovery rules so it stays byte-faithful to the
+canonical iTerm2 reference (`TmuxGateway -decodeEscapedOutput`) on noisy
+transports. These rules resolve audit finding SPEC.md F11:
+
+1. **Literal control-byte drop.** Any unescaped byte `< 0x20` in the stream is
+   dropped. tmux's encoding rule above guarantees real control output is
+   always octal-escaped, so any literal control byte must be transport
+   line-driver noise.
+2. **Mid-escape `\r` skip.** Stray `\r` bytes between the three octal digits
+   of an escape are skipped (line drivers can sprinkle CR between bytes of a
+   single emission). The escape itself still decodes to one byte.
+3. **Malformed-escape recovery.** A `\` not followed by three octal digits
+   decodes to `?` (0x3F); the non-digit byte is reconsidered as ordinary
+   input on the next pass.
+
+These corollaries follow from the encoding rule (which guarantees clean
+streams from tmux itself) plus the assumption that transports may introduce
+noise. They are not derivable from the encoding rule alone.
 
 ---
 
