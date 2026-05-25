@@ -84,11 +84,20 @@ export class TmuxClient {
   // [LAW:single-enforcer] Fan-out for pane bytes lives here, not in consumer
   //   code. Without this, every multi-consumer codebase rebuilds its own
   //   `MulticastSink` wrapper and the sink contract drifts caller-to-caller.
-  // [LAW:one-source-of-truth] Map+Set is the sole registry; `attachPaneSink`
-  //   is the sole writer; the returned disposer is the sole deleter. Iteration
-  //   order is insertion order (Set semantics in JS), which matches the
-  //   public contract that sinks see bytes in attachment order.
-  private readonly paneSinks = new Map<number, Set<PaneByteSink>>();
+  // [LAW:one-source-of-truth] Map<paneId, Map<token, sink>> is the sole
+  //   registry; `attachPaneSink` is the sole writer; the returned disposer
+  //   is the sole deleter. Per-attachment tokens (a fresh symbol per call)
+  //   keep each attachment independent — attaching the same sink twice
+  //   yields two distinct attachments with two independent disposers, so
+  //   `end?()` fires per-attachment, not per-sink-instance.
+  // [LAW:types-are-the-program] The token-keyed Map makes the
+  //   per-attachment lifecycle structural: there is no "is this sink already
+  //   attached" check anywhere, because there can't be — every attachment
+  //   has its own key by construction.
+  private readonly paneSinks = new Map<
+    number,
+    Map<symbol, PaneByteSink>
+  >();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -194,27 +203,25 @@ export class TmuxClient {
    * @see PaneByteSink for the contract sinks must satisfy.
    */
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    let sinks = this.paneSinks.get(paneId);
-    if (sinks === undefined) {
-      sinks = new Set();
-      this.paneSinks.set(paneId, sinks);
+    const token = Symbol("PaneByteSink");
+    let attachments = this.paneSinks.get(paneId);
+    if (attachments === undefined) {
+      attachments = new Map();
+      this.paneSinks.set(paneId, attachments);
     }
-    sinks.add(sink);
+    attachments.set(token, sink);
 
-    let disposed = false;
+    // [LAW:dataflow-not-control-flow] Idempotency is structural — `delete`
+    //   returns `true` only on the first successful removal of the token,
+    //   so the boolean return value is the value that decides whether
+    //   `end?()` fires. No closure-scoped `disposed` flag is needed.
     return () => {
-      // [LAW:dataflow-not-control-flow] Idempotency lives in a boolean flag,
-      // not in a "did this sink end already" check on the sink itself —
-      // the flag is the value that decides; the operations always run the
-      // same way against the registry.
-      if (disposed) return;
-      disposed = true;
       const set = this.paneSinks.get(paneId);
-      if (set !== undefined) {
-        set.delete(sink);
-        if (set.size === 0) {
-          this.paneSinks.delete(paneId);
-        }
+      if (set === undefined) return;
+      const removed = set.delete(token);
+      if (!removed) return;
+      if (set.size === 0) {
+        this.paneSinks.delete(paneId);
       }
       sink.end?.();
     };
@@ -433,9 +440,15 @@ export class TmuxClient {
   // have seen the preceding `%output`.
   private dispatchToPaneSinks(msg: TmuxMessage): void {
     if (!isPaneOutput(msg)) return;
-    const sinks = this.paneSinks.get(msg.paneId);
-    if (sinks === undefined) return;
-    for (const sink of sinks) sink.write(msg.data);
+    const attachments = this.paneSinks.get(msg.paneId);
+    if (attachments === undefined) return;
+    // Snapshot before iterating. Per-chunk dispatch membership is fixed to
+    // "what was attached when this chunk arrived" — a sink's `write` that
+    // calls `attachPaneSink` or its own disposer must not change who sees
+    // this chunk. Without the snapshot, JS Map iteration would expose
+    // mid-write registry mutations into the current loop, breaking the
+    // contract.
+    for (const sink of Array.from(attachments.values())) sink.write(msg.data);
   }
 }
 
