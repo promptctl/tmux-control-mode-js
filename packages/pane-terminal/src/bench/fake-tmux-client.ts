@@ -130,10 +130,11 @@ export class FakeTmuxClient {
   // fire — a behavior-correct no-op for any test that doesn't `inject*` them.
   //
   // The literal `'output'` / `'extended-output'` overloads carry the same
-  // `@deprecated` tag as `TmuxClient.on` so test code that uses the fake sees
-  // the same migration hint a production consumer would. [LAW:one-type-per-
-  // behavior] — the fake is one of many TmuxClientLike implementations; the
-  // deprecation surface is identical because the behavior is.
+  // `@deprecated` tag as `TmuxClient.on` so test code that uses the fake
+  // sees the same migration hint a production consumer would.
+  // [LAW:one-type-per-behavior] the fake is one of many TmuxClientLike
+  // implementations; the deprecation surface is identical because the
+  // behavior is.
   /**
    * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
    * Will be removed in the next minor.
