@@ -28,7 +28,7 @@ import type {
   PaneByteSink,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
-import { attachPaneSinkViaEmitter } from "@promptctl/tmux-control-mode-js";
+import { PaneSinkRegistry } from "@promptctl/tmux-control-mode-js";
 import type {
   OutputMessage,
   ExtendedOutputMessage,
@@ -85,6 +85,15 @@ export class FakeTmuxClient {
     FakeMessageType | "*",
     Set<Handler<FakeMessage>>
   >();
+
+  // [LAW:single-enforcer] Same `PaneSinkRegistry` every other
+  //   `TmuxClientLike` in the monorepo uses. `attachPaneSink` delegates to
+  //   it; `dispatch` calls `paneSinks.dispatch(msg)` before the per-type
+  //   listener fan-out so the fake's byte-sink path matches production
+  //   shape (pre-emit snapshot, throw-isolation from listener Set
+  //   iteration). Tests that script throws on `on('output', …)` listeners
+  //   would otherwise observe behavior the production bridges don't.
+  private readonly paneSinks = new PaneSinkRegistry();
 
   // Capture-pane invocation log + scriptable response handler. Gate 4
   // (re-mount on same stream → exactly 1 capture) reads this counter; future
@@ -189,16 +198,13 @@ export class FakeTmuxClient {
     return this.resolveAck();
   }
 
-  // [LAW:locality-or-seam] The fake dispatches injected `output` /
-  //   `extended-output` messages through its listener registry; the registry
-  //   IS the byte fan-out point. `attachPaneSinkViaEmitter` wires that
-  //   emitter shape onto the `PaneByteSink` seam — identical shape to every
-  //   other emitter-backed bridge.
-  // [LAW:single-enforcer] The shared library helper does the bookkeeping;
-  //   the fake never grows a private per-pane sink registry that could drift
-  //   from the production bridges' semantics.
+  // [LAW:locality-or-seam] Pane bytes fan out to sinks from
+  //   `paneSinks.dispatch(msg)` inside the fake's internal `dispatch`
+  //   path (see below) — the same shape as every other
+  //   `TmuxClientLike` implementation. `attachPaneSink` is the public
+  //   entry into that registry.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return attachPaneSinkViaEmitter(this, paneId, sink);
+    return this.paneSinks.attach(paneId, sink);
   }
 
   close(): void {
@@ -296,6 +302,24 @@ export class FakeTmuxClient {
   // -------------------------------------------------------------------------
 
   private dispatch(msg: FakeMessage): void {
+    // [LAW:single-enforcer] Sinks fire BEFORE the per-type listener
+    //   fan-out, matching `TmuxClient.handleMessage` and every bridge.
+    //   The registry's pre-emit snapshot isolates the per-chunk
+    //   attachment set from re-entrant attach/detach inside `sink.write`,
+    //   and running before `listeners` keeps canonical sink delivery
+    //   resilient to throws in deprecated `on('output', …)` listeners.
+    //
+    // [LAW:types-are-the-program] Narrow to the pane-byte variants
+    //   before handing off — `FakeOutputMessage` / `FakeExtendedOutputMessage`
+    //   ARE `OutputMessage` / `ExtendedOutputMessage` (see the type
+    //   aliases above), so the narrowed value is a structural
+    //   `TmuxMessage` with no cast. Fake-only variants
+    //   (`FakeConnectionStateMessage`, `FakeReconnectedMessage`) never
+    //   reach `dispatch`, which is correct — the registry would no-op on
+    //   them anyway.
+    if (msg.type === "output" || msg.type === "extended-output") {
+      this.paneSinks.dispatch(msg);
+    }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
     this.listeners.get("*")?.forEach((h) => h(msg));
   }

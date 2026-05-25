@@ -24,10 +24,7 @@ import {
   type TmuxEventMap,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import {
-  attachPaneSinkViaEmitter,
-  type PaneByteSink,
-} from "../../pane-sink.js";
+import { PaneSinkRegistry, type PaneByteSink } from "../../pane-sink.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   asPaneOutput,
@@ -84,6 +81,13 @@ import {
 export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
+  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation as
+  //   `TmuxClient`. `attachPaneSink` delegates to it; the inbound IPC
+  //   event handler calls `paneSinks.dispatch(msg)` before `emit(msg)` so
+  //   canonical sink delivery (a) sees a per-chunk attachment snapshot
+  //   and (b) is isolated from throwing `on('output', …)` listeners on the
+  //   deprecated event surface.
+  private readonly paneSinks = new PaneSinkRegistry();
   private readonly eventHandler: IpcRendererOnListener;
   private readonly ackBatchBytes: number;
   /**
@@ -137,6 +141,13 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
       // [LAW:single-enforcer] discriminator lives in src/emitter.ts.
       if (isTmuxMessage(msg)) {
         this.account(msg);
+        // [LAW:single-enforcer] Sinks fire BEFORE emit, exactly as in
+        //   `TmuxClient.handleMessage`. The registry's internal snapshot
+        //   isolates the per-chunk attachment set from re-entrant attach/
+        //   detach inside a sink's `write`, and running it before emit
+        //   keeps canonical sink delivery resilient to throws on the
+        //   deprecated `on('output', …)` event path.
+        this.paneSinks.dispatch(msg);
       }
       this.emitter.emit(msg);
     };
@@ -240,22 +251,19 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     return this.invoke({ method: "queryClipboard", args: [] });
   }
 
-  // [LAW:locality-or-seam] The proxy receives parsed `output` /
-  //   `extended-output` events from main over IPC; its emitter is the
-  //   byte fan-out point. `attachPaneSinkViaEmitter` is the canonical adapter
-  //   from that emitter onto the `PaneByteSink` seam — the same one used by
-  //   every other bridge-shaped client (WebSocketTmuxClient,
-  //   BridgePaneStreamClient, FakeTmuxClient).
-  // [LAW:single-enforcer] One implementation across all emitter-backed
-  //   clients — the proxy does not maintain a parallel paneSink registry.
+  // [LAW:locality-or-seam] The proxy receives parsed pane-output messages
+  //   from main over IPC. `paneSinks.dispatch(msg)` (called from the
+  //   eventHandler above) is where bytes fan out to sinks — same shape as
+  //   `TmuxClient.handleMessage`. `attachPaneSink` is the public entry
+  //   into that registry.
   //
-  // Note: this routes through the proxy's per-event emitter, not through the
-  // `createPaneBytesReceiver` (paneBytes IPC channel) path. The latter is
-  // driven by a main-side `attachWebContentsSink` call and is a separate
-  // opt-in optimization that bypasses the regular event channel; it is the
-  // renderer-side counterpart of `WebContentsSink`, not of `attachPaneSink`.
+  // Note: this is independent of the `createPaneBytesReceiver` /
+  // `attachWebContentsSink` pair (driven by IPC.paneBytes), which is a
+  // separate opt-in optimization that bypasses the regular event channel.
+  // That pair is the renderer-side counterpart of `WebContentsSink`,
+  // NOT of `attachPaneSink`.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return attachPaneSinkViaEmitter(this, paneId, sink);
+    return this.paneSinks.attach(paneId, sink);
   }
 
   /**

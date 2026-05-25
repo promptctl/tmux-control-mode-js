@@ -161,8 +161,13 @@ export class PaneStream implements ReseedTarget {
   private readonly activityListeners = new Set<Listener<"activity-changed">>();
   private readonly reconnectedListeners = new Set<Listener<"reconnected">>();
 
-  // Pre-bound handlers so the [HOT-PATH] byte callback never allocates a
-  // closure per byte and so off() can find the same reference we used for on().
+  // Pre-bound handlers for the non-byte events PaneStream still consumes
+  // from the emitter (`reconnected`, `subscription-changed`) and for the
+  // throttled activity flush. Each is allocated once at construction so
+  // `client.off(...)` can find the same reference at dispose. None of these
+  // are on the [HOT-PATH] — the per-byte path lives in the `PaneByteSink`
+  // attached via `client.attachPaneSink(...)`, whose `write` closure is
+  // also allocated once (in the constructor's `paneSink` literal below).
   private readonly onReconnected: (ev: TmuxEventMap["reconnected"]) => void;
   private readonly boundFlushActivity: () => void;
   private readonly onSubscriptionChanged: (

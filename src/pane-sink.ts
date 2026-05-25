@@ -19,7 +19,7 @@
 // (TmuxClient) and any consumer. Consumers depend only on `PaneByteSink`,
 // never on TmuxClient's emitter shape for pane bytes.
 
-import type { TmuxEventMap } from "./emitter.js";
+import { isPaneOutput, type TmuxMessage } from "./protocol/types.js";
 
 /**
  * Sink for pane bytes.
@@ -125,89 +125,138 @@ export interface PaneByteSink {
 }
 
 // ---------------------------------------------------------------------------
-// attachPaneSinkViaEmitter — bridge-class implementation primitive
+// PaneSinkRegistry — the canonical attachPaneSink implementation
 //
-// `TmuxClient` dispatches bytes directly from its parser into a per-pane
-// registry (sinks fire *before* `emit('output', …)`). Bridge classes —
-// `TmuxClientProxy`, `WebSocketTmuxClient`, `BridgePaneStreamClient`, and the
-// in-tree `FakeTmuxClient` — receive *already-parsed* `output` /
-// `extended-output` events over their wire and dispatch them through an
-// internal `TypedEmitter`. For those classes the emitter IS the byte fan-out
-// point, so their `attachPaneSink` implementation is structurally an
-// emitter-filter that satisfies the same per-attachment contract.
+// `TmuxClient` runs the parser itself and dispatches byte chunks directly
+// from `handleMessage` into a per-pane registry, sinks-first, with a
+// pre-emit snapshot of the per-chunk attachment set. Bridge classes
+// (`TmuxClientProxy`, `WebSocketTmuxClient`, `BridgePaneStreamClient`,
+// `FakeTmuxClient`) receive already-parsed `output` / `extended-output`
+// messages over their wire, but they need the SAME guarantees the canonical
+// surface provides:
 //
-// [LAW:single-enforcer] One implementation shared by every emitter-backed
-//   bridge. The semantics — per-attachment independence, idempotent disposer,
-//   single `end()` invocation — match `TmuxClient.attachPaneSink` at the
-//   per-call boundary so downstream consumers (PaneStream) cannot observe
-//   which backing the client uses.
-// [LAW:locality-or-seam] The seam is the `PaneByteSink` contract. This helper
-//   is the adapter between that contract and the legacy event-emitter surface
-//   bridges use to receive bytes. Bridge consumers compose the sink; the
-//   emitter is an implementation detail behind this seam.
-// [LAW:dataflow-not-control-flow] Both handlers run every chunk. The paneId
-//   check is data filtering, not control flow that skips the operation —
-//   the operation (filter and conditionally forward) executes uniformly on
-//   every byte event.
+//   1. **Pre-emit snapshot** ("no back-fill"): who sees a chunk is fixed at
+//      chunk-arrival time. Attaching a sink from inside an `output` handler
+//      must NOT cause the new sink to receive the current chunk.
+//   2. **Throw-isolation from emit listeners**: sinks fire BEFORE `emit`, so
+//      a throwing `client.on('output', …)` listener on the deprecated event
+//      surface cannot prevent canonical sink delivery for the same chunk.
+//   3. **Per-attachment lifecycle**: each `attach(...)` call yields an
+//      independent token-keyed entry with its own disposer; `end?()` fires
+//      once per disposer invocation.
+//
+// `PaneSinkRegistry` is the single piece of code that encodes those
+// semantics. Every `TmuxClientLike` implementation owns one and calls
+// `registry.dispatch(msg)` from its message-receive path BEFORE `emit(msg)`.
+//
+// [LAW:single-enforcer] One implementation across every TmuxClientLike. The
+//   bridges do not each re-implement the snapshot dance or the per-attachment
+//   bookkeeping — that would let them drift apart from `TmuxClient` and
+//   from each other.
+// [LAW:one-source-of-truth] The registry IS the per-pane attachment state.
+//   `attach` is the sole writer; the returned disposer is the sole deleter;
+//   `dispatch` is the sole reader.
+// [LAW:locality-or-seam] The PaneByteSink contract is the seam. The fact
+//   that bridges deliver bytes via parsed `output` messages while TmuxClient
+//   delivers them directly from the parser is hidden behind the registry —
+//   consumers (PaneStream is the in-repo one) cannot observe which backing
+//   the client uses.
+// [LAW:types-are-the-program] The token-keyed Map makes per-attachment
+//   identity structural: there is no "is this sink already attached" check
+//   anywhere, because every attachment has its own key by construction.
 // ---------------------------------------------------------------------------
 
 /**
- * The minimum emitter shape `attachPaneSinkViaEmitter` consumes: typed
- * `on`/`off` for `output` and `extended-output`. Every `TmuxClientLike`
- * implementation in the monorepo already satisfies this — the helper does
- * not constrain the rest of the client surface.
+ * Snapshot of "who sees this chunk" produced at chunk-arrival time. The
+ * dispatch site iterates the snapshot, not the live attachment Set, so
+ * sinks attached or detached mid-iteration cannot back-fill or skip the
+ * current chunk.
+ *
+ * `null` covers both "message has no pane bytes" and "pane has no attached
+ * sinks." The downstream dispatch site treats both the same.
  */
-export interface PaneByteEmitter {
-  on<K extends "output" | "extended-output">(
-    event: K,
-    handler: (ev: TmuxEventMap[K]) => void,
-  ): void;
-  off<K extends "output" | "extended-output">(
-    event: K,
-    handler: (ev: TmuxEventMap[K]) => void,
-  ): void;
-}
+type PaneDispatchSnapshot = {
+  readonly sinks: readonly PaneByteSink[];
+  readonly data: Uint8Array;
+} | null;
 
 /**
- * Wire a `PaneByteSink` to a bridge-class emitter that already dispatches
- * pre-parsed `output` / `extended-output` events. Registers two filtered
- * handlers and returns an idempotent disposer that removes them and invokes
- * `sink.end?.()` exactly once.
+ * Per-pane registry of `PaneByteSink` attachments + the dispatch primitive
+ * every `TmuxClientLike` implementation uses to deliver bytes into them.
  *
- * Use this from a bridge class's `attachPaneSink` implementation; the result
- * is structurally identical (from any caller's perspective) to
- * `TmuxClient.attachPaneSink`, which is registry-backed because TmuxClient
- * runs the parser itself.
- *
- * Per-attachment lifecycle: every call yields fresh handlers and an
- * independent disposer. Attaching the same sink instance N times to the
- * same pane registers 2N handlers (one `output` + one `extended-output` per
- * attachment) and yields N disposers; each disposer ends only its own
- * attachment, and `sink.end?.()` fires once per disposer call.
+ * Owners construct one instance, hold it for the lifetime of the client,
+ * and:
+ *  - delegate `attachPaneSink(paneId, sink)` to `registry.attach(paneId, sink)`
+ *  - call `registry.dispatch(msg)` from their message-receive path BEFORE
+ *    invoking the deprecated `emit(msg)` event surface — so canonical sink
+ *    delivery is isolated from throwing `client.on('output', …)` listeners.
  */
-export function attachPaneSinkViaEmitter(
-  client: PaneByteEmitter,
-  paneId: number,
-  sink: PaneByteSink,
-): () => void {
-  const onOutput = (ev: TmuxEventMap["output"]): void => {
-    if (ev.paneId === paneId) sink.write(ev.data);
-  };
-  const onExtendedOutput = (ev: TmuxEventMap["extended-output"]): void => {
-    if (ev.paneId === paneId) sink.write(ev.data);
-  };
-  client.on("output", onOutput);
-  client.on("extended-output", onExtendedOutput);
+export class PaneSinkRegistry {
+  // [LAW:one-source-of-truth] Sole attachment state. `attach` writes; the
+  //   per-attachment disposer deletes; `dispatch` reads. No mutation outside
+  //   these three methods.
+  private readonly attachments = new Map<number, Map<symbol, PaneByteSink>>();
 
-  // [LAW:dataflow-not-control-flow] Idempotency carried as a value (`disposed`)
-  //   instead of branching on whether to re-execute. The second invocation
-  //   runs the same closure and returns at the data-driven early exit.
-  let disposed = false;
-  return () => {
-    if (disposed) return;
-    disposed = true;
-    client.off("output", onOutput);
-    client.off("extended-output", onExtendedOutput);
-    sink.end?.();
-  };
+  /**
+   * Attach a sink to receive bytes for one pane. See the `PaneByteSink`
+   * JSDoc above for the per-attachment lifecycle.
+   *
+   * The returned disposer is idempotent — calling it a second time is a
+   * no-op (returns without re-invoking `sink.end?.()`). The token-keyed
+   * Map structurally guarantees that every attach call yields an
+   * independent entry even when the same sink instance is passed twice.
+   */
+  attach(paneId: number, sink: PaneByteSink): () => void {
+    const token = Symbol("PaneByteSink");
+    let perPane = this.attachments.get(paneId);
+    if (perPane === undefined) {
+      perPane = new Map();
+      this.attachments.set(paneId, perPane);
+    }
+    perPane.set(token, sink);
+
+    // [LAW:dataflow-not-control-flow] Idempotency is structural — `delete`
+    //   returns `true` only on the first successful removal of the token,
+    //   so its return value decides whether `end?()` fires. No closure-
+    //   scoped `disposed` flag is needed.
+    return () => {
+      const set = this.attachments.get(paneId);
+      if (set === undefined) return;
+      const removed = set.delete(token);
+      if (!removed) return;
+      if (set.size === 0) {
+        this.attachments.delete(paneId);
+      }
+      sink.end?.();
+    };
+  }
+
+  /**
+   * Snapshot-and-fan-out for one parsed `TmuxMessage`. Callers invoke this
+   * from their message-receive path BEFORE `emit(msg)` so the canonical
+   * sink path is delivered first and isolated from event-listener throws.
+   *
+   * Non-pane-output messages and panes with zero attached sinks are
+   * cheap no-ops (one Map lookup, one early-return — no allocation).
+   */
+  dispatch(msg: TmuxMessage): void {
+    const snapshot = this.computeSnapshot(msg);
+    if (snapshot === null) return;
+    // [LAW:dataflow-not-control-flow] Iterate the snapshot array, not the
+    //   live Set. Mutations to `this.attachments` from a sink's own `write`
+    //   (e.g. a sink calling `attach` or invoking a sibling's disposer)
+    //   cannot back-fill or skip the current chunk.
+    for (const sink of snapshot.sinks) sink.write(snapshot.data);
+  }
+
+  // [LAW:single-enforcer] Sole reader of the per-pane Set's *iteration
+  //   order*. Materializing the iterable here, once, is what makes the
+  //   dispatch above robust to re-entrant attach/detach inside a sink's
+  //   `write` call.
+  private computeSnapshot(msg: TmuxMessage): PaneDispatchSnapshot {
+    if (!isPaneOutput(msg)) return null;
+    const perPane = this.attachments.get(msg.paneId);
+    if (perPane === undefined || perPane.size === 0) return null;
+    return { sinks: Array.from(perPane.values()), data: msg.data };
+  }
 }
