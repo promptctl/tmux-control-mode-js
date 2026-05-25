@@ -63,13 +63,16 @@ export type BridgeErrorCode =
   /** createMainBridge called twice on the same ipcMain. */
   | "BRIDGE_ALREADY_REGISTERED"
   /**
-   * A second `attachWebContentsSink` (or `createPaneBytesReceiver`) was
-   * constructed for a `(target, paneId)` pair that already has an active
-   * attachment. The wire envelope is `paneId`-scoped: the first `paneEnd`
-   * frame to arrive would orphan every concurrent attachment on the same
-   * pair, so the factory refuses the second registration loudly instead
-   * of silently corrupting byte flow. Drop the prior attachment (call
-   * its disposer) before constructing a new one.
+   * A second `attachWebContentsSink`, `createPaneBytesReceiver`, or
+   * `attachWebSocketSink` was constructed for a `(target, paneId)` pair
+   * that already has an active attachment. Every wire envelope here is
+   * `paneId`-scoped — for the Electron path a second attachment would race
+   * the first `paneEnd` frame to land and orphan concurrent receivers; for
+   * the WebSocket path a second attachment would broadcast the same chunk
+   * twice on a wire the browser-side decoder routes by paneId alone.
+   * Either way the factory refuses the second registration loudly instead
+   * of silently corrupting byte flow. Drop the prior attachment (call its
+   * disposer) before constructing a new one.
    */
   | "BRIDGE_PANE_SINK_ALREADY_ATTACHED"
   /** Renderer attempted to unsubscribe a name it does not own. */
