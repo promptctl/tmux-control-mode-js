@@ -59,6 +59,26 @@ repository (version next-3.7, commit 5c30b145).
   `tcsetattr()`
   - `client.c:438-441`
 
+### 2.1 spawnTmux refusal (library)
+
+The raw-mode configuration above is what tmux *applies* at `-CC` startup.
+To do so, tmux first calls `tcgetattr(stdin)` (`tmux.c:343-362`) to capture
+the current terminal attributes — which fails unless stdin is a tty (a
+PTY is the typical kind; a real terminal device also qualifies). The
+library's default transport `spawnTmux` (`src/transport/spawn.ts`) uses
+`child_process.spawn`, which supplies pipe stdio rather than a tty, so it
+cannot host `-CC`. `spawnTmux` short-circuits this by throwing
+synchronously when constructed with `controlControl: true`, refusing the
+configuration before tmux is launched. This resolves audit finding
+MANIFEST F10.
+
+This is not a missing library feature — it is a fundamental incompatibility
+between piped stdio and tmux's `-CC` startup contract. Consumers that need
+`-CC` framing must supply a PTY-backed `TmuxTransport`; consumers that
+just need control-mode protocol should use `-C` (it carries the identical
+protocol minus the DCS framing). SPEC.md §12.1 carries the mirror
+statement on the library-spec side.
+
 ---
 
 ## 3. Command Input Protocol
