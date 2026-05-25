@@ -11,7 +11,9 @@
 // assertion on the source is equivalent to an assertion on the emitted
 // declarations for this property. Scanning source keeps the test self-
 // contained (no `pnpm run build` precondition) and matches the repo's
-// existing law-marker auditing pattern (`grep -n "[LAW:" src/`).
+// existing law-marker auditing pattern (`grep -rn '\[LAW:' src/` — the
+// `\[` escape is important because BRE treats `[` as a character-class
+// opener).
 //
 // [LAW:single-enforcer] One test owns this assertion across every
 // TmuxClient-shaped class. A new bridge class with an `on` overload that
