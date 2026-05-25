@@ -126,8 +126,9 @@ const ACTIVE_WEBSOCKET_SINKS = new WeakMap<WebSocketSinkTarget, Set<number>>();
  * defined behavior in some implementations and throws in others; the
  * guard makes the outcome consistent (a no-op `write` on a dead
  * receiver). The `try/catch` covers the TOCTOU window between the
- * readyState read and the send — Electron's `WebContents` has the same
- * race, mitigated the same way in the bridge's `wsSend` chokepoint.
+ * readyState read and the send — the same mitigation the WS bridge
+ * applies inside its `wsSend` chokepoint (`./server.ts`) for its own
+ * fan-out path.
  *
  * There is no wire-level `paneEnd` frame in the WS protocol (the bridge
  * surfaces pane teardown via the JSON event channel, e.g.
