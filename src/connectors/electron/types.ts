@@ -49,9 +49,9 @@ export const IPC = {
    */
   paneBytes: "tmux:pane-bytes",
   /**
-   * main → renderer: terminator for a `WebContentsSink` attachment. Fired
-   * once when the disposer returned from `attachPaneSink` runs. Payload is
-   * `PaneEndEnvelope`. The renderer-side receiver auto-detaches on this
+   * main → renderer: terminator for an `attachWebContentsSink` attachment.
+   * Fired once when the disposer returned from that factory runs. Payload
+   * is `PaneEndEnvelope`. The renderer-side receiver auto-detaches on this
    * frame — no further `paneBytes` will arrive for the (sink, paneId)
    * attachment that emitted it.
    */
@@ -195,7 +195,7 @@ export interface AckMessage {
 // Main → renderer: WebContentsSink envelopes.
 //
 // [LAW:one-source-of-truth] One declaration for each envelope shape; both
-// `createWebContentsSink` (main.ts) and `createPaneBytesReceiver` (renderer.ts)
+// `attachWebContentsSink` (main.ts) and `createPaneBytesReceiver` (renderer.ts)
 // import it so the wire shape cannot drift across the IPC hop.
 // [LAW:types-are-the-program] The envelope is the seam type that carries
 // `(paneId, bytes)` end-to-end. Holding a `Uint8Array` on the renderer is
