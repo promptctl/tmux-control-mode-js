@@ -251,10 +251,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
    * authors. The `'output'` event continues to fire and will be removed in
    * the next minor.
    */
-  on(
-    event: "output",
-    handler: (ev: TmuxEventMap["output"]) => void,
-  ): void;
+  on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
   /**
    * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
    * Will be removed in the next minor.
@@ -276,10 +273,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
    * @deprecated Use the disposer returned by `attachPaneSink` to detach a
    * pane-byte consumer. Will be removed in the next minor.
    */
-  off(
-    event: "output",
-    handler: (ev: TmuxEventMap["output"]) => void,
-  ): void;
+  off(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
   /**
    * @deprecated Use the disposer returned by `attachPaneSink` to detach a
    * pane-byte consumer. Will be removed in the next minor.
