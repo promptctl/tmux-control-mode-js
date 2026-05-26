@@ -94,7 +94,11 @@ type AnyHandler = (event: never) => void;
  *
  * Type-safe: `on("window-add", handler)` gives autocomplete on event names
  * and infers the handler argument type. Wildcard `"*"` listeners receive
- * all events as the `TmuxMessage` union.
+ * the `EmitterMessage` union — every non-byte tmux message plus the
+ * synthetic lifecycle events (`connection-state`, `reconnected`). Pane-
+ * byte messages (`OutputMessage` / `ExtendedOutputMessage`) are NOT
+ * deliverable through any emitter overload; they flow through
+ * `attachPaneSink` / `attachAllPanesSink` on `TmuxClient`.
  */
 export class TypedEmitter {
   private readonly handlers = new Map<string, Set<AnyHandler>>();
