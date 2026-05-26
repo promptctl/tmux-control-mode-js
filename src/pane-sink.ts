@@ -166,9 +166,12 @@ export interface PaneByteSink {
  *   the multiplexer's responsibility to flush any per-pane state it
  *   accumulated. The library does not call `end` per pane (there is no
  *   reliable pane-close signal in tmux's control protocol).
- * - `write` MUST NOT throw — same rule as `PaneByteSink.write`. A throwing
- *   multiplexer poisons the chunk's dispatch frame for sinks attached after
- *   it in iteration order.
+ * - `write` MUST NOT throw — same rule as `PaneByteSink.write`. Dispatch
+ *   iterates per-pane sinks BEFORE multiplexers (visible renderers are
+ *   senior to forwarders by intent), so a throwing multiplexer cannot
+ *   poison per-pane sinks — they have already received this chunk by the
+ *   time the multiplexer runs. A throwing multiplexer DOES prevent later
+ *   multiplexers in the same dispatch frame from receiving the chunk.
  */
 export interface PaneByteMultiplexer {
   write(msg: PaneOutputMessage): void;
@@ -321,14 +324,23 @@ export class PaneSinkRegistry {
   }
 
   /**
-   * Snapshot-and-fan-out for one parsed `PaneOutputMessage`. Owners invoke
-   * this from their message-receive path for every byte message. The
-   * accompanying emitter path MUST NOT also receive the message — the
-   * `EmitterMessage` type excludes `PaneOutputMessage` so any attempt to
-   * `emit` a byte message is a compile error.
+   * Snapshot-and-fan-out for one parsed `TmuxMessage`. The registry owns
+   * the discriminator: a non-byte message is silently ignored (one
+   * `isPaneOutput` check, one early-return — no allocation), so owners
+   * MAY pass every parsed message they receive without filtering at the
+   * callsite. [LAW:single-enforcer] the byte-vs-not check lives here so
+   * every owner (`TmuxClient`, `WebSocketTmuxClient`, `TmuxClientProxy`,
+   * `FakeTmuxClient`, the demo bridge) routes the same shape through
+   * the same predicate.
    *
-   * Non-pane-output messages and panes with zero attached consumers are
-   * cheap no-ops (one Map lookup, one early-return — no allocation).
+   * The accompanying emitter path MUST NOT also receive byte messages —
+   * the `EmitterMessage` type excludes `PaneOutputMessage` so any attempt
+   * to `emit` a byte message is a compile error. Owners typically wrap
+   * their dispatch in `if (isPaneOutput(msg)) { registry.dispatch(msg);
+   * return; }` so the same discriminator narrows the emit branch too.
+   *
+   * Panes with zero attached consumers are also cheap no-ops (one Map
+   * lookup + boolean check, no allocation).
    */
   dispatch(msg: TmuxMessage): void {
     const snapshot = this.computeSnapshot(msg);
