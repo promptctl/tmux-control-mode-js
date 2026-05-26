@@ -475,7 +475,9 @@ describe("Electron IPC bridge — event forwarding", () => {
     const received: Uint8Array[] = [];
     proxy.attachPaneSink(2, {
       write(bytes) {
-        received.push(bytes);
+        // Per the PaneByteSink contract, `bytes` is owned by the library
+        // and not retained past the synchronous call — copy before storing.
+        received.push(bytes.slice());
       },
     });
 
@@ -1009,7 +1011,9 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     const received: Uint8Array[] = [];
     proxy.attachPaneSink(1, {
       write(bytes) {
-        received.push(bytes);
+        // Per the PaneByteSink contract, `bytes` is owned by the library
+        // and not retained past the synchronous call — copy before storing.
+        received.push(bytes.slice());
       },
     });
 
