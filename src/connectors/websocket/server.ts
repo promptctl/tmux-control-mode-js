@@ -31,12 +31,16 @@
 // down. Every error path funnels through it.
 
 import type { TmuxClient } from "../../client.js";
-import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
-import { TmuxCommandError } from "../../errors.js";
 import {
-  isPaneOutput,
-  type CommandResponse,
-  type TmuxMessage,
+  isTmuxMessage,
+  type EmitterMessage,
+  type EmitterTmuxMessage,
+} from "../../emitter.js";
+import { TmuxCommandError } from "../../errors.js";
+import type { PaneByteMultiplexer } from "../../pane-sink.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
 } from "../../protocol/types.js";
 
 import {
@@ -310,6 +314,11 @@ class Connection {
   private readonly rateWindow: number[] = [];
 
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
+  private readonly byteForwarder: PaneByteMultiplexer;
+  // Disposer for `client.attachAllPanesSink(this.byteForwarder)`, populated
+  // on hello (alongside `client.on('*', this.onAnyEventRef)`) and cleared
+  // in finalize. Mirrors the off-pair for the state channel.
+  private detachByteForwarder: (() => void) | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongDeadline: ReturnType<typeof setTimeout> | null = null;
   private helloDeadline: ReturnType<typeof setTimeout> | null = null;
@@ -330,6 +339,13 @@ class Connection {
     // connection-state via the welcome handshake.
     this.onAnyEventRef = (msg: EmitterMessage): void => {
       if (isTmuxMessage(msg)) this.onTmuxEvent(msg);
+    };
+    // [LAW:single-enforcer] Byte channel is multiplexer-shaped; the bridge
+    //   attaches one all-panes sink instead of inspecting every wildcard
+    //   event for pane output. The emitter no longer carries byte messages,
+    //   so this is the only path bytes reach the wire.
+    this.byteForwarder = {
+      write: (msg) => this.onByteOutput(msg),
     };
   }
 
@@ -535,8 +551,11 @@ class Connection {
     }
     const peer = bridge.registerPeer();
 
-    // Wire up tmux event fan-out.
+    // Wire up tmux event fan-out. The state channel rides the wildcard
+    // emitter; the byte channel rides the all-panes sink — two disjoint
+    // attachments because they are two disjoint channels.
     client.on("*", this.onAnyEventRef);
+    this.detachByteForwarder = client.attachAllPanesSink(this.byteForwarder);
 
     // Atomic state transition: pending-hello → running. From here on, every
     // call site that needs `client`/`ctx`/`bridge`/`peer` reads them off
@@ -794,37 +813,22 @@ class Connection {
   // no special "fast-client" branch — fast clients drain to 0 every send,
   // which keeps the per-pane sum at 0, and pause never fires.
   // -------------------------------------------------------------------------
-  private onTmuxEvent(msg: TmuxMessage): void {
+  //
+  // Two channels, disjoint by message type:
+  //   - `onTmuxEvent` handles non-byte tmux messages via the JSON event
+  //     frame. `EmitterTmuxMessage` excludes `PaneOutputMessage` by
+  //     construction, so a byte message cannot reach this method — the
+  //     type system enforces it.
+  //   - `onByteOutput` handles `PaneOutputMessage` via the binary
+  //     side-channel. Bytes are routed here via
+  //     `client.attachAllPanesSink`, not through `client.on('*', …)`,
+  //     because the emitter no longer carries byte messages.
+  // -------------------------------------------------------------------------
+  private onTmuxEvent(msg: EmitterTmuxMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
-
-    // Backpressure runs only after hello — pre-hello we don't have a peer
-    // registered with the bridge. By construction the WS server never fans
-    // events before reaching `running` (client.on('*', ...) is wired in
-    // onHello), so this is a structural invariant; the early-return is
-    // defensive against future refactors that might wire fan-out earlier.
     if (this.state.kind !== "running" && this.state.kind !== "draining") {
       return;
     }
-    const { bridge, peer } = this.state;
-
-    // [LAW:single-enforcer] Discriminator lives in isPaneOutput. The
-    // remaining branch is genuinely load-bearing — pane output rides the
-    // binary side-channel; everything else rides the JSON event frame. The
-    // type predicate also narrows the else branch to SerializedEventMessage,
-    // so encodeServerFrame's typed payload is satisfied without re-checking.
-    if (isPaneOutput(msg)) {
-      const bytes = encodePaneOutput(msg);
-      bridge.accountOutput(peer, msg.paneId, bytes.byteLength);
-      this.wsSend(bytes);
-      this.emit({
-        kind: "event-out",
-        identity: this.identity,
-        type: msg.type,
-        bytes: bytes.byteLength,
-      });
-      return;
-    }
-
     const encoded = encodeServerFrame({ k: "event", msg });
     this.wsSend(encoded);
     this.emit({
@@ -832,6 +836,27 @@ class Connection {
       identity: this.identity,
       type: msg.type,
       bytes: encoded.length,
+    });
+  }
+
+  private onByteOutput(msg: PaneOutputMessage): void {
+    if (this.ws.readyState !== WEBSOCKET_OPEN) return;
+    // Backpressure runs only after hello — pre-hello we don't have a peer
+    // registered with the bridge. The attach-all-panes sink is wired in
+    // onHello, so this is a structural invariant; the early-return is
+    // defensive against future refactors that might wire fan-out earlier.
+    if (this.state.kind !== "running" && this.state.kind !== "draining") {
+      return;
+    }
+    const { bridge, peer } = this.state;
+    const bytes = encodePaneOutput(msg);
+    bridge.accountOutput(peer, msg.paneId, bytes.byteLength);
+    this.wsSend(bytes);
+    this.emit({
+      kind: "event-out",
+      identity: this.identity,
+      type: msg.type,
+      bytes: bytes.byteLength,
     });
   }
 
@@ -1016,6 +1041,8 @@ class Connection {
 
     if (final !== null) {
       final.client.off("*", this.onAnyEventRef);
+      this.detachByteForwarder?.();
+      this.detachByteForwarder = null;
       // [LAW:single-enforcer] Single shutdown path: removePeer drops this
       // connection's outstanding-byte accounting (resuming any panes paused
       // only because of this peer's lag) and refcount-decrements every

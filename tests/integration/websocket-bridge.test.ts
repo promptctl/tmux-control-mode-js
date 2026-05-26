@@ -284,37 +284,33 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
       const { client } = createWsBackedClient(fx.url);
       await waitForState(client, "ready");
 
-      const seen: TmuxMessage[] = [];
-      const handler = (msg: EmitterMessage): void => {
-        if (msg.type === "output") seen.push(msg);
-      };
-      client.on("*", handler);
+      // Bytes flow through `attachAllPanesSink` — the WS client's emitter
+      // no longer carries `OutputMessage`. The multiplexer surface is what
+      // forwarders/observers use when they don't know the paneId up front.
+      const seen: Uint8Array[] = [];
+      const detach = client.attachAllPanesSink({
+        write(msg) {
+          seen.push(msg.data);
+        },
+      });
 
       // Use a raw send-keys so the "Enter" key name is honored. No target:
       // sendKeys defaults to the active pane of the attached session, which
       // matches the existing client integration test's pattern.
       await client.execute(`send-keys 'echo websocket-bridge-ok' Enter`);
 
-      // Poll for the printf to appear in output events.
+      // Poll for the printf to appear in the byte stream.
+      const isMatch = (): boolean =>
+        seen.some((data) =>
+          new TextDecoder().decode(data).includes("websocket-bridge-ok"),
+        );
       const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        const matched = seen.some((m) => {
-          if (m.type !== "output") return false;
-          const txt = new TextDecoder().decode(m.data);
-          return txt.includes("websocket-bridge-ok");
-        });
-        if (matched) break;
+      while (Date.now() < deadline && !isMatch()) {
         await new Promise<void>((r) => setTimeout(r, 50));
       }
+      expect(isMatch()).toBe(true);
 
-      const match = seen.some((m) => {
-        if (m.type !== "output") return false;
-        const txt = new TextDecoder().decode(m.data);
-        return txt.includes("websocket-bridge-ok");
-      });
-      expect(match).toBe(true);
-
-      client.off("*", handler);
+      detach();
       await client.close();
     },
     15_000,
