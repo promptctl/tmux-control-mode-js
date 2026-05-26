@@ -460,6 +460,10 @@ describe("Electron IPC bridge — event forwarding", () => {
     // The hub now mirrors that with `cloneArgs` (structuredClone per arg) so
     // a regression that depends on shared identity — or stringifies anywhere
     // along the path — fails here the same way it would in production.
+    //
+    // Pane bytes flow through `attachPaneSink`, not the emitter — the
+    // proxy's `on('output', …)` is a TS error because `TmuxEventMap` does
+    // not contain `'output'`.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -468,17 +472,18 @@ describe("Electron IPC bridge — event forwarding", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    const received: Array<{ paneId: number; data: Uint8Array }> = [];
-    proxy.on("output", (ev) => {
-      received.push({ paneId: ev.paneId, data: ev.data });
+    const received: Uint8Array[] = [];
+    proxy.attachPaneSink(2, {
+      write(bytes) {
+        received.push(bytes);
+      },
     });
 
     t.feed("%output %2 hello\n");
 
     expect(received).toHaveLength(1);
-    expect(received[0]?.paneId).toBe(2);
-    expect(received[0]?.data).toBeInstanceOf(Uint8Array);
-    expect(Array.from(received[0]!.data)).toEqual(
+    expect(received[0]).toBeInstanceOf(Uint8Array);
+    expect(Array.from(received[0]!)).toEqual(
       Array.from(new TextEncoder().encode("hello")),
     );
   });
@@ -992,6 +997,8 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     // [M6] The previous fake hub passed args by reference, hiding bugs that
     // would surface in real Electron when payloads cross structuredClone.
     // The hub now clones every IPC payload; this test pins that contract.
+    //
+    // Bytes flow through `attachPaneSink`, not the emitter.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -999,8 +1006,12 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
-    const received: TmuxMessage[] = [];
-    proxy.on("output", (m) => received.push(m));
+    const received: Uint8Array[] = [];
+    proxy.attachPaneSink(1, {
+      write(bytes) {
+        received.push(bytes);
+      },
+    });
 
     // Synthesize a %output frame end-to-end through the parser.
     const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
@@ -1011,14 +1022,12 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     await Promise.resolve();
 
     expect(received).toHaveLength(1);
-    const ev = received[0]!;
-    expect(ev.type).toBe("output");
-    if (ev.type !== "output") return;
-    expect([...ev.data]).toEqual([...payload]);
+    const bytes = received[0]!;
+    expect([...bytes]).toEqual([...payload]);
     // The renderer's copy is a fresh Uint8Array, NOT the main-side identity.
     // (We cannot probe main-side identity directly — but a structuredClone
     // round-trip guarantees the buffers are different objects.)
-    expect(ev.data).toBeInstanceOf(Uint8Array);
+    expect(bytes).toBeInstanceOf(Uint8Array);
   });
 });
 
@@ -1042,14 +1051,22 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     const proxyB = createRendererBridge(b.ipcRenderer);
     const proxyC = createRendererBridge(c.ipcRenderer);
 
-    const got: Array<["a" | "c", string]> = [];
-    proxyA.on("output", (m) => got.push(["a", m.type]));
-    proxyC.on("output", (m) => got.push(["c", m.type]));
+    const got: Array<"a" | "c"> = [];
+    proxyA.attachPaneSink(42, {
+      write() {
+        got.push("a");
+      },
+    });
+    proxyC.attachPaneSink(42, {
+      write() {
+        got.push("c");
+      },
+    });
     // proxyB receives nothing — destroyed before broadcast.
 
     // Destroy B's wc directly (real Electron: webContents went away during
-    // event delivery). Then drive a %output through main; main's forward()
-    // must visit A and C without skipping or double-tearing-down.
+    // event delivery). Then drive a %output through main; main's byte
+    // forwarder must visit A and C without skipping or double-tearing-down.
     b.destroy();
     void proxyB; // keep reference so unused-variable lint is quiet
 
@@ -1057,8 +1074,7 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    const labels = got.map(([who]) => who).sort();
-    expect(labels).toEqual(["a", "c"]);
+    expect(got.sort()).toEqual(["a", "c"]);
   });
 });
 

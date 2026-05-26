@@ -305,11 +305,16 @@ export enum PaneAction {
  * [LAW:single-enforcer] The discriminator literal "output"|"extended-output"
  * appears in this file ONLY. Every connector consumer (electron main /
  * renderer / WS server) routes the question through here so the test cannot
- * drift between sites. As a TypeScript predicate it also narrows the
- * **else** branch to `Exclude<TmuxMessage, PaneOutputMessage>`, which is
- * what the WS server's onTmuxEvent needs to feed into the JSON-event path.
+ * drift between sites. The generic parameter preserves the caller's input
+ * type so the **else** branch narrows correctly — for `TmuxMessage`-typed
+ * input the else is `EmitterTmuxMessage` (which the emitter accepts); for
+ * `EmitterMessage | PaneOutputMessage`-typed input (the IPC wire format)
+ * the else is `EmitterMessage`. The intersection in the predicate return
+ * makes both narrowings sound.
  */
-export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
+export function isPaneOutput<M extends { readonly type: string }>(
+  msg: M,
+): msg is M & PaneOutputMessage {
   return msg.type === "output" || msg.type === "extended-output";
 }
 
@@ -320,7 +325,9 @@ export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
  * (e.g. ack accounting); use `isPaneOutput` when you also need the
  * else-branch narrowing.
  */
-export function asPaneOutput(msg: TmuxMessage): PaneOutputMessage | null {
+export function asPaneOutput<M extends { readonly type: string }>(
+  msg: M,
+): (M & PaneOutputMessage) | null {
   return isPaneOutput(msg) ? msg : null;
 }
 

@@ -25,6 +25,7 @@
 
 import type {
   ConnectionState,
+  PaneByteMultiplexer,
   PaneByteSink,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
@@ -129,28 +130,8 @@ export class FakeTmuxClient {
   // `FakeMessage`, so listeners registered for unmodeled events simply never
   // fire — a behavior-correct no-op for any test that doesn't `inject*` them.
   //
-  // The literal `'output'` / `'extended-output'` overloads carry the same
-  // `@deprecated` tag as `TmuxClient.on` so test code that uses the fake
-  // sees the same migration hint a production consumer would.
-  // [LAW:one-type-per-behavior] the fake is one of many TmuxClientLike
-  // implementations; the deprecation surface is identical because the
-  // behavior is.
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * Will be removed in the next minor.
-   */
-  on(
-    type: "output",
-    handler: (ev: TmuxEventMap["output"]) => void,
-  ): void;
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * Will be removed in the next minor.
-   */
-  on(
-    type: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
+  // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
+  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
   on<K extends keyof TmuxEventMap>(
     type: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -162,22 +143,6 @@ export class FakeTmuxClient {
     this.listeners.set(type as FakeMessageType, set);
   }
 
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(
-    type: "output",
-    handler: (ev: TmuxEventMap["output"]) => void,
-  ): void;
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(
-    type: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   off<K extends keyof TmuxEventMap>(
     type: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -244,6 +209,10 @@ export class FakeTmuxClient {
   //   entry into that registry.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
     return this.paneSinks.attach(paneId, sink);
+  }
+
+  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
+    return this.paneSinks.attachAllPanes(mux);
   }
 
   close(): void {

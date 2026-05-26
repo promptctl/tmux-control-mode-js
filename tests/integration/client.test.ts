@@ -418,12 +418,25 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
       sessionName = uniqueSession("int-output");
       const c = await createSession(socketName, sessionName);
       client = c;
-      const outputPromise = nextMessage(c, "output");
+      // Pane bytes flow through `attachAllPanesSink` (multiplexer surface) —
+      // the emitter no longer carries `OutputMessage` so this is the only
+      // way to observe bytes without knowing a paneId up front.
+      const outputPromise = new Promise<{
+        paneId: number;
+        byteLength: number;
+      }>((resolve) => {
+        const detach = c.attachAllPanesSink({
+          write(msg) {
+            detach();
+            resolve({ paneId: msg.paneId, byteLength: msg.data.byteLength });
+          },
+        });
+      });
       // No target = active pane in active window of attached session.
       await c.execute("send-keys 'echo hello-output' Enter");
       const out = await outputPromise;
       expect(typeof out.paneId).toBe("number");
-      expect(out.data.length).toBeGreaterThan(0);
+      expect(out.byteLength).toBeGreaterThan(0);
     },
     15000,
   );

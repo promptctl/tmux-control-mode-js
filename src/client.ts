@@ -33,7 +33,12 @@ import type {
 import { emptyKeysResponse } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
-import { PaneSinkRegistry, type PaneByteSink } from "./pane-sink.js";
+import {
+  PaneSinkRegistry,
+  type PaneByteSink,
+  type PaneByteMultiplexer,
+} from "./pane-sink.js";
+import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
 
@@ -144,43 +149,18 @@ export class TmuxClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Event delegation — preserve overloads for type safety
+  // Event delegation
   //
-  // The literal-event overloads for `'output'` and `'extended-output'` come
-  // first so the language service matches them ahead of the generic
-  // `keyof TmuxEventMap` signature, surfacing `@deprecated` on the senior
-  // pane-byte path. Every other event flows through the generic overload
-  // unchanged. [LAW:one-source-of-truth] The handler argument type is
-  // referenced as `TmuxEventMap['output']` / `TmuxEventMap['extended-output']`
-  // so the deprecation overload re-uses the same derivation as the generic
-  // one — renaming the wire variant in `protocol/types.ts` cannot leave the
-  // deprecated overload behind.
+  // `TmuxEventMap` does not contain `'output'` or `'extended-output'` —
+  // those messages flow through the sink registry, never the emitter. An
+  // attempt to write `client.on('output', cb)` is a TS error (the key is
+  // not in the map). The wildcard `'*'` overload's argument type is
+  // `EmitterMessage`, which excludes `PaneOutputMessage`, so narrowing on
+  // `msg.type === 'output'` produces `never` and the byte branch is
+  // structurally unreachable. There is no overload that exposes bytes
+  // through the emitter; the misdecode footgun is gone at the type level.
   // ---------------------------------------------------------------------------
 
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * The sink surface is the canonical pane-byte subscription: it runs
-   * synchronously before this event and fail-isolates from a throwing
-   * handler. Compose a built-in sink — `createTextStreamSink` (from this
-   * package's root export), `attachWebContentsSink` (from `/electron/main`),
-   * `attachWebSocketSink` (from `/websocket`), or `XtermSink` (from
-   * `@promptctl/pane-terminal/xterm-sink`) — and the bytes never reach a
-   * code path that could mis-decode them. (A consumer who writes a *custom*
-   * `PaneByteSink` is responsible for its own decoding; the built-ins cover
-   * every legitimate downstream need.) The `'output'` event continues to
-   * fire and will be removed in the next minor.
-   */
-  on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * Both `%output` and `%extended-output` route through the sink path; the
-   * `age` field is dropped because the sink contract is bytes-only. Will be
-   * removed in the next minor.
-   */
-  on(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -190,19 +170,6 @@ export class TmuxClient {
     this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -213,16 +180,16 @@ export class TmuxClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Pane-byte subscriptions — the canonical surface
+  // Pane-byte subscriptions — the sole channel
   //
-  // [LAW:one-source-of-truth] `attachPaneSink` is the canonical pane-byte
-  //   subscription. The `client.on('output', …)` and `client.on('extended-
-  //   output', …)` event emitters become the deprecated underlying mechanism
-  //   (see sibling deprecate ticket); they remain functional through one
-  //   minor for external consumers we don't own.
+  // [LAW:one-source-of-truth] `attachPaneSink` (per-pane) and
+  //   `attachAllPanesSink` (forwarder/multiplexer) are the only way to
+  //   receive pane bytes. The emitter's type surface excludes
+  //   `PaneOutputMessage` so byte messages cannot flow through `on(...)`.
   // [LAW:dataflow-not-control-flow] Variability lives in *which sink is
-  //   attached* (a value of `PaneByteSink` type), never in *how a caller
-  //   decodes bytes* (control flow scattered across every consumer).
+  //   attached* (a value of `PaneByteSink` or `PaneByteMultiplexer` type),
+  //   never in *how a caller decodes bytes* (control flow scattered across
+  //   every consumer).
   // ---------------------------------------------------------------------------
 
   /**
@@ -236,14 +203,30 @@ export class TmuxClient {
    *
    * Both `%output` and `%extended-output` route through this path. The
    * `extended-output` `age` field is dropped — the sink contract is
-   * bytes-only. If a consumer needs the age, surface it via a separate
-   * variant once a real consumer requires it; speculative variants belong
-   * to no ticket.
+   * bytes-only. If a caller needs the age (forwarder bridges typically
+   * do), use `attachAllPanesSink` with a `PaneByteMultiplexer` instead.
    *
    * @see PaneByteSink for the contract sinks must satisfy.
    */
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
     return this.paneSinks.attach(paneId, sink);
+  }
+
+  /**
+   * Attach a multiplexer to receive every pane-byte chunk for every pane
+   * on this client. The multiplexer's `write(msg)` receives the full
+   * `PaneOutputMessage` (including `paneId`, `type` discriminator, and the
+   * `age` field on extended-output), which is what forwarders — WebSocket
+   * bridges, Electron main forwarders, byte archives — need to faithfully
+   * reconstruct the message downstream.
+   *
+   * Per-pane consumers should use `attachPaneSink` instead. Reach for
+   * `attachAllPanesSink` only when you genuinely need every pane.
+   *
+   * @see PaneByteMultiplexer for the contract.
+   */
+  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
+    return this.paneSinks.attachAllPanes(mux);
   }
 
   // ---------------------------------------------------------------------------
@@ -441,26 +424,23 @@ export class TmuxClient {
       );
     }
 
-    // [LAW:single-enforcer] Sinks fire FIRST — they are the canonical
-    //   pane-byte subscription surface. The deprecated event-emitter path
-    //   (`client.on('output', …)`) is the senior surface in time only;
-    //   the sink path is the senior surface in primacy. Running dispatch
-    //   before emit makes sink delivery resilient to a throwing event
-    //   handler: the canonical path cannot be poisoned by a misbehaving
-    //   listener on the deprecated path.
-    //
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
+    //   registry. The emitter's type surface excludes `PaneOutputMessage`
+    //   (`EmitterMessage` is defined as `EmitterTmuxMessage | …` where
+    //   `EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>`),
+    //   so attempting to pass a byte message to `emit` is a compile error.
+    //   The two channels — sinks for bytes, emitter for state — are
+    //   disjoint by message type, and `isPaneOutput`'s narrowing is what
+    //   makes the disjointness check explicit at this site.
     // [LAW:dataflow-not-control-flow] `paneSinks.dispatch` internally
     //   snapshots the per-chunk attachment set before iterating, so
-    //   mutations to `paneSinks` (a sink's `write` calling attach/dispose,
-    //   or an event handler doing the same once emit runs) cannot
-    //   back-fill or skip the current chunk. "Who sees this chunk" is
-    //   fixed to who was attached when the chunk arrived.
-    this.paneSinks.dispatch(msg);
+    //   mutations to `paneSinks` (a sink's `write` calling attach/dispose)
+    //   cannot back-fill or skip the current chunk.
+    if (isPaneOutput(msg)) {
+      this.paneSinks.dispatch(msg);
+      return;
+    }
 
-    // [LAW:dataflow-not-control-flow] Emit unconditionally — all messages
-    //   flow through the emitter regardless of type. A throwing listener
-    //   here propagates up through `handleMessage`; sinks have already
-    //   received this chunk by the time that can happen.
     this.emitter.emit(msg);
   }
 }
@@ -498,4 +478,5 @@ export type TmuxClientLike = Pick<
   | "subscribeRaw"
   | "unsubscribe"
   | "attachPaneSink"
+  | "attachAllPanesSink"
 >;

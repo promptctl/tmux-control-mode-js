@@ -47,16 +47,21 @@ interface EmitterImpl {
   off(event: string, handler: (ev: never) => void): void;
   emit(msg: EmitterMessage): void;
 }
-import type {
-  CommandResponse,
-  PaneAction,
-  TmuxMessage,
+import {
+  isPaneOutput,
+  type CommandResponse,
+  type PaneAction,
+  type TmuxMessage,
 } from "../../protocol/types.js";
 import type { SplitOptions } from "../../client.js";
 
 import type { RpcProxyApi } from "../rpc.js";
 import type { TmuxClientLike } from "../../client.js";
-import { PaneSinkRegistry, type PaneByteSink } from "../../pane-sink.js";
+import {
+  PaneSinkRegistry,
+  type PaneByteMultiplexer,
+  type PaneByteSink,
+} from "../../pane-sink.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -241,25 +246,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   // -------------------------------------------------------------------------
-  // Event subscription — matches TmuxClient.on / off exactly, including the
-  // deprecated literal overloads for `'output'` and `'extended-output'`.
+  // Event subscription — matches TmuxClient.on / off exactly.
+  //
+  // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
+  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
   // -------------------------------------------------------------------------
 
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead;
-   * `attachWebSocketSink` is the matching server-side helper for WS-relay
-   * authors. The `'output'` event continues to fire and will be removed in
-   * the next minor.
-   */
-  on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * Will be removed in the next minor.
-   */
-  on(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -269,19 +261,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     (this.emitter as unknown as EmitterImpl).on(event, handler);
   }
 
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -353,10 +332,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   // [LAW:locality-or-seam] WS pane-output frames arrive as parsed
   //   `output` / `extended-output` messages routed through
   //   `dispatchEvent`. `paneSinks.dispatch(msg)` is where bytes fan out
-  //   to sinks (same shape as `TmuxClient.handleMessage`);
-  //   `attachPaneSink` is the public entry into that registry.
+  //   to sinks (same shape as `TmuxClient.handleMessage`); these methods
+  //   are the public entry into that registry.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
     return this.paneSinks.attach(paneId, sink);
+  }
+
+  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
+    return this.paneSinks.attachAllPanes(mux);
   }
 
   // detach() is intentionally NOT exposed: it tears down the tmux client for
@@ -599,13 +582,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   dispatchEvent(msg: TmuxMessage): void {
-    // [LAW:single-enforcer] Sinks fire BEFORE emit, matching
-    //   `TmuxClient.handleMessage`. The registry's per-chunk snapshot
-    //   isolates the attachment set from re-entrant attach/detach inside
-    //   `sink.write`, and running it before emit keeps canonical sink
-    //   delivery resilient to throws on the deprecated `on('output', …)`
-    //   event path.
-    this.paneSinks.dispatch(msg);
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
+    //   registry, matching `TmuxClient.handleMessage`. The emitter's type
+    //   surface excludes `PaneOutputMessage`, so attempting to pass a byte
+    //   message to `emit` is a compile error; `isPaneOutput`'s narrowing
+    //   makes the disjointness explicit at this site.
+    if (isPaneOutput(msg)) {
+      this.paneSinks.dispatch(msg);
+      return;
+    }
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
