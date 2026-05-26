@@ -19,18 +19,21 @@
 import type { ConnectionState } from "../../connection-state.js";
 import {
   TypedEmitter,
-  isTmuxMessage,
   type EmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import { PaneSinkRegistry, type PaneByteSink } from "../../pane-sink.js";
+import {
+  PaneSinkRegistry,
+  type PaneByteMultiplexer,
+  type PaneByteSink,
+} from "../../pane-sink.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
-  asPaneOutput,
+  isPaneOutput,
   type CommandResponse,
   type PaneAction,
-  type TmuxMessage,
+  type PaneOutputMessage,
 } from "../../protocol/types.js";
 import type { RpcProxyApi } from "../rpc.js";
 import type { TmuxClientLike } from "../../client.js";
@@ -123,31 +126,30 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
-    // [LAW:dataflow-not-control-flow] Every inbound IPC event re-emits
-    // unconditionally through the local emitter. The emitter's handler maps
-    // decide who hears what — same as TmuxClient does with its own messages.
-    // Output messages additionally feed the credit accumulator; non-output
-    // messages contribute zero, so the same path runs for all.
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
+    //   registry; state events flow through the emitter. The IPC.event wire
+    //   format carries both — main sends state via `client.on('*', forward)`
+    //   and bytes via `client.attachAllPanesSink(multiplexer)` — and the
+    //   renderer narrows here. The local emitter's type surface still
+    //   excludes `PaneOutputMessage`, so `this.emitter.emit(msg)` is a
+    //   compile error for byte messages, which is what enforces the split
+    //   on the renderer side.
     this.eventHandler = (_event, ...args) => {
-      const msg = args[0] as EmitterMessage;
+      // [LAW:locality-or-seam] IPC wire format is the boundary type; widen
+      //   to admit byte messages here, narrow into the two channels below.
+      //   The local `EmitterMessage` does not include `PaneOutputMessage`,
+      //   so the `else` branch below carries an `EmitterMessage` correctly.
+      const msg = args[0] as EmitterMessage | PaneOutputMessage;
+      if (isPaneOutput(msg)) {
+        this.account(msg);
+        this.paneSinks.dispatch(msg);
+        return;
+      }
       // [LAW:dataflow-not-control-flow] connection-state messages flow through
       // the same channel; they're picked up here before re-emission so the
       // proxy's `connectionState` getter is in sync with whatever fires.
       if (msg.type === "connection-state") {
         this.currentConnectionState = msg.state;
-      }
-      // account() requires a parsed TmuxMessage; non-tmux events have no
-      // pane bytes and contribute nothing to the credit accumulator.
-      // [LAW:single-enforcer] discriminator lives in src/emitter.ts.
-      if (isTmuxMessage(msg)) {
-        this.account(msg);
-        // [LAW:single-enforcer] Sinks fire BEFORE emit, exactly as in
-        //   `TmuxClient.handleMessage`. The registry's internal snapshot
-        //   isolates the per-chunk attachment set from re-entrant attach/
-        //   detach inside a sink's `write`, and running it before emit
-        //   keeps canonical sink delivery resilient to throws on the
-        //   deprecated `on('output', …)` event path.
-        this.paneSinks.dispatch(msg);
       }
       this.emitter.emit(msg);
     };
@@ -166,25 +168,12 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   }
 
   // ---------------------------------------------------------------------------
-  // Event delegation — same overload set as TmuxClient, including the
-  // deprecated literal overloads for `'output'` and `'extended-output'`.
+  // Event delegation — same overload set as TmuxClient.
+  //
+  // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
+  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
   // ---------------------------------------------------------------------------
 
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead;
-   * `attachWebContentsSink` is the matching main-side helper for Electron
-   * renderer-byte forwarding. The `'output'` event continues to fire and
-   * will be removed in the next minor.
-   */
-  on(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use `attachPaneSink(paneId, sink)` for pane bytes instead.
-   * Will be removed in the next minor.
-   */
-  on(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -194,19 +183,6 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(event: "output", handler: (ev: TmuxEventMap["output"]) => void): void;
-  /**
-   * @deprecated Use the disposer returned by `attachPaneSink` to detach a
-   * pane-byte consumer. Will be removed in the next minor.
-   */
-  off(
-    event: "extended-output",
-    handler: (ev: TmuxEventMap["extended-output"]) => void,
-  ): void;
   off<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
@@ -293,6 +269,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   // NOT of `attachPaneSink`.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
     return this.paneSinks.attach(paneId, sink);
+  }
+
+  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
+    return this.paneSinks.attachAllPanes(mux);
   }
 
   /**
@@ -384,20 +364,18 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     });
   }
 
-  // [LAW:single-enforcer] Discriminator lives in asPaneOutput
-  // (src/protocol/types.ts). Once we have the typed receipt, the accounting
-  // pipeline is the same for both output and extended-output — main credits
-  // them identically on the way out, so we mirror that on the way in.
-  private account(msg: TmuxMessage): void {
-    const out = asPaneOutput(msg);
-    if (out === null) return;
-    const next = (this.pendingAck.get(out.paneId) ?? 0) + out.data.byteLength;
+  // [LAW:single-enforcer] Called from the byte-only branch of `eventHandler`,
+  // so `msg` is statically `PaneOutputMessage`. The accounting pipeline is
+  // the same for both `output` and `extended-output` — main credits them
+  // identically on the way out, so we mirror that on the way in.
+  private account(msg: PaneOutputMessage): void {
+    const next = (this.pendingAck.get(msg.paneId) ?? 0) + msg.data.byteLength;
     if (next < this.ackBatchBytes) {
-      this.pendingAck.set(out.paneId, next);
+      this.pendingAck.set(msg.paneId, next);
       return;
     }
-    this.pendingAck.delete(out.paneId);
-    const ack: AckMessage = { paneId: out.paneId, bytes: next };
+    this.pendingAck.delete(msg.paneId);
+    const ack: AckMessage = { paneId: msg.paneId, bytes: next };
     this.ipc.send(IPC.ack, ack);
   }
 }
