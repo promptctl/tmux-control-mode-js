@@ -290,7 +290,10 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
       const seen: Uint8Array[] = [];
       const detach = client.attachAllPanesSink({
         write(msg) {
-          seen.push(msg.data);
+          // Per the PaneByteMultiplexer contract, `msg.data` is owned by
+          // the library and not retained past the synchronous call —
+          // copy before storing.
+          seen.push(msg.data.slice());
         },
       });
 

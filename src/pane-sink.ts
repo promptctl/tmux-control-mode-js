@@ -87,15 +87,14 @@ export interface PaneByteSink {
    * Called synchronously for every pane chunk this sink is attached to.
    *
    * `bytes` is the post-octal-decode byte payload, owned by the caller.
-   * It MUST be treated as read-only — other sinks attached to the same
-   * pane will see the same instance via subsequent `write` calls, and
-   * `client.on('output', …)` listeners will see the same instance via
-   * the deprecated event path. To retain or modify the payload past
-   * this `write` call, copy first (`bytes.slice()` or
-   * `new Uint8Array(bytes)`). The library makes no guarantee about
-   * chunk boundaries — sinks that need cross-chunk state (multi-byte
-   * UTF-8 sequences, ANSI escape sequences) must carry it across calls
-   * themselves.
+   * It MUST be treated as read-only — every other sink attached to the
+   * same pane and every multiplexer attached via `attachAllPanesSink`
+   * sees the same `Uint8Array` instance via subsequent `write` calls.
+   * To retain or modify the payload past this `write` call, copy first
+   * (`bytes.slice()` or `new Uint8Array(bytes)`). The library makes no
+   * guarantee about chunk boundaries — sinks that need cross-chunk
+   * state (multi-byte UTF-8 sequences, ANSI escape sequences) must
+   * carry it across calls themselves.
    *
    * MUST NOT block. MUST NOT throw — the library does not catch sink
    * errors. A throwing sink propagates the exception synchronously up
@@ -345,18 +344,37 @@ export class PaneSinkRegistry {
   // [LAW:single-enforcer] Sole reader of the attachment iteration order.
   //   Materializing both iterables here, once, is what makes the dispatch
   //   above robust to re-entrant attach/detach inside a sink's `write`.
+  // [LAW:dataflow-not-control-flow] The no-consumer case short-circuits
+  //   before allocating — pane chunks for panes nobody is attached to (the
+  //   common case for short-lived panes) cost one Map lookup and a
+  //   boolean test, no array allocation. The mixed case (only one side
+  //   has consumers) reuses the shared frozen `EMPTY` for the empty side,
+  //   so even there only one `Array.from` runs per dispatch.
   private computeSnapshot(msg: TmuxMessage): PaneDispatchSnapshot {
     if (!isPaneOutput(msg)) return null;
     const perPane = this.attachments.get(msg.paneId);
-    const sinks =
-      perPane === undefined || perPane.size === 0
-        ? []
-        : Array.from(perPane.values());
-    const multiplexers =
-      this.multiplexers.size === 0
-        ? []
-        : Array.from(this.multiplexers.values());
-    if (sinks.length === 0 && multiplexers.length === 0) return null;
-    return { sinks, multiplexers, msg };
+    // [LAW:no-defensive-null-guards] `perPane` may be undefined (no
+    //   attachment for this pane) or empty (last attachment was just
+    //   removed but the Map entry hasn't been pruned yet). The ternary's
+    //   true-branch type-narrows `perPane` to a defined non-empty Map,
+    //   so `Array.from(perPane.values())` has no null assertion.
+    const hasMux = this.multiplexers.size > 0;
+    if ((perPane === undefined || perPane.size === 0) && !hasMux) return null;
+    return {
+      sinks:
+        perPane === undefined || perPane.size === 0
+          ? EMPTY
+          : Array.from(perPane.values()),
+      multiplexers: hasMux ? Array.from(this.multiplexers.values()) : EMPTY,
+      msg,
+    };
   }
 }
+
+// [LAW:one-source-of-truth] Shared frozen empty array reused by every
+//   dispatch path that has no consumers on one side of the fan-out. A
+//   `readonly never[]` is structurally assignable to `readonly T[]` for
+//   any `T`, so a single instance fits both `sinks` and `multiplexers`
+//   fields. The `for...of` loop in `dispatch` iterates zero times on it
+//   — same behavior, zero allocation.
+const EMPTY: readonly never[] = Object.freeze([]);
