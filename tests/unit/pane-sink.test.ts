@@ -10,7 +10,11 @@
 import { describe, expect, it } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
-import type { PaneByteSink } from "../../src/pane-sink.js";
+import type {
+  PaneByteMultiplexer,
+  PaneByteSink,
+} from "../../src/pane-sink.js";
+import type { PaneOutputMessage } from "../../src/protocol/types.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 // ---------------------------------------------------------------------------
@@ -270,5 +274,188 @@ describe("TmuxClient.attachPaneSink", () => {
     expect(Array.from(lateSink.chunks[0])).toEqual([
       ..."second".split("").map((c) => c.charCodeAt(0)),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachAllPanesSink — multiplexer surface for forwarders
+// ---------------------------------------------------------------------------
+
+interface RecordingMux extends PaneByteMultiplexer {
+  readonly messages: PaneOutputMessage[];
+  readonly endCount: { value: number };
+}
+
+function createRecordingMux(): RecordingMux {
+  const messages: PaneOutputMessage[] = [];
+  const endCount = { value: 0 };
+  return {
+    messages,
+    endCount,
+    write(msg): void {
+      // Multiplexer contract mirrors the sink: `msg.data` is read-only and
+      // not retained past the synchronous call. Copying preserves the
+      // assertion when the test outlives the dispatch frame.
+      messages.push({ ...msg, data: msg.data.slice() });
+    },
+    end(): void {
+      endCount.value += 1;
+    },
+  };
+}
+
+describe("TmuxClient.attachAllPanesSink", () => {
+  it("delivers every byte chunk on every pane to the multiplexer", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const mux = createRecordingMux();
+
+    client.attachAllPanesSink(mux);
+    t.feed("%output %1 alpha\n");
+    t.feed("%output %2 beta\n");
+    t.feed("%output %1 gamma\n");
+
+    expect(mux.messages).toHaveLength(3);
+    expect(mux.messages.map((m) => m.paneId)).toEqual([1, 2, 1]);
+    expect(mux.messages.map((m) => new TextDecoder().decode(m.data))).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+  });
+
+  it("carries the discriminator and age fields for extended-output", () => {
+    // The multiplexer surface exists because forwarders need the full
+    // PaneOutputMessage (type discriminator + age) to faithfully reconstruct
+    // the message downstream. Per-pane PaneByteSinks intentionally drop
+    // these; the multiplexer must not.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const mux = createRecordingMux();
+    client.attachAllPanesSink(mux);
+
+    t.feed("%output %3 plain\n");
+    // %extended-output wire format: `%<paneId> <age> [reserved...] : <value>`
+    t.feed("%extended-output %3 12345 : with-age\n");
+
+    expect(mux.messages).toHaveLength(2);
+    expect(mux.messages[0]?.type).toBe("output");
+    expect(mux.messages[1]?.type).toBe("extended-output");
+    if (mux.messages[1]?.type === "extended-output") {
+      expect(mux.messages[1].age).toBe(12345);
+    }
+  });
+
+  it("multiplexer and per-pane sinks both receive the same chunk", () => {
+    // Both attachment kinds fire from the same dispatch frame. A consumer
+    // mixing the two (e.g. xterm sink for visible rendering, multiplexer
+    // for archive forwarding) must see every chunk on both surfaces.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const mux = createRecordingMux();
+    const sink = createRecordingSink();
+
+    client.attachAllPanesSink(mux);
+    client.attachPaneSink(7, sink);
+    t.feed("%output %7 both\n");
+
+    expect(mux.messages).toHaveLength(1);
+    expect(sink.chunks).toHaveLength(1);
+    expect(mux.messages[0]?.paneId).toBe(7);
+    expect(Array.from(sink.chunks[0]!)).toEqual([
+      ..."both".split("").map((c) => c.charCodeAt(0)),
+    ]);
+  });
+
+  it("disposer detaches the multiplexer and fires end() once", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const mux = createRecordingMux();
+    const dispose = client.attachAllPanesSink(mux);
+
+    t.feed("%output %1 before\n");
+    expect(mux.messages).toHaveLength(1);
+    expect(mux.endCount.value).toBe(0);
+
+    dispose();
+    expect(mux.endCount.value).toBe(1);
+
+    t.feed("%output %1 after\n");
+    // Detached: no further delivery, and end() does not fire again.
+    expect(mux.messages).toHaveLength(1);
+    expect(mux.endCount.value).toBe(1);
+
+    // Idempotent: second dispose is a no-op.
+    dispose();
+    expect(mux.endCount.value).toBe(1);
+  });
+
+  it("attaching from inside another multiplexer's write does not back-fill", () => {
+    // Same pre-dispatch snapshot guarantee as the per-pane path: the set
+    // of multiplexers iterated for a chunk is fixed at chunk arrival.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const late = createRecordingMux();
+    const trigger: PaneByteMultiplexer = {
+      write(): void {
+        if (late.messages.length === 0) {
+          client.attachAllPanesSink(late);
+        }
+      },
+    };
+    client.attachAllPanesSink(trigger);
+
+    t.feed("%output %1 first\n");
+    t.feed("%output %1 second\n");
+
+    expect(late.messages).toHaveLength(1);
+    expect(new TextDecoder().decode(late.messages[0]!.data)).toBe("second");
+  });
+
+  it("non-byte messages do not reach the multiplexer", () => {
+    // The multiplexer is byte-only by contract — the registry's dispatch
+    // is gated on `isPaneOutput(msg)`. Non-byte tmux events (window-add,
+    // session-changed, etc.) flow through the emitter, not here.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const mux = createRecordingMux();
+    client.attachAllPanesSink(mux);
+
+    t.feed("%window-add @5\n");
+    t.feed("%session-changed $1 my-session\n");
+    expect(mux.messages).toHaveLength(0);
+
+    t.feed("%output %1 bytes\n");
+    expect(mux.messages).toHaveLength(1);
+  });
+
+  it("supports multiple multiplexers in attachment order", () => {
+    // Forwarders (a bridge) and observability (a byte counter) might both
+    // want all-panes attachment. Each multiplexer is independent.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const a = createRecordingMux();
+    const b = createRecordingMux();
+    const order: string[] = [];
+    const aTagged: PaneByteMultiplexer = {
+      write(msg): void {
+        order.push("a");
+        a.messages.push({ ...msg, data: msg.data.slice() });
+      },
+    };
+    const bTagged: PaneByteMultiplexer = {
+      write(msg): void {
+        order.push("b");
+        b.messages.push({ ...msg, data: msg.data.slice() });
+      },
+    };
+    client.attachAllPanesSink(aTagged);
+    client.attachAllPanesSink(bTagged);
+
+    t.feed("%output %1 x\n");
+
+    expect(order).toEqual(["a", "b"]);
+    expect(a.messages).toHaveLength(1);
+    expect(b.messages).toHaveLength(1);
   });
 });
