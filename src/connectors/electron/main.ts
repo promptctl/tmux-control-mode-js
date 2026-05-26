@@ -32,13 +32,12 @@
 // from ../rpc.js; subscription/refcount/watermark from ../bridge-connection.js.
 
 import type { TmuxClient } from "../../client.js";
-import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
+import type { EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import type { PaneByteSink } from "../../pane-sink.js";
-import {
-  asPaneOutput,
-  type CommandResponse,
-  type TmuxMessage,
+import type { PaneByteMultiplexer, PaneByteSink } from "../../pane-sink.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
 } from "../../protocol/types.js";
 import {
   parseRpcRequest,
@@ -327,22 +326,33 @@ export function createMainBridge(
 
   // -------------------------------------------------------------------------
   // Event forwarding.
+  //
+  // Two channels, disjoint by message type:
+  //   - `forwardState` (`client.on('*', …)`) for every non-byte message.
+  //     `EmitterMessage` excludes `PaneOutputMessage`, so this handler
+  //     cannot accidentally receive bytes — the type system enforces it.
+  //   - `forwardBytes` (`client.attachAllPanesSink(…)`) for every byte
+  //     chunk on every pane. The multiplexer surface is the legitimate
+  //     "I want all bytes" attachment shape; per-pane sinks are for
+  //     consumers that own a single pane, not for forwarders.
+  //
+  // Both write to IPC.event so the renderer's event handler sees a single
+  // stream (the renderer narrows on `isPaneOutput`). The wire format is the
+  // boundary type that admits both, but the local emitter on either side
+  // never carries bytes through its API.
   // -------------------------------------------------------------------------
 
-  const forward = (msg: EmitterMessage): void => {
-    // Synthetic lifecycle events have no pane bytes; account returns null
-    // for non-output messages anyway, but isTmuxMessage narrows the type for
-    // byteAccount which requires TmuxMessage.
-    const accounted = isTmuxMessage(msg) ? byteAccount(msg) : null;
-    // [LAW:dataflow-not-control-flow] One pass over senders, every message,
-    // unconditionally. Senders that aren't subscribed are skipped via the
-    // data flag (state.isSubscribed) — the loop body is the same shape.
-    //
+  // [LAW:dataflow-not-control-flow] One snapshot helper shared by both
+  // channels — same iteration, same liveness check, same subscribed gate.
+  // Variability lives in the per-message work each channel does, not in
+  // the broadcast plumbing.
+  const broadcast = (
+    msg: EmitterMessage | PaneOutputMessage,
+    perSender: ((state: SenderState) => void) | null,
+  ): void => {
     // Snapshot the senders entries before iterating: teardownSender below
     // calls senders.delete(wc), and a destroyed wc detected mid-loop must
-    // not perturb the iteration order of the rest of the senders. V8
-    // Maps tolerate delete-during-iteration today; this snapshot makes
-    // the invariant explicit and survives engine quirks.
+    // not perturb the iteration order of the rest of the senders.
     const snapshot = [...senders];
     for (const [wc, state] of snapshot) {
       // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
@@ -353,17 +363,28 @@ export function createMainBridge(
         continue;
       }
       if (!state.isSubscribed) continue;
-      // Account output bytes per (renderer, pane) BEFORE wc.send so that an
-      // ack arriving synchronously during send subtracts from the right
-      // baseline. Non-output messages produce null accounting.
-      if (accounted !== null) {
-        bridge.accountOutput(state.peer, accounted.paneId, accounted.bytes);
-      }
+      // For byte messages: account bytes per (renderer, pane) BEFORE
+      // wc.send so that an ack arriving synchronously during send
+      // subtracts from the right baseline.
+      perSender?.(state);
       wc.send(IPC.event, msg);
     }
   };
 
-  client.on("*", forward);
+  const forwardState = (msg: EmitterMessage): void => {
+    broadcast(msg, null);
+  };
+
+  const forwardBytes: PaneByteMultiplexer = {
+    write(msg) {
+      broadcast(msg, (state) => {
+        bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
+      });
+    },
+  };
+
+  client.on("*", forwardState);
+  const detachByteForwarder = client.attachAllPanesSink(forwardBytes);
 
   // -------------------------------------------------------------------------
   // Subscribe / unsubscribe / ack channel handlers.
@@ -531,7 +552,8 @@ export function createMainBridge(
 
   return {
     dispose() {
-      client.off("*", forward);
+      client.off("*", forwardState);
+      detachByteForwarder();
       ipcMain.removeListener(IPC.register, onRegisterListener);
       ipcMain.removeListener(IPC.unregister, onUnregisterListener);
       ipcMain.removeListener(IPC.ack, onAckListener);
@@ -567,18 +589,6 @@ export function createMainBridge(
       }
     },
   };
-}
-
-// [LAW:single-enforcer] The discriminator check itself lives in
-// asPaneOutput (src/protocol/types.ts). This function is the bytes-shaped
-// projection main.ts's accounting loop wants — paneId + payload size.
-function byteAccount(
-  msg: TmuxMessage,
-): { paneId: number; bytes: number } | null {
-  const out = asPaneOutput(msg);
-  return out === null
-    ? null
-    : { paneId: out.paneId, bytes: out.data.byteLength };
 }
 
 // ---------------------------------------------------------------------------
