@@ -211,8 +211,9 @@ export interface PaneByteMultiplexer {
 //   bookkeeping — that would let them drift apart from `TmuxClient` and
 //   from each other.
 // [LAW:one-source-of-truth] The registry IS the per-pane attachment state.
-//   `attach` and `attachAllPanesSink` are the sole writers; the returned
-//   disposers are the sole deleters; `dispatch` is the sole reader.
+//   `attach` and `attachAllPanes` are the sole writers (the public TmuxClient
+//   methods `attachPaneSink` / `attachAllPanesSink` delegate to them); the
+//   returned disposers are the sole deleters; `dispatch` is the sole reader.
 // [LAW:locality-or-seam] The `PaneByteSink` and `PaneByteMultiplexer`
 //   contracts are the seam. The fact that bridges deliver bytes via parsed
 //   `output` messages while TmuxClient delivers them directly from the
