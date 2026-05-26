@@ -305,11 +305,26 @@ export enum PaneAction {
  * [LAW:single-enforcer] The discriminator literal "output"|"extended-output"
  * appears in this file ONLY. Every connector consumer (electron main /
  * renderer / WS server) routes the question through here so the test cannot
- * drift between sites. As a TypeScript predicate it also narrows the
- * **else** branch to `Exclude<TmuxMessage, PaneOutputMessage>`, which is
- * what the WS server's onTmuxEvent needs to feed into the JSON-event path.
+ * drift between sites.
+ *
+ * The generic parameter preserves the caller's input type so the else
+ * branch narrows correctly for any union containing `PaneOutputMessage`:
+ *   - `TmuxMessage` input → else is `EmitterTmuxMessage` (emitter accepts it)
+ *   - `EmitterMessage | PaneOutputMessage` input (the IPC wire boundary)
+ *     → else is `EmitterMessage`
+ *
+ * The return type uses `Extract<M, PaneOutputMessage>` rather than
+ * `M & PaneOutputMessage` so the predicate is sound: a caller passing a
+ * union that does NOT contain `PaneOutputMessage` (e.g. `EmitterMessage`,
+ * or an object literal `{ type: "output" }` that is structurally
+ * incompatible with the real message shape) narrows to `never` in the
+ * true branch. That correctly reports the if-branch as unreachable
+ * instead of fabricating a `PaneOutputMessage` from a value that does
+ * not carry `paneId`/`data`.
  */
-export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
+export function isPaneOutput<M extends { readonly type: string }>(
+  msg: M,
+): msg is Extract<M, PaneOutputMessage> {
   return msg.type === "output" || msg.type === "extended-output";
 }
 
@@ -319,8 +334,15 @@ export function isPaneOutput(msg: TmuxMessage): msg is PaneOutputMessage {
  * Use this when the consumer's natural shape is `out === null ? skip : use`
  * (e.g. ack accounting); use `isPaneOutput` when you also need the
  * else-branch narrowing.
+ *
+ * Same soundness reasoning as `isPaneOutput`: `Extract<M, PaneOutputMessage>`
+ * yields `never` when the input union cannot actually carry a
+ * `PaneOutputMessage`, so a caller cannot fabricate a typed value from a
+ * structurally incompatible shape.
  */
-export function asPaneOutput(msg: TmuxMessage): PaneOutputMessage | null {
+export function asPaneOutput<M extends { readonly type: string }>(
+  msg: M,
+): Extract<M, PaneOutputMessage> | null {
   return isPaneOutput(msg) ? msg : null;
 }
 

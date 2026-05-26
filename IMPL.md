@@ -253,18 +253,25 @@ class TmuxClient {
   on<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
   off<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
 
-  // Pane-byte subscription — the canonical surface. `client.on('output', …)`
-  // and `client.on('extended-output', …)` carry `@deprecated` JSDoc tags
-  // pointing here; they continue to fire and will be removed in the next
-  // minor. Use `attachPaneSink` directly with a built-in sink:
+  // Pane-byte subscription — the SOLE channel. `OutputMessage` and
+  // `ExtendedOutputMessage` are excluded from `TmuxEventMap`, so
+  // `client.on('output', …)` is a TS error (the key is not in the map),
+  // and the wildcard `client.on('*', …)` listener's argument type is
+  // `EmitterMessage` which also excludes `PaneOutputMessage` — narrowing
+  // on `msg.type === 'output'` produces `never`. Pane-byte misdecode is
+  // structurally unreachable from any emitter path.
+  //
+  // Use `attachPaneSink(paneId, sink)` for one-pane consumers (xterm
+  // renderers, log capture, regex matchers). Use `attachAllPanesSink(mux)`
+  // when you need bytes from every pane — bridges, observability,
+  // archives. Built-in sinks:
   //   - `createTextStreamSink`   from the package root
   //   - `attachWebContentsSink`  from `@promptctl/tmux-control-mode-js/electron/main`
   //   - `attachWebSocketSink`    from `@promptctl/tmux-control-mode-js/websocket`
   //   - `XtermSink`              from `@promptctl/pane-terminal/xterm-sink`
-  // Sinks fire synchronously before the deprecated event and are fail-
-  // isolated from a throwing event listener. Multiple sinks per pane;
-  // returns a per-attachment idempotent disposer.
+  // Multiple sinks per pane; returns a per-attachment idempotent disposer.
   attachPaneSink(paneId: number, sink: PaneByteSink): () => void;
+  attachAllPanesSink(mux: PaneByteMultiplexer): () => void;
 
   // Command execution with response tracking
   execute(command: string): Promise<CommandResponse>;
