@@ -68,6 +68,22 @@ export type FakeMessage =
 
 export type FakeMessageType = FakeMessage["type"];
 
+/**
+ * Subset of `FakeMessage` that flows through the emitter — pane bytes are
+ * excluded, mirroring production's `EmitterMessage` (which `Exclude`s
+ * `PaneOutputMessage`). Wildcard `'*'` listeners on a `FakeTmuxClient` see
+ * only this type, so test code cannot accidentally exercise a byte-delivery
+ * path that production does not have.
+ *
+ * [LAW:types-are-the-program] If a future bench test wants pane bytes, it
+ * must attach a `PaneByteSink` (or `PaneByteMultiplexer`) — the wildcard
+ * surface refuses to carry them, same as production.
+ */
+export type FakeEmitterMessage = Exclude<
+  FakeMessage,
+  FakeOutputMessage | FakeExtendedOutputMessage
+>;
+
 type Handler<T> = (ev: T) => void;
 
 /**
@@ -132,11 +148,15 @@ export class FakeTmuxClient {
   //
   // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
   // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
+  // The wildcard `'*'` overload's handler argument is `FakeEmitterMessage`,
+  // which excludes byte messages — same shape as production's
+  // `EmitterMessage`. Test code cannot accidentally rely on wildcard byte
+  // delivery that real clients refuse.
   on<K extends keyof TmuxEventMap>(
     type: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  on(type: "*", handler: Handler<FakeMessage>): void;
+  on(type: "*", handler: Handler<FakeEmitterMessage>): void;
   on(type: string, handler: Handler<never>): void {
     const set = this.listeners.get(type as FakeMessageType) ?? new Set();
     set.add(handler as Handler<FakeMessage>);
@@ -147,7 +167,7 @@ export class FakeTmuxClient {
     type: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
-  off(type: "*", handler: Handler<FakeMessage>): void;
+  off(type: "*", handler: Handler<FakeEmitterMessage>): void;
   off(type: string, handler: Handler<never>): void {
     this.listeners
       .get(type as FakeMessageType)
@@ -310,23 +330,19 @@ export class FakeTmuxClient {
   // -------------------------------------------------------------------------
 
   private dispatch(msg: FakeMessage): void {
-    // [LAW:single-enforcer] Sinks fire BEFORE the per-type listener
-    //   fan-out, matching `TmuxClient.handleMessage` and every bridge.
-    //   The registry's pre-emit snapshot isolates the per-chunk
-    //   attachment set from re-entrant attach/detach inside `sink.write`,
-    //   and running before `listeners` keeps canonical sink delivery
-    //   resilient to throws in deprecated `on('output', …)` listeners.
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
+    //   registry — same channel discipline as `TmuxClient.handleMessage`
+    //   and every bridge. The wildcard `'*'` listener (typed against
+    //   `FakeEmitterMessage`) cannot reach byte messages, matching
+    //   production where `EmitterMessage` excludes `PaneOutputMessage`.
     //
-    // [LAW:types-are-the-program] Narrow to the pane-byte variants
-    //   before handing off — `FakeOutputMessage` / `FakeExtendedOutputMessage`
-    //   ARE `OutputMessage` / `ExtendedOutputMessage` (see the type
-    //   aliases above), so the narrowed value is a structural
-    //   `TmuxMessage` with no cast. Fake-only variants
-    //   (`FakeConnectionStateMessage`, `FakeReconnectedMessage`) never
-    //   reach `dispatch`, which is correct — the registry would no-op on
-    //   them anyway.
+    // [LAW:types-are-the-program] `FakeOutputMessage` /
+    //   `FakeExtendedOutputMessage` ARE `OutputMessage` /
+    //   `ExtendedOutputMessage` (see the type aliases above), so the
+    //   narrowed value is a structural `TmuxMessage` with no cast.
     if (msg.type === "output" || msg.type === "extended-output") {
       this.paneSinks.dispatch(msg);
+      return;
     }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
     this.listeners.get("*")?.forEach((h) => h(msg));
