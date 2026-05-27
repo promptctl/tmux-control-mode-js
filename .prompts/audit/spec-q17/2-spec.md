@@ -354,4 +354,11 @@
 ## Source-level bugs surfaced (separate from spec findings)
 
 - src/protocol/types.ts:237 — the union-comment "Discriminated Union — all 28 server-to-client message types" is a count-comment. Counting the union members on lines 241-269 yields 28, so the comment is currently accurate, but per the project's `comments-explain-why-only` law (and the recent commit a01fadf "docs: strip '28 message types' count across 5 sites"), in-source count comments are forbidden. This was already flagged in the inner-audit report's "Source-level bugs surfaced" section; restating here for cross-layer continuity.
-- src/transport/spawn.ts:111 — the `-CC` refusal error message says "See SPEC.md §12 for details." but SPEC.md §12 does not itself say `-CC` is refused (see F4 above). The source's claim about what SPEC §12 contains is wrong until F4 is remediated; either the message should be updated or §12 should be expanded so the cross-reference is accurate.
+- src/transport/spawn.ts:111 — the `-CC` refusal error message says "See SPEC.md §12 for details." but SPEC.md §12 does not itself say `-CC` is refused (see F4 above). The source's claim about what SPEC §12 contains is wrong until F4 is remediated; either the message should be updated or §12 should be expanded so the cross-reference is accurate. **Post-remediation note (x5u.4)**: §12.1 was added by PR #50; the cross-reference is now accurate (§12 as a section now covers the refusal via §12.1). A future cleanup could narrow the error message pointer to `§12.1` but the current `§12` link is no longer wrong.
+
+## Remediation status (ticket tmux-audit-x5u.5)
+
+- Applied: F1 (§26 Library API Surface added), F3 (§11.1 library mapping added), F5 (§15.1 version floor noted), F9 (§23.1 synthetic events added), F10 (§9 wait-exit row annotated with `detach()`)
+- Deferred: none
+- Rejected: none
+- Previously applied (prior tickets x5u.2–x5u.4): F2, F4, F6, F7, F8, F11, F12
