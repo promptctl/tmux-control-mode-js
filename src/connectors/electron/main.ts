@@ -724,8 +724,8 @@ export function attachWebContentsSink(
       // `createMainBridge` forward loop uses for the same reason. Not a
       // workaround for a missing invariant; the lifecycle is external.
       if (wc.isDestroyed()) return;
-      const envelope: PaneBytesEnvelope = { paneId, data: msg.data };
-      wc.send(IPC.paneBytes, envelope);
+      // [LAW:one-source-of-truth] msg IS the envelope — send it directly.
+      wc.send(IPC.paneBytes, msg);
     },
     end(): void {
       // [LAW:one-source-of-truth] `end()` is the library's once-per-
