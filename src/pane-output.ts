@@ -76,7 +76,9 @@ export type PaneScope =
 // [LAW:one-source-of-truth] Consumers reach for these factories, never for
 //   object literals, so the union's shape is the one canonical definition.
 /** Subscribe to all panes on the tmux server, including future sessions. Default scope. */
-export const serverScope: PaneScope = Object.freeze({ kind: "server" } as const);
+export const serverScope: PaneScope = Object.freeze({
+  kind: "server",
+} as const);
 
 /** Subscribe to all panes in the given session, including future panes. */
 export function sessionScope(sessionId: number): PaneScope {
@@ -111,7 +113,10 @@ export interface AttachOptions {
  * Topology metadata for a single pane — the session and window it currently
  * belongs to.
  */
-export interface PaneMeta { readonly sessionId: number; readonly windowId: number }
+export interface PaneMeta {
+  readonly sessionId: number;
+  readonly windowId: number;
+}
 
 /**
  * Maintains the paneId → {sessionId, windowId} table from bootstrap queries
@@ -179,7 +184,10 @@ export class PaneTopologyManager {
     // updated the entry — if so, that newer mapping is authoritative.
     if (prev !== undefined) {
       for (const paneId of prev) {
-        if (!next.has(paneId) && this.table.get(paneId)?.windowId === windowId) {
+        if (
+          !next.has(paneId) &&
+          this.table.get(paneId)?.windowId === windowId
+        ) {
           this.table.delete(paneId);
         }
       }

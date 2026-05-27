@@ -34,10 +34,7 @@
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import {
-  paneScope,
-  type BytesSink,
-} from "../../pane-output.js";
+import { paneScope, type BytesSink } from "../../pane-output.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
@@ -739,7 +736,9 @@ export function attachWebContentsSink(
     },
   };
 
-  const attachDispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
+  const attachDispose = client.attachBytesSink(sink, {
+    scope: paneScope(paneId),
+  });
 
   let disposed = false;
   return () => {
