@@ -34,10 +34,14 @@ import { emptyKeysResponse } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import {
-  PaneSinkRegistry,
-  type PaneByteSink,
-  type PaneByteMultiplexer,
-} from "./pane-sink.js";
+  SinkRegistry,
+  PaneTopologyManager,
+  serverScope,
+  parsePaneListLine,
+  TopologyEpochTracker,
+  type AttachOptions,
+  type BytesSink,
+} from "./pane-output.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
@@ -86,16 +90,17 @@ export class TmuxClient {
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
 
-  // [LAW:single-enforcer] Fan-out for pane bytes lives in `PaneSinkRegistry`
-  //   (see src/pane-sink.ts). The same registry implementation is owned by
-  //   every emitter-backed bridge (TmuxClientProxy, WebSocketTmuxClient,
-  //   BridgePaneStreamClient, FakeTmuxClient), so all `TmuxClientLike`
-  //   implementations enforce the same per-attachment lifecycle, pre-emit
-  //   snapshot, and throw-isolation from event-emitter listeners.
-  // [LAW:one-source-of-truth] `attachPaneSink` delegates to
-  //   `paneSinks.attach`; `handleMessage` delegates pane-byte dispatch to
-  //   `paneSinks.dispatch`. No second per-pane attachment state exists.
-  private readonly paneSinks = new PaneSinkRegistry();
+  // [LAW:single-enforcer] Fan-out for pane bytes lives in `SinkRegistry`
+  //   (see src/pane-output.ts). The same registry implementation is owned by
+  //   every TmuxClientLike (WebSocketTmuxClient, TmuxClientProxy,
+  //   BridgePaneStreamClient, FakeTmuxClient), so all implementations enforce
+  //   the same per-attachment lifecycle and pre-dispatch snapshot discipline.
+  // [LAW:one-source-of-truth] `attachBytesSink` delegates to `sinks.attach`;
+  //   `handleMessage` delegates pane-byte dispatch to `sinks.dispatch` with
+  //   `topology.get(paneId)`. No second attachment state or topology table.
+  private readonly sinks = new SinkRegistry();
+  private readonly topology = new PaneTopologyManager();
+  private readonly topologyEpoch = new TopologyEpochTracker();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -146,6 +151,59 @@ export class TmuxClient {
     if (sameConnectionState(this.currentConnectionState, next)) return;
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
+    // [LAW:dataflow-not-control-flow] Bootstrap fires on ready transition only
+    // when topology-dependent (session/window) sinks are attached. No such
+    // sinks = no bootstrap = no extra command. When the first session/window
+    // sink is attached after ready, attachBytesSink triggers bootstrap there.
+    if (next.status === "ready" && this.sinks.hasTopologyDependentSinks()) {
+      void this.bootstrapTopology();
+    }
+  }
+
+  // Bootstrap the topology table from a full server-wide pane listing.
+  // Fire-and-forget; called on every "ready" transition. Failure is
+  // non-fatal: topology remains empty until the next event or bootstrap.
+  private async bootstrapTopology(): Promise<void> {
+    const gen = this.topologyEpoch.startBootstrap();
+    try {
+      const r = await this.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      // [LAW:dataflow-not-control-flow] gen is the epoch value that proves this
+      // result is still authoritative. A window-close notification in the same
+      // I/O frame may have fired synchronously before this microtask — if so,
+      // the epoch advanced and this stale snapshot must not clobber the correct
+      // synchronous update.
+      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null ? [parsed] : [];
+      });
+      this.topology.seed(entries);
+    } catch {
+      // Non-fatal: topology races are handled at dispatch time.
+    }
+  }
+
+  // Refresh topology for one window (triggered by layout-change / window-add).
+  // On error, removes the window's panes (they may have closed).
+  private async refreshWindowTopology(windowId: number): Promise<void> {
+    const gen = this.topologyEpoch.startWindowRefresh(windowId);
+    try {
+      const r = await this.execute(
+        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
+      );
+      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null
+          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
+          : [];
+      });
+      this.topology.updateWindow(windowId, entries);
+    } catch {
+      this.topology.removeWindow(windowId);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -182,51 +240,41 @@ export class TmuxClient {
   // ---------------------------------------------------------------------------
   // Pane-byte subscriptions — the sole channel
   //
-  // [LAW:one-source-of-truth] `attachPaneSink` (per-pane) and
-  //   `attachAllPanesSink` (forwarder/multiplexer) are the only way to
-  //   receive pane bytes. The emitter's type surface excludes
-  //   `PaneOutputMessage` so byte messages cannot flow through `on(...)`.
-  // [LAW:dataflow-not-control-flow] Variability lives in *which sink is
-  //   attached* (a value of `PaneByteSink` or `PaneByteMultiplexer` type),
-  //   never in *how a caller decodes bytes* (control flow scattered across
-  //   every consumer).
+  // [LAW:one-source-of-truth] `attachBytesSink` is the only way to receive
+  //   pane bytes. The emitter's type surface excludes `PaneOutputMessage` so
+  //   byte messages cannot flow through `on(...)`.
+  // [LAW:dataflow-not-control-flow] Variability lives in the `BytesSink`
+  //   value and the `PaneScope` value, never in how a caller decodes bytes
+  //   or which method they call.
   // ---------------------------------------------------------------------------
 
   /**
-   * Attach a sink to receive post-octal-decode bytes for one pane.
+   * Attach a `BytesSink` to receive pane chunks matching the given scope.
    *
-   * Multiple sinks may be attached to the same pane; they receive every
-   * chunk in attachment order. Returns a disposer that detaches *this
-   * specific* sink (other sinks for the same pane keep receiving bytes)
-   * and invokes `sink.end?.()` exactly once. The disposer is idempotent —
-   * a second call is a no-op.
+   * `options.scope` defaults to `serverScope` (all panes on the server,
+   * including future sessions). Use `paneScope(id)`, `windowScope(id)`, or
+   * `sessionScope(id)` to narrow the subscription.
    *
-   * Both `%output` and `%extended-output` route through this path. The
-   * `extended-output` `age` field is dropped — the sink contract is
-   * bytes-only. If a caller needs the age (forwarder bridges typically
-   * do), use `attachAllPanesSink` with a `PaneByteMultiplexer` instead.
+   * Returns an idempotent disposer. `sink.end?.()` is called exactly once
+   * when the disposer fires. Multiple sinks may be attached concurrently;
+   * each is independent.
    *
-   * @see PaneByteSink for the contract sinks must satisfy.
+   * @see BytesSink for the contract sinks must satisfy.
+   * @see PaneScope for the scope options.
    */
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return this.paneSinks.attach(paneId, sink);
-  }
-
-  /**
-   * Attach a multiplexer to receive every pane-byte chunk for every pane
-   * on this client. The multiplexer's `write(msg)` receives the full
-   * `PaneOutputMessage` (including `paneId`, `type` discriminator, and the
-   * `age` field on extended-output), which is what forwarders — WebSocket
-   * bridges, Electron main forwarders, byte archives — need to faithfully
-   * reconstruct the message downstream.
-   *
-   * Per-pane consumers should use `attachPaneSink` instead. Reach for
-   * `attachAllPanesSink` only when you genuinely need every pane.
-   *
-   * @see PaneByteMultiplexer for the contract.
-   */
-  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
-    return this.paneSinks.attachAllPanes(mux);
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
+    const scope = options?.scope ?? serverScope;
+    const dispose = this.sinks.attach(sink, scope);
+    // [LAW:dataflow-not-control-flow] Lazy bootstrap: if the first
+    // topology-dependent sink is attached while client is already ready,
+    // bootstrap now so the new sink can route by session/window.
+    if (
+      (scope.kind === "session" || scope.kind === "window") &&
+      this.currentConnectionState.status === "ready"
+    ) {
+      void this.bootstrapTopology();
+    }
+    return dispose;
   }
 
   // ---------------------------------------------------------------------------
@@ -425,20 +473,47 @@ export class TmuxClient {
     }
 
     // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
-    //   registry. The emitter's type surface excludes `PaneOutputMessage`
-    //   (`EmitterMessage` is defined as `EmitterTmuxMessage | …` where
-    //   `EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>`),
-    //   so attempting to pass a byte message to `emit` is a compile error.
-    //   The two channels — sinks for bytes, emitter for state — are
-    //   disjoint by message type, and `isPaneOutput`'s narrowing is what
-    //   makes the disjointness check explicit at this site.
-    // [LAW:dataflow-not-control-flow] `paneSinks.dispatch` internally
-    //   snapshots the per-chunk attachment set before iterating, so
-    //   mutations to `paneSinks` (a sink's `write` calling attach/dispose)
-    //   cannot back-fill or skip the current chunk.
+    //   registry. `EmitterMessage` excludes `PaneOutputMessage` so passing a
+    //   byte message to `emit` is a compile error. The two channels — sinks
+    //   for bytes, emitter for state events — are disjoint by message type.
+    // [LAW:dataflow-not-control-flow] `sinks.dispatch` takes the topology
+    //   lookup result as a value; the dispatch path is the same shape on every
+    //   chunk regardless of which buckets match.
     if (isPaneOutput(msg)) {
-      this.paneSinks.dispatch(msg);
+      this.sinks.dispatch(msg, this.topology.get(msg.paneId));
       return;
+    }
+
+    // [LAW:one-source-of-truth] Topology events update the single topology
+    //   table. layout-change / window-add trigger async re-queries; window-close
+    //   / unlinked-window-close remove entries synchronously; sessions-changed
+    //   triggers a full bootstrap re-run.
+    if (msg.type === "layout-change") {
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.refreshWindowTopology(msg.windowId);
+      }
+    } else if (
+      msg.type === "window-add" ||
+      msg.type === "unlinked-window-add"
+    ) {
+      // [LAW:one-source-of-truth] A newly created window's pane is not yet in
+      //   the topology table. Seed it now so the first bytes from the new pane
+      //   route correctly to session/window-scoped sinks.
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.refreshWindowTopology(msg.windowId);
+      }
+    } else if (
+      msg.type === "window-close" ||
+      msg.type === "unlinked-window-close"
+    ) {
+      this.topology.removeWindow(msg.windowId);
+      // [LAW:dataflow-not-control-flow] This synchronous removal invalidates any
+      // in-flight bootstrap or window-refresh that would re-add the closed panes.
+      this.topologyEpoch.invalidateWindow(msg.windowId);
+    } else if (msg.type === "sessions-changed") {
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.bootstrapTopology();
+      }
     }
 
     this.emitter.emit(msg);
@@ -457,12 +532,9 @@ export class TmuxClient {
 //   surfaces as a compile error at every consumer's call site — no hand-typed
 //   mirror, no drift.
 // [LAW:types-are-the-program] subscribe/unsubscribe are mandatory because
-//   they are a paired capability: a consumer that subscribes must be able to
-//   unsubscribe at dispose. Optionality on either method would force a runtime
-//   probe at every callsite; making them mandatory eliminates the probe.
-//   `attachPaneSink` is mandatory for the same reason — pane-byte consumption
-//   is the canonical surface, so every TmuxClient-shaped object must offer it
-//   and every consumer (PaneStream is the in-repo one) routes through it.
+//   they are a paired capability. `attachBytesSink` is mandatory — every
+//   TmuxClientLike must offer it; consumers that subscribe to pane bytes
+//   depend on it as the canonical surface.
 //
 // Both bridge classes (`WebSocketTmuxClient`, `TmuxClientProxy`) declare
 // `implements TmuxClientLike` so the overload set on `on`/`off` is checked at
@@ -477,6 +549,5 @@ export type TmuxClientLike = Pick<
   | "execute"
   | "subscribeRaw"
   | "unsubscribe"
-  | "attachPaneSink"
-  | "attachAllPanesSink"
+  | "attachBytesSink"
 >;
