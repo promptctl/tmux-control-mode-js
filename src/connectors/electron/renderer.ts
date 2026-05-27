@@ -499,9 +499,9 @@ const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<IpcRendererLike, Set<number>>();
  * `WebContentsSink` and forward each chunk into `sink`.
  *
  * Listens on `IPC.paneBytes` and `IPC.paneEnd`, filters every inbound
- * envelope by `paneId`, and calls `sink.write(bytes)` / `sink.end?.()` for
- * matching frames. `Uint8Array` payloads survive Electron's structured
- * clone — the receiver does not copy.
+ * envelope by `paneId`, and calls `sink.write(msg)` / `sink.end?.()` for
+ * matching frames. The envelope is a `PaneOutputMessage` (including `type`
+ * and `age` for `extended-output`); all fields survive structured clone.
  *
  * ## Exclusivity (one receiver per `(ipcRenderer, paneId)`)
  *
@@ -568,7 +568,8 @@ export function createPaneBytesReceiver(
   const onBytes: IpcRendererOnListener = (_event, ...args) => {
     const envelope = args[0] as PaneBytesEnvelope;
     if (envelope.paneId !== paneId) return;
-    sink.write({ type: "output", paneId, data: envelope.data });
+    // [LAW:one-source-of-truth] envelope IS a PaneOutputMessage; forward as-is.
+    sink.write(envelope);
   };
 
   const onEnd: IpcRendererOnListener = (_event, ...args) => {
