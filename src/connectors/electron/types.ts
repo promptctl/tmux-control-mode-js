@@ -15,7 +15,10 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
-import type { CommandResponse, PaneOutputMessage } from "../../protocol/types.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
+} from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { RpcRequest } from "../rpc.js";
 

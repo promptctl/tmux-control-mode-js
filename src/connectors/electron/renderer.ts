@@ -177,7 +177,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
       // proxy's `connectionState` getter is in sync with whatever fires.
       if (msg.type === "connection-state") {
         this.currentConnectionState = msg.state;
-        if (msg.state.status === "ready" && this.sinks.hasTopologyDependentSinks()) {
+        if (
+          msg.state.status === "ready" &&
+          this.sinks.hasTopologyDependentSinks()
+        ) {
           void this.bootstrapTopology();
         }
       }

@@ -11,7 +11,12 @@ export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 
 export type { TmuxEventMap } from "./emitter.js";
 
-export type { BytesSink, AttachOptions, PaneScope, PaneMeta } from "./pane-output.js";
+export type {
+  BytesSink,
+  AttachOptions,
+  PaneScope,
+  PaneMeta,
+} from "./pane-output.js";
 export {
   serverScope,
   sessionScope,

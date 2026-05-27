@@ -107,7 +107,9 @@ function decodeFrame(data: unknown): string {
   if (data instanceof ArrayBuffer) return bytesToLatin1(new Uint8Array(data));
   if (ArrayBuffer.isView(data)) {
     const view = data as ArrayBufferView<ArrayBufferLike>;
-    return bytesToLatin1(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+    return bytesToLatin1(
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+    );
   }
   return "";
 }
