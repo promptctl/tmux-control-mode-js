@@ -110,10 +110,11 @@ describe("byte-faithfulness contract: websocketTransport (Node)", () => {
 // Spawn transport decode mechanism — Node-only (setEncoding('latin1'))
 //
 // spawnTmux sets child.stdout.setEncoding('latin1') so that Node.js's
-// Readable stream API performs the Buffer→string conversion via latin1,
-// which is 1:1 byte↔code-unit in Node.js (unlike TextDecoder('latin1')
-// which is windows-1252 in browsers). This test exercises that mechanism
-// directly via a PassThrough stream without needing actual tmux.
+// Readable stream API performs the Buffer→string conversion via Node's
+// stream latin1 encoding, which is 1:1 byte↔code-unit. In contrast,
+// WHATWG TextDecoder('latin1') maps the 'latin1' label to windows-1252 in
+// all conforming runtimes (Node, browsers, Deno), remapping 0x80-0x9F.
+// This test exercises the Node stream path via a PassThrough without tmux.
 // ---------------------------------------------------------------------------
 
 describe("byte-faithfulness contract: spawn transport decode mechanism (Node)", () => {

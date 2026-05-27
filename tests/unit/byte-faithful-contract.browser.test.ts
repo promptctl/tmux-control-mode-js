@@ -8,9 +8,10 @@
 // websocketTransport — the spawn transport is Node-only (child_process/stream).
 //
 // Purpose: guard against future "simplification" to TextDecoder('latin1').
-// Per the WHATWG Encoding Standard, 'latin1'/'iso-8859-1' is windows-1252 in
-// all conforming runtimes (Node, browsers, Deno) — 0x80-0x9F are remapped.
-// The only byte-faithful decode is String.fromCharCode (bytesToLatin1).
+// Per the WHATWG Encoding Standard, 'latin1'/'iso-8859-1' maps to windows-1252
+// in all conforming runtimes (Node, browsers, Deno) — 0x80-0x9F are remapped.
+// String.fromCharCode (bytesToLatin1) is the portable, browser-safe path.
+// (Node stream setEncoding('latin1') is also byte-faithful but Node-only.)
 //
 // [LAW:behavior-not-structure] Asserts the per-byte contract, not how the
 //   decode is implemented.
