@@ -1348,7 +1348,7 @@ All exports are available from the package root. Grouped by concern:
 | `execute` | `execute(command: string) → Promise<CommandResponse>` | Sends any raw tmux command, newline-terminated. Resolves on `%end`, rejects with `TmuxCommandError` on `%error`. |
 | `listWindows` | `listWindows() → Promise<CommandResponse>` | Sends `list-windows`. |
 | `listPanes` | `listPanes() → Promise<CommandResponse>` | Sends `list-panes`. |
-| `sendKeys` | `sendKeys(target: string, keys: string) → Promise<CommandResponse>` | Sends `send-keys -t <target> <keys>`. Empty `keys` resolves immediately without a round-trip. |
+| `sendKeys` | `sendKeys(target: string, keys: string) → Promise<CommandResponse>` | Encodes `keys` as UTF-8 hex bytes and sends `send-keys -H -t <target> <hex…>`. The `-H` flag causes tmux to interpret each argument as a two-digit hex byte, so control characters and newlines pass through literally. Empty `keys` resolves immediately without a round-trip. |
 | `splitWindow` | `splitWindow(options?: SplitOptions) → Promise<CommandResponse>` | Sends `split-window`. |
 | `setSize` | `setSize(width: number, height: number) → Promise<CommandResponse>` | Sends `refresh-client -C <width>x<height>`. See §11.1. |
 | `setPaneAction` | `setPaneAction(paneId: number, action: PaneAction) → Promise<CommandResponse>` | Sends `refresh-client -A <paneId>:<action>`. See §13. |

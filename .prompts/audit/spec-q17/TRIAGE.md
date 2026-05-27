@@ -35,11 +35,11 @@ These were applied by prior tickets x5u.2 through x5u.4 and are recorded here fo
   `execute()`. A consumer reading §11 has no idea the library surface exists.
   - Disposition: **accept**
   - Reason: Spot-checked `src/client.ts` — `setSize(cols, rows)` maps to form 1; forms 2
-    and 3 (`-C default`, `-C none`) have no typed wrapper and require `execute()`.
-    One sentence annotation resolves this cleanly.
+    and 3 (`-C @<window-id>:<width>x<height>` and `-C @<window-id>:`) have no typed wrapper
+    and require `execute()`. One sentence annotation resolves this cleanly.
 
 - **F5** (P3, incomplete): §15 Reports mentions `requestReport` but not the tmux 3.5
-  version floor. `REQUEST_REPORT_MIN_VERSION` constant exists in `client.ts`; the spec
+  version floor. `REQUEST_REPORT_MIN_VERSION` constant exists in `src/tmux-compat.ts`; the spec
   should surface it so consumers understand the compatibility constraint.
   - Disposition: **accept**
   - Reason: The version floor is a real consumer concern; the constant is exported-adjacent
