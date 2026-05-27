@@ -31,7 +31,9 @@ import type { PaneOutputMessage } from "./protocol/types.js";
  *
  * This is the appropriate contract for terminal renderers, transport
  * forwarders, and byte-faithful archives. Consumers that want UTF-8 text
- * lines should use `attachLineSink` instead — it owns the streaming decode.
+ * lines can use `createTextStreamSink` (from the package root) for a simple
+ * streaming-decode adapter; a dedicated `attachLineSink` with proper line
+ * splitting ships in a future milestone.
  *
  * ## Contract
  *

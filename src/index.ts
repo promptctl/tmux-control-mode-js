@@ -21,6 +21,8 @@ export {
   PaneTopologyManager,
 } from "./pane-output.js";
 
+export { createTextStreamSink } from "./sinks/text-stream.js";
+
 export { spawnTmux } from "./transport/spawn.js";
 export type { TmuxTransport, SpawnOptions } from "./transport/types.js";
 export {
