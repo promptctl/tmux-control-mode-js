@@ -44,6 +44,8 @@ export { TmuxParser } from "./parser.js";
 
 export { decodeOctalEscapes } from "./decode.js";
 
+export { bytesToLatin1, latin1ToBytes } from "./byte-codec.js";
+
 export {
   tmuxEscape,
   buildCommand,
