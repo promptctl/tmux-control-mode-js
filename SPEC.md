@@ -1209,7 +1209,7 @@ transport transitions. See `src/connection-state.ts` for type declarations.
 | Event name | Payload type | Description |
 |------------|--------------|-------------|
 | `connection-state` | `ConnectionStateMessage` (`{ type: "connection-state"; state: ConnectionState }`) | Emitted on every `ConnectionState` transition. `ConnectionState` is a discriminated union of four statuses: `{ status: "connecting" }` (pre-handshake), `{ status: "ready" }` (tmux is talking), `{ status: "reconnecting"; attempt: number; lastError?: Error }` (between auto-reconnect attempts; currently only WebSocket transport), `{ status: "closed"; reason: "exit" \| "transport-error" \| "disposed" }` (terminal). |
-| `reconnected` | `ReconnectedMessage` (`{ type: "reconnected" }`) | Emitted when a transport that was in `reconnecting` successfully reaches `ready` again (currently only WebSocket transport). The spawn-based `TmuxClient` never emits this. |
+| `reconnected` | `ReconnectedMessage` (`{ type: "reconnected" }`) | Emitted on every transition into `ready` after the first such transition (currently only WebSocket transport). The previous state need not be `reconnecting` — manual close→connect cycles count. The spawn-based `TmuxClient` never emits this. |
 
 These events are present in `TmuxEventMap` and are subscribable via
 `client.on("connection-state", ...)` and `client.on("reconnected", ...)` with
@@ -1333,7 +1333,7 @@ All exports are available from the package root. Grouped by concern:
 | `spawnTmux` | function | Spawns `tmux -C` via `child_process.spawn` and returns a `TmuxTransport`. Refuses `-CC` mode — see §12.1. |
 | `TmuxTransport` | type | Interface that every transport must implement; substitute a fake for unit tests. |
 | `SpawnOptions` | type | Options accepted by `spawnTmux()`. |
-| `tmuxSocketDir` | function | Returns the default tmux socket directory for the current user (`/tmp/tmux-<uid>/`). |
+| `tmuxSocketDir` | function | Returns the default tmux socket directory for the current user (`/tmp/tmux-<uid>`, no trailing separator). |
 | `listTmuxSocketNames` | function | Returns the socket names found in `tmuxSocketDir()`. |
 | `isTmuxServerAlive` | function | Probes whether a tmux server with the given socket name is reachable. |
 
