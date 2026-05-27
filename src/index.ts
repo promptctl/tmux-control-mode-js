@@ -19,6 +19,8 @@ export {
   paneScope,
   SinkRegistry,
   PaneTopologyManager,
+  TopologyEpochTracker,
+  parsePaneListLine,
 } from "./pane-output.js";
 
 export { createTextStreamSink } from "./sinks/text-stream.js";
