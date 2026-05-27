@@ -6,6 +6,39 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`attachPaneSink` and `attachAllPanesSink` removed** (replaced by
+  `attachBytesSink` with scope options).
+- **`PaneByteSink` and `PaneByteMultiplexer` removed** (both collapsed into the
+  new `BytesSink` interface — `{ write(msg: PaneOutputMessage): void; end?(): void }`).
+- **`PaneSinkRegistry` removed** (internal; replaced by `SinkRegistry` + `PaneTopologyManager`).
+
+### Added
+
+- **`attachBytesSink(sink, options?)`** on every `TmuxClientLike`. Replaces the
+  old per-pane / all-panes split with a single entry point and a scope
+  discriminator. Default scope is `serverScope` (all panes, equivalent to the
+  old `attachAllPanesSink`).
+- **`BytesSink`** — the unified byte-consumer contract exported from the package
+  root. `write(msg: PaneOutputMessage): void; end?(): void`.
+- **`PaneScope`** — discriminated union with four arms: `serverScope`,
+  `sessionScope(id)`, `windowScope(id)`, `paneScope(id)`. Exported as value
+  factory functions and as a type from the package root.
+- **`PaneTopologyManager`** — internal paneId→{sessionId,windowId} table, seeded
+  at connect time and kept up-to-date by `window-add`, `window-close`,
+  `layout-change`, and `sessions-changed` notifications.
+- **`SinkRegistry`** — scope-bifurcated dispatch: one bucket per scope kind.
+  Snapshot-before-write prevents re-entrant attach/detach from skipping or
+  double-delivering a chunk.
+- Topology bootstrap is lazy: fires only when a session- or window-scoped sink
+  is attached, so server-scope and pane-scope consumers pay zero extra cost.
+- 9 new integration tests in `tests/integration/pane-scope.test.ts` covering
+  all four scope kinds, dynamic membership (window-add), multi-scope dispatch
+  without duplication, bootstrap correctness, and the no-consumer fast path.
+
+Full design: `design-docs/pane-output-architecture.md`.
+
 ## [0.1.0]
 
 Initial public release. Implements the tmux control mode protocol as documented

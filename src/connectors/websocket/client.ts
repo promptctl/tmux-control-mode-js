@@ -58,10 +58,13 @@ import type { SplitOptions } from "../../client.js";
 import type { RpcProxyApi } from "../rpc.js";
 import type { TmuxClientLike } from "../../client.js";
 import {
-  PaneSinkRegistry,
-  type PaneByteMultiplexer,
-  type PaneByteSink,
-} from "../../pane-sink.js";
+  SinkRegistry,
+  PaneTopologyManager,
+  serverScope,
+  parsePaneListLine,
+  type AttachOptions,
+  type BytesSink,
+} from "../../pane-output.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -147,12 +150,12 @@ interface Pending {
 
 export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   private readonly emitter = new TypedEmitter();
-  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation as
-  //   `TmuxClient`. `attachPaneSink` delegates to it; `dispatchEvent`
-  //   calls `paneSinks.dispatch(msg)` before `emitter.emit(msg)` so
-  //   canonical sink delivery is snapshot-protected against re-entrant
-  //   attach/detach and isolated from throwing `on('output', …)` listeners.
-  private readonly paneSinks = new PaneSinkRegistry();
+  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
+  //   `attachBytesSink` delegates to `sinks.attach`; `dispatchEvent` calls
+  //   `sinks.dispatch(msg, topology.get(paneId))` so scope-bifurcated delivery
+  //   is snapshot-protected and isolated from throwing listeners.
+  private readonly sinks = new SinkRegistry();
+  private readonly topology = new PaneTopologyManager();
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;
@@ -249,7 +252,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   // Event subscription — matches TmuxClient.on / off exactly.
   //
   // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
-  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
+  // pane bytes flow through `attachBytesSink` only.
   // -------------------------------------------------------------------------
 
   on<K extends keyof TmuxEventMap>(
@@ -330,16 +333,19 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   // [LAW:locality-or-seam] WS pane-output frames arrive as parsed
-  //   `output` / `extended-output` messages routed through
-  //   `dispatchEvent`. `paneSinks.dispatch(msg)` is where bytes fan out
-  //   to sinks (same shape as `TmuxClient.handleMessage`); these methods
-  //   are the public entry into that registry.
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return this.paneSinks.attach(paneId, sink);
-  }
-
-  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
-    return this.paneSinks.attachAllPanes(mux);
+  //   `output` / `extended-output` messages routed through `dispatchEvent`.
+  //   `sinks.dispatch(msg, topology.get(paneId))` is where scope-bifurcated
+  //   byte fan-out happens (same shape as `TmuxClient.handleMessage`).
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
+    const scope = options?.scope ?? serverScope;
+    const dispose = this.sinks.attach(sink, scope);
+    if (
+      (scope.kind === "session" || scope.kind === "window") &&
+      this.currentState === "ready"
+    ) {
+      void this.bootstrapTopology();
+    }
+    return dispose;
   }
 
   // detach() is intentionally NOT exposed: it tears down the tmux client for
@@ -555,6 +561,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     this.transition("ready");
     this.startHeartbeat();
     this.flushOutbox();
+    if (this.sinks.hasTopologyDependentSinks()) {
+      void this.bootstrapTopology();
+    }
   }
 
   onResult(frame: ResultFrame): void {
@@ -584,16 +593,69 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   dispatchEvent(msg: TmuxMessage): void {
     // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
     //   registry, matching `TmuxClient.handleMessage`. The emitter's type
-    //   surface excludes `PaneOutputMessage`, so attempting to pass a byte
-    //   message to `emit` is a compile error; `isPaneOutput`'s narrowing
-    //   makes the disjointness explicit at this site.
+    //   surface excludes `PaneOutputMessage`, so passing a byte message to
+    //   `emit` is a compile error.
     if (isPaneOutput(msg)) {
-      this.paneSinks.dispatch(msg);
+      this.sinks.dispatch(msg, this.topology.get(msg.paneId));
       return;
+    }
+    // Topology events update the table exactly as TmuxClient.handleMessage does.
+    if (msg.type === "layout-change") {
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.refreshWindowTopology(msg.windowId);
+      }
+    } else if (
+      msg.type === "window-add" ||
+      msg.type === "unlinked-window-add"
+    ) {
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.refreshWindowTopology(msg.windowId);
+      }
+    } else if (
+      msg.type === "window-close" ||
+      msg.type === "unlinked-window-close"
+    ) {
+      this.topology.removeWindow(msg.windowId);
+    } else if (msg.type === "sessions-changed") {
+      if (this.sinks.hasTopologyDependentSinks()) {
+        void this.bootstrapTopology();
+      }
     }
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
+  }
+
+  private async bootstrapTopology(): Promise<void> {
+    try {
+      const r = await this.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null ? [parsed] : [];
+      });
+      this.topology.seed(entries);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  private async refreshWindowTopology(windowId: number): Promise<void> {
+    try {
+      const r = await this.execute(
+        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
+      );
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null
+          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
+          : [];
+      });
+      this.topology.updateWindow(windowId, entries);
+    } catch {
+      this.topology.removeWindow(windowId);
+    }
   }
 
   private onClose(event: { code?: number; reason?: string }): void {

@@ -37,7 +37,7 @@ import {
   type EmitterTmuxMessage,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import type { PaneByteMultiplexer } from "../../pane-sink.js";
+import type { BytesSink } from "../../pane-output.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
@@ -314,8 +314,8 @@ class Connection {
   private readonly rateWindow: number[] = [];
 
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
-  private readonly byteForwarder: PaneByteMultiplexer;
-  // Disposer for `client.attachAllPanesSink(this.byteForwarder)`, populated
+  private readonly byteForwarder: BytesSink;
+  // Disposer for `client.attachBytesSink(this.byteForwarder)`, populated
   // on hello (alongside `client.on('*', this.onAnyEventRef)`) and cleared
   // in finalize. Mirrors the off-pair for the state channel.
   private detachByteForwarder: (() => void) | null = null;
@@ -555,7 +555,7 @@ class Connection {
     // emitter; the byte channel rides the all-panes sink — two disjoint
     // attachments because they are two disjoint channels.
     client.on("*", this.onAnyEventRef);
-    this.detachByteForwarder = client.attachAllPanesSink(this.byteForwarder);
+    this.detachByteForwarder = client.attachBytesSink(this.byteForwarder);
 
     // Atomic state transition: pending-hello → running. From here on, every
     // call site that needs `client`/`ctx`/`bridge`/`peer` reads them off

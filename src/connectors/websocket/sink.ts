@@ -39,7 +39,7 @@
 // invariant compensated for in the body.
 
 import type { TmuxClient } from "../../client.js";
-import type { PaneByteSink } from "../../pane-sink.js";
+import { paneScope, type BytesSink } from "../../pane-output.js";
 
 import { BridgeError } from "../errors.js";
 import { encodePaneOutput } from "./protocol.js";
@@ -96,13 +96,13 @@ const ACTIVE_WEBSOCKET_SINKS = new WeakMap<WebSocketSinkTarget, Set<number>>();
  * pane-output frames (the wire format defined by `encodePaneOutput` in
  * `./protocol.ts`).
  *
- * Internally constructs a sink that turns each `attachPaneSink`-delivered
- * chunk into one `ws.send(encodePaneOutput({ type: 'output', paneId, data }))`
- * binary frame, calls `client.attachPaneSink(paneId, sink)`, and returns
- * a disposer that unwinds the attachment. The sink instance is never
- * exposed: the closure owns it, so it cannot be attached more than once.
- * The wire's `paneId`-scoped envelope and the attachment's lifecycle are
- * 1:1 by construction.
+ * Internally constructs a `BytesSink` that turns each chunk into one
+ * `ws.send(encodePaneOutput({ type: 'output', paneId, data }))` binary
+ * frame, calls `client.attachBytesSink(sink, { scope: paneScope(paneId) })`,
+ * and returns a disposer that unwinds the attachment. The sink instance is
+ * never exposed: the closure owns it, so it cannot be attached more than
+ * once. The wire's `paneId`-scoped envelope and the attachment's lifecycle
+ * are 1:1 by construction.
  *
  * Reading bytes back: the WS bridge's matching browser-side path
  * (`WebSocketTmuxClient`) detects the magic byte via `isPaneOutputFrame`
@@ -152,10 +152,9 @@ const ACTIVE_WEBSOCKET_SINKS = new WeakMap<WebSocketSinkTarget, Set<number>>();
  *
  * @returns A disposer that unwinds the attachment and frees the
  *   `(ws, paneId)` slot. Idempotent.
- * @see PaneByteSink for the underlying sink contract.
+ * @see BytesSink for the underlying sink contract.
  * @see attachWebContentsSink (`../electron/main.ts`) for the matching
  *   Electron-side primitive.
- * @see TmuxClient.attachPaneSink for the attach API the disposer wraps.
  */
 export function attachWebSocketSink(
   client: TmuxClient,
@@ -178,17 +177,17 @@ export function attachWebSocketSink(
 
   // [LAW:one-source-of-truth] No wire-level `paneEnd` frame exists for
   // this protocol; the bridge surfaces pane teardown via the JSON event
-  // channel. `PaneByteSink.end` is optional and intentionally omitted —
+  // channel. `BytesSink.end` is optional and intentionally omitted —
   // the disposer below frees the registry slot, which is the only
   // teardown work this sink owns.
-  const sink: PaneByteSink = {
-    write(bytes): void {
+  const sink: BytesSink = {
+    write(msg): void {
       // [LAW:no-defensive-null-guards] `readyState` is a trust-boundary
       // check on the WebSocket lifecycle — same shape the bridge's
       // `wsSend` chokepoint uses for the same reason. Not a workaround
       // for a missing invariant; the lifecycle is external.
       if (ws.readyState !== WEBSOCKET_OPEN) return;
-      const frame = encodePaneOutput({ type: "output", paneId, data: bytes });
+      const frame = encodePaneOutput({ type: "output", paneId, data: msg.data });
       try {
         ws.send(frame);
       } catch {
@@ -199,7 +198,7 @@ export function attachWebSocketSink(
     },
   };
 
-  const attachDispose = client.attachPaneSink(paneId, sink);
+  const attachDispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
 
   let disposed = false;
   return () => {

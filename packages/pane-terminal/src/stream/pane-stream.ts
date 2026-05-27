@@ -10,16 +10,15 @@
 // ../sink/index.ts; the renderer is the consumer's choice (BufferingSink for
 // tests/buffering, XtermSink for the browser).
 //
-// [LAW:dataflow-not-control-flow] One PaneByteSink is attached ONCE in the
+// [LAW:dataflow-not-control-flow] One BytesSink is attached ONCE in the
 //   constructor (O2) and runs on every byte chunk for this stream's pane.
 //   The same operations execute every byte; the value of `state` decides what
-//   happens. The library's `attachPaneSink` filters by paneId, so no
+//   happens. `attachBytesSink` with paneScope filters by paneId, so no
 //   per-callsite paneId guard exists either — the type carries the filter.
 //   No subscribe/unsubscribe churn at TerminalSink attach time.
 // [LAW:locality-or-seam] PaneStream's only seam to the byte producer is the
-//   `PaneByteSink` contract, not the full `client.on('output', …)` emitter.
-//   This narrows what consumers can do (and what bridges must implement)
-//   relative to the deprecated event surface.
+//   `BytesSink` contract via `attachBytesSink`, not the deprecated event surface.
+//   This narrows what consumers can do (and what bridges must implement).
 // [LAW:single-enforcer] One activity-flush timer per stream. The byte path
 //   only sets a flag and calls setTimeout(boundFlush) when no flush is
 //   pending — there is exactly one path that emits 'activity-changed'.
@@ -28,10 +27,11 @@
 
 import type { TerminalSink, SeedCursor } from "../sink/index.js";
 import type {
-  PaneByteSink,
+  BytesSink,
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
+import { paneScope } from "@promptctl/tmux-control-mode-js";
 import {
   sendKeys as encodeSendKeys,
   emptyKeysResponse,
@@ -165,8 +165,8 @@ export class PaneStream implements ReseedTarget {
   // from the emitter (`reconnected`, `subscription-changed`) and for the
   // throttled activity flush. Each is allocated once at construction so
   // `client.off(...)` can find the same reference at dispose. None of these
-  // are on the [HOT-PATH] — the per-byte path lives in the `PaneByteSink`
-  // attached via `client.attachPaneSink(...)`, whose `write` closure is
+  // are on the [HOT-PATH] — the per-byte path lives in the `BytesSink`
+  // attached via `client.attachBytesSink(...)`, whose `write` closure is
   // also allocated once (in the constructor's `paneSink` literal below).
   private readonly onReconnected: (ev: TmuxEventMap["reconnected"]) => void;
   private readonly boundFlushActivity: () => void;
@@ -175,7 +175,7 @@ export class PaneStream implements ReseedTarget {
   ) => void;
 
   // [LAW:one-source-of-truth] The byte path's only attach point. Set once in
-  //   the constructor by `client.attachPaneSink(...)`; called exactly once
+  //   the constructor by `client.attachBytesSink(...)`; called exactly once
   //   from `dispose()`. The library's disposer is itself idempotent, so a
   //   double-call would be a no-op — guarding here is a structural assertion
   //   that PaneStream owns one attachment, not a defensive check.
@@ -202,30 +202,28 @@ export class PaneStream implements ReseedTarget {
     };
     this.boundFlushActivity = () => this.flushActivity();
 
-    // O2: attach the byte sink at construction. The library's
-    // `attachPaneSink` invokes `sink.write` for every chunk on this pane for
-    // the lifetime of the attachment; state value decides what happens with
-    // each chunk.
+    // O2: attach the byte sink at construction via `attachBytesSink` with
+    // paneScope. The sink's `write` closure runs for every chunk on this
+    // pane's scope for the lifetime of the attachment; state value decides
+    // what happens with each chunk.
     //
-    // The sink is a private object literal — PaneStream does NOT
-    // `implements PaneByteSink` because exposing `write` publicly would let
-    // consumers bypass the state machine and dump bytes straight into the
-    // buffer/sink path. The closure forwards into `handlePaneBytes`, the
-    // same hot-path body the old `client.on('output', …)` callbacks fed.
+    // The sink is a private object literal — PaneStream does NOT expose
+    // `write` publicly because that would let consumers bypass the state
+    // machine. The closure forwards into `handlePaneBytes`.
     //
-    // [LAW:locality-or-seam] One attachment, one disposer. The PaneByteSink
-    //   seam replaces the deprecated `client.on('output')` +
-    //   `client.on('extended-output')` pair as the pane-byte subscription
-    //   surface; `reconnected` and `subscription-changed` are non-byte
-    //   events and stay on the emitter.
-    const paneSink: PaneByteSink = {
-      write: (data) => this.handlePaneBytes(data),
+    // [LAW:locality-or-seam] One attachment, one disposer. `BytesSink` via
+    //   `attachBytesSink` is the pane-byte subscription surface; `reconnected`
+    //   and `subscription-changed` are non-byte events and stay on the emitter.
+    const paneSink: BytesSink = {
+      write: (msg) => this.handlePaneBytes(msg.data),
       // No `end()`: PaneStream's `dispose()` owns the full teardown. The
       // library's disposer calls `end?.()` exactly once when invoked, but
       // the optional-chain short-circuits when `end` is absent — so
       // dispose's bookkeeping is the single authoritative cleanup site.
     };
-    this.paneSinkDisposer = this.client.attachPaneSink(this.paneId, paneSink);
+    this.paneSinkDisposer = this.client.attachBytesSink(paneSink, {
+      scope: paneScope(this.paneId),
+    });
 
     this.client.on("reconnected", this.onReconnected);
 
@@ -364,7 +362,7 @@ export class PaneStream implements ReseedTarget {
     this.setState("disposed");
 
     // [LAW:single-enforcer] One disposer per attachment. The library's
-    //   `attachPaneSink` returned function is idempotent and fires
+    //   `attachBytesSink` returned function is idempotent and fires
     //   `sink.end?.()` exactly once — null-out the field so a future call
     //   path that re-enters dispose() observes "already torn down" via the
     //   value, not via a separate boolean guard.
@@ -422,9 +420,9 @@ export class PaneStream implements ReseedTarget {
   // Branching on values (currentState) is fine — the rule forbids
   // allocation expressions, not conditionals.
   //
-  // [LAW:types-are-the-program] No paneId parameter: the library's
-  //   `attachPaneSink(paneId, sink)` filters at the attach site, so this
-  //   method receives only bytes destined for *this* PaneStream. The earlier
+  // [LAW:types-are-the-program] No paneId parameter: `attachBytesSink` with
+  //   `paneScope(paneId)` filters at the attach site, so this method receives
+  //   only bytes destined for *this* PaneStream. The earlier
   //   `if (paneId !== this.paneId) return` guard existed because the
   //   `on('output', …)` emitter fan-out delivered every pane's bytes to
   //   every listener; the sink contract makes that mismatch unrepresentable

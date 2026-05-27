@@ -48,7 +48,7 @@ import {
   IPC,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
-import type { PaneByteSink } from "../../src/pane-sink.js";
+import type { BytesSink } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 import { createIpcHub } from "./_helpers/ipc-hub.js";
@@ -118,7 +118,7 @@ function createFakeWebContents(): FakeWebContents {
 }
 
 interface RecordingSink {
-  readonly sink: PaneByteSink;
+  readonly sink: BytesSink;
   readonly writes: Uint8Array[];
   endCalls: number;
 }
@@ -126,12 +126,12 @@ interface RecordingSink {
 function createRecordingSink(): RecordingSink {
   const writes: Uint8Array[] = [];
   const state = { endCalls: 0 };
-  const sink: PaneByteSink = {
-    write(bytes) {
-      // Copy: the PaneByteSink contract is "bytes is read-only and not
+  const sink: BytesSink = {
+    write(msg) {
+      // Copy: the BytesSink contract is "msg.data is read-only and not
       // retained past write." A recording sink that retains its inputs
       // must copy.
-      writes.push(bytes.slice());
+      writes.push(msg.data.slice());
     },
     end() {
       state.endCalls++;
