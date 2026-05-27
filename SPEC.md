@@ -1281,7 +1281,7 @@ All exports are available from the package root. Grouped by concern:
 
 | Export | Kind | Description |
 |--------|------|-------------|
-| `TmuxCommandError` | class | Thrown (rejected) when a command produces a `%error` response. Carries the `CommandResponse` fields. |
+| `TmuxCommandError` | class | Thrown (rejected) when a command produces a `%error` response. Carries the original `CommandResponse` on `.response` (use `err.response.output` to read tmux's error lines). |
 
 **Connection state**
 
