@@ -147,6 +147,13 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // re-interprets bytes as UTF-8. Pane output reaches the renderer as raw bytes
   // (the renderer decodes); consumers that need text from a metadata field
   // decode it themselves.
+  // [LAW:single-enforcer] exception: setEncoding('latin1') is the Node.js
+  // stream API for byte-faithful decode and is equivalent to bytesToLatin1()
+  // on a Buffer in Node.js only. This site is exempt because (a) spawn.ts is
+  // Node-only and never runs in a browser, and (b) the Buffer.toString('latin1')
+  // path that setEncoding triggers is genuinely 1:1 byte↔code-unit in Node
+  // (unlike TextDecoder('latin1') which is windows-1252 in browsers). All
+  // other transports must use bytesToLatin1() from byte-codec.ts.
   child.stdout.setEncoding("latin1");
   child.stdout.on("data", (chunk: string) => {
     if (stripper === null) {

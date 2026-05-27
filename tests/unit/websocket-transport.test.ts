@@ -104,17 +104,19 @@ describe("websocketTransport", () => {
     expect(chunks).toEqual(["%begin 1 2 1\n", "%output %1 hello\n"]);
   });
 
-  it("decodes ArrayBuffer message frames as UTF-8", () => {
+  it("decodes ArrayBuffer message frames byte-faithfully", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const chunks: string[] = [];
     t.onData((c) => chunks.push(c));
-    const bytes = new TextEncoder().encode("%output %1 hé\n");
+    // Include 0x80–0x9F (windows-1252 landmine range): TextDecoder("latin1")
+    // remaps those bytes; bytesToLatin1 must preserve them 1:1.
+    const bytes = new Uint8Array([0x25, 0x6f, 0x75, 0x74, 0x80, 0x9f, 0x0a]);
     ws.emitMessage(bytes.buffer);
-    expect(chunks).toEqual(["%output %1 hé\n"]);
+    expect(chunks).toEqual(["%out\x80\x9f\n"]);
   });
 
-  it("decodes typed-array message frames as UTF-8", () => {
+  it("decodes typed-array message frames byte-faithfully", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const chunks: string[] = [];
