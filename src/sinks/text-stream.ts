@@ -27,6 +27,12 @@ import type { BytesSink } from "../pane-output.js";
  * `BytesSink` contract guarantees no chunk-boundary alignment, so
  * multi-byte sequences split across chunks decode correctly.
  *
+ * **Single-pane only.** Use this sink with `paneScope(id)` — not with
+ * `serverScope`, `sessionScope`, or `windowScope`. Multi-pane scopes deliver
+ * chunks from different panes interleaved into the same decoder, corrupting
+ * multi-byte UTF-8 sequences that straddle a chunk boundary. For multi-pane
+ * text decoding, create one sink per pane with its own `paneScope`.
+ *
  * `handler` is called once per `write` and once on `end`, with no
  * skip-empty filter — every write produces exactly one handler call
  * ([LAW:dataflow-not-control-flow]). `handler` MUST NOT throw: it runs

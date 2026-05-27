@@ -426,11 +426,16 @@ export class TopologyEpochTracker {
    * Call on `window-close` / `unlinked-window-close`. Invalidates any
    * in-flight bootstrap (it would re-add the closed window's panes) and
    * any in-flight per-window refresh for the same window.
+   *
+   * Deletes the window entry rather than incrementing it: the window is
+   * gone and no future refresh will be started for this id (until a new
+   * window-add assigns the same id). `isWindowRefreshCurrent` returns
+   * false for a missing key (`undefined !== gen`), so in-flight refreshes
+   * are still correctly discarded. Deletion keeps the Map bounded.
    */
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
-    const wg = this.windowGens.get(windowId);
-    if (wg !== undefined) this.windowGens.set(windowId, wg + 1);
+    this.windowGens.delete(windowId);
   }
 }
 
