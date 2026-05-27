@@ -746,10 +746,17 @@ function parseSeedState(line: string): SeedState {
   const height = f[8] !== undefined && f[8] !== "" ? Number(f[8]) : NaN;
   const historySize = f[9] !== undefined && f[9] !== "" ? Number(f[9]) : NaN;
 
-  // Before content: enter alt screen (if active) then set autowrap — both
-  // change how the subsequent screen content lays out.
+  // Before content: establish the correct screen buffer and cursor home, then
+  // set autowrap — all three affect how screen content lays out.
+  // [LAW:dataflow-not-control-flow] CUP-home is embedded in each branch of
+  //   mode() so both screen paths always home the cursor. The value selects
+  //   the full preamble sequence; no extra branching outside the table lookup.
+  //   On a reseed, ?1049l exits a stale alt screen before drawing main-screen
+  //   content; ?1049h enters alt screen before drawing alt-screen content.
+  //   Without explicit CUP-home, ?1049l restores the cursor saved at the
+  //   matching ?1049h entry point rather than row 0 — content draws mid-screen.
   const preamble =
-    (f[2] === "1" ? `${ESC}[?1049h` : "") +
+    mode(f[2], `${ESC}[?1049h${ESC}[H`, `${ESC}[?1049l${ESC}[H`) + // screen + CUP home
     mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
 
   // After content: input/cursor modes that the captured grid can't carry.
