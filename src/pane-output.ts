@@ -173,10 +173,15 @@ export class PaneTopologyManager {
     const prev = this.windowIndex.get(windowId);
     const next = new Set(entries.map((e) => e.paneId));
 
-    // Remove panes no longer in this window
+    // Remove panes no longer in this window.
+    // [LAW:one-source-of-truth] Only delete when table still maps the pane to
+    // this window. A concurrent refresh for another window may have already
+    // updated the entry — if so, that newer mapping is authoritative.
     if (prev !== undefined) {
       for (const paneId of prev) {
-        if (!next.has(paneId)) this.table.delete(paneId);
+        if (!next.has(paneId) && this.table.get(paneId)?.windowId === windowId) {
+          this.table.delete(paneId);
+        }
       }
     }
 
@@ -198,7 +203,14 @@ export class PaneTopologyManager {
   removeWindow(windowId: number): void {
     const panes = this.windowIndex.get(windowId);
     if (panes === undefined) return;
-    for (const paneId of panes) this.table.delete(paneId);
+    for (const paneId of panes) {
+      // [LAW:one-source-of-truth] Only remove when table still maps the pane to
+      // this window. windowIndex may lag behind table if the pane moved to
+      // another window and that window's refresh ran first.
+      if (this.table.get(paneId)?.windowId === windowId) {
+        this.table.delete(paneId);
+      }
+    }
     this.windowIndex.delete(windowId);
   }
 }
