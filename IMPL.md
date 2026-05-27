@@ -261,17 +261,23 @@ class TmuxClient {
   // on `msg.type === 'output'` produces `never`. Pane-byte misdecode is
   // structurally unreachable from any emitter path.
   //
-  // Use `attachPaneSink(paneId, sink)` for one-pane consumers (xterm
-  // renderers, log capture, regex matchers). Use `attachAllPanesSink(mux)`
-  // when you need bytes from every pane — bridges, observability,
-  // archives. Built-in sinks:
-  //   - `createTextStreamSink`   from the package root
+  // Scope-based subscription via `attachBytesSink`. Four scope kinds:
+  //   - serverScope (default) — every pane on the tmux server
+  //   - sessionScope(id)      — every pane in session $id, dynamic
+  //   - windowScope(id)       — every pane in window @id, dynamic
+  //   - paneScope(id)         — exactly pane %id
+  //
+  // The library maintains a `PaneTopologyManager` (paneId → {sessionId,
+  // windowId}) lazily bootstrapped and updated on window-add /
+  // window-close / layout-change / sessions-changed. Session/window
+  // scope routing is data-driven against this table per chunk.
+  //
+  // Concrete sink destinations:
   //   - `attachWebContentsSink`  from `@promptctl/tmux-control-mode-js/electron/main`
   //   - `attachWebSocketSink`    from `@promptctl/tmux-control-mode-js/websocket`
   //   - `XtermSink`              from `@promptctl/pane-terminal/xterm-sink`
-  // Multiple sinks per pane; returns a per-attachment idempotent disposer.
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void;
-  attachAllPanesSink(mux: PaneByteMultiplexer): () => void;
+  //
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void;
 
   // Command execution with response tracking
   execute(command: string): Promise<CommandResponse>;

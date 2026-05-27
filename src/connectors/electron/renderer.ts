@@ -24,10 +24,14 @@ import {
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
 import {
-  PaneSinkRegistry,
-  type PaneByteMultiplexer,
-  type PaneByteSink,
-} from "../../pane-sink.js";
+  SinkRegistry,
+  PaneTopologyManager,
+  serverScope,
+  parsePaneListLine,
+  TopologyEpochTracker,
+  type AttachOptions,
+  type BytesSink,
+} from "../../pane-output.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   isPaneOutput,
@@ -84,13 +88,13 @@ import {
 export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
-  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation as
-  //   `TmuxClient`. `attachPaneSink` delegates to it; the inbound IPC
-  //   event handler calls `paneSinks.dispatch(msg)` before `emit(msg)` so
-  //   canonical sink delivery (a) sees a per-chunk attachment snapshot
-  //   and (b) is isolated from throwing `on('output', …)` listeners on the
-  //   deprecated event surface.
-  private readonly paneSinks = new PaneSinkRegistry();
+  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
+  //   `attachBytesSink` delegates to `sinks.attach`; the IPC event handler
+  //   calls `sinks.dispatch(msg, topology.get(paneId))` so scope-bifurcated
+  //   delivery is snapshot-protected and isolated from throwing listeners.
+  private readonly sinks = new SinkRegistry();
+  private readonly topology = new PaneTopologyManager();
+  private readonly topologyEpoch = new TopologyEpochTracker();
   private readonly eventHandler: IpcRendererOnListener;
   private readonly ackBatchBytes: number;
   /**
@@ -129,7 +133,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
     //   registry; state events flow through the emitter. The IPC.event wire
     //   format carries both — main sends state via `client.on('*', forward)`
-    //   and bytes via `client.attachAllPanesSink(multiplexer)` — and the
+    //   and bytes via `client.attachBytesSink(sink)` — and the
     //   renderer narrows here. The local emitter's type surface still
     //   excludes `PaneOutputMessage`, so `this.emitter.emit(msg)` is a
     //   compile error for byte messages, which is what enforces the split
@@ -142,14 +146,40 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
       const msg = args[0] as EmitterMessage | PaneOutputMessage;
       if (isPaneOutput(msg)) {
         this.account(msg);
-        this.paneSinks.dispatch(msg);
+        this.sinks.dispatch(msg, this.topology.get(msg.paneId));
         return;
+      }
+      // Topology events update the table exactly as TmuxClient.handleMessage does.
+      if (msg.type === "layout-change") {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.refreshWindowTopology(msg.windowId);
+        }
+      } else if (
+        msg.type === "window-add" ||
+        msg.type === "unlinked-window-add"
+      ) {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.refreshWindowTopology(msg.windowId);
+        }
+      } else if (
+        msg.type === "window-close" ||
+        msg.type === "unlinked-window-close"
+      ) {
+        this.topology.removeWindow(msg.windowId);
+        this.topologyEpoch.invalidateWindow(msg.windowId);
+      } else if (msg.type === "sessions-changed") {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.bootstrapTopology();
+        }
       }
       // [LAW:dataflow-not-control-flow] connection-state messages flow through
       // the same channel; they're picked up here before re-emission so the
       // proxy's `connectionState` getter is in sync with whatever fires.
       if (msg.type === "connection-state") {
         this.currentConnectionState = msg.state;
+        if (msg.state.status === "ready" && this.sinks.hasTopologyDependentSinks()) {
+          void this.bootstrapTopology();
+        }
       }
       this.emitter.emit(msg);
     };
@@ -171,7 +201,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   // Event delegation — same overload set as TmuxClient.
   //
   // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
-  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
+  // pane bytes flow through `attachBytesSink` only.
   // ---------------------------------------------------------------------------
 
   on<K extends keyof TmuxEventMap>(
@@ -257,22 +287,59 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
   }
 
   // [LAW:locality-or-seam] The proxy receives parsed pane-output messages
-  //   from main over IPC. `paneSinks.dispatch(msg)` (called from the
-  //   eventHandler above) is where bytes fan out to sinks — same shape as
-  //   `TmuxClient.handleMessage`. `attachPaneSink` is the public entry
-  //   into that registry.
+  //   from main over IPC. `sinks.dispatch` (called from the eventHandler
+  //   above) is where scope-bifurcated byte fan-out happens — same shape as
+  //   `TmuxClient.handleMessage`. `attachBytesSink` is the public entry.
   //
   // Note: this is independent of the `createPaneBytesReceiver` /
   // `attachWebContentsSink` pair (driven by IPC.paneBytes), which is a
   // separate opt-in optimization that bypasses the regular event channel.
-  // That pair is the renderer-side counterpart of `WebContentsSink`,
-  // NOT of `attachPaneSink`.
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return this.paneSinks.attach(paneId, sink);
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
+    const scope = options?.scope ?? serverScope;
+    const dispose = this.sinks.attach(sink, scope);
+    if (
+      (scope.kind === "session" || scope.kind === "window") &&
+      this.currentConnectionState.status === "ready"
+    ) {
+      void this.bootstrapTopology();
+    }
+    return dispose;
   }
 
-  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
-    return this.paneSinks.attachAllPanes(mux);
+  private async bootstrapTopology(): Promise<void> {
+    const gen = this.topologyEpoch.startBootstrap();
+    try {
+      const r = await this.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null ? [parsed] : [];
+      });
+      this.topology.seed(entries);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  private async refreshWindowTopology(windowId: number): Promise<void> {
+    const gen = this.topologyEpoch.startWindowRefresh(windowId);
+    try {
+      const r = await this.execute(
+        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
+      );
+      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null
+          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
+          : [];
+      });
+      this.topology.updateWindow(windowId, entries);
+    } catch {
+      this.topology.removeWindow(windowId);
+    }
   }
 
   /**
@@ -399,7 +466,7 @@ export function createRendererBridge(
 // Renderer-side companion to `attachWebContentsSink` (main.ts).
 //
 // Subscribes to `IPC.paneBytes` + `IPC.paneEnd`, filters by paneId, and
-// forwards each chunk into a caller-supplied `PaneByteSink`. The seam type
+// forwards each chunk into a caller-supplied `BytesSink`. The seam type
 // is identical on both sides of the IPC hop: bytes leave the main-side sink,
 // cross structured-clone IPC, and land in the renderer-side sink — at no
 // point does the consumer hold a raw `Uint8Array` as a value the type system
@@ -408,10 +475,9 @@ export function createRendererBridge(
 // [LAW:single-enforcer] One Electron byte-receiver lives here only. Hosts
 // stop writing `ipcRenderer.on('pane-bytes', ...)` ad hoc and stop choosing
 // channel names or envelope shapes.
-// [LAW:locality-or-seam] The seam shape is `PaneByteSink`. Renderer consumers
-// compose a sink (an xterm.js feeder, `createTextStreamSink(...)`, or any
-// other implementation) and hand it in — the receiver is a wire-to-sink
-// adapter, nothing more.
+// [LAW:locality-or-seam] The seam shape is `BytesSink`. Renderer consumers
+// compose a sink (an xterm.js terminal feeder or any other implementation)
+// and hand it in — the receiver is a wire-to-sink adapter, nothing more.
 // [LAW:dataflow-not-control-flow] Every inbound frame runs the same path
 // (filter → sink call). The auto-detach on `paneEnd` is data flow on the
 // attachment-terminated state, not a control-flow guard.
@@ -440,9 +506,9 @@ const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<IpcRendererLike, Set<number>>();
  * `WebContentsSink` and forward each chunk into `sink`.
  *
  * Listens on `IPC.paneBytes` and `IPC.paneEnd`, filters every inbound
- * envelope by `paneId`, and calls `sink.write(bytes)` / `sink.end?.()` for
- * matching frames. `Uint8Array` payloads survive Electron's structured
- * clone — the receiver does not copy.
+ * envelope by `paneId`, and calls `sink.write(msg)` / `sink.end?.()` for
+ * matching frames. The envelope is a `PaneOutputMessage` (including `type`
+ * and `age` for `extended-output`); all fields survive structured clone.
  *
  * ## Exclusivity (one receiver per `(ipcRenderer, paneId)`)
  *
@@ -470,18 +536,17 @@ const ACTIVE_PANE_BYTES_RECEIVERS = new WeakMap<IpcRendererLike, Set<number>>();
  * ## Sink contract
  *
  * `sink.write` runs synchronously inside the IPC event handler and MUST
- * NOT throw — same constraint as the underlying `PaneByteSink` contract
- * on main. A throwing sink propagates through the IPC dispatch loop with
- * unpredictable cleanup semantics; wrap risky work in try/catch inside
- * the sink itself.
+ * NOT throw — same constraint as the `BytesSink` contract on main. A
+ * throwing sink propagates through the IPC dispatch loop with unpredictable
+ * cleanup semantics; wrap risky work in try/catch inside the sink itself.
  *
- * @see PaneByteSink for the sink contract.
+ * @see BytesSink for the sink contract.
  * @see attachWebContentsSink (main.ts) for the main-side producer.
  */
 export function createPaneBytesReceiver(
   ipcRenderer: IpcRendererLike,
   paneId: number,
-  sink: PaneByteSink,
+  sink: BytesSink,
 ): () => void {
   let active = ACTIVE_PANE_BYTES_RECEIVERS.get(ipcRenderer);
   if (active === undefined) {
@@ -510,7 +575,8 @@ export function createPaneBytesReceiver(
   const onBytes: IpcRendererOnListener = (_event, ...args) => {
     const envelope = args[0] as PaneBytesEnvelope;
     if (envelope.paneId !== paneId) return;
-    sink.write(envelope.data);
+    // [LAW:one-source-of-truth] envelope IS a PaneOutputMessage; forward as-is.
+    sink.write(envelope);
   };
 
   const onEnd: IpcRendererOnListener = (_event, ...args) => {
