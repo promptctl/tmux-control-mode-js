@@ -411,6 +411,13 @@ function snapshotBucket(bucket: Bucket | undefined): readonly BytesSink[] {
 export class TopologyEpochTracker {
   private bootstrapGen = 0;
   private readonly windowGens = new Map<number, number>();
+  // [LAW:types-are-the-program] Global monotone counter — each startWindowRefresh
+  // call gets a strictly-greater-than-all-prior token. After startBootstrap()
+  // clears windowGens, any new startWindowRefresh still produces a token that
+  // cannot alias a pre-clear token, because it is drawn from a sequence that
+  // only ever increases. Per-window counters that reset after a clear would
+  // allow pre-clear and post-clear tokens to collide (both start at 1).
+  private windowEpoch = 0;
 
   /**
    * Call immediately before the `list-panes -a` execute(). Returns captured gen.
@@ -418,6 +425,8 @@ export class TopologyEpochTracker {
    * Also clears all window-refresh generations: a bootstrap is a full table
    * replacement via `seed()`, so any in-flight `list-panes -t @W` result is
    * superseded — `isWindowRefreshCurrent` will return false for a missing key.
+   * Post-clear window refreshes draw from the global `windowEpoch` and therefore
+   * cannot alias any pre-clear token.
    */
   startBootstrap(): number {
     this.windowGens.clear();
@@ -431,7 +440,7 @@ export class TopologyEpochTracker {
 
   /** Call immediately before the `list-panes -t @W` execute(). Returns captured gen. */
   startWindowRefresh(windowId: number): number {
-    const gen = (this.windowGens.get(windowId) ?? 0) + 1;
+    const gen = ++this.windowEpoch;
     this.windowGens.set(windowId, gen);
     return gen;
   }
