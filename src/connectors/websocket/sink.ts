@@ -187,7 +187,7 @@ export function attachWebSocketSink(
       // `wsSend` chokepoint uses for the same reason. Not a workaround
       // for a missing invariant; the lifecycle is external.
       if (ws.readyState !== WEBSOCKET_OPEN) return;
-      const frame = encodePaneOutput({ type: "output", paneId, data: msg.data });
+      const frame = encodePaneOutput(msg);
       try {
         ws.send(frame);
       } catch {
