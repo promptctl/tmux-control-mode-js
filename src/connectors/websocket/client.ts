@@ -60,6 +60,7 @@ import type { TmuxClientLike } from "../../client.js";
 import {
   SinkRegistry,
   PaneTopologyManager,
+  TopologyEpochTracker,
   serverScope,
   parsePaneListLine,
   type AttachOptions,
@@ -156,6 +157,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   //   is snapshot-protected and isolated from throwing listeners.
   private readonly sinks = new SinkRegistry();
   private readonly topology = new PaneTopologyManager();
+  private readonly topologyEpoch = new TopologyEpochTracker();
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;
@@ -616,6 +618,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
       msg.type === "unlinked-window-close"
     ) {
       this.topology.removeWindow(msg.windowId);
+      this.topologyEpoch.invalidateWindow(msg.windowId);
     } else if (msg.type === "sessions-changed") {
       if (this.sinks.hasTopologyDependentSinks()) {
         void this.bootstrapTopology();
@@ -627,10 +630,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   private async bootstrapTopology(): Promise<void> {
+    const gen = this.topologyEpoch.startBootstrap();
     try {
       const r = await this.execute(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
       );
+      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null ? [parsed] : [];
@@ -642,10 +647,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   private async refreshWindowTopology(windowId: number): Promise<void> {
+    const gen = this.topologyEpoch.startWindowRefresh(windowId);
     try {
       const r = await this.execute(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
       );
+      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null

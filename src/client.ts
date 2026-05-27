@@ -38,6 +38,7 @@ import {
   PaneTopologyManager,
   serverScope,
   parsePaneListLine,
+  TopologyEpochTracker,
   type AttachOptions,
   type BytesSink,
 } from "./pane-output.js";
@@ -99,6 +100,7 @@ export class TmuxClient {
   //   `topology.get(paneId)`. No second attachment state or topology table.
   private readonly sinks = new SinkRegistry();
   private readonly topology = new PaneTopologyManager();
+  private readonly topologyEpoch = new TopologyEpochTracker();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -162,10 +164,17 @@ export class TmuxClient {
   // Fire-and-forget; called on every "ready" transition. Failure is
   // non-fatal: topology remains empty until the next event or bootstrap.
   private async bootstrapTopology(): Promise<void> {
+    const gen = this.topologyEpoch.startBootstrap();
     try {
       const r = await this.execute(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
       );
+      // [LAW:dataflow-not-control-flow] gen is the epoch value that proves this
+      // result is still authoritative. A window-close notification in the same
+      // I/O frame may have fired synchronously before this microtask — if so,
+      // the epoch advanced and this stale snapshot must not clobber the correct
+      // synchronous update.
+      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null ? [parsed] : [];
@@ -176,13 +185,15 @@ export class TmuxClient {
     }
   }
 
-  // Refresh topology for one window (triggered by layout-change).
+  // Refresh topology for one window (triggered by layout-change / window-add).
   // On error, removes the window's panes (they may have closed).
   private async refreshWindowTopology(windowId: number): Promise<void> {
+    const gen = this.topologyEpoch.startWindowRefresh(windowId);
     try {
       const r = await this.execute(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
       );
+      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null
@@ -496,6 +507,9 @@ export class TmuxClient {
       msg.type === "unlinked-window-close"
     ) {
       this.topology.removeWindow(msg.windowId);
+      // [LAW:dataflow-not-control-flow] This synchronous removal invalidates any
+      // in-flight bootstrap or window-refresh that would re-add the closed panes.
+      this.topologyEpoch.invalidateWindow(msg.windowId);
     } else if (msg.type === "sessions-changed") {
       if (this.sinks.hasTopologyDependentSinks()) {
         void this.bootstrapTopology();

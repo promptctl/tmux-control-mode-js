@@ -374,6 +374,67 @@ function snapshotBucket(bucket: Bucket | undefined): readonly BytesSink[] {
 }
 
 // ---------------------------------------------------------------------------
+// TopologyEpochTracker — stale-result guard for async topology queries
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks generation counters so async topology queries can detect when a
+ * synchronous notification arrived between the query send and the apply.
+ *
+ * JavaScript's event model processes synchronous notification handlers
+ * before Promise microtasks in the same I/O frame. When `window-close @X`
+ * and `%end` (for a `list-panes` response that includes @X) arrive in the
+ * same TCP segment, the `removeWindow` call fires synchronously before
+ * `seed()` or `updateWindow()` runs as a microtask. Without epoch guards
+ * the microtask would re-add @X's panes, contradicting the notification.
+ *
+ * [LAW:one-type-per-behavior] All TmuxClientLike implementations share this
+ *   one tracker type; the staleness invariant is encoded here, not repeated
+ *   in each client.
+ * [LAW:dataflow-not-control-flow] The generation number IS a value — the
+ *   proof that an async result belongs to the current topology epoch. The
+ *   check is data deciding whether a result is authoritative, not control
+ *   flow skipping an operation.
+ */
+export class TopologyEpochTracker {
+  private bootstrapGen = 0;
+  private readonly windowGens = new Map<number, number>();
+
+  /** Call immediately before the `list-panes -a` execute(). Returns captured gen. */
+  startBootstrap(): number {
+    return ++this.bootstrapGen;
+  }
+
+  /** Call before applying seed(). Returns false if a newer event superseded this query. */
+  isBootstrapCurrent(gen: number): boolean {
+    return this.bootstrapGen === gen;
+  }
+
+  /** Call immediately before the `list-panes -t @W` execute(). Returns captured gen. */
+  startWindowRefresh(windowId: number): number {
+    const gen = (this.windowGens.get(windowId) ?? 0) + 1;
+    this.windowGens.set(windowId, gen);
+    return gen;
+  }
+
+  /** Call before applying updateWindow(). Returns false if a newer event superseded this query. */
+  isWindowRefreshCurrent(windowId: number, gen: number): boolean {
+    return this.windowGens.get(windowId) === gen;
+  }
+
+  /**
+   * Call on `window-close` / `unlinked-window-close`. Invalidates any
+   * in-flight bootstrap (it would re-add the closed window's panes) and
+   * any in-flight per-window refresh for the same window.
+   */
+  invalidateWindow(windowId: number): void {
+    this.bootstrapGen++;
+    const wg = this.windowGens.get(windowId);
+    if (wg !== undefined) this.windowGens.set(windowId, wg + 1);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Topology parsing helpers — used by TmuxClient and bridge clients
 // ---------------------------------------------------------------------------
 
