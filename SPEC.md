@@ -1369,7 +1369,7 @@ The shape returned by all command methods that return `Promise<CommandResponse>`
 |-------|------|-------------|
 | `commandNumber` | `number` | The `%begin`/`%end` command number (monotonically increasing per client session). `-1` for synthetic no-op responses (e.g., empty `sendKeys`). |
 | `timestamp` | `number` | The `%begin` timestamp (seconds since Unix epoch), as parsed from the guard line. For synthetic responses, `Date.now()`. |
-| `output` | `readonly string[]` | Lines between `%begin` and `%end`/`%error`. Empty for commands that produce no output. Each string is a **latin1-container** (one code unit per transport byte, code units 0x00–0xFF). ASCII-only output is transparent; non-ASCII output (window/session names, paths) requires explicit decode: `new TextDecoder().decode(latin1ToBytes(line))` — import `latin1ToBytes` from this package. |
+| `output` | `readonly string[]` | Lines between `%begin` and `%end`/`%error`. Empty for commands that produce no output. Each string is a **latin1-container** byte-faithful string. ASCII-only output is transparent; non-ASCII output (window/session names, paths) requires explicit decode: `new TextDecoder().decode(latin1ToBytes(response.output[0]))` — import `latin1ToBytes` from this package. |
 | `success` | `boolean` | `true` for `%end`, `false` for `%error`. When `false`, the Promise rejects with `TmuxCommandError` wrapping this response rather than resolving. |
 
 `CommandResponse` maps directly to the guard-line fields documented in §5.1.

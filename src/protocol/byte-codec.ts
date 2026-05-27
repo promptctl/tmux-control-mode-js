@@ -4,8 +4,9 @@
 // [LAW:single-enforcer] All bytes<->string conversion in this library flows
 //   through these two functions. No other site may use TextDecoder, TextEncoder,
 //   Buffer.from(…, 'latin1'), or setEncoding('latin1') for this conversion.
-// [LAW:one-source-of-truth] The contract "each byte 0x00-0xFF maps 1:1 to code
-//   unit U+0000-U+00FF" is stated here and nowhere else.
+// [LAW:one-source-of-truth] The canonical definition of the byte<->code-unit
+//   bijection lives here. Other types may declare that a value uses this
+//   encoding; the definition itself is not duplicated.
 //
 // Why not TextDecoder('latin1')?
 //   TextDecoder('latin1') is the windows-1252 decoder in browsers: bytes
