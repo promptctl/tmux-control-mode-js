@@ -288,3 +288,10 @@
 ## Source-level bugs surfaced (separate from spec findings)
 
 - src/protocol/types.ts:237 contains the comment `// Discriminated Union — all 28 server-to-client message types`. A count was deleted across the codebase recently (per recent commit a01fadf "docs: strip '28 message types' count across 5 sites"), but this in-source comment was missed. Counting the union members on lines 241-269 yields 28 (Begin/End/Error/Output/ExtendedOutput/Pause/Continue/PaneModeChanged/WindowAdd/WindowClose/WindowRenamed/WindowPaneChanged/UnlinkedWindowAdd/UnlinkedWindowClose/UnlinkedWindowRenamed/LayoutChange/SessionChanged/SessionRenamed/SessionsChanged/SessionWindowChanged/ClientSessionChanged/ClientDetached/PasteBufferChanged/PasteBufferDeleted/SubscriptionChanged/Message/ConfigError/Exit). The comment count is currently accurate, but is exactly the WHAT-comment that drifts on the next addition/removal — flag for the issue tracker per the project rule against count comments in CLAUDE.md (`FORBIDDEN in comments: enumerations of callers, counts, etc.`).
+
+## Remediation status (ticket tmux-audit-x5u.5)
+
+- Applied: MANIFEST F4 (§3.2 library detach note added), MANIFEST F9 (§26.1 library typed operations added)
+- Deferred: none
+- Rejected: none
+- Previously applied (prior tickets x5u.2–x5u.4): F1, F2, F3, F5, F6, F7, F8, F10
