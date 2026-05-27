@@ -284,15 +284,12 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
       const { client } = createWsBackedClient(fx.url);
       await waitForState(client, "ready");
 
-      // Bytes flow through `attachAllPanesSink` — the WS client's emitter
-      // no longer carries `OutputMessage`. The multiplexer surface is what
-      // forwarders/observers use when they don't know the paneId up front.
+      // Bytes flow through `attachBytesSink` (server scope = all panes) —
+      // the WS client's emitter no longer carries `OutputMessage`.
       const seen: Uint8Array[] = [];
-      const detach = client.attachAllPanesSink({
+      const detach = client.attachBytesSink({
         write(msg) {
-          // Per the PaneByteMultiplexer contract, `msg.data` is owned by
-          // the library and not retained past the synchronous call —
-          // copy before storing.
+          // BytesSink contract: msg.data is read-only, copy before retention.
           seen.push(msg.data.slice());
         },
       });

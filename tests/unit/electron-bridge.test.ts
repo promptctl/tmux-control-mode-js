@@ -18,6 +18,7 @@ import { isTmuxMessage } from "../../src/emitter.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
+import { paneScope } from "../../src/pane-output.js";
 import {
   IPC,
   type IpcRendererLike,
@@ -461,7 +462,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     // a regression that depends on shared identity — or stringifies anywhere
     // along the path — fails here the same way it would in production.
     //
-    // Pane bytes flow through `attachPaneSink`, not the emitter — the
+    // Pane bytes flow through `attachBytesSink`, not the emitter — the
     // proxy's `on('output', …)` is a TS error because `TmuxEventMap` does
     // not contain `'output'`.
     const hub = createIpcHub();
@@ -473,13 +474,15 @@ describe("Electron IPC bridge — event forwarding", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const received: Uint8Array[] = [];
-    proxy.attachPaneSink(2, {
-      write(bytes) {
-        // Per the PaneByteSink contract, `bytes` is owned by the library
-        // and not retained past the synchronous call — copy before storing.
-        received.push(bytes.slice());
+    proxy.attachBytesSink(
+      {
+        write(msg) {
+          // BytesSink contract: msg.data is read-only, copy before retention.
+          received.push(msg.data.slice());
+        },
       },
-    });
+      { scope: paneScope(2) },
+    );
 
     t.feed("%output %2 hello\n");
 
@@ -1000,7 +1003,7 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     // would surface in real Electron when payloads cross structuredClone.
     // The hub now clones every IPC payload; this test pins that contract.
     //
-    // Bytes flow through `attachPaneSink`, not the emitter.
+    // Bytes flow through `attachBytesSink`, not the emitter.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -1009,13 +1012,15 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
     const received: Uint8Array[] = [];
-    proxy.attachPaneSink(1, {
-      write(bytes) {
-        // Per the PaneByteSink contract, `bytes` is owned by the library
-        // and not retained past the synchronous call — copy before storing.
-        received.push(bytes.slice());
+    proxy.attachBytesSink(
+      {
+        write(msg) {
+          // BytesSink contract: msg.data is read-only, copy before retention.
+          received.push(msg.data.slice());
+        },
       },
-    });
+      { scope: paneScope(1) },
+    );
 
     // Synthesize a %output frame end-to-end through the parser.
     const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
@@ -1056,16 +1061,14 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     const proxyC = createRendererBridge(c.ipcRenderer);
 
     const got: Array<"a" | "c"> = [];
-    proxyA.attachPaneSink(42, {
-      write() {
-        got.push("a");
-      },
-    });
-    proxyC.attachPaneSink(42, {
-      write() {
-        got.push("c");
-      },
-    });
+    proxyA.attachBytesSink(
+      { write() { got.push("a"); } },
+      { scope: paneScope(42) },
+    );
+    proxyC.attachBytesSink(
+      { write() { got.push("c"); } },
+      { scope: paneScope(42) },
+    );
     // proxyB receives nothing — destroyed before broadcast.
 
     // Destroy B's wc directly (real Electron: webContents went away during

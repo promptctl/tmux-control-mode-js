@@ -11,8 +11,18 @@ export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 
 export type { TmuxEventMap } from "./emitter.js";
 
-export type { PaneByteMultiplexer, PaneByteSink } from "./pane-sink.js";
-export { PaneSinkRegistry } from "./pane-sink.js";
+export type { BytesSink, AttachOptions, PaneScope, PaneMeta } from "./pane-output.js";
+export {
+  serverScope,
+  sessionScope,
+  windowScope,
+  paneScope,
+  SinkRegistry,
+  PaneTopologyManager,
+  TopologyEpochTracker,
+  parsePaneListLine,
+} from "./pane-output.js";
+
 export { createTextStreamSink } from "./sinks/text-stream.js";
 
 export { spawnTmux } from "./transport/spawn.js";

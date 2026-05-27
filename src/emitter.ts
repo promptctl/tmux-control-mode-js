@@ -4,7 +4,7 @@
 
 // [LAW:types-are-the-program] The strongest true theorem about what the
 // emitter carries is "state events, never bytes." Pane bytes flow exclusively
-// through PaneSinkRegistry (`attachPaneSink` / `attachAllPanesSink`); they
+// through SinkRegistry (`attachBytesSink`); they
 // are not deliverable through any emitter overload. `EmitterTmuxMessage`
 // encodes that constraint by `Exclude`-ing `PaneOutputMessage` from the
 // `TmuxMessage` union, and `TypedEmitter.emit`'s parameter is `EmitterMessage`
@@ -26,9 +26,8 @@ import type {
 /**
  * The subset of `TmuxMessage` that flows through the emitter. Pane-byte
  * messages (`OutputMessage` / `ExtendedOutputMessage`) are excluded because
- * they belong to the sink channel — see `PaneSinkRegistry` in
- * `src/pane-sink.ts` and `TmuxClient.attachPaneSink` /
- * `TmuxClient.attachAllPanesSink`.
+ * they belong to the sink channel — see `SinkRegistry` in
+ * `src/pane-output.ts` and `TmuxClient.attachBytesSink`.
  *
  * [LAW:one-source-of-truth] Derived from `TmuxMessage` via `Exclude`; adding
  * a non-byte variant to `protocol/types.ts` propagates here automatically.
@@ -98,7 +97,7 @@ type AnyHandler = (event: never) => void;
  * synthetic lifecycle events (`connection-state`, `reconnected`). Pane-
  * byte messages (`OutputMessage` / `ExtendedOutputMessage`) are NOT
  * deliverable through any emitter overload; they flow through
- * `attachPaneSink` / `attachAllPanesSink` on `TmuxClient`.
+ * `attachBytesSink` on `TmuxClient`.
  */
 export class TypedEmitter {
   private readonly handlers = new Map<string, Set<AnyHandler>>();

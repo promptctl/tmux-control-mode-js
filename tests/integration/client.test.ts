@@ -418,14 +418,14 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
       sessionName = uniqueSession("int-output");
       const c = await createSession(socketName, sessionName);
       client = c;
-      // Pane bytes flow through `attachAllPanesSink` (multiplexer surface) —
-      // the emitter no longer carries `OutputMessage` so this is the only
+      // Pane bytes flow through `attachBytesSink` (server scope = all panes)
+      // — the emitter no longer carries `OutputMessage` so this is the only
       // way to observe bytes without knowing a paneId up front.
       const outputPromise = new Promise<{
         paneId: number;
         byteLength: number;
       }>((resolve) => {
-        const detach = c.attachAllPanesSink({
+        const detach = c.attachBytesSink({
           write(msg) {
             detach();
             resolve({ paneId: msg.paneId, byteLength: msg.data.byteLength });

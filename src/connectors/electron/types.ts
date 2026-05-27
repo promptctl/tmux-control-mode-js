@@ -15,7 +15,7 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
-import type { CommandResponse } from "../../protocol/types.js";
+import type { CommandResponse, PaneOutputMessage } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { RpcRequest } from "../rpc.js";
 
@@ -197,17 +197,18 @@ export interface AckMessage {
 // [LAW:one-source-of-truth] One declaration for each envelope shape; both
 // `attachWebContentsSink` (main.ts) and `createPaneBytesReceiver` (renderer.ts)
 // import it so the wire shape cannot drift across the IPC hop.
-// [LAW:types-are-the-program] The envelope is the seam type that carries
-// `(paneId, bytes)` end-to-end. Holding a `Uint8Array` on the renderer is
-// only possible inside the receiver's filter-and-forward frame; the value
-// leaves the consumer's reach the moment it lands in the receiver's `sink`.
+// [LAW:types-are-the-program] The envelope IS a PaneOutputMessage — same
+// discriminator, same fields (paneId, data, type, age?). A separate interface
+// was a second source of truth that could only be a lossy subset.
 // ---------------------------------------------------------------------------
 
-/** Payload for `IPC.paneBytes`. `data` survives Electron's structured clone. */
-export interface PaneBytesEnvelope {
-  readonly paneId: number;
-  readonly data: Uint8Array;
-}
+/**
+ * Payload for `IPC.paneBytes`. All fields survive Electron's structured clone.
+ *
+ * [LAW:one-source-of-truth] This is a type alias for `PaneOutputMessage` — the
+ * envelope IS the message; no information is dropped at the IPC boundary.
+ */
+export type PaneBytesEnvelope = PaneOutputMessage;
 
 /** Payload for `IPC.paneEnd`. */
 export interface PaneEndEnvelope {
