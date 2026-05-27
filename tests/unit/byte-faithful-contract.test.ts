@@ -12,51 +12,8 @@
 
 import { PassThrough } from "node:stream";
 import { websocketTransport } from "../../src/connectors/websocket/transport.js";
-import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
+import { assertByteFaithful, FakeWebSocket } from "./_helpers/websocket-fake.js";
 import { PROBE_BYTES } from "./_helpers/probe-bytes.js";
-
-function assertByteFaithful(received: string, expected: Uint8Array): void {
-  expect(received.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i++) {
-    expect(received.charCodeAt(i)).toBe(expected[i]);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal FakeWebSocket — drives message events into the transport under test.
-// The generic addEventListener implementation mirrors the pattern from
-// websocket-transport.test.ts, which avoids the strict-contravariance issue
-// that arises when typing a union of listener shapes.
-// ---------------------------------------------------------------------------
-
-interface FakeEvents {
-  open: (event: unknown) => void;
-  error: (event: unknown) => void;
-  message: (event: { data: unknown }) => void;
-  close: (event: { code?: number; reason?: string }) => void;
-}
-
-class FakeWebSocket implements BrowserWebSocketLike {
-  readyState = 1;
-  binaryType: "blob" | "arraybuffer" = "blob";
-  private readonly listeners: { [K in keyof FakeEvents]: FakeEvents[K][] } = {
-    open: [], error: [], message: [], close: [],
-  };
-
-  send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
-  close(_code?: number, _reason?: string): void {}
-
-  addEventListener(type: "open" | "error", listener: (event: unknown) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener(type: "message", listener: (event: { data: unknown }) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener(type: "close", listener: (event: { code?: number; reason?: string }) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener<K extends keyof FakeEvents>(type: K, listener: FakeEvents[K]): void {
-    this.listeners[type].push(listener);
-  }
-
-  emitMessage(data: unknown): void {
-    this.listeners.message.forEach((l) => l({ data }));
-  }
-}
 
 // ---------------------------------------------------------------------------
 // websocketTransport — ArrayBuffer frame (the primary binary path)

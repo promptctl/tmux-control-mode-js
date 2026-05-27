@@ -17,44 +17,8 @@
 //   decode is implemented.
 
 import { websocketTransport } from "../../src/connectors/websocket/transport.js";
-import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
+import { assertByteFaithful, FakeWebSocket } from "./_helpers/websocket-fake.js";
 import { PROBE_BYTES } from "./_helpers/probe-bytes.js";
-
-function assertByteFaithful(received: string, expected: Uint8Array): void {
-  expect(received.length).toBe(expected.length);
-  for (let i = 0; i < expected.length; i++) {
-    expect(received.charCodeAt(i)).toBe(expected[i]);
-  }
-}
-
-interface FakeEvents {
-  open: (event: unknown) => void;
-  error: (event: unknown) => void;
-  message: (event: { data: unknown }) => void;
-  close: (event: { code?: number; reason?: string }) => void;
-}
-
-class FakeWebSocket implements BrowserWebSocketLike {
-  readyState = 1;
-  binaryType: "blob" | "arraybuffer" = "blob";
-  private readonly listeners: { [K in keyof FakeEvents]: FakeEvents[K][] } = {
-    open: [], error: [], message: [], close: [],
-  };
-
-  send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
-  close(_code?: number, _reason?: string): void {}
-
-  addEventListener(type: "open" | "error", listener: (event: unknown) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener(type: "message", listener: (event: { data: unknown }) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener(type: "close", listener: (event: { code?: number; reason?: string }) => void, options?: { signal?: AbortSignal }): void;
-  addEventListener<K extends keyof FakeEvents>(type: K, listener: FakeEvents[K]): void {
-    this.listeners[type].push(listener);
-  }
-
-  emitMessage(data: unknown): void {
-    this.listeners.message.forEach((l) => l({ data }));
-  }
-}
 
 describe("byte-faithfulness contract: websocketTransport (browser / happy-dom)", () => {
   it("ArrayBuffer frame: every byte maps 1:1 to its code unit (browser env)", () => {
