@@ -7,9 +7,10 @@
 // but inside a browser-like runtime. The only transport tested here is
 // websocketTransport — the spawn transport is Node-only (child_process/stream).
 //
-// Purpose: guard against future "simplification" to TextDecoder('latin1'),
-// which is byte-faithful in Node but remaps 0x80-0x9F to windows-1252 code
-// points in browsers, silently corrupting tmux pane output.
+// Purpose: guard against future "simplification" to TextDecoder('latin1').
+// Per the WHATWG Encoding Standard, 'latin1'/'iso-8859-1' is windows-1252 in
+// all conforming runtimes (Node, browsers, Deno) — 0x80-0x9F are remapped.
+// The only byte-faithful decode is String.fromCharCode (bytesToLatin1).
 //
 // [LAW:behavior-not-structure] Asserts the per-byte contract, not how the
 //   decode is implemented.
@@ -39,8 +40,8 @@ class FakeWebSocket implements BrowserWebSocketLike {
     open: [], error: [], message: [], close: [],
   };
 
-  send(): void {}
-  close(): void {}
+  send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
+  close(_code?: number, _reason?: string): void {}
 
   addEventListener(type: "open" | "error", listener: (event: unknown) => void, options?: { signal?: AbortSignal }): void;
   addEventListener(type: "message", listener: (event: { data: unknown }) => void, options?: { signal?: AbortSignal }): void;

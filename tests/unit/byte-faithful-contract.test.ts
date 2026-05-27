@@ -43,8 +43,8 @@ class FakeWebSocket implements BrowserWebSocketLike {
     open: [], error: [], message: [], close: [],
   };
 
-  send(): void {}
-  close(): void {}
+  send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
+  close(_code?: number, _reason?: string): void {}
 
   addEventListener(type: "open" | "error", listener: (event: unknown) => void, options?: { signal?: AbortSignal }): void;
   addEventListener(type: "message", listener: (event: { data: unknown }) => void, options?: { signal?: AbortSignal }): void;
