@@ -29,7 +29,10 @@ import type { BytesSink } from "../pane-output.js";
  *
  * `handler` is called once per `write` and once on `end`, with no
  * skip-empty filter — every write produces exactly one handler call
- * ([LAW:dataflow-not-control-flow]).
+ * ([LAW:dataflow-not-control-flow]). `handler` MUST NOT throw: it runs
+ * synchronously inside `write`, and a throwing handler violates the
+ * `BytesSink` must-not-throw contract, breaking dispatch for all co-attached
+ * sinks on the same client. Wrap risky work in try/catch inside `handler`.
  *
  * Call `createTextStreamSink` once per `attachBytesSink` call.
  * Each factory call returns a fresh decoder.

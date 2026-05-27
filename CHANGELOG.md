@@ -25,9 +25,15 @@ All notable changes to this project are documented here. Format follows
 - **`PaneScope`** — discriminated union with four arms: `serverScope`,
   `sessionScope(id)`, `windowScope(id)`, `paneScope(id)`. Exported as value
   factory functions and as a type from the package root.
-- **`PaneTopologyManager`** — internal paneId→{sessionId,windowId} table, lazily
+- **`PaneTopologyManager`** — paneId→{sessionId,windowId} topology table, lazily
   bootstrapped and kept up-to-date by `window-add`, `window-close`,
-  `layout-change`, and `sessions-changed` notifications.
+  `layout-change`, and `sessions-changed` notifications. Exported for
+  consumers implementing `TmuxClientLike`.
+- **`TopologyEpochTracker`** — epoch guard for async topology queries; prevents
+  stale `list-panes` results from clobbering synchronous `window-close` updates.
+  Exported alongside `PaneTopologyManager` for `TmuxClientLike` implementors.
+- **`parsePaneListLine`** — parses one line of `list-panes -F '#{pane_id} #{window_id} #{session_id}'`
+  output. Exported for consumers implementing topology bootstrap.
 - **`SinkRegistry`** — scope-bifurcated dispatch: one bucket per scope kind.
   Snapshot-before-write prevents re-entrant attach/detach from skipping or
   double-delivering a chunk.

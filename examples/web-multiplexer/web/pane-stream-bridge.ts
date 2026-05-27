@@ -26,9 +26,10 @@ import type {
 import {
   SinkRegistry,
   PaneTopologyManager,
+  TopologyEpochTracker,
+  parsePaneListLine,
   serverScope,
 } from "@promptctl/tmux-control-mode-js";
-import { parsePaneListLine, TopologyEpochTracker } from "../../../src/pane-output.js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
