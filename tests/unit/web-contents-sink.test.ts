@@ -305,6 +305,7 @@ describe("createPaneBytesReceiver", () => {
 
     const payload = new Uint8Array([0xc3, 0xa9, 0xe2, 0x98, 0x83]); // 'é☃'
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 3,
       data: payload,
     } satisfies PaneBytesEnvelope);
@@ -320,10 +321,12 @@ describe("createPaneBytesReceiver", () => {
     createPaneBytesReceiver(renderer.ipcRenderer, 3, sink.sink);
 
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 4,
       data: new Uint8Array([0x01]),
     } satisfies PaneBytesEnvelope);
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 2,
       data: new Uint8Array([0x02]),
     } satisfies PaneBytesEnvelope);
@@ -350,6 +353,7 @@ describe("createPaneBytesReceiver", () => {
 
     renderer.sender.send(IPC.paneEnd, { paneId: 5 } satisfies PaneEndEnvelope);
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 5,
       data: new Uint8Array([0x01, 0x02]),
     } satisfies PaneBytesEnvelope);
@@ -373,6 +377,7 @@ describe("createPaneBytesReceiver", () => {
     dispose(); // idempotent — must not throw, must not double-detach
 
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 6,
       data: new Uint8Array([0xff]),
     } satisfies PaneBytesEnvelope);
@@ -392,6 +397,7 @@ describe("createPaneBytesReceiver", () => {
 
     // The receiver is still attached; a subsequent matching frame must land.
     renderer.sender.send(IPC.paneBytes, {
+      type: "output" as const,
       paneId: 9,
       data: new Uint8Array([0x42]),
     } satisfies PaneBytesEnvelope);
