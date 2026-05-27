@@ -18,11 +18,17 @@
 import { makeAutoObservable, runInAction } from "mobx";
 import type {
   ConnectionState,
-  PaneByteSink,
+  AttachOptions,
+  BytesSink,
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
-import { PaneSinkRegistry } from "@promptctl/tmux-control-mode-js";
+import {
+  SinkRegistry,
+  PaneTopologyManager,
+  serverScope,
+} from "@promptctl/tmux-control-mode-js";
+import { parsePaneListLine } from "../../../src/pane-output.js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
@@ -73,12 +79,12 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   private readonly subChangedSet = new Set<
     (ev: SubscriptionChangedMessage) => void
   >();
-  // [LAW:single-enforcer] Same `PaneSinkRegistry` implementation every
-  //   `TmuxClientLike` in the monorepo uses. `attachPaneSink` delegates to
-  //   it; the bridge.onEvent handler calls `paneSinks.dispatch(ev)` before
-  //   the per-type fan-out so canonical sink delivery is snapshot-protected
-  //   and isolated from throws in the per-type listener sets.
-  private readonly paneSinks = new PaneSinkRegistry();
+  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager every
+  //   `TmuxClientLike` in the monorepo uses. `attachBytesSink` delegates to
+  //   `sinks.attach`; the bridge.onEvent handler calls
+  //   `sinks.dispatch(ev, topology.get(paneId))` before the per-type fan-out.
+  private readonly sinks = new SinkRegistry();
+  private readonly topology = new PaneTopologyManager();
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -89,10 +95,27 @@ export class BridgePaneStreamClient implements TmuxClientLike {
       // [LAW:single-enforcer] Sinks fire BEFORE the per-type listener
       //   fan-out, matching `TmuxClient.handleMessage`. The registry's
       //   per-chunk snapshot isolates the attachment set from re-entrant
-      //   attach/detach inside `sink.write`, and running it before the
-      //   per-type sets keeps canonical sink delivery resilient to throws
-      //   in any deprecated `on('output', …)` listener.
-      this.paneSinks.dispatch(ev);
+      //   attach/detach inside `sink.write`.
+      if (ev.type === "output" || ev.type === "extended-output") {
+        this.sinks.dispatch(ev, this.topology.get(ev.paneId));
+        return;
+      }
+      // Topology events update the table in lock-step with TmuxClient.
+      if (ev.type === "layout-change") {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.refreshWindowTopology(ev.windowId);
+        }
+      } else if (ev.type === "window-add" || ev.type === "unlinked-window-add") {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.refreshWindowTopology(ev.windowId);
+        }
+      } else if (ev.type === "window-close" || ev.type === "unlinked-window-close") {
+        this.topology.removeWindow(ev.windowId);
+      } else if (ev.type === "sessions-changed") {
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.bootstrapTopology();
+        }
+      }
       // [LAW:types-are-the-program] `ev` is the canonical `TmuxMessage`
       // discriminated union; narrowing on `ev.type` produces the exact
       // variant the per-type handler set expects, with no cast needed.
@@ -115,6 +138,9 @@ export class BridgePaneStreamClient implements TmuxClientLike {
           for (const h of this.reconnectedSet) h({ type: "reconnected" });
         }
         this.everReady = true;
+        if (this.sinks.hasTopologyDependentSinks()) {
+          void this.bootstrapTopology();
+        }
       }
     });
   }
@@ -183,12 +209,51 @@ export class BridgePaneStreamClient implements TmuxClientLike {
     return this.bridge.execute(`refresh-client -B ${tmuxEscape(name)}`);
   }
 
-  // [LAW:locality-or-seam] Pane bytes fan out to sinks from the
-  //   `paneSinks.dispatch(ev)` call in the bridge.onEvent handler above —
-  //   the same shape as every other `TmuxClientLike` implementation.
-  //   `attachPaneSink` is the public entry into that registry.
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return this.paneSinks.attach(paneId, sink);
+  // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the
+  //   bridge.onEvent handler above — same shape as every other
+  //   `TmuxClientLike` implementation. `attachBytesSink` is the public entry.
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
+    const scope = options?.scope ?? serverScope;
+    const dispose = this.sinks.attach(sink, scope);
+    if (
+      (scope.kind === "session" || scope.kind === "window") &&
+      this._connectionState.status === "ready"
+    ) {
+      void this.bootstrapTopology();
+    }
+    return dispose;
+  }
+
+  private async bootstrapTopology(): Promise<void> {
+    try {
+      const r = await this.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null ? [parsed] : [];
+      });
+      this.topology.seed(entries);
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  private async refreshWindowTopology(windowId: number): Promise<void> {
+    try {
+      const r = await this.execute(
+        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
+      );
+      const entries = r.output.flatMap((line) => {
+        const parsed = parsePaneListLine(line);
+        return parsed !== null
+          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
+          : [];
+      });
+      this.topology.updateWindow(windowId, entries);
+    } catch {
+      this.topology.removeWindow(windowId);
+    }
   }
 }
 

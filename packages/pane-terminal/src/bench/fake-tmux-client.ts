@@ -25,11 +25,15 @@
 
 import type {
   ConnectionState,
-  PaneByteMultiplexer,
-  PaneByteSink,
+  AttachOptions,
+  BytesSink,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
-import { PaneSinkRegistry } from "@promptctl/tmux-control-mode-js";
+import {
+  SinkRegistry,
+  PaneTopologyManager,
+  serverScope,
+} from "@promptctl/tmux-control-mode-js";
 import type {
   OutputMessage,
   ExtendedOutputMessage,
@@ -76,8 +80,8 @@ export type FakeMessageType = FakeMessage["type"];
  * path that production does not have.
  *
  * [LAW:types-are-the-program] If a future bench test wants pane bytes, it
- * must attach a `PaneByteSink` (or `PaneByteMultiplexer`) — the wildcard
- * surface refuses to carry them, same as production.
+ * must call `attachBytesSink` — the wildcard surface refuses to carry
+ * them, same as production.
  */
 export type FakeEmitterMessage = Exclude<
   FakeMessage,
@@ -103,14 +107,13 @@ export class FakeTmuxClient {
     Set<Handler<FakeMessage>>
   >();
 
-  // [LAW:single-enforcer] Same `PaneSinkRegistry` every other
-  //   `TmuxClientLike` in the monorepo uses. `attachPaneSink` delegates to
-  //   it; `dispatch` calls `paneSinks.dispatch(msg)` before the per-type
-  //   listener fan-out so the fake's byte-sink path matches production
-  //   shape (pre-emit snapshot, throw-isolation from listener Set
-  //   iteration). Tests that script throws on `on('output', …)` listeners
-  //   would otherwise observe behavior the production bridges don't.
-  private readonly paneSinks = new PaneSinkRegistry();
+  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
+  //   `attachBytesSink` delegates to `sinks.attach`; `dispatch` calls
+  //   `sinks.dispatch(msg, topology.get(paneId))` before the per-type listener
+  //   fan-out so the fake's byte-sink path matches production shape. Tests that
+  //   need scope-based dispatch use `seedTopology(entries)` to seed the table.
+  private readonly sinks = new SinkRegistry();
+  private readonly topology = new PaneTopologyManager();
 
   // Capture-pane invocation log + scriptable response handler. Gate 4
   // (re-mount on same stream → exactly 1 capture) reads this counter; future
@@ -147,7 +150,7 @@ export class FakeTmuxClient {
   // fire — a behavior-correct no-op for any test that doesn't `inject*` them.
   //
   // `TmuxEventMap` does not contain `'output'` or `'extended-output'`;
-  // pane bytes flow through `attachPaneSink` / `attachAllPanesSink` only.
+  // pane bytes flow through `attachBytesSink` only.
   // The wildcard `'*'` overload's handler argument is `FakeEmitterMessage`,
   // which excludes byte messages — same shape as production's
   // `EmitterMessage`. Test code cannot accidentally rely on wildcard byte
@@ -222,17 +225,11 @@ export class FakeTmuxClient {
     return this.resolveAck();
   }
 
-  // [LAW:locality-or-seam] Pane bytes fan out to sinks from
-  //   `paneSinks.dispatch(msg)` inside the fake's internal `dispatch`
-  //   path (see below) — the same shape as every other
-  //   `TmuxClientLike` implementation. `attachPaneSink` is the public
-  //   entry into that registry.
-  attachPaneSink(paneId: number, sink: PaneByteSink): () => void {
-    return this.paneSinks.attach(paneId, sink);
-  }
-
-  attachAllPanesSink(mux: PaneByteMultiplexer): () => void {
-    return this.paneSinks.attachAllPanes(mux);
+  // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside
+  //   the fake's internal `dispatch` path — same shape as every other
+  //   `TmuxClientLike` implementation. `attachBytesSink` is the public entry.
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
+    return this.sinks.attach(sink, options?.scope ?? serverScope);
   }
 
   close(): void {
@@ -325,6 +322,22 @@ export class FakeTmuxClient {
     this.roundTripMs = ms;
   }
 
+  /**
+   * Seed the topology table for tests that use session/window-scoped
+   * attachments. The fake's execute() returns empty output so the automatic
+   * bootstrap is a no-op; tests that need scope-based routing call this
+   * directly before attaching sinks.
+   */
+  seedTopology(
+    entries: ReadonlyArray<{
+      paneId: number;
+      windowId: number;
+      sessionId: number;
+    }>,
+  ): void {
+    this.topology.seed(entries);
+  }
+
   // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
@@ -341,7 +354,7 @@ export class FakeTmuxClient {
     //   `ExtendedOutputMessage` (see the type aliases above), so the
     //   narrowed value is a structural `TmuxMessage` with no cast.
     if (msg.type === "output" || msg.type === "extended-output") {
-      this.paneSinks.dispatch(msg);
+      this.sinks.dispatch(msg, this.topology.get(msg.paneId));
       return;
     }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
