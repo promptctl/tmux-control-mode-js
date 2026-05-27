@@ -30,6 +30,7 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
+import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
 import {
   isTmuxMessage,
@@ -382,7 +383,7 @@ class Connection {
         typeof data === "string"
           ? data
           : data instanceof Uint8Array
-            ? new TextDecoder().decode(data)
+            ? bytesToLatin1(data)
             : String(data);
       this.onFrame(text);
     });

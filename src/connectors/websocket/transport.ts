@@ -15,12 +15,9 @@
 // those carry a structured RPC framing with auth, rate limits, and
 // observability; this is a transport-layer pipe.
 
+import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxTransport } from "../../transport/types.js";
 import type { BrowserWebSocketLike } from "./types.js";
-
-// [LAW:single-enforcer] Decoding of binary WebSocket frames happens in this
-// adapter and nowhere else. Higher layers (parser, client) only see strings.
-const BINARY_DECODER = new TextDecoder();
 
 /**
  * Adapt a WebSocket to the TmuxTransport interface.
@@ -32,9 +29,13 @@ const BINARY_DECODER = new TextDecoder();
  * fire once the underlying transport is ready.
  *
  * Outbound bytes go to `ws.send`. Inbound bytes go through `addEventListener`
- * for `message` / `close` / `error`. Binary frames are decoded as UTF-8;
- * tmux control mode is a text protocol (SPEC §1) so any binary frame must
- * be a UTF-8 byte buffer.
+ * for `message` / `close` / `error`. Binary frames are decoded via the
+ * byte-faithful codec (see `byte-codec.ts`) so byte values 0x00-0xFF survive
+ * the transport intact.
+ *
+ * [LAW:single-enforcer] All bytes↔string conversion flows through
+ * `bytesToLatin1` from `byte-codec.ts`. No other site in this file derives
+ * this conversion independently.
  *
  * [LAW:dataflow-not-control-flow] Listener arrays always exist; dispatch is
  * unconditional. The path through `addEventListener("message", …)` is the
@@ -103,9 +104,10 @@ function decodeFrame(data: unknown): string {
   // [LAW:dataflow-not-control-flow] Each branch is a pure value transform of
   // the incoming `data` shape — no side effects vary on the type.
   if (typeof data === "string") return data;
-  if (data instanceof ArrayBuffer) return BINARY_DECODER.decode(data);
+  if (data instanceof ArrayBuffer) return bytesToLatin1(new Uint8Array(data));
   if (ArrayBuffer.isView(data)) {
-    return BINARY_DECODER.decode(data as ArrayBufferView<ArrayBufferLike>);
+    const view = data as ArrayBufferView<ArrayBufferLike>;
+    return bytesToLatin1(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
   }
   return "";
 }
