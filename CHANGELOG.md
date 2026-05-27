@@ -25,8 +25,8 @@ All notable changes to this project are documented here. Format follows
 - **`PaneScope`** — discriminated union with four arms: `serverScope`,
   `sessionScope(id)`, `windowScope(id)`, `paneScope(id)`. Exported as value
   factory functions and as a type from the package root.
-- **`PaneTopologyManager`** — internal paneId→{sessionId,windowId} table, seeded
-  at connect time and kept up-to-date by `window-add`, `window-close`,
+- **`PaneTopologyManager`** — internal paneId→{sessionId,windowId} table, lazily
+  bootstrapped and kept up-to-date by `window-add`, `window-close`,
   `layout-change`, and `sessions-changed` notifications.
 - **`SinkRegistry`** — scope-bifurcated dispatch: one bucket per scope kind.
   Snapshot-before-write prevents re-entrant attach/detach from skipping or
@@ -37,7 +37,6 @@ All notable changes to this project are documented here. Format follows
   all four scope kinds, dynamic membership (window-add), multi-scope dispatch
   without duplication, bootstrap correctness, and the no-consumer fast path.
 
-Full design: `design-docs/pane-output-architecture.md`.
 
 ## [0.1.0]
 

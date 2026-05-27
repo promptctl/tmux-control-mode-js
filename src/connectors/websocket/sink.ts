@@ -97,8 +97,9 @@ const ACTIVE_WEBSOCKET_SINKS = new WeakMap<WebSocketSinkTarget, Set<number>>();
  * `./protocol.ts`).
  *
  * Internally constructs a `BytesSink` that turns each chunk into one
- * `ws.send(encodePaneOutput({ type: 'output', paneId, data }))` binary
- * frame, calls `client.attachBytesSink(sink, { scope: paneScope(paneId) })`,
+ * `ws.send(encodePaneOutput(msg))` binary frame — forwarding the full
+ * `PaneOutputMessage` (including `type: 'extended-output'` and `age`).
+ * Calls `client.attachBytesSink(sink, { scope: paneScope(paneId) })`,
  * and returns a disposer that unwinds the attachment. The sink instance is
  * never exposed: the closure owns it, so it cannot be attached more than
  * once. The wire's `paneId`-scoped envelope and the attachment's lifecycle

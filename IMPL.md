@@ -268,7 +268,7 @@ class TmuxClient {
   //   - paneScope(id)         — exactly pane %id
   //
   // The library maintains a `PaneTopologyManager` (paneId → {sessionId,
-  // windowId}) seeded at connect time and updated on window-add /
+  // windowId}) lazily bootstrapped and updated on window-add /
   // window-close / layout-change / sessions-changed. Session/window
   // scope routing is data-driven against this table per chunk.
   //
@@ -277,7 +277,6 @@ class TmuxClient {
   //   - `attachWebSocketSink`    from `@promptctl/tmux-control-mode-js/websocket`
   //   - `XtermSink`              from `@promptctl/pane-terminal/xterm-sink`
   //
-  // Full architecture: design-docs/pane-output-architecture.md
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void;
 
   // Command execution with response tracking
