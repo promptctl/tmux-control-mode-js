@@ -111,7 +111,7 @@ export interface AttachOptions {
  * Topology metadata for a single pane — the session and window it currently
  * belongs to.
  */
-export type PaneMeta = { readonly sessionId: number; readonly windowId: number };
+export interface PaneMeta { readonly sessionId: number; readonly windowId: number }
 
 /**
  * Maintains the paneId → {sessionId, windowId} table from bootstrap queries
@@ -143,11 +143,11 @@ export class PaneTopologyManager {
    * Called on bootstrap (list-panes -a) and on sessions-changed.
    */
   seed(
-    entries: ReadonlyArray<{
+    entries: readonly {
       paneId: number;
       windowId: number;
       sessionId: number;
-    }>,
+    }[],
   ): void {
     this.table.clear();
     this.windowIndex.clear();
@@ -168,7 +168,7 @@ export class PaneTopologyManager {
    */
   updateWindow(
     windowId: number,
-    entries: ReadonlyArray<{ paneId: number; sessionId: number }>,
+    entries: readonly { paneId: number; sessionId: number }[],
   ): void {
     const prev = this.windowIndex.get(windowId);
     const next = new Set(entries.map((e) => e.paneId));

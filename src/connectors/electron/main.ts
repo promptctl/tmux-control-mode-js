@@ -66,7 +66,6 @@ import {
   type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
-  type PaneBytesEnvelope,
   type PaneEndEnvelope,
   type WebContentsLike,
 } from "./types.js";
