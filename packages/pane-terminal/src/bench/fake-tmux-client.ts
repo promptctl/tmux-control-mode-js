@@ -329,11 +329,11 @@ export class FakeTmuxClient {
    * directly before attaching sinks.
    */
   seedTopology(
-    entries: ReadonlyArray<{
+    entries: readonly {
       paneId: number;
       windowId: number;
       sessionId: number;
-    }>,
+    }[],
   ): void {
     this.topology.seed(entries);
   }

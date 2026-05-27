@@ -199,7 +199,9 @@ export function attachWebSocketSink(
     },
   };
 
-  const attachDispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
+  const attachDispose = client.attachBytesSink(sink, {
+    scope: paneScope(paneId),
+  });
 
   let disposed = false;
   return () => {
