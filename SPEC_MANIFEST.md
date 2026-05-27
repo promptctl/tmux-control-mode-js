@@ -116,6 +116,15 @@ transport line-driver noise, not data. The behavior is library-side
 defensive code, not a tmux rule. SPEC.md §4.3.1 carries the mirror
 statement on the outer-spec side. Resolves audit finding MANIFEST F7.
 
+### 3.2 Library detach note (library)
+
+The §3 bullet above states that an empty line causes the client to detach.
+`TmuxClient.detach()` (`src/client.ts`) is the typed first-class operation
+for sending this empty-line signal — it encodes and writes a bare `\n` via
+the `detachClient()` protocol encoder. This is semantically distinct from
+`TmuxClient.close()`, which tears down the underlying transport without
+sending any protocol signal to tmux. Resolves audit finding MANIFEST F4.
+
 ---
 
 ## 4. Command Response Protocol (`%begin` / `%end` / `%error`)
@@ -778,6 +787,21 @@ for control-mode-specific flags.
 - **`refresh-client -l`** - request clipboard via xterm escape (does NOT require
   `CLIENT_CONTROL`)
   - `cmd-refresh-client.c:256-258`, `tmux.1:1496-1499`
+
+### 26.1 Library typed operations (library)
+
+Beyond the `refresh-client` wrappers enumerated above, `TmuxClient`
+(`src/client.ts`) exposes typed methods that send other tmux commands:
+
+- `execute(command)` — raw tmux command passthrough; the general escape hatch for any command not covered by a named method
+- `listWindows()` — wraps `list-windows`
+- `listPanes()` — wraps `list-panes`
+- `sendKeys(target, keys)` — wraps `send-keys`
+- `splitWindow(options?)` — wraps `split-window`
+
+The `refresh-client` variants (`setSize`, `setPaneAction`, `subscribeRaw`,
+`setFlags`, etc.) are the typed wrappers for the §26 commands listed above.
+Resolves audit finding MANIFEST F9.
 
 ---
 
