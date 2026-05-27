@@ -8,3 +8,4 @@ playwright-report/
 .claude/*.lock
 .claude/worktrees/
 package-lock.json
+iterm2_tmux_cc_impl/
