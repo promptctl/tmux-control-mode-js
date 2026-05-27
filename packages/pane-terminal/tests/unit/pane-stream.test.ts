@@ -253,6 +253,77 @@ describe("PaneStream — state machine", () => {
     expect(rows[7]?.startsWith("\x1b")).toBe(true);
   });
 
+  it("seed preamble emits ?1049l + CUP home for main-screen pane (alternate_on=0)", async () => {
+    // Regression: the original preamble emitted nothing for alternate_on=0,
+    // so a reseed on a terminal still in alt screen drew content into the
+    // wrong buffer. The fix emits ?1049l (exit alt screen) + CUP home before
+    // any screen content so the correct screen and cursor row are established
+    // deterministically, even on a reconnect reseed.
+    const { stream } = makeStream({
+      capture: "row-0\nrow-1",
+      // alternate_on=0, cursor visible, no insert/keypad, autowrap, 3 rows
+      cursor: "0;0;0;1;0;0;0;1;3;0",
+    });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    const text = sink.seedTexts[0] ?? "";
+    expect(text.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+  });
+
+  it("seed preamble emits ?1049h + CUP home for alt-screen pane (alternate_on=1)", async () => {
+    const { stream } = makeStream({
+      capture: "alt-row-0\nalt-row-1",
+      cursor: "0;0;1;1;0;0;0;1;3;0", // alternate_on=1
+    });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    const text = sink.seedTexts[0] ?? "";
+    expect(text.startsWith("\x1b[?1049h\x1b[H")).toBe(true);
+  });
+
+  it("reseed from alt screen to main screen: preamble switches screen buffer", async () => {
+    // The critical reseed-from-alt regression: the XtermSink terminal was
+    // left in alt screen after an alt-screen seed; a subsequent reconnect
+    // reseed for a main-screen pane must emit ?1049l + CUP so the seed
+    // content lands on the main screen at row 0, not mid-alt-screen.
+    const client = new FakeTmuxClient();
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message")
+        ? "0;0;1;1;0;0;0;1;3;0" // alt=1
+        : "alt-content",
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+
+    const sink1 = new RecordingSink();
+    stream.attach(sink1);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    // First seed established alt screen.
+    expect(sink1.seedTexts[0]?.startsWith("\x1b[?1049h\x1b[H")).toBe(true);
+    stream.detach();
+
+    // Reconnect: pane is now on main screen.
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message")
+        ? "0;0;0;1;0;0;0;1;3;0" // alt=0
+        : "main-content",
+    );
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+
+    const sink2 = new RecordingSink();
+    stream.attach(sink2);
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    // Reseed must exit alt screen and home cursor before drawing main content.
+    expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+  });
+
   it("dispose() → 'disposed' and is idempotent", () => {
     const { stream } = makeStream();
     stream.dispose();
