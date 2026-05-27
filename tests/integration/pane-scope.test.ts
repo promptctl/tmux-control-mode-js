@@ -97,17 +97,12 @@ async function listAllPanes(
 }
 
 /**
- * Produce a line of output in the given pane and return the first chunk
- * delivered to `sink`.
+ * Send a keystroke to the given pane so it produces output.
  *
  * Uses `send-keys … Enter` to a specific pane target so the pane that
  * receives input is explicit, not the currently-active pane.
  */
-function sendOutputToPane(
-  client: TmuxClient,
-  socketName: string,
-  paneId: number,
-): Promise<void> {
+function sendOutputToPane(client: TmuxClient, paneId: number): Promise<void> {
   return client
     .execute(`send-keys -t %${paneId} 'echo scope-test-${paneId}' Enter`)
     .then(() => undefined);
@@ -186,7 +181,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       const panesInit = await listAllPanes(client);
       expect(panesInit.length).toBeGreaterThan(0);
       const paneA = panesInit[0].paneId;
-      await sendOutputToPane(client, socketName, paneA);
+      await sendOutputToPane(client, paneA);
       await waitFor(() => arrived.some((e) => e.paneId === paneA));
 
       // Create a second window and produce output in its pane. Server scope
@@ -199,7 +194,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       );
       expect(newPanes.length).toBeGreaterThan(0);
       const paneB = newPanes[0].paneId;
-      await sendOutputToPane(client, socketName, paneB);
+      await sendOutputToPane(client, paneB);
       await waitFor(() => arrived.some((e) => e.paneId === paneB));
 
       dispose();
@@ -230,11 +225,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       );
 
       // Output from %X must arrive.
-      await sendOutputToPane(client, socketName, paneX);
+      await sendOutputToPane(client, paneX);
       await waitFor(() => arrived.some((e) => e.paneId === paneX));
 
       // Output from %Y must not arrive (wait briefly and assert empty for Y).
-      await sendOutputToPane(client, socketName, paneY);
+      await sendOutputToPane(client, paneY);
       // Give Y bytes a fair chance to arrive (they should not).
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
       expect(arrived.some((e) => e.paneId === paneY)).toBe(false);
@@ -270,7 +265,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       // Both panes in the session must deliver bytes.
       for (const p of panesAfter) {
-        await sendOutputToPane(client, socketName, p.paneId);
+        await sendOutputToPane(client, p.paneId);
       }
       await waitFor(() =>
         panesAfter.every((p) => arrived.some((e) => e.paneId === p.paneId)),
@@ -314,7 +309,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       const newPane = newPanes[0].paneId;
 
       // Output in the new pane must arrive via the existing sessionScope subscription.
-      await sendOutputToPane(client, socketName, newPane);
+      await sendOutputToPane(client, newPane);
       await waitFor(() => arrived.some((e) => e.paneId === newPane));
 
       dispose();
@@ -352,13 +347,13 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       // Pane(s) in @N must arrive.
       for (const p of panesInN) {
-        await sendOutputToPane(client, socketName, p.paneId);
+        await sendOutputToPane(client, p.paneId);
       }
       await waitFor(() => panesInN.every((p) => arrived.some((e) => e.paneId === p.paneId)));
 
       // Pane(s) in @M must NOT arrive.
       for (const p of panesInM) {
-        await sendOutputToPane(client, socketName, p.paneId);
+        await sendOutputToPane(client, p.paneId);
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
       expect(panesInM.every((p) => !arrived.some((e) => e.paneId === p.paneId))).toBe(true);
@@ -414,7 +409,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       const beforeCount = arrived.length;
 
       // Output in the moved pane — now in B — must NOT arrive to the A sink.
-      await sendOutputToPane(client, socketName, movedPane);
+      await sendOutputToPane(client, movedPane);
       await new Promise<void>((resolve) => setTimeout(resolve, 300));
       expect(arrived.length).toBe(beforeCount);
 
@@ -447,7 +442,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
         { scope: paneScope(paneX) },
       );
 
-      await sendOutputToPane(client, socketName, paneX);
+      await sendOutputToPane(client, paneX);
       // Wait until at least one chunk arrived via each path.
       await waitFor(() => serverCount > 0 && paneCount > 0);
 
@@ -503,7 +498,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       // All panes must route correctly via the bootstrapped topology.
       for (const p of allPanes) {
-        await sendOutputToPane(c, socketName, p.paneId);
+        await sendOutputToPane(c, p.paneId);
       }
       await waitFor(() => allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)));
 
@@ -525,7 +520,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       // No sink attached. Output from the pane must not throw or hang.
       // Verified by the absence of errors — the test completes cleanly.
-      await sendOutputToPane(client, socketName, pane);
+      await sendOutputToPane(client, pane);
       // A brief wait confirms no crash / unhandled rejection occurs.
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
       // No assertion — the test passing is the assertion.
