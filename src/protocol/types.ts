@@ -275,6 +275,19 @@ export type TmuxMessage =
 export interface CommandResponse {
   readonly commandNumber: number;
   readonly timestamp: number;
+  /**
+   * Lines between the `%begin` and `%end`/`%error` guard pair.
+   *
+   * **Encoding:** Each string is a latin1-container byte-faithful string:
+   * byte-containers, not decoded Unicode. ASCII-only output is transparent;
+   * non-ASCII output (window names, session names, paths) requires explicit
+   * decode:
+   *
+   * ```ts
+   * import { latin1ToBytes } from "@promptctl/tmux-control-mode-js";
+   * const text = new TextDecoder().decode(latin1ToBytes(response.output[0]));
+   * ```
+   */
   readonly output: readonly string[];
   readonly success: boolean;
 }
