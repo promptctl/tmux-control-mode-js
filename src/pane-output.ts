@@ -412,8 +412,15 @@ export class TopologyEpochTracker {
   private bootstrapGen = 0;
   private readonly windowGens = new Map<number, number>();
 
-  /** Call immediately before the `list-panes -a` execute(). Returns captured gen. */
+  /**
+   * Call immediately before the `list-panes -a` execute(). Returns captured gen.
+   *
+   * Also clears all window-refresh generations: a bootstrap is a full table
+   * replacement via `seed()`, so any in-flight `list-panes -t @W` result is
+   * superseded — `isWindowRefreshCurrent` will return false for a missing key.
+   */
   startBootstrap(): number {
+    this.windowGens.clear();
     return ++this.bootstrapGen;
   }
 

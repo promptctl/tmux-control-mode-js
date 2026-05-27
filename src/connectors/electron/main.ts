@@ -647,7 +647,8 @@ const ACTIVE_WEBCONTENTS_SINKS = new WeakMap<WebContentsLike, Set<number>>();
  * Forward pane bytes for `paneId` to the given `WebContents` over IPC.
  *
  * Internally constructs a `BytesSink` that turns each chunk into one
- * `wc.send(IPC.paneBytes, { paneId, data })` frame and the
+ * `wc.send(IPC.paneBytes, msg)` frame (forwarding the full
+ * `PaneOutputMessage` directly — `PaneBytesEnvelope` is that type) and the
  * once-per-attachment `end()` into one `wc.send(IPC.paneEnd, { paneId })`
  * frame, calls `client.attachBytesSink(sink, { scope: paneScope(paneId) })`,
  * and returns a disposer that unwinds the attachment. `Uint8Array` payloads
