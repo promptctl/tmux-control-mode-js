@@ -28,7 +28,7 @@ import {
   PaneTopologyManager,
   serverScope,
 } from "@promptctl/tmux-control-mode-js";
-import { parsePaneListLine } from "../../../src/pane-output.js";
+import { parsePaneListLine, TopologyEpochTracker } from "../../../src/pane-output.js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
@@ -85,6 +85,7 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   //   `sinks.dispatch(ev, topology.get(paneId))` before the per-type fan-out.
   private readonly sinks = new SinkRegistry();
   private readonly topology = new PaneTopologyManager();
+  private readonly topologyEpoch = new TopologyEpochTracker();
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -111,6 +112,7 @@ export class BridgePaneStreamClient implements TmuxClientLike {
         }
       } else if (ev.type === "window-close" || ev.type === "unlinked-window-close") {
         this.topology.removeWindow(ev.windowId);
+        this.topologyEpoch.invalidateWindow(ev.windowId);
       } else if (ev.type === "sessions-changed") {
         if (this.sinks.hasTopologyDependentSinks()) {
           void this.bootstrapTopology();
@@ -225,10 +227,12 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   }
 
   private async bootstrapTopology(): Promise<void> {
+    const gen = this.topologyEpoch.startBootstrap();
     try {
       const r = await this.execute(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
       );
+      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null ? [parsed] : [];
@@ -240,10 +244,12 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   }
 
   private async refreshWindowTopology(windowId: number): Promise<void> {
+    const gen = this.topologyEpoch.startWindowRefresh(windowId);
     try {
       const r = await this.execute(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
       );
+      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null
