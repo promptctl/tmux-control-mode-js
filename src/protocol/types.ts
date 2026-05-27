@@ -278,17 +278,13 @@ export interface CommandResponse {
   /**
    * Lines between the `%begin` and `%end`/`%error` guard pair.
    *
-   * **Encoding:** Each string is a latin1-container — one code unit per
-   * transport byte (code units 0x00–0xFF map 1:1 to byte values). This is a
-   * consequence of the byte-faithful latin1 transport: the strings are
-   * byte-containers, not decoded Unicode.
-   *
-   * For ASCII-only command output this is transparent. For non-ASCII output
-   * (window names, session names, paths with non-ASCII characters) callers
-   * must decode explicitly:
+   * **Encoding:** Each string is a latin1-container byte-faithful string —
+   * the same encoding `bytesToLatin1` produces. The strings are byte-containers,
+   * not decoded Unicode. ASCII-only output is transparent; non-ASCII output
+   * (window names, session names, paths) requires explicit decode:
    *
    * ```ts
-   * import { latin1ToBytes } from "tmux-control-mode";
+   * import { latin1ToBytes } from "@promptctl/tmux-control-mode-js";
    * const text = new TextDecoder().decode(latin1ToBytes(line));
    * ```
    */
