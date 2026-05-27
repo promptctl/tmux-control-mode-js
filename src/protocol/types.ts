@@ -278,14 +278,14 @@ export interface CommandResponse {
   /**
    * Lines between the `%begin` and `%end`/`%error` guard pair.
    *
-   * **Encoding:** Each string is a latin1-container byte-faithful string —
-   * the same encoding `bytesToLatin1` produces. The strings are byte-containers,
-   * not decoded Unicode. ASCII-only output is transparent; non-ASCII output
-   * (window names, session names, paths) requires explicit decode:
+   * **Encoding:** Each string is a latin1-container byte-faithful string:
+   * byte-containers, not decoded Unicode. ASCII-only output is transparent;
+   * non-ASCII output (window names, session names, paths) requires explicit
+   * decode:
    *
    * ```ts
    * import { latin1ToBytes } from "@promptctl/tmux-control-mode-js";
-   * const text = new TextDecoder().decode(latin1ToBytes(line));
+   * const text = new TextDecoder().decode(latin1ToBytes(response.output[0]));
    * ```
    */
   readonly output: readonly string[];
