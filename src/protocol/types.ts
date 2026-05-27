@@ -275,6 +275,23 @@ export type TmuxMessage =
 export interface CommandResponse {
   readonly commandNumber: number;
   readonly timestamp: number;
+  /**
+   * Lines between the `%begin` and `%end`/`%error` guard pair.
+   *
+   * **Encoding:** Each string is a latin1-container — one code unit per
+   * transport byte (code units 0x00–0xFF map 1:1 to byte values). This is a
+   * consequence of the byte-faithful latin1 transport: the strings are
+   * byte-containers, not decoded Unicode.
+   *
+   * For ASCII-only command output this is transparent. For non-ASCII output
+   * (window names, session names, paths with non-ASCII characters) callers
+   * must decode explicitly:
+   *
+   * ```ts
+   * import { latin1ToBytes } from "tmux-control-mode";
+   * const text = new TextDecoder().decode(latin1ToBytes(line));
+   * ```
+   */
   readonly output: readonly string[];
   readonly success: boolean;
 }
