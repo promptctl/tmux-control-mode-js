@@ -1,5 +1,13 @@
 # tmux Control Mode Protocol Specification
 
+> **PROTOCOL REFERENCE — DO NOT ADD LIBRARY CONTENT HERE.**
+>
+> This file documents the tmux wire protocol: what tmux does over the wire, derived from the tmux C source and man page. The library implements this protocol and builds ergonomic API on top of it. Those two things are separate.
+>
+> **"Not described in this spec" does not mean "should be removed from the library."** The spec is a floor, not a ceiling. Library features that go beyond the protocol are correct and expected — do not touch them on the basis that they are not here.
+>
+> The only valid reason to edit this file is to correct an inaccuracy in the tmux protocol description, with a citation to the tmux C source or man page. If you find yourself writing anything about what this library does, stop — that belongs in `IMPL.md` or source JSDoc.
+
 Derived from tmux source code (version next-3.7, commit 5c30b145) and the
 tmux(1) man page. All citations reference files in the tmux source tree.
 
@@ -1256,144 +1264,3 @@ from `TmuxEventMap`; pane bytes route exclusively through `attachBytesSink`.
 | `%session-renamed` args | `<name>` (`tmux.1:7982`) | `<session-id> <name>` (`control-notify.c:189`: `$%u %s`) |
 
 ---
-
-## 26. Library API Surface
-
-This section documents the public API of the `tmux-control-mode-js` library.
-All exports are declared in `src/index.ts` and implemented across the modules
-listed below. The protocol sections above remain the authoritative reference for
-the underlying wire behavior; this section covers only the library's JavaScript
-surface.
-
-### 26.1 Public Exports
-
-All exports are available from the package root. Grouped by concern:
-
-**Core client**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `TmuxClient` | class | Main entry point. Orchestrates transport, parser, and event emission. Owns command correlation state. |
-| `TmuxClientLike` | type | `Pick<TmuxClient, …>` — the transport-agnostic slice every consumer writes against. Covers `connectionState`, `on`/`off`, `execute`, `subscribeRaw`, `unsubscribe`, `attachBytesSink`. |
-| `SplitOptions` | type | Options bag for `splitWindow()`. |
-
-**Errors**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `TmuxCommandError` | class | Thrown (rejected) when a command produces a `%error` response. Carries the original `CommandResponse` on `.response` (use `err.response.output` to read tmux's error lines). |
-
-**Connection state**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `ConnectionState` | type | Discriminated union of four lifecycle statuses. See §23.1 for the full member list. |
-
-**Protocol types**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `CommandResponse` | type | Shape returned by all command methods. See §26.3. |
-| `TmuxMessage` | type | Discriminated union of all parsed tmux wire messages. |
-| `PaneAction` | enum | `On \| Off \| Continue \| Pause` — values for `setPaneAction()` / `refresh-client -A`. See §13. |
-
-**Events**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `TmuxEventMap` | type | Maps event-name strings to their payload types for `on()`/`off()`. Includes wire events (all non-byte `TmuxMessage` variants) plus synthetic lifecycle events. See §26.4. |
-
-**Pane output (sink / scope)**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `BytesSink` | type | Consumer contract for raw pane bytes. See `src/pane-output.ts`. |
-| `AttachOptions` | type | Options for `attachBytesSink()` — currently holds `scope?: PaneScope`. |
-| `PaneScope` | type | Discriminated union describing which panes a sink receives: `serverScope`, `sessionScope(id)`, `windowScope(id)`, or `paneScope(id)`. |
-| `PaneMeta` | type | Topology metadata associated with a pane at dispatch time. |
-| `serverScope` | value | Scope constant — all panes on the server (default). |
-| `sessionScope(id)` | function | Returns a `PaneScope` matching all panes in session `id`. |
-| `windowScope(id)` | function | Returns a `PaneScope` matching all panes in window `id`. |
-| `paneScope(id)` | function | Returns a `PaneScope` matching a single pane `id`. |
-| `SinkRegistry` | class | Internal fan-out registry; exported for use by bridge / proxy implementations of `TmuxClientLike`. |
-| `PaneTopologyManager` | class | Maintains pane→window→session mapping for scope-based routing; exported for bridge implementations. |
-| `TopologyEpochTracker` | class | Tracks bootstrap and per-window refresh epochs to avoid stale async overwrites; exported for bridge implementations. |
-| `parsePaneListLine` | function | Parses one line of `list-panes -a -F '#{pane_id} #{window_id} #{session_id}'` output into a `PaneMeta`. |
-
-**Text sink**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `createTextStreamSink` | function | Wraps a `BytesSink` with a streaming UTF-8 decoder, yielding decoded string chunks. Convenience adapter for consumers that do not need byte-level fidelity. For the decoder's behavior on noisy transports, see §7.1. |
-
-**Transport**
-
-| Export | Kind | Description |
-|--------|------|-------------|
-| `spawnTmux` | function | Spawns `tmux -C` via `child_process.spawn` and returns a `TmuxTransport`. Refuses `-CC` mode — see §12.1. |
-| `TmuxTransport` | type | Interface that every transport must implement; substitute a fake for unit tests. |
-| `SpawnOptions` | type | Options accepted by `spawnTmux()`. |
-| `tmuxSocketDir` | function | Returns the default tmux socket directory for the current user (`/tmp/tmux-<uid>`, no trailing separator). |
-| `listTmuxSocketNames` | function | Returns the socket names found in `tmuxSocketDir()`. |
-| `isTmuxServerAlive` | function | Probes whether a tmux server with the given socket name is reachable. |
-
-### 26.2 TmuxClient Public Methods
-
-| Method / getter | Signature | Notes |
-|-----------------|-----------|-------|
-| constructor | `new TmuxClient(transport: TmuxTransport)` | Wires the transport to the parser and emitter; begins reading immediately. |
-| `connectionState` | getter → `ConnectionState` | Current lifecycle state. |
-| `on` / `off` | `on(event: K, handler): void` | Typed event subscription. `K` is a key of `TmuxEventMap`. Wildcard `"*"` overload delivers the full `EmitterMessage` union. |
-| `attachBytesSink` | `attachBytesSink(sink: BytesSink, options?: AttachOptions) → () => void` | Registers a byte consumer for pane output matching `options.scope` (default `serverScope`). Returns an idempotent disposer; calling it invokes `sink.end?.()` exactly once. |
-| `execute` | `execute(command: string) → Promise<CommandResponse>` | Sends any raw tmux command, newline-terminated. Resolves on `%end`, rejects with `TmuxCommandError` on `%error`. |
-| `listWindows` | `listWindows() → Promise<CommandResponse>` | Sends `list-windows`. |
-| `listPanes` | `listPanes() → Promise<CommandResponse>` | Sends `list-panes`. |
-| `sendKeys` | `sendKeys(target: string, keys: string) → Promise<CommandResponse>` | Encodes `keys` as UTF-8 hex bytes and sends `send-keys -H -t <target> <hex…>`. The `-H` flag causes tmux to interpret each argument as a two-digit hex byte, so control characters and newlines pass through literally. Empty `keys` resolves immediately without a round-trip. |
-| `splitWindow` | `splitWindow(options?: SplitOptions) → Promise<CommandResponse>` | Sends `split-window`. |
-| `setSize` | `setSize(width: number, height: number) → Promise<CommandResponse>` | Sends `refresh-client -C <width>x<height>`. See §11.1. |
-| `setPaneAction` | `setPaneAction(paneId: number, action: PaneAction) → Promise<CommandResponse>` | Sends `refresh-client -A <paneId>:<action>`. See §13. |
-| `subscribeRaw` | `subscribeRaw(name: string, what: string, format: string) → Promise<CommandResponse>` | Sends `refresh-client -B <name>:<what>:<format>`. See §14. |
-| `unsubscribe` | `unsubscribe(name: string) → Promise<CommandResponse>` | Sends `refresh-client -B <name>` (removes subscription). See §14. |
-| `setFlags` | `setFlags(flags: readonly string[]) → Promise<CommandResponse>` | Sends `refresh-client -f <flag,...>`. See §9. |
-| `clearFlags` | `clearFlags(flags: readonly string[]) → Promise<CommandResponse>` | Convenience for `setFlags` with `!` prefix on each flag. See §9. |
-| `requestReport` | `requestReport(paneId: number, report: string) → Promise<CommandResponse>` | Sends `refresh-client -r <paneId>:<report>`. Requires tmux 3.5+; see §15.1. |
-| `queryClipboard` | `queryClipboard() → Promise<CommandResponse>` | Sends `refresh-client -l`. See §19. Clipboard contents arrive via the terminal's OSC 52 response, not this Promise. |
-| `detach` | `detach() → void` | Sends a bare LF (the §4.1 detach trigger). Fire-and-forget: tmux responds with `%exit` but produces no `%begin`/`%end` pair. Prefer over `close()` for graceful shutdown. See §9 `wait-exit`. |
-| `close` | `close() → void` | Immediately tears down the underlying transport. Sets `connectionState` to `{ status: "closed", reason: "disposed" }`. |
-
-### 26.3 CommandResponse
-
-The shape returned by all command methods that return `Promise<CommandResponse>`:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `commandNumber` | `number` | The `%begin`/`%end` command number (monotonically increasing per client session). `-1` for synthetic no-op responses (e.g., empty `sendKeys`). |
-| `timestamp` | `number` | The `%begin` timestamp (seconds since Unix epoch), as parsed from the guard line. For synthetic responses, `Date.now()`. |
-| `output` | `readonly string[]` | Lines between `%begin` and `%end`/`%error`. Empty for commands that produce no output. |
-| `success` | `boolean` | `true` for `%end`, `false` for `%error`. When `false`, the Promise rejects with `TmuxCommandError` wrapping this response rather than resolving. |
-
-`CommandResponse` maps directly to the guard-line fields documented in §5.1.
-
-### 26.4 Event Names
-
-The keys of `TmuxEventMap`. All wire-protocol events correspond to the `%`
-notifications in §23; synthetic events are defined in §23.1.
-
-**Wire events (subscribable via `on()`):**
-`begin`, `end`, `error`, `pause`, `continue`,
-`pane-mode-changed`, `window-add`, `window-close`, `window-renamed`,
-`window-pane-changed`, `unlinked-window-add`, `unlinked-window-close`,
-`unlinked-window-renamed`, `layout-change`, `session-changed`,
-`session-renamed`, `sessions-changed`, `session-window-changed`,
-`client-session-changed`, `client-detached`, `paste-buffer-changed`,
-`paste-buffer-deleted`, `subscription-changed`, `message`, `config-error`,
-`exit`
-
-Note: `output` and `extended-output` exist as parsed wire message types but
-are intentionally absent from `TmuxEventMap`. `client.on("output", cb)` is a
-TypeScript compile error — pane bytes are not deliverable through the emitter.
-Route byte consumers through `attachBytesSink` instead. See §7.1 for the
-decoded `Uint8Array` payload description.
-
-**Synthetic events (not parsed from tmux output):**
-`connection-state`, `reconnected` — see §23.1 for payload shapes and semantics.
