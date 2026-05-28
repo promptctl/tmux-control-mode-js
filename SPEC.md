@@ -2,7 +2,7 @@
 
 > **PROTOCOL REFERENCE — DO NOT ADD LIBRARY CONTENT HERE.**
 >
-> This file documents the tmux wire protocol: what tmux does over the wire, derived from the tmux C source and man page. The library implements this protocol and builds ergonomic API on top of it. Those two things are separate.
+> This file documents the tmux wire protocol: what tmux does over the wire, derived from the tmux C source and man page. The library implements this protocol and builds an ergonomic API on top of it. Those two things are separate.
 >
 > **"Not described in this spec" does not mean "should be removed from the library."** The spec is a floor, not a ceiling. Library features that go beyond the protocol are correct and expected — do not touch them on the basis that they are not here.
 >
@@ -710,7 +710,7 @@ to disable.
 | `no-output` | `CLIENT_CONTROL_NOOUTPUT` (`0x4000000`) | Suppress all pane output notifications; resets offsets when set |
 | `pause-after[=N]` | `CLIENT_CONTROL_PAUSEAFTER` (`0x100000000ULL`) | Pause panes when buffered output is older than N seconds (stored as ms internally); switches to `%extended-output` |
 | `read-only` | `CLIENT_READONLY` (`0x800`) | Client is read-only |
-| `wait-exit` | `CLIENT_CONTROL_WAITEXIT` (`0x200000000ULL`) | Wait for empty line on stdin before exiting; an empty line on stdin is what unblocks it |
+| `wait-exit` | `CLIENT_CONTROL_WAITEXIT` (`0x200000000ULL`) | Wait for an empty line or EOF on stdin before exiting |
 
 The `pause-after`, `no-output`, and `wait-exit` flags are control-mode-specific
 and parsed by `server_client_control_flags()`. The others apply to all clients.
