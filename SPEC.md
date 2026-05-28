@@ -7,6 +7,8 @@
 > **"Not described in this spec" does not mean "should be removed from the library."** The spec is a floor, not a ceiling. Library features that go beyond the protocol are correct and expected — do not touch them on the basis that they are not here.
 >
 > The only valid reason to edit this file is to correct an inaccuracy in the tmux protocol description, with a citation to the tmux C source or man page. If you find yourself writing anything about what this library does, stop — that belongs in `IMPL.md` or source JSDoc.
+>
+> Some sections contain legacy library notes (labeled `(library)`); these are tracked for migration out of this file by the spec conformance audit (`tmux-audit-q17`). Do not add new ones.
 
 Derived from tmux source code (version next-3.7, commit 5c30b145) and the
 tmux(1) man page. All citations reference files in the tmux source tree.
@@ -708,7 +710,7 @@ to disable.
 | `no-output` | `CLIENT_CONTROL_NOOUTPUT` (`0x4000000`) | Suppress all pane output notifications; resets offsets when set |
 | `pause-after[=N]` | `CLIENT_CONTROL_PAUSEAFTER` (`0x100000000ULL`) | Pause panes when buffered output is older than N seconds (stored as ms internally); switches to `%extended-output` |
 | `read-only` | `CLIENT_READONLY` (`0x800`) | Client is read-only |
-| `wait-exit` | `CLIENT_CONTROL_WAITEXIT` (`0x200000000ULL`) | Wait for empty line on stdin before exiting; see also `detach()` in §26.2 which sends that unblocking LF |
+| `wait-exit` | `CLIENT_CONTROL_WAITEXIT` (`0x200000000ULL`) | Wait for empty line on stdin before exiting; an empty line on stdin is what unblocks it |
 
 The `pause-after`, `no-output`, and `wait-exit` flags are control-mode-specific
 and parsed by `server_client_control_flags()`. The others apply to all clients.
