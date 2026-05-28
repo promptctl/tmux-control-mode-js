@@ -31,6 +31,9 @@ export {
 
 export { createTextStreamSink } from "./sinks/text-stream.js";
 
+export { attachLineSink } from "./line-sink.js";
+export type { LineEvent, LineHandler } from "./line-sink.js";
+
 export { spawnTmux } from "./transport/spawn.js";
 export type { TmuxTransport, SpawnOptions } from "./transport/types.js";
 export {
