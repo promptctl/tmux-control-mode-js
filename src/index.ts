@@ -2,7 +2,7 @@
 // [LAW:one-source-of-truth] All consumer-facing exports are declared here only.
 
 export { TmuxClient } from "./client.js";
-export type { SplitOptions, TmuxClientLike } from "./client.js";
+export type { TmuxConnection, SplitOptions, TmuxClientLike } from "./client.js";
 export type { ConnectionState } from "./connection-state.js";
 export { TmuxCommandError } from "./errors.js";
 
@@ -14,6 +14,7 @@ export type { TmuxEventMap } from "./emitter.js";
 
 export type {
   BytesSink,
+  ChunkPayload,
   AttachOptions,
   PaneScope,
   PaneMeta,
@@ -41,3 +42,20 @@ export {
   listTmuxSocketNames,
   isTmuxServerAlive,
 } from "./transport/sockets.js";
+
+// [LAW:types-are-the-program] Free-function command surface — all tmux
+// commands are functions over TmuxConnection, not methods on TmuxClient.
+export {
+  listWindows,
+  listPanes,
+  sendKeys,
+  splitWindow,
+  setSize,
+  setPaneAction,
+  subscribeRaw,
+  unsubscribe,
+  setFlags,
+  clearFlags,
+  requestReport,
+  queryClipboard,
+} from "./commands/index.js";

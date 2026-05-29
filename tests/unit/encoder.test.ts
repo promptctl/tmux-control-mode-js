@@ -54,6 +54,8 @@ describe("tmuxEscape", () => {
   });
 });
 
+// buildCommand is the backward-compat shim that adds \n — it owns the newline.
+// All other encoder functions return plain command strings; execute() adds \n.
 describe("buildCommand", () => {
   it("list-sessions → 'list-sessions\\n'", () => {
     expect(buildCommand("list-sessions")).toBe("list-sessions\n");
@@ -72,15 +74,15 @@ describe("buildCommand", () => {
 
 describe("refreshClientSize", () => {
   it("220x50", () => {
-    expect(refreshClientSize(220, 50)).toBe("refresh-client -C 220x50\n");
+    expect(refreshClientSize(220, 50)).toBe("refresh-client -C 220x50");
   });
 
   it("80x24", () => {
-    expect(refreshClientSize(80, 24)).toBe("refresh-client -C 80x24\n");
+    expect(refreshClientSize(80, 24)).toBe("refresh-client -C 80x24");
   });
 
   it("1x1", () => {
-    expect(refreshClientSize(1, 1)).toBe("refresh-client -C 1x1\n");
+    expect(refreshClientSize(1, 1)).toBe("refresh-client -C 1x1");
   });
 });
 
@@ -89,25 +91,25 @@ describe("refreshClientPaneAction", () => {
   // pane:action token must be quoted as a single argument.
   it("pane 1, PaneAction.On — quoted pane:action token", () => {
     expect(refreshClientPaneAction(1, PaneAction.On)).toBe(
-      "refresh-client -A '%1:on'\n"
+      "refresh-client -A '%1:on'"
     );
   });
 
   it("pane 5, PaneAction.Pause", () => {
     expect(refreshClientPaneAction(5, PaneAction.Pause)).toBe(
-      "refresh-client -A '%5:pause'\n"
+      "refresh-client -A '%5:pause'"
     );
   });
 
   it("pane 3, PaneAction.Off", () => {
     expect(refreshClientPaneAction(3, PaneAction.Off)).toBe(
-      "refresh-client -A '%3:off'\n"
+      "refresh-client -A '%3:off'"
     );
   });
 
   it("pane 2, PaneAction.Continue", () => {
     expect(refreshClientPaneAction(2, PaneAction.Continue)).toBe(
-      "refresh-client -A '%2:continue'\n"
+      "refresh-client -A '%2:continue'"
     );
   });
 });
@@ -116,7 +118,7 @@ describe("refreshClientSubscribe", () => {
   it("simple name, what, format are individually single-quoted", () => {
     const result = refreshClientSubscribe("my-sub", "pane", "#{pane_title}");
     expect(result).toBe(
-      "refresh-client -B 'my-sub':'pane':'#{pane_title}'\n"
+      "refresh-client -B 'my-sub':'pane':'#{pane_title}'"
     );
   });
 
@@ -130,27 +132,27 @@ describe("refreshClientSubscribe", () => {
     expect(result).toContain("'$(echo)'");
   });
 
-  it("always appends exactly one newline", () => {
+  it("does not include a trailing newline", () => {
     const result = refreshClientSubscribe("a", "b", "c");
-    expect(result.endsWith("\n")).toBe(true);
+    expect(result.endsWith("\n")).toBe(false);
   });
 });
 
 describe("refreshClientUnsubscribe", () => {
   it("simple name is single-quoted", () => {
     expect(refreshClientUnsubscribe("my-sub")).toBe(
-      "refresh-client -B 'my-sub'\n"
+      "refresh-client -B 'my-sub'"
     );
   });
 
   it("name with special chars is properly escaped", () => {
     const result = refreshClientUnsubscribe("sub's");
-    expect(result).toBe("refresh-client -B 'sub'\\''s'\n");
+    expect(result).toBe("refresh-client -B 'sub'\\''s'");
   });
 
-  it("always appends exactly one newline", () => {
+  it("does not include a trailing newline", () => {
     const result = refreshClientUnsubscribe("x");
-    expect(result.endsWith("\n")).toBe(true);
+    expect(result.endsWith("\n")).toBe(false);
   });
 });
 
@@ -160,12 +162,12 @@ describe("sendKeys", () => {
   // line, so control bytes and shell metacharacters are inert by construction.
   it("simple target and keys → hex-byte wire string", () => {
     expect(sendKeys("%1", "hello")).toBe(
-      "send-keys -H -t '%1' 68 65 6c 6c 6f\n",
+      "send-keys -H -t '%1' 68 65 6c 6c 6f",
     );
   });
 
   it("target with single quote is properly escaped", () => {
-    expect(sendKeys("it's", "x")).toBe("send-keys -H -t 'it'\\''s' 78\n");
+    expect(sendKeys("it's", "x")).toBe("send-keys -H -t 'it'\\''s' 78");
   });
 
   it("empty keys returns null (no valid wire form — caller no-ops)", () => {
@@ -176,116 +178,113 @@ describe("sendKeys", () => {
 
   it("keys containing $(cmd) become inert hex bytes", () => {
     expect(sendKeys("%2", "$(rm -rf /)")).toBe(
-      "send-keys -H -t '%2' 24 28 72 6d 20 2d 72 66 20 2f 29\n",
+      "send-keys -H -t '%2' 24 28 72 6d 20 2d 72 66 20 2f 29",
     );
   });
 
   it("control bytes (Enter, Ctrl-C) and a literal LF encode as hex, not raw", () => {
     // CR (0x0d), Ctrl-C (0x03), then a multi-line paste with an embedded LF
     // (0x0a) — none may appear raw in the command line.
-    expect(sendKeys("%0", "\r")).toBe("send-keys -H -t '%0' 0d\n");
-    expect(sendKeys("%0", "\x03")).toBe("send-keys -H -t '%0' 03\n");
-    expect(sendKeys("%0", "a\nb")).toBe("send-keys -H -t '%0' 61 0a 62\n");
+    expect(sendKeys("%0", "\r")).toBe("send-keys -H -t '%0' 0d");
+    expect(sendKeys("%0", "\x03")).toBe("send-keys -H -t '%0' 03");
+    expect(sendKeys("%0", "a\nb")).toBe("send-keys -H -t '%0' 61 0a 62");
   });
 
   it("multibyte UTF-8 keys send their exact byte sequence", () => {
     // 'é' is 0xC3 0xA9; '😀' (U+1F600) is 0xF0 0x9F 0x98 0x80.
-    expect(sendKeys("%0", "é")).toBe("send-keys -H -t '%0' c3 a9\n");
+    expect(sendKeys("%0", "é")).toBe("send-keys -H -t '%0' c3 a9");
     expect(sendKeys("%0", "\u{1F600}")).toBe(
-      "send-keys -H -t '%0' f0 9f 98 80\n",
+      "send-keys -H -t '%0' f0 9f 98 80",
     );
   });
 
-  it("ends with exactly one trailing newline", () => {
+  it("does not include a trailing newline", () => {
     const result = sendKeys("%1", "x");
     if (result === null) throw new Error("non-empty keys must produce a command");
-    expect(result.endsWith("\n")).toBe(true);
-    expect(result.split("\n").length).toBe(2);
+    expect(result.endsWith("\n")).toBe(false);
   });
 });
 
 describe("splitWindow", () => {
   it("default options → horizontal split", () => {
-    expect(splitWindow()).toBe("split-window -h\n");
+    expect(splitWindow()).toBe("split-window -h");
   });
 
   it("explicit empty options → horizontal split", () => {
-    expect(splitWindow({})).toBe("split-window -h\n");
+    expect(splitWindow({})).toBe("split-window -h");
   });
 
   it("vertical: true → -v", () => {
-    expect(splitWindow({ vertical: true })).toBe("split-window -v\n");
+    expect(splitWindow({ vertical: true })).toBe("split-window -v");
   });
 
   it("vertical: false → -h (explicit)", () => {
-    expect(splitWindow({ vertical: false })).toBe("split-window -h\n");
+    expect(splitWindow({ vertical: false })).toBe("split-window -h");
   });
 
   it("target only", () => {
-    expect(splitWindow({ target: "%2" })).toBe("split-window -h -t '%2'\n");
+    expect(splitWindow({ target: "%2" })).toBe("split-window -h -t '%2'");
   });
 
   it("vertical and target", () => {
     expect(splitWindow({ vertical: true, target: "main" })).toBe(
-      "split-window -v -t 'main'\n"
+      "split-window -v -t 'main'"
     );
   });
 
   it("target with single quote is properly escaped", () => {
     expect(splitWindow({ target: "it's" })).toBe(
-      "split-window -h -t 'it'\\''s'\n"
+      "split-window -h -t 'it'\\''s'"
     );
   });
 
-  it("always ends with exactly one newline", () => {
+  it("does not include a trailing newline", () => {
     const result = splitWindow({ vertical: true, target: "x" });
-    expect(result.endsWith("\n")).toBe(true);
-    expect(result.split("\n").length).toBe(2);
+    expect(result.endsWith("\n")).toBe(false);
   });
 });
 
 describe("refreshClientSetFlags", () => {
   it("single flag", () => {
     expect(refreshClientSetFlags(["pause-after"])).toBe(
-      "refresh-client -f pause-after\n"
+      "refresh-client -f pause-after"
     );
   });
 
   it("flag with value", () => {
     expect(refreshClientSetFlags(["pause-after=2"])).toBe(
-      "refresh-client -f pause-after=2\n"
+      "refresh-client -f pause-after=2"
     );
   });
 
   it("multiple flags comma-separated", () => {
     expect(refreshClientSetFlags(["pause-after=2", "no-output"])).toBe(
-      "refresh-client -f pause-after=2,no-output\n"
+      "refresh-client -f pause-after=2,no-output"
     );
   });
 
   it("disable form (! prefix passes through)", () => {
     expect(refreshClientSetFlags(["!pause-after"])).toBe(
-      "refresh-client -f !pause-after\n"
+      "refresh-client -f !pause-after"
     );
   });
 
-  it("ends with exactly one newline", () => {
+  it("does not include a trailing newline", () => {
     const r = refreshClientSetFlags(["a"]);
-    expect(r.endsWith("\n")).toBe(true);
-    expect(r.split("\n").length).toBe(2);
+    expect(r.endsWith("\n")).toBe(false);
   });
 });
 
 describe("refreshClientClearFlags", () => {
   it("single flag → !flag", () => {
     expect(refreshClientClearFlags(["pause-after"])).toBe(
-      "refresh-client -f !pause-after\n"
+      "refresh-client -f !pause-after"
     );
   });
 
   it("multiple flags → !a,!b,!c", () => {
     expect(refreshClientClearFlags(["pause-after", "no-output", "read-only"])).toBe(
-      "refresh-client -f !pause-after,!no-output,!read-only\n"
+      "refresh-client -f !pause-after,!no-output,!read-only"
     );
   });
 });
@@ -294,31 +293,31 @@ describe("refreshClientReport", () => {
   // The whole `pane-id:report` token is quoted as a single argument so tmux
   // doesn't split on the colon (same fix as -A).
   it("simple OSC 10 color report", () => {
-    const osc = "\u001b]10;rgb:1818/1818/1818\u001b\\";
+    const osc = "]10;rgb:1818/1818/1818\\";
     expect(refreshClientReport(0, osc)).toBe(
-      `refresh-client -r '%0:${osc}'\n`
+      `refresh-client -r '%0:${osc}'`
     );
   });
 
   it("pane id is rendered with % prefix", () => {
-    expect(refreshClientReport(5, "x")).toBe("refresh-client -r '%5:x'\n");
+    expect(refreshClientReport(5, "x")).toBe("refresh-client -r '%5:x'");
   });
 
   it("report containing single quote is properly escaped", () => {
     expect(refreshClientReport(1, "it's")).toBe(
-      "refresh-client -r '%1:it'\\''s'\n"
+      "refresh-client -r '%1:it'\\''s'"
     );
   });
 
-  it("ends with exactly one newline", () => {
+  it("does not include a trailing newline", () => {
     const r = refreshClientReport(0, "a");
-    expect(r.endsWith("\n")).toBe(true);
+    expect(r.endsWith("\n")).toBe(false);
   });
 });
 
 describe("refreshClientQueryClipboard", () => {
   it("produces exact wire string", () => {
-    expect(refreshClientQueryClipboard()).toBe("refresh-client -l\n");
+    expect(refreshClientQueryClipboard()).toBe("refresh-client -l");
   });
 });
 

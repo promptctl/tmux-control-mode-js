@@ -38,10 +38,9 @@ import {
   type EmitterTmuxMessage,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import type { BytesSink } from "../../pane-output.js";
+import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 import type {
   CommandResponse,
-  PaneOutputMessage,
 } from "../../protocol/types.js";
 
 import {
@@ -347,6 +346,7 @@ class Connection {
     //   so this is the only path bytes reach the wire.
     this.byteForwarder = {
       write: (msg) => this.onByteOutput(msg),
+      end(): void {},
     };
   }
 
@@ -840,7 +840,7 @@ class Connection {
     });
   }
 
-  private onByteOutput(msg: PaneOutputMessage): void {
+  private onByteOutput(msg: ChunkPayload): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
     // Backpressure runs only after hello — pre-hello we don't have a peer
     // registered with the bridge. The attach-all-panes sink is wired in
@@ -856,7 +856,7 @@ class Connection {
     this.emit({
       kind: "event-out",
       identity: this.identity,
-      type: msg.type,
+      type: "output",
       bytes: bytes.byteLength,
     });
   }

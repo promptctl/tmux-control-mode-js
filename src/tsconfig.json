@@ -7,7 +7,7 @@
     "rootDir": ".",
     "types": ["node"]
   },
-  "include": ["./*.ts", "./sinks/**/*.ts"],
+  "include": ["./*.ts", "./sinks/**/*.ts", "./commands/**/*.ts"],
   "references": [
     { "path": "protocol" },
     { "path": "transport" }

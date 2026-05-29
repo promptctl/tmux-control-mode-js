@@ -9,6 +9,16 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
+import {
+  setSize,
+  setPaneAction,
+  subscribeRaw,
+  unsubscribe,
+  setFlags,
+  clearFlags,
+  queryClipboard,
+  requestReport,
+} from "../../src/commands/index.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
@@ -231,7 +241,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     async () => {
       sessionName = uniqueSession("test-size");
       client = await createSession(socketName, sessionName);
-      const r = await client.setSize(120, 40);
+      const r = await setSize(client, 120, 40);
       expect(r.success).toBe(true);
     },
     15000,
@@ -251,7 +261,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
       expect(match).not.toBeNull();
       const paneId = parseInt(match![1], 10);
       const { PaneAction } = await import("../../src/protocol/types.js");
-      const r = await client.setPaneAction(paneId, PaneAction.On);
+      const r = await setPaneAction(client, paneId, PaneAction.On);
       expect(r.success).toBe(true);
     },
     15000,
@@ -262,13 +272,14 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     async () => {
       sessionName = uniqueSession("test-sub");
       client = await createSession(socketName, sessionName);
-      const sub = await client.subscribeRaw(
+      const sub = await subscribeRaw(
+        client,
         "test-sub-1",
         "",
         "#{pane_current_command}",
       );
       expect(sub.success).toBe(true);
-      const unsub = await client.unsubscribe("test-sub-1");
+      const unsub = await unsubscribe(client, "test-sub-1");
       expect(unsub.success).toBe(true);
     },
     15000,
@@ -279,9 +290,9 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     async () => {
       sessionName = uniqueSession("test-flag");
       client = await createSession(socketName, sessionName);
-      const setR = await client.setFlags(["pause-after=2"]);
+      const setR = await setFlags(client, ["pause-after=2"]);
       expect(setR.success).toBe(true);
-      const clearR = await client.clearFlags(["pause-after"]);
+      const clearR = await clearFlags(client, ["pause-after"]);
       expect(clearR.success).toBe(true);
     },
     15000,
@@ -292,7 +303,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     async () => {
       sessionName = uniqueSession("test-clip");
       client = await createSession(socketName, sessionName);
-      const r = await client.queryClipboard();
+      const r = await queryClipboard(client);
       // Note: contents may be empty in a CI/headless environment; success is
       // about the protocol round-trip, not the clipboard payload.
       expect(r.success).toBe(true);
@@ -309,7 +320,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
       const match = list.output.join("\n").match(/%(\d+)/);
       expect(match).not.toBeNull();
       const paneId = parseInt(match![1], 10);
-      const r = await client.requestReport(
+      const r = await requestReport(client, 
         paneId,
         "\u001b]11;rgb:1818/1818/1818\u001b\\",
       );
@@ -430,6 +441,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
             detach();
             resolve({ paneId: msg.paneId, byteLength: msg.data.byteLength });
           },
+          end() {},
         });
       });
       // No target = active pane in active window of attached session.
