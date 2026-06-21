@@ -23,24 +23,18 @@ import {
   type TmuxEventMap,
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import {
-  SinkRegistry,
-  PaneTopologyManager,
-  serverScope,
-  parsePaneListLine,
-  TopologyEpochTracker,
-  type AttachOptions,
-  type BytesSink,
-} from "../../pane-output.js";
+import { type AttachOptions, type BytesSink } from "../../pane-output.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
   isPaneOutput,
   type CommandResponse,
   type PaneAction,
   type PaneOutputMessage,
+  type TmuxMessage,
 } from "../../protocol/types.js";
+import { TopologyRouter } from "../../topology-router.js";
 import type { RpcProxyApi } from "../rpc.js";
-import type { TmuxClientLike } from "../../client.js";
+import type { TmuxConnection } from "../../client.js";
 import {
   BridgeError,
   DEFAULT_ACK_BATCH_BYTES,
@@ -85,16 +79,13 @@ import {
  * work) will starve itself of new output — the same shape as tmux's own
  * `%pause`-when-the-client-falls-behind contract.
  */
-export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
+export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
-  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
-  //   `attachBytesSink` delegates to `sinks.attach`; the IPC event handler
-  //   calls `sinks.dispatch(msg, topology.get(paneId))` so scope-bifurcated
-  //   delivery is snapshot-protected and isolated from throwing listeners.
-  private readonly sinks = new SinkRegistry();
-  private readonly topology = new PaneTopologyManager();
-  private readonly topologyEpoch = new TopologyEpochTracker();
+  // [LAW:one-source-of-truth] TopologyRouter is the shared substrate for byte
+  //   routing. It owns the topology table, sink registry, and epoch tracker so
+  //   none of them are duplicated here.
+  private readonly router = new TopologyRouter();
   private readonly eventHandler: IpcRendererOnListener;
   private readonly ackBatchBytes: number;
   /**
@@ -146,43 +137,23 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
       const msg = args[0] as EmitterMessage | PaneOutputMessage;
       if (isPaneOutput(msg)) {
         this.account(msg);
-        this.sinks.dispatch(msg, this.topology.get(msg.paneId));
+        // [LAW:single-enforcer] Byte dispatch routes through the router.
+        this.router.dispatchBytes({ paneId: msg.paneId, data: msg.data });
         return;
       }
-      // Topology events update the table exactly as TmuxClient.handleMessage does.
-      if (msg.type === "layout-change") {
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.refreshWindowTopology(msg.windowId);
-        }
-      } else if (
-        msg.type === "window-add" ||
-        msg.type === "unlinked-window-add"
-      ) {
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.refreshWindowTopology(msg.windowId);
-        }
-      } else if (
-        msg.type === "window-close" ||
-        msg.type === "unlinked-window-close"
-      ) {
-        this.topology.removeWindow(msg.windowId);
-        this.topologyEpoch.invalidateWindow(msg.windowId);
-      } else if (msg.type === "sessions-changed") {
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.bootstrapTopology();
-        }
-      }
-      // [LAW:dataflow-not-control-flow] connection-state messages flow through
-      // the same channel; they're picked up here before re-emission so the
-      // proxy's `connectionState` getter is in sync with whatever fires.
+      // [LAW:no-ambient-temporal-coupling] connection-state drives the router
+      //   lifecycle. onTransportReady wires the execute callback;
+      //   onTransportClose tears down all attached sinks.
       if (msg.type === "connection-state") {
         this.currentConnectionState = msg.state;
-        if (
-          msg.state.status === "ready" &&
-          this.sinks.hasTopologyDependentSinks()
-        ) {
-          void this.bootstrapTopology();
+        if (msg.state.status === "ready") {
+          this.router.onTransportReady((cmd) => this.execute(cmd));
+        } else if (msg.state.status === "closed") {
+          this.router.onTransportClose();
         }
+      } else {
+        // [LAW:single-enforcer] All topology mutations route through the router.
+        this.router.handleNotification(msg as TmuxMessage);
       }
       this.emitter.emit(msg);
     };
@@ -289,60 +260,14 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     return this.invoke({ method: "queryClipboard", args: [] });
   }
 
-  // [LAW:locality-or-seam] The proxy receives parsed pane-output messages
-  //   from main over IPC. `sinks.dispatch` (called from the eventHandler
-  //   above) is where scope-bifurcated byte fan-out happens — same shape as
-  //   `TmuxClient.handleMessage`. `attachBytesSink` is the public entry.
+  // [LAW:single-enforcer] Byte sink registration delegates to the router,
+  //   which owns the SinkRegistry, bootstrap trigger, and topology table.
   //
   // Note: this is independent of the `createPaneBytesReceiver` /
   // `attachWebContentsSink` pair (driven by IPC.paneBytes), which is a
   // separate opt-in optimization that bypasses the regular event channel.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    const scope = options?.scope ?? serverScope;
-    const dispose = this.sinks.attach(sink, scope);
-    if (
-      (scope.kind === "session" || scope.kind === "window") &&
-      this.currentConnectionState.status === "ready"
-    ) {
-      void this.bootstrapTopology();
-    }
-    return dispose;
-  }
-
-  private async bootstrapTopology(): Promise<void> {
-    const gen = this.topologyEpoch.startBootstrap();
-    try {
-      const r = await this.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  private async refreshWindowTopology(windowId: number): Promise<void> {
-    const gen = this.topologyEpoch.startWindowRefresh(windowId);
-    try {
-      const r = await this.execute(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
-      );
-      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
-      });
-      this.topology.updateWindow(windowId, entries);
-    } catch {
-      this.topology.removeWindow(windowId);
-    }
+    return this.router.attachBytesSink(sink, options);
   }
 
   /**
@@ -362,6 +287,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxClientLike {
     this.ipc.removeListener(IPC.event, this.eventHandler);
     this.ipc.send(IPC.unregister);
     this.pendingAck.clear();
+    this.router.onTransportClose();
     // The proxy's lifecycle is over even though main keeps running. Report
     // `closed{disposed}` so consumers know this proxy will not emit again
     // (and emit a final synthetic event so registered listeners observe it).

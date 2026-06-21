@@ -34,7 +34,7 @@
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import { paneScope, type BytesSink } from "../../pane-output.js";
+import { paneScope, serverScope, type BytesSink } from "../../pane-output.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
@@ -178,6 +178,9 @@ interface SenderState {
    * the WebContents's lifetime.
    */
   readonly onDestroyed: () => void;
+  /** Disposer for this renderer's per-peer byte forwarder sink. Null before
+   * the first IPC.register call; set once and cleared on teardown. */
+  detachBytes: (() => void) | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +294,7 @@ export function createMainBridge(
       isSubscribed: false,
       pending: new Set(),
       onDestroyed,
+      detachBytes: null,
     };
     senders.set(wc, state);
     wc.once("destroyed", onDestroyed);
@@ -316,7 +320,11 @@ export function createMainBridge(
     //     trying to deliver to a dead webContents.
     for (const p of state.pending) p.aborted = true;
 
-    // (2) Drop helper-side accounting + subscription refcounts in one call.
+    // (2) Detach the per-renderer byte forwarder so no further bytes are
+    //     routed to this renderer's sink from the substrate.
+    state.detachBytes?.();
+
+    // (3) Drop helper-side accounting + subscription refcounts in one call.
     //     bridge.removePeer fires setPaneAction(Continue) for any pane this
     //     sender's outstanding bytes were keeping paused, and unsubscribes
     //     from tmux for any subscription this sender was the last owner of.
@@ -330,10 +338,9 @@ export function createMainBridge(
   //   - `forwardState` (`client.on('*', …)`) for every non-byte message.
   //     `EmitterMessage` excludes `PaneOutputMessage`, so this handler
   //     cannot accidentally receive bytes — the type system enforces it.
-  //   - `forwardBytes` (`client.attachBytesSink(…)`) for every byte
-  //     chunk on every pane. The server scope is the legitimate
-  //     "I want all bytes" attachment shape; pane scope is for
-  //     consumers that own a single pane, not for forwarders.
+  //   - Per-renderer BytesSink (attached in onRegister) for byte chunks.
+  //     Each renderer's sink routes directly from the substrate — no
+  //     per-chunk broadcast loop. [LAW:dataflow-not-control-flow]
   //
   // Both write to IPC.event so the renderer's event handler sees a single
   // stream (the renderer narrows on `isPaneOutput`). The wire format is the
@@ -341,14 +348,7 @@ export function createMainBridge(
   // never carries bytes through its API.
   // -------------------------------------------------------------------------
 
-  // [LAW:dataflow-not-control-flow] One snapshot helper shared by both
-  // channels — same iteration, same liveness check, same subscribed gate.
-  // Variability lives in the per-message work each channel does, not in
-  // the broadcast plumbing.
-  const broadcast = (
-    msg: EmitterMessage | PaneOutputMessage,
-    perSender: ((state: SenderState) => void) | null,
-  ): void => {
+  const broadcast = (msg: EmitterMessage): void => {
     // Snapshot the senders entries before iterating: teardownSender below
     // calls senders.delete(wc), and a destroyed wc detected mid-loop must
     // not perturb the iteration order of the rest of the senders.
@@ -362,41 +362,15 @@ export function createMainBridge(
         continue;
       }
       if (!state.isSubscribed) continue;
-      // For byte messages: account bytes per (renderer, pane) BEFORE
-      // wc.send so that an ack arriving synchronously during send
-      // subtracts from the right baseline.
-      perSender?.(state);
       wc.send(IPC.event, msg);
     }
   };
 
   const forwardState = (msg: EmitterMessage): void => {
-    broadcast(msg, null);
-  };
-
-  const forwardBytes: BytesSink = {
-    // [LAW:types-are-the-program] ChunkPayload is the internal form; the IPC
-    // wire boundary requires a PaneOutputMessage so the renderer's isPaneOutput
-    // check routes correctly. Adapt at the boundary by adding type: "output".
-    write(msg) {
-      const ipcMsg: PaneOutputMessage = {
-        type: "output",
-        paneId: msg.paneId,
-        data: msg.data,
-      };
-      broadcast(ipcMsg, (state) => {
-        bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
-      });
-    },
-    // [LAW:types-are-the-program] end() is required by BytesSink contract; no
-    // pane teardown state to flush in this forwarding sink.
-    end(): void {
-      /* stateless sink */
-    },
+    broadcast(msg);
   };
 
   client.on("*", forwardState);
-  const detachByteForwarder = client.attachBytesSink(forwardBytes);
 
   // -------------------------------------------------------------------------
   // Subscribe / unsubscribe / ack channel handlers.
@@ -405,6 +379,37 @@ export function createMainBridge(
   const onRegister = (event: IpcMainEventLike): void => {
     const state = getOrCreateSender(event.sender);
     state.isSubscribed = true;
+    // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
+    // exactly once per registration. Each renderer's sink is the routing
+    // primitive — the substrate's SinkRegistry.dispatch fans out; no
+    // per-chunk broadcast loop exists in the bridge. [LAW:one-source-of-truth]
+    if (state.detachBytes === null) {
+      const wc = state.wc;
+      const rendererSink: BytesSink = {
+        write(msg): void {
+          // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check
+          // on Electron's WebContents lifecycle — same pattern as broadcast().
+          if (wc.isDestroyed()) return;
+          // Account BEFORE wc.send so a synchronous ack during send subtracts
+          // from the right baseline.
+          bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
+          // [LAW:types-are-the-program] ChunkPayload → PaneOutputMessage at the
+          // IPC boundary so the renderer's isPaneOutput check routes correctly.
+          const ipcMsg: PaneOutputMessage = {
+            type: "output",
+            paneId: msg.paneId,
+            data: msg.data,
+          };
+          wc.send(IPC.event, ipcMsg);
+        },
+        end(): void {
+          // Stateless forwarding sink; no teardown action needed.
+        },
+      };
+      state.detachBytes = client.attachBytesSink(rendererSink, {
+        scope: serverScope,
+      });
+    }
     // [LAW:dataflow-not-control-flow] Late-joining renderers need the current
     // lifecycle state immediately, not just when the next transition happens.
     // Send a snapshot through the same IPC.event channel the live transitions
@@ -565,7 +570,6 @@ export function createMainBridge(
   return {
     dispose() {
       client.off("*", forwardState);
-      detachByteForwarder();
       ipcMain.removeListener(IPC.register, onRegisterListener);
       ipcMain.removeListener(IPC.unregister, onUnregisterListener);
       ipcMain.removeListener(IPC.ack, onAckListener);
