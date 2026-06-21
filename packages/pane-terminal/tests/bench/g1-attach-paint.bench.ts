@@ -29,8 +29,7 @@
 
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execSync } from "node:child_process";
-import { spawnTmux } from "../../../../src/transport/spawn.js";
-import { TmuxClient } from "../../../../src/client.js";
+import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "../../src/stream/index.js";
 import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
 

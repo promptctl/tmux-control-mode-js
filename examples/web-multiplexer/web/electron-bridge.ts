@@ -19,12 +19,12 @@ import {
   type IpcRendererLike,
   type TmuxClientProxy,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
-import { isTmuxMessage } from "../../../src/emitter.js";
-import type { EmitterMessage } from "../../../src/emitter.js";
+import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import type {
   CommandResponse,
   TmuxMessage,
-} from "../../../src/protocol/types.js";
+} from "@promptctl/tmux-control-mode-js/protocol";
 import type { ClientToServer } from "../shared/protocol.ts";
 import type {
   ConnState,

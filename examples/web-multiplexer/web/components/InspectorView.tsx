@@ -31,7 +31,7 @@ import {
 } from "@mantine/core";
 import type { InspectorStore, InspectorEntry } from "../inspector-store.ts";
 import type { WireEntry } from "../bridge.ts";
-import type { TmuxMessage } from "../../../../src/protocol/types.js";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { prettyBytes } from "../format-bytes.ts";
 import type { DemoStore } from "../store.ts";
 

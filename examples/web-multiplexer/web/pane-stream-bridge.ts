@@ -1,13 +1,13 @@
 // examples/web-multiplexer/web/pane-stream-bridge.ts
 //
 // Two adapters that wire the demo's `TmuxBridge` pub/sub API to the
-// `@promptctl/pane-terminal` package's `TmuxClientLike` surface, plus a MobX
+// `@promptctl/pane-terminal` package's `TmuxConnection` surface, plus a MobX
 // observable wrapper around `PaneStream`.
 //
 // [LAW:locality-or-seam] The seam is here — not scattered across every
 //   component. `BridgePaneStreamClient` is the only place that knows the
 //   difference between `TmuxBridge.onEvent(handler)` (push-subscription,
-//   unsubscribe-via-return) and `TmuxClientLike.on/off` (explicit registry).
+//   unsubscribe-via-return) and `TmuxConnection.on/off` (explicit registry).
 //   One class absorbs the impedance mismatch; nothing downstream sees it.
 // [LAW:one-source-of-truth] One `BridgePaneStreamClient` per bridge.
 //   All `PaneStream` instances share it; no duplicate bridge subscriptions.
@@ -20,7 +20,7 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
-  TmuxClientLike,
+  TmuxConnection,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
 import {
@@ -41,12 +41,12 @@ import type {
   ExtendedOutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
-} from "../../../src/protocol/types.js";
+} from "@promptctl/tmux-control-mode-js/protocol";
 
 // `reconnected` event payload — derived from the library's TmuxEventMap so
 // any future shape change at the source propagates here automatically.
 type ReconnectedMessage = TmuxEventMap["reconnected"];
-import { tmuxEscape } from "../../../src/protocol/encoder.js";
+import { tmuxEscape } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
 
 function mapConnState(s: ConnState): ConnectionState {
@@ -61,14 +61,14 @@ function mapConnState(s: ConnState): ConnectionState {
 
 /**
  * Adapts a `TmuxBridge` (demo's push-subscription interface) to the
- * `TmuxClientLike` surface that `PaneStream` consumes. Create one per bridge;
+ * `TmuxConnection` surface that `PaneStream` consumes. Create one per bridge;
  * share across all `PaneStream` instances for the same session.
  *
  * The adapter subscribes to `bridge.onEvent` and `bridge.onState` in its
  * constructor. These subscriptions live for the adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
-export class BridgePaneStreamClient implements TmuxClientLike {
+export class BridgePaneStreamClient implements TmuxConnection {
   private _connectionState: ConnectionState = { status: "connecting" };
   // Becomes true on the first `ready` transition; subsequent `ready`
   // transitions are reconnects and fire the registered handlers.
@@ -81,7 +81,7 @@ export class BridgePaneStreamClient implements TmuxClientLike {
     (ev: SubscriptionChangedMessage) => void
   >();
   // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager every
-  //   `TmuxClientLike` in the monorepo uses. `attachBytesSink` delegates to
+  //   `TmuxConnection` in the monorepo uses. `attachBytesSink` delegates to
   //   `sinks.attach`; the bridge.onEvent handler calls
   //   `sinks.dispatch(ev, topology.get(paneId))` before the per-type fan-out.
   private readonly sinks = new SinkRegistry();
@@ -153,7 +153,7 @@ export class BridgePaneStreamClient implements TmuxClientLike {
   }
 
   // The generic `on`/`off` overloads accept any `keyof TmuxEventMap` so this
-  // adapter structurally satisfies `TmuxClientLike`. The bridge only routes
+  // adapter structurally satisfies `TmuxConnection`. The bridge only routes
   // events for the four types this adapter cares about; listeners registered
   // for any other event type sit in no set and are correctly never fired.
   on<K extends keyof TmuxEventMap>(
@@ -214,7 +214,7 @@ export class BridgePaneStreamClient implements TmuxClientLike {
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the
   //   bridge.onEvent handler above — same shape as every other
-  //   `TmuxClientLike` implementation. `attachBytesSink` is the public entry.
+  //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
     const scope = options?.scope ?? serverScope;
     const dispose = this.sinks.attach(sink, scope);

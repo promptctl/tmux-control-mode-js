@@ -8,7 +8,7 @@ export { PaneStream } from "./pane-stream.js";
 export type {
   PaneStreamState,
   PaneStreamOptions,
-  TmuxClientLike,
+  TmuxConnection,
   PaneActivity,
 } from "./pane-stream.js";
 export { ReseedScheduler, getScheduler } from "./reseed-scheduler.js";

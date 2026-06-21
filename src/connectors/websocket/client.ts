@@ -56,10 +56,7 @@ import {
 import type { SplitOptions, TmuxConnection } from "../../client.js";
 
 import type { RpcProxyApi } from "../rpc.js";
-import {
-  type AttachOptions,
-  type BytesSink,
-} from "../../pane-output.js";
+import { type AttachOptions, type BytesSink } from "../../pane-output.js";
 import { TopologyRouter } from "../../topology-router.js";
 import {
   BridgeError,
