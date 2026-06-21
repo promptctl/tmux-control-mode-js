@@ -370,19 +370,19 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
         { scope: paneScope(paneA) },
       );
 
-      // Feed the marker via send-keys WITHOUT Enter — the shell echoes the
-      // typed characters inline on the current prompt line, never emitting
-      // a newline. The marker therefore lands in the per-pane buffer as a
-      // partial trailing line. Dispose flushes it.
       const tailMarker = `TAIL${Math.random().toString(36).slice(2, 8)}`;
-      // Settle the prompt first so its bytes are consumed as complete lines
-      // before the marker arrives. Sending an empty Enter triggers a fresh
-      // prompt; subsequent send-keys without Enter writes raw input.
-      await client.execute(`send-keys -t %${paneA} '' Enter`);
-      await new Promise<void>((r) => setTimeout(r, 150));
+      // Replace the interactive shell with a long-lived sleep process so no
+      // shell prompt, PROMPT_CR expansion, or readline buffering can interfere.
+      // The exec output lands in the pane, admitting this consumer before the
+      // marker arrives.
+      await client.execute(`send-keys -t %${paneA} 'exec sleep 3600' Enter`);
+      await new Promise<void>((r) => setTimeout(r, 200));
 
+      // Type the marker WITHOUT Enter — the TTY driver echoes the characters
+      // verbatim with no trailing newline. They land in the per-pane buffer
+      // as a partial trailing line; dispose() flushes them.
       await client.execute(`send-keys -t %${paneA} '${tailMarker}'`);
-      // Give the echoed bytes time to round-trip.
+      // Give the echoed bytes time to round-trip through the tmux server.
       await new Promise<void>((r) => setTimeout(r, 200));
 
       const countBefore = lines.length;
