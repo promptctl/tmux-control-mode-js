@@ -245,4 +245,3 @@ export class TmuxClient implements TmuxConnection {
     this.emitter.emit(msg);
   }
 }
-
