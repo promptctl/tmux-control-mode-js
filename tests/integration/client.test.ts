@@ -10,6 +10,9 @@ import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import {
+  listWindows,
+  listPanes,
+  sendKeys,
   setSize,
   setPaneAction,
   subscribeRaw,
@@ -19,6 +22,8 @@ import {
   queryClipboard,
   requestReport,
 } from "../../src/commands/index.js";
+import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
+import type { BytesSink } from "../../src/pane-output.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
@@ -564,6 +569,125 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
       c.detach();
       await evt;
       client = null;
+    },
+    15000,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Free-function command surface (z31.3 acceptance)
+//
+// Verifies that listWindows, listPanes, and sendKeys — thin wrappers over
+// TmuxConnection.execute() — produce correct responses against a real tmux.
+// [LAW:types-are-the-program] Commands are free functions over TmuxConnection,
+// not methods on TmuxClient. These tests type the client as TmuxConnection.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
+  let sessionName: string;
+  let socketName = "";
+  let client: TmuxClient | null = null;
+
+  beforeEach(() => {
+    socketName = uniqueSocket("cmd");
+  });
+
+  afterEach(() => {
+    client?.close();
+    client = null;
+    killServer(socketName);
+    socketName = "";
+  });
+
+  it(
+    "CMD-01: listWindows() returns a successful response with at least one output line",
+    async () => {
+      sessionName = uniqueSession("cmd-lw");
+      client = await createSession(socketName, sessionName);
+
+      // [LAW:types-are-the-program] Type the client as TmuxConnection — the
+      // free function takes the minimal interface, not the full TmuxClient.
+      const r = await listWindows(client);
+
+      expect(r.success).toBe(true);
+      expect(typeof r.commandNumber).toBe("number");
+      expect(Array.isArray(r.output)).toBe(true);
+      // list-windows always has at least one line (the initial window).
+      expect(r.output.length).toBeGreaterThan(0);
+    },
+    15000,
+  );
+
+  it(
+    "CMD-02: listPanes() returns a successful response with at least one output line",
+    async () => {
+      sessionName = uniqueSession("cmd-lp");
+      client = await createSession(socketName, sessionName);
+
+      const r = await listPanes(client);
+
+      expect(r.success).toBe(true);
+      expect(Array.isArray(r.output)).toBe(true);
+      expect(r.output.length).toBeGreaterThan(0);
+    },
+    15000,
+  );
+
+  it(
+    "CMD-03: sendKeys() delivers keystrokes that produce pane output",
+    async () => {
+      sessionName = uniqueSession("cmd-sk");
+      client = await createSession(socketName, sessionName);
+
+      // Identify the initial pane.
+      const panesResp = await client.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      const panes = panesResp.output.flatMap((line) => {
+        const p = parsePaneListLine(line);
+        return p !== null ? [p] : [];
+      });
+      expect(panes.length).toBeGreaterThan(0);
+      const paneId = panes[0].paneId;
+
+      // Attach a pane-scoped sink to capture bytes.
+      const chunks: Uint8Array[] = [];
+      const sink: BytesSink = {
+        write(msg) {
+          chunks.push(msg.data.slice());
+        },
+        end() {
+          /* stateless */
+        },
+      };
+      const dispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
+
+      // sendKeys uses hex-byte encoding (-H) so special characters can't
+      // be misinterpreted by tmux's string interpolation.
+      await sendKeys(client, `%${paneId}`, "echo cmd-test-marker\r");
+
+      // Wait until the marker string appears in the captured bytes.
+      const decoder = new TextDecoder();
+      const received = (): string =>
+        chunks.map((c) => decoder.decode(c)).join("");
+      await new Promise<void>((resolve, reject) => {
+        const deadline = Date.now() + 8000;
+        const check = () => {
+          if (received().includes("cmd-test-marker")) {
+            resolve();
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error("timeout: cmd-test-marker not received"));
+            return;
+          }
+          setTimeout(check, 5);
+        };
+        check();
+      });
+
+      dispose();
+      expect(received()).toContain("cmd-test-marker");
     },
     15000,
   );
