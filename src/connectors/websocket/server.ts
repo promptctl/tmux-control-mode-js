@@ -39,9 +39,7 @@ import {
 } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
-import type {
-  CommandResponse,
-} from "../../protocol/types.js";
+import type { CommandResponse } from "../../protocol/types.js";
 
 import {
   BridgeError,
@@ -348,7 +346,9 @@ class Connection {
       write: (msg) => this.onByteOutput(msg),
       // [LAW:types-are-the-program] end() is required by BytesSink contract;
       // forwarding sink has no per-pane state to flush.
-      end(): void { /* stateless sink */ },
+      end(): void {
+        /* stateless sink */
+      },
     };
   }
 

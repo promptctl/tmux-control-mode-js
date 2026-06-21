@@ -12,13 +12,8 @@ import {
   type ConnectionState,
 } from "./connection-state.js";
 import { TmuxParser } from "./protocol/parser.js";
-import {
-  detachClient,
-} from "./protocol/encoder.js";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "./protocol/types.js";
+import { detachClient } from "./protocol/encoder.js";
+import type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import {
@@ -48,9 +43,15 @@ export type { SplitOptions } from "./protocol/encoder.js";
 
 export interface TmuxConnection {
   execute(command: string): Promise<CommandResponse>;
-  on<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  on<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   on(event: "*", handler: (ev: EmitterMessage) => void): void;
-  off<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  off<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   off(event: "*", handler: (ev: EmitterMessage) => void): void;
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void;
   readonly connectionState: ConnectionState;
@@ -138,13 +139,19 @@ export class TmuxClient implements TmuxConnection {
     });
   }
 
-  on<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  on<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   on(event: "*", handler: (ev: EmitterMessage) => void): void;
   on(event: string, handler: (ev: never) => void): void {
     this.emitter.on(event as "*", handler as (ev: EmitterMessage) => void);
   }
 
-  off<K extends keyof TmuxEventMap>(event: K, handler: (ev: TmuxEventMap[K]) => void): void;
+  off<K extends keyof TmuxEventMap>(
+    event: K,
+    handler: (ev: TmuxEventMap[K]) => void,
+  ): void;
   off(event: "*", handler: (ev: EmitterMessage) => void): void;
   off(event: string, handler: (ev: never) => void): void {
     this.emitter.off(event as "*", handler as (ev: EmitterMessage) => void);
