@@ -375,10 +375,23 @@ export function createMainBridge(
   };
 
   const forwardBytes: BytesSink = {
+    // [LAW:types-are-the-program] ChunkPayload is the internal form; the IPC
+    // wire boundary requires a PaneOutputMessage so the renderer's isPaneOutput
+    // check routes correctly. Adapt at the boundary by adding type: "output".
     write(msg) {
-      broadcast(msg, (state) => {
+      const ipcMsg: PaneOutputMessage = {
+        type: "output",
+        paneId: msg.paneId,
+        data: msg.data,
+      };
+      broadcast(ipcMsg, (state) => {
         bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
       });
+    },
+    // [LAW:types-are-the-program] end() is required by BytesSink contract; no
+    // pane teardown state to flush in this forwarding sink.
+    end(): void {
+      /* stateless sink */
     },
   };
 

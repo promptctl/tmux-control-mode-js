@@ -16,6 +16,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
+import { sendKeys, setSize } from "../../src/commands/index.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
 import type {
   TerminalSink,
@@ -134,7 +135,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       const paneId = await getPrimaryPaneId(client);
 
       // Put a known marker on the pane so the seed is non-empty.
-      await client.sendKeys(`%${paneId}`, "echo HELLO_SEED_MARKER");
+      await sendKeys(client, `%${paneId}`, "echo HELLO_SEED_MARKER");
       await client.execute(`send-keys -t %${paneId} Enter`);
       // Give the shell a moment to render.
       await new Promise((r) => setTimeout(r, 200));
@@ -187,7 +188,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
-      await client.setSize(120, 30);
+      await setSize(client, 120, 30);
       for (
         let i = 0;
         i < 30 &&

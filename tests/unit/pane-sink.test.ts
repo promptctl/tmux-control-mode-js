@@ -11,9 +11,8 @@
 import { describe, expect, it } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
-import type { BytesSink } from "../../src/pane-output.js";
+import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { paneScope, serverScope } from "../../src/pane-output.js";
-import type { PaneOutputMessage } from "../../src/protocol/types.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 // ---------------------------------------------------------------------------
@@ -54,13 +53,13 @@ function createFakeTransport(): FakeTransport {
 }
 
 interface RecordingSink extends BytesSink {
-  readonly messages: PaneOutputMessage[];
+  readonly messages: ChunkPayload[];
   readonly chunks: Uint8Array[];
   readonly endCount: { value: number };
 }
 
 function createRecordingSink(): RecordingSink {
-  const messages: PaneOutputMessage[] = [];
+  const messages: ChunkPayload[] = [];
   const chunks: Uint8Array[] = [];
   const endCount = { value: 0 };
   return {
@@ -92,16 +91,12 @@ describe("TmuxClient.attachBytesSink (pane scope)", () => {
     const order: string[] = [];
 
     const aTagged: BytesSink = {
-      write(msg): void {
-        order.push("a");
-        a.write(msg);
-      },
+      write(msg): void { order.push("a"); a.write(msg); },
+      end(): void { a.end(); },
     };
     const bTagged: BytesSink = {
-      write(msg): void {
-        order.push("b");
-        b.write(msg);
-      },
+      write(msg): void { order.push("b"); b.write(msg); },
+      end(): void { b.end(); },
     };
     client.attachBytesSink(aTagged, { scope: paneScope(1) });
     client.attachBytesSink(bTagged, { scope: paneScope(1) });
@@ -166,14 +161,16 @@ describe("TmuxClient.attachBytesSink (pane scope)", () => {
     expect(sink.endCount.value).toBe(1);
   });
 
-  it("tolerates sinks that omit the optional end() method", () => {
+  it("end() is called exactly once on dispose, regardless of how many chunks were written", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);
-    const sinkNoEnd: BytesSink = {
-      write(): void {},
-    };
-    const dispose = client.attachBytesSink(sinkNoEnd, { scope: paneScope(1) });
-    expect(() => dispose()).not.toThrow();
+    const sink = createRecordingSink();
+    const dispose = client.attachBytesSink(sink, { scope: paneScope(1) });
+    t.feed("%output %1 a\n");
+    t.feed("%output %1 b\n");
+    expect(sink.endCount.value).toBe(0);
+    dispose();
+    expect(sink.endCount.value).toBe(1);
   });
 
   it("treats each attachBytesSink call as an independent attachment — same sink twice, same pane", () => {
@@ -243,6 +240,7 @@ describe("TmuxClient.attachBytesSink (pane scope)", () => {
           client.attachBytesSink(lateSink, { scope: paneScope(1) });
         }
       },
+      end(): void {},
     };
     client.attachBytesSink(triggerSink, { scope: paneScope(1) });
 
@@ -280,7 +278,7 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
     ]);
   });
 
-  it("carries the discriminator and age fields for extended-output", () => {
+  it("delivers both output and extended-output bytes as ChunkPayload — paneId and data only", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);
     const sink = createRecordingSink();
@@ -290,11 +288,10 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
     t.feed("%extended-output %3 12345 : with-age\n");
 
     expect(sink.messages).toHaveLength(2);
-    expect(sink.messages[0]?.type).toBe("output");
-    expect(sink.messages[1]?.type).toBe("extended-output");
-    if (sink.messages[1]?.type === "extended-output") {
-      expect(sink.messages[1].age).toBe(12345);
-    }
+    expect(sink.messages[0]?.paneId).toBe(3);
+    expect(sink.messages[1]?.paneId).toBe(3);
+    expect(new TextDecoder().decode(sink.messages[0]?.data)).toBe("plain");
+    expect(new TextDecoder().decode(sink.messages[1]?.data)).toBe("with-age");
   });
 
   it("server-scope and pane-scope sinks both receive the same chunk", () => {
@@ -347,6 +344,7 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
           client.attachBytesSink(late);
         }
       },
+      end(): void {},
     };
     client.attachBytesSink(trigger);
 
@@ -378,16 +376,12 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
     const b = createRecordingSink();
     const order: string[] = [];
     const aTagged: BytesSink = {
-      write(msg): void {
-        order.push("a");
-        a.write(msg);
-      },
+      write(msg): void { order.push("a"); a.write(msg); },
+      end(): void { a.end(); },
     };
     const bTagged: BytesSink = {
-      write(msg): void {
-        order.push("b");
-        b.write(msg);
-      },
+      write(msg): void { order.push("b"); b.write(msg); },
+      end(): void { b.end(); },
     };
     client.attachBytesSink(aTagged);
     client.attachBytesSink(bTagged);

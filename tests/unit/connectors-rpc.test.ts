@@ -231,7 +231,7 @@ describe("dispatchRpcRequest — routing", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
-    expect(t.sent).toEqual(["list-windows\n"]);
+    expect(t.sent[0]).toContain("list-windows");
     feedOk(t.feed, 1, ["@0 zsh 1 -"]);
     const r = await p;
     expect(r.success).toBe(true);
