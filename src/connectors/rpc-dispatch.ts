@@ -39,12 +39,15 @@ const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
   sendKeys: (c, [target, keys]) => commands.sendKeys(c, target, keys),
   splitWindow: (c, [options]) => commands.splitWindow(c, options),
   setSize: (c, [width, height]) => commands.setSize(c, width, height),
-  setPaneAction: (c, [paneId, action]) => commands.setPaneAction(c, paneId, action),
-  subscribeRaw: (c, [name, what, format]) => commands.subscribeRaw(c, name, what, format),
+  setPaneAction: (c, [paneId, action]) =>
+    commands.setPaneAction(c, paneId, action),
+  subscribeRaw: (c, [name, what, format]) =>
+    commands.subscribeRaw(c, name, what, format),
   unsubscribe: (c, [name]) => commands.unsubscribe(c, name),
   setFlags: (c, [flags]) => commands.setFlags(c, flags),
   clearFlags: (c, [flags]) => commands.clearFlags(c, flags),
-  requestReport: (c, [paneId, report]) => commands.requestReport(c, paneId, report),
+  requestReport: (c, [paneId, report]) =>
+    commands.requestReport(c, paneId, report),
   queryClipboard: (c) => commands.queryClipboard(c),
 } satisfies Dispatcher);
 

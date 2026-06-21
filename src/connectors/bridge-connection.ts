@@ -233,14 +233,18 @@ export function createBridgeConnection(
     if (pausedPanes.has(paneId)) return;
     if (totalOutstanding(paneId) < high) return;
     pausedPanes.add(paneId);
-    void client.execute(refreshClientPaneAction(paneId, PaneAction.Pause)).catch(swallow);
+    void client
+      .execute(refreshClientPaneAction(paneId, PaneAction.Pause))
+      .catch(swallow);
   };
 
   const maybeResume = (paneId: number): void => {
     if (!pausedPanes.has(paneId)) return;
     if (totalOutstanding(paneId) > low) return;
     pausedPanes.delete(paneId);
-    void client.execute(refreshClientPaneAction(paneId, PaneAction.Continue)).catch(swallow);
+    void client
+      .execute(refreshClientPaneAction(paneId, PaneAction.Continue))
+      .catch(swallow);
   };
 
   // Synthesized success response for refcounted no-op operations. command
@@ -359,7 +363,8 @@ export function createBridgeConnection(
     //     transitions fire client.unsubscribe.
     for (const name of state.subscriptions) {
       const lastOwner = releaseName(name, peer);
-      if (lastOwner) void client.execute(refreshClientUnsubscribe(name)).catch(swallow);
+      if (lastOwner)
+        void client.execute(refreshClientUnsubscribe(name)).catch(swallow);
     }
     state.subscriptions.clear();
   };
@@ -482,7 +487,9 @@ export function createBridgeConnection(
       // last peer leaves), but flush unconditionally so a programming error
       // that left pausedPanes populated does not leave tmux stuck.
       for (const paneId of pausedPanes) {
-        void client.execute(refreshClientPaneAction(paneId, PaneAction.Continue)).catch(swallow);
+        void client
+          .execute(refreshClientPaneAction(paneId, PaneAction.Continue))
+          .catch(swallow);
       }
       pausedPanes.clear();
     },

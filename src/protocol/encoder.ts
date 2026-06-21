@@ -23,13 +23,20 @@ export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
 
-export function refreshClientPaneAction(paneId: number, action: PaneAction): string {
+export function refreshClientPaneAction(
+  paneId: number,
+  action: PaneAction,
+): string {
   // [LAW:single-enforcer] tmux's command parser splits unquoted arguments on
   // ':' and rejects `%N:action`. Quote the entire pane:action token.
   return `refresh-client -A ${tmuxEscape(`%${paneId}:${action}`)}`;
 }
 
-export function refreshClientSubscribe(name: string, what: string, format: string): string {
+export function refreshClientSubscribe(
+  name: string,
+  what: string,
+  format: string,
+): string {
   return `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`;
 }
 
