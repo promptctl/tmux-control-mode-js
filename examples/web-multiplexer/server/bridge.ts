@@ -9,11 +9,11 @@
 
 import { createServer } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { TmuxClient } from "../../../src/client.js";
-import { spawnTmux } from "../../../src/transport/spawn.js";
-import { isTmuxMessage } from "../../../src/emitter.js";
-import type { TmuxMessage } from "../../../src/protocol/types.js";
-import type { EmitterMessage } from "../../../src/emitter.js";
+import { TmuxClient } from "@promptctl/tmux-control-mode-js";
+import { spawnTmux } from "@promptctl/tmux-control-mode-js";
+import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import type {
   ClientToServer,
   ServerToClient,

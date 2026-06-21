@@ -18,7 +18,7 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
-import type { TmuxMessage } from "../../../src/protocol/types.js";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a

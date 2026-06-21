@@ -25,7 +25,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
-import type { TmuxMessage } from "../../../src/protocol/types.js";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 import {
   INITIAL_STATE,
@@ -36,7 +36,7 @@ import {
   type KeyEvent,
   type Keymap,
   type KeymapState,
-} from "../../../src/keymap/index.js";
+} from "@promptctl/tmux-control-mode-js/keymap";
 
 export interface PaneInfo {
   id: number;
@@ -211,7 +211,7 @@ export class DemoStore {
   pendingConfirm: PendingConfirm | null = null;
 
   readonly client: TmuxBridge;
-  /** Shared `TmuxClientLike` adapter — one per bridge, used by all `PaneStream` instances. */
+  /** Shared `TmuxConnection` adapter — one per bridge, used by all `PaneStream` instances. */
   readonly paneStreamClient: BridgePaneStreamClient;
 
   // [LAW:one-source-of-truth] One keymap engine per client session. The

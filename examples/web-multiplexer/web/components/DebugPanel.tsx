@@ -6,7 +6,7 @@
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
 import { useMemo, useState } from "react";
-import type { TmuxMessage } from "../../../../src/protocol/types.js";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import { prettyBytes } from "../format-bytes.ts";

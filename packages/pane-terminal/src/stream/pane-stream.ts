@@ -28,7 +28,7 @@
 import type { TerminalSink, SeedCursor } from "../sink/index.js";
 import type {
   BytesSink,
-  TmuxClientLike,
+  TmuxConnection,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
 import {
@@ -43,8 +43,8 @@ import {
 } from "@promptctl/tmux-control-mode-js/protocol";
 
 // Re-exported so `@promptctl/pane-terminal/stream` consumers don't have to
-// dual-import `TmuxClientLike` from the library separately.
-export type { TmuxClientLike };
+// dual-import `TmuxConnection` from the library separately.
+export type { TmuxConnection };
 import {
   getScheduler,
   type ReseedPriority,
@@ -80,7 +80,7 @@ export interface PaneActivity {
 // priority. There is no stream-side `Visibility` type or setter.
 
 export interface PaneStreamOptions {
-  readonly client: TmuxClientLike;
+  readonly client: TmuxConnection;
   readonly paneId: number;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
@@ -122,7 +122,7 @@ type Unsubscribe = () => void;
 export class PaneStream implements ReseedTarget {
   readonly paneId: number;
 
-  private readonly client: TmuxClientLike;
+  private readonly client: TmuxConnection;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
   private readonly subscriptionName: string;
