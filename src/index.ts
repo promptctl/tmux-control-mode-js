@@ -10,7 +10,11 @@ export { PaneAction } from "./protocol/types.js";
 export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 export { latin1ToBytes } from "./protocol/byte-codec.js";
 
-export type { TmuxEventMap, EmitterMessage, EmitterTmuxMessage } from "./emitter.js";
+export type {
+  TmuxEventMap,
+  EmitterMessage,
+  EmitterTmuxMessage,
+} from "./emitter.js";
 export { isTmuxMessage } from "./emitter.js";
 
 export type {
