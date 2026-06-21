@@ -21,7 +21,7 @@ import type {
 import type {
   CommandResponse,
   TmuxMessage,
-} from "../../../src/protocol/types.js";
+} from "@promptctl/tmux-control-mode-js/protocol";
 import type {
   ConnState,
   ErrorHandler,
