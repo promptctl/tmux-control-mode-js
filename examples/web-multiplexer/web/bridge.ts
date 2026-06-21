@@ -15,7 +15,7 @@ import type { ClientToServer } from "../shared/protocol.ts";
 import type {
   CommandResponse,
   TmuxMessage,
-} from "../../../src/protocol/types.js";
+} from "@promptctl/tmux-control-mode-js/protocol";
 
 /**
  * Connection state observed by every consumer that cares about the

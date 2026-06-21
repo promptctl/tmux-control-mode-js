@@ -7,7 +7,7 @@
 // Types-only imports from tmux-control-mode-js. No runtime code from the
 // library crosses into the browser bundle (enforced by build + DEMO-02).
 
-import type { TmuxMessage, CommandResponse } from "../../../src/protocol/types.js";
+import type { TmuxMessage, CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 
 /**
  * A TmuxMessage serialized for JSON transport. Pane `output` and

@@ -3,7 +3,7 @@
 // DEMO BRIDGE GATES — exercise PaneStream against a spawn-mode TmuxClient so
 // adapter logic is measured in isolation from any network/serialisation layer.
 //
-// `TmuxClient` structurally satisfies `TmuxClientLike`, so it's passed to
+// `TmuxClient` structurally satisfies `TmuxConnection`, so it's passed to
 // `new PaneStream({ client })` directly — no shim. Gate 7 (reconnect) is out
 // of scope here — spawn-mode `TmuxClient` never emits `reconnected`, so
 // reconnect gates belong in a separate bench that uses a WebSocket transport.
@@ -17,11 +17,10 @@
 
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execSync } from "node:child_process";
-import { spawnTmux } from "../../../../src/transport/spawn.js";
-import { TmuxClient } from "../../../../src/client.js";
-import { PaneStream } from "../../../../packages/pane-terminal/src/stream/index.js";
-import { BufferingSink } from "../../../../packages/pane-terminal/src/sink/index.js";
-import type { ConnectionState } from "../../../../src/connection-state.js";
+import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
+import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
+import { PaneStream } from "@promptctl/pane-terminal/stream";
+import { BufferingSink } from "@promptctl/pane-terminal/sink";
 
 const integrationOn = process.env.TMUX_INTEGRATION === "1";
 

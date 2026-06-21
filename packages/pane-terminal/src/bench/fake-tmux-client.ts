@@ -1,7 +1,7 @@
 // packages/pane-terminal/src/bench/fake-tmux-client.ts
 //
 // Deterministic stand-in for `TmuxClient` used by every gate that does not
-// need a real tmux process. Structurally satisfies `TmuxClientLike` — the
+// need a real tmux process. Structurally satisfies `TmuxConnection` — the
 // PaneStream-shaped projection of the library's `TmuxClient` — so benches and
 // unit tests can pass a `FakeTmuxClient` to `new PaneStream({ client })` with
 // no cast.
@@ -145,7 +145,7 @@ export class FakeTmuxClient {
 
   // The `on`/`off` overloads accept any `keyof TmuxEventMap` (matching the
   // library's `TmuxClient.on`/`off`) so a `FakeTmuxClient` structurally
-  // satisfies `TmuxClientLike`. The fake never dispatches event types outside
+  // satisfies `TmuxConnection`. The fake never dispatches event types outside
   // `FakeMessage`, so listeners registered for unmodeled events simply never
   // fire — a behavior-correct no-op for any test that doesn't `inject*` them.
   //
@@ -227,7 +227,7 @@ export class FakeTmuxClient {
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside
   //   the fake's internal `dispatch` path — same shape as every other
-  //   `TmuxClientLike` implementation. `attachBytesSink` is the public entry.
+  //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
     return this.sinks.attach(sink, options?.scope ?? serverScope);
   }
