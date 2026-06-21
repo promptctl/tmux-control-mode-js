@@ -53,19 +53,14 @@ import {
   type PaneAction,
   type TmuxMessage,
 } from "../../protocol/types.js";
-import type { SplitOptions } from "../../client.js";
+import type { SplitOptions, TmuxConnection } from "../../client.js";
 
 import type { RpcProxyApi } from "../rpc.js";
-import type { TmuxClientLike } from "../../client.js";
 import {
-  SinkRegistry,
-  PaneTopologyManager,
-  TopologyEpochTracker,
-  serverScope,
-  parsePaneListLine,
   type AttachOptions,
   type BytesSink,
 } from "../../pane-output.js";
+import { TopologyRouter } from "../../topology-router.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -149,15 +144,11 @@ interface Pending {
   transmitted: boolean;
 }
 
-export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
+export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly emitter = new TypedEmitter();
-  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
-  //   `attachBytesSink` delegates to `sinks.attach`; `dispatchEvent` calls
-  //   `sinks.dispatch(msg, topology.get(paneId))` so scope-bifurcated delivery
-  //   is snapshot-protected and isolated from throwing listeners.
-  private readonly sinks = new SinkRegistry();
-  private readonly topology = new PaneTopologyManager();
-  private readonly topologyEpoch = new TopologyEpochTracker();
+  // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
+  //   lives in TopologyRouter. This client injects execute() as the command runner.
+  private readonly router = new TopologyRouter();
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;
@@ -334,20 +325,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     return this.call("queryClipboard", []);
   }
 
-  // [LAW:locality-or-seam] WS pane-output frames arrive as parsed
-  //   `output` / `extended-output` messages routed through `dispatchEvent`.
-  //   `sinks.dispatch(msg, topology.get(paneId))` is where scope-bifurcated
-  //   byte fan-out happens (same shape as `TmuxClient.handleMessage`).
+  // [LAW:one-source-of-truth] All sink registration, topology bootstrap,
+  //   and scope dispatch is owned by TopologyRouter — no duplication here.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    const scope = options?.scope ?? serverScope;
-    const dispose = this.sinks.attach(sink, scope);
-    if (
-      (scope.kind === "session" || scope.kind === "window") &&
-      this.currentState === "ready"
-    ) {
-      void this.bootstrapTopology();
-    }
-    return dispose;
+    return this.router.attachBytesSink(sink, options);
   }
 
   // detach() is intentionally NOT exposed: it tears down the tmux client for
@@ -563,9 +544,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     this.transition("ready");
     this.startHeartbeat();
     this.flushOutbox();
-    if (this.sinks.hasTopologyDependentSinks()) {
-      void this.bootstrapTopology();
-    }
+    // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
+    //   Called after transition("ready") so execute() accepts calls from within bootstrap.
+    this.router.onTransportReady((cmd) => this.execute(cmd));
   }
 
   onResult(frame: ResultFrame): void {
@@ -593,76 +574,19 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
   }
 
   dispatchEvent(msg: TmuxMessage): void {
-    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
-    //   registry, matching `TmuxClient.handleMessage`. The emitter's type
-    //   surface excludes `PaneOutputMessage`, so passing a byte message to
-    //   `emit` is a compile error.
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the router's
+    //   byte-dispatch path. ChunkPayload strips wire discriminator fields before
+    //   dispatch — sinks receive only {paneId, data}.
     if (isPaneOutput(msg)) {
-      this.sinks.dispatch(msg, this.topology.get(msg.paneId));
+      this.router.dispatchBytes({ paneId: msg.paneId, data: msg.data });
       return;
     }
-    // Topology events update the table exactly as TmuxClient.handleMessage does.
-    if (msg.type === "layout-change") {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.refreshWindowTopology(msg.windowId);
-      }
-    } else if (
-      msg.type === "window-add" ||
-      msg.type === "unlinked-window-add"
-    ) {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.refreshWindowTopology(msg.windowId);
-      }
-    } else if (
-      msg.type === "window-close" ||
-      msg.type === "unlinked-window-close"
-    ) {
-      this.topology.removeWindow(msg.windowId);
-      this.topologyEpoch.invalidateWindow(msg.windowId);
-    } else if (msg.type === "sessions-changed") {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.bootstrapTopology();
-      }
-    }
+    // [LAW:one-source-of-truth] Topology mutations live in TopologyRouter.
+    //   This adapter remains unaware of topology update logic.
+    this.router.handleNotification(msg);
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
-  }
-
-  private async bootstrapTopology(): Promise<void> {
-    const gen = this.topologyEpoch.startBootstrap();
-    try {
-      const r = await this.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  private async refreshWindowTopology(windowId: number): Promise<void> {
-    const gen = this.topologyEpoch.startWindowRefresh(windowId);
-    try {
-      const r = await this.execute(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
-      );
-      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
-      });
-      this.topology.updateWindow(windowId, entries);
-    } catch {
-      this.topology.removeWindow(windowId);
-    }
   }
 
   private onClose(event: { code?: number; reason?: string }): void {
@@ -711,6 +635,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     this.serverLimits = null;
 
     if (this.userRequestedClose) {
+      // [LAW:no-ambient-temporal-coupling] Permanent close: end all sinks and
+      //   clear runCommand. NOT called on reconnect — sinks survive reconnect.
+      this.router.onTransportClose();
       this.transition("closed");
       return;
     }
@@ -718,6 +645,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
     // Decide whether to reconnect.
     const policy = this.opts.reconnect;
     if (policy === undefined || policy.maxAttempts <= 0) {
+      this.router.onTransportClose();
       this.transition("closed");
       return;
     }
@@ -728,6 +656,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxClientLike {
           `reconnect gave up after ${policy.maxAttempts} attempts`,
         ),
       );
+      this.router.onTransportClose();
       this.transition("closed");
       return;
     }
