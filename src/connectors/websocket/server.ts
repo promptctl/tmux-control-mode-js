@@ -346,7 +346,9 @@ class Connection {
     //   so this is the only path bytes reach the wire.
     this.byteForwarder = {
       write: (msg) => this.onByteOutput(msg),
-      end(): void {},
+      // [LAW:types-are-the-program] end() is required by BytesSink contract;
+      // forwarding sink has no per-pane state to flush.
+      end(): void { /* stateless sink */ },
     };
   }
 

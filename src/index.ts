@@ -30,6 +30,8 @@ export {
   parsePaneListLine,
 } from "./pane-output.js";
 
+export { TopologyRouter } from "./topology-router.js";
+
 export { createTextStreamSink } from "./sinks/text-stream.js";
 
 export { attachLineSink } from "./line-sink.js";

@@ -22,15 +22,11 @@ import type {
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import {
-  SinkRegistry,
-  PaneTopologyManager,
-  serverScope,
-  parsePaneListLine,
-  TopologyEpochTracker,
   type AttachOptions,
   type BytesSink,
   type ChunkPayload,
 } from "./pane-output.js";
+import { TopologyRouter } from "./topology-router.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
@@ -94,11 +90,9 @@ export class TmuxClient implements TmuxConnection {
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
 
-  // [LAW:single-enforcer] Fan-out for pane bytes lives in SinkRegistry.
-  // [LAW:one-source-of-truth] topology and epoch tracker owned here only.
-  private readonly sinks = new SinkRegistry();
-  private readonly topology = new PaneTopologyManager();
-  private readonly topologyEpoch = new TopologyEpochTracker();
+  // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
+  //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
+  private readonly router = new TopologyRouter();
 
   constructor(transport: TmuxTransport) {
     this.transport = transport;
@@ -114,6 +108,7 @@ export class TmuxClient implements TmuxConnection {
       this.parser.feed(chunk);
     });
     transport.onClose((reason) => {
+      this.router.onTransportClose();
       this.emitter.emit({ type: "exit", reason });
       this.setConnectionState({
         status: "closed",
@@ -156,17 +151,7 @@ export class TmuxClient implements TmuxConnection {
   }
 
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    const scope = options?.scope ?? serverScope;
-    const dispose = this.sinks.attach(sink, scope);
-    // [LAW:dataflow-not-control-flow] Lazy bootstrap when first topology-
-    // dependent sink arrives while already ready.
-    if (
-      (scope.kind === "session" || scope.kind === "window") &&
-      this.currentConnectionState.status === "ready"
-    ) {
-      void this.bootstrapTopology();
-    }
-    return dispose;
+    return this.router.attachBytesSink(sink, options);
   }
 
   // ---------------------------------------------------------------------------
@@ -185,51 +170,15 @@ export class TmuxClient implements TmuxConnection {
   }
 
   // ---------------------------------------------------------------------------
-  // Internal — topology bootstrap
+  // Internal — lifecycle state
   // ---------------------------------------------------------------------------
 
   private setConnectionState(next: ConnectionState): void {
     if (sameConnectionState(this.currentConnectionState, next)) return;
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
-    if (next.status === "ready" && this.sinks.hasTopologyDependentSinks()) {
-      void this.bootstrapTopology();
-    }
-  }
-
-  private async bootstrapTopology(): Promise<void> {
-    const gen = this.topologyEpoch.startBootstrap();
-    try {
-      const r = await this.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
-    } catch {
-      // Non-fatal: topology races handled at dispatch time.
-    }
-  }
-
-  private async refreshWindowTopology(windowId: number): Promise<void> {
-    const gen = this.topologyEpoch.startWindowRefresh(windowId);
-    try {
-      const r = await this.execute(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
-      );
-      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
-      });
-      this.topology.updateWindow(windowId, entries);
-    } catch {
-      this.topology.removeWindow(windowId);
+    if (next.status === "ready") {
+      this.router.onTransportReady((cmd) => this.execute(cmd));
     }
   }
 
@@ -272,39 +221,21 @@ export class TmuxClient implements TmuxConnection {
       );
     }
 
-    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
-    // registry. ChunkPayload strips the wire discriminator fields before
+    // [LAW:single-enforcer] Pane bytes flow exclusively through the router's
+    // byte-dispatch path. ChunkPayload strips wire discriminator fields before
     // dispatch — sinks receive only {paneId, data}. [LAW:types-are-the-program]
     if (isPaneOutput(msg)) {
       const chunk: ChunkPayload = { paneId: msg.paneId, data: msg.data };
-      this.sinks.dispatch(chunk, this.topology.get(msg.paneId));
+      this.router.dispatchBytes(chunk);
       return;
     }
 
-    // [LAW:one-source-of-truth] Topology events update the single topology table.
-    if (msg.type === "layout-change") {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.refreshWindowTopology(msg.windowId);
-      }
-    } else if (
-      msg.type === "window-add" ||
-      msg.type === "unlinked-window-add"
-    ) {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.refreshWindowTopology(msg.windowId);
-      }
-    } else if (
-      msg.type === "window-close" ||
-      msg.type === "unlinked-window-close"
-    ) {
-      this.topology.removeWindow(msg.windowId);
-      this.topologyEpoch.invalidateWindow(msg.windowId);
-    } else if (msg.type === "sessions-changed") {
-      if (this.sinks.hasTopologyDependentSinks()) {
-        void this.bootstrapTopology();
-      }
-    }
-
+    // [LAW:one-source-of-truth] Topology mutations live in TopologyRouter.
+    //   The router handles window-close, window-add, layout-change, sessions-changed;
+    //   this adapter remains unaware of topology update logic.
+    // [LAW:effects-at-boundaries] The router does NOT call the emitter. This adapter
+    //   is responsible for emitting non-byte messages to event listeners.
+    this.router.handleNotification(msg);
     this.emitter.emit(msg);
   }
 }

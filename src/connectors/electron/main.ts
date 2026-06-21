@@ -384,7 +384,9 @@ export function createMainBridge(
         bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
       });
     },
-    end(): void {},
+    // [LAW:types-are-the-program] end() is required by BytesSink contract; no
+    // pane teardown state to flush in this forwarding sink.
+    end(): void { /* stateless sink */ },
   };
 
   client.on("*", forwardState);

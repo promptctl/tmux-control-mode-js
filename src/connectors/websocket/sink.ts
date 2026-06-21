@@ -199,7 +199,7 @@ export function attachWebSocketSink(
     },
     // No wire-level paneEnd frame in this protocol; pane teardown surfaces
     // via the JSON event channel. end() is a required contract method.
-    end(): void {},
+    end(): void { /* stateless sink — pane teardown via JSON event channel */ },
   };
 
   const attachDispose = client.attachBytesSink(sink, {

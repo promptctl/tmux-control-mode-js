@@ -373,6 +373,42 @@ export class SinkRegistry {
     }
   }
 
+  /**
+   * End every attached sink and clear all buckets.
+   *
+   * Called by the transport adapter when the connection closes. Guarantees
+   * `end()` is called exactly once per attached sink even if the caller still
+   * holds disposers from earlier `attach()` calls — the inner bucket Maps are
+   * cleared first so any subsequent disposer invocation sees `bucket.delete()`
+   * return `false` and becomes a no-op.
+   *
+   * [LAW:one-source-of-truth] Transport-close sink teardown lives here; no
+   * transport adapter re-implements the sweep.
+   */
+  endAll(): void {
+    // Collect inner bucket references before clearing outer maps.
+    const innerBuckets: Bucket[] = [
+      ...this.sessionAttachments.values(),
+      ...this.windowAttachments.values(),
+      ...this.paneAttachments.values(),
+    ];
+    // Collect all sinks before any bucket is mutated.
+    const allSinks: BytesSink[] = [
+      ...this.serverAttachments.values(),
+      ...innerBuckets.flatMap((b) => [...b.values()]),
+    ];
+    // Clear inner buckets first — existing disposers see empty bucket and
+    // become no-ops, preventing double-end on concurrent disposal.
+    for (const b of innerBuckets) b.clear();
+    // Clear server bucket and outer maps.
+    this.serverAttachments.clear();
+    this.sessionAttachments.clear();
+    this.windowAttachments.clear();
+    this.paneAttachments.clear();
+    // Call end() on collected sinks exactly once each.
+    for (const sink of allSinks) sink.end();
+  }
+
   private pruneEmptyBucket(scope: PaneScope): void {
     switch (scope.kind) {
       case "server":
