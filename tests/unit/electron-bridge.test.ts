@@ -1279,7 +1279,7 @@ describe("Electron IPC bridge — renderer import graph", () => {
       // Match value/side-effect imports only. `import type { ... } from "..."`
       // is fully erased at compile time and produces no runtime edge, so it is
       // safe even when the target lives in Node-only code (e.g. an
-      // `implements TmuxClientLike` clause whose declaration lives in
+      // `implements TmuxConnection` clause whose declaration lives in
       // `src/client.ts`). The negative lookahead after `import` rejects the
       // `import type` statement form while still flagging
       // `import { type X, Y } from "..."` (Y is a value).

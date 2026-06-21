@@ -56,7 +56,7 @@ export interface LineEvent {
 export type LineHandler = (event: LineEvent) => void;
 
 // ---------------------------------------------------------------------------
-// TmuxClientLike slice — the only client capability this module needs
+// TmuxConnection slice — the only client capability this module needs
 // ---------------------------------------------------------------------------
 
 interface AttachBytes {

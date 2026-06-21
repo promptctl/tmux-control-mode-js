@@ -3,7 +3,7 @@
 //
 // [LAW:types-are-the-program] TmuxConnection is the 5-method slim interface.
 //   TmuxClient implements it. All tmux commands are free functions over execute
-//   in src/commands/. The wide TmuxClientLike is replaced by TmuxConnection.
+//   in src/commands/.
 // [LAW:one-source-of-truth] Command correlation state lives exclusively here.
 // [LAW:single-enforcer] FIFO queue is the sole mechanism for matching responses.
 
@@ -37,8 +37,7 @@ export type { SplitOptions } from "./protocol/encoder.js";
 // not the full TmuxClient class.
 //
 // [LAW:types-are-the-program] The strongest true theorem about what a consumer
-// needs from a tmux connection is these five capabilities. The 18-method
-// TmuxClientLike was the previous under-constrained shape.
+// needs from a tmux connection is these five capabilities.
 // ---------------------------------------------------------------------------
 
 export interface TmuxConnection {
@@ -247,14 +246,3 @@ export class TmuxClient implements TmuxConnection {
   }
 }
 
-// ---------------------------------------------------------------------------
-// TmuxClientLike — backward-compat alias for TmuxConnection.
-//
-// Kept so in-tree bridge clients (WebSocketTmuxClient, TmuxClientProxy) that
-// declare `implements TmuxClientLike` still compile while tickets .4/.5
-// migrate them to TmuxConnection. Will be deleted in ticket .7.
-// [LAW:types-are-the-program] exception: backward-compat shim, delete in .7
-// ---------------------------------------------------------------------------
-
-/** @deprecated Use TmuxConnection. Will be deleted in ticket .7. */
-export type TmuxClientLike = TmuxConnection;
