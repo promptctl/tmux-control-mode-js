@@ -527,4 +527,118 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     },
     10000,
   );
+
+  // ── Test 10: two-session isolation ───────────────────────────────────────
+
+  it(
+    "SCOPE-10: sessionScope($A) receives bytes from $A but NOT from $B",
+    async () => {
+      const sessionA = uniqueSession("iso-a");
+      client = await createClient(socketName, sessionA);
+
+      // Create session B independently — the control-mode client attached to
+      // A can still send commands targeting B's pane (the server is shared).
+      const sessionB = uniqueSession("iso-b");
+      execSync(tmuxCmd(socketName, `new-session -d -s ${sessionB}`), {
+        stdio: "ignore",
+      });
+
+      const allPanes = await listAllPanes(client);
+      // The global pane list should show panes from both sessions.
+      const sessionAId = allPanes[0]?.sessionId;
+      expect(sessionAId).toBeDefined();
+      const panesA = allPanes.filter((p) => p.sessionId === sessionAId);
+      const panesB = allPanes.filter((p) => p.sessionId !== sessionAId);
+      // B's session is detached; its panes should appear in the global list.
+      expect(panesB.length).toBeGreaterThan(0);
+
+      const arrived: { paneId: number }[] = [];
+      const dispose = client.attachBytesSink(
+        {
+          write(msg) {
+            arrived.push({ paneId: msg.paneId });
+          },
+          end() {},
+        },
+        { scope: sessionScope(sessionAId!) },
+      );
+
+      // Output from A's pane must arrive.
+      const paneA = panesA[0].paneId;
+      await sendOutputToPane(client, paneA);
+      await waitFor(() => arrived.some((e) => e.paneId === paneA));
+
+      // Output from B's pane — sent via the same control-mode client which has
+      // server-wide command authority — must NOT arrive to A's sessionScope sink.
+      const paneB = panesB[0].paneId;
+      await sendOutputToPane(client, paneB);
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      expect(arrived.some((e) => e.paneId === paneB)).toBe(false);
+
+      dispose();
+    },
+    20000,
+  );
+
+  // ── Test 11: window-kill removes panes from routing ───────────────────────
+
+  it(
+    "SCOPE-11: killing a window removes its panes from sessionScope routing",
+    async () => {
+      const session = uniqueSession("wkill");
+      client = await createClient(socketName, session);
+
+      // Create a second window so we have two to work with.
+      await client.execute("new-window");
+      const allPanes = await listAllPanes(client);
+      expect(allPanes.length).toBeGreaterThanOrEqual(2);
+
+      const sessionId = allPanes[0].sessionId;
+      const windowIds = [...new Set(allPanes.map((p) => p.windowId))];
+      expect(windowIds.length).toBeGreaterThanOrEqual(2);
+
+      const windowToKeep = windowIds[0];
+      const windowToKill = windowIds[1];
+      const panesInKept = allPanes.filter((p) => p.windowId === windowToKeep);
+
+      const arrived: { paneId: number }[] = [];
+      const dispose = client.attachBytesSink(
+        {
+          write(msg) {
+            arrived.push({ paneId: msg.paneId });
+          },
+          end() {},
+        },
+        { scope: sessionScope(sessionId) },
+      );
+
+      // Confirm output from both windows arrives before the kill.
+      for (const p of allPanes) {
+        await sendOutputToPane(client, p.paneId);
+      }
+      await waitFor(() =>
+        allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+      );
+      arrived.length = 0; // reset
+
+      // Kill the second window and allow topology notifications to propagate.
+      // [LAW:single-enforcer] window-close triggers TopologyRouter.handleNotification
+      // which calls topology.removeWindow() exactly once — the epoch mechanism
+      // ensures any in-flight list-panes result for this window is discarded.
+      await client.execute(`kill-window -t @${windowToKill}`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+      // Panes in the surviving window must still receive bytes — the topology
+      // update from window-close must not corrupt routing for remaining panes.
+      for (const p of panesInKept) {
+        await sendOutputToPane(client, p.paneId);
+      }
+      await waitFor(() =>
+        panesInKept.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+      );
+
+      dispose();
+    },
+    20000,
+  );
 });
