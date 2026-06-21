@@ -12,7 +12,7 @@
 //   (topology table + scope description), not pre-computed control flow.
 //   Topology changes update the table; the next chunk reads the updated state.
 // [LAW:single-enforcer] SinkRegistry is the one dispatch path. PaneTopologyManager
-//   is the one topology writer. Neither is duplicated across TmuxClientLike impls.
+//   is the one topology writer. Neither is duplicated across TmuxConnection implementations.
 
 // ---------------------------------------------------------------------------
 // ChunkPayload — what a BytesSink receives
@@ -248,7 +248,7 @@ type Bucket = Map<symbol, BytesSink>;
  * server) and calls `sink.write(msg)` for each — in that order, most to
  * least specific.
  *
- * [LAW:single-enforcer] One dispatch path. All TmuxClientLike implementations
+ * [LAW:single-enforcer] One dispatch path. All TmuxConnection implementations
  *   own one instance; none duplicate the snapshot logic or the bucket layout.
  * [LAW:dataflow-not-control-flow] dispatch() runs the same four bucket lookups
  *   on every chunk. Which buckets are non-empty is data, not guarded control.
@@ -451,7 +451,7 @@ function snapshotBucket(bucket: Bucket | undefined): readonly BytesSink[] {
  * `seed()` or `updateWindow()` runs as a microtask. Without epoch guards
  * the microtask would re-add @X's panes, contradicting the notification.
  *
- * [LAW:one-type-per-behavior] All TmuxClientLike implementations share this
+ * [LAW:one-type-per-behavior] All TmuxConnection implementations share this
  *   one tracker type; the staleness invariant is encoded here, not repeated
  *   in each client.
  * [LAW:dataflow-not-control-flow] The generation number IS a value — the

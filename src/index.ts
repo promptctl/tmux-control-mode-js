@@ -2,7 +2,7 @@
 // [LAW:one-source-of-truth] All consumer-facing exports are declared here only.
 
 export { TmuxClient } from "./client.js";
-export type { TmuxConnection, SplitOptions, TmuxClientLike } from "./client.js";
+export type { TmuxConnection, SplitOptions } from "./client.js";
 export type { ConnectionState } from "./connection-state.js";
 export { TmuxCommandError } from "./errors.js";
 

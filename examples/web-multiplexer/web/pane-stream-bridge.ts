@@ -46,7 +46,6 @@ import type {
 // `reconnected` event payload — derived from the library's TmuxEventMap so
 // any future shape change at the source propagates here automatically.
 type ReconnectedMessage = TmuxEventMap["reconnected"];
-import { tmuxEscape } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
 
 function mapConnState(s: ConnState): ConnectionState {
@@ -190,26 +189,6 @@ export class BridgePaneStreamClient implements TmuxConnection {
 
   execute(command: string): Promise<CommandResponse> {
     return this.bridge.execute(command);
-  }
-
-  // [LAW:single-enforcer] Each segment is escaped via `tmuxEscape` from
-  // `src/protocol/encoder.ts`, the canonical quoting authority for tmux
-  // command arguments. Callers today pass only library-controlled values
-  // (literal subscription name + `%<paneId>` + literal format), but reusing
-  // the encoder's escaping discipline prevents drift if untrusted input
-  // ever flows through here.
-  subscribeRaw(
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse> {
-    return this.bridge.execute(
-      `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`,
-    );
-  }
-
-  unsubscribe(name: string): Promise<CommandResponse> {
-    return this.bridge.execute(`refresh-client -B ${tmuxEscape(name)}`);
   }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the

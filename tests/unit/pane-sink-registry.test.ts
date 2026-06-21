@@ -1,6 +1,6 @@
 // tests/unit/pane-sink-registry.test.ts
 // Direct behavior-level tests for `SinkRegistry` and `PaneTopologyManager`.
-// Every TmuxClientLike implementation owns one of each; pinning their
+// Every TmuxConnection implementation owns one of each; pinning their
 // contracts here means every client that delegates to these classes inherits
 // the assertions by construction.
 //
@@ -12,7 +12,7 @@
 //   are stored internally.
 //
 // [LAW:single-enforcer] These assertions sit on the canonical classes.
-//   Every TmuxClientLike-shaped object that owns a `SinkRegistry` is covered
+//   Every TmuxConnection implementation that owns a `SinkRegistry` is covered
 //   without needing N parallel test suites.
 
 import { describe, expect, it } from "vitest";
