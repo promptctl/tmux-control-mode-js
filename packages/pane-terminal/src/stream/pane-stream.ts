@@ -31,7 +31,11 @@ import type {
   TmuxClientLike,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js";
-import { paneScope } from "@promptctl/tmux-control-mode-js";
+import {
+  paneScope,
+  subscribeRaw,
+  unsubscribe,
+} from "@promptctl/tmux-control-mode-js";
 import {
   sendKeys as encodeSendKeys,
   emptyKeysResponse,
@@ -216,10 +220,9 @@ export class PaneStream implements ReseedTarget {
     //   and `subscription-changed` are non-byte events and stay on the emitter.
     const paneSink: BytesSink = {
       write: (msg) => this.handlePaneBytes(msg.data),
-      // No `end()`: PaneStream's `dispose()` owns the full teardown. The
-      // library's disposer calls `end?.()` exactly once when invoked, but
-      // the optional-chain short-circuits when `end` is absent — so
-      // dispose's bookkeeping is the single authoritative cleanup site.
+      // [LAW:types-are-the-program] end() is required by BytesSink contract.
+      // PaneStream.dispose() owns teardown; end() is a no-op here.
+      end(): void { /* stateless sink — PaneStream.dispose() owns teardown */ },
     };
     this.paneSinkDisposer = this.client.attachBytesSink(paneSink, {
       scope: paneScope(this.paneId),
@@ -227,10 +230,8 @@ export class PaneStream implements ReseedTarget {
 
     this.client.on("reconnected", this.onReconnected);
 
-    // [LAW:dataflow-not-control-flow] subscribeRaw/unsubscribe are mandatory
-    // on TmuxClientLike, so the subscription path always runs. Earlier shapes
-    // gated this on a runtime `typeof === "function"` probe; making the
-    // capability part of the type erased the branch.
+    // [LAW:dataflow-not-control-flow] subscribeRaw/unsubscribe are free
+    // functions over TmuxConnection; the subscription path always runs.
     this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
     this.client.on("subscription-changed", this.onSubscriptionChanged);
     // Per-pane width;height in one subscription (single message,
@@ -238,13 +239,12 @@ export class PaneStream implements ReseedTarget {
     // .catch keeps construction safe — if the client is already closed or
     // tmux rejects the subscribe, swallowing here matches the symmetrical
     // unsubscribe() in dispose(), which can't surface as a usable error.
-    void this.client
-      .subscribeRaw(
-        this.subscriptionName,
-        `%${this.paneId}`,
-        "#{pane_width};#{pane_height}",
-      )
-      .catch(() => undefined);
+    void subscribeRaw(
+      this.client,
+      this.subscriptionName,
+      `%${this.paneId}`,
+      "#{pane_width};#{pane_height}",
+    ).catch(() => undefined);
 
     // [LAW:one-source-of-truth] Per-client reseed scheduler. Registering at
     // construction means the scheduler can include this stream in its very
@@ -373,7 +373,7 @@ export class PaneStream implements ReseedTarget {
     this.client.off("subscription-changed", this.onSubscriptionChanged);
     // Best-effort unsubscribe — if the client is already closed, this
     // rejects; we swallow because dispose() must not throw.
-    void this.client.unsubscribe(this.subscriptionName).catch(() => undefined);
+    void unsubscribe(this.client, this.subscriptionName).catch(() => undefined);
 
     if (this.flushTimerId !== null) {
       clearTimeout(this.flushTimerId);

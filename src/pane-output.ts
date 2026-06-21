@@ -14,7 +14,25 @@
 // [LAW:single-enforcer] SinkRegistry is the one dispatch path. PaneTopologyManager
 //   is the one topology writer. Neither is duplicated across TmuxClientLike impls.
 
-import type { PaneOutputMessage } from "./protocol/types.js";
+// ---------------------------------------------------------------------------
+// ChunkPayload — what a BytesSink receives
+// ---------------------------------------------------------------------------
+
+/**
+ * The pane-byte payload delivered to every BytesSink on each chunk.
+ *
+ * [LAW:types-are-the-program] The `type` discriminator (`'output'` vs
+ * `'extended-output'`) and the `age` field from the wire protocol are consumed
+ * by the substrate before dispatch and never reach the sink. This type encodes
+ * exactly what a sink reads — nothing more.
+ *
+ * `data` is the same `Uint8Array` instance shared by every sink matching the
+ * same chunk. Treat it as read-only. Copy before retention.
+ */
+export interface ChunkPayload {
+  readonly paneId: number;
+  readonly data: Uint8Array;
+}
 
 // ---------------------------------------------------------------------------
 // BytesSink — the byte consumer contract
@@ -23,32 +41,24 @@ import type { PaneOutputMessage } from "./protocol/types.js";
 /**
  * Byte-shaped consumer contract for pane output.
  *
- * Implementors receive one `PaneOutputMessage` per tmux chunk. Chunks do not
- * align with anything semantic — a UTF-8 multi-byte sequence may straddle
- * two chunks, an ANSI escape may, a log line may. Implementors that need
+ * Implementors receive one `ChunkPayload` per tmux chunk. Chunks do not align
+ * with anything semantic — a UTF-8 multi-byte sequence may straddle two
+ * chunks, an ANSI escape may, a log line may. Implementors that need
  * cross-chunk state (streaming UTF-8 decode, ANSI parser) must carry it
  * between `write` calls.
  *
- * This is the appropriate contract for terminal renderers, transport
- * forwarders, and byte-faithful archives. Consumers that want UTF-8 text
- * lines can use `createTextStreamSink` (from the package root) for a simple
- * streaming-decode adapter; a dedicated `attachLineSink` with proper line
- * splitting ships in a future milestone.
- *
  * ## Contract
  *
- * - `write(msg)` MUST be synchronous and non-throwing. The library calls it
- *   inline from the parser loop for every matching chunk; a slow or throwing
- *   sink stalls all consumers on that client. Buffer async work internally.
- * - `msg.data` is the same `Uint8Array` instance shared by every sink
- *   matching the same chunk. Treat it as read-only. Copy before retention:
- *   `msg.data.slice()` or `new Uint8Array(msg.data)`.
- * - `end?()` is called at most once — when the attachment's disposer is
- *   invoked. Sinks holding cross-chunk state use this to flush.
+ * - `write(msg)` MUST be synchronous and non-throwing.
+ * - `msg.data` is shared across all sinks for the same chunk — read-only.
+ * - `end()` is called exactly once after the final `write`, regardless of
+ *   cause (disposer called, connection closed). Not optional — stateless
+ *   sinks implement it as a no-op. [LAW:types-are-the-program]: optional
+ *   cleanup hedges the contract.
  */
 export interface BytesSink {
-  write(msg: PaneOutputMessage): void;
-  end?(): void;
+  write(msg: ChunkPayload): void;
+  end(): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,24 +270,21 @@ export class SinkRegistry {
    *
    * Each call is an independent attachment — the same sink may be attached
    * multiple times; each yields its own token and disposer. The disposer
-   * calls `sink.end?.()` exactly once on the first invocation.
+   * calls `sink.end()` exactly once on the first invocation.
    */
   attach(sink: BytesSink, scope: PaneScope): () => void {
     const token = Symbol("BytesSink");
     const bucket = this.getOrCreateBucket(scope);
     bucket.set(token, sink);
 
-    // Capture the parent map + key for bucket cleanup on empty.
     // [LAW:dataflow-not-control-flow] Idempotency is structural — delete()
-    //   returns true only on the first removal, so end?() fires at most once
+    //   returns true only on the first removal, so end() fires at most once
     //   without a separate `disposed` flag.
     return () => {
       const removed = bucket.delete(token);
       if (!removed) return;
-      // Prune empty sub-buckets to prevent unbounded Map growth as
-      // pane/window/session scopes are attached and disposed over time.
       if (bucket.size === 0) this.pruneEmptyBucket(scope);
-      sink.end?.();
+      sink.end();
     };
   }
 
@@ -293,7 +300,7 @@ export class SinkRegistry {
   }
 
   /**
-   * Dispatch one `PaneOutputMessage` to all matching attachments.
+   * Dispatch one chunk to all matching attachments.
    *
    * `meta` is the topology lookup result for `msg.paneId` — undefined when
    * the pane is unknown (topology race). In that case only pane-scoped and
@@ -304,7 +311,7 @@ export class SinkRegistry {
    *   before the first write so re-entrant attach/detach in a sink's write
    *   cannot back-fill or skip the current chunk.
    */
-  dispatch(msg: PaneOutputMessage, meta: PaneMeta | undefined): void {
+  dispatch(msg: ChunkPayload, meta: PaneMeta | undefined): void {
     // Snapshot all four buckets synchronously before any write() call.
     const paneSnap = snapshotBucket(this.paneAttachments.get(msg.paneId));
     const windowSnap =
@@ -364,6 +371,42 @@ export class SinkRegistry {
         return b;
       }
     }
+  }
+
+  /**
+   * End every attached sink and clear all buckets.
+   *
+   * Called by the transport adapter when the connection closes. Guarantees
+   * `end()` is called exactly once per attached sink even if the caller still
+   * holds disposers from earlier `attach()` calls — the inner bucket Maps are
+   * cleared first so any subsequent disposer invocation sees `bucket.delete()`
+   * return `false` and becomes a no-op.
+   *
+   * [LAW:one-source-of-truth] Transport-close sink teardown lives here; no
+   * transport adapter re-implements the sweep.
+   */
+  endAll(): void {
+    // Collect inner bucket references before clearing outer maps.
+    const innerBuckets: Bucket[] = [
+      ...this.sessionAttachments.values(),
+      ...this.windowAttachments.values(),
+      ...this.paneAttachments.values(),
+    ];
+    // Collect all sinks before any bucket is mutated.
+    const allSinks: BytesSink[] = [
+      ...this.serverAttachments.values(),
+      ...innerBuckets.flatMap((b) => [...b.values()]),
+    ];
+    // Clear inner buckets first — existing disposers see empty bucket and
+    // become no-ops, preventing double-end on concurrent disposal.
+    for (const b of innerBuckets) b.clear();
+    // Clear server bucket and outer maps.
+    this.serverAttachments.clear();
+    this.sessionAttachments.clear();
+    this.windowAttachments.clear();
+    this.paneAttachments.clear();
+    // Call end() on collected sinks exactly once each.
+    for (const sink of allSinks) sink.end();
   }
 
   private pruneEmptyBucket(scope: PaneScope): void {

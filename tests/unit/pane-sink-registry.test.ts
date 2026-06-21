@@ -74,6 +74,7 @@ describe("SinkRegistry.dispatch", () => {
       write(): void {
         reg.attach(lateAttached, paneScope(1));
       },
+      end(): void {},
     };
     reg.attach(trigger, paneScope(1));
     reg.attach(a, paneScope(1));
@@ -98,11 +99,13 @@ describe("SinkRegistry.dispatch", () => {
         observed.push("a");
         disposeA();
       },
+      end(): void {},
     };
     const b: BytesSink = {
       write(): void {
         observed.push("b");
       },
+      end(): void {},
     };
     disposeA = reg.attach(a, paneScope(1));
     reg.attach(b, paneScope(1));
@@ -223,10 +226,10 @@ describe("SinkRegistry.dispatch", () => {
     const reg = new SinkRegistry();
     const order: string[] = [];
 
-    reg.attach({ write() { order.push("pane"); } }, paneScope(5));
-    reg.attach({ write() { order.push("window"); } }, windowScope(2));
-    reg.attach({ write() { order.push("session"); } }, sessionScope(1));
-    reg.attach({ write() { order.push("server"); } }, serverScope);
+    reg.attach({ write() { order.push("pane"); }, end() {} }, paneScope(5));
+    reg.attach({ write() { order.push("window"); }, end() {} }, windowScope(2));
+    reg.attach({ write() { order.push("session"); }, end() {} }, sessionScope(1));
+    reg.attach({ write() { order.push("server"); }, end() {} }, serverScope);
 
     reg.dispatch(paneOutput(5, 0x01), { sessionId: 1, windowId: 2 });
 
@@ -262,7 +265,7 @@ describe("SinkRegistry.hasTopologyDependentSinks", () => {
 
   it("returns false for pane-scope and server-scope attachments only", () => {
     const reg = new SinkRegistry();
-    const noop: BytesSink = { write() {} };
+    const noop: BytesSink = { write() {}, end() {} };
     reg.attach(noop, paneScope(1));
     reg.attach(noop, serverScope);
     expect(reg.hasTopologyDependentSinks()).toBe(false);
@@ -270,7 +273,7 @@ describe("SinkRegistry.hasTopologyDependentSinks", () => {
 
   it("returns true when a window-scope sink is attached", () => {
     const reg = new SinkRegistry();
-    const noop: BytesSink = { write() {} };
+    const noop: BytesSink = { write() {}, end() {} };
     const dispose = reg.attach(noop, windowScope(1));
     expect(reg.hasTopologyDependentSinks()).toBe(true);
     dispose();
@@ -279,7 +282,7 @@ describe("SinkRegistry.hasTopologyDependentSinks", () => {
 
   it("returns true when a session-scope sink is attached", () => {
     const reg = new SinkRegistry();
-    const noop: BytesSink = { write() {} };
+    const noop: BytesSink = { write() {}, end() {} };
     const dispose = reg.attach(noop, sessionScope(1));
     expect(reg.hasTopologyDependentSinks()).toBe(true);
     dispose();

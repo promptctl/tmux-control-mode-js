@@ -25,7 +25,6 @@ import {
   parsePaneListLine,
 } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
-import type { PaneOutputMessage } from "../../src/protocol/types.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -116,9 +115,10 @@ function makeRecordingSink(
   arrived: { paneId: number; data: Uint8Array }[],
 ): BytesSink {
   return {
-    write(msg: PaneOutputMessage): void {
+    write(msg): void {
       arrived.push({ paneId: msg.paneId, data: msg.data.slice() });
     },
+    end(): void {},
   };
 }
 
@@ -220,7 +220,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       const arrived: { paneId: number }[] = [];
       const dispose = client.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: paneScope(paneX) },
       );
 
@@ -259,7 +259,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       const arrived: { paneId: number }[] = [];
       const dispose = client.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: sessionScope(sessionId) },
       );
 
@@ -294,7 +294,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       const arrived: { paneId: number }[] = [];
       const dispose = client.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: sessionScope(sessionId) },
       );
 
@@ -341,7 +341,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       const arrived: { paneId: number }[] = [];
       const dispose = client.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: windowScope(windowN) },
       );
 
@@ -393,7 +393,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
       const arrived: { paneId: number }[] = [];
       const dispose = client.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: sessionScope(sessionAId) },
       );
 
@@ -434,11 +434,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       let paneCount = 0;
 
       const disposeServer = client.attachBytesSink(
-        { write(msg) { if (msg.paneId === paneX) serverCount++; } },
+        { write(msg) { if (msg.paneId === paneX) serverCount++; }, end() {} },
         { scope: serverScope },
       );
       const disposePane = client.attachBytesSink(
-        { write() { paneCount++; } },
+        { write() { paneCount++; }, end() {} },
         { scope: paneScope(paneX) },
       );
 
@@ -492,7 +492,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       // Subscribe AFTER client is ready — triggers lazy bootstrap.
       const arrived: { paneId: number }[] = [];
       const dispose = c.attachBytesSink(
-        { write(msg) { arrived.push({ paneId: msg.paneId }); } },
+        { write(msg) { arrived.push({ paneId: msg.paneId }); }, end() {} },
         { scope: sessionScope(sessionId) },
       );
 

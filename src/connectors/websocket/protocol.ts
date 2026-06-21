@@ -20,6 +20,7 @@ import type {
   TmuxMessage,
 } from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
+import type { ChunkPayload } from "../../pane-output.js";
 
 // [LAW:one-source-of-truth] Re-export the canonical PaneOutputMessage from
 // the protocol types module. The websocket layer USES the type but does not
@@ -198,19 +199,17 @@ export function isPaneOutputFrame(buf: Uint8Array): boolean {
   return buf.length > 0 && buf[0] === PANE_OUTPUT_MAGIC;
 }
 
-// [LAW:dataflow-not-control-flow] Same encode pipeline for both output and
-// extended-output; the `extended` flag selects a value (header length,
-// whether `age` is written), not a separate code path.
-export function encodePaneOutput(msg: PaneOutputMessage): Uint8Array {
-  const extended = msg.type === "extended-output";
-  const headerLen = extended ? HEADER_EXTENDED : HEADER_BASE;
-  const out = new Uint8Array(headerLen + msg.data.byteLength);
+// [LAW:types-are-the-program] ChunkPayload strips the wire discriminator
+// fields (type, age) before dispatch — the wire frame always uses the base
+// (non-extended) layout. The browser-side decoder still supports extended
+// frames for forward compatibility; the server never emits them from sinks.
+export function encodePaneOutput(msg: ChunkPayload): Uint8Array {
+  const out = new Uint8Array(HEADER_BASE + msg.data.byteLength);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   out[0] = PANE_OUTPUT_MAGIC;
-  out[1] = extended ? FLAG_EXTENDED : 0;
+  out[1] = 0;
   view.setUint32(2, msg.paneId, false);
-  if (extended) view.setUint32(6, msg.age, false);
-  out.set(msg.data, headerLen);
+  out.set(msg.data, HEADER_BASE);
   return out;
 }
 

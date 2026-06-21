@@ -480,6 +480,7 @@ describe("Electron IPC bridge — event forwarding", () => {
           // BytesSink contract: msg.data is read-only, copy before retention.
           received.push(msg.data.slice());
         },
+        end() {},
       },
       { scope: paneScope(2) },
     );
@@ -1018,6 +1019,7 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
           // BytesSink contract: msg.data is read-only, copy before retention.
           received.push(msg.data.slice());
         },
+        end() {},
       },
       { scope: paneScope(1) },
     );
@@ -1062,11 +1064,11 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
 
     const got: Array<"a" | "c"> = [];
     proxyA.attachBytesSink(
-      { write() { got.push("a"); } },
+      { write() { got.push("a"); }, end() {} },
       { scope: paneScope(42) },
     );
     proxyC.attachBytesSink(
-      { write() { got.push("c"); } },
+      { write() { got.push("c"); }, end() {} },
       { scope: paneScope(42) },
     );
     // proxyB receives nothing — destroyed before broadcast.

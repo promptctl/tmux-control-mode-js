@@ -292,6 +292,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
           // BytesSink contract: msg.data is read-only, copy before retention.
           seen.push(msg.data.slice());
         },
+        end() {},
       });
 
       // Use a raw send-keys so the "Enter" key name is honored. No target:
