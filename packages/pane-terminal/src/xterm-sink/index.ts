@@ -1,5 +1,14 @@
 // packages/pane-terminal/src/xterm-sink/index.ts
 //
+// Two exports in this module:
+//
+//   XtermSink      — DOM-backed TerminalSink that drives an xterm.js Terminal.
+//                    Rich lifecycle: ResizeObserver, rAF-deferred first resize,
+//                    IntersectionObserver, font fitting. Used with PaneStream.
+//
+//   XtermBytesSink — Minimal BytesSink adapter: write(msg) → term.write(msg.data).
+//                    No lifecycle management. Used with attachBytesSink directly.
+//
 // `XtermSink` — DOM-backed `TerminalSink` that drives an xterm.js `Terminal`.
 // The single entry point in this package that touches the DOM and the heavy
 // xterm peer dependency. Everything else (PaneStream, BufferingSink) is
@@ -457,4 +466,85 @@ function isDocumentVisible(): boolean {
   // `visibilityState` may be undefined in tests with bare DOMs; treat
   // anything-other-than-"hidden" as visible.
   return document.visibilityState !== "hidden";
+}
+
+// ---------------------------------------------------------------------------
+// XtermBytesSink — minimal BytesSink adapter for any xterm-compatible terminal
+// ---------------------------------------------------------------------------
+
+import type {
+  AttachOptions,
+  BytesSink,
+  ChunkPayload,
+} from "@promptctl/tmux-control-mode-js";
+
+// [LAW:decomposition] Minimal slice — only the write method this sink needs.
+interface AttachBytesClient {
+  attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void;
+}
+
+/**
+ * Minimum surface of an xterm.js `Terminal` (or compatible object) needed by
+ * `XtermBytesSink`. Satisfied by `@xterm/xterm`'s `Terminal` and any mock.
+ */
+export interface XtermTerminalLike {
+  write(data: Uint8Array): void;
+}
+
+/**
+ * `BytesSink` that forwards each pane chunk directly to an xterm.js `Terminal`
+ * (or any `XtermTerminalLike`).
+ *
+ * Each `write(msg)` call is exactly one `term.write(msg.data)`. No seeding,
+ * no resize management, no font fitting. Use with `PaneStream + XtermSink`
+ * (TerminalSink) if you need the full managed pipeline.
+ *
+ * ## Usage
+ *
+ * ```ts
+ * const term = new Terminal();
+ * term.open(container);
+ * const dispose = attachXtermSink(client, term, { scope: paneScope(paneId) });
+ * ```
+ *
+ * ## Contract
+ *
+ * - `write(msg)` always calls `term.write(msg.data)`.
+ * - `end()` is a no-op.
+ *
+ * [LAW:composability] Does one thing: forward raw bytes. The caller controls
+ *   terminal lifecycle, seeding, and resize — this sink does none of it.
+ * [LAW:one-type-per-behavior] Shares the BytesSink interface with
+ *   WebSocketSink and WebContentsSink; this is the xterm arm.
+ */
+export class XtermBytesSink implements BytesSink {
+  constructor(private readonly term: XtermTerminalLike) {}
+
+  write(msg: ChunkPayload): void {
+    this.term.write(msg.data);
+  }
+
+  end(): void {}
+}
+
+/**
+ * Attach an `XtermBytesSink` to `client` and return an idempotent disposer.
+ *
+ * Equivalent to:
+ * ```ts
+ * client.attachBytesSink(new XtermBytesSink(term), options)
+ * ```
+ *
+ * `options.scope` defaults to `serverScope` (all panes on the server).
+ * Pass `{ scope: paneScope(id) }` or `{ scope: sessionScope(id) }` to narrow.
+ *
+ * @see XtermBytesSink for the underlying BytesSink implementation.
+ * @see XtermSink for the full DOM-backed renderer with resize / font management.
+ */
+export function attachXtermSink(
+  client: AttachBytesClient,
+  term: XtermTerminalLike,
+  options?: AttachOptions,
+): () => void {
+  return client.attachBytesSink(new XtermBytesSink(term), options);
 }
