@@ -222,7 +222,9 @@ export class PaneStream implements ReseedTarget {
       write: (msg) => this.handlePaneBytes(msg.data),
       // [LAW:types-are-the-program] end() is required by BytesSink contract.
       // PaneStream.dispose() owns teardown; end() is a no-op here.
-      end(): void { /* stateless sink — PaneStream.dispose() owns teardown */ },
+      end(): void {
+        /* stateless sink — PaneStream.dispose() owns teardown */
+      },
     };
     this.paneSinkDisposer = this.client.attachBytesSink(paneSink, {
       scope: paneScope(this.paneId),
