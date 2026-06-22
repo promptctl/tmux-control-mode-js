@@ -46,9 +46,9 @@ import type {
   PaneOutputMessage,
 } from "../../protocol/types.js";
 import {
+  mapRpcCode,
   parseRpcRequest,
   RpcError,
-  type RpcErrorCode,
   type RpcRequest,
 } from "../rpc.js";
 import { dispatchRpcRequest } from "../rpc-dispatch.js";
@@ -61,7 +61,6 @@ import {
   BridgeError,
   IPC,
   parseAckMessage,
-  type BridgeErrorCode,
   type InvokeResultEnvelope,
   type IpcMainEventLike,
   type IpcMainInvokeEventLike,
@@ -77,22 +76,16 @@ import {
 //
 // [LAW:single-enforcer] RpcError is connector-internal; it is mapped to a
 // `BridgeError` here so the wire taxonomy is unified across both transports.
-// (The WebSocket server has the same mapping at its own seam — see
-// `src/connectors/websocket/server.ts:RPC_ERROR_TO_BRIDGE`.)
+// The taxonomy translation (mapRpcCode) is single-sourced in `../rpc.js`; this
+// seam keeps only the Electron-specific envelope (the message-prefix strip).
 // ---------------------------------------------------------------------------
-
-const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
-  UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
-  INVALID_REQUEST: "BRIDGE_INVALID_REQUEST",
-  INVALID_ARG: "BRIDGE_INVALID_ARG",
-};
 
 function rpcErrorToBridge(err: RpcError): BridgeError {
   // RpcError prepends `[CODE] ` to its `.message`; the bridge code on the
   // BridgeError already supplies that prefix, so strip RpcError's first to
   // avoid double-prefixed messages like `[BRIDGE_INVALID_ARG] [INVALID_ARG] ...`.
   const stripped = err.message.replace(/^\[[A-Z_]+\] /, "");
-  return new BridgeError(RPC_ERROR_TO_BRIDGE[err.code], stripped);
+  return new BridgeError(mapRpcCode(err.code), stripped);
 }
 
 function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
