@@ -414,10 +414,10 @@ class Connection {
       }
     });
 
-    this.ws.on("ping", () => {
-      // `ws` auto-replies with pong by default, but defending against
-      // surprising implementations is cheap.
-    });
+    // No inbound-ping listener: `ws` auto-replies with pong, and a no-op
+    // handler would only read as "something happens here". The outbound
+    // heartbeat (this.ws.ping + the "pong" deadline above) is the liveness
+    // mechanism this server actually owns.
   }
 
   private onFrame(raw: string): void {
