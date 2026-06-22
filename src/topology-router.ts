@@ -1,9 +1,9 @@
 // src/topology-router.ts
 // TopologyRouter — the shared substrate component for pane-output routing.
 //
-// [LAW:one-source-of-truth] All three transport clients (TmuxClient, WebSocketTmuxClient,
-//   TmuxClientProxy) compose one TopologyRouter rather than each re-implementing the ~240
-//   lines of topology bootstrap + notification routing + byte dispatch that were duplicated.
+// [LAW:one-source-of-truth] Every transport client composes one TopologyRouter rather than each
+//   re-implementing the topology bootstrap + notification routing + byte dispatch that would
+//   otherwise be duplicated across them.
 // [LAW:single-enforcer] Bootstrap policy, race-protection, and notification routing live
 //   here only. Transport adapters call onTransportReady / handleNotification / dispatchBytes;
 //   they do NOT own a topology table, a sink registry, or a bootstrap method.
