@@ -81,8 +81,9 @@ export function bindKeymap(
       if (state !== prev) {
         for (const l of listeners) l(state);
       }
-      // Fire-and-forget: actions dispatch asynchronously; the caller doesn't
-      // await tmux acknowledgement just to process the next keystroke.
+      // Fire-and-forget: the dispatch loop runs synchronously, but each
+      // `client.execute` promise is discarded (`void`) — keystroke handling
+      // never blocks on tmux's round-trip acknowledgement.
       for (const action of result.actions) dispatchAction(client, action);
       return result.handled;
     },
@@ -97,10 +98,9 @@ export function bindKeymap(
 
 /**
  * Translate a single `Action` into the corresponding `TmuxCommander` call.
- * Exported so consumers that drive the pure engine themselves (see
- * `handleKey`) can delegate to the canonical dispatch table instead of
- * reimplementing it — and can selectively override individual actions while
- * forwarding the rest here.
+ * Exported so consumers that drive the pure engine themselves can delegate to
+ * the canonical dispatch table instead of reimplementing it — and can
+ * selectively override individual actions while forwarding the rest here.
  *
  * [LAW:single-enforcer] This is the sole canonical mapping from Action →
  * tmux command. Adding a new Action variant is a compile error here under
@@ -121,7 +121,6 @@ export function dispatchAction(client: TmuxCommander, action: Action): void {
       void client.execute("last-window");
       return;
     case "select-window":
-      // `select-window -t :N` targets window index N in the current session.
       void client.execute(`select-window -t :${action.index}`);
       return;
     case "kill-window":

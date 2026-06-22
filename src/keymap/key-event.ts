@@ -21,10 +21,11 @@ export interface KeyEvent {
 // lowercase letter and NOT a digit — uppercase letters, `%`, `!`, `{`, `|`
 // and friends — the shift flag is treated as "don't care". Rationale: the
 // browser's KeyboardEvent.key already encodes shift INTO the character
-// (Shift+5 produces key="%" with shift:true; Shift+a produces key="A").
-// Requiring callers to write `S-%` for `%` would be noise. For lowercase
-// letters (`a` vs `A`) and digits (`1` vs `!`) shift meaningfully changes
-// what you'd see, so we keep the strict comparison.
+// (Shift+5 produces key="%" with shift:true; Shift+a produces key="A"), so the
+// shifted glyph is already a distinct `key` and comparing the shift flag too
+// would be redundant — requiring callers to write `S-%` for `%` would be noise.
+// Lowercase letters and digits are the base, unshifted glyphs, so their shift
+// flag is not baked into `key` and is compared strictly.
 export function keysEqual(a: KeyEvent, b: KeyEvent): boolean {
   const shiftImplicit = shiftIsImplicit(a.key) || shiftIsImplicit(b.key);
   return (

@@ -1,12 +1,11 @@
 // src/keymap/actions.ts
 // Discriminated union of every intent a bound chord can produce.
-// The engine emits these; the dispatcher (bind.ts) is the single enforcer
-// that translates them into tmux commands.
+// The engine emits these; the dispatcher is the single enforcer that
+// translates them into tmux commands.
 
 // [LAW:one-source-of-truth] Action is the canonical vocabulary between the
-// pure engine and any dispatcher. Downstream code discriminates on `type`;
-// adding a variant here forces a dispatcher update (non-exhaustive switch
-// becomes a compile error under `strict`).
+// pure engine and any dispatcher. Adding a variant here forces a dispatcher
+// update: a non-exhaustive switch becomes a compile error under `strict`.
 // [LAW:one-type-per-behavior] Every action variant represents a distinct
 // tmux operation. Variants that would differ only by parameter live as one
 // type with a parameter field (e.g. select-window carries an index).

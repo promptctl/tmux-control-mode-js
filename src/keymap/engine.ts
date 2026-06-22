@@ -14,10 +14,9 @@ export type KeymapState =
   | { readonly mode: "root" }
   | { readonly mode: "prefix" };
 
-// [LAW:one-type-per-behavior] Renamed from `Binding` to avoid collision with
-// the bind.ts `KeymapBinding` (the returned handle). A ChordBinding is a
-// pairing of keystroke → intent; the other is a live handle — different
-// things, different names.
+// [LAW:decomposition] A ChordBinding is a static keystroke → intent pairing —
+// a distinct concept from the live binding handle the dispatcher layer returns,
+// so the two carry distinct names rather than being conflated under one type.
 export interface ChordBinding {
   readonly chord: KeyEvent;
   readonly action: Action;
@@ -95,9 +94,9 @@ export function handleKey(
   const matched = findBinding(event, keymap.bindings);
   const inPrefixMode = state.mode === "prefix";
 
-  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the six rows of
-  // this decision are data, not branches of an if/else cascade. Each row
-  // produces a fully-formed HandleResult; no row "skips" a field.
+  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the rows of this
+  // decision are data, not branches of an if/else cascade. Each row produces a
+  // fully-formed result; no row "skips" a field.
   const outcomes: readonly HandleResult[] = [
     // inPrefixMode && matched              — bound chord fires, return to root
     {
