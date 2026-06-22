@@ -132,13 +132,6 @@ export interface PaneMeta {
  * Maintains the paneId → {sessionId, windowId} table from bootstrap queries
  * and tmux topology notifications.
  *
- * Callers:
- * - `seed(entries)` — wholesale replace on bootstrap (list-panes -a output).
- * - `updateWindow(windowId, entries)` — differential update on layout-change
- *   (list-panes -t @W output); removes stale panes, adds new ones.
- * - `removeWindow(windowId)` — drop all panes for a closed window.
- * - `get(paneId)` — per-chunk lookup in SinkRegistry.dispatch.
- *
  * [LAW:one-source-of-truth] This is the sole writer to the topology table.
  *   SinkRegistry.dispatch is the sole reader. No second table exists.
  */
