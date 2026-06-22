@@ -342,16 +342,18 @@ export class PaneStream implements ReseedTarget {
    */
   sendKeys(data: string): Promise<CommandResponse> {
     // [LAW:one-source-of-truth] The send-keys wire format AND its empty-input
-    // precondition live in the library encoder (send -H hex bytes), shared with
-    // TmuxClient.sendKeys. encodeSendKeys returns null for empty input (no
-    // command to send) → no-op response, or a full wire line (trailing LF) for
-    // a real send; execute() re-adds the LF via buildCommand, so strip the
-    // encoder's trailing LF to avoid emitting a bare empty line (which tmux
-    // treats as the detach signal).
+    // precondition live in the library encoder (send -H hex bytes). This mirrors
+    // the canonical `commands.sendKeys`: encodeSendKeys returns null for empty
+    // input (no command — synthesize the no-op response) or the bare wire line
+    // (NO trailing LF — execute() is the sole enforcer of LF-termination). Pass
+    // the wire straight through; execute() appends the single LF. (A prior
+    // version sliced the last char to "strip the encoder's trailing LF" — but
+    // the encoder never emits one, so the slice dropped the last hex DIGIT,
+    // corrupting every keystroke's final byte into a stray control code.)
     const wire = encodeSendKeys(`%${this.paneId}`, data);
     return wire === null
       ? Promise.resolve(emptyKeysResponse())
-      : this.client.execute(wire.slice(0, -1));
+      : this.client.execute(wire);
   }
 
   on<E extends EventName>(event: E, handler: Listener<E>): Unsubscribe {

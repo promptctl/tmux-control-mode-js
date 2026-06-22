@@ -21,8 +21,14 @@ import {
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 // [LAW:one-way-deps] Browser-safe core only — the `/browser` subpath carries
 // no Node transport coupling (see pane-stream-bridge.ts).
-import { isTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
-import type { EmitterMessage } from "@promptctl/tmux-control-mode-js/browser";
+import {
+  isTmuxMessage,
+  serverScope,
+} from "@promptctl/tmux-control-mode-js/browser";
+import type {
+  ChunkPayload,
+  EmitterMessage,
+} from "@promptctl/tmux-control-mode-js/browser";
 import type {
   CommandResponse,
   TmuxMessage,
@@ -42,6 +48,10 @@ export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
   private readonly proxyEventHandler: (msg: EmitterMessage) => void;
   private proxy: TmuxClientProxy | null = null;
+  // [LAW:single-enforcer] Disposer for the proxy byte-sink that re-surfaces
+  // pane output as `output` events. One sink per live proxy; cleared on
+  // disconnect alongside the proxy.
+  private byteSinkDisposer: (() => void) | null = null;
   private state: ConnState = "connecting";
   private nextId = 0;
   private readonly eventHandlers = new Set<EventHandler>();
@@ -113,6 +123,28 @@ export class ElectronBridge implements TmuxBridge {
     if (this.proxy !== null) return;
     const proxy = createRendererBridge(this.ipcRenderer);
     proxy.on("*", this.proxyEventHandler);
+    // [LAW:single-enforcer] The renderer proxy delivers pane bytes ONLY through
+    // its byte-sink channel (`attachBytesSink`) — it does NOT re-emit them on
+    // `on("*")`, which carries non-byte EmitterMessages. So bridge the byte
+    // channel back into the unified event stream: each chunk becomes an
+    // `output` TmuxMessage routed through `fanOutEvent`, exactly mirroring the
+    // WebSocket transport (which decodes binary frames into the same `output`
+    // message and delivers them through its event fan-out + wire log). Without
+    // this, BridgePaneStreamClient — which consumes pane bytes via
+    // `bridge.onEvent("output")` — would never see live pane output.
+    this.byteSinkDisposer = proxy.attachBytesSink(
+      {
+        write: (chunk: ChunkPayload): void => {
+          this.fanOutEvent({
+            type: "output",
+            paneId: chunk.paneId,
+            data: chunk.data,
+          });
+        },
+        end: (): void => {},
+      },
+      { scope: serverScope },
+    );
     this.proxy = proxy;
     this.setState("connecting");
     // Main-side createWindow gates on `session-changed`, so by the time
@@ -129,6 +161,8 @@ export class ElectronBridge implements TmuxBridge {
     const proxy = this.proxy;
     if (proxy === null) return;
     this.proxy = null;
+    this.byteSinkDisposer?.();
+    this.byteSinkDisposer = null;
     proxy.off("*", this.proxyEventHandler);
     proxy.close();
     this.setState("closed");

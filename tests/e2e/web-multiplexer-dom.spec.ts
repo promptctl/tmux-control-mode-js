@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
 import { e2eSocketName } from "./socket-naming.js";
+import { cleanSessionArgs } from "./tmux-shell.js";
 
 // [LAW:single-enforcer] All tmux subprocess invocations cross the
 // process boundary as argv arrays. Mirrors the wrapper in the Electron
@@ -64,6 +65,11 @@ interface AppHandle {
 
 async function launchApp(): Promise<AppHandle> {
   const socket = freshSocket();
+  // Seed the session with a clean shell BEFORE the app boots so its
+  // ensureSession attaches instead of spawning the developer's login shell —
+  // the DOM assertions below need a quiet, deterministic pane. See
+  // tmux-shell.ts.
+  tmux(socket, cleanSessionArgs("web-multiplexer-demo"));
   const app = await electron.launch({
     args: [APP_ROOT],
     cwd: APP_ROOT,
