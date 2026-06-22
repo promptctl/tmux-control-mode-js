@@ -23,7 +23,7 @@ const CHUNK = 8192;
  * Callers that need to recover the original bytes call `latin1ToBytes`.
  */
 export function bytesToLatin1(bytes: Uint8Array): string {
-  // [LAW:single-enforcer] Chunked to avoid call-stack overflow on large inputs.
+  // Chunked to avoid call-stack overflow from the argument spread on large inputs.
   let result = "";
   for (let i = 0; i < bytes.length; i += CHUNK) {
     result += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
