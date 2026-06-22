@@ -234,7 +234,7 @@ export interface ExitMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Discriminated Union — all 28 server-to-client message types
+// Discriminated Union — every server-to-client message type
 // ---------------------------------------------------------------------------
 
 // [LAW:one-source-of-truth] Single union is the authoritative set of message types.
