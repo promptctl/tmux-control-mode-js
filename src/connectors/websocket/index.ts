@@ -62,4 +62,8 @@ export {
 
 export { websocketTransport } from "./transport.js";
 
-export { attachWebSocketSink, type WebSocketSinkTarget } from "./sink.js";
+export {
+  WebSocketSink,
+  attachWebSocketSink,
+  type WebSocketSinkTarget,
+} from "./sink.js";
