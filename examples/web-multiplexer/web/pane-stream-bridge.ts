@@ -16,20 +16,23 @@
 //   never subscribes to `PaneStream.on()` directly.
 
 import { makeAutoObservable, runInAction } from "mobx";
+// [LAW:one-way-deps] Browser code imports the pure pane-output core from the
+// `/browser` subpath, never the root entry — the root pulls the Node-only
+// transport (`node:child_process`), which a browser bundle cannot resolve.
 import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
   TmuxConnection,
   TmuxEventMap,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import {
   SinkRegistry,
   PaneTopologyManager,
   TopologyEpochTracker,
   parsePaneListLine,
   serverScope,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import type {
   PaneStreamOptions,
@@ -37,8 +40,6 @@ import type {
   PaneStreamState,
 } from "@promptctl/pane-terminal/stream";
 import type {
-  OutputMessage,
-  ExtendedOutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
 } from "@promptctl/tmux-control-mode-js/protocol";
@@ -73,8 +74,6 @@ export class BridgePaneStreamClient implements TmuxConnection {
   // transitions are reconnects and fire the registered handlers.
   private everReady = false;
 
-  private readonly outputSet = new Set<(ev: OutputMessage) => void>();
-  private readonly extOutputSet = new Set<(ev: ExtendedOutputMessage) => void>();
   private readonly reconnectedSet = new Set<(ev: ReconnectedMessage) => void>();
   private readonly subChangedSet = new Set<
     (ev: SubscriptionChangedMessage) => void
@@ -97,6 +96,11 @@ export class BridgePaneStreamClient implements TmuxConnection {
       //   fan-out, matching `TmuxClient.handleMessage`. The registry's
       //   per-chunk snapshot isolates the attachment set from re-entrant
       //   attach/detach inside `sink.write`.
+      // [LAW:single-enforcer] Pane bytes leave the bridge through the sink
+      //   registry only — the per-pane `PaneStream` subscribes via
+      //   `attachBytesSink(paneScope)`, never `on("output")`. Dispatch fires
+      //   the registry's per-chunk snapshot, isolating the attachment set
+      //   from re-entrant attach/detach inside `sink.write`.
       if (ev.type === "output" || ev.type === "extended-output") {
         this.sinks.dispatch(ev, this.topology.get(ev.paneId));
         return;
@@ -106,11 +110,17 @@ export class BridgePaneStreamClient implements TmuxConnection {
         if (this.sinks.hasTopologyDependentSinks()) {
           void this.refreshWindowTopology(ev.windowId);
         }
-      } else if (ev.type === "window-add" || ev.type === "unlinked-window-add") {
+      } else if (
+        ev.type === "window-add" ||
+        ev.type === "unlinked-window-add"
+      ) {
         if (this.sinks.hasTopologyDependentSinks()) {
           void this.refreshWindowTopology(ev.windowId);
         }
-      } else if (ev.type === "window-close" || ev.type === "unlinked-window-close") {
+      } else if (
+        ev.type === "window-close" ||
+        ev.type === "unlinked-window-close"
+      ) {
         this.topology.removeWindow(ev.windowId);
         this.topologyEpoch.invalidateWindow(ev.windowId);
       } else if (ev.type === "sessions-changed") {
@@ -121,11 +131,9 @@ export class BridgePaneStreamClient implements TmuxConnection {
       // [LAW:types-are-the-program] `ev` is the canonical `TmuxMessage`
       // discriminated union; narrowing on `ev.type` produces the exact
       // variant the per-type handler set expects, with no cast needed.
-      if (ev.type === "output") {
-        for (const h of this.outputSet) h(ev);
-      } else if (ev.type === "extended-output") {
-        for (const h of this.extOutputSet) h(ev);
-      } else if (ev.type === "subscription-changed") {
+      // Pane bytes already returned above (sink channel); only non-byte
+      // subscriptions fan out here.
+      if (ev.type === "subscription-changed") {
         for (const h of this.subChangedSet) h(ev);
       }
     });
@@ -152,22 +160,21 @@ export class BridgePaneStreamClient implements TmuxConnection {
   }
 
   // The generic `on`/`off` overloads accept any `keyof TmuxEventMap` so this
-  // adapter structurally satisfies `TmuxConnection`. The bridge only routes
-  // events for the four types this adapter cares about; listeners registered
-  // for any other event type sit in no set and are correctly never fired.
+  // adapter structurally satisfies `TmuxConnection`. Pane bytes never travel
+  // this surface (they flow through `attachBytesSink`), so only the non-byte
+  // events `PaneStream` subscribes to are routed; listeners registered for any
+  // other event type sit in no set and are correctly never fired.
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   on(event: string, handler: (ev: never) => void): void {
-    if (event === "output")
-      this.outputSet.add(handler as (ev: OutputMessage) => void);
-    else if (event === "extended-output")
-      this.extOutputSet.add(handler as (ev: ExtendedOutputMessage) => void);
-    else if (event === "reconnected")
+    if (event === "reconnected")
       this.reconnectedSet.add(handler as (ev: ReconnectedMessage) => void);
     else if (event === "subscription-changed")
-      this.subChangedSet.add(handler as (ev: SubscriptionChangedMessage) => void);
+      this.subChangedSet.add(
+        handler as (ev: SubscriptionChangedMessage) => void,
+      );
   }
 
   off<K extends keyof TmuxEventMap>(
@@ -175,11 +182,7 @@ export class BridgePaneStreamClient implements TmuxConnection {
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   off(event: string, handler: (ev: never) => void): void {
-    if (event === "output")
-      this.outputSet.delete(handler as (ev: OutputMessage) => void);
-    else if (event === "extended-output")
-      this.extOutputSet.delete(handler as (ev: ExtendedOutputMessage) => void);
-    else if (event === "reconnected")
+    if (event === "reconnected")
       this.reconnectedSet.delete(handler as (ev: ReconnectedMessage) => void);
     else if (event === "subscription-changed")
       this.subChangedSet.delete(
@@ -280,16 +283,25 @@ export class ObservablePaneStream {
       stream: false,
       _activityTimer: false,
     });
-    this.stream.on("state-changed", (s) => runInAction(() => { this.state = s; }));
-    this.stream.on("activity-changed", (a) => runInAction(() => {
-      this.activity = a;
-      this.isActive = true;
-      if (this._activityTimer !== null) clearTimeout(this._activityTimer);
-      this._activityTimer = setTimeout(
-        () => runInAction(() => { this.isActive = false; }),
-        ACTIVITY_TTL_MS,
-      );
-    }));
+    this.stream.on("state-changed", (s) =>
+      runInAction(() => {
+        this.state = s;
+      }),
+    );
+    this.stream.on("activity-changed", (a) =>
+      runInAction(() => {
+        this.activity = a;
+        this.isActive = true;
+        if (this._activityTimer !== null) clearTimeout(this._activityTimer);
+        this._activityTimer = setTimeout(
+          () =>
+            runInAction(() => {
+              this.isActive = false;
+            }),
+          ACTIVITY_TTL_MS,
+        );
+      }),
+    );
   }
 
   dispose(): void {

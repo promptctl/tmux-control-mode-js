@@ -12,16 +12,22 @@
 // them with a drifting shape. This file owns the wire mechanics (socket
 // lifecycle, JSON framing, request/response correlation) and nothing else.
 
-import { makeObservable, observable, action, reaction, runInAction } from "mobx";
-import type {
-  ClientToServer,
-  SerializedTmuxMessage,
-  ServerToClient,
-} from "../shared/protocol.ts";
+import {
+  makeObservable,
+  observable,
+  action,
+  reaction,
+  runInAction,
+} from "mobx";
+import type { ClientToServer, ServerToClient } from "../shared/protocol.ts";
 import type {
   CommandResponse,
   TmuxMessage,
 } from "@promptctl/tmux-control-mode-js/protocol";
+import {
+  isPaneOutputFrame,
+  decodePaneOutput,
+} from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import type {
   ConnState,
   ErrorHandler,
@@ -95,6 +101,10 @@ export class WebSocketBridge implements TmuxBridge {
 
     this.setState("connecting");
     const ws = new WebSocket(url);
+    // Pane bytes arrive as binary pane-output frames; everything else is
+    // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
+    // frame synchronously in the message handler.
+    ws.binaryType = "arraybuffer";
     this.ws = ws;
 
     // Each listener just pokes an observable — the reaction above handles
@@ -124,7 +134,13 @@ export class WebSocketBridge implements TmuxBridge {
     });
     ws.addEventListener("message", (ev) => {
       if (this.ws !== ws) return;
-      this.handleFrame(ev.data as string);
+      // [LAW:dataflow-not-control-flow] The frame's runtime type is the
+      // discriminator: ArrayBuffer → binary pane-output, string → JSON.
+      if (ev.data instanceof ArrayBuffer) {
+        this.handleBinary(ev.data);
+      } else {
+        this.handleFrame(ev.data as string);
+      }
     });
   }
 
@@ -157,15 +173,10 @@ export class WebSocketBridge implements TmuxBridge {
       return;
     }
     if (frame.kind === "event") {
-      // [LAW:single-enforcer] Base64 decode happens here, exactly once,
-      // at the bridge boundary. Every consumer (DemoStore, PaneTerminal,
-      // HeatmapStore, InspectorStore) and the in-event WireEntry see the
-      // same decoded TmuxMessage with Uint8Array bytes — same shape the
-      // Electron transport delivers natively.
-      const decoded = this.decodeFrameEvent(frame.event);
-      if (decoded === null) return;
-      this.emitWire({ dir: "in-event", ts: Date.now(), event: decoded });
-      this.eventHandlers.forEach((h) => h(decoded));
+      // Non-byte state events ride the JSON channel as plain TmuxMessages;
+      // no decode step. Pane bytes never appear here — they arrive as binary
+      // frames handled by `handleBinary`.
+      this.deliverEvent(frame.event);
       return;
     }
     if (frame.kind === "response") {
@@ -266,24 +277,46 @@ export class WebSocketBridge implements TmuxBridge {
     this.wireHandlers.forEach((h) => h(entry));
   }
 
-  private decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage | null {
-    try {
-      return decodeFrameEvent(ev);
-    } catch (err) {
-      // [LAW:no-silent-fallbacks] Bad bridge frames are surfaced as errors.
-      // Treating malformed base64 as empty output would make corruption look
-      // like legitimate terminal data and hide the responsible boundary.
-      const message =
-        err instanceof Error ? err.message : "invalid bridge event frame";
-      this.emitWire({
-        dir: "in-error",
-        ts: Date.now(),
-        id: null,
-        message,
-      });
+  /**
+   * Decode a binary pane-output frame into a TmuxMessage and deliver it
+   * through the same path as JSON events. The library owns the wire format
+   * (`decodePaneOutput` matches the server's `attachWebSocketSink` encoder);
+   * the demo never touches base64 or hand-rolls a byte decoder.
+   *
+   * [LAW:single-enforcer] One decode path for pane bytes — the library's.
+   * [LAW:no-silent-failure] A malformed frame is surfaced as an error, never
+   * swallowed into empty terminal output.
+   */
+  private handleBinary(buf: ArrayBuffer): void {
+    const bytes = new Uint8Array(buf);
+    if (!isPaneOutputFrame(bytes)) {
+      const message = "unrecognized binary frame from bridge";
+      this.emitWire({ dir: "in-error", ts: Date.now(), id: null, message });
       this.emitError(message);
-      return null;
+      return;
     }
+    let msg: TmuxMessage;
+    try {
+      msg = decodePaneOutput(bytes);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "invalid pane-output frame";
+      this.emitWire({ dir: "in-error", ts: Date.now(), id: null, message });
+      this.emitError(message);
+      return;
+    }
+    this.deliverEvent(msg);
+  }
+
+  /**
+   * Single delivery path for an inbound event — JSON state events and decoded
+   * binary pane-output frames both flow through here, so every consumer and
+   * the in-event WireEntry see one uniform TmuxMessage shape (the same shape
+   * the Electron transport delivers natively). [LAW:one-type-per-behavior]
+   */
+  private deliverEvent(ev: TmuxMessage): void {
+    this.emitWire({ dir: "in-event", ts: Date.now(), event: ev });
+    this.eventHandlers.forEach((h) => h(ev));
   }
 
   onWire(h: WireHandler): () => void {
@@ -306,39 +339,4 @@ export class WebSocketBridge implements TmuxBridge {
     h(this.state);
     return () => this.stateHandlers.delete(h);
   }
-}
-
-function decodeBase64(b64: string): Uint8Array {
-  let bin: string;
-  try {
-    bin = atob(b64);
-  } catch {
-    throw new Error("invalid base64 event frame from bridge");
-  }
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-/**
- * Convert a wire-shape SerializedTmuxMessage (base64-encoded data fields)
- * into a renderer-shape TmuxMessage (Uint8Array data fields). Non-output
- * variants pass through unchanged.
- *
- * [LAW:dataflow-not-control-flow] The same operation runs for every event
- * — the discriminator selects the data shape, not whether work happens.
- */
-function decodeFrameEvent(ev: SerializedTmuxMessage): TmuxMessage {
-  if (ev.type === "output") {
-    return { type: "output", paneId: ev.paneId, data: decodeBase64(ev.dataBase64) };
-  }
-  if (ev.type === "extended-output") {
-    return {
-      type: "extended-output",
-      paneId: ev.paneId,
-      age: ev.age,
-      data: decodeBase64(ev.dataBase64),
-    };
-  }
-  return ev;
 }

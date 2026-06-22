@@ -7,22 +7,8 @@
 // Types-only imports from tmux-control-mode-js. No runtime code from the
 // library crosses into the browser bundle (enforced by build + DEMO-02).
 
-import type { TmuxMessage, CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
-
-/**
- * A TmuxMessage serialized for JSON transport. Pane `output` and
- * `extended-output` messages carry `Uint8Array` data on the server side;
- * we transport them as base64 strings and decode in the browser.
- */
-export type SerializedTmuxMessage =
-  | Exclude<TmuxMessage, { type: "output" } | { type: "extended-output" }>
-  | { readonly type: "output"; readonly paneId: number; readonly dataBase64: string }
-  | {
-      readonly type: "extended-output";
-      readonly paneId: number;
-      readonly age: number;
-      readonly dataBase64: string;
-    };
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js";
 
 // ---------------------------------------------------------------------------
 // Browser → Server
@@ -52,9 +38,17 @@ export type ClientToServer = ExecuteRequest | SendKeysRequest | DetachRequest;
 // Server → Browser
 // ---------------------------------------------------------------------------
 
+/**
+ * A non-byte tmux event (session/window/pane state). Pane `output` /
+ * `extended-output` bytes do NOT ride this JSON channel — they travel as
+ * binary pane-output frames (see `attachWebSocketSink` on the server and
+ * `decodePaneOutput` in the browser). `EmitterTmuxMessage` is the library's
+ * `Exclude<TmuxMessage, PaneOutputMessage>`, so this frame is type-level
+ * incapable of carrying bytes. [LAW:types-are-the-program]
+ */
 export interface EventFrame {
   readonly kind: "event";
-  readonly event: SerializedTmuxMessage;
+  readonly event: EmitterTmuxMessage;
 }
 
 export interface ResponseFrame {
@@ -73,4 +67,8 @@ export interface ReadyFrame {
   readonly kind: "ready";
 }
 
-export type ServerToClient = EventFrame | ResponseFrame | ErrorFrame | ReadyFrame;
+export type ServerToClient =
+  | EventFrame
+  | ResponseFrame
+  | ErrorFrame
+  | ReadyFrame;

@@ -12,48 +12,67 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { spawnTmux } from "@promptctl/tmux-control-mode-js";
 import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import { serverScope } from "@promptctl/tmux-control-mode-js";
+import { sendKeys } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
-import type {
-  ClientToServer,
-  ServerToClient,
-  SerializedTmuxMessage,
-} from "../shared/protocol.js";
+import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
+import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 
 // ---------------------------------------------------------------------------
-// Serialization
+// Outbound forwarding: TmuxClient → WebSocket
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a Uint8Array to a base64 string using Node's Buffer.
- * Kept as a tiny helper so the intent is obvious at the call site.
+ * Minimum WebSocket surface this bridge sends on: binary pane-output frames
+ * (via the library's WebSocketSink) and JSON text frames (state events,
+ * responses). The `ws` package's WebSocket and a test double both satisfy it.
  */
-function toBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+export interface BridgeSocket {
+  readonly readyState: number;
+  readonly OPEN: number;
+  send(data: string | ArrayBufferLike | ArrayBufferView): void;
 }
 
 /**
- * Serialize a TmuxMessage for JSON transport. The only types that need
- * special handling are `output` and `extended-output`, which carry
- * `Uint8Array` data.
+ * Wire a `TmuxClient`'s outbound traffic onto a WebSocket and return a
+ * disposer. Two channels, one boundary:
  *
- * [LAW:dataflow-not-control-flow] Returns the same shape regardless of
- * type; the variability lives in which fields are set.
+ *   - pane bytes → binary pane-output frames, encoded by the library's
+ *     `WebSocketSink` (`attachWebSocketSink`). The bridge never touches the
+ *     bytes; the browser decodes with the matching `decodePaneOutput`.
+ *   - every non-byte event → a JSON `event` frame.
+ *
+ * [LAW:single-enforcer] The one place that forwards client traffic to a
+ *   socket — the live server and its tests share this wiring, so neither can
+ *   drift from the other.
+ * [LAW:effects-at-boundaries] Pure wiring: no `listen`, no process state. The
+ *   caller owns the socket and the server lifecycle.
  */
-function serialize(msg: TmuxMessage): SerializedTmuxMessage {
-  if (msg.type === "output") {
-    return { type: "output", paneId: msg.paneId, dataBase64: toBase64(msg.data) };
-  }
-  if (msg.type === "extended-output") {
-    return {
-      type: "extended-output",
-      paneId: msg.paneId,
-      age: msg.age,
-      dataBase64: toBase64(msg.data),
-    };
-  }
-  return msg;
+export function forwardClientToSocket(
+  client: TmuxClient,
+  ws: BridgeSocket,
+): () => void {
+  const detachBytes = attachWebSocketSink(client, ws, { scope: serverScope });
+
+  // [LAW:dataflow-not-control-flow] `client.on("*")` carries
+  // `EmitterTmuxMessage` only — pane bytes are structurally excluded from the
+  // emitter (they ride the binary sink above), so this channel is JSON state
+  // events end to end. ConnectionStateMessage / ReconnectedMessage are local
+  // lifecycle signals; they are not forwarded over the wire.
+  const onEvent = (msg: EmitterMessage): void => {
+    if (!isTmuxMessage(msg)) return;
+    if (ws.readyState === ws.OPEN) {
+      const frame: ServerToClient = { kind: "event", event: msg };
+      ws.send(JSON.stringify(frame));
+    }
+  };
+  client.on("*", onEvent);
+
+  return () => {
+    detachBytes();
+    client.off("*", onEvent);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -63,10 +82,14 @@ function serialize(msg: TmuxMessage): SerializedTmuxMessage {
 /**
  * Each WebSocket connection gets its own TmuxClient. This keeps one browser
  * session independent from another (no shared state, no cross-talk).
+ *
+ * `detachBytes` tears down the per-connection pane-byte sink (the binary
+ * pane-output channel) when the connection closes.
  */
 interface ConnectionState {
   readonly ws: WebSocket;
   readonly client: TmuxClient;
+  readonly detachBytes: () => void;
 }
 
 const connections = new Set<ConnectionState>();
@@ -77,6 +100,7 @@ function removeConnection(connection: ConnectionState): void {
 
 function closeConnection(connection: ConnectionState): void {
   removeConnection(connection);
+  connection.detachBytes();
   connection.client.close();
   if (
     connection.ws.readyState === connection.ws.OPEN ||
@@ -97,17 +121,13 @@ function handleConnection(ws: WebSocket): void {
   // No explicit socket path — use the default server the user already has.
   const transport = spawnTmux(["attach-session"]);
   const client = new TmuxClient(transport);
-  const connection = { ws, client };
-  connections.add(connection);
 
-  // [LAW:dataflow-not-control-flow] Forward every message through the same
-  // pipeline. The `*` wildcard is the single enforcement point.
-  // ConnectionStateMessage / ReconnectedMessage are lifecycle signals for
-  // local consumers; they are not serialized over the wire.
-  client.on("*", (msg: EmitterMessage) => {
-    if (!isTmuxMessage(msg)) return;
-    send({ kind: "event", event: serialize(msg) });
-  });
+  // Pane bytes (binary frames) + non-byte events (JSON) are forwarded by the
+  // shared wiring; `detachBytes` tears both down on close.
+  const detachBytes = forwardClientToSocket(client, ws);
+
+  const connection = { ws, client, detachBytes };
+  connections.add(connection);
 
   // Fire a ready frame after the session-changed handshake arrives.
   const onSessionChanged = () => {
@@ -137,16 +157,17 @@ function handleConnection(ws: WebSocket): void {
 
     try {
       if (msg.kind === "execute") {
-        const response = await client
-          .execute(msg.command)
-          .catch((r) => r); // both resolve and reject carry CommandResponse
+        const response = await client.execute(msg.command).catch((r) => r); // both resolve and reject carry CommandResponse
         send({ kind: "response", id: msg.id, response });
         return;
       }
       if (msg.kind === "sendKeys") {
-        const response = await client
-          .sendKeys(msg.target, msg.keys)
-          .catch((r) => r);
+        // [LAW:decomposition] sendKeys is a free command function over the
+        // TmuxConnection surface, not a TmuxClient method — one shared
+        // implementation for every connector.
+        const response = await sendKeys(client, msg.target, msg.keys).catch(
+          (r) => r,
+        );
         send({ kind: "response", id: msg.id, response });
         return;
       }
@@ -172,45 +193,53 @@ function handleConnection(ws: WebSocket): void {
 // HTTP + WebSocket server
 // ---------------------------------------------------------------------------
 
-const httpServer = createServer((_req, res) => {
-  res.writeHead(200, { "content-type": "text/plain" });
-  res.end("tmux-control-mode-js demo bridge — connect to /ws via WebSocket\n");
-});
-
-const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
-wss.on("connection", (ws) => {
-  console.log("[bridge] client connected");
-  try {
-    handleConnection(ws);
-  } catch (err) {
-    console.error("[bridge] connection failed:", err);
-    ws.close();
-  }
-});
-
-httpServer.listen(BRIDGE_PORT, () => {
-  console.log(`[bridge] listening on http://localhost:${BRIDGE_PORT} (WS at /ws)`);
-  console.log(`[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`);
-});
-
-let shuttingDown = false;
-
-function shutdown(): void {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  // [LAW:single-enforcer] Bridge teardown is centralized here so Ctrl+C and
-  // watcher restarts close sockets and tmux clients through one path.
-  for (const connection of [...connections]) {
-    closeConnection(connection);
-  }
-
-  wss.close();
-  httpServer.close();
-  setImmediate(() => {
-    process.exit(0);
-  });
+/** A running bridge server. `close()` tears down every connection + listener. */
+export interface BridgeHandle {
+  close(): void;
 }
 
-process.once("SIGINT", shutdown);
-process.once("SIGTERM", shutdown);
+/**
+ * Construct the HTTP + WebSocket bridge and start listening. Returns a handle
+ * whose `close()` centralizes teardown (Ctrl+C, watcher restart, test cleanup)
+ * through one path. [LAW:single-enforcer]
+ *
+ * The process entry (`server/main.ts`) owns the signal handlers; importing
+ * this module performs no I/O, so tests can exercise `forwardClientToSocket`
+ * without binding a port. [LAW:effects-at-boundaries]
+ */
+export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
+  const httpServer = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/plain" });
+    res.end(
+      "tmux-control-mode-js demo bridge — connect to /ws via WebSocket\n",
+    );
+  });
+
+  const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+  wss.on("connection", (ws) => {
+    console.log("[bridge] client connected");
+    try {
+      handleConnection(ws);
+    } catch (err) {
+      console.error("[bridge] connection failed:", err);
+      ws.close();
+    }
+  });
+
+  httpServer.listen(port, () => {
+    console.log(`[bridge] listening on http://localhost:${port} (WS at /ws)`);
+    console.log(
+      `[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`,
+    );
+  });
+
+  return {
+    close(): void {
+      for (const connection of [...connections]) {
+        closeConnection(connection);
+      }
+      wss.close();
+      httpServer.close();
+    },
+  };
+}

@@ -3,10 +3,9 @@
 // other place that needs to render Uint8Array bytes as printable ASCII with
 // control-character escapes.
 //
-// [LAW:one-source-of-truth] Two near-identical prettyBase64 helpers used to
-// live inline in DebugPanel.tsx and InspectorView.tsx. Both decoded base64
-// then escaped — but base64 is a transport detail. Now that hz1.2 normalizes
-// event payloads to Uint8Array at the bridge boundary, the formatter takes
+// [LAW:one-source-of-truth] One byte formatter, used everywhere. Pane bytes
+// reach the renderer as Uint8Array — the library decodes the transport's
+// binary pane-output frames at the bridge boundary — so the formatter takes
 // bytes directly and lives in exactly one place.
 
 /**

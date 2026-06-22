@@ -1,7 +1,7 @@
 // examples/web-multiplexer/web/components/DebugPanel.tsx
 // Filterable event stream for the control-mode protocol. Rendered in the
 // aside. Category chips toggle visibility (click to hide, click again to
-// show); output events are decoded from base64 and labeled by session:win.pane.
+// show); output bytes arrive as decoded Uint8Array, labeled by session:win.pane.
 
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
