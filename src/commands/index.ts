@@ -13,7 +13,7 @@
 
 import type { TmuxConnection } from "../client.js";
 import type { CommandResponse } from "../protocol/types.js";
-import { PaneAction } from "../protocol/types.js";
+import { PaneAction, emptyKeysResponse } from "../protocol/types.js";
 import type { SplitOptions } from "../protocol/encoder.js";
 import {
   refreshClientSize,
@@ -31,13 +31,6 @@ import {
 export { PaneAction };
 export type { SplitOptions };
 
-const SYNTHETIC_OK: CommandResponse = Object.freeze({
-  commandNumber: -1,
-  timestamp: 0,
-  success: true as const,
-  output: [] as const,
-});
-
 export function listWindows(client: TmuxConnection): Promise<CommandResponse> {
   return client.execute("list-windows");
 }
@@ -49,13 +42,15 @@ export function listPanes(client: TmuxConnection): Promise<CommandResponse> {
 // [LAW:types-are-the-program] The encoder returns null for empty keys
 // (no valid wire form exists). A null-keyed send is a no-op — resolved
 // immediately with a synthetic success so callers never see a branch.
+// [LAW:one-source-of-truth] The synthetic response is built by the canonical
+// emptyKeysResponse(); this function does not mint its own.
 export function sendKeys(
   client: TmuxConnection,
   target: string,
   keys: string,
 ): Promise<CommandResponse> {
   const cmd = encodeSendKeys(target, keys);
-  if (cmd === null) return Promise.resolve(SYNTHETIC_OK);
+  if (cmd === null) return Promise.resolve(emptyKeysResponse());
   return client.execute(cmd);
 }
 

@@ -40,7 +40,11 @@
 // fires.
 
 import type { TmuxClient } from "../client.js";
-import { PaneAction, type CommandResponse } from "../protocol/types.js";
+import {
+  PaneAction,
+  emptyKeysResponse,
+  type CommandResponse,
+} from "../protocol/types.js";
 import {
   refreshClientPaneAction,
   refreshClientSubscribe,
@@ -247,16 +251,6 @@ export function createBridgeConnection(
       .catch(swallow);
   };
 
-  // Synthesized success response for refcounted no-op operations. command
-  // number -1 makes the synthetic origin obvious in any logging that surfaces
-  // the response.
-  const synthesizeOk = (): CommandResponse => ({
-    commandNumber: -1,
-    timestamp: Date.now(),
-    success: true,
-    output: [],
-  });
-
   const releaseName = (name: string, peer: Peer): boolean => {
     const rec = subscriptions.get(name);
     if (rec === undefined) return false;
@@ -312,7 +306,7 @@ export function createBridgeConnection(
         state.subscriptions.add(name);
         existing.owners.add(peer);
       }
-      return synthesizeOk();
+      return emptyKeysResponse();
     }
 
     const inflight = client.execute(refreshClientSubscribe(name, what, format));
@@ -432,12 +426,12 @@ export function createBridgeConnection(
       // Re-check after the await — rollback or a peer dispose during the
       // wait may have already cleared this peer's slot.
       if (!state.subscriptions.has(name)) {
-        return synthesizeOk();
+        return emptyKeysResponse();
       }
       state.subscriptions.delete(name);
       const lastOwner = releaseName(name, peer);
       if (lastOwner) return client.execute(refreshClientUnsubscribe(name));
-      return synthesizeOk();
+      return emptyKeysResponse();
     },
 
     accountOutput(peer: Peer, paneId: number, bytes: number): void {
