@@ -1,8 +1,8 @@
 // packages/pane-terminal/src/stream/index.ts
 //
 // Public subpath: `@promptctl/pane-terminal/stream`. The data carrier — no
-// DOM, no xterm. Consumers pair this with a sink (BufferingSink in 8w9.5,
-// XtermSink in 8w9.6, or a custom one).
+// DOM, no xterm. Consumers pair this with a sink (BufferingSink, XtermSink, or
+// a custom one).
 
 export { PaneStream } from "./pane-stream.js";
 export type {

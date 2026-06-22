@@ -1,10 +1,9 @@
 // packages/pane-terminal/src/bench/fake-tmux-client.ts
 //
-// Deterministic stand-in for `TmuxClient` used by every gate that does not
-// need a real tmux process. Structurally satisfies `TmuxConnection` — the
-// PaneStream-shaped projection of the library's `TmuxClient` — so benches and
-// unit tests can pass a `FakeTmuxClient` to `new PaneStream({ client })` with
-// no cast.
+// Deterministic stand-in for `TmuxClient` used by benches and unit tests that
+// do not need a real tmux process. Structurally satisfies `TmuxConnection` —
+// the PaneStream-shaped projection of the library's `TmuxClient` — so a
+// `FakeTmuxClient` passes to `new PaneStream({ client })` with no cast.
 //
 // [LAW:one-source-of-truth] Event/message and CommandResponse shapes come
 //   from the library — `OutputMessage`/`ExtendedOutputMessage`/`CommandResponse`/
@@ -16,11 +15,9 @@
 //   subscribe/unsubscribe round-trips, subscription-changed delivery) — not
 //   the internal structure of TmuxClient.
 //
-// Real TmuxClient surface NOT modeled here (out of scope for the gate
-// harness, expanded as later steps need them):
-//   - sendKeys / splitWindow / setSize / setPaneAction / setFlags / clearFlags
-//   - requestReport / queryClipboard / listWindows / listPanes / detach
-// If a future gate needs one of these, add it here — never let a bench grow
+// Real TmuxClient surface NOT modeled here — the fake implements only the
+// `TmuxConnection` projection PaneStream consumes. If a consumer needs another
+// method from TmuxClient's public surface, add it here — never let a bench grow
 // its own private fake.
 
 // [LAW:one-way-deps] Browser-safe core only (see pane-stream.ts) — never the
@@ -117,23 +114,23 @@ export class FakeTmuxClient {
   private readonly sinks = new SinkRegistry();
   private readonly topology = new PaneTopologyManager();
 
-  // Capture-pane invocation log + scriptable response handler. Gate 4
-  // (re-mount on same stream → exactly 1 capture) reads this counter; future
-  // gates may script the response payload.
+  // Capture-pane invocation log + scriptable response handler. The log lets a
+  // consumer assert re-mount churn on one stream issues exactly one capture;
+  // the handler scripts the response payload.
   private readonly captureLog: string[] = [];
   private captureHandler: (target: string) => string = () => "";
   private commandCounter = 0;
 
   // Subscription RPC log. PaneStream calls `subscribeRaw` at construction and
-  // `unsubscribe` at dispose; the layout-change integration test inspects
-  // these entries to verify the wiring.
+  // `unsubscribe` at dispose; the log lets a consumer assert exactly that
+  // wiring — one subscribe per pane, one matching unsubscribe.
   private readonly subscriptionLog: (
     | { kind: "subscribe"; name: string; what: string; format: string }
     | { kind: "unsubscribe"; name: string }
   )[] = [];
 
-  // Round-trip latency injected into `execute()`. Gates 1 and 7 vary this to
-  // measure the visibility-toggle / reconnect-burst timings against a known
+  // Round-trip latency injected into `execute()`. A consumer varies this to
+  // measure visibility-toggle / reconnect-burst timing against a known
   // simulated tmux response time. Default 0 = next-macrotask resolution.
   private roundTripMs = 0;
 
@@ -183,8 +180,8 @@ export class FakeTmuxClient {
    * Mimics `TmuxClient.execute(cmd)` — used by PaneStream for capture-pane.
    * The `captureHandler` is the seam tests use to script payloads (e.g. a
    * fake scrollback dump). Resolution is scheduled via `setTimeout(...,
-   * roundTripMs)` for every value (including 0) so gates 1/7 get a single,
-   * deterministic macrotask boundary between the call site and the response.
+   * roundTripMs)` so every value (including 0) yields a single, deterministic
+   * macrotask boundary between the call site and the response.
    */
   execute(command: string): Promise<CommandResponse> {
     if (command.startsWith("capture-pane")) {
@@ -209,7 +206,7 @@ export class FakeTmuxClient {
   /**
    * Models `TmuxClient.subscribeRaw` — appended to `subscriptionLog` and
    * resolved via the same `setTimeout(..., roundTripMs)` ladder as
-   * `execute()`, so gate timing stays deterministic across both call sites.
+   * `execute()`, so timing stays deterministic across both call sites.
    * No-op behaviorally: the fake does not auto-emit `subscription-changed`
    * messages. Use `injectSubscriptionChanged()` to drive the listener.
    */
@@ -293,7 +290,7 @@ export class FakeTmuxClient {
 
   /**
    * Persistently script the response body for *all subsequent* capture-pane
-   * calls. Gates 1/4/7 set this once and call execute() many times — the
+   * calls. Callers set this once and call execute() many times — the
    * persistent shape is intentional. To change the response mid-bench, call
    * this method again.
    */
@@ -301,16 +298,14 @@ export class FakeTmuxClient {
     this.captureHandler = handler;
   }
 
-  /** How many capture-pane invocations have happened since construction. */
   capturePaneCount(): number {
     return this.captureLog.length;
   }
 
   /**
-   * Frozen snapshot of the subscribe/unsubscribe RPC log in arrival order.
-   * The integration-test path for layout subscriptions reads this to assert
-   * "PaneStream issues exactly one `subscribeRaw` per pane and one matching
-   * `unsubscribe` at dispose."
+   * Frozen snapshot of the subscribe/unsubscribe RPC log in arrival order, so a
+   * consumer can assert PaneStream issues exactly one `subscribeRaw` per pane
+   * and one matching `unsubscribe` at dispose.
    */
   subscriptionLogEntries(): readonly (
     | { kind: "subscribe"; name: string; what: string; format: string }

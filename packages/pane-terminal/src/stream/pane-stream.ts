@@ -137,7 +137,7 @@ export class PaneStream implements ReseedTarget {
   private buffer: Uint8Array[] = [];
   // Last successful seed payload — kept so subsequent re-attaches can hand
   // the new sink the same starting picture WITHOUT a fresh capture-pane
-  // round-trip (gate #4: re-mount ×100 → exactly one capture). Set inside
+  // round-trip (re-mount churn on one stream → exactly one capture). Set inside
   // seed(); cleared by reconnect (the underlying pane state has moved).
   private lastSeed: {
     captured: Uint8Array;
@@ -145,7 +145,7 @@ export class PaneStream implements ReseedTarget {
   } | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a
   // time. attach() short-circuits when this is non-null (the resolution
-  // will pick up `this.sink` whatever it is then). Required by gate #4 under
+  // will pick up `this.sink` whatever it is then). Required under
   // React StrictMode, where mount→cleanup→mount happens synchronously
   // *inside* one rendered frame — both attaches land before the first
   // capture-pane resolves.
@@ -284,7 +284,7 @@ export class PaneStream implements ReseedTarget {
    *   `idle → seeding → live`.
    * - **Re-attach** (a prior attach already seeded successfully) — replays
    *   the cached seed to the new sink synchronously, no tmux round-trip.
-   *   State path: `detached → live`. This is gate #4's contract: mount churn
+   *   State path: `detached → live`. This is the re-attach contract: mount churn
    *   (visibility flicker, React strict-mode, tab restore) must not multiply
    *   tmux load. The cached seed is invalidated on `reconnected`, where the
    *   `ReseedScheduler` re-issues capture-pane in priority order.
@@ -313,8 +313,8 @@ export class PaneStream implements ReseedTarget {
       // A capture-pane is already in flight from a previous attach (e.g.
       // React StrictMode's mount→cleanup→remount happens before the first
       // RPC resolves). Don't issue a second capture — when the in-flight
-      // one resolves, it will read `this.sink` and seed it. Gate #4 under
-      // StrictMode depends on this short-circuit.
+      // one resolves, it will read `this.sink` and seed it. The exactly-one-
+      // capture guarantee under StrictMode depends on this short-circuit.
       this.setState("seeding");
       return;
     }
@@ -481,7 +481,7 @@ export class PaneStream implements ReseedTarget {
     if (this.currentState === "disposed") return;
     if (this.activityListeners.size === 0) return;
     // [LAW:single-enforcer] One frozen snapshot per window — the only
-    // allocation in the byte path, well under Gate 3's 2MB/60s budget.
+    // allocation in the byte path, well under the 2MB/60s allocation budget.
     const snap: PaneActivity = Object.freeze({
       lastByteAt: this.currentLastByteAt,
       bytesSinceLastAttach: this.currentBytesSinceAttach,
@@ -634,7 +634,7 @@ export class PaneStream implements ReseedTarget {
     // mode escapes are ASCII, so they encode 1:1.
     const captured = latin1ToBytes(preamble + screen + epilogue);
 
-    // Cache for the next attach() — gate #4 reuses this without a fresh
+    // Cache for the next attach() — a re-attach reuses this without a fresh
     // capture-pane round-trip. Only cached on success: a failed seed left
     // in the cache would let subsequent re-attaches paint a blank screen
     // forever, and the next attach is the natural recovery point.
