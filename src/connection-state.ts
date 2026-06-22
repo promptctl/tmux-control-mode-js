@@ -34,8 +34,7 @@ export type ConnectionState =
 /**
  * Synthetic lifecycle messages emitted through the same `TypedEmitter` that
  * carries parsed tmux notifications. These are NOT parsed from tmux output —
- * client classes (`TmuxClient`, `WebSocketTmuxClient`, `TmuxClientProxy`)
- * synthesize them as their connection state changes.
+ * client classes synthesize them as their connection state changes.
  *
  * [LAW:locality-or-seam] These live alongside `ConnectionState`, outside the
  * pure `src/protocol/` boundary, because they're a client/transport concern,
