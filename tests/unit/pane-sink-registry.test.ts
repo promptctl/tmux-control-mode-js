@@ -89,6 +89,52 @@ describe("SinkRegistry.dispatch", () => {
     expect(lateAttached.messages).toHaveLength(1);
   });
 
+  it("holds the pre-dispatch snapshot for a LONE sink that attaches a sibling mid-write (size-1 path)", () => {
+    // The dominant case is exactly one sink in a bucket. Dispatch captures that
+    // sole sink by reference (no array) before calling write; a sibling it
+    // attaches mid-write MUST NOT see the current chunk — same freeze the
+    // size>=2 path guarantees, exercised where the bucket starts at size 1.
+    const reg = new SinkRegistry();
+    const lateAttached = recorder();
+
+    const lone: BytesSink = {
+      write(): void {
+        reg.attach(lateAttached, paneScope(1));
+      },
+      end(): void {},
+    };
+    reg.attach(lone, paneScope(1));
+
+    reg.dispatch(paneOutput(1, 0x41), undefined);
+    expect(lateAttached.messages).toHaveLength(0);
+
+    // The sibling joins the membership for the next chunk.
+    reg.dispatch(paneOutput(1, 0x42), undefined);
+    expect(lateAttached.messages).toHaveLength(1);
+  });
+
+  it("freezes membership ACROSS buckets — a pane-sink attaching a server-sink mid-write does not deliver this chunk to it", () => {
+    // All four buckets are snapshotted before the first write, so a write in
+    // one bucket cannot back-fill a *different* bucket for the current chunk.
+    const reg = new SinkRegistry();
+    const lateServer = recorder();
+
+    const paneTrigger: BytesSink = {
+      write(): void {
+        reg.attach(lateServer, serverScope);
+      },
+      end(): void {},
+    };
+    reg.attach(paneTrigger, paneScope(1));
+
+    reg.dispatch(paneOutput(1, 0x41), undefined);
+    expect(lateServer.messages).toHaveLength(0);
+
+    // It is in the server bucket for the next chunk (any pane).
+    reg.dispatch(paneOutput(7, 0x42), undefined);
+    expect(lateServer.messages).toHaveLength(1);
+  });
+
   it("delivers a chunk to sinks even if a sibling detaches itself mid-dispatch", () => {
     const reg = new SinkRegistry();
     const observed: string[] = [];
