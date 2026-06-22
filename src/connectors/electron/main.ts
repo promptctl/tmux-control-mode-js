@@ -34,24 +34,24 @@
 import type { TmuxConnection } from "../../client.js";
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
-import { TmuxCommandError } from "../../errors.js";
 import {
   serverScope,
   type AttachOptions,
   type BytesSink,
   type ChunkPayload,
 } from "../../pane-output.js";
-import type {
-  CommandResponse,
-  PaneOutputMessage,
-} from "../../protocol/types.js";
+import type { PaneOutputMessage } from "../../protocol/types.js";
 import {
   mapRpcCode,
   parseRpcRequest,
   RpcError,
   type RpcRequest,
 } from "../rpc.js";
-import { dispatchRpcRequest } from "../rpc-dispatch.js";
+import {
+  type BridgeOutcome,
+  dispatchBridgeRequest,
+  internalError,
+} from "../bridge-dispatch.js";
 import {
   createBridgeConnection,
   type BridgeConnection,
@@ -102,25 +102,20 @@ function abortedEnvelope(method: string): InvokeResultEnvelope {
   };
 }
 
+// [LAW:single-enforcer] The BRIDGE_INTERNAL construction (method-labelled
+// message + chained cause stack) lives once in `../bridge-dispatch.js`. This
+// fallback covers only the pre-parse path, where the method is not yet known
+// (`parseRpcRequest` threw something other than RpcError — defensive: it only
+// ever throws RpcError). The post-parse dispatch path is classified inside
+// dispatchBridgeRequest.
 function internalErrorEnvelope(
   method: string,
   err: unknown,
 ): InvokeResultEnvelope {
-  const causeMsg = err instanceof Error ? err.message : String(err);
-  const wrapped = new BridgeError(
-    "BRIDGE_INTERNAL",
-    `dispatch failed for method=${method}: ${causeMsg}`,
-  );
-  // [LAW:locality-or-seam] Preserve the original cause's stack so renderer
-  // logs localize the failure to the function that actually threw — not
-  // just to the bridge frame that wrapped it. Mirrors the pre-envelope
-  // behavior where a thrown Error carried `wrapped.stack = ${own}\nCaused
-  // by: ${cause}`.
-  if (err instanceof Error && err.stack !== undefined) {
-    const own = wrapped.stack ?? wrapped.message;
-    wrapped.stack = `${own}\nCaused by: ${err.stack}`;
-  }
-  return { status: "bridge-error", error: wrapped.toPayload() };
+  return {
+    status: "bridge-error",
+    error: internalError(method, err).toPayload(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +198,7 @@ interface SenderState {
  * Method dispatch:
  *   - `ipcMain.handle(IPC.invoke, ...)` validates the renderer payload via
  *     `parseRpcRequest` (allowlist + per-method arg shape check) before
- *     dispatching via `dispatchRpcRequest`. A compromised renderer cannot
+ *     dispatching via `dispatchBridgeRequest`. A compromised renderer cannot
  *     reach an unknown TmuxClient method or trigger a prototype-chain lookup.
  *   - Subscribe / unsubscribe are intercepted at the bridge boundary and
  *     routed through the shared `BridgeConnection` helper, which holds the
@@ -463,28 +458,30 @@ export function createMainBridge(
   ipcMain.on(IPC.ack, onAckListener);
 
   // -------------------------------------------------------------------------
-  // Single invoke handler — straight pipe through the shared RPC layer,
-  // with subscribe/unsubscribe interception for ownership + refcount.
+  // Single invoke handler — parse, run the shared bridge dispatch pipeline
+  // (subscribe/unsubscribe interception + tmux/bridge/internal classification,
+  // shared with the WS server), then encode the BridgeOutcome as an
+  // InvokeResultEnvelope.
   //
-  // [LAW:single-enforcer] One handler. parseRpcRequest enforces the shape;
-  // dispatchRpcRequest performs the typed dispatch for everything except
-  // the bridge-stateful operations (subscribe/unsubscribe), whose ownership
-  // logic lives in the shared BridgeConnection helper.
+  // [LAW:single-enforcer] parseRpcRequest is the only validation site;
+  // dispatchBridgeRequest is the only dispatch+classify site. This handler
+  // owns ONLY the Electron wire encoding of the outcome.
   // -------------------------------------------------------------------------
 
-  const runDispatch = (
-    state: SenderState,
-    req: RpcRequest,
-  ): Promise<CommandResponse> => {
-    if (req.method === "subscribeRaw") {
-      const [name, what, format] = req.args;
-      return bridge.subscribeForPeer(state.peer, name, what, format);
+  // [LAW:decomposition] Electron wire encoding of a BridgeOutcome — the
+  // transport-specific half. `ok` and `tmux-error` keep their distinct
+  // envelope `status` tags; `bridge-error` serializes the typed BridgeError
+  // via `toPayload()` (structured-clone drops Error subclass fields, so the
+  // payload is what survives the IPC hop).
+  const encodeOutcome = (outcome: BridgeOutcome): InvokeResultEnvelope => {
+    switch (outcome.kind) {
+      case "ok":
+        return { status: "ok", response: outcome.response };
+      case "tmux-error":
+        return { status: "tmux-error", response: outcome.response };
+      case "bridge-error":
+        return { status: "bridge-error", error: outcome.error.toPayload() };
     }
-    if (req.method === "unsubscribe") {
-      const [name] = req.args;
-      return bridge.unsubscribeForPeer(state.peer, name);
-    }
-    return dispatchRpcRequest(client, req);
   };
 
   const invokeHandler = async (
@@ -505,8 +502,8 @@ export function createMainBridge(
     // reconstructs a typed BridgeError via `BridgeError.fromPayload`.
     //
     // [LAW:single-enforcer] parseRpcRequest is still the only validation
-    // site; the difference is that RpcError no longer escapes — it is
-    // mapped to BridgeError at this seam (rpcErrorToBridge below).
+    // site; RpcError never escapes — it is mapped to BridgeError at this
+    // seam (rpcErrorToBridge below).
     const senderState = getOrCreateSender(event.sender);
     const dispatch: PendingDispatch = { aborted: false };
     senderState.pending.add(dispatch);
@@ -519,22 +516,17 @@ export function createMainBridge(
         if (err instanceof RpcError) return rpcErrorEnvelope(err);
         return internalErrorEnvelope("<unknown>", err);
       }
-      const method = req.method;
-      try {
-        const response = await runDispatch(senderState, req);
-        if (dispatch.aborted) return abortedEnvelope(method);
-        return { status: "ok", response };
-      } catch (err) {
-        if (dispatch.aborted) return abortedEnvelope(method);
-        if (err instanceof TmuxCommandError) {
-          return { status: "tmux-error", response: err.response };
-        }
-        if (err instanceof BridgeError) {
-          return { status: "bridge-error", error: err.toPayload() };
-        }
-        if (err instanceof RpcError) return rpcErrorEnvelope(err);
-        return internalErrorEnvelope(method, err);
-      }
+      const outcome = await dispatchBridgeRequest(
+        bridge,
+        client,
+        senderState.peer,
+        req,
+      );
+      // [LAW:no-ambient-temporal-coupling] If the sender was destroyed while
+      // the dispatch was in flight, the abort flag is the single owner of
+      // "this reply is moot" — it overrides any outcome.
+      if (dispatch.aborted) return abortedEnvelope(req.method);
+      return encodeOutcome(outcome);
     } finally {
       senderState.pending.delete(dispatch);
     }
