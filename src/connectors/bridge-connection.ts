@@ -13,11 +13,10 @@
 //     panes that were paused only because of this peer's lag.
 //
 // Why this is shared:
-//   - The Electron bridge already implemented all of the above inline in
-//     `electron/main.ts` (audit fix H7 + C4 watermark). The WebSocket bridge
-//     never had any of it (audit findings C2/C3). Lifting the bookkeeping
-//     into one place is the only structural fix — re-implementing it on the
-//     WS side would just guarantee the same drift the audit caught.
+//   - The Electron bridge already implemented all of the above inline; the
+//     WebSocket bridge never had any of it. Lifting the bookkeeping into one
+//     place is the only structural fix — re-implementing it on the WS side
+//     would just guarantee the same drift.
 //
 // What this module does NOT own:
 //   - Wire encoding (Electron IPC envelopes vs. WS JSON/binary frames).

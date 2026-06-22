@@ -21,12 +21,11 @@
 //
 // [LAW:single-enforcer] One pipeline owns WHO may dispatch the bridge-stateful
 // methods AND THAT every method gets dispatched + classified. Previously this
-// lived once per connector (websocket/server.ts + electron/main.ts) with a
-// documented "keep in sync" hazard: a future bridge-stateful method had to be
-// added to the interception arm in BOTH files, and a connector that forgot
-// routed it straight to `dispatchRpcRequest`, bypassing the refcount
-// BridgeConnection exists to enforce. The single interception list here makes
-// that drift unrepresentable.
+// lived once per connector with a documented "keep in sync" hazard: a future
+// bridge-stateful method had to be added to the interception arm in every
+// connector, and one that forgot routed it straight to `dispatchRpcRequest`,
+// bypassing the refcount BridgeConnection exists to enforce. The single
+// interception list here makes that drift unrepresentable.
 // [LAW:decomposition] The cut is classify-vs-encode: the outcome union is the
 // seam, carrying the whole truth of the call so each connector can encode it
 // by looking only at the value.
