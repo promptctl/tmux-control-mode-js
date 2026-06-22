@@ -12,10 +12,16 @@
 //   else to the outside world. It does NOT call the emitter — non-topology notifications
 //   are still passed by the transport adapter to its own emitter.
 
-import type { CommandResponse, TmuxMessage } from "./protocol/types.js";
+import type {
+  CommandResponse,
+  PaneAction,
+  TmuxMessage,
+} from "./protocol/types.js";
+import { refreshClientPaneAction } from "./protocol/encoder.js";
 import {
   SinkRegistry,
   PaneTopologyManager,
+  PaneInterestTracker,
   TopologyEpochTracker,
   parsePaneListLine,
   serverScope,
@@ -23,6 +29,18 @@ import {
   type BytesSink,
   type ChunkPayload,
 } from "./pane-output.js";
+import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
+
+/** Construction options for {@link TopologyRouter}. */
+export interface TopologyRouterOptions {
+  /**
+   * Pause panes no attachment is interested in, continuing them when interest
+   * returns. Default off — when off the router does no interest tracking and no
+   * pane-action traffic, and behaves exactly as before this option existed.
+   * [LAW:no-mode-explosion]
+   */
+  readonly idlePaneSuppression?: boolean;
+}
 
 // [LAW:types-are-the-program] The command runner is a first-class param, not
 // an ambient dependency. TopologyRouter has no TmuxClient reference — the transport
@@ -60,6 +78,52 @@ export class TopologyRouter {
   //   onTransportReady sets it; onTransportClose clears it.
   private runCommand: RunCommand | null = null;
 
+  // Idle-pane suppression. Both null when the feature is off (the default), in
+  // which case every `this.interest?.recompute()` is a genuine no-op and the
+  // router issues no pane-action traffic. [LAW:no-mode-explosion]
+  // [LAW:dataflow-not-control-flow] Presence of `interest` IS the enablement;
+  //   no call site branches on a boolean flag.
+  private readonly suppressor: IdlePaneSuppressor | null;
+  private readonly interest: PaneInterestTracker | null;
+
+  constructor(options?: TopologyRouterOptions) {
+    if (options?.idlePaneSuppression === true) {
+      // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
+      //   sender, which the router gates on the live runCommand.
+      this.suppressor = new IdlePaneSuppressor((paneId, action) =>
+        this.sendPaneAction(paneId, action),
+      );
+      this.interest = new PaneInterestTracker(
+        this.sinks,
+        this.topology,
+        this.suppressor,
+      );
+    } else {
+      this.suppressor = null;
+      this.interest = null;
+    }
+  }
+
+  // [LAW:dataflow-not-control-flow] One predicate answers "does anything need
+  //   the topology table populated" — topology-scoped sinks, or idle suppression
+  //   (which must know every pane to pause the idle ones). Every bootstrap /
+  //   refresh gate reads this single source.
+  private needsTopology(): boolean {
+    return this.sinks.hasTopologyDependentSinks() || this.interest !== null;
+  }
+
+  // [LAW:effects-at-boundaries] The single seam from suppression policy to tmux.
+  //   Drops the action when no connection can carry it — a detached control-mode
+  //   client's pauses are moot, so teardown-time continues simply do not fire.
+  private sendPaneAction(paneId: number, action: PaneAction): void {
+    const run = this.runCommand;
+    if (run === null) return;
+    // Fire-and-forget: a rejection means the pane already went away, which is
+    // fine for a best-effort suppression action. [LAW:no-silent-failure] does
+    // not apply — there is no downstream that depends on this succeeding.
+    void run(refreshClientPaneAction(paneId, action)).catch(() => undefined);
+  }
+
   // ---------------------------------------------------------------------------
   // Transport adapter interface
   // ---------------------------------------------------------------------------
@@ -76,7 +140,17 @@ export class TopologyRouter {
    */
   onTransportReady(runCommand: RunCommand): void {
     this.runCommand = runCommand;
-    if (this.sinks.hasTopologyDependentSinks()) {
+    // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
+    //   Before runCommand exists, sendPaneAction drops every action — but the
+    //   only panes the tracker can mark interesting pre-ready are pane-scope
+    //   ones (topology is empty until bootstrap), so the dropped action is a
+    //   Continue, and a control-mode client's panes default to RUNNING. A
+    //   dropped pre-ready Continue therefore targets an already-running pane: a
+    //   no-op, not lost state. Nothing is ever paused pre-ready, because pausing
+    //   requires a delivered Pause, which cannot happen while runCommand is null.
+    //   The bootstrap below recomputes the full universe and pauses the
+    //   genuinely-idle panes with runCommand set.
+    if (this.needsTopology()) {
       void this.bootstrap();
     }
   }
@@ -90,6 +164,10 @@ export class TopologyRouter {
    */
   onTransportClose(): void {
     this.runCommand = null;
+    // [LAW:no-ambient-temporal-coupling] runCommand is already null, so the
+    //   suppressor's continue actions drop at the sender — this clears local
+    //   paused-pane state without writing to a dead transport.
+    this.suppressor?.dispose();
     this.sinks.endAll();
   }
 
@@ -115,7 +193,14 @@ export class TopologyRouter {
     ) {
       void this.bootstrap();
     }
-    return dispose;
+    // Attaching changed this scope's admit count. Recompute against current
+    // topology (covers server/pane scope immediately); a session/window attach
+    // that triggered a bootstrap recomputes again when seed() lands.
+    this.interest?.recompute();
+    return () => {
+      dispose();
+      this.interest?.recompute();
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -155,16 +240,25 @@ export class TopologyRouter {
         // list-panes result for this window will be discarded by the epoch check.
         this.topology.removeWindow(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
+        this.interest?.recompute();
         break;
       case "window-add":
       case "unlinked-window-add":
       case "layout-change":
-        if (this.sinks.hasTopologyDependentSinks()) {
+        if (this.needsTopology()) {
           void this.refreshWindow(msg.windowId);
         }
         break;
+      case "session-changed":
       case "sessions-changed":
-        if (this.sinks.hasTopologyDependentSinks()) {
+        // [LAW:no-ambient-temporal-coupling] The startup `session-changed` is
+        //   the signal that the initial %begin/%end handshake has been consumed
+        //   and the FIFO queue is clean — a bootstrap issued before it races the
+        //   startup block and reads empty. Re-bootstrapping here (epoch-guarded,
+        //   so any premature onTransportReady bootstrap is superseded) is the one
+        //   correct point to load topology, and it also refreshes the table when
+        //   the attached session changes later.
+        if (this.needsTopology()) {
           void this.bootstrap();
         }
         break;
@@ -194,6 +288,7 @@ export class TopologyRouter {
         return parsed !== null ? [parsed] : [];
       });
       this.topology.seed(entries);
+      this.interest?.recompute();
     } catch {
       // Non-fatal: topology races are handled at dispatch time via the fallback
       // to server-scope and pane-scope buckets even when meta is undefined.
@@ -216,8 +311,10 @@ export class TopologyRouter {
           : [];
       });
       this.topology.updateWindow(windowId, entries);
+      this.interest?.recompute();
     } catch {
       this.topology.removeWindow(windowId);
+      this.interest?.recompute();
     }
   }
 }
