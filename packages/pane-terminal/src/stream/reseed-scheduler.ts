@@ -71,7 +71,7 @@ export class ReseedScheduler {
     this.registered.delete(target);
   }
 
-  /** Tests inspect this. */
+  /** Registered-target count, exposed so a consumer can assert register/unregister bookkeeping. */
   size(): number {
     return this.registered.size;
   }
