@@ -790,7 +790,7 @@ class Connection {
   //     type system enforces it.
   //   - `onByteOutput` handles `PaneOutputMessage` via the binary
   //     side-channel. Bytes are routed here via
-  //     `client.attachAllPanesSink`, not through `client.on('*', …)`,
+  //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
   // -------------------------------------------------------------------------
   private onTmuxEvent(msg: EmitterTmuxMessage): void {
