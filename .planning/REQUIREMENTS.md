@@ -111,7 +111,7 @@ Deferred — not in scope for this milestone.
 
 ### Library Terminal Integration
 
-- **TERM-01**: `TerminalEmulator` interface in the library proper (currently the demo proves the pattern lives outside the library)
+- **TERM-01** — **Resolved differently** (no longer deferred): the terminal-integration layer ships as the separate `@promptctl/pane-terminal` workspace package — `PaneStream` / `TerminalSink` / `XtermSink` / `<PaneTerminal>` — rather than a `TerminalEmulator` interface inside the library proper. This keeps the protocol library UI-agnostic by design (see PROJECT.md "Out of Scope"). Design: `design-docs/pane-session-v2.md`.
 - **TERM-02**: Generic browser/WebSocket transport in `src/transport/`
 
 ## Out of Scope
