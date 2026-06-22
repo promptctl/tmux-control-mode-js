@@ -79,8 +79,10 @@ function buildArgv(
   return [flag, ...socketArgs, ...userArgs];
 }
 
-// [LAW:dataflow-not-control-flow] Callback arrays always exist; they may be empty.
-// Every registration pushes; every dispatch iterates. No conditional execution paths.
+// [LAW:dataflow-not-control-flow] Callback arrays always exist and may be empty;
+// every registration pushes and the close/error dispatch iterates the whole
+// array. (The stdout data path below additionally branches on stripper mode and
+// the stripper's result — see the handler.)
 
 /**
  * Spawn a tmux child process in control mode and return a TmuxTransport.
@@ -130,10 +132,9 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   };
   const child = spawn(tmuxPath, argv, spawnOptions);
 
-  // [LAW:dataflow-not-control-flow] The data pipeline runs on every chunk.
-  // In -C mode the stripper is null and the chunk forwards unchanged. In -CC
-  // mode the stripper applies the DCS framing rules. The pipeline shape is
-  // identical; only the values differ.
+  // In -C mode the stripper is null and chunks forward unchanged; -CC would
+  // install a DCS stripper. The stdout handler below branches on stripper mode
+  // and on the stripper's result (forward chunk vs. reject the stream).
   const stripper = controlControl ? createDcsStripper() : null;
 
   // [LAW:one-source-of-truth] The byte stream is the source of truth. tmux

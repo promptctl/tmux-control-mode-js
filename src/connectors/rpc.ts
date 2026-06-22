@@ -367,9 +367,9 @@ function requireNonNegativeInteger(
   return v;
 }
 
-// [LAW:single-enforcer] Non-empty string check for subscription names.
-// The WS frame parser already rejects empty IDs; the RPC layer must be
-// symmetric — empty subscription names are meaningless to tmux.
+// Rejects empty subscription names at the RPC argument boundary — an empty
+// name is meaningless to tmux. This is ordinary input validation for this
+// argument, alongside the sibling `require*` guards above.
 function requireNonEmptyString(
   args: readonly unknown[],
   index: number,

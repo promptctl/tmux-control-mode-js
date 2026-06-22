@@ -23,7 +23,7 @@
 //   admitting-consumer set grows by membership-on-arrival. When the last
 //   admitting consumer for a pane detaches, the buffer is flushed through
 //   that consumer and the per-pane state is dropped.
-// [LAW:make-it-impossible] Line consumers receive `{ line: string; paneId }`
+// [LAW:types-are-the-program] Line consumers receive `{ line: string; paneId }`
 //   only. The shared `TextDecoder` instance is unreachable from the value the
 //   consumer holds, so a downstream cannot misdecode by reaching through.
 
@@ -31,8 +31,8 @@ import {
   serverScope,
   type AttachOptions,
   type BytesSink,
+  type ChunkPayload,
 } from "./pane-output.js";
-import type { PaneOutputMessage } from "./protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -73,11 +73,11 @@ interface PerPaneLineState {
   readonly decoder: TextDecoder;
   // Partial trailing line carried between chunks.
   buffer: string;
-  // Identity check: the `PaneOutputMessage` object dispatched by `SinkRegistry`
+  // Identity check: the `ChunkPayload` object dispatched by `SinkRegistry`
   // is the same reference for every byte sink that admits the chunk. When two
   // byte sinks fire for the same chunk, the second sees `lastMsg === msg` and
   // re-uses `lines` without invoking the decoder a second time.
-  lastMsg: PaneOutputMessage | null;
+  lastMsg: ChunkPayload | null;
   // Complete lines produced from the most recent chunk. Snapshot per chunk so
   // the second consumer iterates the same array the first produced.
   lines: readonly string[];
@@ -169,7 +169,7 @@ export function attachLineSink(
   const consumer: LineConsumerRecord = { handler: onLine };
 
   const byteSink: BytesSink = {
-    write(msg: PaneOutputMessage): void {
+    write(msg: ChunkPayload): void {
       let state = registry.perPane.get(msg.paneId);
       if (state === undefined) {
         state = newPerPaneLineState();
@@ -177,7 +177,7 @@ export function attachLineSink(
       }
 
       // [LAW:single-enforcer] Decode-and-split runs at most once per chunk.
-      //   `SinkRegistry` dispatches the same `PaneOutputMessage` reference to
+      //   `SinkRegistry` dispatches the same `ChunkPayload` reference to
       //   every admitting byte sink; the identity check makes the second-and-
       //   subsequent calls no-ops for decode.
       if (state.lastMsg !== msg) {

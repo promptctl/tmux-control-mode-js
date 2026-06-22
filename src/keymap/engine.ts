@@ -49,11 +49,17 @@ export const INITIAL_STATE: KeymapState = { mode: "root" };
  * Advance the keymap state machine by one key event.
  *
  * Contract:
+ * - any mode + bare modifier (Shift/Control/Alt/Meta) → state unchanged, actions=[], handled=false
  * - `root` + prefix chord                       → state=prefix, actions=[],       handled=true
  * - `root` + anything else                      → state=root,   actions=[],       handled=false
  * - `prefix` + bound chord                      → state=root,   actions=[action], handled=true
  * - `prefix` + prefix chord (unbound)           → state=root,   actions=[],       handled=false  (send-prefix)
  * - `prefix` + unbound non-prefix chord         → state=root,   actions=[],       handled=true
+ *
+ * The bare-modifier row is distinct: it is the only outcome that preserves the
+ * incoming state. A modifier pressed mid-sequence (e.g. Shift to reach `%`
+ * after the prefix) must not be read as an "unbound non-prefix chord" and drop
+ * prefix mode, so it passes through with state untouched.
  *
  * The send-prefix row matches tmux's default `C-b C-b` behavior: pressing the
  * prefix key a second time exits prefix mode AND lets the UI forward the
@@ -62,10 +68,10 @@ export const INITIAL_STATE: KeymapState = { mode: "root" };
  * first in the index selection below).
  *
  * [LAW:dataflow-not-control-flow] The function always executes the same
- * sequence: compute (isPrefix, matchedBinding, isInPrefixMode), then pick
- * the result. There is no early-return optimization that would cause one
- * branch to do less work than another; control flow is the same shape per
- * call and the returned *value* encodes the outcome.
+ * sequence: compute (isBareModifier, isPrefix, matchedBinding, isInPrefixMode),
+ * then index into the outcomes table. No branch does less work than another and
+ * there is no early return; the bare-modifier pass-through is a row of the
+ * table like every other outcome, and the returned *value* encodes which one.
  */
 // [LAW:one-source-of-truth] Bare modifier key names per KeyboardEvent.key.
 // A keydown whose `key` IS one of these is a user pressing a modifier in
@@ -84,19 +90,12 @@ export function handleKey(
   state: KeymapState,
   keymap: Keymap,
 ): HandleResult {
-  // [LAW:dataflow-not-control-flow] Bare-modifier keydowns produce a
-  // deterministic pass-through result: state unchanged, no actions, not
-  // handled. The caller still gets a HandleResult with the same shape —
-  // we're not skipping the function, we're returning early-out data.
-  if (BARE_MODIFIER_KEYS.has(event.key)) {
-    return { state, actions: [], handled: false };
-  }
-
+  const isBareModifier = BARE_MODIFIER_KEYS.has(event.key);
   const isPrefix = keysEqual(event, keymap.prefix);
   const matched = findBinding(event, keymap.bindings);
   const inPrefixMode = state.mode === "prefix";
 
-  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the five rows of
+  // Table-driven outcome. [LAW:dataflow-not-control-flow] — the six rows of
   // this decision are data, not branches of an if/else cascade. Each row
   // produces a fully-formed HandleResult; no row "skips" a field.
   const outcomes: readonly HandleResult[] = [
@@ -116,21 +115,29 @@ export function handleKey(
     //                                        let the UI forward the literal
     //                                        prefix key to the focused pane
     { state: INITIAL_STATE, actions: [], handled: false },
+    // isBareModifier (any mode)            — pass through, PRESERVING state so a
+    //                                        modifier pressed mid-chord can't
+    //                                        drop prefix mode (the only row that
+    //                                        keeps the incoming state)
+    { state, actions: [], handled: false },
   ];
 
   // Index selection is the only decision — again, data drives which row we
-  // return, not control flow over emitted work. An explicit binding for the
-  // prefix key (matched !== null) wins over the send-prefix row, so users can
-  // override `C-b C-b` with their own binding.
-  const index = inPrefixMode
-    ? matched !== null
-      ? 0
+  // return, not control flow over emitted work. A bare modifier is checked
+  // first (it must never disturb state); below that, an explicit binding for
+  // the prefix key (matched !== null) wins over the send-prefix row, so users
+  // can override `C-b C-b` with their own binding.
+  const index = isBareModifier
+    ? 5
+    : inPrefixMode
+      ? matched !== null
+        ? 0
+        : isPrefix
+          ? 4
+          : 1
       : isPrefix
-        ? 4
-        : 1
-    : isPrefix
-      ? 2
-      : 3;
+        ? 2
+        : 3;
   return outcomes[index];
 }
 
