@@ -430,6 +430,26 @@ describe("PaneStream — state machine", () => {
     expect(res.success).toBe(true);
     expect(res.commandNumber).toBe(-1);
   });
+
+  it("sendKeys forwards the FULL encoded wire — no trailing-char truncation", async () => {
+    // Regression: a prior version called `client.execute(wire.slice(0, -1))`,
+    // believing the encoder appended a trailing LF to strip. encodeSendKeys
+    // emits NO trailing LF (execute() is the sole LF-terminator), so the slice
+    // dropped the final HEX DIGIT — turning "A" (send-keys … 41) into … 4,
+    // i.e. byte 0x04 (Ctrl-D). Every keystroke's last byte was corrupted into a
+    // stray control code; against a shell that exits on EOF this killed the
+    // session outright. Assert the exact, untruncated wire reaches execute().
+    const { client, stream } = makeStream();
+    const seen: string[] = [];
+    client.setCapturePaneResponse((cmd) => {
+      seen.push(cmd);
+      return cmd.startsWith("display-message") ? "0;0" : "";
+    });
+    await stream.sendKeys("A");
+    expect(seen.find((c) => c.startsWith("send-keys"))).toBe(
+      `send-keys -H -t '%${PANE_ID}' 41`,
+    );
+  });
 });
 
 describe("PaneStream — paneId filter & dataflow", () => {
