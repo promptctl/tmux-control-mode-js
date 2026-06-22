@@ -37,7 +37,6 @@ import {
   type EmitterMessage,
   type EmitterTmuxMessage,
 } from "../../emitter.js";
-import { TmuxCommandError } from "../../errors.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 import type { CommandResponse } from "../../protocol/types.js";
 
@@ -59,7 +58,10 @@ import {
   RpcError,
   type RpcRequest,
 } from "../rpc.js";
-import { dispatchRpcRequest } from "../rpc-dispatch.js";
+import {
+  type BridgeOutcome,
+  dispatchBridgeRequest,
+} from "../bridge-dispatch.js";
 import {
   createBridgeConnection,
   DEFAULT_OUTPUT_LOW_WATERMARK,
@@ -681,86 +683,56 @@ class Connection {
     timer.unref?.();
     this.inflight.set(frame.id, { timer, startedAt });
 
-    try {
-      const result = await this.runDispatch(state, req);
-      if (!this.inflight.has(frame.id)) return;
-      this.inflight.delete(frame.id);
-      clearTimeout(timer);
-      this.replyOk(frame.id, result);
-      this.emit({
-        kind: "result",
-        identity: this.identity,
-        id: frame.id,
-        ok: true,
-        durationMs: Date.now() - startedAt,
-      });
-    } catch (err) {
-      if (!this.inflight.has(frame.id)) return;
-      this.inflight.delete(frame.id);
-      clearTimeout(timer);
-      // [LAW:single-enforcer] TmuxCommandError is the typed receipt for a
-      // tmux-side %error reply (see src/errors.ts). Replying ok with the
-      // structured response preserves the wire contract — clients see a
-      // CommandResponse with success:false instead of a transport error.
-      if (err instanceof TmuxCommandError) {
-        this.replyOk(frame.id, err.response);
-        this.emit({
-          kind: "result",
-          identity: this.identity,
-          id: frame.id,
-          ok: true,
-          durationMs: Date.now() - startedAt,
-        });
-        return;
-      }
-      // [LAW:single-enforcer] BridgeError raised by the shared helper
-      // (BRIDGE_UNKNOWN_SUBSCRIPTION, BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT,
-      // ...) carries a typed code already — surface it verbatim instead of
-      // collapsing into BRIDGE_INTERNAL. Without this, a renderer reading
-      // `.code` would see every helper-rejection as the same opaque code.
-      if (err instanceof BridgeError) {
-        this.replyError(frame.id, err.code, err.message);
-        this.emit({
-          kind: "result",
-          identity: this.identity,
-          id: frame.id,
-          ok: false,
-          code: err.code,
-          durationMs: Date.now() - startedAt,
-        });
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      this.replyError(frame.id, "BRIDGE_INTERNAL", message);
-      this.emit({
-        kind: "result",
-        identity: this.identity,
-        id: frame.id,
-        ok: false,
-        code: "BRIDGE_INTERNAL",
-        durationMs: Date.now() - startedAt,
-      });
-    }
+    // [LAW:single-enforcer] dispatchBridgeRequest owns the subscribe/unsubscribe
+    // interception + the tmux/bridge/internal classification, shared with the
+    // Electron main. It never throws — every result is a BridgeOutcome value.
+    const outcome = await dispatchBridgeRequest(
+      state.bridge,
+      state.client,
+      state.peer,
+      req,
+    );
+    // [LAW:no-ambient-temporal-coupling] The timeout may have already fired,
+    // replied, and deleted the inflight slot while dispatch was in flight; if
+    // so, do not double-reply. The inflight Set is the single owner of "this
+    // call still needs a reply".
+    if (!this.inflight.has(frame.id)) return;
+    this.inflight.delete(frame.id);
+    clearTimeout(timer);
+    this.encodeOutcome(frame.id, outcome, startedAt);
   }
 
-  // [LAW:single-enforcer] Subscribe/unsubscribe go through the shared
-  // BridgeConnection helper so subscription ownership + refcount + the
-  // divergent-re-subscribe rejection (BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT)
-  // are enforced exactly once across both transports. Every other RPC
-  // dispatches verbatim through dispatchRpcRequest.
-  private runDispatch(
-    state: RunningState,
-    req: RpcRequest,
-  ): Promise<CommandResponse> {
-    if (req.method === "subscribeRaw") {
-      const [name, what, format] = req.args;
-      return state.bridge.subscribeForPeer(state.peer, name, what, format);
+  // [LAW:decomposition] WS wire encoding of a BridgeOutcome — the
+  // transport-specific half. `ok` and `tmux-error` both reply with a
+  // CommandResponse frame (a tmux %error is a successful bridge call whose
+  // response carries success:false, not a transport error); `bridge-error`
+  // replies with a typed error frame carrying the BridgeError's code. The
+  // classification that produced the outcome lives in dispatchBridgeRequest.
+  private encodeOutcome(
+    id: string,
+    outcome: BridgeOutcome,
+    startedAt: number,
+  ): void {
+    if (outcome.kind === "bridge-error") {
+      this.replyError(id, outcome.error.code, outcome.error.message);
+      this.emit({
+        kind: "result",
+        identity: this.identity,
+        id,
+        ok: false,
+        code: outcome.error.code,
+        durationMs: Date.now() - startedAt,
+      });
+      return;
     }
-    if (req.method === "unsubscribe") {
-      const [name] = req.args;
-      return state.bridge.unsubscribeForPeer(state.peer, name);
-    }
-    return dispatchRpcRequest(state.client, req);
+    this.replyOk(id, outcome.response);
+    this.emit({
+      kind: "result",
+      identity: this.identity,
+      id,
+      ok: true,
+      durationMs: Date.now() - startedAt,
+    });
   }
 
   private async safeAuthorize(frame: CallFrame): Promise<AuthorizeResult> {
