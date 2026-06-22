@@ -18,11 +18,11 @@
 import type { CommandResponse } from "./protocol/types.js";
 
 /**
- * Thrown via Promise rejection from any TmuxClient method that maps to a
- * tmux command (i.e. anything backed by sendRaw — `execute`, `sendKeys`,
- * `splitWindow`, `setSize`, `setPaneAction`, `subscribe`, `unsubscribe`,
- * `setFlags`, `clearFlags`, `requestReport`, `queryClipboard`) when tmux
- * replies with `%error`.
+ * Thrown via Promise rejection when a dispatched tmux command receives an
+ * `%error` reply instead of `%end`. Every command flows through
+ * `TmuxClient.execute` (the sole dispatch path), including the command
+ * helpers in `./commands/index.ts` that compose on top of it; any of them
+ * can reject with this error.
  *
  * The original `CommandResponse` (containing the captured error output) is
  * available on `.response`.

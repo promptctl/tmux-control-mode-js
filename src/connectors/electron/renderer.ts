@@ -416,12 +416,12 @@ export function createRendererBridge(
 // Active-receiver registry — exactly one receiver per
 // `(ipcRenderer, paneId)` pair.
 //
-// Symmetric to the main-side `ACTIVE_PANE_SINK_ATTACHMENTS` in `main.ts`,
-// for the same reason: `paneEnd` carries only `paneId`, so a second
-// receiver for the same pair would either race the auto-detach (the
+// This registry is renderer-local: `paneEnd` carries only `paneId`, so a
+// second receiver for the same pair would either race the auto-detach (the
 // first to handle `paneEnd` tears every receiver down) or split the byte
-// stream across two sinks with no way to distinguish them. The
-// constructor refuses loudly.
+// stream across two sinks with no way to distinguish them. The constructor
+// refuses loudly. (The server-side sinks keep no such registry — multiple
+// scoped attachments on one target are valid.)
 //
 // [LAW:single-enforcer] One constructor-time check, one registry, one API.
 // [LAW:no-shared-mutable-globals] WeakMap keyed by `ipcRenderer` so a
