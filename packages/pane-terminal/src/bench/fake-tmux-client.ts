@@ -23,17 +23,19 @@
 // If a future gate needs one of these, add it here — never let a bench grow
 // its own private fake.
 
+// [LAW:one-way-deps] Browser-safe core only (see pane-stream.ts) — never the
+// Node-coupled root entry.
 import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
   TmuxEventMap,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import {
   SinkRegistry,
   PaneTopologyManager,
   serverScope,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import type {
   OutputMessage,
   ExtendedOutputMessage,

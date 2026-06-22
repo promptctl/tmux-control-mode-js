@@ -26,16 +26,19 @@
 //   External views (`get state()`) read from `currentState` directly.
 
 import type { TerminalSink, SeedCursor } from "../sink/index.js";
+// [LAW:one-way-deps] pane-terminal is a browser-rendering package; it imports
+// the pure pane-output core from the `/browser` subpath, never the root entry
+// (which pulls the Node-only transport and breaks browser bundlers).
 import type {
   BytesSink,
   TmuxConnection,
   TmuxEventMap,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import {
   paneScope,
   subscribeRaw,
   unsubscribe,
-} from "@promptctl/tmux-control-mode-js";
+} from "@promptctl/tmux-control-mode-js/browser";
 import {
   sendKeys as encodeSendKeys,
   emptyKeysResponse,

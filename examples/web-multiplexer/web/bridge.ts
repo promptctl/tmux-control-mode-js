@@ -41,8 +41,9 @@ export type ConnState = "connecting" | "open" | "ready" | "closed";
  * the InspectorView's wire log. Transports synthesize this on each side.
  *
  * Note: `in-event.event` is a fully-decoded TmuxMessage (Uint8Array bytes
- * for output / extended-output). Wire-side encodings such as base64 in the
- * WebSocket JSON frame are a transport detail — the inspector renders the
+ * for output / extended-output). The transport's wire encoding — binary
+ * pane-output frames over WebSocket, native IPC over Electron — is a detail
+ * the library decodes at the bridge boundary; the inspector renders the
  * bytes directly.
  */
 export type WireEntry =
