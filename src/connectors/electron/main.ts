@@ -378,25 +378,26 @@ export function createMainBridge(
     // per-chunk broadcast loop exists in the bridge. [LAW:one-source-of-truth]
     if (state.detachBytes === null) {
       const wc = state.wc;
+      // [LAW:one-source-of-truth] The IPC envelope shaping (ChunkPayload →
+      // PaneOutputMessage) and wire send live solely in WebContentsSink.write;
+      // this internal sink wraps that one forwarder and adds backpressure
+      // accounting. Previously both paths hand-built the envelope and could
+      // silently diverge.
+      const forwarder = new WebContentsSink(wc);
       const rendererSink: BytesSink = {
         write(msg): void {
-          // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check
-          // on Electron's WebContents lifecycle — same pattern as broadcast().
+          // [LAW:no-defensive-null-guards] Trust-boundary guard gating the
+          // accounting: never bill a renderer whose WebContents Electron has
+          // already destroyed (a stray account could pause a pane that never
+          // acks). The send-side lifecycle guard is WebContentsSink's own.
           if (wc.isDestroyed()) return;
-          // Account BEFORE wc.send so a synchronous ack during send subtracts
-          // from the right baseline.
+          // Account BEFORE the send so a synchronous ack during dispatch
+          // subtracts from the right baseline.
           bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
-          // [LAW:types-are-the-program] ChunkPayload → PaneOutputMessage at the
-          // IPC boundary so the renderer's isPaneOutput check routes correctly.
-          const ipcMsg: PaneOutputMessage = {
-            type: "output",
-            paneId: msg.paneId,
-            data: msg.data,
-          };
-          wc.send(IPC.event, ipcMsg);
+          forwarder.write(msg);
         },
         end(): void {
-          // Stateless forwarding sink; no teardown action needed.
+          forwarder.end();
         },
       };
       state.detachBytes = client.attachBytesSink(rendererSink, {
