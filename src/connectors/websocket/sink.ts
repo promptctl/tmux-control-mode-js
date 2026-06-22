@@ -17,7 +17,11 @@
 //   Callers decide whether multiple attachments on the same WS make sense.
 
 import type { TmuxConnection } from "../../client.js";
-import type { AttachOptions, BytesSink, ChunkPayload } from "../../pane-output.js";
+import type {
+  AttachOptions,
+  BytesSink,
+  ChunkPayload,
+} from "../../pane-output.js";
 
 import { encodePaneOutput } from "./protocol.js";
 import { WEBSOCKET_OPEN } from "./types.js";
@@ -94,17 +98,23 @@ export class WebSocketSink implements BytesSink {
     // the WebSocket lifecycle — the same guard the bridge's wsSend chokepoint
     // uses for the same reason. Not a workaround for a missing invariant.
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
+    // [LAW:no-silent-failure] Encode is pure computation — a serializer error is
+    // a deterministic bug, not a transient race, so it must propagate loudly.
+    // [LAW:effects-at-boundaries] Keep the pure encode outside the try; only the
+    // world-touching send is wrapped.
+    const frame = encodePaneOutput(msg);
     try {
-      this.ws.send(encodePaneOutput(msg));
+      this.ws.send(frame);
     } catch {
       // TOCTOU: socket may have torn down between the readyState read and the
       // send. Let the close handler complete the teardown.
     }
   }
 
-  // No wire-level pane-end frame in this protocol; pane teardown surfaces
-  // via the JSON event channel.
-  end(): void {}
+  end(): void {
+    // No wire-level pane-end frame in this protocol; pane teardown surfaces
+    // via the JSON event channel.
+  }
 }
 
 // ---------------------------------------------------------------------------

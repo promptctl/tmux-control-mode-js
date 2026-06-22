@@ -35,7 +35,12 @@ import type { TmuxConnection } from "../../client.js";
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
 import { TmuxCommandError } from "../../errors.js";
-import { serverScope, type AttachOptions, type BytesSink, type ChunkPayload } from "../../pane-output.js";
+import {
+  serverScope,
+  type AttachOptions,
+  type BytesSink,
+  type ChunkPayload,
+} from "../../pane-output.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
@@ -64,7 +69,6 @@ import {
   type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
-  type PaneEndEnvelope,
   type WebContentsLike,
 } from "./types.js";
 

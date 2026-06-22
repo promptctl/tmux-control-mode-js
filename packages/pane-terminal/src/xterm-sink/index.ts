@@ -235,15 +235,13 @@ export class XtermSink implements TerminalSink {
       // `SeedCursor.col`/`row` are 0-indexed (see ../sink/index.ts). Adding
       // 1 here is the only translation; sinks that don't position a hardware
       // cursor (BufferingSink) ignore the cursor entirely.
-      this.terminal.write(
-        `\x1b[${cursor.row + 1};${cursor.col + 1}H`,
-        () => { if (!this.isDisposed) this.terminal.scrollToBottom(); },
-      );
+      this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
+        if (!this.isDisposed) this.terminal.scrollToBottom();
+      });
     } else {
-      this.terminal.write(
-        captured,
-        () => { if (!this.isDisposed) this.terminal.scrollToBottom(); },
-      );
+      this.terminal.write(captured, () => {
+        if (!this.isDisposed) this.terminal.scrollToBottom();
+      });
     }
   }
 
@@ -524,7 +522,10 @@ export class XtermBytesSink implements BytesSink {
     this.term.write(msg.data);
   }
 
-  end(): void {}
+  end(): void {
+    // xterm.js owns its own buffer lifecycle; a pane ending is not a terminal
+    // teardown, so there is nothing to flush or dispose here.
+  }
 }
 
 /**
