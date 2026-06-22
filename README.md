@@ -42,6 +42,34 @@ actually called:
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
 
+## Idle pane suppression (opt-in)
+
+By default tmux streams output for **every** pane to a control-mode client,
+whether or not anything is consuming it. For a client that only watches a few
+panes at a time, that is wasted decoding and wire traffic.
+
+Passing `{ idlePaneSuppression: true }` flips on an opt-in layer that pauses any
+pane no sink is interested in and resumes it the moment one is:
+
+```ts
+const client = new TmuxClient(transport, { idlePaneSuppression: true });
+
+// Every idle pane is paused. Attaching a sink continues exactly the panes its
+// scope admits; disposing it re-pauses them when nothing else admits them.
+const dispose = client.attachBytesSink(sink, { scope: paneScope(3) });
+```
+
+How it works: the library tracks, per pane, the number of attachments whose
+scope admits it (`paneScope` + `windowScope` + `sessionScope` + `serverScope`).
+When that count crosses 0 ↔ 1 it issues `refresh-client -A <pane>:pause` /
+`:continue`. A `serverScope` sink admits every pane, so attaching one keeps
+everything live.
+
+- **Default off** — without the option the client behaves exactly as before and
+  issues no pause/continue traffic.
+- **Per-control-mode-client** — `pause`/`continue` only affect *this* client's
+  view. Other tmux clients attached to the same session are untouched.
+
 ## Testing
 
 ```bash

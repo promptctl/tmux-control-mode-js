@@ -22,12 +22,17 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { TopologyRouter } from "./topology-router.js";
+import type { TopologyRouterOptions } from "./topology-router.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport } from "./transport/types.js";
 import { TmuxCommandError } from "./errors.js";
 
 // Re-export for consumers that need it
 export type { SplitOptions } from "./protocol/encoder.js";
+
+// [LAW:one-source-of-truth] The router owns the option's meaning and default;
+//   the client's public option type is that same shape, not a second copy.
+export type TmuxClientOptions = TopologyRouterOptions;
 
 // ---------------------------------------------------------------------------
 // TmuxConnection — the minimal 5-method interface
@@ -92,10 +97,11 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
   //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
-  private readonly router = new TopologyRouter();
+  private readonly router: TopologyRouter;
 
-  constructor(transport: TmuxTransport) {
+  constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
+    this.router = new TopologyRouter(options);
     this.emitter = new TypedEmitter();
     this.parser = new TmuxParser((msg) => this.handleMessage(msg));
 
