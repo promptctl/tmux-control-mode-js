@@ -1,9 +1,9 @@
 // packages/pane-terminal/src/sink/index.ts
 //
 // `TerminalSink` — the seam between PaneStream (byte/text producer, no DOM)
-// and any concrete renderer (XtermSink in 8w9.6, BufferingSink below, or
+// and any concrete renderer (XtermSink, BufferingSink below, or
 // any consumer-defined sink). PaneStream calls only the methods declared
-// here; nothing about xterm, MobX, React, or DOM appears in this contract.
+// here; nothing about a concrete renderer or UI framework appears in this contract.
 //
 // [LAW:locality-or-seam] This interface IS the seam — it lets PaneStream's
 //   tests substitute `BufferingSink` (or any inline collector) without

@@ -31,7 +31,7 @@
 //     "Cannot read properties of undefined (reading 'dimensions')".
 //     This is the demo's hard-won lesson and stays load-bearing here.
 //  4. `write(Uint8Array)` forwards directly to `term.write()` — no
-//     `TextDecoder` in the live path. Gate 5's byte-fidelity guarantee
+//     `TextDecoder` in the live path. The byte-fidelity guarantee
 //     comes from this single line.
 //  5. `dispose()` releases every observer/listener/timer and disposes the
 //     `Terminal`. After dispose, every public method is a no-op.
@@ -247,7 +247,7 @@ export class XtermSink implements TerminalSink {
 
   // [HOT-PATH] live byte forwarding — must not allocate per call.
   // `term.write(Uint8Array)` accepts the buffer by reference; no copy, no
-  // decode. Gate 5 (non-UTF8 fidelity) is satisfied by the absence of any
+  // decode. Non-UTF8 fidelity is preserved by the absence of any
   // TextDecoder on this path.
   write(data: Uint8Array): void {
     if (this.isDisposed) return;
@@ -440,8 +440,8 @@ export class XtermSink implements TerminalSink {
     if (this.boxW <= 0 || this.boxH <= 0) return;
     if (this.cols <= 0 || this.rows <= 0) return;
     const px = this.fitFont();
-    // Avoid touching xterm's options if the answer hasn't changed —
-    // resize-storm test asserts this.
+    // Avoid touching xterm's options if the answer hasn't changed — a resize
+    // storm must not trigger redundant font-size writes.
     if (this.terminal.options.fontSize === px) return;
     this.terminal.options.fontSize = px;
   }

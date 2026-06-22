@@ -6,9 +6,8 @@
 // assert what the sink was asked to do, and concatenates `write()` payloads
 // into a single byte view so byte-fidelity tests can `.equal()` the input.
 //
-// [LAW:one-source-of-truth] One sink class for tests. Gates 4 and 5 use
-//   this; consumer-side fixtures should reuse it rather than re-implementing
-//   capture-by-array.
+// [LAW:one-source-of-truth] One sink class for tests; consumer-side fixtures
+//   should reuse it rather than re-implementing capture-by-array.
 // [LAW:behavior-not-structure] The sink records BEHAVIORAL events (seed,
 //   write, resize, clear, dispose) — not internal renderer state. A test
 //   that depends on internal Uint8Array buffer indices should examine the
@@ -34,8 +33,8 @@ export interface ResizeCall {
 export interface BufferingSinkOptions {
   /**
    * Initial visibility for `isVisible()`. Default `true` (matches the
-   * "fixture is in view" intent the gate-7 test expects). Use `false` to
-   * model an attached-but-hidden sink in reseed-priority tests.
+   * "fixture is in view" intent reseed-priority fixtures expect). Use `false`
+   * to model an attached-but-hidden sink in reseed-priority tests.
    */
   readonly visible?: boolean;
 }
@@ -70,8 +69,8 @@ export class BufferingSink implements TerminalSink {
 
   write(data: Uint8Array): void {
     if (this.isDisposed) return;
-    // Push the reference, not a copy — gate 5 asserts byte-identity by
-    // reference (`expect(sink.writes[0]).toBe(injected)`), and the design
+    // Push the reference, not a copy — so a consumer can assert byte-identity
+    // by reference (`sink.writes[0] === injected`), and the design
     // doc's O3 ("zero decoding in pipeline") forbids any copy here.
     this.writes.push(data);
   }
@@ -125,7 +124,7 @@ export class BufferingSink implements TerminalSink {
   }
 
   /**
-   * Mutate visibility — used by the reseed-priority bench (gate 7) to
+   * Mutate visibility — used by reseed-priority fixtures to
    * model "this sink is on the offscreen tab right now." No-op after
    * `dispose()` to honour the post-dispose contract documented at the top
    * of this file (every method becomes a no-op).
