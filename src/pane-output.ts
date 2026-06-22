@@ -312,34 +312,36 @@ export class SinkRegistry {
    *   cannot back-fill or skip the current chunk.
    */
   dispatch(msg: ChunkPayload, meta: PaneMeta | undefined): void {
-    // Snapshot all four buckets synchronously before any write() call.
+    // Snapshot all four buckets synchronously before any write() call. The
+    // up-front capture is load-bearing across buckets too: a pane-sink's write
+    // attaching a server-sink must not deliver to it this chunk, so all four
+    // memberships are frozen before the first write fires.
     const paneSnap = snapshotBucket(this.paneAttachments.get(msg.paneId));
     const windowSnap =
       meta !== undefined
         ? snapshotBucket(this.windowAttachments.get(meta.windowId))
-        : EMPTY;
+        : undefined;
     const sessionSnap =
       meta !== undefined
         ? snapshotBucket(this.sessionAttachments.get(meta.sessionId))
-        : EMPTY;
+        : undefined;
     const serverSnap = snapshotBucket(this.serverAttachments);
 
-    // [LAW:no-defensive-null-guards] All four snaps are non-null; EMPTY is
-    //   a shared frozen array. The early exit is a performance gate (avoid
-    //   iterating four empty arrays on the common no-consumer path), not a
-    //   defensive null check.
+    // [LAW:no-defensive-null-guards] `undefined` is the no-sinks sentinel, not
+    //   a defensive guard. The early exit is a performance gate (skip four
+    //   no-op writeSnapshot calls on the common no-consumer path).
     if (
-      paneSnap === EMPTY &&
-      windowSnap === EMPTY &&
-      sessionSnap === EMPTY &&
-      serverSnap === EMPTY
+      paneSnap === undefined &&
+      windowSnap === undefined &&
+      sessionSnap === undefined &&
+      serverSnap === undefined
     )
       return;
 
-    for (const sink of paneSnap) sink.write(msg);
-    for (const sink of windowSnap) sink.write(msg);
-    for (const sink of sessionSnap) sink.write(msg);
-    for (const sink of serverSnap) sink.write(msg);
+    writeSnapshot(paneSnap, msg);
+    writeSnapshot(windowSnap, msg);
+    writeSnapshot(sessionSnap, msg);
+    writeSnapshot(serverSnap, msg);
   }
 
   private getOrCreateBucket(scope: PaneScope): Bucket {
@@ -426,14 +428,48 @@ export class SinkRegistry {
   }
 }
 
-// [LAW:one-source-of-truth] Shared frozen empty array reused for every
-//   absent bucket. `readonly never[]` is assignable to `readonly BytesSink[]`
-//   and iterates zero times — no allocation on the no-consumer path.
-const EMPTY: readonly never[] = Object.freeze([]);
+// A bucket's membership frozen at dispatch entry. Three shapes, no wrapper
+// object (a tagged wrapper would allocate per chunk — the exact cost this
+// representation exists to avoid):
+//   undefined        — no sinks for this scope (the no-consumer common case).
+//   BytesSink        — exactly one sink (the dominant one-terminal case); the
+//                      bare reference IS the frozen membership, no array.
+//   BytesSink[]      — two or more sinks, copied to freeze against re-entrant
+//                      mutation while iterating.
+// [LAW:types-are-the-program] The union is exactly as wide as the domain: a
+//   frozen membership is empty, single, or many — nothing else representable.
+//   The array arm is mutable (not `readonly`) so `Array.isArray` narrows it in
+//   writeSnapshot; immutability is guaranteed structurally — the array is
+//   module-private, built once by snapshotBucket and only ever iterated.
+type SinkSnapshot = undefined | BytesSink | BytesSink[];
 
-function snapshotBucket(bucket: Bucket | undefined): readonly BytesSink[] {
-  if (bucket === undefined || bucket.size === 0) return EMPTY;
+// [LAW:dataflow-not-control-flow] The size branch selects a *materialization*
+//   strategy, not a behavior: every shape delivers the chunk to exactly the
+//   sinks present at dispatch entry. Capturing the sole reference for size===1
+//   is the allocation-free freeze for the hot path — over a steady %output
+//   stream this is the largest per-chunk allocation eliminated. The `Array.from`
+//   copy remains only for size>=2, where live-iterating a mutating Map is the
+//   real re-entrancy hazard.
+function snapshotBucket(bucket: Bucket | undefined): SinkSnapshot {
+  if (bucket === undefined || bucket.size === 0) return undefined;
+  if (bucket.size === 1) {
+    // The single (only) entry: returning its reference allocates nothing —
+    // V8's escape analysis scalar-replaces the non-escaping Map iterator.
+    for (const sink of bucket.values()) return sink;
+  }
   return Array.from(bucket.values());
+}
+
+// [LAW:dataflow-not-control-flow] Dispatches on the snapshot's shape, not on
+//   any behavioral condition — the write to each frozen member runs the same
+//   way regardless of how membership was materialized.
+function writeSnapshot(snap: SinkSnapshot, msg: ChunkPayload): void {
+  if (snap === undefined) return;
+  if (Array.isArray(snap)) {
+    for (const sink of snap) sink.write(msg);
+    return;
+  }
+  snap.write(msg);
 }
 
 // ---------------------------------------------------------------------------
