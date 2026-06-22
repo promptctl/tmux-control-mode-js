@@ -2,7 +2,7 @@
 // Electron main-process bridge: forwards TmuxClient events to registered
 // renderers and routes renderer command invocations to the client.
 //
-// This file owns ONLY what is electron-specific:
+// Everything in this file is electron-specific; for example:
 //   - Single-instance enforcement on the ipcMain singleton.
 //   - Per-sender IPC-side wiring (one unified SenderState per renderer with
 //     the destroyed-listener handle, in-flight invoke set, isSubscribed flag).
