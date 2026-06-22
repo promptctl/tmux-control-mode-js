@@ -2,6 +2,12 @@ node_modules/
 dist/
 dist-electron/
 *.tsbuildinfo
+# src/ is pure TypeScript source; compiled output belongs in dist/. Guard
+# against build artifacts being committed back into the source tree.
+src/**/*.js
+src/**/*.js.map
+src/**/*.d.ts
+src/**/*.d.ts.map
 .DS_Store
 test-results/
 playwright-report/
