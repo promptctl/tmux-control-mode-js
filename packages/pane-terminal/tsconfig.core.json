@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
-  // [LAW:one-way-deps] [LAW:locality-or-seam] core (./stream, ./sink, ./bench)
-  // is environment-agnostic — no DOM globals, no JSX. Splitting the config
+  // [LAW:one-way-deps] [LAW:locality-or-seam] core is environment-agnostic
+  // — no DOM globals, no JSX. Splitting the config
   // makes that constraint mechanical: a stray `document.querySelector` in
   // src/stream would fail to compile here, instead of silently picking up
   // DOM types from a package-wide lib setting.
