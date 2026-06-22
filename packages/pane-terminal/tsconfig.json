@@ -1,8 +1,8 @@
 {
   // [LAW:one-way-deps] Solution-style tsconfig. The package is split into
   // two composite project references so DOM/JSX globals cannot bleed into
-  // the environment-agnostic core (./stream, ./sink). See tsconfig.core.json
-  // and tsconfig.dom.json for the actual compiler options.
+  // the environment-agnostic core. See tsconfig.core.json and
+  // tsconfig.dom.json for the actual compiler options.
   "files": [],
   "references": [
     { "path": "./tsconfig.core.json" },

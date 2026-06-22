@@ -1,8 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
-  // [LAW:one-way-deps] DOM/JSX scope is confined to UI adapters
-  // (./xterm-sink, ./react, ./vanilla). These reference core via project
-  // references — they may import core types but core may not import them.
+  // [LAW:one-way-deps] DOM/JSX scope is confined to UI adapters. These
+  // reference core via project references — they may import core types but
+  // core may not import them.
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
