@@ -154,6 +154,18 @@ export class PaneTopologyManager {
   }
 
   /**
+   * Enumerate every pane currently known to the topology.
+   *
+   * The sole consumer is `PaneInterestTracker`, which needs the universe of
+   * panes to recompute admitting-attachment counts. Returns the live key
+   * iterator — callers must consume it synchronously (the tracker does), as a
+   * concurrent topology mutation would invalidate it.
+   */
+  paneIds(): IterableIterator<number> {
+    return this.table.keys();
+  }
+
+  /**
    * Wholesale replace the topology table from a full pane listing.
    * Called on bootstrap (list-panes -a) and on sessions-changed.
    */
@@ -297,6 +309,49 @@ export class SinkRegistry {
    */
   hasTopologyDependentSinks(): boolean {
     return this.sessionAttachments.size > 0 || this.windowAttachments.size > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Admitting-attachment counts — read surface for PaneInterestTracker
+  //
+  // [LAW:decomposition] Counting is a distinct concern from byte dispatch. The
+  //   registry owns the buckets, so it answers "how many attachments admit this
+  //   scope"; it does NOT own the topology needed to sum a pane's admit count
+  //   across scopes (that join lives in PaneInterestTracker). Each count is the
+  //   bucket size — `?? 0` maps "no bucket for this id" to the domain value
+  //   zero, not a defensive guard. [LAW:no-defensive-null-guards]
+  // ---------------------------------------------------------------------------
+
+  /** Attachments admitting every pane (serverScope). */
+  serverAttachmentCount(): number {
+    return this.serverAttachments.size;
+  }
+
+  /** Attachments admitting every pane in the given session. */
+  sessionAttachmentCount(sessionId: number): number {
+    return this.sessionAttachments.get(sessionId)?.size ?? 0;
+  }
+
+  /** Attachments admitting every pane in the given window. */
+  windowAttachmentCount(windowId: number): number {
+    return this.windowAttachments.get(windowId)?.size ?? 0;
+  }
+
+  /** Attachments admitting exactly this pane. */
+  paneAttachmentCount(paneId: number): number {
+    return this.paneAttachments.get(paneId)?.size ?? 0;
+  }
+
+  /**
+   * Pane ids named by a pane-scoped attachment.
+   *
+   * [LAW:one-source-of-truth] These panes belong to the interest universe even
+   *   when topology has not yet learned of them — a `paneScope(%N)` attachment
+   *   is an explicit declaration that %N is interesting. Returns the live key
+   *   iterator; consume synchronously.
+   */
+  paneScopedPaneIds(): IterableIterator<number> {
+    return this.paneAttachments.keys();
   }
 
   /**
@@ -470,6 +525,116 @@ function writeSnapshot(snap: SinkSnapshot, msg: ChunkPayload): void {
     return;
   }
   snap.write(msg);
+}
+
+// ---------------------------------------------------------------------------
+// PaneInterestTracker — derives per-pane interest from scope attachments
+// ---------------------------------------------------------------------------
+
+/**
+ * Notified when a pane crosses the boundary between "some attachment admits
+ * it" (interesting) and "none does" (idle).
+ *
+ * [LAW:effects-at-boundaries] The tracker that drives this listener is pure —
+ *   it computes transitions and calls these methods. Whatever acts on the
+ *   world (pausing/continuing tmux panes) implements this interface at the
+ *   boundary; the tracker never touches tmux itself.
+ */
+export interface PaneInterestListener {
+  onPaneBecameInteresting(paneId: number): void;
+  onPaneBecameIdle(paneId: number): void;
+}
+
+/**
+ * Derives, for every pane in the interest universe, whether any attachment
+ * admits it — and fires {@link PaneInterestListener} on each transition.
+ *
+ * A pane's **admitting-attachment count** is the scope-correct sum:
+ *
+ * ```
+ * admit(p) = paneAttachmentCount(p)
+ *          + windowAttachmentCount(window(p))
+ *          + sessionAttachmentCount(session(p))
+ *          + serverAttachmentCount()
+ * ```
+ *
+ * The pane is *interesting* iff `admit(p) > 0`. The **universe** of panes is
+ * every pane known to topology plus every pane named by a pane-scoped
+ * attachment (the latter may not yet be in topology).
+ *
+ * [LAW:dataflow-not-control-flow] `recompute()` rebuilds the whole interest map
+ *   from current data (topology + attachment counts) and diffs against the
+ *   prior map on every mutating event — attach, dispose, and every topology
+ *   mutation. There is no per-event "which panes are affected" branching: the
+ *   same full recompute runs every time, and the data decides which panes
+ *   transitioned. This is correct under topology moves for free — a pane that
+ *   moves from an admitting session to a non-admitting one simply recomputes to
+ *   a different admit count. recompute() is off the per-chunk hot path (it runs
+ *   only on attach/dispose/topology events), so the O(universe) sweep is cheap.
+ * [LAW:single-enforcer] The interest map is the sole record of which panes are
+ *   currently interesting. The listener is told only the deltas.
+ */
+export class PaneInterestTracker {
+  // [LAW:one-source-of-truth] paneId → interesting. A pane absent from this map
+  //   is outside the tracked universe (topology does not know it and no
+  //   pane-scope attachment names it). Reassigned wholesale each recompute.
+  private state = new Map<number, boolean>();
+
+  constructor(
+    private readonly registry: SinkRegistry,
+    private readonly topology: PaneTopologyManager,
+    private readonly listener: PaneInterestListener,
+  ) {}
+
+  /**
+   * Recompute every pane's interest and fire the listener on each transition.
+   *
+   * Transitions fired:
+   * - **interesting**: a pane enters the universe already interesting, or flips
+   *   idle → interesting.
+   * - **idle**: a pane enters the universe with no admitting attachment (the
+   *   join pulse that lets a suppressor pause a freshly-discovered idle pane),
+   *   or flips interesting → idle.
+   *
+   * A pane that *leaves* the universe (topology dropped it and no pane-scope
+   * attachment names it) fires nothing — the pane is gone from tmux, so neither
+   * pausing nor continuing it is meaningful.
+   */
+  recompute(): void {
+    const serverCount = this.registry.serverAttachmentCount();
+
+    // Universe = topology panes ∪ pane-scope-named panes. Both iterators are
+    // consumed synchronously here, before any mutation can invalidate them.
+    const next = new Map<number, boolean>();
+    for (const paneId of this.topology.paneIds()) {
+      next.set(paneId, this.isInteresting(paneId, serverCount));
+    }
+    for (const paneId of this.registry.paneScopedPaneIds()) {
+      next.set(paneId, this.isInteresting(paneId, serverCount));
+    }
+
+    // Diff against prior state. A pane whose interest is unchanged — including
+    // one no longer in the universe (absent from `next`) — produces no call.
+    for (const [paneId, interesting] of next) {
+      if (this.state.get(paneId) === interesting) continue;
+      if (interesting) this.listener.onPaneBecameInteresting(paneId);
+      else this.listener.onPaneBecameIdle(paneId);
+    }
+
+    this.state = next;
+  }
+
+  private isInteresting(paneId: number, serverCount: number): boolean {
+    const meta = this.topology.get(paneId);
+    const admit =
+      this.registry.paneAttachmentCount(paneId) +
+      serverCount +
+      (meta !== undefined
+        ? this.registry.windowAttachmentCount(meta.windowId) +
+          this.registry.sessionAttachmentCount(meta.sessionId)
+        : 0);
+    return admit > 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
