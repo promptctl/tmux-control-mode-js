@@ -140,6 +140,16 @@ export class TopologyRouter {
    */
   onTransportReady(runCommand: RunCommand): void {
     this.runCommand = runCommand;
+    // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
+    //   Before runCommand exists, sendPaneAction drops every action — but the
+    //   only panes the tracker can mark interesting pre-ready are pane-scope
+    //   ones (topology is empty until bootstrap), so the dropped action is a
+    //   Continue, and a control-mode client's panes default to RUNNING. A
+    //   dropped pre-ready Continue therefore targets an already-running pane: a
+    //   no-op, not lost state. Nothing is ever paused pre-ready, because pausing
+    //   requires a delivered Pause, which cannot happen while runCommand is null.
+    //   The bootstrap below recomputes the full universe and pauses the
+    //   genuinely-idle panes with runCommand set.
     if (this.needsTopology()) {
       void this.bootstrap();
     }
