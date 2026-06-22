@@ -19,8 +19,10 @@ import {
   type IpcRendererLike,
   type TmuxClientProxy,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
-import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
-import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
+// [LAW:one-way-deps] Browser-safe core only — the `/browser` subpath carries
+// no Node transport coupling (see pane-stream-bridge.ts).
+import { isTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
+import type { EmitterMessage } from "@promptctl/tmux-control-mode-js/browser";
 import type {
   CommandResponse,
   TmuxMessage,

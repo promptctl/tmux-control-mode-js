@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "concurrently -n bridge,web -c blue,green \"pnpm run dev:bridge\" \"pnpm run dev:web\"",
     "dev:watch": "concurrently -n bridge,web -c blue,green \"pnpm run dev:bridge:watch\" \"pnpm run dev:web\"",
-    "dev:bridge": "tsx server/bridge.ts",
-    "dev:bridge:watch": "tsx watch server/bridge.ts",
+    "dev:bridge": "tsx server/main.ts",
+    "dev:bridge:watch": "tsx watch server/main.ts",
     "dev:web": "vite",
     "build": "vite build",
     "build:electron": "ELECTRON_BUILD=1 vite build && node electron/build.mjs",
