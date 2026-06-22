@@ -29,8 +29,8 @@
 //
 // [LAW:single-enforcer] Subscription refcount + watermark logic exists in
 // EXACTLY one source file. Both transports compose it; neither re-implements
-// the bookkeeping. A grep for `subscriptionRefcount` should turn up exactly
-// one definition site.
+// the bookkeeping. The refcount is `SubscriptionRecord.owners.size` — one
+// Set per name, defined and mutated only here.
 // [LAW:one-source-of-truth] Per-peer state lives in this module; transports
 // hold a `Peer` token returned by `registerPeer` and pass it back on every
 // subsequent call. The map is the canonical record of who owns what.

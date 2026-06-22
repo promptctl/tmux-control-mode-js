@@ -3,9 +3,10 @@
 // Bench/test fixtures — internal to this package, NOT a published subpath
 // export. Importable from `tests/` only via the in-tree path.
 //
-// Real implementation surfaces (PaneStream, TerminalSink, XtermSink) land in
-// later steps of the tmux-pane-terminal-8w9 epic. This module hosts the
-// deterministic FakeTmuxClient that gates can use without a live tmux.
+// This module hosts the deterministic FakeTmuxClient that gates and benches
+// exercise without a live tmux — the real implementation surfaces
+// (PaneStream, TerminalSink, XtermSink) drive it in place of a spawned
+// `tmux -C`.
 
 export {
   FakeTmuxClient,
