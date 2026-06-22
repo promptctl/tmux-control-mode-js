@@ -292,9 +292,12 @@ export interface CommandResponse {
   readonly success: boolean;
 }
 
-// [LAW:one-source-of-truth] The synthetic response for a send that issued no
-// tmux command (empty `sendKeys` input). commandNumber -1 marks "no command
-// was correlated" — there is no FIFO entry because nothing was sent.
+// [LAW:one-source-of-truth] The canonical synthetic response for any operation
+// that resolves without issuing a correlated tmux command: an empty `sendKeys`
+// input, or a bridge refcounted no-op (a subscribe/unsubscribe that only bumps
+// a refcount and never reaches tmux). commandNumber -1 marks "no command was
+// correlated" — there is no FIFO entry because nothing was sent. Every such
+// path builds its response here rather than minting its own.
 export function emptyKeysResponse(): CommandResponse {
   return {
     commandNumber: -1,
