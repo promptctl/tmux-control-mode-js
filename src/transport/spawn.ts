@@ -10,9 +10,10 @@ import {
 } from "node:child_process";
 import type { TmuxTransport, SpawnOptions } from "./types.js";
 
-// [LAW:one-source-of-truth] DCS frame bytes live here only (SPEC §12).
-const DCS_INTRODUCER = "\u001bP1000p"; // 7 bytes: ESC P 1 0 0 0 p
-const DCS_TERMINATOR = "\u001b\\"; // 2 bytes: ESC backslash
+// [LAW:one-source-of-truth] DCS frame bytes live here only (SPEC §12); every
+// other site references these named constants instead of re-encoding the literal.
+const DCS_INTRODUCER = "\u001bP1000p";
+const DCS_TERMINATOR = "\u001b\\";
 
 /**
  * Result of feeding a chunk to the DCS stripper.
@@ -29,7 +30,7 @@ export interface DcsStripperResult {
 /**
  * Create a stateful DCS introducer stripper for `-CC` mode.
  *
- * The first 7 bytes of the stream MUST be `\u001bP1000p`. Once they have been
+ * The stream MUST begin with the `DCS_INTRODUCER` bytes. Once they have been
  * seen and verified, every subsequent chunk is forwarded byte-for-byte.
  * Handles arbitrary fragmentation (chunk sizes 1..N) of the introducer.
  *
@@ -63,7 +64,8 @@ export function createDcsStripper(): (chunk: string) => DcsStripperResult {
   };
 }
 
-// [LAW:one-source-of-truth] Single function builds the full argv for the tmux process.
+// [LAW:decomposition] Argv assembly is one part: flag (-CC/-C) and socket (-S/-L)
+// selection live at a single cut, so callers pass intent rather than a built argv.
 function buildArgv(
   controlControl: boolean,
   socketPath: string | undefined,

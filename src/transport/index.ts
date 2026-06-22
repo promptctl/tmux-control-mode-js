@@ -1,8 +1,9 @@
 // src/transport/index.ts
-// Barrel export for the transport layer.
 // Node.js-only — uses child_process.spawn.
 
-// [LAW:one-source-of-truth] Re-exports only; no logic lives here.
+// [LAW:decomposition] This is the layer's public seam, kept a pure re-export so
+// the boundary carries no behavior; adding logic here would couple the layer's
+// face to its internals.
 
 export type { TmuxTransport, SpawnOptions } from "./types.js";
 
