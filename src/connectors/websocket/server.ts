@@ -54,9 +54,9 @@ import {
 } from "./protocol.js";
 
 import {
+  mapRpcCode,
   parseRpcRequest,
   RpcError,
-  type RpcErrorCode,
   type RpcRequest,
 } from "../rpc.js";
 import { dispatchRpcRequest } from "../rpc-dispatch.js";
@@ -763,12 +763,6 @@ class Connection {
     return dispatchRpcRequest(state.client, req);
   }
 
-  // [LAW:dataflow-not-control-flow] Single-arm mapping function for
-  // parse-time errors. Each RpcErrorCode maps to one BridgeErrorCode for
-  // the wire reply.
-  // (Defined here as a private helper so it stays close to its single caller.)
-  // (See `mapRpcCode` below the class definition.)
-
   private async safeAuthorize(frame: CallFrame): Promise<AuthorizeResult> {
     const hook = this.opts.authorize;
     if (hook === undefined) return { allow: true };
@@ -1105,21 +1099,6 @@ const CLIENT_FRAME_HANDLERS: ClientFrameHandlers = Object.assign(
     bye: (self) => self.closeBye(),
   } satisfies ClientFrameHandlers,
 );
-
-// ---------------------------------------------------------------------------
-// RpcError → BridgeErrorCode mapping (single arm function — Connection.onCall
-// uses this to translate parser failures into the wire error taxonomy).
-// ---------------------------------------------------------------------------
-
-const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
-  UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
-  INVALID_REQUEST: "BRIDGE_INVALID_REQUEST",
-  INVALID_ARG: "BRIDGE_INVALID_ARG",
-};
-
-function mapRpcCode(code: RpcErrorCode): BridgeErrorCode {
-  return RPC_ERROR_TO_BRIDGE[code];
-}
 
 // ---------------------------------------------------------------------------
 // Helpers visible to the factory

@@ -27,6 +27,7 @@
 
 import type { SplitOptions } from "../protocol/encoder.js";
 import { PaneAction, type CommandResponse } from "../protocol/types.js";
+import type { BridgeErrorCode } from "./errors.js";
 
 // ---------------------------------------------------------------------------
 // RpcRequest discriminated union — one variant per bridged TmuxClient method.
@@ -119,6 +120,37 @@ export class RpcError extends Error {
     this.name = "RpcError";
     this.code = code;
   }
+}
+
+// ---------------------------------------------------------------------------
+// RpcErrorCode → BridgeErrorCode taxonomy translation.
+//
+// RpcError is connector-internal (a validator-time parse failure); the code a
+// renderer/peer sees on the wire is a BridgeErrorCode. Each parse failure has
+// exactly one wire code. This translation lives here — beside the RpcErrorCode
+// it consumes — so every connector maps the SAME way. The `satisfies` clause
+// forces one entry per RpcErrorCode at compile time; a single home is what
+// forces both transports to agree on the VALUE (a per-file table only caught
+// a missing KEY, never a diverged value).
+//
+// [LAW:single-enforcer] One taxonomy translation for every connector; the WS
+// server and the Electron main both call mapRpcCode rather than restating it.
+// [LAW:one-source-of-truth] The values live once; the per-connector copies are
+// gone.
+// [LAW:one-way-deps] rpc.ts (specific: RPC internals) depends on errors.ts
+// (general: the wire taxonomy every transport reaches); errors.ts stays
+// ignorant of RPC. BridgeErrorCode is a type-only import, erased at runtime,
+// so rpc.ts keeps its renderer-safe / zero-runtime-dep contract.
+// ---------------------------------------------------------------------------
+
+const RPC_ERROR_TO_BRIDGE: Readonly<Record<RpcErrorCode, BridgeErrorCode>> = {
+  UNKNOWN_METHOD: "BRIDGE_UNKNOWN_METHOD",
+  INVALID_REQUEST: "BRIDGE_INVALID_REQUEST",
+  INVALID_ARG: "BRIDGE_INVALID_ARG",
+};
+
+export function mapRpcCode(code: RpcErrorCode): BridgeErrorCode {
+  return RPC_ERROR_TO_BRIDGE[code];
 }
 
 // ---------------------------------------------------------------------------
