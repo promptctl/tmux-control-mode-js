@@ -27,11 +27,6 @@ export const MIN_TMUX_VERSION: TmuxVersion = { major: 3, minor: 2 };
 export const REQUEST_REPORT_MIN_VERSION: TmuxVersion = { major: 3, minor: 5 };
 
 /**
- * `%config-error` notifications are only emitted by tmux 3.4+.
- */
-export const CONFIG_ERROR_MIN_VERSION: TmuxVersion = { major: 3, minor: 4 };
-
-/**
  * Parse the major/minor pair from a `tmux -V` output line.
  * Trailing suffix letters (e.g. `3.5a`) are ignored — match is on the
  * leading `<major>.<minor>` digits only.
