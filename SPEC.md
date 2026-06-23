@@ -908,12 +908,18 @@ Note: `-r` does NOT require `CLIENT_CONTROL` (it operates on the client's tty).
 
 ### 15.1 Library note (library)
 
-`TmuxClient.requestReport()` requires tmux 3.5+. The `-r` flag to
-`refresh-client` was not recognized in tmux 3.4 — tmux rejects it with an
-unknown-flag error. The minimum version is encoded in `src/tmux-compat.ts` as
-`REQUEST_REPORT_MIN_VERSION = { major: 3, minor: 5 }`. The library does not
-enforce this floor at call time; callers on older tmux will receive a rejected
-`%error` response. The README compatibility table reflects this constraint.
+`requestReport()` requires tmux 3.5+. The `-r` flag to `refresh-client` was not
+recognized in tmux 3.4 — tmux rejects it with an unknown-flag error. The
+minimum version is encoded in `src/tmux-compat.ts` as
+`REQUEST_REPORT_MIN_VERSION = { major: 3, minor: 5 }`.
+
+The library supports tmux 3.2+, so `requestReport()` enforces this per-command
+floor itself rather than leaking tmux's raw "unknown flag" `%error`: it probes
+the running version in-protocol (`display-message -p "#{version}"`, a format
+available since tmux 2.4 and verified in the tmux 3.2 source) via
+`queryTmuxVersion()`, and on tmux 3.2–3.4 rejects with a typed
+`UnsupportedTmuxVersionError` naming the requirement. The README compatibility
+table reflects this constraint.
 
 ---
 
