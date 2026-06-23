@@ -62,21 +62,6 @@ export type BridgeErrorCode =
   | "BRIDGE_RATE_LIMITED"
   /** createMainBridge called twice on the same ipcMain. */
   | "BRIDGE_ALREADY_REGISTERED"
-  /**
-   * A second `createPaneBytesReceiver` (Electron renderer side) was
-   * constructed for an `(ipcRenderer, paneId)` pair that already has an
-   * active receiver. `paneEnd` carries only `paneId`, so a second receiver
-   * would race the auto-detach — whichever handles `paneEnd` first tears
-   * every receiver for that pair down — or split the byte stream across two
-   * sinks with no way to tell them apart. The factory refuses the second
-   * registration loudly instead of silently corrupting byte flow; drop the
-   * prior attachment (call its disposer) before constructing a new one.
-   *
-   * The server-side sinks (`attachWebContentsSink`, `attachWebSocketSink`)
-   * keep no exclusivity registry and never raise this — multiple scoped
-   * attachments on one target are valid.
-   */
-  | "BRIDGE_PANE_SINK_ALREADY_ATTACHED"
   /** Renderer attempted to unsubscribe a name it does not own. */
   | "BRIDGE_UNKNOWN_SUBSCRIPTION"
   /**
