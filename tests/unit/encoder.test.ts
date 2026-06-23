@@ -3,7 +3,6 @@
 
 import {
   tmuxEscape,
-  buildCommand,
   refreshClientSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
@@ -51,24 +50,6 @@ describe("tmuxEscape", () => {
 
   it("hash/format specifiers pass through", () => {
     expect(tmuxEscape("#{pane_title}")).toBe("'#{pane_title}'");
-  });
-});
-
-// buildCommand is the backward-compat shim that adds \n — it owns the newline.
-// All other encoder functions return plain command strings; execute() adds \n.
-describe("buildCommand", () => {
-  it("list-sessions → 'list-sessions\\n'", () => {
-    expect(buildCommand("list-sessions")).toBe("list-sessions\n");
-  });
-
-  it("new-session → 'new-session\\n'", () => {
-    expect(buildCommand("new-session")).toBe("new-session\n");
-  });
-
-  it("always appends exactly one newline", () => {
-    const result = buildCommand("some-command");
-    expect(result.endsWith("\n")).toBe(true);
-    expect(result.split("\n").length).toBe(2); // one newline splits into exactly 2 parts
   });
 });
 

@@ -97,10 +97,3 @@ export function refreshClientQueryClipboard(): string {
 export function detachClient(): string {
   return "\n";
 }
-
-// buildCommand is kept for backward-compat with any external consumers.
-// [LAW:one-source-of-truth] Newline is the wire terminator; TmuxClient.execute
-// adds it. This helper is kept for callers that need the wire form directly.
-export function buildCommand(cmd: string): string {
-  return cmd + "\n";
-}
