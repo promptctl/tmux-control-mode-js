@@ -15,10 +15,7 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
-import type {
-  CommandResponse,
-  PaneOutputMessage,
-} from "../../protocol/types.js";
+import type { CommandResponse } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { RpcRequest } from "../rpc.js";
 
@@ -43,22 +40,6 @@ export const IPC = {
    * low-watermark trigger a resume. See AckMessage.
    */
   ack: "tmux:ack",
-  /**
-   * main → renderer: one chunk of pane bytes from a `WebContentsSink`. Payload
-   * is `PaneBytesEnvelope`. Distinct from `event` so a renderer's pane-byte
-   * receiver does not have to filter the broadcast event stream — only sinks
-   * that the host explicitly attached on the main side reach this channel.
-   * `Uint8Array` rides Electron's structured-clone IPC; no base64 hop.
-   */
-  paneBytes: "tmux:pane-bytes",
-  /**
-   * main → renderer: terminator for an `attachWebContentsSink` attachment.
-   * Fired once when the disposer returned from that factory runs. Payload
-   * is `PaneEndEnvelope`. The renderer-side receiver auto-detaches on this
-   * frame — no further `paneBytes` will arrive for the (sink, paneId)
-   * attachment that emitted it.
-   */
-  paneEnd: "tmux:pane-end",
 } as const;
 
 /**
@@ -192,30 +173,6 @@ export type InvokeResultEnvelope =
 export interface AckMessage {
   readonly paneId: number;
   readonly bytes: number;
-}
-
-// ---------------------------------------------------------------------------
-// Main → renderer: WebContentsSink envelopes.
-//
-// [LAW:one-source-of-truth] One declaration for each envelope shape; both
-// `attachWebContentsSink` (main.ts) and `createPaneBytesReceiver` (renderer.ts)
-// import it so the wire shape cannot drift across the IPC hop.
-// [LAW:types-are-the-program] The envelope IS a PaneOutputMessage — same
-// discriminator, same fields (paneId, data, type, age?). A separate interface
-// was a second source of truth that could only be a lossy subset.
-// ---------------------------------------------------------------------------
-
-/**
- * Payload for `IPC.paneBytes`. All fields survive Electron's structured clone.
- *
- * [LAW:one-source-of-truth] This is a type alias for `PaneOutputMessage` — the
- * envelope IS the message; no information is dropped at the IPC boundary.
- */
-export type PaneBytesEnvelope = PaneOutputMessage;
-
-/** Payload for `IPC.paneEnd`. */
-export interface PaneEndEnvelope {
-  readonly paneId: number;
 }
 
 // ---------------------------------------------------------------------------

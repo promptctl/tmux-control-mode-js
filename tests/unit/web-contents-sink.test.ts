@@ -1,6 +1,6 @@
 // tests/unit/web-contents-sink.test.ts
-// Behavior-level tests for `WebContentsSink`, `attachWebContentsSink` (main.ts)
-// and the renderer-side `createPaneBytesReceiver` (renderer.ts).
+// Behavior-level tests for `WebContentsSink` and `attachWebContentsSink`
+// (main.ts).
 //
 // What the contract promises:
 //
@@ -17,16 +17,9 @@
 //   - Multiple attachments on the same wc with different scopes coexist —
 //     there is NO exclusivity registry.
 //
-// createPaneBytesReceiver (unchanged; uses IPC.paneBytes separately):
-//   - Filters inbound IPC.paneBytes frames by paneId.
-//   - Forwards matching frames into the supplied BytesSink.
-//   - Calls sink.end() and auto-detaches on IPC.paneEnd for matching paneId.
-//   - Returned disposer is idempotent.
-//   - Exclusivity: one receiver per (ipcRenderer, paneId).
-//
 // [LAW:behavior-not-structure] Tests assert the wire contract (channel names,
 //   envelope shape, byte preservation, scope filtering, lifecycle), not the
-//   closure-internal structure of the sink or receiver.
+//   closure-internal structure of the sink.
 
 import { describe, expect, it } from "vitest";
 
@@ -34,21 +27,14 @@ import { TmuxClient } from "../../src/client.js";
 import {
   WebContentsSink,
   attachWebContentsSink,
-  type PaneBytesEnvelope,
-  type PaneEndEnvelope,
 } from "../../src/connectors/electron/main.js";
-import { createPaneBytesReceiver } from "../../src/connectors/electron/renderer.js";
 import {
-  BridgeError,
   IPC,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
-import type { BytesSink } from "../../src/pane-output.js";
 import { paneScope } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { PaneOutputMessage } from "../../src/protocol/types.js";
-
-import { createIpcHub } from "./_helpers/ipc-hub.js";
 
 // ---------------------------------------------------------------------------
 // Test rigging
@@ -106,35 +92,6 @@ function createFakeWebContents(): FakeWebContents {
     sends,
     destroy() {
       destroyed = true;
-    },
-  };
-}
-
-interface RecordingSink {
-  readonly sink: BytesSink;
-  readonly writes: Uint8Array[];
-  endCalls: number;
-}
-
-function createRecordingSink(): RecordingSink {
-  const writes: Uint8Array[] = [];
-  const state = { endCalls: 0 };
-  const sink: BytesSink = {
-    write(msg) {
-      writes.push(msg.data.slice());
-    },
-    end() {
-      state.endCalls++;
-    },
-  };
-  return {
-    sink,
-    writes,
-    get endCalls() {
-      return state.endCalls;
-    },
-    set endCalls(v) {
-      state.endCalls = v;
     },
   };
 }
@@ -262,7 +219,7 @@ describe("attachWebContentsSink", () => {
     expect(fake.sends).toHaveLength(0);
   });
 
-  it("disposer is idempotent — no paneEnd frame (IPC.event has no pane-end)", () => {
+  it("disposer is idempotent — no wire-level pane-end frame", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     const fake = createFakeWebContents();
@@ -272,7 +229,8 @@ describe("attachWebContentsSink", () => {
     dispose();
     dispose();
 
-    // No sends: end() is a no-op, no IPC.paneEnd frame.
+    // No sends: end() is a no-op; pane lifecycle surfaces via tmux
+    // notifications on IPC.event, not a dedicated terminator frame.
     expect(fake.sends).toHaveLength(0);
   });
 
@@ -302,168 +260,5 @@ describe("attachWebContentsSink", () => {
 
     // Both attachments fire: two sends for the one chunk.
     expect(fake.sends).toHaveLength(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// createPaneBytesReceiver — renderer-side behavior in isolation.
-//
-// Driven by the shared IPC hub so structured-clone semantics match real
-// Electron (`Uint8Array` is preserved; mutating the source post-send does
-// NOT affect the receiver's view).
-// ---------------------------------------------------------------------------
-
-describe("createPaneBytesReceiver", () => {
-  it("forwards matching paneBytes frames into the sink", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 3, sink.sink);
-
-    const payload = new Uint8Array([0xc3, 0xa9, 0xe2, 0x98, 0x83]);
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 3,
-      data: payload,
-    } satisfies PaneBytesEnvelope);
-
-    expect(sink.writes).toHaveLength(1);
-    expect(Array.from(sink.writes[0])).toEqual(Array.from(payload));
-  });
-
-  it("ignores paneBytes frames whose paneId does not match", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 3, sink.sink);
-
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 4,
-      data: new Uint8Array([0x01]),
-    } satisfies PaneBytesEnvelope);
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 2,
-      data: new Uint8Array([0x02]),
-    } satisfies PaneBytesEnvelope);
-
-    expect(sink.writes).toEqual([]);
-  });
-
-  it("forwards paneEnd for matching paneId, calling sink.end exactly once", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 5, sink.sink);
-
-    renderer.sender.send(IPC.paneEnd, { paneId: 5 } satisfies PaneEndEnvelope);
-
-    expect(sink.endCalls).toBe(1);
-  });
-
-  it("auto-detaches after paneEnd so subsequent frames do not reach the sink", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 5, sink.sink);
-
-    renderer.sender.send(IPC.paneEnd, { paneId: 5 } satisfies PaneEndEnvelope);
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 5,
-      data: new Uint8Array([0x01, 0x02]),
-    } satisfies PaneBytesEnvelope);
-    renderer.sender.send(IPC.paneEnd, { paneId: 5 } satisfies PaneEndEnvelope);
-
-    expect(sink.writes).toEqual([]);
-    expect(sink.endCalls).toBe(1);
-  });
-
-  it("returns an idempotent disposer that detaches both listeners", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    const dispose = createPaneBytesReceiver(
-      renderer.ipcRenderer,
-      6,
-      sink.sink,
-    );
-
-    dispose();
-    dispose();
-
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 6,
-      data: new Uint8Array([0xff]),
-    } satisfies PaneBytesEnvelope);
-    renderer.sender.send(IPC.paneEnd, { paneId: 6 } satisfies PaneEndEnvelope);
-
-    expect(sink.writes).toEqual([]);
-    expect(sink.endCalls).toBe(0);
-  });
-
-  it("ignores paneEnd whose paneId does not match (no detach, no sink.end)", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 9, sink.sink);
-
-    renderer.sender.send(IPC.paneEnd, { paneId: 8 } satisfies PaneEndEnvelope);
-
-    renderer.sender.send(IPC.paneBytes, {
-      type: "output" as const,
-      paneId: 9,
-      data: new Uint8Array([0x42]),
-    } satisfies PaneBytesEnvelope);
-
-    expect(sink.endCalls).toBe(0);
-    expect(sink.writes).toHaveLength(1);
-    expect(Array.from(sink.writes[0])).toEqual([0x42]);
-  });
-
-  it("refuses a second concurrent receiver for the same (ipcRenderer, paneId)", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink);
-
-    expect(() =>
-      createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink),
-    ).toThrow(BridgeError);
-    expect(() =>
-      createPaneBytesReceiver(renderer.ipcRenderer, 30, sink.sink),
-    ).toThrow(/BRIDGE_PANE_SINK_ALREADY_ATTACHED/);
-  });
-
-  it("frees the (ipcRenderer, paneId) slot on disposer so a rotated receiver can attach", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    const dispose = createPaneBytesReceiver(
-      renderer.ipcRenderer,
-      31,
-      sink.sink,
-    );
-
-    dispose();
-
-    expect(() =>
-      createPaneBytesReceiver(renderer.ipcRenderer, 31, sink.sink),
-    ).not.toThrow();
-  });
-
-  it("frees the (ipcRenderer, paneId) slot on auto-detach (paneEnd)", () => {
-    const hub = createIpcHub();
-    const renderer = hub.createRenderer();
-    const sink = createRecordingSink();
-    createPaneBytesReceiver(renderer.ipcRenderer, 32, sink.sink);
-
-    renderer.sender.send(IPC.paneEnd, { paneId: 32 } satisfies PaneEndEnvelope);
-
-    expect(() =>
-      createPaneBytesReceiver(renderer.ipcRenderer, 32, sink.sink),
-    ).not.toThrow();
   });
 });
