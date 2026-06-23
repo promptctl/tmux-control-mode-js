@@ -637,6 +637,23 @@ describe("Electron IPC bridge — method dispatch", () => {
   it("requestReport passes paneId and escape-sequence payload", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
+
+    // [LAW:no-ambient-temporal-coupling] requestReport now probes the tmux
+    // version (refresh-client -r needs 3.5+) before sending the report, so the
+    // bridge path makes two round-trips. Drive ordering with the real promise
+    // chain — not microtask polling — via an auto-responding transport: each
+    // command is answered as it is sent (version probe → "3.6a", everything
+    // else → empty success). The test then awaits requestReport to full
+    // resolution and inspects t.sent at the end.
+    let respNum = 0;
+    const record = t.transport.send.bind(t.transport);
+    t.transport.send = (cmd: string): void => {
+      record(cmd);
+      respNum += 1;
+      const output = cmd.includes("#{version}") ? ["3.6a"] : [];
+      feedCommandResponse(t, respNum, output);
+    };
+
     const client = new TmuxClient(t.transport);
     createMainBridge(client, hub.ipcMain);
 
@@ -644,21 +661,11 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const report = "\u001b]10;rgb:1818/1818/1818\u001b\\";
-    const pending = proxy.requestReport(3, report);
+    await proxy.requestReport(3, report);
 
-    // [version gate] requestReport probes the running tmux version first
-    // (refresh-client -r needs tmux 3.5+); answering with 3.6 lets it proceed
-    // to send the actual report command.
-    expect(t.sent[0]).toContain("display-message");
-    feedCommandResponse(t, 1, ["3.6a"]);
-
-    // Let the probe resolve and the report command dispatch.
-    for (let i = 0; i < 20 && t.sent.length < 2; i++) await Promise.resolve();
-    expect(t.sent[1]).toContain("refresh-client");
-    expect(t.sent[1]).toContain("%3");
-
-    feedCommandResponse(t, 2, []);
-    await pending;
+    const reportCmd = t.sent.find((c) => c.includes("refresh-client -r"));
+    expect(reportCmd).toBeDefined();
+    expect(reportCmd).toContain("%3");
   });
 
   it("detach is NOT exposed on the proxy (admin-only) and renderer attempts are rejected", async () => {
