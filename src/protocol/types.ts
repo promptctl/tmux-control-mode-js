@@ -45,7 +45,7 @@ export interface ExtendedOutputMessage {
 }
 
 /**
- * Receipt type produced by `asPaneOutput`. A `PaneOutputMessage` is *exactly*
+ * The type `isPaneOutput` narrows to. A `PaneOutputMessage` is *exactly*
  * a TmuxMessage whose discriminator says it carries pane bytes + a paneId;
  * the type system makes it impossible to construct one with any other shape.
  *
@@ -342,24 +342,6 @@ export function isPaneOutput<M extends { readonly type: string }>(
   msg: M,
 ): msg is Extract<M, PaneOutputMessage> {
   return msg.type === "output" || msg.type === "extended-output";
-}
-
-/**
- * Receipt-style sibling of `isPaneOutput`. Returns the same value typed as
- * `PaneOutputMessage` when the discriminator matches, or `null` otherwise.
- * Use this when the consumer's natural shape is `out === null ? skip : use`
- * (e.g. ack accounting); use `isPaneOutput` when you also need the
- * else-branch narrowing.
- *
- * Same soundness reasoning as `isPaneOutput`: `Extract<M, PaneOutputMessage>`
- * yields `never` when the input union cannot actually carry a
- * `PaneOutputMessage`, so a caller cannot fabricate a typed value from a
- * structurally incompatible shape.
- */
-export function asPaneOutput<M extends { readonly type: string }>(
-  msg: M,
-): Extract<M, PaneOutputMessage> | null {
-  return isPaneOutput(msg) ? msg : null;
 }
 
 /**
