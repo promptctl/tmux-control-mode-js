@@ -36,7 +36,4 @@ export interface SpawnOptions {
 
   /** Environment variables for the child process. */
   readonly env?: Record<string, string | undefined>;
-
-  /** Use `-CC` mode instead of `-C`. */
-  readonly controlControl?: boolean;
 }
