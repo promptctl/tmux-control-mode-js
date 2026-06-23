@@ -67,9 +67,9 @@ the current terminal attributes — which fails unless stdin is a tty (a
 PTY is the typical kind; a real terminal device also qualifies). The
 library's default transport `spawnTmux` (`src/transport/spawn.ts`) uses
 `child_process.spawn`, which supplies pipe stdio rather than a tty, so it
-cannot host `-CC`. `spawnTmux` short-circuits this by throwing
-synchronously when constructed with `controlControl: true`, refusing the
-configuration before tmux is launched. This resolves audit finding
+cannot host `-CC`. `spawnTmux` therefore emits `-C` only and exposes no
+option to request `-CC` — the incompatible configuration is unrepresentable
+by construction rather than rejected at runtime. This resolves audit finding
 MANIFEST F10.
 
 This is not a missing library feature — it is a fundamental incompatibility
