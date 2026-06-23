@@ -645,10 +645,19 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     const report = "\u001b]10;rgb:1818/1818/1818\u001b\\";
     const pending = proxy.requestReport(3, report);
-    expect(t.sent[0]).toContain("refresh-client");
-    expect(t.sent[0]).toContain("%3");
 
-    feedCommandResponse(t, 1, []);
+    // [version gate] requestReport probes the running tmux version first
+    // (refresh-client -r needs tmux 3.5+); answering with 3.6 lets it proceed
+    // to send the actual report command.
+    expect(t.sent[0]).toContain("display-message");
+    feedCommandResponse(t, 1, ["3.6a"]);
+
+    // Let the probe resolve and the report command dispatch.
+    for (let i = 0; i < 20 && t.sent.length < 2; i++) await Promise.resolve();
+    expect(t.sent[1]).toContain("refresh-client");
+    expect(t.sent[1]).toContain("%3");
+
+    feedCommandResponse(t, 2, []);
     await pending;
   });
 
