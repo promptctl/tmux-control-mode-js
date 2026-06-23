@@ -11,7 +11,6 @@ import { describe, it, expect } from "vitest";
 import {
   MIN_TMUX_VERSION,
   REQUEST_REPORT_MIN_VERSION,
-  CONFIG_ERROR_MIN_VERSION,
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
@@ -25,12 +24,6 @@ describe("MIN_TMUX_VERSION", () => {
 describe("REQUEST_REPORT_MIN_VERSION", () => {
   it("is 3.5 (refresh-client -r is rejected by tmux <3.5)", () => {
     expect(REQUEST_REPORT_MIN_VERSION).toEqual({ major: 3, minor: 5 });
-  });
-});
-
-describe("CONFIG_ERROR_MIN_VERSION", () => {
-  it("is 3.4 (%config-error notifications only emitted by tmux 3.4+)", () => {
-    expect(CONFIG_ERROR_MIN_VERSION).toEqual({ major: 3, minor: 4 });
   });
 });
 
