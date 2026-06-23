@@ -91,6 +91,15 @@ export function refreshClientQueryClipboard(): string {
   return `refresh-client -l`;
 }
 
+// [LAW:one-source-of-truth] The version-probe wire format lives here only.
+// `#{version}` is a format variable present since tmux 2.4 (verified in the
+// tmux 3.2 source, format.c — our load-bearing floor), so this probe resolves
+// across the entire supported range. In control mode the reply is a single
+// %output line carrying the version string (e.g. `3.5a`).
+export function displayMessageVersion(): string {
+  return `display-message -p "#{version}"`;
+}
+
 // [LAW:one-source-of-truth] Detach byte sequence lives here only.
 // Returns just "\n" — a bare newline causes tmux to exit (SPEC §4.1).
 // This is NOT a command and does NOT go through execute().

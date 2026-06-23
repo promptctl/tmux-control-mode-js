@@ -8,7 +8,19 @@ export type {
   TmuxClientOptions,
 } from "./client.js";
 export type { ConnectionState } from "./connection-state.js";
-export { TmuxCommandError } from "./errors.js";
+export { TmuxCommandError, UnsupportedTmuxVersionError } from "./errors.js";
+
+// [LAW:one-source-of-truth] tmux version-compatibility contract. These are the
+// machine-readable form of the support floors the README Compatibility table
+// mirrors — library surface, consumed by requestReport's version gate and
+// available to consumers that want to pre-check before issuing a command.
+export type { TmuxVersion } from "./tmux-compat.js";
+export {
+  MIN_TMUX_VERSION,
+  REQUEST_REPORT_MIN_VERSION,
+  parseTmuxVersion,
+  meetsTmuxVersion,
+} from "./tmux-compat.js";
 
 export { PaneAction } from "./protocol/types.js";
 export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
@@ -69,4 +81,5 @@ export {
   clearFlags,
   requestReport,
   queryClipboard,
+  queryTmuxVersion,
 } from "./commands/index.js";

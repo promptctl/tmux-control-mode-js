@@ -42,6 +42,19 @@ export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
 export type { ConnectionState } from "./connection-state.js";
 export type { TmuxConnection } from "./client.js";
 
+// [LAW:one-source-of-truth] The tmux version-compatibility contract is pure
+//   (zero Node coupling), so it ships identically on the browser surface. A
+//   browser consumer issuing requestReport over a TmuxConnection must be able
+//   to catch its version-precondition failure and pre-check the floor itself.
+export { UnsupportedTmuxVersionError } from "./errors.js";
+export type { TmuxVersion } from "./tmux-compat.js";
+export {
+  MIN_TMUX_VERSION,
+  REQUEST_REPORT_MIN_VERSION,
+  parseTmuxVersion,
+  meetsTmuxVersion,
+} from "./tmux-compat.js";
+
 // [LAW:one-type-per-behavior] The free command functions are one family — pure
 //   builders over `TmuxConnection` with no transport coupling — so the whole
 //   set ships on the browser surface, identical to the root entry's view.
@@ -58,4 +71,5 @@ export {
   clearFlags,
   requestReport,
   queryClipboard,
+  queryTmuxVersion,
 } from "./commands/index.js";

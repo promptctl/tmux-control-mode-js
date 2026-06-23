@@ -24,9 +24,17 @@ import {
   refreshClientClearFlags,
   refreshClientReport,
   refreshClientQueryClipboard,
+  displayMessageVersion,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
 } from "../protocol/encoder.js";
+import {
+  type TmuxVersion,
+  REQUEST_REPORT_MIN_VERSION,
+  parseTmuxVersion,
+  meetsTmuxVersion,
+} from "../tmux-compat.js";
+import { UnsupportedTmuxVersionError } from "../errors.js";
 
 export { PaneAction };
 export type { SplitOptions };
@@ -107,11 +115,52 @@ export function clearFlags(
   return client.execute(refreshClientClearFlags(flags));
 }
 
-export function requestReport(
+/**
+ * Probe the running tmux server's version over the live control-mode
+ * connection (`display-message -p "#{version}"`).
+ *
+ * [LAW:effects-at-boundaries] The pure comparison helpers live in
+ * tmux-compat.ts; this is the single effectful wrapper that turns a live
+ * connection into a known version. Works against any transport (spawn,
+ * websocket, electron) because the probe travels the control-mode channel to
+ * the real tmux server, not a local `tmux -V` spawn.
+ *
+ * [LAW:no-silent-failure] Rejects loudly if the reply carries no recognisable
+ * version rather than guessing a floor.
+ */
+export async function queryTmuxVersion(
+  client: TmuxConnection,
+): Promise<TmuxVersion> {
+  const response = await client.execute(displayMessageVersion());
+  const version = response.output
+    .map((line) => parseTmuxVersion(line))
+    .find((v): v is TmuxVersion => v !== null);
+  if (version === undefined) {
+    throw new Error(
+      `could not determine tmux version from reply: ${JSON.stringify(response.output)}`,
+    );
+  }
+  return version;
+}
+
+// [LAW:single-enforcer] requestReport is the sole gate for the `refresh-client
+// -r` version floor. `-r` was added in tmux 3.5; the library supports tmux
+// 3.2+, so a caller on 3.2-3.4 would otherwise receive tmux's raw "unknown
+// flag" %error. We probe the live version first and surface a clear,
+// version-named precondition failure instead.
+export async function requestReport(
   client: TmuxConnection,
   paneId: number,
   report: string,
 ): Promise<CommandResponse> {
+  const version = await queryTmuxVersion(client);
+  if (!meetsTmuxVersion(version, REQUEST_REPORT_MIN_VERSION)) {
+    throw new UnsupportedTmuxVersionError(
+      "requestReport (refresh-client -r)",
+      REQUEST_REPORT_MIN_VERSION,
+      version,
+    );
+  }
   return client.execute(refreshClientReport(paneId, report));
 }
 
