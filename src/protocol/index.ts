@@ -48,7 +48,6 @@ export { bytesToLatin1, latin1ToBytes } from "./byte-codec.js";
 
 export {
   tmuxEscape,
-  buildCommand,
   sendKeys,
   refreshClientSize,
   refreshClientPaneAction,
