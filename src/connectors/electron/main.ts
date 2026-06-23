@@ -698,8 +698,6 @@ export type {
   IpcMainLike,
   MainBridgeHandle,
   MainBridgeOptions,
-  PaneBytesEnvelope,
-  PaneEndEnvelope,
   WebContentsLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";
