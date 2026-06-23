@@ -10,81 +10,27 @@ import {
 } from "node:child_process";
 import type { TmuxTransport, SpawnOptions } from "./types.js";
 
-// [LAW:one-source-of-truth] DCS frame bytes live here only (SPEC §12); every
-// other site references these named constants instead of re-encoding the literal.
-const DCS_INTRODUCER = "\u001bP1000p";
-const DCS_TERMINATOR = "\u001b\\";
-
-/**
- * Result of feeding a chunk to the DCS stripper.
- *
- * `forward` is the bytes (possibly empty) to hand to downstream consumers.
- * `error`, when present, indicates the stripper has rejected the stream
- * (e.g., the introducer was malformed) and no further forwards will occur.
- */
-export interface DcsStripperResult {
-  readonly forward: string;
-  readonly error?: string;
-}
-
-/**
- * Create a stateful DCS introducer stripper for `-CC` mode.
- *
- * The stream MUST begin with the `DCS_INTRODUCER` bytes. Once they have been
- * seen and verified, every subsequent chunk is forwarded byte-for-byte.
- * Handles arbitrary fragmentation (chunk sizes 1..N) of the introducer.
- *
- * [LAW:single-enforcer] DCS strip state lives only inside the closure returned here.
- * [LAW:dataflow-not-control-flow] The same `feed` function runs on every chunk;
- * the `stripped` flag selects between two pure value transformations.
- */
-export function createDcsStripper(): (chunk: string) => DcsStripperResult {
-  let stripped = false;
-  let buffer = "";
-  let rejected = false;
-
-  return (chunk: string): DcsStripperResult => {
-    if (rejected) return { forward: "" };
-    if (stripped) return { forward: chunk };
-
-    buffer += chunk;
-    if (buffer.length < DCS_INTRODUCER.length) {
-      return { forward: "" };
-    }
-
-    if (!buffer.startsWith(DCS_INTRODUCER)) {
-      rejected = true;
-      return { forward: "", error: "invalid DCS introducer in -CC mode" };
-    }
-
-    const remainder = buffer.slice(DCS_INTRODUCER.length);
-    buffer = "";
-    stripped = true;
-    return { forward: remainder };
-  };
-}
-
-// [LAW:decomposition] Argv assembly is one part: flag (-CC/-C) and socket (-S/-L)
+// [LAW:decomposition] Argv assembly is one part: control flag and socket (-S/-L)
 // selection live at a single cut, so callers pass intent rather than a built argv.
+// This transport emits `-C` only. `-CC` requires PTY-backed stdio — tmux calls
+// tcgetattr(stdin) at startup (SPEC §12) and child_process.spawn supplies pipes,
+// so `-CC` is not representable here; it belongs in a separate PTY-backed
+// transport (e.g., one built on node-pty), never a flag this constructor rejects.
 function buildArgv(
-  controlControl: boolean,
   socketPath: string | undefined,
   userArgs: readonly string[],
 ): string[] {
-  const flag = controlControl ? "-CC" : "-C";
   const socketArgs: readonly string[] =
     socketPath === undefined
       ? []
       : socketPath.includes("/")
         ? ["-S", socketPath]
         : ["-L", socketPath];
-  return [flag, ...socketArgs, ...userArgs];
+  return ["-C", ...socketArgs, ...userArgs];
 }
 
 // [LAW:dataflow-not-control-flow] Callback arrays always exist and may be empty;
-// every registration pushes and the close/error dispatch iterates the whole
-// array. (The stdout data path below additionally branches on stripper mode and
-// the stripper's result — see the handler.)
+// every registration pushes and the close/error dispatch iterates the whole array.
 
 /**
  * Spawn a tmux child process in control mode and return a TmuxTransport.
@@ -95,28 +41,7 @@ function buildArgv(
 // [LAW:single-enforcer] LF-termination enforced exactly once, in send().
 function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   const tmuxPath = options?.tmuxPath ?? "tmux";
-  const controlControl = options?.controlControl ?? false;
-
-  // [LAW:no-defensive-null-guards] This is a trust-boundary fail-fast, not a
-  // silent skip. tmux -CC calls tcgetattr() on stdin and requires PTY-backed
-  // stdio (SPEC §12). child_process.spawn provides only pipes, so the resulting
-  // tmux process exits immediately with "tcgetattr failed: Inappropriate ioctl
-  // for device". Programmatic clients (the typical consumer of this library)
-  // gain nothing from -CC vs -C — both carry the identical protocol; -CC
-  // exists so terminal emulators can frame the stream within their own escape
-  // protocol. If you genuinely need -CC, supply a PTY-backed transport
-  // (e.g., one built on node-pty) instead of spawnTmux.
-  if (controlControl) {
-    throw new Error(
-      "spawnTmux: controlControl (-CC) mode requires PTY-backed stdio, " +
-        "which child_process.spawn cannot provide. Use -C mode for " +
-        "programmatic clients (it carries the identical protocol), or " +
-        "supply a custom transport built on node-pty. " +
-        "See SPEC.md §12 for details.",
-    );
-  }
-
-  const argv = buildArgv(controlControl, options?.socketPath, args);
+  const argv = buildArgv(options?.socketPath, args);
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
   const closeCallbacks: ((reason?: string) => void)[] = [];
@@ -133,11 +58,6 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     env: options?.env as NodeJS.ProcessEnv | undefined,
   };
   const child = spawn(tmuxPath, argv, spawnOptions);
-
-  // In -C mode the stripper is null and chunks forward unchanged; -CC would
-  // install a DCS stripper. The stdout handler below branches on stripper mode
-  // and on the stripper's result (forward chunk vs. reject the stream).
-  const stripper = controlControl ? createDcsStripper() : null;
 
   // [LAW:one-source-of-truth] The byte stream is the source of truth. tmux
   // emits pane output bytes 0x80-0xFF (UTF-8, raw) UNescaped; decoding the
@@ -159,18 +79,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // other transports must use bytesToLatin1() from byte-codec.ts.
   child.stdout.setEncoding("latin1");
   child.stdout.on("data", (chunk: string) => {
-    if (stripper === null) {
-      dataCallbacks.forEach((cb) => cb(chunk));
-      return;
-    }
-    const result = stripper(chunk);
-    if (result.error !== undefined) {
-      closeCallbacks.forEach((cb) => cb(result.error));
-      return;
-    }
-    if (result.forward.length > 0) {
-      dataCallbacks.forEach((cb) => cb(result.forward));
-    }
+    dataCallbacks.forEach((cb) => cb(chunk));
   });
 
   let closed = false;
@@ -203,11 +112,6 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     },
 
     close(): void {
-      // [LAW:dataflow-not-control-flow] DCS terminator is conditional on mode (a value),
-      // not on whether close runs.
-      if (controlControl && !closed && child.stdin.writable) {
-        child.stdin.write(DCS_TERMINATOR);
-      }
       child.kill();
     },
   };
