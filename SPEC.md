@@ -893,16 +893,22 @@ Allows a control mode client to provide terminal reports (such as OSC 10/11
 color responses) on behalf of a pane. The report is parsed for color values
 which are stored as `wp->control_fg` and `wp->control_bg`.
 
-These are queried via `window_pane_get_fg_control_client()` and
-`window_pane_get_bg_control_client()` for rendering, specifically by
-`input_osc_10()` and `input_osc_11()` when handling OSC 10/11 `?` queries.
+These are queried for rendering when `input_osc_10()` / `input_osc_11()` handle
+OSC 10/11 `?` queries, but the two paths are **asymmetric**:
+
+- **Foreground (OSC 10)** is read directly: `input_osc_10()` calls
+  `window_pane_get_fg_control_client()` (`input.c:2955`).
+- **Background (OSC 11)** is read indirectly: `input_osc_11()` calls
+  `window_pane_get_bg()` (`input.c:3005`), which in turn calls
+  `window_pane_get_bg_control_client()` (`window.c:1805`).
+  `window_pane_get_bg_control_client()` is never called from `input.c`.
 
 Note: `-r` does NOT require `CLIENT_CONTROL` (it operates on the client's tty).
 
 **Source:**
 - `cmd-refresh-client.c:167-192`
-- `window.c:1840-1893`
-- `input.c:2955, 2999`
+- `window.c:1840-1893` (`window_pane_get_bg_control_client` / `window_pane_get_fg_control_client`); `window.c:1800-1816` (`window_pane_get_bg`)
+- `input.c:2955` (fg, direct), `input.c:3005` (bg, via `window_pane_get_bg`)
 - `tmux.h:1267-1268`
 - `tmux.1:1490-1494`
 
@@ -1152,9 +1158,13 @@ struct window_pane_offset {
 
 | Variable | Value | Description |
 |----------|-------|-------------|
-| `client_control_mode` | `"1"` or `""` | Whether client is in control mode |
+| `client_control_mode` | `"1"` or `"0"` (absent when there is no client) | Whether client is in control mode |
 
-**Source:** `format.c:1422-1424, 3079-3080`, `tmux.1:6270`
+`format_cb_client_control_mode` returns `"1"` when the client has the
+`CLIENT_CONTROL` flag and `"0"` otherwise; it returns NULL (variable absent)
+only when there is no client.
+
+**Source:** `format.c:1423-1432, 3079-3080`, `tmux.1:6270`
 
 ---
 
