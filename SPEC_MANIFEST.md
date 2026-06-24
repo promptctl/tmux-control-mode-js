@@ -538,9 +538,12 @@ for control-mode-specific flags.
 - Initialized to `-1` (no color)
   - `window.c:955-956`
 - Used by `input_osc_10()` and `input_osc_11()` in `input.c` when handling
-  OSC 10/11 `?` queries to provide foreground/background color from control
-  clients
-  - `input.c:2955` (fg), `input.c:2999` (bg)
+  OSC 10/11 `?` queries, but **asymmetrically**: foreground is read directly via
+  `window_pane_get_fg_control_client()`, while background is read indirectly via
+  `window_pane_get_bg()` (which calls `window_pane_get_bg_control_client()`).
+  `window_pane_get_bg_control_client()` is never called from `input.c`.
+  - `input.c:2955` (fg, direct)
+  - `input.c:3005` (bg, via `window_pane_get_bg()` → `window.c:1805`)
 - `tmux.1:1490-1494`
 
 ---
