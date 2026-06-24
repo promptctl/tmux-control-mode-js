@@ -47,7 +47,7 @@ repository (version next-3.7, commit 5c30b145).
 - `-CC` mode closes `out_fd` and uses a single `bufferevent` for both read and
   write (stdin/stdout share a socket)
   - `control.c:769-771, 787-788`
-- `-CC` terminal raw mode configuration (`tmux.c:343-362`): when
+- `-CC` terminal raw mode configuration (`client.c:343-362`): when
   `CLIENT_CONTROLCONTROL` is set, the terminal is configured with:
   - `c_iflag = ICRNL|IXANY`
   - `c_oflag = OPOST|ONLCR`
@@ -62,7 +62,7 @@ repository (version next-3.7, commit 5c30b145).
 ### 2.1 spawnTmux refusal (library)
 
 The raw-mode configuration above is what tmux *applies* at `-CC` startup.
-To do so, tmux first calls `tcgetattr(stdin)` (`tmux.c:343-362`) to capture
+To do so, tmux first calls `tcgetattr(stdin)` (`client.c:343-362`) to capture
 the current terminal attributes — which fails unless stdin is a tty (a
 PTY is the typical kind; a real terminal device also qualifies). The
 library's default transport `spawnTmux` (`src/transport/spawn.ts`) uses
@@ -88,7 +88,7 @@ statement on the library-spec side.
 - Lines are read with `EVBUFFER_EOL_LF`
   - `control.c:557`
 - An **empty line** causes the client to detach (`CLIENT_EXIT`)
-  - `control.c:561-564`
+  - `control.c:561-565`
 - Commands are parsed with `cmd_parse_and_append()` using `CMDQ_STATE_CONTROL`
   flag
   - `control.c:567-570`
@@ -145,7 +145,7 @@ sending any protocol signal to tmux. Resolves audit finding MANIFEST F4.
   - `server_client_print()` writes command output; sanitizes non-UTF8 if needed
     - `server-client.c:3988-4001`
   - `cmdq_print()` writes command output/messages within response blocks
-    - `cmd-queue.c:881-891`
+    - `cmd-queue.c:843-859`
   - `cmd_capture_pane_exec()` writes captured pane output for `capture-pane -p`
     - `cmd-capture-pane.c:241-242`
   - `control_error()` writes parse error messages
@@ -160,8 +160,8 @@ is either the block terminator itself or command output produced by the
 running command — regardless of whether that command output happens to
 begin with `%`.
 
-- Upstream citation: `tmux.1:7896-7897` — "a notification will never occur
-  inside a response block"
+- Upstream citation: `tmux.1:7902` — "A notification will never occur
+  inside an output block"
 - Rationale: this invariant is what lets a parser route every byte arriving
   inside a block to "command output" without ambiguity. Without it, a
   payload line whose first byte happened to be `%` (e.g. the output of
@@ -188,7 +188,7 @@ begin with `%`.
   (`notify_callback`) maps hook names to `control_notify_*` functions
 - All notifications also correspond to hooks (except `%exit`)
   - `tmux.1:5671-5674`
-- The macro `CONTROL_SHOULD_NOTIFY_CLIENT(c)` checks `(c)->flags & CLIENT_CONTROL`
+- The macro `CONTROL_SHOULD_NOTIFY_CLIENT(c)` checks `(c) != NULL && (c)->flags & CLIENT_CONTROL`
   - `control-notify.c:26-27`
 
 ---
@@ -534,7 +534,7 @@ for control-mode-specific flags.
   - `tmux.h:1267-1268`
 - Color values queried via `window_pane_get_fg_control_client()` and
   `window_pane_get_bg_control_client()`
-  - `window.c:1840-1852, 1881-1893`
+  - `window.c:1881-1893` (`window_pane_get_fg_control_client`), `window.c:1840-1852` (`window_pane_get_bg_control_client`)
 - Initialized to `-1` (no color)
   - `window.c:955-956`
 - Used by `input_osc_10()` and `input_osc_11()` in `input.c` when handling
@@ -875,7 +875,7 @@ Resolves audit finding MANIFEST F9.
 - **`control_write()`** - formats and queues a notification line for a control
   client; creates a `control_block` with `size=0`, appends to `all_blocks`; if
   no pending output, writes directly to write event buffer, otherwise queues
-  - `control.c:406-464`
+  - `control.c:406-429`
 - **`control_window_pane()`** - looks up a pane by ID and validates it's in the
   client's session window list; returns NULL if not found or not in session
   - `control.c:144-157`
