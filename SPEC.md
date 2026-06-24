@@ -62,7 +62,7 @@ tmux -C attach-session -t mysession
 2. `control_ready()` enables `EV_READ` on the read event (called from
    `server-client.c:3525-3526` when client is attached)
 
-**Source:** `control.c:765-809`
+**Source:** `control.c:765-802`
 
 ### 2.3 Teardown
 
@@ -88,6 +88,8 @@ Throughout the protocol, tmux uses these prefixes for identifiers:
 These are unsigned integers assigned by the server and stable for the lifetime
 of the object.
 
+**Source:** `format.c:2491` (`format_cb_session_id`), `format.c:2705` (`format_cb_window_id`), `format.c:2090` (`format_cb_pane_id`) — each emits its prefix (`$`/`@`/`%`) ahead of the unsigned id.
+
 ---
 
 ## 4. Command Input
@@ -109,7 +111,7 @@ tmux command-line syntax.
 
 An empty line (just `\n`) causes the client to detach (sets `CLIENT_EXIT`).
 
-**Source:** `control.c:561-564`
+**Source:** `control.c:561-565`
 
 ### 4.2 Command Parsing
 
@@ -205,7 +207,7 @@ Command output (the lines between `%begin` and `%end`/`%error`) is written via
 | Caller | Purpose | Source |
 |--------|---------|--------|
 | `server_client_print()` | Command output; sanitizes non-UTF8 if needed | `server-client.c:3988-4001` |
-| `cmdq_print()` | Command output/messages within response blocks | `cmd-queue.c:881-891` |
+| `cmdq_print()` | Command output/messages within response blocks | `cmd-queue.c:843-859` |
 | `cmd_capture_pane_exec()` | `capture-pane -p` output | `cmd-capture-pane.c:241-242` |
 | `control_error()` | Parse error messages | `control.c:527-529` |
 
@@ -226,7 +228,7 @@ Notifications (except `%exit`) also correspond to tmux hooks.
 
 Notifications are dispatched through `notify_callback()` which maps hook names
 to `control_notify_*()` functions. The macro
-`CONTROL_SHOULD_NOTIFY_CLIENT(c)` checks `(c)->flags & CLIENT_CONTROL`.
+`CONTROL_SHOULD_NOTIFY_CLIENT(c)` checks `(c) != NULL && (c)->flags & CLIENT_CONTROL`.
 
 **Source:** `notify.c:122-156`, `control-notify.c:26-27`
 
@@ -804,7 +806,7 @@ When started with `-CC` (double control mode):
 This wrapping allows terminal emulators to identify and frame the control mode
 session within the terminal's own escape sequence protocol.
 
-In `-CC` mode, the terminal is configured in raw mode (`tmux.c:343-362`):
+In `-CC` mode, the terminal is configured in raw mode (`client.c:343-362`):
 `c_iflag = ICRNL|IXANY`, `c_oflag = OPOST|ONLCR`, `c_lflag = NOKERNINFO`,
 `c_cflag = CREAD|CS8|HUPCL`, `c_cc[VMIN] = 1`, `c_cc[VTIME] = 0`.
 
@@ -812,7 +814,7 @@ In `-CC` mode, the terminal is configured in raw mode (`tmux.c:343-362`):
 
 §12's raw-mode terminal configuration is the upstream contract for `-CC`
 mode. To apply it, tmux calls `tcgetattr(stdin)` at startup
-(`tmux.c:343-362`) to read the current terminal attributes — which
+(`client.c:343-362`) to read the current terminal attributes — which
 requires stdin to be a tty (a PTY is the typical kind; a real terminal
 device also qualifies). The library's default transport `spawnTmux`
 (`src/transport/spawn.ts`) uses `child_process.spawn`, which supplies
@@ -876,7 +878,7 @@ The subscription timer fires every 1 second to check for changes. It is started
 when the first subscription is added and stopped when the last is removed.
 
 **Source:**
-- `control.c:1032-1168` (timer, add, remove, check functions)
+- `control.c:849-1168` (check functions, timer, add, remove)
 - `cmd-refresh-client.c:47-79`
 - `tmux.h:2138-2144` (enum)
 - `tmux.1:1463-1486`
