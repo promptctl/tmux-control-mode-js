@@ -31,12 +31,25 @@ export interface ErrorMessage {
 // Pane Output
 // ---------------------------------------------------------------------------
 
+/**
+ * Parsed `%output` notification. The `data` field is a `Uint8Array` carrying
+ * the *decoded* bytes — not the raw octal-escaped wire string tmux emits. The
+ * library decodes (and tolerates transport noise: literal control bytes,
+ * mid-escape `\r`, malformed escapes) on the way through `decodeOctalEscapes`,
+ * so consumers receive ready-to-render bytes.
+ */
 export interface OutputMessage {
   readonly type: "output";
   readonly paneId: number;
   readonly data: Uint8Array;
 }
 
+/**
+ * Parsed `%extended-output` notification (sent instead of `%output` when the
+ * `pause-after` flag is set; `age` is the milliseconds tmux buffered the output
+ * before sending). `data` carries decoded bytes under the same contract as
+ * {@link OutputMessage.data}.
+ */
 export interface ExtendedOutputMessage {
   readonly type: "extended-output";
   readonly paneId: number;

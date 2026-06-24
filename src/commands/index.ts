@@ -69,6 +69,13 @@ export function splitWindow(
   return client.execute(encodeSplitWindow(options));
 }
 
+/**
+ * Set the overall client size, mapping to `refresh-client -C <width>x<height>`
+ * (the encoder is `refreshClientSize` in `../protocol/encoder.ts`). This is the
+ * first of the three `-C` forms tmux accepts; the per-window forms
+ * (`refresh-client -C @<id>:<w>x<h>` and the per-window clear `... @<id>:`) have
+ * no typed wrapper — issue them via `client.execute("refresh-client -C @<id>:...")`.
+ */
 export function setSize(
   client: TmuxConnection,
   width: number,

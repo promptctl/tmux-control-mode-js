@@ -24,10 +24,12 @@ compatibility table). Implementation layering is described in `CLAUDE.md` →
 
 This file was (re)created by **R4** (`tmux-audit-a91.4`) as the destination for
 library-behavior notes that the q17 spec-conformance audit found mis-filed inside the
-two wire-protocol specs. **R4 creates the home and the destination map only — it moves
-no content.** The sections below are placeholders; **R5** (`tmux-audit-a91.5`, SPEC.md)
-and **R6** (`tmux-audit-a91.6`, SPEC_MANIFEST.md) fill the IMPL.md-home sections and add
-the JSDoc-home notes, then delete the source `(library)` blocks.
+two wire-protocol specs. R4 created the home and the destination map only. **R5**
+(`tmux-audit-a91.5`) has since relocated the SPEC.md library notes — filling IMPL.md
+§2.1–2.3, writing the JSDoc-home notes, and deleting the SPEC.md `(library)` blocks.
+**R6** (`tmux-audit-a91.6`) does the same for SPEC_MANIFEST.md (filling §2.4–2.5 and
+deleting the remaining `(library)` blocks, including the mirror-pair blocks whose
+shared home R5 already wrote).
 
 The relocation map (§ *Relocation map* below) is the contract those two tickets
 implement. Each note has **exactly one** canonical home — never both IMPL.md *and*
@@ -55,36 +57,73 @@ pointer table (§3) — a reference, not a copy.
 
 ---
 
-## 2. IMPL.md-home sections (R5/R6 fill these)
+## 2. IMPL.md-home sections
 
-> Placeholders. Each carries the source incursion(s) to relocate and the verified
-> src/ anchor. Do not write the body until R5/R6.
+> §2.1–2.3 are the relocated SPEC.md library notes (filled by R5). §2.4–2.5 remain
+> placeholders for R6 (SPEC_MANIFEST.md) — each carries the source incursion(s) to
+> relocate and the verified `src/` anchor; do not write their body until R6.
 
 ### 2.1 Transport & control flag (`-C` vs `-CC`) rationale
-<!-- R5: relocate SPEC.md §12.1 "spawnTmux refusal (library)" -->
-<!-- R6: relocate SPEC_MANIFEST.md §2.1 "spawnTmux refusal" (mirror — consolidate here) -->
-Why `spawnTmux` emits `tmux -C` (single `-C`) and **refuses** `-CC`: the
-double-flag form needs PTY-backed stdio because tmux calls `tcgetattr(stdin)` at
-startup, and `child_process` supplies pipes, so `-CC` is not representable in this
-transport (it belongs in a separate PTY-backed transport). Anchor: `spawnTmux` /
-`buildArgv` — `src/transport/spawn.ts`.
-*(The bare wire fact "`tcgetattr` needs a tty" may remain in SPEC §12 / MANIFEST §2 as
-a one-line protocol note with its C-source citation; only the library rationale moves here.)*
+<!-- R5 (done): relocated from SPEC.md §12.1 "spawnTmux refusal (library)". -->
+<!-- R6 TODO: delete the SPEC_MANIFEST.md §2.1 mirror block — its content lives here. -->
+
+Why `spawnTmux` (`src/transport/spawn.ts`; argv built by `buildArgv`) emits
+`tmux -C` (single `-C`) and **refuses** `-CC`:
+
+The `-CC` (double control mode) wire contract puts the terminal in raw mode, which
+tmux applies by calling `tcgetattr(stdin)` at startup to read the current terminal
+attributes — so stdin must be a tty (a PTY is the typical kind; a real terminal
+device also qualifies). `spawnTmux` uses `child_process.spawn`, which supplies
+**pipe** stdio; `tcgetattr` would fail and tmux would exit before the control-mode
+protocol begins. `spawnTmux` therefore emits `-C` only and exposes no option to
+request `-CC`, so the incompatible configuration is **unrepresentable by
+construction** rather than reached at tmux exit time. `[LAW:types-are-the-program]`
+
+Programmatic consumers should use `-C`: it carries the identical protocol minus the
+DCS framing that `-CC` adds (the `\033P1000p` prologue and `\033\\` terminator —
+see SPEC.md §12). For terminal-emulator use cases that genuinely require `-CC`
+framing, supply a PTY-backed `TmuxTransport` (e.g. built on `node-pty`) in place of
+`spawnTmux`; the `-CC` raw-mode configuration belongs in that separate transport.
+
+*(The bare wire facts — `-CC` raw-mode config and the `tcgetattr` tty requirement —
+remain in SPEC.md §12 / SPEC_MANIFEST.md §2 with their C-source citations; only this
+library rationale lives here.)*
 
 ### 2.2 Version-compatibility policy
-<!-- R5: relocate SPEC.md §15.1 "Library note (library)" -->
-The library's version-gating stance: tmux 3.2 floor; features that need newer tmux
-(e.g. `requestReport` → `refresh-client -r`, tmux 3.5) degrade or throw rather than
-silently no-op. Anchors: `requestReport` — `src/commands/index.ts`; `src/tmux-compat.ts`.
-*(A single protocol sentence — "`refresh-client -r` is unrecognized before tmux 3.5" —
-may remain in SPEC §15 if anchored to a tmux source/version citation.)*
+<!-- R5 (done): relocated from SPEC.md §15.1 "Library note (library)". -->
+
+The library's version-gating stance: tmux **3.2** is the floor; a feature that needs
+a newer tmux enforces its own per-command floor and rejects with a typed error rather
+than leaking tmux's raw `%error` or silently no-opping. `[LAW:no-silent-failure]`
+
+Concrete case — `requestReport()` (`src/commands/index.ts`) requires tmux **3.5+**.
+The `-r` flag to `refresh-client` was not recognized in tmux 3.4 (tmux rejects it with
+an unknown-flag error). The minimum is encoded in `src/tmux-compat.ts` as
+`REQUEST_REPORT_MIN_VERSION = { major: 3, minor: 5 }`. Because the library supports
+tmux 3.2+, `requestReport()` probes the running version in-protocol
+(`display-message -p "#{version}"`, a format available since tmux 2.4) via
+`queryTmuxVersion()`, and on tmux 3.2–3.4 rejects with a typed
+`UnsupportedTmuxVersionError` naming the requirement. The README compatibility table
+reflects this constraint.
 
 ### 2.3 Synthetic events & connection lifecycle
-<!-- R5: relocate SPEC.md §23.1 "Synthetic Events (library)" -->
-Library-synthesized events (`connection-state`, `reconnected`) that have **no emit site
-in the tmux C source** — they are a library superset over the wire protocol and must not
-sit in a wire-message reference. Anchors: `src/connection-state.ts`; `TmuxEventMap` —
-`src/emitter.ts`.
+<!-- R5 (done): relocated from SPEC.md §23.1 "Synthetic Events (library)". -->
+
+The following events are emitted by `TmuxClient` itself and are **NOT** parsed from
+tmux wire output — they have no emit site in the tmux C source. They carry lifecycle
+state synthesized as the underlying transport transitions, a library superset over the
+wire protocol. Type declarations live in `src/connection-state.ts`; both events are
+present in `TmuxEventMap` (`src/emitter.ts`).
+
+| Event name | Payload type | Description |
+|------------|--------------|-------------|
+| `connection-state` | `ConnectionStateMessage` (`{ type: "connection-state"; state: ConnectionState }`) | Emitted on every `ConnectionState` transition. `ConnectionState` is a discriminated union of four statuses: `{ status: "connecting" }` (pre-handshake), `{ status: "ready" }` (tmux is talking), `{ status: "reconnecting"; attempt: number; lastError?: Error }` (between auto-reconnect attempts; currently only WebSocket transport), `{ status: "closed"; reason: "exit" \| "transport-error" \| "disposed" }` (terminal). |
+| `reconnected` | `ReconnectedMessage` (`{ type: "reconnected" }`) | Emitted on every transition into `ready` after the first such transition (currently only WebSocket transport). The previous state need not be `reconnecting` — manual close→connect cycles count. The spawn-based `TmuxClient` never emits this. |
+
+Both are subscribable via `client.on("connection-state", ...)` and
+`client.on("reconnected", ...)` with full type inference. `output` and
+`extended-output` are intentionally **absent** from `TmuxEventMap`; pane bytes route
+exclusively through `attachBytesSink`.
 
 ### 2.4 Detach vs close
 <!-- R6: relocate SPEC_MANIFEST.md §3.2 "Library detach note" (no SPEC.md mirror) -->

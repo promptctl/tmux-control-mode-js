@@ -314,6 +314,15 @@ export class TmuxParser {
    * Push a chunk of data into the parser. The chunk may contain zero, one,
    * or many complete lines, and may end mid-line. The parser buffers partial
    * lines and processes complete ones immediately.
+   *
+   * CRLF tolerance: this parser sits on tmux's *output* side, the opposite of
+   * the input side tmux itself reads with `EVBUFFER_EOL_LF` (LF-terminated, no
+   * CR stripping). `feed()` strips a trailing `\r` before each `\n`, so a
+   * transport that introduces CRLF between tmux and the parser is tolerated and
+   * parses identically to an LF-only one. This is safe because tmux always
+   * octal-escapes literal control bytes in pane output (see `decodeOctalEscapes`),
+   * so any unescaped `\r` adjacent to LF must be transport line-driver noise, not
+   * data. This is library-side defensive behavior, not a tmux protocol rule.
    */
   feed(chunk: string): void {
     this.buffer += chunk;
