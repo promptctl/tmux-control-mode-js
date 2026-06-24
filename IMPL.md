@@ -46,7 +46,7 @@ one principle:
   cannot drift from the code and a reader meets it at the callsite.
   `[LAW:locality-or-seam]`
 - **Cross-cutting rationale or a multi-symbol relationship → an IMPL.md section.** A
-  policy that spans the library (version floor), a design rationale (`-CC`), a state
+  policy that spans the library (version floor), a design rationale (`-C` vs `-CC`), a state
   machine (connection lifecycle), or a catalogue (typed-method map) has no single host
   symbol, so its home is here.
 
@@ -60,11 +60,14 @@ pointer table (§3) — a reference, not a copy.
 > Placeholders. Each carries the source incursion(s) to relocate and the verified
 > src/ anchor. Do not write the body until R5/R6.
 
-### 2.1 Transport & `-CC` rationale
+### 2.1 Transport & control flag (`-C` vs `-CC`) rationale
 <!-- R5: relocate SPEC.md §12.1 "spawnTmux refusal (library)" -->
 <!-- R6: relocate SPEC_MANIFEST.md §2.1 "spawnTmux refusal" (mirror — consolidate here) -->
-Why `spawnTmux` drives `tmux -CC` and the library's stance on the upstream
-`tcgetattr`-needs-a-tty constraint. Anchor: `spawnTmux` — `src/transport/spawn.ts`.
+Why `spawnTmux` emits `tmux -C` (single `-C`) and **refuses** `-CC`: the
+double-flag form needs PTY-backed stdio because tmux calls `tcgetattr(stdin)` at
+startup, and `child_process` supplies pipes, so `-CC` is not representable in this
+transport (it belongs in a separate PTY-backed transport). Anchor: `spawnTmux` /
+`buildArgv` — `src/transport/spawn.ts`.
 *(The bare wire fact "`tcgetattr` needs a tty" may remain in SPEC §12 / MANIFEST §2 as
 a one-line protocol note with its C-source citation; only the library rationale moves here.)*
 
@@ -134,7 +137,7 @@ when their shared home is written. Line numbers are from the audit
 | 3 | Parsed message types | JSDoc `OutputMessage`/`ExtendedOutputMessage` | SPEC §7.1 | R5 |
 | 4 | Notification-block reliance | JSDoc `processLine` | MANIFEST Invariant 4.1 | R6 |
 | 5 | Size-control mapping | JSDoc `setSize` | SPEC §11.1 | R5 |
-| 6 | Transport / `-CC` rationale | IMPL.md §2.1 | SPEC §12.1 ↔ MANIFEST §2.1 | R5+R6 |
+| 6 | Transport / `-C` vs `-CC` rationale | IMPL.md §2.1 | SPEC §12.1 ↔ MANIFEST §2.1 | R5+R6 |
 | 7 | Version-compat policy | IMPL.md §2.2 | SPEC §15.1 | R5 |
 | 8 | Synthetic events / lifecycle | IMPL.md §2.3 | SPEC §23.1 | R5 |
 | 9 | Detach vs close | IMPL.md §2.4 | MANIFEST §3.2 | R6 |
