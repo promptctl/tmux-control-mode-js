@@ -8,7 +8,7 @@
 >
 > The only valid reason to edit this file is to correct an inaccuracy in the tmux protocol description, with a citation to the tmux C source or man page. If you find yourself writing anything about what this library does, stop — that belongs in `IMPL.md` or source JSDoc.
 >
-> Some sections contain legacy library notes (labeled `(library)`); these are tracked for migration out of this file by the spec conformance audit (`tmux-audit-q17`). Do not add new ones.
+> Do not add library notes here; they belong in `IMPL.md` or JSDoc.
 
 Derived from tmux source code (version next-3.7, commit 5c30b145) and the
 tmux(1) man page. All citations reference files in the tmux source tree.
@@ -131,21 +131,6 @@ Commands are parsed with `cmd_parse_and_append()` using the
 Lines are read using `EVBUFFER_EOL_LF` (LF-terminated, no CR stripping).
 
 **Source:** `control.c:557`
-
-#### 4.3.1 Library parser note: CRLF tolerance
-
-§4.3 above documents tmux's *input* side — what tmux reads from the client.
-The library's parser sits on tmux's *output* side and goes the opposite
-direction: `TmuxParser.feed()` (`src/protocol/parser.ts`) strips a trailing
-`\r` before each `\n`, so transports that introduce CRLF between tmux and
-the parser are tolerated and parse identically to LF-only ones.
-
-This is safe because tmux always octal-escapes literal control bytes in
-pane output (see [§10. Data Encoding](#10-data-encoding)) — any unescaped
-`\r` adjacent to LF must therefore be transport line-driver noise, not
-data. The behavior is library-side defensive code, not a tmux rule.
-SPEC_MANIFEST §3.1 carries the mirror statement on the inner-spec side.
-Resolves audit finding SPEC.md F6.
 
 ### 4.4 Bufferevent Error
 
@@ -320,8 +305,6 @@ Sent instead of `%output` when `pause-after` flag **is** set.
 | `value`   | Octal-escaped output data (same encoding as `%output`) |
 
 **Source:** `control.c:621-623`, `tmux.1` `.It Ic %extended-output`
-
-**Library note (resolves audit finding SPEC.md F2):** The parsed `OutputMessage.data` and `ExtendedOutputMessage.data` fields are `Uint8Array` carrying the *decoded* bytes — not the raw octal-escaped wire string. The decoder also tolerates transport noise (literal control bytes, mid-escape `\r`, malformed escapes); see [§10.1 Decoder behavior (library)](#101-decoder-behavior-library).
 
 ---
 
@@ -745,29 +728,6 @@ the corresponding byte value.
 
 **Source:** `control.c:631-642` (`control_append_data`)
 
-### 10.1 Decoder behavior (library)
-
-The "scan for `\` + 3 octal digits" instruction above is the rule for *clean*
-streams. The library's decoder (`src/protocol/decode.ts`, `decodeOctalEscapes`)
-applies three additional recovery rules so it stays byte-faithful to the
-canonical iTerm2 reference (`TmuxGateway -decodeEscapedOutput`) on noisy
-transports. These rules resolve audit finding SPEC.md F11:
-
-1. **Literal control-byte drop.** Any unescaped byte `< 0x20` in the stream is
-   dropped. tmux's encoding rule above guarantees real control output is
-   always octal-escaped, so any literal control byte must be transport
-   line-driver noise.
-2. **Mid-escape `\r` skip.** Stray `\r` bytes between the three octal digits
-   of an escape are skipped (line drivers can sprinkle CR between bytes of a
-   single emission). The escape itself still decodes to one byte.
-3. **Malformed-escape recovery.** A `\` not followed by three octal digits
-   decodes to `?` (0x3F); the non-digit byte is reconsidered as ordinary
-   input on the next pass.
-
-These corollaries follow from the encoding rule (which guarantees clean
-streams from tmux itself) plus the assumption that transports may introduce
-noise. They are not derivable from the encoding rule alone.
-
 ---
 
 ## 11. Client Size Control
@@ -785,14 +745,6 @@ refresh-client -C @<window-id>:
 Requires `CLIENT_CONTROL`.
 
 **Source:** `cmd-refresh-client.c:82-131`, `tmux.1` `refresh-client` `.Fl C`
-
-### 11.1 Library mapping (library)
-
-Form 1 (`-C <width>x<height>`) is wrapped as `TmuxClient.setSize(cols, rows)` —
-it calls `refreshClientSize(width, height)` in `src/protocol/encoder.ts`.
-Forms 2 and 3 (per-window size and per-window size clear) have no typed wrapper
-and require `client.execute("refresh-client -C @<id>:<w>x<h>")` or
-`client.execute("refresh-client -C @<id>:")` directly.
 
 ---
 
@@ -814,27 +766,8 @@ session within the terminal's own escape sequence protocol.
 
 In `-CC` mode, the terminal is configured in raw mode (`client.c:343-362`):
 `c_iflag = ICRNL|IXANY`, `c_oflag = OPOST|ONLCR`, `c_lflag = NOKERNINFO`,
-`c_cflag = CREAD|CS8|HUPCL`, `c_cc[VMIN] = 1`, `c_cc[VTIME] = 0`.
-
-### 12.1 spawnTmux refusal (library)
-
-§12's raw-mode terminal configuration is the upstream contract for `-CC`
-mode. To apply it, tmux calls `tcgetattr(stdin)` at startup
-(`client.c:343-362`) to read the current terminal attributes — which
-requires stdin to be a tty (a PTY is the typical kind; a real terminal
-device also qualifies). The library's default transport `spawnTmux`
-(`src/transport/spawn.ts`) uses `child_process.spawn`, which supplies
-pipe stdio; `tcgetattr` would fail and tmux would exit before the
-control-mode protocol begins. `spawnTmux` therefore emits `-C` only and
-exposes no option to request `-CC`, so the incompatible configuration is
-unrepresentable by construction rather than reached at tmux exit time.
-This resolves audit finding SPEC.md F4.
-
-Programmatic consumers should use `-C` instead — it carries the identical
-protocol minus the DCS framing of §12. For terminal-emulator use cases
-that genuinely require `-CC` framing, supply a PTY-backed `TmuxTransport`
-(e.g., built on `node-pty`) in place of `spawnTmux`. SPEC_MANIFEST.md
-§2.1 carries the mirror statement on the upstream-anchored side.
+`c_cflag = CREAD|CS8|HUPCL`, `c_cc[VMIN] = 1`, `c_cc[VTIME] = 0`. Applying this
+requires `tcgetattr(stdin)` at startup, so `-CC` needs a tty-backed stdin.
 
 ---
 
@@ -919,21 +852,6 @@ Note: `-r` does NOT require `CLIENT_CONTROL` (it operates on the client's tty).
 - `input.c:2955` (fg, direct), `input.c:3005` (bg, via `window_pane_get_bg`)
 - `tmux.h:1267-1268`
 - `tmux.1` `refresh-client` `.Fl r`
-
-### 15.1 Library note (library)
-
-`requestReport()` requires tmux 3.5+. The `-r` flag to `refresh-client` was not
-recognized in tmux 3.4 — tmux rejects it with an unknown-flag error. The
-minimum version is encoded in `src/tmux-compat.ts` as
-`REQUEST_REPORT_MIN_VERSION = { major: 3, minor: 5 }`.
-
-The library supports tmux 3.2+, so `requestReport()` enforces this per-command
-floor itself rather than leaking tmux's raw "unknown flag" `%error`: it probes
-the running version in-protocol (`display-message -p "#{version}"`, a format
-available since tmux 2.4 and verified in the tmux 3.2 source) via
-`queryTmuxVersion()`, and on tmux 3.2–3.4 rejects with a typed
-`UnsupportedTmuxVersionError` naming the requirement. The README compatibility
-table reflects this constraint.
 
 ---
 
@@ -1233,22 +1151,6 @@ Control clients differ from terminal clients in these ways:
 ### Client-to-Server Messages
 
 Any valid tmux command, newline-terminated. An empty line causes detach.
-
-### 23.1 Synthetic Events (library)
-
-The following events are emitted by `TmuxClient` itself and are NOT parsed from
-tmux wire output. They carry lifecycle state synthesized as the underlying
-transport transitions. See `src/connection-state.ts` for type declarations.
-
-| Event name | Payload type | Description |
-|------------|--------------|-------------|
-| `connection-state` | `ConnectionStateMessage` (`{ type: "connection-state"; state: ConnectionState }`) | Emitted on every `ConnectionState` transition. `ConnectionState` is a discriminated union of four statuses: `{ status: "connecting" }` (pre-handshake), `{ status: "ready" }` (tmux is talking), `{ status: "reconnecting"; attempt: number; lastError?: Error }` (between auto-reconnect attempts; currently only WebSocket transport), `{ status: "closed"; reason: "exit" \| "transport-error" \| "disposed" }` (terminal). |
-| `reconnected` | `ReconnectedMessage` (`{ type: "reconnected" }`) | Emitted on every transition into `ready` after the first such transition (currently only WebSocket transport). The previous state need not be `reconnecting` — manual close→connect cycles count. The spawn-based `TmuxClient` never emits this. |
-
-These events are present in `TmuxEventMap` and are subscribable via
-`client.on("connection-state", ...)` and `client.on("reconnected", ...)` with
-full type inference. `output` and `extended-output` are intentionally absent
-from `TmuxEventMap`; pane bytes route exclusively through `attachBytesSink`.
 
 ---
 
