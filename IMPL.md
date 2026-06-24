@@ -25,11 +25,14 @@ compatibility table). Implementation layering is described in `CLAUDE.md` →
 This file was (re)created by **R4** (`tmux-audit-a91.4`) as the destination for
 library-behavior notes that the q17 spec-conformance audit found mis-filed inside the
 two wire-protocol specs. R4 created the home and the destination map only. **R5**
-(`tmux-audit-a91.5`) has since relocated the SPEC.md library notes — filling IMPL.md
-§2.1–2.3, writing the JSDoc-home notes, and deleting the SPEC.md `(library)` blocks.
-**R6** (`tmux-audit-a91.6`) does the same for SPEC_MANIFEST.md (filling §2.4–2.5 and
-deleting the remaining `(library)` blocks, including the mirror-pair blocks whose
-shared home R5 already wrote).
+(`tmux-audit-a91.5`) relocated the SPEC.md library notes — filling IMPL.md §2.1–2.3,
+writing the JSDoc-home notes, and deleting the SPEC.md `(library)` blocks. **R6**
+(`tmux-audit-a91.6`) did the same for SPEC_MANIFEST.md: it filled §2.4–2.5, deleted the
+remaining `(library)` blocks (including the mirror-pair blocks whose shared home R5
+already wrote), and trimmed the MANIFEST Invariant 4.1 `Library reliance`/`Why named`
+bullets — whose substance already lives in the `processLine` code at its
+`[LAW:one-source-of-truth]` annotation. With R6 done, both wire-protocol specs hold
+only tmux protocol facts and every library note has exactly one home here or in JSDoc.
 
 The relocation map (§ *Relocation map* below) is the contract those two tickets
 implement. Each note has **exactly one** canonical home — never both IMPL.md *and*
@@ -59,13 +62,13 @@ pointer table (§3) — a reference, not a copy.
 
 ## 2. IMPL.md-home sections
 
-> §2.1–2.3 are the relocated SPEC.md library notes (filled by R5). §2.4–2.5 remain
-> placeholders for R6 (SPEC_MANIFEST.md) — each carries the source incursion(s) to
-> relocate and the verified `src/` anchor; do not write their body until R6.
+> §2.1–2.3 are the relocated SPEC.md library notes (filled by R5); §2.4–2.5 are the
+> relocated SPEC_MANIFEST.md library notes (filled by R6). Each is anchored to a verified
+> `src/` symbol.
 
 ### 2.1 Transport & control flag (`-C` vs `-CC`) rationale
 <!-- R5 (done): relocated from SPEC.md §12.1 "spawnTmux refusal (library)". -->
-<!-- R6 TODO: delete the SPEC_MANIFEST.md §2.1 mirror block — its content lives here. -->
+<!-- R6 (done): deleted the SPEC_MANIFEST.md §2.1 mirror block — its content lives here. -->
 
 Why `spawnTmux` (`src/transport/spawn.ts`; argv built by `buildArgv`) emits
 `tmux -C` (single `-C`) and **refuses** `-CC`:
@@ -126,18 +129,59 @@ Both are subscribable via `client.on("connection-state", ...)` and
 exclusively through `attachBytesSink`.
 
 ### 2.4 Detach vs close
-<!-- R6: relocate SPEC_MANIFEST.md §3.2 "Library detach note" (no SPEC.md mirror) -->
-The lifecycle distinction between `TmuxClient.detach()` and `TmuxClient.close()` —
-detach sends a bare newline with no `%begin`/`%end` correlation and cannot use
-`execute()`; close tears down the transport. A two-method relationship, so it lives here
-rather than on either method alone. Anchors: `TmuxClient.close` / `TmuxClient.detach` —
-`src/client.ts`.
+<!-- R6 (done): relocated from SPEC_MANIFEST.md §3.2 "Library detach note" (no SPEC.md mirror). -->
 
-### 2.5 Typed-method API map
-<!-- R6: relocate SPEC_MANIFEST.md §26.1 "Library typed operations" -->
-The mapping from `TmuxClient` typed methods to the underlying tmux commands they issue.
-A catalogue spanning many methods, so it has no single host symbol. Anchor: `TmuxClient`
-— `src/client.ts`; `src/commands/index.ts`.
+`TmuxClient` has two distinct teardown operations (`src/client.ts`), and the
+distinction is a contract a caller must understand to pick correctly — so it lives
+here rather than on either method's JSDoc alone:
+
+- **`detach()`** sends the wire-level detach signal: a bare `\n` (the empty line that
+  tmux reads as `CLIENT_EXIT`, SPEC_MANIFEST.md §3). It writes that newline straight
+  to the transport via the `detachClient()` protocol encoder — it does **not** go
+  through `execute()`, because the empty line carries no `%begin`/`%end` guard block
+  and so cannot be command-correlated. The tmux server tears the client down and the
+  transport closes on the server's exit.
+- **`close()`** tears down the underlying transport directly and sends **no** protocol
+  signal to tmux. It is the local-side teardown.
+
+`detach()` therefore asks tmux to end the session; `close()` just drops the local
+connection. They are deliberately not collapsed: `detach()` cannot be expressed as a
+command (no correlation), which is also why it is not one of the free command-functions
+in §2.5. `[LAW:single-enforcer]` `execute()` remains the sole command-dispatch path;
+`detach()` is the one wire write that is correctly *not* a command.
+
+### 2.5 Typed command-function API map
+<!-- R6 (done): relocated from SPEC_MANIFEST.md §26.1 "Library typed operations". -->
+
+The catalogue of the library's typed tmux operations and the wire command each issues.
+It spans many symbols, so it has no single host symbol and lives here.
+
+**The shape matters and is easy to get wrong** (the relocated MANIFEST note had it
+backwards): `TmuxClient` (`src/client.ts`) is **not** a god-object of per-command
+methods. Its only command-related member is `execute(command)` — the sole
+command-dispatch path, `[LAW:single-enforcer]`. Every other typed operation is a
+**free function** in `src/commands/index.ts` taking `(client: TmuxConnection, …)` and
+delegating to `client.execute(…)`; they are composable command *encoders* over the one
+enforcer, not methods on the client. (`close()` and `detach()` are the two genuine
+`TmuxClient` methods beyond `execute()` — see §2.4 — and `detach()` is intentionally
+not a command-function because its bare-newline signal cannot be correlated.)
+
+| Typed operation | Defined in | tmux command issued |
+|---|---|---|
+| `execute(command)` | `TmuxClient` method (`src/client.ts`) | raw passthrough — the escape hatch for any command without a named wrapper |
+| `listWindows(client)` | `src/commands/index.ts` | `list-windows` |
+| `listPanes(client)` | `src/commands/index.ts` | `list-panes` |
+| `sendKeys(client, target, keys)` | `src/commands/index.ts` | `send-keys -H -t …` (hex bytes; empty keys → synthetic success, no wire send) |
+| `splitWindow(client, options?)` | `src/commands/index.ts` | `split-window -h`/`-v` |
+| `setSize(client, width, height)` | `src/commands/index.ts` | `refresh-client -C <w>x<h>` |
+| `setPaneAction(client, paneId, action)` | `src/commands/index.ts` | `refresh-client -A` (pane flow control) |
+| `subscribeRaw(client, name, what, format)` | `src/commands/index.ts` | `refresh-client -B` (subscribe) |
+| `unsubscribe(client, name)` | `src/commands/index.ts` | `refresh-client -B <name>` (unsubscribe) |
+| `setFlags(client, flags)` | `src/commands/index.ts` | `refresh-client -f` |
+| `clearFlags(client, flags)` | `src/commands/index.ts` | `refresh-client -f` (`!`-prefixed to disable) |
+| `queryTmuxVersion(client)` | `src/commands/index.ts` | `display-message -p "#{version}"` |
+| `requestReport(client, paneId, report)` | `src/commands/index.ts` | `refresh-client -r` (tmux 3.5+; version-gated — see §2.2) |
+| `queryClipboard(client)` | `src/commands/index.ts` | `refresh-client -l` |
 
 ---
 

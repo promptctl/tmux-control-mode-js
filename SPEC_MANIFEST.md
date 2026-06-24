@@ -65,26 +65,6 @@ flag anchors are scoped by the named command. Do not reintroduce `tmux.1:NNNN`.
   `tcsetattr()`
   - `client.c:438-441`
 
-### 2.1 spawnTmux refusal (library)
-
-The raw-mode configuration above is what tmux *applies* at `-CC` startup.
-To do so, tmux first calls `tcgetattr(stdin)` (`client.c:343-362`) to capture
-the current terminal attributes — which fails unless stdin is a tty (a
-PTY is the typical kind; a real terminal device also qualifies). The
-library's default transport `spawnTmux` (`src/transport/spawn.ts`) uses
-`child_process.spawn`, which supplies pipe stdio rather than a tty, so it
-cannot host `-CC`. `spawnTmux` therefore emits `-C` only and exposes no
-option to request `-CC` — the incompatible configuration is unrepresentable
-by construction rather than rejected at runtime. This resolves audit finding
-MANIFEST F10.
-
-This is not a missing library feature — it is a fundamental incompatibility
-between piped stdio and tmux's `-CC` startup contract. Consumers that need
-`-CC` framing must supply a PTY-backed `TmuxTransport`; consumers that
-just need control-mode protocol should use `-C` (it carries the identical
-protocol minus the DCS framing). SPEC.md §12.1 carries the mirror
-statement on the library-spec side.
-
 ---
 
 ## 3. Command Input Protocol
@@ -106,30 +86,6 @@ statement on the library-spec side.
 - Multiple commands may be separated by `;` on a single line, following normal
   tmux command-line syntax
   - `tmux.1` `.Sh CONTROL MODE` (command input)
-
-### 3.1 Library parser note: CRLF tolerance
-
-§3 above describes tmux's *input* side (the rule tmux applies to lines it
-reads from the client). The library's parser consumes tmux's *output* and
-goes the opposite direction: `TmuxParser.feed()` (`src/protocol/parser.ts`)
-strips a trailing `\r` before each `\n` so transports that introduce CRLF
-between tmux and the parser are tolerated and parse identically to LF-only
-ones.
-
-This is safe because tmux always octal-escapes literal control bytes in
-pane output (see §9) — any unescaped `\r` adjacent to LF must therefore be
-transport line-driver noise, not data. The behavior is library-side
-defensive code, not a tmux rule. SPEC.md §4.3.1 carries the mirror
-statement on the outer-spec side. Resolves audit finding MANIFEST F7.
-
-### 3.2 Library detach note (library)
-
-The §3 bullet above states that an empty line causes the client to detach.
-`TmuxClient.detach()` (`src/client.ts`) is the typed first-class operation
-for sending this empty-line signal — it encodes and writes a bare `\n` via
-the `detachClient()` protocol encoder. This is semantically distinct from
-`TmuxClient.close()`, which tears down the underlying transport without
-sending any protocol signal to tmux. Resolves audit finding MANIFEST F4.
 
 ---
 
@@ -174,16 +130,6 @@ begin with `%`.
   `list-panes -F '#{pane_id}'`, which prints lines like `%5`) would be
   indistinguishable from a real notification, and the parser would have to
   guess by content.
-- Library reliance: `src/protocol/parser.ts` (`processLine`) treats every
-  non-terminator line inside an active response block as command output and
-  forwards it to `onOutputLine`, regardless of its leading byte. That branch
-  is annotated `[LAW:one-source-of-truth]` and names this invariant as its
-  sole justification.
-- Why named: any future tmux change that violated Invariant 4.1 would
-  silently miscategorise output as events (or vice versa) in every
-  control-mode consumer. Naming the invariant — rather than burying it in
-  prose — makes such a change a discoverable spec edit instead of a silent
-  parser regression.
 
 ---
 
@@ -407,28 +353,6 @@ Not all notifications are sent to all control clients. The filtering rules are:
 - All other bytes (0x20-0x5B, 0x5D-0xFF): sent as-is
 - Encoding loop in `control_append_data()`
   - `control.c:631-642`
-
-### 9.1 Decoder corollaries
-
-The encoding rule above describes what tmux *emits*. The library's decoder
-(`src/protocol/decode.ts`, `decodeOctalEscapes`) implements three additional
-recovery rules that follow from the encoding rule plus the assumption that
-transports may introduce line-driver noise. These rules resolve audit finding
-MANIFEST F8 and mirror the canonical iTerm2 reference
-(`TmuxGateway -decodeEscapedOutput`):
-
-1. **Literal control-byte drop.** Because real control output is always
-   octal-escaped per §9, any literal byte `< 0x20` appearing unescaped in the
-   stream must be transport noise — and is dropped.
-2. **Mid-escape `\r` skip.** Stray `\r` between the three digits of a `\NNN`
-   escape is skipped; the escape still decodes to one byte.
-3. **Malformed-escape recovery.** A `\` not followed by three octal digits
-   decodes to `?` (0x3F); the non-digit byte is reconsidered on the next
-   pass.
-
-A consumer who reads §9 alone cannot predict these behaviors — the rules
-follow logically from §9 but are not stated by it. SPEC.md §10.1 carries the
-mirror statement on the outer-spec side.
 
 ---
 
@@ -796,21 +720,6 @@ for control-mode-specific flags.
 - **`refresh-client -l`** - request clipboard via xterm escape (does NOT require
   `CLIENT_CONTROL`)
   - `cmd-refresh-client.c:256-258`, `tmux.1` `refresh-client` `.Fl l`
-
-### 26.1 Library typed operations (library)
-
-Beyond the `refresh-client` wrappers enumerated above, `TmuxClient`
-(`src/client.ts`) exposes typed methods that send other tmux commands:
-
-- `execute(command)` — raw tmux command passthrough; the general escape hatch for any command not covered by a named method
-- `listWindows()` — wraps `list-windows`
-- `listPanes()` — wraps `list-panes`
-- `sendKeys(target, keys)` — wraps `send-keys`
-- `splitWindow(options?)` — wraps `split-window`
-
-The `refresh-client` variants (`setSize`, `setPaneAction`, `subscribeRaw`,
-`setFlags`, etc.) are the typed wrappers for the §26 commands listed above.
-Resolves audit finding MANIFEST F9.
 
 ---
 
