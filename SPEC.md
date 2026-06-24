@@ -13,6 +13,12 @@
 Derived from tmux source code (version next-3.7, commit 5c30b145) and the
 tmux(1) man page. All citations reference files in the tmux source tree.
 
+Man-page citations use **stable mandoc anchors** (`` `tmux.1` `.It Ic %output` ``,
+`` `tmux.1` `refresh-client` `.Fl C` ``, `` `tmux.1` `.Sh CONTROL MODE` ``) rather
+than absolute line numbers, which drift whenever upstream reflows the page. Resolve
+one by grepping the anchor line in `tmux.1` (e.g. `grep -n '.It Ic %output' tmux.1`);
+flag anchors are scoped by the named command. Do not reintroduce `tmux.1:NNNN`.
+
 ---
 
 ## 1. Overview
@@ -25,7 +31,7 @@ responses and asynchronous notifications on stdout.
 All protocol messages are line-oriented (terminated by `\n`). All protocol
 lines from the server begin with `%`.
 
-**Source:** `tmux.1:7861-7870`
+**Source:** `tmux.1` `.Sh CONTROL MODE`
 
 ---
 
@@ -38,7 +44,7 @@ tmux -C new-session
 tmux -C attach-session -t mysession
 ```
 
-**Source:** `tmux.1:104-110`, `tmux.c:393-398`
+**Source:** `tmux.1` `.It Fl C`, `tmux.c:393-398`
 
 ### 2.1 Variants
 
@@ -185,7 +191,7 @@ timestamp, command-number, and flags values.
 %end 1363006971 2 1
 ```
 
-**Source:** `tmux.1:7884-7889`
+**Source:** `tmux.1` `.Sh CONTROL MODE` (guard block: `%begin`/`%end` "have three arguments")
 
 ### 5.3 Parse Errors
 
@@ -222,7 +228,7 @@ All notifications are a single line beginning with `%`.
 
 Notifications (except `%exit`) also correspond to tmux hooks.
 
-**Source:** `tmux.1:7896-7904`, `tmux.1:5671-5674`
+**Source:** `tmux.1` `.Sh CONTROL MODE` ("outputs notifications"), `tmux.1` `.Sh HOOKS`
 
 ### 6.1 Notification Dispatch
 
@@ -295,7 +301,7 @@ set.
 - `<pane-id>`: pane identifier (e.g., `%0`)
 - `<value>`: octal-escaped output data (see Section 10)
 
-**Source:** `control.c:625`, `tmux.1:7964-7967`
+**Source:** `control.c:625`, `tmux.1` `.It Ic %output`
 
 #### `%extended-output`
 
@@ -313,7 +319,7 @@ Sent instead of `%output` when `pause-after` flag **is** set.
 | `:`       | Literal colon separator (space-delimited) |
 | `value`   | Octal-escaped output data (same encoding as `%output`) |
 
-**Source:** `control.c:621-623`, `tmux.1:7935-7944`
+**Source:** `control.c:621-623`, `tmux.1` `.It Ic %extended-output`
 
 **Library note (resolves audit finding SPEC.md F2):** The parsed `OutputMessage.data` and `ExtendedOutputMessage.data` fields are `Uint8Array` carrying the *decoded* bytes — not the raw octal-escaped wire string. The decoder also tolerates transport noise (literal control bytes, mid-escape `\r`, malformed escapes); see [§10.1 Decoder behavior (library)](#101-decoder-behavior-library).
 
@@ -336,7 +342,7 @@ is continued. Sent when:
 When a pane is paused, all queued output for that pane is discarded.
 
 **Source:** `control.c:383` (explicit), `control.c:455` (age-triggered),
-`tmux.1:7973-7975`
+`tmux.1` `.It Ic %pause`
 
 #### `%continue`
 
@@ -347,7 +353,7 @@ When a pane is paused, all queued output for that pane is discarded.
 A previously paused pane has been resumed. Output resumes from the pane's
 current position (data produced while paused is not replayed).
 
-**Source:** `control.c:369`, `tmux.1:7914-7918`
+**Source:** `control.c:369`, `tmux.1` `.It Ic %continue`
 
 ---
 
@@ -362,7 +368,7 @@ current position (data produced while paused is not replayed).
 The pane has changed mode (e.g., entered or exited copy mode). Sent to all
 control clients regardless of session.
 
-**Source:** `control-notify.c:34-39`, `tmux.1:7969-7971`
+**Source:** `control-notify.c:34-39`, `tmux.1` `.It Ic %pane-mode-changed`
 
 ---
 
@@ -376,7 +382,7 @@ control clients regardless of session.
 
 A window was linked to the current session.
 
-**Source:** `control-notify.c:118`, `tmux.1:8027-8029`
+**Source:** `control-notify.c:118`, `tmux.1` `.It Ic %window-add`
 
 #### `%window-close`
 
@@ -386,7 +392,7 @@ A window was linked to the current session.
 
 A window was closed (unlinked from the current session).
 
-**Source:** `control-notify.c:100`, `tmux.1:8031-8033`
+**Source:** `control-notify.c:100`, `tmux.1` `.It Ic %window-close`
 
 #### `%window-renamed`
 
@@ -396,7 +402,7 @@ A window was closed (unlinked from the current session).
 
 A window in the current session was renamed.
 
-**Source:** `control-notify.c:136-137`, `tmux.1:8039-8042`
+**Source:** `control-notify.c:136-137`, `tmux.1` `.It Ic %window-renamed`
 
 #### `%window-pane-changed`
 
@@ -407,7 +413,7 @@ A window in the current session was renamed.
 The active pane in a window changed. Sent to all control clients regardless
 of session.
 
-**Source:** `control-notify.c:79-86`, `tmux.1:8035-8038`
+**Source:** `control-notify.c:79-86`, `tmux.1` `.It Ic %window-pane-changed`
 
 #### `%unlinked-window-add`
 
@@ -417,7 +423,7 @@ of session.
 
 A window was created but is not linked to the current session.
 
-**Source:** `control-notify.c:120`, `tmux.1:8013-8015`
+**Source:** `control-notify.c:120`, `tmux.1` `.It Ic %unlinked-window-add`
 
 #### `%unlinked-window-close`
 
@@ -427,7 +433,7 @@ A window was created but is not linked to the current session.
 
 A window not linked to the current session was closed.
 
-**Source:** `control-notify.c:102`, `tmux.1:8017-8020`
+**Source:** `control-notify.c:102`, `tmux.1` `.It Ic %unlinked-window-close`
 
 #### `%unlinked-window-renamed`
 
@@ -438,7 +444,7 @@ A window not linked to the current session was closed.
 A window not linked to the current session was renamed. The code sends both the
 window ID and the name (`@%u %s`).
 
-**Source:** `control-notify.c:139-140`, `tmux.1:8022-8025`
+**Source:** `control-notify.c:139-140`, `tmux.1` `.It Ic %unlinked-window-renamed`
 
 ---
 
@@ -466,7 +472,7 @@ Layout change notifications are sent only to control clients whose session
 contains the affected window. Not sent if the window has no `layout_root`
 (i.e., the last pane is being closed and the window will be destroyed).
 
-**Source:** `control-notify.c:51-52, 58-70`, `tmux.1:7946-7956`
+**Source:** `control-notify.c:51-52, 58-70`, `tmux.1` `.It Xo Ic %layout-change`
 
 ---
 
@@ -481,7 +487,7 @@ contains the affected window. Not sent if the window has no `layout_root`
 The client is now attached to a different session. Sent to the client whose
 session changed.
 
-**Source:** `control-notify.c:160-161`, `tmux.1:7977-7980`
+**Source:** `control-notify.c:160-161`, `tmux.1` `.It Ic %session-changed`
 
 #### `%client-session-changed`
 
@@ -492,7 +498,7 @@ session changed.
 Another client changed its attached session. Sent to all other control mode
 clients.
 
-**Source:** `control-notify.c:163-164`, `tmux.1:7907-7911`
+**Source:** `control-notify.c:163-164`, `tmux.1` `.It Ic %client-session-changed`
 
 #### `%session-renamed`
 
@@ -502,11 +508,11 @@ clients.
 
 A session was renamed.
 
-NOTE: The man page (`tmux.1:7982-7983`) documents only `<name>` as the
+NOTE: The man page (`tmux.1` `.It Ic %session-renamed`) documents only `<name>` as the
 argument, but the code (`control-notify.c:189`) sends `$%u %s` (session ID
 followed by name).
 
-**Source:** `control-notify.c:189`, `tmux.1:7982-7983`
+**Source:** `control-notify.c:189`, `tmux.1` `.It Ic %session-renamed`
 
 #### `%sessions-changed`
 
@@ -516,7 +522,7 @@ followed by name).
 
 A session was created or destroyed. Takes no arguments.
 
-**Source:** `control-notify.c:202, 215`, `tmux.1:7989-7990`
+**Source:** `control-notify.c:202, 215`, `tmux.1` `.It Ic %sessions-changed`
 
 #### `%session-window-changed`
 
@@ -526,7 +532,7 @@ A session was created or destroyed. Takes no arguments.
 
 The active window in a session changed.
 
-**Source:** `control-notify.c:228-229`, `tmux.1:7985-7988`
+**Source:** `control-notify.c:228-229`, `tmux.1` `.It Ic %session-window-changed`
 
 ---
 
@@ -540,7 +546,7 @@ The active window in a session changed.
 
 A client has detached.
 
-**Source:** `control-notify.c:176`, `tmux.1:7905-7906`
+**Source:** `control-notify.c:176`, `tmux.1` `.It Ic %client-detached`
 
 ---
 
@@ -554,7 +560,7 @@ A client has detached.
 
 A paste buffer was created or modified.
 
-**Source:** `control-notify.c:242`, `tmux.1:7969-7971`
+**Source:** `control-notify.c:242`, `tmux.1` `.It Ic %paste-buffer-changed`
 
 #### `%paste-buffer-deleted`
 
@@ -564,7 +570,7 @@ A paste buffer was created or modified.
 
 A paste buffer was deleted.
 
-**Source:** `control-notify.c:255`, `tmux.1:7972-7973`
+**Source:** `control-notify.c:255`, `tmux.1` `.It Ic %paste-buffer-deleted`
 
 ---
 
@@ -604,7 +610,7 @@ compared to the last-seen value. Only changed values trigger a notification.
 - Pane: `control.c:909, 944`
 - Window: `control.c:989, 1024`
 - Timer: `control.c:1032-1125`
-- `tmux.1:7991-8011`
+- `tmux.1` `.It Xo Ic %subscription-changed`
 
 ---
 
@@ -619,7 +625,7 @@ compared to the last-seen value. Only changed values trigger a notification.
 A message sent with the `display-message` command when the target client is a
 control mode client.
 
-**Source:** `cmd-display-message.c:151`, `tmux.1:7958-7960`
+**Source:** `cmd-display-message.c:151`, `tmux.1` `.It Ic %message`
 
 ---
 
@@ -633,7 +639,7 @@ control mode client.
 
 An error occurred while parsing a configuration file.
 
-**Source:** `cfg.c:229, 253`, `tmux.1:7912-7913`
+**Source:** `cfg.c:229, 253`, `tmux.1` `.It Ic %config-error`
 
 ---
 
@@ -649,7 +655,7 @@ The tmux client is exiting. The optional reason describes why. This message is
 printed client-side on stdout (not sent through the protocol from server to
 client).
 
-**Source:** `client.c:424-427`, `tmux.1:7920-7925`
+**Source:** `client.c:424-427`, `tmux.1` `.It Ic %exit`
 
 #### Exit Reasons
 
@@ -720,7 +726,7 @@ and parsed by `server_client_control_flags()`. The others apply to all clients.
 **Source:**
 - Flag parsing: `server-client.c:3786-3845`
 - Flag defines: `tmux.h:2013-2041`
-- Man page: `tmux.1:1072-1089`
+- Man page: `tmux.1` `attach-session` `.Fl f`
 
 ---
 
@@ -778,7 +784,7 @@ refresh-client -C @<window-id>:
 
 Requires `CLIENT_CONTROL`.
 
-**Source:** `cmd-refresh-client.c:82-131`, `tmux.1:1427-1438`
+**Source:** `cmd-refresh-client.c:82-131`, `tmux.1` `refresh-client` `.Fl C`
 
 ### 11.1 Library mapping (library)
 
@@ -851,7 +857,7 @@ different panes. Requires `CLIENT_CONTROL`.
 **Source:**
 - `control.c:335-385`
 - `cmd-refresh-client.c:134-164`
-- `tmux.1:1439-1461`
+- `tmux.1` `refresh-client` `.Fl A`
 
 ---
 
@@ -881,7 +887,7 @@ when the first subscription is added and stopped when the last is removed.
 - `control.c:849-1168` (check functions, timer, add, remove)
 - `cmd-refresh-client.c:47-79`
 - `tmux.h:2138-2144` (enum)
-- `tmux.1:1463-1486`
+- `tmux.1` `refresh-client` `.Fl B`
 
 ---
 
@@ -912,7 +918,7 @@ Note: `-r` does NOT require `CLIENT_CONTROL` (it operates on the client's tty).
 - `window.c:1840-1893` (`window_pane_get_bg_control_client` / `window_pane_get_fg_control_client`); `window.c:1800-1816` (`window_pane_get_bg`)
 - `input.c:2955` (fg, direct), `input.c:3005` (bg, via `window_pane_get_bg`)
 - `tmux.h:1267-1268`
-- `tmux.1:1490-1494`
+- `tmux.1` `refresh-client` `.Fl r`
 
 ### 15.1 Library note (library)
 
@@ -939,7 +945,7 @@ If pane output data is buffered for more than **300 seconds** (5 minutes,
 `CONTROL_MAXIMUM_AGE`) due to a slow client, the client is forcibly
 disconnected with the exit message `too far behind`.
 
-**Source:** `control.c:456-461`, `tmux.1:7723-7725`
+**Source:** `control.c:456-461`, `tmux.1` `.It too far behind`
 
 ### 16.2 With `pause-after=N`
 
@@ -1053,7 +1059,7 @@ refresh-client -l
 Requests the terminal's clipboard contents via xterm OSC 52 escape sequence.
 This does NOT require `CLIENT_CONTROL`.
 
-**Source:** `cmd-refresh-client.c:256-258`, `tmux.1:1496-1499`
+**Source:** `cmd-refresh-client.c:256-258`, `tmux.1` `refresh-client` `.Fl l`
 
 ---
 
@@ -1166,7 +1172,7 @@ struct window_pane_offset {
 `CLIENT_CONTROL` flag and `"0"` otherwise; it returns NULL (variable absent)
 only when there is no client.
 
-**Source:** `format.c:1423-1432, 3079-3080`, `tmux.1:6270`
+**Source:** `format.c:1423-1432, 3079-3080`, `tmux.1` `.It Li "client_control_mode"`
 
 ---
 
@@ -1281,6 +1287,6 @@ from `TmuxEventMap`; pane bytes route exclusively through `attachBytesSink`.
 
 | Item | Man Page | Code |
 |------|----------|------|
-| `%session-renamed` args | `<name>` (`tmux.1:7982`) | `<session-id> <name>` (`control-notify.c:189`: `$%u %s`) |
+| `%session-renamed` args | `<name>` (`tmux.1` `.It Ic %session-renamed`) | `<session-id> <name>` (`control-notify.c:189`: `$%u %s`) |
 
 ---
