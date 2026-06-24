@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # required for npm --provenance
+      id-token: write # OIDC token npm signs the provenance attestation with
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +40,51 @@ jobs:
       # if the workspace grows additional publishable packages, and avoids
       # depending on pnpm's cwd-as-package implicit selection at the
       # workspace root (a known footgun across pnpm versions).
-      - run: pnpm --filter @promptctl/tmux-control-mode-js publish --provenance --no-git-checks
+      #
+      # Provenance is requested via NPM_CONFIG_PROVENANCE, NOT the
+      # `--provenance` CLI flag. pnpm 10 does not implement publish natively —
+      # it delegates to the npm CLI — and it silently drops `--provenance`
+      # when forwarding, so the flag publishes a no-op (succeeds, attaches no
+      # attestation). An env var is inherited by the delegated npm process
+      # unconditionally, so npm honors it regardless of pnpm's flag handling.
+      # Do NOT "restore" the flag: it is the broken channel, not a missing one.
+      # The verify step below fails the job if provenance still doesn't attach.
+      - run: pnpm --filter @promptctl/tmux-control-mode-js publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      # Provenance verification gate. The publish above can succeed while
+      # attaching no provenance attestation (this is exactly how 0.1.0
+      # shipped). Assert the SLSA provenance attestation exists rather than
+      # trusting the publish exit code.
+      #
+      # Endpoint contract (verified live): a version WITH provenance returns
+      # HTTP 200 + {"attestations":[...]} containing a predicateType of
+      # https://slsa.dev/provenance/v1; a version WITHOUT returns HTTP 404
+      # {"error":"Not found"}. We poll because the endpoint lags publish by a
+      # few seconds, so a 404 may be propagation rather than absence — only a
+      # 404 that persists across the whole window is a real failure. Any other
+      # status is a registry/network fault and also fails loudly: this gate
+      # never passes on an inconclusive result.
+      - name: Verify provenance attestation attached
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          url="https://registry.npmjs.org/-/npm/v1/attestations/@promptctl%2Ftmux-control-mode-js@${version}"
+          echo "Checking SLSA provenance for @promptctl/tmux-control-mode-js@${version}"
+          for attempt in 1 2 3 4 5 6; do
+            http="$(curl -sS -o /tmp/attestations.json -w '%{http_code}' "$url")" || http="000"
+            if [ "$http" = "200" ]; then
+              has_slsa="$(node -e "const d=require('/tmp/attestations.json');process.stdout.write(String((d.attestations||[]).some(a=>(a.predicateType||'').includes('slsa.dev/provenance'))))")"
+              if [ "$has_slsa" = "true" ]; then
+                echo "✓ SLSA provenance attestation present"
+                exit 0
+              fi
+              echo "attempt ${attempt}: 200 but no SLSA provenance predicateType yet"
+            else
+              echo "attempt ${attempt}: HTTP ${http} (404 = not yet visible / absent)"
+            fi
+            sleep 10
+          done
+          echo "::error::No SLSA provenance attestation for @promptctl/tmux-control-mode-js@${version} after publish (regression of tmux-release-5f2.1)"
+          exit 1
