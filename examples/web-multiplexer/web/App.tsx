@@ -29,6 +29,7 @@ import { RegexMatcherStore } from "./regex-matcher-store.ts";
 import { ImageExtractorStore } from "./image-extractor-store.ts";
 import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import { SessionRecorderStore } from "./session-recorder-store.ts";
+import { ByteAttributionStore } from "./byte-attribution-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -44,6 +45,7 @@ import { RegexMatcherView } from "./components/RegexMatcherView.tsx";
 import { ImageExtractorView } from "./components/ImageExtractorView.tsx";
 import { EscapePlaygroundView } from "./components/EscapePlaygroundView.tsx";
 import { SessionRecorderView } from "./components/SessionRecorderView.tsx";
+import { ByteAttributionView } from "./components/ByteAttributionView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -126,6 +128,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new SessionRecorderStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] ByteAttributionStore drives the SAME bridge as the
+  // rest of the app, sourcing the dedicated firehose channel (raw pty bytes of
+  // every pane). It reconstructs the pane's grid from the very bytes it
+  // attributes, so a cell and its provenance can never disagree. The store
+  // outlives the view so the captured window survives tab switches.
+  const attributionStore = useMemo(
+    () => new ByteAttributionStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -138,6 +149,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      attributionStore.dispose();
       recorderStore.dispose();
       playgroundStore.dispose();
       imageStore.dispose();
@@ -156,6 +168,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     imageStore,
     playgroundStore,
     recorderStore,
+    attributionStore,
     consoleStore,
     connectUrl,
   ]);
@@ -203,6 +216,18 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, recorderStore]);
+
+  // Same firehose-only lifecycle for byte attribution: taps open while the mode
+  // is active and close on leave. The store reconstructs the selected pane's
+  // grid from the captured bytes so each cell can be traced to its source byte.
+  // [LAW:no-ambient-temporal-coupling] one owner, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "attribution") {
+      attributionStore.start();
+      return () => attributionStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, attributionStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -333,6 +358,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Image Extractor", value: "image" },
                 { label: "Escape Playground", value: "playground" },
                 { label: "Session Recorder", value: "record" },
+                { label: "Byte Attribution", value: "attribution" },
               ]}
             />
           </Group>
@@ -432,6 +458,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <SessionRecorderView
             demoStore={demoStore}
             store={recorderStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "attribution" ? (
+          <ByteAttributionView
+            demoStore={demoStore}
+            store={attributionStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
