@@ -31,6 +31,7 @@ import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import { SessionRecorderStore } from "./session-recorder-store.ts";
 import { ByteAttributionStore } from "./byte-attribution-store.ts";
 import { ScrollbackTimeMachineStore } from "./scrollback-store.ts";
+import { MomentDiffStore } from "./moment-diff-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -48,6 +49,7 @@ import { EscapePlaygroundView } from "./components/EscapePlaygroundView.tsx";
 import { SessionRecorderView } from "./components/SessionRecorderView.tsx";
 import { ByteAttributionView } from "./components/ByteAttributionView.tsx";
 import { ScrollbackTimeMachineView } from "./components/ScrollbackTimeMachineView.tsx";
+import { MomentDiffView } from "./components/MomentDiffView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -147,6 +149,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new ScrollbackTimeMachineStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] MomentDiffStore drives the SAME bridge, seeding
+  // each pane and recording the forward firehose like the time machine, then
+  // diffing two reconstructed moments cell-by-cell. The store outlives the view
+  // so a captured recording survives tab switches.
+  const momentDiffStore = useMemo(
+    () => new MomentDiffStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -159,6 +169,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      momentDiffStore.dispose();
       timeMachineStore.dispose();
       attributionStore.dispose();
       recorderStore.dispose();
@@ -181,6 +192,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     recorderStore,
     attributionStore,
     timeMachineStore,
+    momentDiffStore,
     consoleStore,
     connectUrl,
   ]);
@@ -252,6 +264,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, timeMachineStore]);
+
+  // Same firehose-only lifecycle for the moment diff: taps open while the mode
+  // is active and close on leave. Like the time machine it also seeds every pane
+  // at record-start. [LAW:no-ambient-temporal-coupling] one owner, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "momentdiff") {
+      momentDiffStore.start();
+      return () => momentDiffStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, momentDiffStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -384,6 +407,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Session Recorder", value: "record" },
                 { label: "Byte Attribution", value: "attribution" },
                 { label: "Time Machine", value: "timemachine" },
+                { label: "Moment Diff", value: "momentdiff" },
               ]}
             />
           </Group>
@@ -495,6 +519,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <ScrollbackTimeMachineView
             demoStore={demoStore}
             store={timeMachineStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "momentdiff" ? (
+          <MomentDiffView
+            demoStore={demoStore}
+            store={momentDiffStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
