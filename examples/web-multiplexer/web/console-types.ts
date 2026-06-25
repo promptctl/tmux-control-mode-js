@@ -83,6 +83,37 @@ export const REPL_RING_CAP = 200;
 /** Persisted recall-command cap. Strings only — recall across reloads. */
 export const CONSOLE_HISTORY_CAP = 50;
 
+/**
+ * The single tmux subscription name the Playground ever installs. Exactly one
+ * subscription is live at a time (the store tears the old one down before
+ * starting a new one), so a stable name is correct: re-subscribing under the
+ * same name and explicitly removing it are the only two operations.
+ * [LAW:one-source-of-truth] every `%subscription-changed` the Playground reacts
+ * to is filtered by this name, so the demo's own `sessions`/`windows`/`panes`
+ * subscriptions never bleed into the Playground result.
+ */
+export const PLAYGROUND_SUB = "playground";
+
+/**
+ * A Playground format preset: a human label and the tmux format it loads into
+ * the input. Fixed set (≤6), not user-editable in v1. Every preset is
+ * pane-context-evaluable — a pane target can resolve session/window/pane
+ * variables alike — so each one works against any selected target.
+ */
+export interface PlaygroundPreset {
+  readonly label: string;
+  readonly format: string;
+}
+
+export const PLAYGROUND_PRESETS: readonly PlaygroundPreset[] = [
+  { label: "command", format: "#{pane_current_command}" },
+  { label: "cwd", format: "#{pane_current_path}" },
+  { label: "pid", format: "#{pane_pid}" },
+  { label: "context", format: "#{session_name}: #{window_name}" },
+  { label: "size", format: "#{pane_width}x#{pane_height}" },
+  { label: "cursor", format: "#{cursor_x},#{cursor_y}" },
+];
+
 export const DEFAULT_FORMAT = "#{session_name}: #{window_name}";
 export const DEFAULT_TARGET: PlaygroundTarget = { kind: "active" };
 export const DEFAULT_MODE: PlaygroundMode = "one-shot";

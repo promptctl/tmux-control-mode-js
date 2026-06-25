@@ -12,16 +12,16 @@
 // so we stub a Map-backed Storage to exercise the real persistence path.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse, TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
 import { UiStore } from "./ui-store.ts";
-import { ConsoleStore } from "./console-store.ts";
+import { ConsoleStore, quoteTmuxArg } from "./console-store.ts";
 import {
   CONSOLE_HISTORY_CAP,
   DEFAULT_FORMAT,
   DEFAULT_MODE,
   REPL_RING_CAP,
 } from "./console-types.ts";
-import type { TmuxBridge } from "./bridge.ts";
+import type { ConnState, EventHandler, StateHandler, TmuxBridge } from "./bridge.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 // The auto-persist reaction is debounced; give it room to flush before we
@@ -115,6 +115,68 @@ function ok(output: readonly string[]): CommandResponse {
 
 function errResp(output: readonly string[]): CommandResponse {
   return { commandNumber: 0, timestamp: 0, output, success: false };
+}
+
+/** Flush pending microtasks (and the trailing macrotask) so a fire-and-forget
+ *  store evaluation settles before assertions. */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * A bridge that records every executed command, lets the test settle one-shot
+ * calls by hand, and lets it push `%subscription-changed` / connection-state
+ * events to the store's live listeners. `eventListeners` is the leak probe:
+ * exactly one is registered while a subscription is live, zero otherwise.
+ */
+function playgroundBridge(): {
+  bridge: TmuxBridge;
+  execCalls: Call[];
+  eventListeners: Set<EventHandler>;
+  emit: (ev: TmuxMessage) => void;
+  fireState: (s: ConnState) => void;
+} {
+  const execCalls: Call[] = [];
+  const eventListeners = new Set<EventHandler>();
+  const stateListeners = new Set<StateHandler>();
+  return {
+    bridge: {
+      ...fakeBridge(),
+      execute: (command: string) => {
+        const d = deferred<CommandResponse>();
+        execCalls.push({ command, d });
+        return d.promise;
+      },
+      onEvent: (h: EventHandler) => {
+        eventListeners.add(h);
+        return () => void eventListeners.delete(h);
+      },
+      onState: (h: StateHandler) => {
+        stateListeners.add(h);
+        return () => void stateListeners.delete(h);
+      },
+    },
+    execCalls,
+    eventListeners,
+    emit: (ev) => eventListeners.forEach((h) => h(ev)),
+    fireState: (s) => stateListeners.forEach((h) => h(s)),
+  };
+}
+
+function subEvent(name: string, value: string): TmuxMessage {
+  return {
+    type: "subscription-changed",
+    name,
+    sessionId: 0,
+    windowId: -1,
+    windowIndex: -1,
+    paneId: -1,
+    value,
+  };
+}
+
+function commandsOf(calls: readonly Call[]): string[] {
+  return calls.map((c) => c.command);
 }
 
 beforeEach(() => {
@@ -388,6 +450,242 @@ describe("ConsoleStore — recall", () => {
     await store.submit("c");
     // Cursor is back at the live line; Down has nowhere to go.
     expect(store.recallNext()).toEqual({ kind: "none" });
+  });
+});
+
+describe("quoteTmuxArg", () => {
+  it("wraps a plain string in single quotes", () => {
+    expect(quoteTmuxArg("#{pane_pid}")).toBe("'#{pane_pid}'");
+  });
+
+  it("round-trips an embedded single quote via the '\\'' sequence", () => {
+    // The fixture from the design doc. Verified against tmux 3.6a control mode:
+    // this exact encoding makes `it's` survive display-message / refresh-client.
+    expect(quoteTmuxArg("it's")).toBe("'it'\\''s'");
+  });
+
+  it("escapes every embedded quote, not just the first", () => {
+    expect(quoteTmuxArg("a'b'c")).toBe("'a'\\''b'\\''c'");
+  });
+});
+
+describe("ConsoleStore — Playground one-shot", () => {
+  function oneShotStore(): {
+    store: ConsoleStore;
+    rig: ReturnType<typeof playgroundBridge>;
+  } {
+    const rig = playgroundBridge();
+    const store = new ConsoleStore(rig.bridge, new UiStore());
+    return { store, rig };
+  }
+
+  it("issues display-message -p with the quoted format and routes ok → value", async () => {
+    const { store, rig } = oneShotStore();
+    store.setPlaygroundFormat("#{session_name}");
+
+    expect(rig.execCalls).toHaveLength(1);
+    expect(rig.execCalls[0].command).toBe("display-message -p '#{session_name}'");
+
+    rig.execCalls[0].d.resolve(ok(["demo"]));
+    await tick();
+    expect(store.playgroundResult).toEqual({ status: "value", value: "demo", updateCount: 1 });
+  });
+
+  it("targets an explicit pane with -t and omits it for the active pane", () => {
+    const { store, rig } = oneShotStore();
+
+    store.setPlaygroundTarget({ kind: "explicit", target: "%3" });
+    expect(rig.execCalls.at(-1)?.command).toBe(
+      "display-message -p -t %3 '#{session_name}: #{window_name}'",
+    );
+
+    store.setPlaygroundTarget({ kind: "active" });
+    expect(rig.execCalls.at(-1)?.command).toBe(
+      "display-message -p '#{session_name}: #{window_name}'",
+    );
+  });
+
+  it("routes a tmux %error (success:false) → error variant carrying the diagnostic", async () => {
+    const { store, rig } = oneShotStore();
+    store.setPlaygroundFormat("#{bogus");
+
+    rig.execCalls[0].d.resolve(errResp(["invalid format"]));
+    await tick();
+    expect(store.playgroundResult).toEqual({ status: "error", message: "invalid format" });
+  });
+
+  it("surfaces a transport rejection in the error variant, not a swallowed log", async () => {
+    const { store, rig } = oneShotStore();
+    store.setPlaygroundFormat("#{pane_pid}");
+
+    rig.execCalls[0].d.reject(new Error("bridge disconnected"));
+    await tick();
+    expect(store.playgroundResult).toEqual({
+      status: "error",
+      message: "bridge disconnected",
+    });
+  });
+
+  it("decodes a latin1-container value to UTF-8 at the store boundary", async () => {
+    const { store, rig } = oneShotStore();
+    store.setPlaygroundFormat("#{pane_title}");
+
+    rig.execCalls[0].d.resolve(ok(["cafÃ©"]));
+    await tick();
+    expect(store.playgroundResult).toEqual({ status: "value", value: "café", updateCount: 1 });
+  });
+
+  it("drops a stale one-shot resolution superseded by a newer evaluation", async () => {
+    const { store, rig } = oneShotStore();
+    store.setPlaygroundFormat("first");
+    store.setPlaygroundFormat("second");
+
+    // Resolve the SECOND (newest) first, then the stale first.
+    rig.execCalls[1].d.resolve(ok(["second-value"]));
+    await tick();
+    rig.execCalls[0].d.resolve(ok(["first-value"]));
+    await tick();
+
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "second-value",
+      updateCount: 1,
+    });
+  });
+});
+
+describe("ConsoleStore — Playground subscription lifecycle", () => {
+  function subscribedStore(): {
+    store: ConsoleStore;
+    rig: ReturnType<typeof playgroundBridge>;
+  } {
+    const rig = playgroundBridge();
+    const store = new ConsoleStore(rig.bridge, new UiStore());
+    store.setPlaygroundMode("subscribed"); // installs the first subscription
+    return { store, rig };
+  }
+
+  it("installs exactly one subscription on entering subscribed mode", () => {
+    const { rig } = subscribedStore();
+    expect(rig.eventListeners.size).toBe(1);
+    expect(rig.execCalls.at(-1)?.command).toBe(
+      "refresh-client -B 'playground::#{session_name}: #{window_name}'",
+    );
+  });
+
+  it("subscribes the active pane with an empty <what> and an explicit pane by token", () => {
+    const { store, rig } = subscribedStore();
+    store.setPlaygroundTarget({ kind: "explicit", target: "%5" });
+    expect(rig.eventListeners.size).toBe(1);
+    expect(rig.execCalls.at(-1)?.command).toBe(
+      "refresh-client -B 'playground:%5:#{session_name}: #{window_name}'",
+    );
+  });
+
+  it("tears down before re-subscribing on a format change — never leaks a subscription", () => {
+    const { store, rig } = subscribedStore();
+    store.setPlaygroundFormat("#{pane_pid}");
+    store.setPlaygroundFormat("#{pane_current_command}");
+
+    // One listener live at all times — every re-subscribe removed the prior.
+    expect(rig.eventListeners.size).toBe(1);
+
+    // Each re-subscribe is preceded by a `refresh-client -B playground` removal.
+    const cmds = commandsOf(rig.execCalls);
+    expect(cmds.filter((c) => c === "refresh-client -B playground")).toHaveLength(2);
+    expect(cmds.at(-1)).toBe("refresh-client -B 'playground::#{pane_current_command}'");
+  });
+
+  it("a target change while subscribed tears down and re-subscribes (single active)", () => {
+    const { store, rig } = subscribedStore();
+    store.setPlaygroundTarget({ kind: "explicit", target: "%7" });
+
+    expect(rig.eventListeners.size).toBe(1);
+    const cmds = commandsOf(rig.execCalls);
+    expect(cmds).toContain("refresh-client -B playground");
+    expect(cmds.at(-1)).toBe(
+      "refresh-client -B 'playground:%7:#{session_name}: #{window_name}'",
+    );
+  });
+
+  it("switching to one-shot tears down the subscription before issuing display-message", () => {
+    const { store, rig } = subscribedStore();
+    const before = rig.execCalls.length;
+    store.setPlaygroundMode("one-shot");
+
+    expect(rig.eventListeners.size).toBe(0); // listener removed
+    const after = commandsOf(rig.execCalls).slice(before);
+    expect(after).toEqual([
+      "refresh-client -B playground",
+      "display-message -p '#{session_name}: #{window_name}'",
+    ]); // teardown strictly precedes the one-shot
+  });
+
+  it("an identical refresh is a no-op — the subscription survives view re-mounts", () => {
+    const { store, rig } = subscribedStore();
+    const listenerBefore = [...rig.eventListeners][0];
+    const callsBefore = rig.execCalls.length;
+
+    store.refresh(); // e.g. the view re-mounting on a tab switch
+
+    expect(rig.eventListeners.size).toBe(1);
+    expect([...rig.eventListeners][0]).toBe(listenerBefore); // same listener, not rebuilt
+    expect(rig.execCalls).toHaveLength(callsBefore); // no new command issued
+  });
+
+  it("applies subscription values, counting updates and ignoring other subscriptions", () => {
+    const { store, rig } = subscribedStore();
+    expect(store.playgroundResult).toEqual({ status: "idle" }); // before the first fire
+
+    rig.emit(subEvent("sessions", "not-mine")); // demo's own subscription — ignored
+    expect(store.playgroundResult).toEqual({ status: "idle" });
+
+    rig.emit(subEvent("playground", "vim"));
+    expect(store.playgroundResult).toEqual({ status: "value", value: "vim", updateCount: 1 });
+
+    rig.emit(subEvent("playground", "nvim"));
+    expect(store.playgroundResult).toEqual({ status: "value", value: "nvim", updateCount: 2 });
+  });
+
+  it("decodes latin1-container subscription values", () => {
+    const { store, rig } = subscribedStore();
+    rig.emit(subEvent("playground", "cafÃ©"));
+    expect(store.playgroundResult).toEqual({ status: "value", value: "café", updateCount: 1 });
+  });
+
+  it("re-subscribing resets the update counter and result to idle", () => {
+    const { store, rig } = subscribedStore();
+    rig.emit(subEvent("playground", "a"));
+    expect(store.playgroundResult).toEqual({ status: "value", value: "a", updateCount: 1 });
+
+    store.setPlaygroundFormat("#{pane_pid}");
+    expect(store.playgroundResult).toEqual({ status: "idle" });
+  });
+
+  it("dispose() removes the live subscription and stops listening", () => {
+    const { store, rig } = subscribedStore();
+    store.dispose();
+
+    expect(rig.eventListeners.size).toBe(0);
+    expect(commandsOf(rig.execCalls).at(-1)).toBe("refresh-client -B playground");
+
+    // A late event from the dropped subscription is ignored.
+    rig.emit(subEvent("playground", "late"));
+    expect(store.playgroundResult).toEqual({ status: "idle" });
+  });
+
+  it("installs the subscription when the bridge reaches ready (boot into subscribed)", () => {
+    // Persisted mode is subscribed, but the store is constructed before the
+    // bridge is ready: the ready handler reconciles to the desired state.
+    const rig = playgroundBridge();
+    const ui = new UiStore();
+    ui.setConsoleMode("subscribed");
+    const store = new ConsoleStore(rig.bridge, ui);
+    expect(rig.eventListeners.size).toBe(0); // nothing yet — bridge not ready
+
+    rig.fireState("ready");
+    expect(rig.eventListeners.size).toBe(1);
+    expect(store.playgroundMode).toBe("subscribed");
   });
 });
 
