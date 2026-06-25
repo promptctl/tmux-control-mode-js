@@ -35,6 +35,7 @@ export type AppMode =
   | "sniffer"
   | "hyperlinks"
   | "commands"
+  | "copilot"
   | "tutorial"
   | "conformance";
 
@@ -67,6 +68,7 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "sniffer" ||
     v === "hyperlinks" ||
     v === "commands" ||
+    v === "copilot" ||
     v === "tutorial" ||
     v === "conformance"
   );
