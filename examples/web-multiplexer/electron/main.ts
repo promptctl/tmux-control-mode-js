@@ -35,16 +35,15 @@ import {
   type MainBridgeHandle,
   type MainBridgeOptions,
 } from "@promptctl/tmux-control-mode-js/electron/main";
+import { PaneFirehose } from "../server/pane-firehose.js";
 
 // [LAW:single-enforcer] One pair of (socket, session) names drives the
 // demo's INITIAL connection. Both default to `web-multiplexer-demo` but
 // can be overridden via env so e2e runs are inherently isolated. After
 // boot, the renderer's socket picker can swap us to any other live
 // socket — see swapTo() below.
-const INITIAL_SOCKET =
-  process.env.TMUX_DEMO_SOCKET ?? "web-multiplexer-demo";
-const INITIAL_SESSION =
-  process.env.TMUX_DEMO_SESSION ?? "web-multiplexer-demo";
+const INITIAL_SOCKET = process.env.TMUX_DEMO_SOCKET ?? "web-multiplexer-demo";
+const INITIAL_SESSION = process.env.TMUX_DEMO_SESSION ?? "web-multiplexer-demo";
 
 // Sockets the demo created itself. Only these get killed on quit;
 // user-owned sockets the picker hops onto are read-only as far as we're
@@ -164,7 +163,14 @@ async function createWindow(): Promise<void> {
   // dist/electron/index.html (relative to the demo workspace root). The
   // electron main bundle lives at dist-electron/main.mjs (esbuild
   // output), so the path goes ../dist/electron/index.html.
-  await win.loadFile(path.join(__dirname, "..", "dist", "electron", "index.html"));
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+
+  await win.loadFile(
+    path.join(__dirname, "..", "dist", "electron", "index.html"),
+  );
 }
 
 function bridgeOptions(): MainBridgeOptions {
@@ -191,6 +197,19 @@ interface Active {
 }
 let active: Active | null = null;
 
+// The renderer window, retained so the firehose can push pane bytes to it.
+let mainWindow: BrowserWindow | null = null;
+
+// [LAW:single-enforcer] One cross-terminal firehose for the (single) active
+// client. Lazily created on demo:firehose-start, torn down on stop, socket
+// swap, or window close — never outlives the client whose panes it taps.
+let firehose: PaneFirehose | null = null;
+
+function stopFirehose(): void {
+  firehose?.stop();
+  firehose = null;
+}
+
 async function connectTo(socket: string, session: string): Promise<void> {
   ensureSession(socket, session);
   const transport = spawnTmux(["-L", socket, "attach-session", "-t", session]);
@@ -214,6 +233,10 @@ async function swapTo(newSocket: string): Promise<void> {
       `swapTo: tmux server on socket "${newSocket}" is not alive`,
     );
   }
+  // The firehose taps the OUTGOING client's panes; tear it down before the
+  // client closes so its pipe-pane taps and FIFOs don't outlive their server.
+  // The renderer re-opens it on re-entering regex mode against the new socket.
+  stopFirehose();
   // [LAW:single-enforcer] One bridge installed at a time. Dispose first
   // so createMainBridge in connectTo() finds a clean ipcMain to register
   // on.
@@ -262,6 +285,32 @@ app.whenReady().then(async () => {
     },
   );
 
+  // Cross-terminal firehose IPC. The Electron analogue of the WebSocket
+  // startFirehose/stopFirehose frames: PaneFirehose runs in this process (the
+  // only place that can drive tmux) and pushes pane bytes to the renderer over
+  // the demo:firehose-bytes channel. [LAW:single-enforcer] One PaneFirehose,
+  // sourced from the active client's control connection.
+  ipcMain.handle("demo:firehose-start", async (): Promise<void> => {
+    if (active === null) {
+      throw new Error("demo:firehose-start: no active tmux client");
+    }
+    const client = active.client;
+    if (firehose === null) {
+      firehose = new PaneFirehose(
+        (command) => client.execute(command),
+        (paneId, data) => {
+          // Send only to the live window; a closed window means the firehose
+          // is being torn down anyway.
+          mainWindow?.webContents.send("demo:firehose-bytes", paneId, data);
+        },
+      );
+    }
+    await firehose.start();
+  });
+  ipcMain.handle("demo:firehose-stop", (): void => {
+    stopFirehose();
+  });
+
   // By the time `window-all-closed` fires, every BrowserWindow has
   // already emitted its 'closed' event and its WebContents is destroyed,
   // so the %exit notification client.close() will emit cannot be
@@ -271,6 +320,7 @@ app.whenReady().then(async () => {
   // is still alive; during normal app shutdown the renderer is already
   // gone, so the absence of an exit hop is correct.
   app.on("window-all-closed", () => {
+    stopFirehose();
     if (active !== null) {
       active.bridge.dispose();
       active.client.close();

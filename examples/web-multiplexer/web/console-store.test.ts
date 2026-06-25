@@ -56,6 +56,9 @@ function fakeBridge(): TmuxBridge {
     onError: () => noopUnsub,
     onState: () => noopUnsub,
     onWire: () => noopUnsub,
+    startFirehose: () => {},
+    stopFirehose: () => {},
+    onFirehose: () => noopUnsub,
   };
 }
 

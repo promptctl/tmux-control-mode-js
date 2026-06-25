@@ -18,6 +18,8 @@ import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
+import { PaneFirehose } from "./pane-firehose.js";
+import { encodeFirehoseFrame } from "../shared/firehose-frame.js";
 
 // ---------------------------------------------------------------------------
 // Outbound forwarding: TmuxClient → WebSocket
@@ -90,6 +92,13 @@ interface ConnectionState {
   readonly ws: WebSocket;
   readonly client: TmuxClient;
   readonly detachBytes: () => void;
+  /**
+   * The cross-terminal firehose for this connection, lazily created on the
+   * first `startFirehose` and torn down on `stopFirehose` or close. Null while
+   * the browser isn't in regex-matcher mode, so idle connections pay no
+   * pipe-pane cost.
+   */
+  firehose: PaneFirehose | null;
 }
 
 const connections = new Set<ConnectionState>();
@@ -100,6 +109,8 @@ function removeConnection(connection: ConnectionState): void {
 
 function closeConnection(connection: ConnectionState): void {
   removeConnection(connection);
+  connection.firehose?.stop();
+  connection.firehose = null;
   connection.detachBytes();
   connection.client.close();
   if (
@@ -117,16 +128,28 @@ function handleConnection(ws: WebSocket): void {
     }
   };
 
-  // Spawn tmux in -C mode against the host's existing tmux server.
-  // No explicit socket path — use the default server the user already has.
-  const transport = spawnTmux(["attach-session"]);
+  // Spawn tmux in -C mode against the host's existing tmux server. By default
+  // the user's default server; `TMUX_DEMO_SOCKET` pins it to a named `-L`
+  // socket (parity with the Electron target — keeps e2e / live verification
+  // isolated from the user's real tmux). [LAW:single-enforcer]
+  const socket = process.env.TMUX_DEMO_SOCKET;
+  const attachArgs =
+    socket !== undefined && socket.length > 0
+      ? ["-L", socket, "attach-session"]
+      : ["attach-session"];
+  const transport = spawnTmux(attachArgs);
   const client = new TmuxClient(transport);
 
   // Pane bytes (binary frames) + non-byte events (JSON) are forwarded by the
   // shared wiring; `detachBytes` tears both down on close.
   const detachBytes = forwardClientToSocket(client, ws);
 
-  const connection = { ws, client, detachBytes };
+  const connection: ConnectionState = {
+    ws,
+    client,
+    detachBytes,
+    firehose: null,
+  };
   connections.add(connection);
 
   // Fire a ready frame after the session-changed handshake arrives.
@@ -175,10 +198,32 @@ function handleConnection(ws: WebSocket): void {
         client.detach();
         return;
       }
+      if (msg.kind === "startFirehose") {
+        // [LAW:single-enforcer] One firehose per connection. A repeat start
+        // (e.g. re-entering regex mode) reuses the live one; PaneFirehose.start
+        // is itself idempotent.
+        if (connection.firehose === null) {
+          connection.firehose = new PaneFirehose(
+            (command) => client.execute(command),
+            (paneId, data) => {
+              if (ws.readyState === ws.OPEN) {
+                ws.send(encodeFirehoseFrame(paneId, data));
+              }
+            },
+          );
+        }
+        await connection.firehose.start();
+        return;
+      }
+      if (msg.kind === "stopFirehose") {
+        connection.firehose?.stop();
+        connection.firehose = null;
+        return;
+      }
     } catch (err) {
       send({
         kind: "error",
-        id: (msg as ClientToServer).id as string | undefined,
+        id: msg.id,
         message: err instanceof Error ? err.message : String(err),
       });
     }

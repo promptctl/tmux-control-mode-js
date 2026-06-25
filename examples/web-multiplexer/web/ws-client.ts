@@ -28,10 +28,15 @@ import {
   isPaneOutputFrame,
   decodePaneOutput,
 } from "@promptctl/tmux-control-mode-js/websocket/protocol";
+import {
+  isFirehoseFrame,
+  decodeFirehoseFrame,
+} from "../shared/firehose-frame.ts";
 import type {
   ConnState,
   ErrorHandler,
   EventHandler,
+  FirehoseHandler,
   StateHandler,
   TmuxBridge,
   WireEntry,
@@ -51,6 +56,7 @@ export class WebSocketBridge implements TmuxBridge {
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly wireHandlers = new Set<WireHandler>();
+  private readonly firehoseHandlers = new Set<FirehoseHandler>();
   private nextId = 0;
 
   // Observable state — connection state and the outbox size drive the
@@ -220,6 +226,19 @@ export class WebSocketBridge implements TmuxBridge {
     this.sendRaw({ kind: "detach", id: this.id() });
   }
 
+  startFirehose(): void {
+    this.sendRaw({ kind: "startFirehose", id: this.id() });
+  }
+
+  stopFirehose(): void {
+    this.sendRaw({ kind: "stopFirehose", id: this.id() });
+  }
+
+  onFirehose(h: FirehoseHandler): () => void {
+    this.firehoseHandlers.add(h);
+    return () => this.firehoseHandlers.delete(h);
+  }
+
   private send(msg: ClientToServer): Promise<CommandResponse> {
     return new Promise((resolve) => {
       if (msg.kind !== "detach") {
@@ -289,6 +308,15 @@ export class WebSocketBridge implements TmuxBridge {
    */
   private handleBinary(buf: ArrayBuffer): void {
     const bytes = new Uint8Array(buf);
+    // [LAW:dataflow-not-control-flow] The leading magic byte is the channel
+    // discriminator: 0x7F (library) → attached pane output → event fan-out;
+    // 0xF1 → firehose bytes → firehose fan-out. The two channels never cross,
+    // so a tapped line can't also reach the terminal as attached output.
+    if (isFirehoseFrame(bytes)) {
+      const chunk = decodeFirehoseFrame(bytes);
+      this.firehoseHandlers.forEach((h) => h(chunk.paneId, chunk.data));
+      return;
+    }
     if (!isPaneOutputFrame(bytes)) {
       const message = "unrecognized binary frame from bridge";
       this.emitWire({ dir: "in-error", ts: Date.now(), id: null, message });

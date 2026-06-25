@@ -74,6 +74,14 @@ export type StateHandler = (state: ConnState) => void;
 export type WireHandler = (entry: WireEntry) => void;
 
 /**
+ * One chunk of firehose pane bytes: which pane it came from, and the raw bytes
+ * (Latin-1 decodable). The firehose taps EVERY pane in EVERY session — not just
+ * the attached one — so its bytes are a separate stream from `onEvent`'s
+ * attached `%output`. See `startFirehose`.
+ */
+export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
+
+/**
  * Transport-agnostic bridge surface consumed by every renderer module.
  *
  * Subscription methods (`onEvent` / `onError` / `onState` / `onWire`) all
@@ -98,4 +106,20 @@ export interface TmuxBridge {
   onError(handler: ErrorHandler): () => void;
   onState(handler: StateHandler): () => void;
   onWire(handler: WireHandler): () => void;
+
+  /**
+   * Firehose channel — live bytes from EVERY pane in EVERY session, tapped via
+   * `pipe-pane` in the bridge's host process (the browser cannot open tmux
+   * connections). This is a DEDICATED channel, separate from `onEvent`'s
+   * attached-`%output`: the cross-terminal regex feed sources EXCLUSIVELY from
+   * here so the attached session's bytes never double-count.
+   * [LAW:one-source-of-truth]
+   *
+   * `startFirehose` opens the taps (idempotent); `stopFirehose` closes them.
+   * Bytes are delivered to every handler registered via `onFirehose` until the
+   * returned disposer is called.
+   */
+  startFirehose(): void;
+  stopFirehose(): void;
+  onFirehose(handler: FirehoseHandler): () => void;
 }

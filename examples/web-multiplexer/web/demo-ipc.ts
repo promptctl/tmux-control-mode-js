@@ -23,6 +23,22 @@ export interface DemoIpc {
    * if the name is empty.
    */
   switchSocket(name: string): Promise<void>;
+
+  /**
+   * Open the cross-terminal firehose in the main process: `pipe-pane` taps on
+   * every pane in every session, bytes streamed back over `onFirehose`. The
+   * Electron analogue of the WebSocket `startFirehose` control frame.
+   */
+  startFirehose(): Promise<void>;
+
+  /** Close the firehose taps in the main process. */
+  stopFirehose(): Promise<void>;
+
+  /**
+   * Subscribe to firehose pane bytes pushed from the main process. Returns a
+   * disposer that removes the listener.
+   */
+  onFirehose(handler: (paneId: number, data: Uint8Array) => void): () => void;
 }
 
 declare global {

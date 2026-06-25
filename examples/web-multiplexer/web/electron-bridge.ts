@@ -34,10 +34,12 @@ import type {
   TmuxMessage,
 } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ClientToServer } from "../shared/protocol.ts";
+import type { DemoIpc } from "./demo-ipc.ts";
 import type {
   ConnState,
   ErrorHandler,
   EventHandler,
+  FirehoseHandler,
   StateHandler,
   TmuxBridge,
   WireEntry,
@@ -58,9 +60,20 @@ export class ElectronBridge implements TmuxBridge {
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly wireHandlers = new Set<WireHandler>();
+  private readonly firehoseHandlers = new Set<FirehoseHandler>();
+  // [LAW:single-enforcer] One demo-IPC firehose subscription, fanned out to
+  // every onFirehose handler. The demoIpc surface is the Electron analogue of
+  // the WebSocket binary firehose frame.
+  private readonly demoIpc: DemoIpc;
 
-  constructor(ipcRenderer: IpcRendererLike) {
+  constructor(ipcRenderer: IpcRendererLike, demoIpc: DemoIpc) {
     this.ipcRenderer = ipcRenderer;
+    this.demoIpc = demoIpc;
+    // Persistent fan-out: bytes pushed from the main process reach every
+    // registered handler. Lives for the bridge's lifetime (one per page).
+    this.demoIpc.onFirehose((paneId, data) => {
+      this.firehoseHandlers.forEach((h) => h(paneId, data));
+    });
     // [LAW:single-enforcer] One proxy.on("*") subscription per connect()
     // — every event fans out to local handlers + the wire stream from
     // this single source. Storing the bound handler at construction time
@@ -115,6 +128,33 @@ export class ElectronBridge implements TmuxBridge {
    */
   detach(): void {
     // intentional no-op
+  }
+
+  /**
+   * [LAW:no-silent-failure] A firehose start failure (e.g. no active client in
+   * the main process) is surfaced through the error handlers, then swallowed at
+   * the Promise edge so a fire-and-forget caller doesn't trip an unhandled
+   * rejection. The renderer reflects the failure via onError, never silently.
+   */
+  startFirehose(): void {
+    this.demoIpc.startFirehose().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.errorHandlers.forEach((h) => h(`firehose: ${message}`));
+    });
+  }
+
+  stopFirehose(): void {
+    this.demoIpc.stopFirehose().catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      this.errorHandlers.forEach((h) => h(`firehose: ${message}`));
+    });
+  }
+
+  onFirehose(h: FirehoseHandler): () => void {
+    this.firehoseHandlers.add(h);
+    return () => {
+      this.firehoseHandlers.delete(h);
+    };
   }
 
   /**
@@ -235,7 +275,12 @@ export class ElectronBridge implements TmuxBridge {
     const proxy = this.proxy;
     if (proxy === null) {
       const message = `cannot ${request.kind}: bridge is not connected`;
-      this.emitWire({ dir: "in-error", ts: Date.now(), id: request.id, message });
+      this.emitWire({
+        dir: "in-error",
+        ts: Date.now(),
+        id: request.id,
+        message,
+      });
       this.errorHandlers.forEach((h) => h(message, request.id));
       throw new Error(message);
     }
