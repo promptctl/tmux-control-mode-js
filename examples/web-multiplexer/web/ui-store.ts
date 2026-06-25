@@ -37,6 +37,7 @@ export type AppMode =
   | "commands"
   | "copilot"
   | "reader"
+  | "webgl"
   | "tutorial"
   | "conformance";
 
@@ -71,6 +72,7 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "commands" ||
     v === "copilot" ||
     v === "reader" ||
+    v === "webgl" ||
     v === "tutorial" ||
     v === "conformance"
   );
