@@ -28,6 +28,7 @@ import { SearchStore } from "./search-store.ts";
 import { RegexMatcherStore } from "./regex-matcher-store.ts";
 import { ImageExtractorStore } from "./image-extractor-store.ts";
 import { EscapePlaygroundStore } from "./escape-playground-store.ts";
+import { SessionRecorderStore } from "./session-recorder-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -42,6 +43,7 @@ import { SearchView } from "./components/SearchView.tsx";
 import { RegexMatcherView } from "./components/RegexMatcherView.tsx";
 import { ImageExtractorView } from "./components/ImageExtractorView.tsx";
 import { EscapePlaygroundView } from "./components/EscapePlaygroundView.tsx";
+import { SessionRecorderView } from "./components/SessionRecorderView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -116,6 +118,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new EscapePlaygroundStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] SessionRecorderStore drives the SAME bridge as the
+  // rest of the app, capturing the dedicated firehose channel (raw pty bytes of
+  // every pane, view-independent) into a timestamped log. The store outlives the
+  // view so a finished recording survives tab switches.
+  const recorderStore = useMemo(
+    () => new SessionRecorderStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -128,6 +138,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      recorderStore.dispose();
       playgroundStore.dispose();
       imageStore.dispose();
       regexStore.dispose();
@@ -144,6 +155,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     regexStore,
     imageStore,
     playgroundStore,
+    recorderStore,
     consoleStore,
     connectUrl,
   ]);
@@ -178,6 +190,19 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, imageStore]);
+
+  // Same firehose-only lifecycle for the session recorder: taps open while
+  // record mode is active and close on leave. The recorder captures the firehose
+  // (raw pty bytes of every pane) with timing; nothing is recorded until the
+  // user hits Record. [LAW:no-ambient-temporal-coupling] one owner, keyed on
+  // appMode — leaving the mode freezes any in-progress recording and closes taps.
+  useEffect(() => {
+    if (uiStore.appMode === "record") {
+      recorderStore.start();
+      return () => recorderStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, recorderStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -307,6 +332,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Regex Matcher", value: "regex" },
                 { label: "Image Extractor", value: "image" },
                 { label: "Escape Playground", value: "playground" },
+                { label: "Session Recorder", value: "record" },
               ]}
             />
           </Group>
@@ -400,6 +426,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <EscapePlaygroundView
             demoStore={demoStore}
             store={playgroundStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "record" ? (
+          <SessionRecorderView
+            demoStore={demoStore}
+            store={recorderStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
