@@ -33,6 +33,7 @@ import { ByteAttributionStore } from "./byte-attribution-store.ts";
 import { ScrollbackTimeMachineStore } from "./scrollback-store.ts";
 import { MomentDiffStore } from "./moment-diff-store.ts";
 import { BisectStore } from "./bisect-store.ts";
+import { BroadcastStore } from "./broadcast-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -52,6 +53,7 @@ import { ByteAttributionView } from "./components/ByteAttributionView.tsx";
 import { ScrollbackTimeMachineView } from "./components/ScrollbackTimeMachineView.tsx";
 import { MomentDiffView } from "./components/MomentDiffView.tsx";
 import { BisectView } from "./components/BisectView.tsx";
+import { BroadcastView } from "./components/BroadcastView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -165,6 +167,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   // The store outlives the view so a captured recording survives tab switches.
   const bisectStore = useMemo(
     () => new BisectStore(demoStore.client),
+    [demoStore],
+  );
+  // [LAW:one-source-of-truth] BroadcastStore reads the LIVE pane model off the
+  // same DemoStore (built-in `${pane}`/`${title}` bindings derive from it, never
+  // a snapshot) and fans resolved bytes over the SAME `sendKeys` boundary the
+  // rest of the app writes through. It owns no tmux resource, so unlike the
+  // recording stores it needs no lifecycle effect and no dispose.
+  const broadcastStore = useMemo(
+    () => new BroadcastStore(demoStore.client, demoStore),
     [demoStore],
   );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
@@ -432,6 +443,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Time Machine", value: "timemachine" },
                 { label: "Moment Diff", value: "momentdiff" },
                 { label: "Bug Bisect", value: "bisect" },
+                { label: "Smart Broadcast", value: "broadcast" },
               ]}
             />
           </Group>
@@ -557,6 +569,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             store={bisectStore}
             uiStore={uiStore}
           />
+        ) : uiStore.appMode === "broadcast" ? (
+          <BroadcastView store={broadcastStore} />
         ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
