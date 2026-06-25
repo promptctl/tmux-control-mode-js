@@ -182,6 +182,26 @@ export function seedBytes(snap: ScrollbackSnapshot): Uint8Array {
 }
 
 /**
+ * The bytes to paint a FRESHLY-CLEARED terminal so it shows the pane's real
+ * screen after `forward` bytes have landed on top of the seed: clear the screen,
+ * lay down the seed screen (the program's view at t=0), then replay `forward`.
+ * The single definition of the seeded reconstruction assembly — including the
+ * `CLEAR` magic bytes — so every reconstruction that builds on a seed shares one
+ * source rather than re-stating the clear sequence. [LAW:one-source-of-truth]
+ *
+ * `forward` is the prefix that has landed: `bytesUpTo(t)` for a time-keyed moment
+ * (the live branch below), or `stream.slice(0, n)` for a byte-keyed offset (the
+ * .11 bisect reconstruction). The keying lives in the caller; the assembly here
+ * is identical either way.
+ */
+export function seededPaint(
+  snap: ScrollbackSnapshot,
+  forward: Uint8Array,
+): Uint8Array {
+  return concat([CLEAR, seedBytes(snap), forward]);
+}
+
+/**
  * The bytes to feed a FRESHLY-CLEARED terminal so it shows `moment`. The single
  * source of "how a moment looks" — both regimes reduce to clear-then-paint, so
  * the view never branches on regime to decide what to draw, only the engine
@@ -190,7 +210,7 @@ export function seedBytes(snap: ScrollbackSnapshot): Uint8Array {
  * - `history`: clear, then the window of `rows` captured rows starting at
  *   `topLine` (the bottom window equals the live screen — the regimes meet
  *   seamlessly at t=0 by construction). [LAW:one-source-of-truth]
- * - `live`: clear, then the seed screen, then the forward delta `bytesUpTo(t)`.
+ * - `live`: the seeded reconstruction with the forward delta `bytesUpTo(t)`.
  *
  * KNOWN LIMITATION: `capture-pane` emits one logical row per line; a row that
  * was exactly `cols` wide and soft-wrapped is rejoined here with an explicit
@@ -204,9 +224,8 @@ export function momentBytes(moment: Moment, tl: Timeline): Uint8Array {
     const window = lines.slice(moment.topLine, moment.topLine + geometry.rows);
     return concat([CLEAR, joinWith(window, CRLF)]);
   }
-  return concat([
-    CLEAR,
-    seedBytes(tl.snapshot),
+  return seededPaint(
+    tl.snapshot,
     bytesUpTo(tl.recording, tl.paneId, moment.tMs),
-  ]);
+  );
 }

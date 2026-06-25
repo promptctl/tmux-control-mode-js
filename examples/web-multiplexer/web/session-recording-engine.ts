@@ -156,6 +156,58 @@ export function bytesBetween(
 }
 
 /**
+ * `paneId`'s entire forward byte stream, concatenated in capture order — every
+ * byte the pane emitted after record-start, as one buffer. This is the axis the
+ * .11 bisect binary-searches: a position in it is a byte offset, finer than the
+ * chunk/time grain (one chunk carries one `tMs`, so time cannot address a point
+ * mid-chunk). `paneStreamBytes(rec, p).length` is the bad-end of the search.
+ */
+export function paneStreamBytes(rec: Recording, paneId: number): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (const c of rec.chunks) {
+    if (c.paneId === paneId) parts.push(c.bytes);
+  }
+  return concatBytes(parts);
+}
+
+/**
+ * Where one byte offset into `paneStreamBytes(rec, paneId)` came from: the index
+ * of the chunk it falls in, that chunk's arrival `tMs`, and the offset within
+ * the chunk. Ties a bisect culprit byte back to WHEN it arrived and which
+ * `%output` chunk carried it — the .8 "who wrote this byte?" provenance, keyed
+ * by stream offset instead of grid cell.
+ *
+ * Returns null when `byteOffset` is outside `[0, streamLength)` — an honest "no
+ * such byte" rather than a clamped lie. [LAW:no-silent-failure] The half-open
+ * convention matches the bisect: offset N names the Nth byte (0-based), so the
+ * end-of-stream sentinel `streamLength` has no owning chunk.
+ */
+export interface StreamLocation {
+  readonly chunkIndex: number;
+  readonly tMs: number;
+  readonly offsetInChunk: number;
+}
+
+export function locateOffset(
+  rec: Recording,
+  paneId: number,
+  byteOffset: number,
+): StreamLocation | null {
+  if (byteOffset < 0) return null;
+  let consumed = 0;
+  let chunkIndex = 0;
+  for (const c of rec.chunks) {
+    if (c.paneId !== paneId) continue;
+    if (byteOffset < consumed + c.bytes.length) {
+      return { chunkIndex, tMs: c.tMs, offsetInChunk: byteOffset - consumed };
+    }
+    consumed += c.bytes.length;
+    chunkIndex += 1;
+  }
+  return null;
+}
+
+/**
  * Bucket `paneId`'s bytes into `bucketCount` equal time bins over
  * `[0, durationMs]`, returning bytes-per-bin. Powers the scrub bar's activity
  * sparkline — "where the action is" in the recording. A byte at exactly
