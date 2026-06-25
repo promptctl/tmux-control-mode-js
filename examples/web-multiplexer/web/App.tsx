@@ -35,6 +35,7 @@ import { MomentDiffStore } from "./moment-diff-store.ts";
 import { BisectStore } from "./bisect-store.ts";
 import { BroadcastStore } from "./broadcast-store.ts";
 import { SyncScrollStore } from "./sync-store.ts";
+import { MirrorStore } from "./mirror-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -56,6 +57,7 @@ import { MomentDiffView } from "./components/MomentDiffView.tsx";
 import { BisectView } from "./components/BisectView.tsx";
 import { BroadcastView } from "./components/BroadcastView.tsx";
 import { SyncScrollView } from "./components/SyncScrollView.tsx";
+import { MirrorView } from "./components/MirrorView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -188,6 +190,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new SyncScrollStore(demoStore.client),
     [demoStore],
   );
+  // The Pane Mirror tab holds only the operator's pane SELECTION. The live
+  // mirror connection (the IO) is owned by the read-only `MirrorViewerBridge`
+  // the view mounts — a separate `/mirror` endpoint that never touches this
+  // bridge — so this store needs no tmux client and no dispose. [LAW:decomposition]
+  const mirrorStore = useMemo(() => new MirrorStore(), []);
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -468,6 +475,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Bug Bisect", value: "bisect" },
                 { label: "Smart Broadcast", value: "broadcast" },
                 { label: "Sync Scrollback", value: "syncscroll" },
+                { label: "Pane Mirror", value: "mirror" },
               ]}
             />
           </Group>
@@ -599,6 +607,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <SyncScrollView
             demoStore={demoStore}
             store={syncStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "mirror" ? (
+          <MirrorView
+            demoStore={demoStore}
+            store={mirrorStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
