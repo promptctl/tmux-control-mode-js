@@ -26,6 +26,7 @@ import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
 import { RegexMatcherStore } from "./regex-matcher-store.ts";
+import { ImageExtractorStore } from "./image-extractor-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -38,6 +39,7 @@ import { InspectorView } from "./components/InspectorView.tsx";
 import { HeatmapView } from "./components/HeatmapView.tsx";
 import { SearchView } from "./components/SearchView.tsx";
 import { RegexMatcherView } from "./components/RegexMatcherView.tsx";
+import { ImageExtractorView } from "./components/ImageExtractorView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -94,6 +96,16 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new RegexMatcherStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] ImageExtractorStore drives the SAME bridge as the
+  // rest of the app, sourcing image escape sequences exclusively from the
+  // dedicated firehose channel — tmux strips graphics sequences from the
+  // attached %output the terminals render, so the firehose is the only place
+  // they survive. The store outlives the view so the gallery survives tab
+  // switches.
+  const imageStore = useMemo(
+    () => new ImageExtractorStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -106,6 +118,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      imageStore.dispose();
       regexStore.dispose();
       searchStore.dispose();
       heatmapStore.dispose();
@@ -118,6 +131,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     inspectorStore,
     searchStore,
     regexStore,
+    imageStore,
     consoleStore,
     connectUrl,
   ]);
@@ -141,6 +155,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, regexStore]);
+
+  // Same firehose-only lifecycle for the inline image extractor: taps open while
+  // image mode is active and close on leave. [LAW:no-ambient-temporal-coupling]
+  // one owner per effect, both keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "image") {
+      imageStore.start();
+      return () => imageStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, imageStore]);
 
   // Document-level keymap routing.
   //
@@ -256,6 +281,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Activity Heatmap", value: "heatmap" },
                 { label: "Scrollback Search", value: "search" },
                 { label: "Regex Matcher", value: "regex" },
+                { label: "Image Extractor", value: "image" },
               ]}
             />
           </Group>
@@ -337,6 +363,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <RegexMatcherView
             demoStore={demoStore}
             regexStore={regexStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "image" ? (
+          <ImageExtractorView
+            demoStore={demoStore}
+            imageStore={imageStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
