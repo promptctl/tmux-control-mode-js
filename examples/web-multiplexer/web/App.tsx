@@ -66,6 +66,8 @@ import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
 import { TutorialView } from "./components/TutorialView.tsx";
 import { TutorialStore } from "./tutorial-store.ts";
+import { ConformanceView } from "./components/ConformanceView.tsx";
+import { ConformanceStore } from "./conformance-store.ts";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -242,11 +244,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   // subpaths). So this store needs no tmux client, no firehose effect, and no
   // connection lifecycle; it is self-contained, like the Pane Mirror store.
   const tutorialStore = useMemo(() => new TutorialStore(), []);
+  // Self-contained like the Tutorial store: runs the library conformance
+  // catalogue in-tab, no tmux/bridge connection. [LAW:effects-at-boundaries]
+  const conformanceStore = useMemo(() => new ConformanceStore(), []);
 
   useEffect(() => {
     demoStore.connect(connectUrl);
     return () => {
       tutorialStore.dispose();
+      conformanceStore.dispose();
       consoleStore.dispose();
       promptStore.dispose();
       hyperlinkStore.dispose();
@@ -284,6 +290,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     promptStore,
     consoleStore,
     tutorialStore,
+    conformanceStore,
     connectUrl,
   ]);
 
@@ -561,6 +568,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
                 { label: "Command Palette", value: "commands" },
                 { label: "Protocol Tutorial", value: "tutorial" },
+                { label: "Conformance", value: "conformance" },
               ]}
             />
           </Group>
@@ -720,6 +728,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           />
         ) : uiStore.appMode === "tutorial" ? (
           <TutorialView store={tutorialStore} uiStore={uiStore} />
+        ) : uiStore.appMode === "conformance" ? (
+          <ConformanceView store={conformanceStore} uiStore={uiStore} />
         ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
