@@ -30,7 +30,8 @@ export type AppMode =
   | "bisect"
   | "broadcast"
   | "syncscroll"
-  | "mirror";
+  | "mirror"
+  | "sniffer";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -56,7 +57,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "bisect" ||
     v === "broadcast" ||
     v === "syncscroll" ||
-    v === "mirror"
+    v === "mirror" ||
+    v === "sniffer"
   );
 }
 
