@@ -118,7 +118,10 @@ export class MockTmuxServer implements TmuxTransport {
   // The commands the client has sent, newline-stripped, in order — for assertions.
   private readonly commandLog: string[] = [];
 
-  constructor(scenario: MockScenario = DEFAULT_SCENARIO, options?: MockServerOptions) {
+  constructor(
+    scenario: MockScenario = DEFAULT_SCENARIO,
+    options?: MockServerOptions,
+  ) {
     this.scenario = scenario;
     this.now = options?.now ?? (() => 0);
   }
@@ -213,10 +216,20 @@ export class MockTmuxServer implements TmuxTransport {
     // [LAW:one-source-of-truth] begin/end/error are serialized through the same
     // serializeMessage as every other message — guard lines are not special-
     // cased strings. The whole block is enqueued atomically (Block Purity).
-    this.enqueueMessage({ type: "begin", timestamp, commandNumber: number, flags: CONTROL_FLAGS });
+    this.enqueueMessage({
+      type: "begin",
+      timestamp,
+      commandNumber: number,
+      flags: CONTROL_FLAGS,
+    });
     for (const outLine of reply.output ?? []) this.enqueueLine(outLine);
     const terminator = reply.kind === "error" ? "error" : "end";
-    this.enqueueMessage({ type: terminator, timestamp, commandNumber: number, flags: CONTROL_FLAGS });
+    this.enqueueMessage({
+      type: terminator,
+      timestamp,
+      commandNumber: number,
+      flags: CONTROL_FLAGS,
+    });
 
     this.flush();
   }
