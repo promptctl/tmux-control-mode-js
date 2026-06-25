@@ -21,7 +21,7 @@ import {
 } from "@mantine/core";
 import type { TmuxBridge } from "./bridge.ts";
 import { DemoStore } from "./store.ts";
-import { UiStore } from "./ui-store.ts";
+import { UiStore, isAppMode } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
@@ -201,19 +201,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             <SegmentedControl
               size="xs"
               value={uiStore.appMode}
-              onChange={(v) =>
-                uiStore.setAppMode(
-                  v === "console"
-                    ? "console"
-                    : v === "inspector"
-                    ? "inspector"
-                    : v === "heatmap"
-                    ? "heatmap"
-                    : v === "search"
-                    ? "search"
-                    : "multiplexer",
-                )
-              }
+              onChange={(v) => uiStore.setAppMode(isAppMode(v) ? v : "multiplexer")}
               data={[
                 { label: "Multiplexer", value: "multiplexer" },
                 { label: "Console", value: "console" },

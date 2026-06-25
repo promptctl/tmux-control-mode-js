@@ -21,6 +21,23 @@ export type AppMode =
   | "heatmap"
   | "search";
 
+/**
+ * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
+ * persistence guard (untrusted storage) and the header control (untrusted
+ * Mantine `string`) narrow through this one place rather than each re-listing
+ * the union. [LAW:dataflow-not-control-flow] membership is a boolean on the
+ * data; callers run `setAppMode` unconditionally with the chosen value.
+ */
+export function isAppMode(v: unknown): v is AppMode {
+  return (
+    v === "multiplexer" ||
+    v === "console" ||
+    v === "inspector" ||
+    v === "heatmap" ||
+    v === "search"
+  );
+}
+
 interface PersistedShape {
   navbarWidth: number;
   navbarCollapsed: boolean;
@@ -81,14 +98,7 @@ function loadFromStorage(): PersistedShape {
         parsed.terminalFontSize <= TERMINAL_FONT_MAX
           ? parsed.terminalFontSize
           : DEFAULTS.terminalFontSize,
-      appMode:
-        parsed.appMode === "multiplexer" ||
-        parsed.appMode === "console" ||
-        parsed.appMode === "inspector" ||
-        parsed.appMode === "heatmap" ||
-        parsed.appMode === "search"
-          ? parsed.appMode
-          : DEFAULTS.appMode,
+      appMode: isAppMode(parsed.appMode) ? parsed.appMode : DEFAULTS.appMode,
       console: parseConsole(parsed.console),
     };
   } catch {
