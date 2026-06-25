@@ -43,6 +43,7 @@ import { PromptStore } from "./prompt-store.ts";
 import { CopilotStore } from "./copilot-store.ts";
 import { HttpLlmClient } from "./llm-client.ts";
 import { ReaderStore } from "./reader-store.ts";
+import { WebGLStressStore } from "./webgl-stress-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -71,6 +72,7 @@ import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
 import { CopilotView } from "./components/CopilotView.tsx";
 import { ReaderView } from "./components/ReaderView.tsx";
+import { WebGLStressView } from "./components/WebGLStressView.tsx";
 import { TutorialView } from "./components/TutorialView.tsx";
 import { TutorialStore } from "./tutorial-store.ts";
 import { ConformanceView } from "./components/ConformanceView.tsx";
@@ -262,6 +264,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new ReaderStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] WebGLStressStore takes the whole DemoStore: live
+  // mode opens a PaneStream (via demoStore.paneStreamClient) per pane of
+  // demoStore.currentWindow and feeds each through a custom WebGL TerminalSink.
+  // The store outlives the view so live taps + metrics survive tab switches.
+  const webglStore = useMemo(
+    () => new WebGLStressStore(demoStore),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -284,6 +294,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
       tutorialStore.dispose();
       conformanceStore.dispose();
       consoleStore.dispose();
+      webglStore.dispose();
       readerStore.dispose();
       copilotStore.dispose();
       promptStore.dispose();
@@ -322,6 +333,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     promptStore,
     copilotStore,
     readerStore,
+    webglStore,
     consoleStore,
     tutorialStore,
     conformanceStore,
@@ -406,6 +418,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, readerStore]);
+
+  // [LAW:no-ambient-temporal-coupling] one owner for the WebGL demo's live
+  // PaneStream lifecycle: this effect, keyed on appMode. start() begins
+  // reconciling live taps; stop() tears every PaneStream down on leave.
+  useEffect(() => {
+    if (uiStore.appMode === "webgl") {
+      webglStore.start();
+      return () => webglStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, webglStore]);
 
   useEffect(() => {
     if (uiStore.appMode === "image") {
@@ -627,6 +650,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Command Palette", value: "commands" },
                 { label: "AI Co-pilot", value: "copilot" },
                 { label: "Terminal Reader", value: "reader" },
+                { label: "WebGL Grid", value: "webgl" },
                 { label: "Protocol Tutorial", value: "tutorial" },
                 { label: "Conformance", value: "conformance" },
               ]}
@@ -800,6 +824,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           />
         ) : uiStore.appMode === "reader" ? (
           <ReaderView demoStore={demoStore} store={readerStore} />
+        ) : uiStore.appMode === "webgl" ? (
+          <WebGLStressView store={webglStore} />
         ) : uiStore.appMode === "tutorial" ? (
           <TutorialView store={tutorialStore} uiStore={uiStore} />
         ) : uiStore.appMode === "conformance" ? (
