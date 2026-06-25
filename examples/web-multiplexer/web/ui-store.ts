@@ -6,10 +6,20 @@
 // read/write via the store, never touch sessionStorage directly.
 
 import { makeAutoObservable, reaction } from "mobx";
+import {
+  type ConsolePersist,
+  DEFAULT_CONSOLE,
+  parseConsole,
+} from "./console-types.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 
-export type AppMode = "multiplexer" | "inspector" | "heatmap" | "search";
+export type AppMode =
+  | "multiplexer"
+  | "console"
+  | "inspector"
+  | "heatmap"
+  | "search";
 
 interface PersistedShape {
   navbarWidth: number;
@@ -19,6 +29,9 @@ interface PersistedShape {
   activeAsideTab: string;
   terminalFontSize: number;
   appMode: AppMode;
+  // Console-tab persisted slice. `ConsoleStore` is the API surface, but
+  // UiStore is the single persistence authority. [LAW:one-source-of-truth]
+  console: ConsolePersist;
 }
 
 const TERMINAL_FONT_MIN = 6;
@@ -32,6 +45,7 @@ const DEFAULTS: PersistedShape = {
   activeAsideTab: "debug",
   terminalFontSize: 13,
   appMode: "multiplexer",
+  console: DEFAULT_CONSOLE,
 };
 
 function loadFromStorage(): PersistedShape {
@@ -69,11 +83,13 @@ function loadFromStorage(): PersistedShape {
           : DEFAULTS.terminalFontSize,
       appMode:
         parsed.appMode === "multiplexer" ||
+        parsed.appMode === "console" ||
         parsed.appMode === "inspector" ||
         parsed.appMode === "heatmap" ||
         parsed.appMode === "search"
           ? parsed.appMode
           : DEFAULTS.appMode,
+      console: parseConsole(parsed.console),
     };
   } catch {
     return DEFAULTS;
@@ -89,6 +105,9 @@ export class UiStore {
   activeAsideTab: string;
   terminalFontSize: number;
   appMode: AppMode;
+  // Console-tab persisted slice. Replaced wholesale on change (immutable
+  // update), so the auto-persist reaction tracks it by reference.
+  console: ConsolePersist;
 
   constructor() {
     const initial = loadFromStorage();
@@ -98,6 +117,7 @@ export class UiStore {
     this.activeAsideTab = initial.activeAsideTab;
     this.terminalFontSize = initial.terminalFontSize;
     this.appMode = initial.appMode;
+    this.console = initial.console;
     for (const t of initial.hiddenEventTypes) this.hiddenEventTypes[t] = true;
 
     makeAutoObservable(this);
@@ -112,6 +132,7 @@ export class UiStore {
         activeAsideTab: this.activeAsideTab,
         terminalFontSize: this.terminalFontSize,
         appMode: this.appMode,
+        console: this.console,
       }),
       (snapshot) => {
         try {
