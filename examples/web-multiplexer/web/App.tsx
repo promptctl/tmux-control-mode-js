@@ -21,10 +21,11 @@ import {
 } from "@mantine/core";
 import type { TmuxBridge } from "./bridge.ts";
 import { DemoStore } from "./store.ts";
-import { UiStore } from "./ui-store.ts";
+import { UiStore, isAppMode } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
+import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
 import { WindowTabs } from "./components/WindowTabs.tsx";
@@ -35,6 +36,7 @@ import { NavbarResizer } from "./components/NavbarResizer.tsx";
 import { InspectorView } from "./components/InspectorView.tsx";
 import { HeatmapView } from "./components/HeatmapView.tsx";
 import { SearchView } from "./components/SearchView.tsx";
+import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
 export interface AppProps {
@@ -82,16 +84,24 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new SearchStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
+  // rest of the app and reads its persisted slice from UiStore. The store
+  // outlives the view so an in-flight command resolves across tab switches.
+  const consoleStore = useMemo(
+    () => new ConsoleStore(demoStore.client, uiStore),
+    [demoStore, uiStore],
+  );
 
   useEffect(() => {
     demoStore.connect(connectUrl);
     return () => {
+      consoleStore.dispose();
       searchStore.dispose();
       heatmapStore.dispose();
       inspectorStore.dispose();
       demoStore.disconnect();
     };
-  }, [demoStore, heatmapStore, inspectorStore, searchStore, connectUrl]);
+  }, [demoStore, heatmapStore, inspectorStore, searchStore, consoleStore, connectUrl]);
 
   // Lazily seed the full-scrollback index the first time search mode opens —
   // capturing every pane's history on app load would be wasteful when the
@@ -191,19 +201,10 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             <SegmentedControl
               size="xs"
               value={uiStore.appMode}
-              onChange={(v) =>
-                uiStore.setAppMode(
-                  v === "inspector"
-                    ? "inspector"
-                    : v === "heatmap"
-                    ? "heatmap"
-                    : v === "search"
-                    ? "search"
-                    : "multiplexer",
-                )
-              }
+              onChange={(v) => uiStore.setAppMode(isAppMode(v) ? v : "multiplexer")}
               data={[
                 { label: "Multiplexer", value: "multiplexer" },
+                { label: "Console", value: "console" },
                 { label: "Protocol Inspector", value: "inspector" },
                 { label: "Activity Heatmap", value: "heatmap" },
                 { label: "Scrollback Search", value: "search" },
@@ -264,7 +265,9 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           height: "100vh",
         }}
       >
-        {uiStore.appMode === "inspector" ? (
+        {uiStore.appMode === "console" ? (
+          <ConsoleView store={consoleStore} demoStore={demoStore} />
+        ) : uiStore.appMode === "inspector" ? (
           <InspectorView store={inspectorStore} demoStore={demoStore} />
         ) : uiStore.appMode === "heatmap" ? (
           <HeatmapView

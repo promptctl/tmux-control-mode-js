@@ -6,10 +6,37 @@
 // read/write via the store, never touch sessionStorage directly.
 
 import { makeAutoObservable, reaction } from "mobx";
+import {
+  type ConsolePersist,
+  DEFAULT_CONSOLE,
+  parseConsole,
+} from "./console-types.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 
-export type AppMode = "multiplexer" | "inspector" | "heatmap" | "search";
+export type AppMode =
+  | "multiplexer"
+  | "console"
+  | "inspector"
+  | "heatmap"
+  | "search";
+
+/**
+ * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
+ * persistence guard (untrusted storage) and the header control (untrusted
+ * Mantine `string`) narrow through this one place rather than each re-listing
+ * the union. [LAW:dataflow-not-control-flow] membership is a boolean on the
+ * data; callers run `setAppMode` unconditionally with the chosen value.
+ */
+export function isAppMode(v: unknown): v is AppMode {
+  return (
+    v === "multiplexer" ||
+    v === "console" ||
+    v === "inspector" ||
+    v === "heatmap" ||
+    v === "search"
+  );
+}
 
 interface PersistedShape {
   navbarWidth: number;
@@ -19,6 +46,9 @@ interface PersistedShape {
   activeAsideTab: string;
   terminalFontSize: number;
   appMode: AppMode;
+  // Console-tab persisted slice. `ConsoleStore` is the API surface, but
+  // UiStore is the single persistence authority. [LAW:one-source-of-truth]
+  console: ConsolePersist;
 }
 
 const TERMINAL_FONT_MIN = 6;
@@ -32,6 +62,7 @@ const DEFAULTS: PersistedShape = {
   activeAsideTab: "debug",
   terminalFontSize: 13,
   appMode: "multiplexer",
+  console: DEFAULT_CONSOLE,
 };
 
 function loadFromStorage(): PersistedShape {
@@ -67,13 +98,8 @@ function loadFromStorage(): PersistedShape {
         parsed.terminalFontSize <= TERMINAL_FONT_MAX
           ? parsed.terminalFontSize
           : DEFAULTS.terminalFontSize,
-      appMode:
-        parsed.appMode === "multiplexer" ||
-        parsed.appMode === "inspector" ||
-        parsed.appMode === "heatmap" ||
-        parsed.appMode === "search"
-          ? parsed.appMode
-          : DEFAULTS.appMode,
+      appMode: isAppMode(parsed.appMode) ? parsed.appMode : DEFAULTS.appMode,
+      console: parseConsole(parsed.console),
     };
   } catch {
     return DEFAULTS;
@@ -89,6 +115,9 @@ export class UiStore {
   activeAsideTab: string;
   terminalFontSize: number;
   appMode: AppMode;
+  // Console-tab persisted slice. Replaced wholesale on change (immutable
+  // update), so the auto-persist reaction tracks it by reference.
+  console: ConsolePersist;
 
   constructor() {
     const initial = loadFromStorage();
@@ -98,6 +127,7 @@ export class UiStore {
     this.activeAsideTab = initial.activeAsideTab;
     this.terminalFontSize = initial.terminalFontSize;
     this.appMode = initial.appMode;
+    this.console = initial.console;
     for (const t of initial.hiddenEventTypes) this.hiddenEventTypes[t] = true;
 
     makeAutoObservable(this);
@@ -112,6 +142,7 @@ export class UiStore {
         activeAsideTab: this.activeAsideTab,
         terminalFontSize: this.terminalFontSize,
         appMode: this.appMode,
+        console: this.console,
       }),
       (snapshot) => {
         try {
