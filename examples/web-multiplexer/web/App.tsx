@@ -25,6 +25,7 @@ import { UiStore, isAppMode } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
+import { RegexMatcherStore } from "./regex-matcher-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -36,6 +37,7 @@ import { NavbarResizer } from "./components/NavbarResizer.tsx";
 import { InspectorView } from "./components/InspectorView.tsx";
 import { HeatmapView } from "./components/HeatmapView.tsx";
 import { SearchView } from "./components/SearchView.tsx";
+import { RegexMatcherView } from "./components/RegexMatcherView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -84,6 +86,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new SearchStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] RegexMatcherStore drives the SAME bridge as the
+  // rest of the app, sourcing the cross-terminal regex feed exclusively from
+  // the dedicated firehose channel (never the attached %output the terminals
+  // render). The store outlives the view so the feed survives tab switches.
+  const regexStore = useMemo(
+    () => new RegexMatcherStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -96,12 +106,21 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      regexStore.dispose();
       searchStore.dispose();
       heatmapStore.dispose();
       inspectorStore.dispose();
       demoStore.disconnect();
     };
-  }, [demoStore, heatmapStore, inspectorStore, searchStore, consoleStore, connectUrl]);
+  }, [
+    demoStore,
+    heatmapStore,
+    inspectorStore,
+    searchStore,
+    regexStore,
+    consoleStore,
+    connectUrl,
+  ]);
 
   // Lazily seed the full-scrollback index the first time search mode opens —
   // capturing every pane's history on app load would be wasteful when the
@@ -110,6 +129,18 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   useEffect(() => {
     if (uiStore.appMode === "search") void searchStore.ensureBackfilled();
   }, [uiStore.appMode, searchStore]);
+
+  // Open the cross-terminal firehose only while regex mode is active — taps on
+  // every pane cost server-side resources, so idle modes pay nothing. Leaving
+  // the mode (or unmounting) closes the taps. [LAW:no-ambient-temporal-coupling]
+  // the lifecycle has one owner: this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "regex") {
+      regexStore.start();
+      return () => regexStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, regexStore]);
 
   // Document-level keymap routing.
   //
@@ -171,20 +202,34 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
       navbar={{
         width: uiStore.navbarWidth,
         breakpoint: 0,
-        collapsed: { desktop: uiStore.navbarCollapsed, mobile: uiStore.navbarCollapsed },
+        collapsed: {
+          desktop: uiStore.navbarCollapsed,
+          mobile: uiStore.navbarCollapsed,
+        },
       }}
       aside={{
         width: 420,
         breakpoint: 0,
-        collapsed: { desktop: uiStore.asideCollapsed, mobile: uiStore.asideCollapsed },
+        collapsed: {
+          desktop: uiStore.asideCollapsed,
+          mobile: uiStore.asideCollapsed,
+        },
       }}
       padding="md"
     >
       <AppShell.Header p="sm">
         <Group justify="space-between" h="100%" wrap="nowrap">
-          <Group gap="sm" wrap="nowrap" style={{ minWidth: 0, overflow: "hidden" }}>
+          <Group
+            gap="sm"
+            wrap="nowrap"
+            style={{ minWidth: 0, overflow: "hidden" }}
+          >
             <Tooltip
-              label={uiStore.navbarCollapsed ? "Show session sidebar" : "Hide session sidebar"}
+              label={
+                uiStore.navbarCollapsed
+                  ? "Show session sidebar"
+                  : "Hide session sidebar"
+              }
             >
               <ActionIcon
                 variant="subtle"
@@ -201,13 +246,16 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             <SegmentedControl
               size="xs"
               value={uiStore.appMode}
-              onChange={(v) => uiStore.setAppMode(isAppMode(v) ? v : "multiplexer")}
+              onChange={(v) =>
+                uiStore.setAppMode(isAppMode(v) ? v : "multiplexer")
+              }
               data={[
                 { label: "Multiplexer", value: "multiplexer" },
                 { label: "Console", value: "console" },
                 { label: "Protocol Inspector", value: "inspector" },
                 { label: "Activity Heatmap", value: "heatmap" },
                 { label: "Scrollback Search", value: "search" },
+                { label: "Regex Matcher", value: "regex" },
               ]}
             />
           </Group>
@@ -228,7 +276,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 live tmux sockets). On the web target it falls back to a
                 plain reconnect button. See components/SocketBadge.tsx. */}
             <SocketBadge demoStore={demoStore} connectUrl={connectUrl} />
-            <Tooltip label={uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"}>
+            <Tooltip
+              label={
+                uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"
+              }
+            >
               <ActionIcon
                 variant="subtle"
                 onClick={() => uiStore.toggleAside()}
@@ -281,6 +333,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             searchStore={searchStore}
             uiStore={uiStore}
           />
+        ) : uiStore.appMode === "regex" ? (
+          <RegexMatcherView
+            demoStore={demoStore}
+            regexStore={regexStore}
+            uiStore={uiStore}
+          />
         ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
@@ -306,7 +364,10 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
         >
           <Tabs.List>
             <Tabs.Tab value="debug">Debug ({events.length})</Tabs.Tab>
-            <Tabs.Tab value="errors" color={errors.length > 0 ? "red" : undefined}>
+            <Tabs.Tab
+              value="errors"
+              color={errors.length > 0 ? "red" : undefined}
+            >
               Errors ({errors.length})
             </Tabs.Tab>
           </Tabs.List>
