@@ -56,20 +56,35 @@ export function groupDuration(group: SyncGroup): number {
 }
 
 /**
- * Build one pane's reconstruction `Timeline`. Null when the pane has no seed: a
- * pane cannot be faithfully reconstructed without its t=0 screen (the .5 gap),
- * so an unseeded pane is honestly unrenderable rather than forward-only-wrong.
- * [LAW:no-silent-failure]
+ * The single place a `Timeline` is assembled from a pane and its (known-present)
+ * seed. Both the boundary lookup (`timelineFor`) and the bulk projection
+ * (`linkedTimelines`) route through here, so the Timeline shape is stated once.
+ * [LAW:single-enforcer] [LAW:one-source-of-truth]
  */
-export function timelineFor(group: SyncGroup, paneId: number): Timeline | null {
-  const snapshot = group.snapshots.get(paneId);
-  if (snapshot === undefined) return null;
+function buildTimeline(
+  group: SyncGroup,
+  paneId: number,
+  snapshot: ScrollbackSnapshot,
+): Timeline {
   return {
     snapshot,
     recording: group.recording,
     paneId,
     durationMs: group.recording.durationMs,
   };
+}
+
+/**
+ * Build one pane's reconstruction `Timeline`. Null when the pane has no seed: a
+ * pane cannot be faithfully reconstructed without its t=0 screen (the .5 gap).
+ * This is GENUINE optionality at the boundary — a caller may ask for an arbitrary
+ * paneId — encoded as a discriminated `Timeline | null` for exhaustive handling,
+ * not a defensive skip. [LAW:no-silent-failure]
+ */
+export function timelineFor(group: SyncGroup, paneId: number): Timeline | null {
+  const snapshot = group.snapshots.get(paneId);
+  if (snapshot === undefined) return null;
+  return buildTimeline(group, paneId, snapshot);
 }
 
 /**
@@ -84,16 +99,15 @@ export function linkablePanes(group: SyncGroup): readonly number[] {
 
 /**
  * The linked, renderable timelines in seed order — the surfaces the view mounts.
- * Filters to panes that are both linked AND seeded; an unseeded id in the linked
- * set is silently absent here because it has no timeline to render (it could
- * never have entered the set through `linkablePanes`).
+ * Iterates the seed map's ENTRIES, so each snapshot is in hand and every built
+ * timeline is non-null by construction (no null guard, no impossible-state skip).
+ * An id in the linked set that has no seed is excluded structurally: it is never
+ * an entry here, so it is never considered. [LAW:dataflow-not-control-flow]
  */
 export function linkedTimelines(group: SyncGroup): readonly Timeline[] {
   const out: Timeline[] = [];
-  for (const paneId of group.snapshots.keys()) {
-    if (!group.linked.has(paneId)) continue;
-    const tl = timelineFor(group, paneId);
-    if (tl !== null) out.push(tl);
+  for (const [paneId, snapshot] of group.snapshots) {
+    if (group.linked.has(paneId)) out.push(buildTimeline(group, paneId, snapshot));
   }
   return out;
 }
