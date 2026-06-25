@@ -21,11 +21,13 @@ import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 import { PaneFirehose } from "./pane-firehose.js";
 import { encodeFirehoseFrame } from "../shared/firehose-frame.js";
 import { MirrorRegistry, type MirrorViewer } from "./mirror-registry.js";
+import { CollabInput } from "./collab-input.js";
 import {
   parseMirrorPane,
   MIRROR_WS_PATH,
   type MirrorControlFrame,
 } from "../shared/mirror-frame.js";
+import { COLLAB_WS_PATH, parseCollabKeys } from "../shared/collab-frame.js";
 import { demoAttachArgs } from "./tmux-target.js";
 
 // ---------------------------------------------------------------------------
@@ -302,6 +304,80 @@ function handleMirrorConnection(
 }
 
 // ---------------------------------------------------------------------------
+// Collaborative pane: /collab-ws endpoint
+// ---------------------------------------------------------------------------
+
+/**
+ * Wire a `/collab-ws` WebSocket as a READ-WRITE collaborator on the pane named
+ * in its query string (`/collab-ws?pane=%3`). Output is the read-only mirror,
+ * unchanged: the socket registers as a `MirrorViewer` and receives the same
+ * seed → live bytes + lifecycle frames every viewer gets. [LAW:composability]
+ * the output fan-out is reused whole, not re-implemented.
+ *
+ * What this endpoint ADDS over the mirror is exactly one capability: an inbound
+ * `keys` frame is forwarded to the pane via `sendKeys`. Many browsers can hold
+ * this socket on the same pane at once; tmux serialises their keystrokes into
+ * one authoritative pane and the result fans back through the shared tap — so
+ * "two browsers, one pane" needs no CRDT. [LAW:no-silent-failure] a frame that
+ * is not a well-formed `keys` frame closes the socket loudly (1003) rather than
+ * being ignored.
+ */
+function handleCollabConnection(
+  ws: WebSocket,
+  registry: MirrorRegistry,
+  input: CollabInput,
+  requestUrl: string,
+): void {
+  const q = requestUrl.indexOf("?");
+  const paneId = parseMirrorPane(q === -1 ? "" : requestUrl.slice(q));
+  const send = (frame: MirrorControlFrame): void => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame));
+  };
+
+  if (paneId === null) {
+    send({ kind: "error", message: "collab requires a ?pane=%N query" });
+    ws.close();
+    return;
+  }
+
+  const viewer: MirrorViewer = {
+    sendControl: send,
+    sendBytes: (data) => {
+      if (ws.readyState === ws.OPEN) ws.send(data);
+    },
+    close: () => {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+        ws.close();
+      }
+    },
+  };
+
+  // The collaborative channel's ONE inbound capability: keystrokes → pane. A
+  // frame that is not a valid `keys` frame is misuse, not data. [LAW:no-silent-
+  // failure]
+  ws.on("message", (raw: Buffer) => {
+    const keys = parseCollabKeys(raw.toString("utf8"));
+    if (keys === null) {
+      ws.close(1003, "collab expects { kind: 'keys' } frames");
+      return;
+    }
+    void input.sendKeys(paneId, keys);
+  });
+
+  let dispose: (() => void) | null = null;
+  let closed = false;
+  ws.on("close", () => {
+    closed = true;
+    dispose?.();
+  });
+
+  void registry.addViewer(paneId, viewer).then((d) => {
+    if (closed) d();
+    else dispose = d;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // HTTP + WebSocket server
 // ---------------------------------------------------------------------------
 
@@ -360,6 +436,23 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
     }
   });
 
+  // The collaborative endpoint reuses the SAME mirror registry for output
+  // (one tap per pane, shared with read-only viewers — a read-only mirror and
+  // a writable collaborator of one pane share its byte stream and viewer count)
+  // and adds the write side via a dedicated `CollabInput`. [LAW:one-source-of-
+  // truth] one pane, one tap, regardless of how each browser connects.
+  const collabInput = new CollabInput();
+  const collabWss = new WebSocketServer({ noServer: true });
+  collabWss.on("connection", (ws, request) => {
+    console.log("[bridge] collaborator connected");
+    try {
+      handleCollabConnection(ws, mirrorRegistry, collabInput, request.url ?? "");
+    } catch (err) {
+      console.error("[bridge] collab connection failed:", err);
+      ws.close();
+    }
+  });
+
   httpServer.on("upgrade", (request, socket, head) => {
     const path = (request.url ?? "").split("?")[0];
     if (path === "/ws") {
@@ -370,6 +463,10 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
       mirrorWss.handleUpgrade(request, socket, head, (ws) =>
         mirrorWss.emit("connection", ws, request),
       );
+    } else if (path === COLLAB_WS_PATH) {
+      collabWss.handleUpgrade(request, socket, head, (ws) =>
+        collabWss.emit("connection", ws, request),
+      );
     } else {
       socket.destroy();
     }
@@ -378,6 +475,7 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
   httpServer.listen(port, () => {
     console.log(`[bridge] listening on http://localhost:${port} (WS at /ws)`);
     console.log(`[bridge] read-only pane mirror at ${MIRROR_WS_PATH}?pane=%N`);
+    console.log(`[bridge] collaborative pane at ${COLLAB_WS_PATH}?pane=%N`);
     console.log(
       `[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`,
     );
@@ -389,8 +487,10 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
         closeConnection(connection);
       }
       mirrorRegistry.close();
+      collabInput.close();
       wss.close();
       mirrorWss.close();
+      collabWss.close();
       httpServer.close();
     },
   };

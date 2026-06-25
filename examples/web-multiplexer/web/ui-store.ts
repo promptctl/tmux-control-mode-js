@@ -31,6 +31,7 @@ export type AppMode =
   | "broadcast"
   | "syncscroll"
   | "mirror"
+  | "collaborate"
   | "sniffer"
   | "hyperlinks"
   | "commands"
@@ -62,6 +63,7 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "broadcast" ||
     v === "syncscroll" ||
     v === "mirror" ||
+    v === "collaborate" ||
     v === "sniffer" ||
     v === "hyperlinks" ||
     v === "commands" ||

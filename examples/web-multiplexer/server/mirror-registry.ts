@@ -22,11 +22,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
-import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
+import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { tapPaneToFifo } from "./pane-tap.js";
-import { demoAttachArgs } from "./tmux-target.js";
+import { spawnReadyControlClient } from "./control-client.js";
 import { buildMirrorSeed, type MirrorControlFrame } from "../shared/mirror-frame.js";
 
 /**
@@ -57,9 +56,9 @@ export class MirrorRegistry {
   private readonly hubs = new Map<number, Hub>();
   private client: TmuxClient | null = null;
   // Resolves when the dedicated client has reached `ready` (first byte from
-  // tmux). The FIRST command on a freshly spawned control client races the
-  // control-mode handshake — gate every execute behind this so the first
-  // viewer's tap + seed run against a settled client. [LAW:no-ambient-temporal-coupling]
+  // tmux). Gating the first viewer's tap + seed behind this avoids the
+  // control-mode cold-start race; the gate itself is owned by
+  // `spawnReadyControlClient`. [LAW:no-ambient-temporal-coupling]
   private ready: Promise<void> | null = null;
   private dir: string | null = null;
   private liveness: ReturnType<typeof setInterval> | null = null;
@@ -151,21 +150,9 @@ export class MirrorRegistry {
   /** Lazily spawn the one control client + FIFO dir the registry shares. */
   private ensureClient(): TmuxClient {
     if (this.client === null) {
-      const client = new TmuxClient(spawnTmux(demoAttachArgs()));
+      const { client, ready } = spawnReadyControlClient();
       this.client = client;
-      this.ready = new Promise<void>((resolve) => {
-        if (client.connectionState.status === "ready") {
-          resolve();
-          return;
-        }
-        const onState = (ev: { state: ConnectionState }): void => {
-          if (ev.state.status === "ready") {
-            client.off("connection-state", onState);
-            resolve();
-          }
-        };
-        client.on("connection-state", onState);
-      });
+      this.ready = ready;
     }
     if (this.dir === null) {
       this.dir = mkdtempSync(join(tmpdir(), "tmux-mirror-"));
