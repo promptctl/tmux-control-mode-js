@@ -110,7 +110,17 @@ export class MirrorViewerBridge {
     let frame: MirrorControlFrame;
     try {
       frame = JSON.parse(raw) as MirrorControlFrame;
-    } catch {
+    } catch (err) {
+      // [LAW:no-silent-failure] A malformed control frame is a protocol
+      // violation (the server only ever sends JSON.stringify'd frames), not
+      // something to swallow. The viewer has no separate error channel, so its
+      // status IS the surface — make the break visible in the UI, and log the
+      // offending frame for the developer console.
+      console.warn("[mirror] malformed control frame:", raw, err);
+      runInAction(() => {
+        this.status = "error";
+        this.errorMessage = "malformed control frame from bridge";
+      });
       return;
     }
     runInAction(() => {
