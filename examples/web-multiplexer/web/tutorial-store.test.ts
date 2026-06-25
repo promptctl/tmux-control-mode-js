@@ -68,4 +68,41 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
     expect(store.scenarioId).toBe("output");
     expect(store.wire.every((l) => l.dir === "in")).toBe(true);
   });
+
+  it("defaults to a transparent (chaos-off) stream", () => {
+    const store = new TutorialStore();
+    expect(store.chaosActive).toBe(false);
+    expect(store.chaosStats.dropped).toBe(0);
+    expect(store.chaosStats.corrupted).toBe(0);
+    // Every delivered line is a line the mock genuinely sent.
+    expect(store.wire.filter((l) => l.dir === "in").every((l) => l.fate === "clean")).toBe(true);
+  });
+
+  it("dropRate 1 drops the whole inbound stream — nothing parses", () => {
+    const store = new TutorialStore();
+    store.setChaos({ dropRate: 1 });
+    expect(store.chaosStats.sent).toBeGreaterThan(0);
+    expect(store.chaosStats.delivered).toBe(0);
+    expect(store.chaosStats.dropped).toBe(store.chaosStats.sent);
+    expect(store.wire.some((l) => l.dir === "in")).toBe(false);
+    expect(store.events.length).toBe(0);
+  });
+
+  it("corruptRate 1 mangles every delivered line without crashing the parser", () => {
+    const store = new TutorialStore();
+    store.setChaos({ corruptRate: 1 });
+    const inbound = store.wire.filter((l) => l.dir === "in");
+    expect(inbound.length).toBeGreaterThan(0);
+    expect(store.chaosStats.corrupted).toBe(store.chaosStats.delivered);
+    expect(inbound.every((l) => l.fate === "corrupted")).toBe(true);
+  });
+
+  it("is reproducible: same seed + dials replay the same chaotic run", () => {
+    const a = new TutorialStore();
+    const b = new TutorialStore();
+    a.setChaos({ dropRate: 0.5, corruptRate: 0.3, seed: 777 });
+    b.setChaos({ dropRate: 0.5, corruptRate: 0.3, seed: 777 });
+    expect(a.chaosStats).toEqual(b.chaosStats);
+    expect(a.wire.map((l) => l.text)).toEqual(b.wire.map((l) => l.text));
+  });
 });

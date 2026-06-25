@@ -28,6 +28,8 @@ import {
   TextInput,
   Select,
   SimpleGrid,
+  Slider,
+  NumberInput,
 } from "@mantine/core";
 import type { UiStore } from "../ui-store.ts";
 import type { TutorialStore, WireLine, EventEntry } from "../tutorial-store.ts";
@@ -120,6 +122,8 @@ export const TutorialView = observer(function TutorialView({ store }: Props) {
         </Group>
       )}
 
+      <ChaosControls store={store} />
+
       <SimpleGrid cols={2} spacing="sm" style={{ flex: 1, minHeight: 0 }}>
         <WirePanel wire={store.wire} />
         <EventsPanel events={store.events} />
@@ -127,6 +131,121 @@ export const TutorialView = observer(function TutorialView({ store }: Props) {
     </Stack>
   );
 });
+
+/**
+ * Chaos dials. Each is a transparent default (0) the learner turns up; on change
+ * the scenario replays under the new chaos via a real `withChaos`-wrapped mock,
+ * so the wire (left) shows the lossy, mangled bytes the parser actually receives
+ * and the events (right) show the library coping. Same seed + dials → same run.
+ */
+const ChaosControls = observer(function ChaosControls({ store }: { readonly store: TutorialStore }) {
+  const c = store.chaos;
+  const stats = store.chaosStats;
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  return (
+    <Paper withBorder p="xs">
+      <Group justify="space-between" align="center" mb={6}>
+        <Group gap="xs">
+          <Text size="xs" fw={600} c="dimmed">
+            CHAOS
+          </Text>
+          <Badge size="xs" variant="light" color={store.chaosActive ? "red" : "gray"}>
+            {store.chaosActive ? "engaged" : "off"}
+          </Badge>
+        </Group>
+        {store.chaosActive && (
+          <Text size="xs" c="dimmed">
+            sent {stats.sent} · delivered {stats.delivered} ·{" "}
+            <Text span c="orange">
+              dropped {stats.dropped}
+            </Text>{" "}
+            ·{" "}
+            <Text span c="red">
+              corrupted {stats.corrupted}
+            </Text>
+          </Text>
+        )}
+      </Group>
+      <SimpleGrid cols={4} spacing="md">
+        <ChaosSlider
+          label="Drop"
+          value={c.dropRate}
+          format={pct}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(v) => store.setChaos({ dropRate: v })}
+        />
+        <ChaosSlider
+          label="Corrupt"
+          value={c.corruptRate}
+          format={pct}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(v) => store.setChaos({ corruptRate: v })}
+        />
+        <ChaosSlider
+          label="Latency"
+          value={c.latencyMs}
+          format={(v) => `${v}ms`}
+          min={0}
+          max={500}
+          step={10}
+          onChange={(v) => store.setChaos({ latencyMs: v })}
+        />
+        <NumberInput
+          label="Seed"
+          size="xs"
+          value={c.seed}
+          min={0}
+          allowDecimal={false}
+          onChange={(v) => store.setChaos({ seed: typeof v === "number" ? v : 1 })}
+        />
+      </SimpleGrid>
+    </Paper>
+  );
+});
+
+function ChaosSlider({
+  label,
+  value,
+  format,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly format: (v: number) => string;
+  readonly min: number;
+  readonly max: number;
+  readonly step: number;
+  readonly onChange: (v: number) => void;
+}) {
+  return (
+    <Stack gap={2}>
+      <Group justify="space-between">
+        <Text size="xs">{label}</Text>
+        <Text size="xs" c="dimmed">
+          {format(value)}
+        </Text>
+      </Group>
+      {/* Uncontrolled: the thumb drags freely on internal state; onChangeEnd
+          commits once on release, replaying the scenario — not on every pixel. */}
+      <Slider
+        size="xs"
+        defaultValue={value}
+        min={min}
+        max={max}
+        step={step}
+        label={format}
+        onChangeEnd={onChange}
+      />
+    </Stack>
+  );
+}
 
 function WirePanel({ wire }: { readonly wire: readonly WireLine[] }) {
   return (
@@ -141,21 +260,30 @@ function WirePanel({ wire }: { readonly wire: readonly WireLine[] }) {
               No traffic yet.
             </Text>
           ) : (
-            wire.map((line) => (
-              <Group key={line.seq} gap={6} wrap="nowrap" align="flex-start">
-                <Badge
-                  size="xs"
-                  variant="filled"
-                  color={line.dir === "out" ? "blue" : "teal"}
-                  style={{ flexShrink: 0 }}
-                >
-                  {line.dir === "out" ? "→ tmux" : "tmux →"}
-                </Badge>
-                <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                  {line.text === "" ? "·" : line.text}
-                </Code>
-              </Group>
-            ))
+            wire.map((line) => {
+              const corrupted = line.fate === "corrupted";
+              return (
+                <Group key={line.seq} gap={6} wrap="nowrap" align="flex-start">
+                  <Badge
+                    size="xs"
+                    variant="filled"
+                    color={line.dir === "out" ? "blue" : corrupted ? "red" : "teal"}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {line.dir === "out" ? "→ tmux" : corrupted ? "corrupt" : "tmux →"}
+                  </Badge>
+                  <Code
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                      color: corrupted ? "var(--mantine-color-red-4)" : undefined,
+                    }}
+                  >
+                    {line.text === "" ? "·" : line.text}
+                  </Code>
+                </Group>
+              );
+            })
           )}
         </Stack>
       </ScrollArea>

@@ -35,6 +35,10 @@
       "types": "./dist/mock/index.d.ts",
       "default": "./dist/mock/index.js"
     },
+    "./chaos": {
+      "types": "./dist/chaos/index.d.ts",
+      "default": "./dist/chaos/index.js"
+    },
     "./electron/main": {
       "types": "./dist/connectors/electron/main.d.ts",
       "default": "./dist/connectors/electron/main.js"
