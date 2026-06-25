@@ -32,7 +32,29 @@ export interface DetachRequest {
   readonly id: string;
 }
 
-export type ClientToServer = ExecuteRequest | SendKeysRequest | DetachRequest;
+/**
+ * Open / close the cross-terminal firehose (live bytes from every pane in every
+ * session). Like `detach`, these are fire-and-forget — no response frame — but
+ * they carry an `id` so every ClientToServer message is uniformly correlatable
+ * in the inspector wire log. The bytes themselves arrive as binary firehose
+ * frames (see shared/firehose-frame.ts), not on the JSON channel.
+ */
+export interface StartFirehoseRequest {
+  readonly kind: "startFirehose";
+  readonly id: string;
+}
+
+export interface StopFirehoseRequest {
+  readonly kind: "stopFirehose";
+  readonly id: string;
+}
+
+export type ClientToServer =
+  | ExecuteRequest
+  | SendKeysRequest
+  | DetachRequest
+  | StartFirehoseRequest
+  | StopFirehoseRequest;
 
 // ---------------------------------------------------------------------------
 // Server → Browser

@@ -79,4 +79,26 @@ contextBridge.exposeInMainWorld("demoIpc", {
   switchSocket(name: string): Promise<void> {
     return ipcRenderer.invoke("demo:switch-socket", name) as Promise<void>;
   },
+  startFirehose(): Promise<void> {
+    return ipcRenderer.invoke("demo:firehose-start") as Promise<void>;
+  },
+  stopFirehose(): Promise<void> {
+    return ipcRenderer.invoke("demo:firehose-stop") as Promise<void>;
+  },
+  onFirehose(handler: (paneId: number, data: Uint8Array) => void): () => void {
+    // Fixed wrapper over one channel — no generic listener surface escapes.
+    // Each subscription gets its own wrapper so the disposer detaches exactly
+    // this handler. [LAW:single-enforcer]
+    const wrapped = (
+      _event: IpcRendererEvent,
+      paneId: number,
+      data: Uint8Array,
+    ): void => {
+      handler(paneId, data);
+    };
+    ipcRenderer.on("demo:firehose-bytes", wrapped);
+    return () => {
+      ipcRenderer.removeListener("demo:firehose-bytes", wrapped);
+    };
+  },
 });
