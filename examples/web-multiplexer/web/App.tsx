@@ -64,6 +64,8 @@ import { MirrorView } from "./components/MirrorView.tsx";
 import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
+import { TutorialView } from "./components/TutorialView.tsx";
+import { TutorialStore } from "./tutorial-store.ts";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -235,10 +237,16 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new ConsoleStore(demoStore.client, uiStore),
     [demoStore, uiStore],
   );
+  // [LAW:decomposition] The Protocol Tutorial touches NO bridge and NO tmux — it
+  // runs a MockTmuxServer + TmuxParser in-browser (the library's browser-safe
+  // subpaths). So this store needs no tmux client, no firehose effect, and no
+  // connection lifecycle; it is self-contained, like the Pane Mirror store.
+  const tutorialStore = useMemo(() => new TutorialStore(), []);
 
   useEffect(() => {
     demoStore.connect(connectUrl);
     return () => {
+      tutorialStore.dispose();
       consoleStore.dispose();
       promptStore.dispose();
       hyperlinkStore.dispose();
@@ -275,6 +283,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     hyperlinkStore,
     promptStore,
     consoleStore,
+    tutorialStore,
     connectUrl,
   ]);
 
@@ -551,6 +560,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Data Sniffer", value: "sniffer" },
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
                 { label: "Command Palette", value: "commands" },
+                { label: "Protocol Tutorial", value: "tutorial" },
               ]}
             />
           </Group>
@@ -708,6 +718,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             store={promptStore}
             uiStore={uiStore}
           />
+        ) : uiStore.appMode === "tutorial" ? (
+          <TutorialView store={tutorialStore} uiStore={uiStore} />
         ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"

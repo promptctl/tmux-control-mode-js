@@ -33,7 +33,8 @@ export type AppMode =
   | "mirror"
   | "sniffer"
   | "hyperlinks"
-  | "commands";
+  | "commands"
+  | "tutorial";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -62,7 +63,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "mirror" ||
     v === "sniffer" ||
     v === "hyperlinks" ||
-    v === "commands"
+    v === "commands" ||
+    v === "tutorial"
   );
 }
 

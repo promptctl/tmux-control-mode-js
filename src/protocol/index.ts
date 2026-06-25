@@ -42,7 +42,9 @@ export { PaneAction, emptyKeysResponse } from "./types.js";
 
 export { TmuxParser } from "./parser.js";
 
-export { decodeOctalEscapes } from "./decode.js";
+export { serializeMessage } from "./serializer.js";
+
+export { decodeOctalEscapes, encodeOctalEscapes } from "./decode.js";
 
 export { bytesToLatin1, latin1ToBytes } from "./byte-codec.js";
 

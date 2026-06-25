@@ -1,6 +1,7 @@
 // src/protocol/decode.ts
-// Decodes octal-escaped pane output from tmux control mode.
-// Pure TypeScript — no Node.js dependencies. Works in browser, Deno, Bun.
+// Octal-escape codec for tmux control-mode pane output: decode (wire → bytes)
+// and its exact inverse encode (bytes → wire). Pure TypeScript — no Node.js
+// dependencies. Works in browser, Deno, Bun.
 
 // [LAW:one-source-of-truth] Encoding rules per SPEC.md Section 10 and the
 //   canonical iTerm2 client (TmuxGateway -decodeEscapedOutput):
@@ -76,4 +77,36 @@ export function decodeOctalEscapes(encoded: string): Uint8Array {
   }
 
   return result.subarray(0, writePos);
+}
+
+/**
+ * Encode raw bytes into tmux's octal-escaped `%output` wire form — the exact
+ * inverse of {@link decodeOctalEscapes}, mirroring tmux's own emitter
+ * (SPEC.md §10, `input_key`/`control_write_output`):
+ *
+ *  - 0x00-0x1F (control bytes) → `\NNN` (three-digit zero-padded octal),
+ *  - 0x5C (`\`)               → `\134`,
+ *  - 0x20-0x5B, 0x5D-0xFF     → the byte as a single Latin-1 code unit.
+ *
+ * Returns a Latin-1 string (one code unit per emitted byte), the same byte
+ * container the parser consumes — so a transport may carry it verbatim. Because
+ * encode escapes *every* control byte and the backslash, the decoder never
+ * reaches its lossy branches (literal-control drop, malformed-escape `?`):
+ * `decodeOctalEscapes(encodeOctalEscapes(b))` reproduces `b` for ALL byte
+ * inputs. [LAW:one-source-of-truth] The escape rules live here once, shared
+ * with the decoder above; the round-trip property is the single contract.
+ */
+export function encodeOctalEscapes(bytes: Uint8Array): string {
+  // [LAW:dataflow-not-control-flow] Every byte runs the same classify-then-emit
+  // step; the byte's value (not a branch on whether to emit) selects literal vs
+  // escape, and an escaped byte is always the fixed 4-char `\NNN` shape.
+  let out = "";
+  for (const byte of bytes) {
+    if (byte < SPACE || byte === BACKSLASH) {
+      out += "\\" + byte.toString(8).padStart(3, "0");
+    } else {
+      out += String.fromCharCode(byte);
+    }
+  }
+  return out;
 }
