@@ -12,6 +12,8 @@ import {
   buildRecording,
   bytesUpTo,
   bytesBetween,
+  paneStreamBytes,
+  locateOffset,
   activityHistogram,
   busiestPane,
   type RecordedChunk,
@@ -78,11 +80,10 @@ describe("buildRecording", () => {
   });
 
   it("attaches captured geometry to its pane, null when uncaptured", () => {
-    const geometry = new Map<number, PaneGeometry>([[1, { cols: 120, rows: 40 }]]);
-    const rec = buildRecording(
-      [chunk(1, 0, "x"), chunk(2, 5, "y")],
-      geometry,
-    );
+    const geometry = new Map<number, PaneGeometry>([
+      [1, { cols: 120, rows: 40 }],
+    ]);
+    const rec = buildRecording([chunk(1, 0, "x"), chunk(2, 5, "y")], geometry);
     expect(rec.panes[0].geometry).toEqual({ cols: 120, rows: 40 });
     expect(rec.panes[1].geometry).toBeNull();
   });
@@ -97,7 +98,12 @@ describe("buildRecording", () => {
 
 describe("bytesUpTo", () => {
   const rec = buildRecording(
-    [chunk(1, 0, "a"), chunk(1, 100, "b"), chunk(1, 200, "c"), chunk(2, 50, "Z")],
+    [
+      chunk(1, 0, "a"),
+      chunk(1, 100, "b"),
+      chunk(1, 200, "c"),
+      chunk(2, 50, "Z"),
+    ],
     NO_GEOMETRY,
   );
 
@@ -125,7 +131,12 @@ describe("bytesUpTo", () => {
 
 describe("bytesBetween", () => {
   const rec = buildRecording(
-    [chunk(1, 0, "a"), chunk(1, 100, "b"), chunk(1, 200, "c"), chunk(1, 200, "d")],
+    [
+      chunk(1, 0, "a"),
+      chunk(1, 100, "b"),
+      chunk(1, 200, "c"),
+      chunk(1, 200, "d"),
+    ],
     NO_GEOMETRY,
   );
 
@@ -159,10 +170,80 @@ describe("composition invariant", () => {
     for (const a of cuts) {
       for (const b2 of cuts) {
         if (b2 < a) continue;
-        const split = str(bytesUpTo(rec, 1, a)) + str(bytesBetween(rec, 1, a, b2));
+        const split =
+          str(bytesUpTo(rec, 1, a)) + str(bytesBetween(rec, 1, a, b2));
         expect(split).toBe(str(bytesUpTo(rec, 1, b2)));
       }
     }
+  });
+});
+
+describe("paneStreamBytes", () => {
+  const rec = buildRecording(
+    [
+      chunk(1, 0, "a"),
+      chunk(2, 5, "ZZ"),
+      chunk(1, 10, "bc"),
+      chunk(1, 20, "d"),
+    ],
+    NO_GEOMETRY,
+  );
+
+  it("concatenates only the target pane's bytes in capture order", () => {
+    expect(str(paneStreamBytes(rec, 1))).toBe("abcd");
+    expect(str(paneStreamBytes(rec, 2))).toBe("ZZ");
+  });
+
+  it("is empty for an unknown pane (no silent borrow from another)", () => {
+    expect(paneStreamBytes(rec, 999)).toHaveLength(0);
+  });
+
+  it("equals bytesUpTo past the duration — the whole forward stream", () => {
+    expect(str(paneStreamBytes(rec, 1))).toBe(str(bytesUpTo(rec, 1, 1e9)));
+  });
+});
+
+describe("locateOffset", () => {
+  // pane 1 stream is "abcd": offsets 0(a) from chunk@0, 1(b) 2(c) from chunk@10,
+  // 3(d) from chunk@20. The cross-pane chunk@5 ("ZZ") must not shift pane 1.
+  const rec = buildRecording(
+    [
+      chunk(1, 0, "a"),
+      chunk(2, 5, "ZZ"),
+      chunk(1, 10, "bc"),
+      chunk(1, 20, "d"),
+    ],
+    NO_GEOMETRY,
+  );
+
+  it("maps a byte offset to its chunk, time, and in-chunk offset", () => {
+    expect(locateOffset(rec, 1, 0)).toEqual({
+      chunkIndex: 0,
+      tMs: 0,
+      offsetInChunk: 0,
+    });
+    expect(locateOffset(rec, 1, 2)).toEqual({
+      chunkIndex: 1,
+      tMs: 10,
+      offsetInChunk: 1,
+    });
+    expect(locateOffset(rec, 1, 3)).toEqual({
+      chunkIndex: 2,
+      tMs: 20,
+      offsetInChunk: 0,
+    });
+  });
+
+  it("chunkIndex counts only the target pane's chunks, not the firehose", () => {
+    // pane 2's "ZZ" sits between pane 1's chunks in capture order, but pane 1's
+    // chunkIndex must skip it. [LAW:no-silent-failure]
+    expect(locateOffset(rec, 1, 1)?.chunkIndex).toBe(1);
+  });
+
+  it("returns null past the end and below zero (no clamped lie)", () => {
+    expect(locateOffset(rec, 1, 4)).toBeNull(); // length, the bad-end sentinel
+    expect(locateOffset(rec, 1, 99)).toBeNull();
+    expect(locateOffset(rec, 1, -1)).toBeNull();
   });
 });
 
