@@ -14,7 +14,9 @@ import { spawnTmux } from "@promptctl/tmux-control-mode-js";
 import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { serverScope } from "@promptctl/tmux-control-mode-js";
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
@@ -35,6 +37,20 @@ import {
 } from "../shared/copilot-frame.js";
 import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
 import { demoAttachArgs } from "./tmux-target.js";
+
+// [LAW:single-enforcer] One place translates a command rejection into the wire
+// `response` frame. The library rejects a failed command with `TmuxCommandError`
+// — an `Error` whose `.response` is the real `CommandResponse` carrying tmux's
+// `%error` output. Returning the error object itself (as the old `.catch(r => r)`
+// did) ships a serialized `Error` shell `{name, response}` over a frame typed
+// `CommandResponse`, so the browser loses `success`/`output`. Unwrap it so the
+// `response` frame always honors its declared type. [LAW:no-silent-failure] a
+// non-command rejection (transport, version precondition) is rethrown to the
+// outer handler, which surfaces it as an `error` frame rather than a fake ok.
+function asCommandResponse(err: unknown): CommandResponse {
+  if (err instanceof TmuxCommandError) return err.response;
+  throw err;
+}
 
 // ---------------------------------------------------------------------------
 // Outbound forwarding: TmuxClient → WebSocket
@@ -189,7 +205,7 @@ function handleConnection(ws: WebSocket): void {
 
     try {
       if (msg.kind === "execute") {
-        const response = await client.execute(msg.command).catch((r) => r); // both resolve and reject carry CommandResponse
+        const response = await client.execute(msg.command).catch(asCommandResponse);
         send({ kind: "response", id: msg.id, response });
         return;
       }
@@ -198,7 +214,7 @@ function handleConnection(ws: WebSocket): void {
         // TmuxConnection surface, not a TmuxClient method — one shared
         // implementation for every connector.
         const response = await sendKeys(client, msg.target, msg.keys).catch(
-          (r) => r,
+          asCommandResponse,
         );
         send({ kind: "response", id: msg.id, response });
         return;
