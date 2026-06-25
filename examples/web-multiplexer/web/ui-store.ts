@@ -36,6 +36,7 @@ export type AppMode =
   | "hyperlinks"
   | "commands"
   | "copilot"
+  | "reader"
   | "tutorial"
   | "conformance";
 
@@ -69,6 +70,7 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "hyperlinks" ||
     v === "commands" ||
     v === "copilot" ||
+    v === "reader" ||
     v === "tutorial" ||
     v === "conformance"
   );
@@ -227,7 +229,14 @@ export class UiStore {
 
   toggleEventType(type: string): void {
     if (this.hiddenEventTypes[type] === true) {
-      delete this.hiddenEventTypes[type];
+      // Omit the key by reconstruction rather than a dynamic `delete` (which
+      // de-opts the object and trips no-dynamic-delete). The reaction tracks
+      // the new reference; the membership shape stays Record<string, true>.
+      const next: Record<string, true> = {};
+      for (const k of Object.keys(this.hiddenEventTypes)) {
+        if (k !== type) next[k] = true;
+      }
+      this.hiddenEventTypes = next;
     } else {
       this.hiddenEventTypes[type] = true;
     }
