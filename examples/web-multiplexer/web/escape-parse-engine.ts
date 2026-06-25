@@ -318,7 +318,9 @@ const COLOR_NAMES = [
 ] as const;
 
 // CSS for the basic + bright palette (xterm-ish), indexed 0–15.
-const PALETTE_16 = [
+// Exported as the single color-resolution authority shared with the byte-
+// attribution emulator's SGR pen. [LAW:single-enforcer] one index→CSS mapping.
+export const PALETTE_16 = [
   "#000000",
   "#cd0000",
   "#00cd00",
@@ -337,8 +339,9 @@ const PALETTE_16 = [
   "#ffffff",
 ] as const;
 
-/** Resolve an xterm 256-color index to CSS — used for SGR `38;5;n` swatches. */
-function css256(n: number): string {
+/** Resolve an xterm 256-color index to CSS — used for SGR `38;5;n` swatches.
+ *  Shared with the byte-attribution emulator's pen. [LAW:single-enforcer] */
+export function css256(n: number): string {
   if (n < 16) return PALETTE_16[n] ?? "#000000";
   if (n >= 232) {
     const v = 8 + (n - 232) * 10;
