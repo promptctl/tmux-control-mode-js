@@ -9,7 +9,7 @@ import { makeAutoObservable, reaction } from "mobx";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 
-export type AppMode = "multiplexer" | "inspector" | "heatmap";
+export type AppMode = "multiplexer" | "inspector" | "heatmap" | "search";
 
 interface PersistedShape {
   navbarWidth: number;
@@ -70,7 +70,8 @@ function loadFromStorage(): PersistedShape {
       appMode:
         parsed.appMode === "multiplexer" ||
         parsed.appMode === "inspector" ||
-        parsed.appMode === "heatmap"
+        parsed.appMode === "heatmap" ||
+        parsed.appMode === "search"
           ? parsed.appMode
           : DEFAULTS.appMode,
     };
