@@ -742,6 +742,27 @@ export class DemoStore {
     }
   }
 
+  /**
+   * Focus a pane anywhere in the server by absolute id, regardless of which
+   * session/window is currently active. Used by cross-session jumps (e.g. a
+   * search hit in another session).
+   *
+   * [LAW:no-ambient-temporal-coupling] Unlike the `select*` trio — which read
+   *   the client-side `currentWindow` getter and so only resolve correctly
+   *   *after* a subscription tick flips the active flags — this issues
+   *   `@windowId` / `%paneId` absolute targets that tmux resolves itself, in
+   *   the order sent. No reliance on the model catching up between calls.
+   * [LAW:single-enforcer] Selection commands stay owned by DemoStore; callers
+   *   pass ids, never assemble tmux target strings themselves.
+   */
+  jumpToPane(sessionId: number, windowId: number, paneId: number): void {
+    this.clientSessionId = sessionId;
+    void this.client.execute(`switch-client -t \\$${sessionId}`);
+    void this.client.execute(`select-window -t @${windowId}`);
+    void this.client.execute(`select-pane -t %${paneId}`);
+    void this.refreshSession(sessionId);
+  }
+
   sendKeysToPane(paneId: number, data: string): void {
     void this.client.sendKeys(`%${paneId}`, data);
   }
