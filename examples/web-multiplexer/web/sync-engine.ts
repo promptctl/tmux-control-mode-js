@@ -155,6 +155,36 @@ export function forwardDelta(
   return bytesBetween(tl.recording, tl.paneId, fromMs, toMs);
 }
 
+/**
+ * How to bring a surface already showing `renderedMs` to `cursorMs`: a discriminated
+ * description, NOT a branch in the view. `advance` writes only the forward delta
+ * onto the current screen; `repaint` clears and lays down the full reconstruction.
+ * Both reach the identical screen — the kind selects the cheaper route, never a
+ * different result. The view interprets this value at the boundary (clear iff
+ * `repaint`, then write), so the strategy lives in data and the effect is the edge
+ * applying a pure description. [LAW:dataflow-not-control-flow] [LAW:effects-at-boundaries]
+ */
+export type PaintOp =
+  | { readonly kind: "advance"; readonly bytes: Uint8Array }
+  | { readonly kind: "repaint"; readonly bytes: Uint8Array };
+
+/**
+ * The pure paint strategy for one surface. A forward move from a known rendered
+ * instant advances by the delta; the first paint (`renderedMs === null`) or any
+ * backward move repaints from the seed. `renderedMs >= cursorMs` going backward
+ * needs a repaint because a delta cannot un-write bytes.
+ */
+export function paintOp(
+  tl: Timeline,
+  renderedMs: number | null,
+  cursorMs: number,
+): PaintOp {
+  if (renderedMs !== null && cursorMs >= renderedMs) {
+    return { kind: "advance", bytes: forwardDelta(tl, renderedMs, cursorMs) };
+  }
+  return { kind: "repaint", bytes: paintAt(tl, cursorMs) };
+}
+
 /** One pane's reconstruction within a synchronized frame. */
 export interface SyncPanePaint {
   readonly paneId: number;

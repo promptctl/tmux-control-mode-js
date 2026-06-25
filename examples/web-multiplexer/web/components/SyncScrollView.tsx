@@ -52,8 +52,7 @@ import {
   linkablePanes,
   linkedActivity,
   linkedTimelines,
-  paintAt,
-  forwardDelta,
+  paintOp,
 } from "../sync-engine.ts";
 
 const FONT_FAMILY =
@@ -421,12 +420,13 @@ const LinkedPaneCell = observer(function LinkedPaneCell({
 });
 
 /**
- * Owns an `XtermSink` and paints it to match the SHARED cursor. A forward step
- * writes only the byte delta (`forwardDelta`); any backward move or the first
- * paint clears and repaints from `paintAt`. `rendered` is the single record of the
- * instant the terminal currently shows, so the delta math reads and updates only
- * it. The cursor is the store's, never this surface's — that is what keeps every
- * cell in lockstep. [LAW:no-ambient-temporal-coupling]
+ * Owns an `XtermSink` and paints it to match the SHARED cursor. The engine's pure
+ * `paintOp` decides the strategy (advance by delta vs. clear-and-repaint) and
+ * returns the bytes; this effect just interprets that description at the boundary.
+ * `rendered` is the single record of the instant the terminal currently shows, fed
+ * back into `paintOp`. The cursor is the store's, never this surface's — that is
+ * what keeps every cell in lockstep. [LAW:no-ambient-temporal-coupling]
+ * [LAW:effects-at-boundaries]
  */
 function SyncSurface({
   timeline,
@@ -471,13 +471,9 @@ function SyncSurface({
   useEffect(() => {
     const sink = sinkRef.current;
     if (sink === null) return;
-    const prev = rendered.current;
-    if (prev !== null && cursorMs >= prev) {
-      sink.write(forwardDelta(timeline, prev, cursorMs));
-    } else {
-      sink.clear();
-      sink.write(paintAt(timeline, cursorMs));
-    }
+    const op = paintOp(timeline, rendered.current, cursorMs);
+    if (op.kind === "repaint") sink.clear();
+    sink.write(op.bytes);
     rendered.current = cursorMs;
   }, [cursorMs, timeline]);
 

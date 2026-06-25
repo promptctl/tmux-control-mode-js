@@ -23,6 +23,7 @@ import {
   linkedActivity,
   linkedTimelines,
   paintAt,
+  paintOp,
   syncFrame,
   timelineFor,
 } from "./sync-engine.ts";
@@ -171,6 +172,43 @@ describe("forwardDelta", () => {
       const advanced = str(paintAt(tl, from)) + str(forwardDelta(tl, from, to));
       expect(advanced).toBe(str(paintAt(tl, to)));
     }
+  });
+});
+
+// --- paint strategy as a value --------------------------------------------
+
+describe("paintOp", () => {
+  it("repaints on the first paint (no rendered instant yet)", () => {
+    const tl = timelineFor(twoPaneGroup(), 1);
+    if (tl === null) throw new Error("pane 1 should be seeded");
+    const op = paintOp(tl, null, 150);
+    expect(op.kind).toBe("repaint");
+    expect(str(op.bytes)).toBe(str(paintAt(tl, 150)));
+  });
+
+  it("advances by the delta on a forward move", () => {
+    const tl = timelineFor(twoPaneGroup(), 1);
+    if (tl === null) throw new Error("pane 1 should be seeded");
+    const op = paintOp(tl, 150, 1000);
+    expect(op.kind).toBe("advance");
+    // Applying the advance to the from-screen reaches the to-screen exactly.
+    expect(str(paintAt(tl, 150)) + str(op.bytes)).toBe(str(paintAt(tl, 1000)));
+  });
+
+  it("repaints on a backward move (a delta cannot un-write bytes)", () => {
+    const tl = timelineFor(twoPaneGroup(), 1);
+    if (tl === null) throw new Error("pane 1 should be seeded");
+    const op = paintOp(tl, 1000, 150);
+    expect(op.kind).toBe("repaint");
+    expect(str(op.bytes)).toBe(str(paintAt(tl, 150)));
+  });
+
+  it("treats an equal move as an empty advance (no work, same screen)", () => {
+    const tl = timelineFor(twoPaneGroup(), 1);
+    if (tl === null) throw new Error("pane 1 should be seeded");
+    const op = paintOp(tl, 200, 200);
+    expect(op.kind).toBe("advance");
+    expect(op.bytes.length).toBe(0);
   });
 });
 
