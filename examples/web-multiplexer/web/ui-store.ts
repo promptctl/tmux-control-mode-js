@@ -28,7 +28,8 @@ export type AppMode =
   | "timemachine"
   | "momentdiff"
   | "bisect"
-  | "broadcast";
+  | "broadcast"
+  | "syncscroll";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -52,7 +53,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "timemachine" ||
     v === "momentdiff" ||
     v === "bisect" ||
-    v === "broadcast"
+    v === "broadcast" ||
+    v === "syncscroll"
   );
 }
 
