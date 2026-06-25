@@ -29,6 +29,7 @@ import { latin1ToBytes } from "@promptctl/tmux-control-mode-js/protocol";
 import type { TmuxBridge } from "./bridge.ts";
 import type { UiStore } from "./ui-store.ts";
 import {
+  PLAYGROUND_SUB,
   REPL_RING_CAP,
   type PlaygroundMode,
   type PlaygroundResult,
@@ -50,6 +51,47 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Quote one argument for tmux's control-mode command lexer: wrap in single
+ * quotes and escape any embedded single quote as the `'\''` sequence (close
+ * quote, backslash-escaped literal quote, reopen). Verified against tmux 3.6a
+ * control mode — `it's` round-trips through both `display-message -p` and
+ * `refresh-client -B`. [LAW:single-enforcer] every tmux command the Playground
+ * builds runs its dynamic parts through this one helper, so format strings reach
+ * tmux intact regardless of embedded quotes. [FRAMING:representation] quoting is
+ * a property of the wire encoding, applied only at the command callsite — the
+ * persisted format string never carries it.
+ */
+export function quoteTmuxArg(arg: string): string {
+  return `'${arg.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * The tmux `<what>` selector for a subscription / one-shot target. `active` maps
+ * to the empty selector (session scope), which tmux evaluates against the
+ * client's active pane — so `active` naturally tracks whatever pane is current.
+ * An explicit target carries its concrete pane token (e.g. `%3`). A pane context
+ * can resolve session/window/pane formats alike, so one target shape serves
+ * every format. [LAW:one-type-per-behavior]
+ */
+function targetWhat(target: PlaygroundTarget): string {
+  return target.kind === "active" ? "" : target.target;
+}
+
+/**
+ * Signature identifying a live subscription by the only inputs that change its
+ * tmux command: the target selector and the format. Re-subscribing with an
+ * identical signature is a no-op, which keeps a subscription alive untouched
+ * across view re-mounts (tab switches) instead of thrashing it. The target
+ * selector is empty or a single tmux token (`%3`, `@2`) and never contains a
+ * space, so it is the whole prefix up to the first space — distinct
+ * (what, format) pairs can't collide. [LAW:dataflow-not-control-flow] desired
+ * state is data; refresh reconciles current → desired, not a branch on history.
+ */
+function subscriptionSig(target: PlaygroundTarget, format: string): string {
+  return `${targetWhat(target)} ${format}`;
+}
+
 export class ConsoleStore {
   /** Live REPL timeline. Holds full response bodies; never persisted. */
   replEntries: ReplEntry[] = [];
@@ -67,6 +109,20 @@ export class ConsoleStore {
   // mount/unmount of a component never starts or stops a subscription.
   // [LAW:no-ambient-temporal-coupling]
   private disposeSubscription: (() => void) | null = null;
+  // Signature (`what` + format) of the live subscription, or `null` when none.
+  // Re-`refresh()` with a matching signature is a no-op, so a subscription
+  // survives view re-mounts (tab switches) untouched rather than being torn down
+  // and rebuilt. [LAW:dataflow-not-control-flow]
+  private liveSig: string | null = null;
+  // Connection-state listener teardown. The store owns the "subscribe once the
+  // bridge is ready" coupling: on `ready` it reconciles to the desired
+  // Playground state, so booting straight into subscribed mode installs the
+  // subscription when the transport can carry it. [LAW:no-ambient-temporal-coupling]
+  private disposeState: (() => void) | null = null;
+  // Monotonic token guarding one-shot evaluations against out-of-order
+  // resolution: only the latest issued one-shot may write the result, so a slow
+  // earlier request can never clobber a newer one. [LAW:no-ambient-temporal-coupling]
+  private evalToken = 0;
   // Monotonic id for REPL rows. Never reused, so resolution finds its entry by
   // id even after the ring has shifted, and React keys stay stable.
   private nextId = 0;
@@ -83,12 +139,22 @@ export class ConsoleStore {
     this.uiStore = uiStore;
     this.now = now;
     makeAutoObservable(this);
+    // Reconcile the Playground to its desired state whenever the transport
+    // reaches `ready`. The common case (user opens the tab long after boot)
+    // is driven by the view calling refresh() on mount; this handler covers
+    // the boot-into-subscribed case where the persisted mode wants a live
+    // subscription before the bridge can carry one. refresh() is idempotent,
+    // so the two paths never double-subscribe. [LAW:no-ambient-temporal-coupling]
+    this.disposeState = bridge.onState((state) => {
+      if (state === "ready") this.refresh();
+    });
   }
 
   dispose(): void {
-    if (this.disposeSubscription !== null) {
-      this.disposeSubscription();
-      this.disposeSubscription = null;
+    this.teardownSubscription();
+    if (this.disposeState !== null) {
+      this.disposeState();
+      this.disposeState = null;
     }
   }
 
@@ -237,5 +303,142 @@ export class ConsoleStore {
     }
     this.recallCursor = null;
     return { kind: "live" };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Format Playground — evaluate a tmux format against a target, one-shot or
+  // subscribed. The store owns the subscription lifecycle end to end: there is
+  // ever at most one live subscription, and every setter reconciles toward the
+  // desired (mode, target, format) by tearing down the old flow and starting
+  // the new one. Components only call these setters and refresh(); they never
+  // touch the subscription directly. [LAW:no-ambient-temporal-coupling]
+  // ---------------------------------------------------------------------------
+
+  /** Persist a new format and re-evaluate. The view debounces keystrokes before
+   *  calling this, so subscriptions don't thrash mid-typing. */
+  setPlaygroundFormat(format: string): void {
+    this.uiStore.setConsoleFormat(format);
+    this.refresh();
+  }
+
+  /** Persist a new target and re-evaluate (re-subscribes in subscribed mode). */
+  setPlaygroundTarget(target: PlaygroundTarget): void {
+    this.uiStore.setConsoleTarget(target);
+    this.refresh();
+  }
+
+  /** Persist a new mode and re-evaluate. Switching modes tears down any active
+   *  subscription before the new flow starts (subscribe ⇄ one-shot). */
+  setPlaygroundMode(mode: PlaygroundMode): void {
+    this.uiStore.setConsoleMode(mode);
+    this.refresh();
+  }
+
+  /**
+   * Reconcile the live evaluation to the persisted (mode, target, format). In
+   * subscribed mode an unchanged signature is a no-op so the subscription
+   * survives view re-mounts; otherwise the old flow is torn down and the new one
+   * started. In one-shot mode every call issues a fresh `display-message`.
+   * [LAW:dataflow-not-control-flow] the same reconcile runs regardless of which
+   * setter (or the ready handler, or the view on mount) called it — the inputs
+   * are data, not a per-caller branch.
+   */
+  refresh(): void {
+    const token = ++this.evalToken;
+    const target = this.playgroundTarget;
+    const format = this.playgroundFormat;
+    if (this.playgroundMode === "subscribed") {
+      const sig = subscriptionSig(target, format);
+      if (this.disposeSubscription !== null && this.liveSig === sig) return;
+      this.teardownSubscription();
+      this.startSubscription(target, format, sig);
+      return;
+    }
+    this.teardownSubscription();
+    void this.runOneShot(target, format, token);
+  }
+
+  /**
+   * Evaluate the format once via `display-message -p`. tmux resolves `-t` against
+   * the target pane (omitted for `active`, which uses the client's active pane).
+   * A `%error` resolves with `success: false` carrying the diagnostic (the bridge
+   * normalizes tmux errors); a transport failure rejects — both land in the error
+   * variant. [LAW:no-silent-failure] the real message rides the result.
+   *
+   * The token guard drops a stale resolution: if a newer evaluation was issued
+   * (mode/target/format changed) while this one was in flight, its result is
+   * discarded rather than overwriting the newer state.
+   */
+  private async runOneShot(
+    target: PlaygroundTarget,
+    format: string,
+    token: number,
+  ): Promise<void> {
+    const targetArg = target.kind === "active" ? "" : ` -t ${target.target}`;
+    const command = `display-message -p${targetArg} ${quoteTmuxArg(format)}`;
+    const result = await this.evalOneShot(command);
+    runInAction(() => {
+      if (token === this.evalToken) this.playgroundResult = result;
+    });
+  }
+
+  private async evalOneShot(command: string): Promise<PlaygroundResult> {
+    try {
+      const resp = await this.bridge.execute(command);
+      if (resp.success) {
+        return { status: "value", value: resp.output.map(decodeLine).join("\n"), updateCount: 1 };
+      }
+      return {
+        status: "error",
+        message: resp.output.map(decodeLine).join("\n") || "evaluation failed (%error)",
+      };
+    } catch (err) {
+      return { status: "error", message: errorMessage(err) };
+    }
+  }
+
+  /**
+   * Install the single Playground subscription via `refresh-client -B
+   * <name>:<what>:<format>`. tmux reports each change as `%subscription-changed`
+   * (at most once per second, only when the value changes), with the first value
+   * arriving on the ~1s timer — so the result stays `idle` until the first fire,
+   * which is what distinguishes "hasn't fired yet" from an evaluated-empty value.
+   * The teardown closes over both the event listener removal and the tmux-side
+   * `refresh-client -B <name>` removal, so dispose()/re-subscribe drop the
+   * subscription completely.
+   */
+  private startSubscription(
+    target: PlaygroundTarget,
+    format: string,
+    sig: string,
+  ): void {
+    const off = this.bridge.onEvent((ev) => {
+      if (ev.type !== "subscription-changed" || ev.name !== PLAYGROUND_SUB) return;
+      runInAction(() => {
+        const prev = this.playgroundResult;
+        const updateCount = (prev.status === "value" ? prev.updateCount : 0) + 1;
+        this.playgroundResult = { status: "value", value: decodeLine(ev.value), updateCount };
+      });
+    });
+    this.disposeSubscription = () => {
+      off();
+      void this.bridge.execute(`refresh-client -B ${PLAYGROUND_SUB}`);
+    };
+    this.liveSig = sig;
+    this.playgroundResult = { status: "idle" };
+    const what = targetWhat(target);
+    void this.bridge.execute(
+      `refresh-client -B ${quoteTmuxArg(`${PLAYGROUND_SUB}:${what}:${format}`)}`,
+    );
+  }
+
+  /** Drop the live subscription if any: remove the listener and tell tmux to
+   *  stop. Idempotent — the single tear-down point shared by refresh()/dispose(). */
+  private teardownSubscription(): void {
+    if (this.disposeSubscription !== null) {
+      this.disposeSubscription();
+      this.disposeSubscription = null;
+    }
+    this.liveSig = null;
   }
 }
