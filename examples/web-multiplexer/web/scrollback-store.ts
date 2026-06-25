@@ -16,12 +16,15 @@
 //   "recording" and stamps `captureStartedAt`; only from that flip does
 //   `onFirehoseBytes` buffer. The cost is a sub-frame gap between the capture
 //   instant and the first buffered byte — surfaced here, not hidden.
-// [LAW:effects-at-boundaries] All IO lives here: list-panes, capture-pane, the
-//   firehose subscription, the wall clock, the playback ticker. The byte math it
-//   feeds — `momentBytes` / `bytesUpTo` — is pure and unit-tested.
+// [LAW:effects-at-boundaries] The firehose subscription, the wall clock, and the
+//   playback ticker live here. The seed capture (list-panes + capture-pane) is
+//   shared IO lifted to `recording-capture`; the byte math it feeds —
+//   `momentBytes` / `bytesUpTo` — is pure and unit-tested.
 // [LAW:one-source-of-truth] The frozen `Recording` + the per-pane snapshot map
 //   are the two artifacts; everything the view shows is DERIVED from them by the
-//   engine, never tracked as parallel state.
+//   engine, never tracked as parallel state. The verbatim-identical capture
+//   pieces shared with the .10 moment diff (`captureSeeds`, `parsePaneList`, the
+//   caps, `firstKey`, `now`) are imported from `recording-capture`, not re-stated.
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
@@ -34,29 +37,19 @@ import {
   type RecordedChunk,
 } from "./session-recording-engine.ts";
 import {
-  parseCaptureReply,
   splitFraction,
   type ScrollbackSnapshot,
   type Timeline,
 } from "./scrollback-engine.ts";
+import {
+  MAX_RECORDING_BYTES,
+  captureSeeds,
+  firstKey,
+  now,
+} from "./recording-capture.ts";
 
 /** Playback ticker cadence — ~30fps is smooth for a scrubbing terminal. */
 const TICK_INTERVAL_MS = 33;
-
-/**
- * Soft cap on a single recording's captured forward bytes — a time machine clip
- * is meant to be scrubbed, not an unbounded log. Past this the store auto-stops
- * and says so. [LAW:no-silent-failure] the stop is surfaced (`limitHit`).
- */
-const MAX_RECORDING_BYTES = 16 * 1024 * 1024;
-
-/**
- * Cap on how many panes get seeded at record-start. Seeding is an O(panes ×
- * scrollback) burst of `capture-pane` calls; a sane ceiling keeps a busy server
- * from stalling the start. [LAW:no-silent-failure] the truncation is reported
- * (`seedTruncated`), not silent.
- */
-const MAX_SEEDED_PANES = 24;
 
 /** Discrete lifecycle. [LAW:no-mode-explosion] three states, no flags. */
 export type RecorderPhase = "idle" | "recording" | "review";
@@ -64,31 +57,6 @@ export type RecorderPhase = "idle" | "recording" | "review";
 /** Available playback speeds. */
 export const PLAYBACK_RATES = [0.5, 1, 2, 4] as const;
 export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
-
-/** One pane as reported by `list-panes -a`: id + the geometry to seed it on. */
-interface PaneInfo {
-  readonly paneId: number;
-  readonly geometry: PaneGeometry;
-}
-
-/** Monotonic wall clock for capture + playback timing. */
-function now(): number {
-  return performance.now();
-}
-
-/** Parse `%<id> <cols> <rows>` rows from `list-panes -a -F`. */
-function parsePaneList(lines: readonly string[]): PaneInfo[] {
-  const out: PaneInfo[] = [];
-  for (const line of lines) {
-    const m = /^%?(\d+)\s+(\d+)\s+(\d+)/.exec(line.trim());
-    if (m === null) continue;
-    const paneId = Number(m[1]);
-    const cols = Number(m[2]);
-    const rows = Number(m[3]);
-    if (cols > 0 && rows > 0) out.push({ paneId, geometry: { cols, rows } });
-  }
-  return out;
-}
 
 export class ScrollbackTimeMachineStore {
   phase: RecorderPhase = "idle";
@@ -220,26 +188,29 @@ export class ScrollbackTimeMachineStore {
       this.pos = 0;
       this.liveDurationMs = 0;
     });
-    void this.captureSeeds().then((seeds) => {
-      // The mode may have been left while seeds were in flight — abandon if so.
-      if (!this.active) {
+    void captureSeeds(this.bridge, "time machine").then(
+      ({ seeds, truncated }) => {
+        // The mode may have been left while seeds were in flight — abandon if so.
+        if (!this.active) {
+          runInAction(() => {
+            this.seeding = false;
+          });
+          return;
+        }
+        this.pendingSeeds = seeds;
+        this.geometry.clear();
+        for (const [paneId, snap] of seeds)
+          this.geometry.set(paneId, snap.geometry);
+        this.buffer = [];
+        this.capturedBytes = 0;
+        this.captureStartedAt = now();
         runInAction(() => {
           this.seeding = false;
+          this.seedTruncated = truncated;
+          this.phase = "recording";
         });
-        return;
-      }
-      this.pendingSeeds = seeds;
-      this.geometry.clear();
-      for (const [paneId, snap] of seeds)
-        this.geometry.set(paneId, snap.geometry);
-      this.buffer = [];
-      this.capturedBytes = 0;
-      this.captureStartedAt = now();
-      runInAction(() => {
-        this.seeding = false;
-        this.phase = "recording";
-      });
-    });
+      },
+    );
   }
 
   /** Freeze the forward buffer + seeds into the review artifacts. */
@@ -279,47 +250,6 @@ export class ScrollbackTimeMachineStore {
       this.limitHit = false;
       this.seedTruncated = false;
     });
-  }
-
-  /**
-   * Capture every pane's scrollback seed in parallel. Best-effort per pane: a
-   * pane that vanishes or errors is skipped (logged, not swallowed into a wrong
-   * seed). [LAW:no-silent-failure]
-   */
-  private async captureSeeds(): Promise<Map<number, ScrollbackSnapshot>> {
-    const seeds = new Map<number, ScrollbackSnapshot>();
-    let panes: PaneInfo[];
-    try {
-      const list = await this.bridge.execute(
-        "list-panes -a -F '#{pane_id} #{pane_width} #{pane_height}'",
-      );
-      panes = parsePaneList(list.output);
-    } catch (err: unknown) {
-      console.warn("time machine: list-panes failed", err);
-      return seeds;
-    }
-    if (panes.length > MAX_SEEDED_PANES) {
-      runInAction(() => {
-        this.seedTruncated = true;
-      });
-      panes = panes.slice(0, MAX_SEEDED_PANES);
-    }
-    await Promise.all(
-      panes.map(async (p) => {
-        try {
-          const r = await this.bridge.execute(
-            `capture-pane -e -p -S - -E - -t %${p.paneId}`,
-          );
-          seeds.set(
-            p.paneId,
-            parseCaptureReply(r.output, p.geometry, p.paneId),
-          );
-        } catch (err: unknown) {
-          console.warn(`time machine: capture-pane %${p.paneId} failed`, err);
-        }
-      }),
-    );
-    return seeds;
   }
 
   private onFirehoseBytes(paneId: number, data: Uint8Array): void {
@@ -432,12 +362,6 @@ export class ScrollbackTimeMachineStore {
       }
     });
   }
-}
-
-/** First key of a map in insertion order, or null when empty. */
-function firstKey(m: ReadonlyMap<number, unknown>): number | null {
-  for (const k of m.keys()) return k;
-  return null;
 }
 
 /**

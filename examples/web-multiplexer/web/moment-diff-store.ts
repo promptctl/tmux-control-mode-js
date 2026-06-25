@@ -13,19 +13,18 @@
 //   would be counted twice (once baked into a later seed, once in the stream).
 //   `startRecording` awaits every `capture-pane`, THEN flips `phase` to
 //   "recording"; only from that flip does `onFirehoseBytes` buffer.
-// [LAW:effects-at-boundaries] All IO lives here: list-panes, capture-pane, the
-//   firehose subscription, the wall clock. The diff math it feeds —
-//   `diffMoments` — is pure and unit-tested.
+// [LAW:effects-at-boundaries] The firehose subscription + buffering live here;
+//   the wall clock too. The seed capture (list-panes + capture-pane) is shared
+//   IO lifted to `recording-capture`, and the diff math (`diffMoments`) is pure.
 // [LAW:one-source-of-truth] The frozen `Recording` + the per-pane snapshot map
 //   are the artifacts; the `diff` getter DERIVES everything the view shows from
-//   them via the engine, never tracked as parallel state.
-// [LAW:carrying-cost] This capture-then-record orchestration is shared in shape
-//   with the .5 recorder, .8 attribution, and .9 time-machine stores — each a
-//   thin IO boundary over the same `TmuxBridge` seam (onFirehose / startFirehose
-//   / execute), differing only in what they do with the frozen artifacts. The
-//   genuinely load-bearing logic (the byte math) is reused from the pure engines;
-//   when a 5th consumer lands, the capture shell is the natural thing to lift
-//   into one owned `RecordingSession` rather than copy a 5th time.
+//   them via the engine, never tracked as parallel state. The verbatim-identical
+//   capture pieces this store shares with the .9 time machine (`captureSeeds`,
+//   `parsePaneList`, the caps, `firstKey`, `now`) are imported from
+//   `recording-capture`, not re-stated — both seeding stores read one definition.
+//   What stays here is the firehose/phase state machine, which genuinely diverges
+//   from .9's (a static two-playhead diff vs a single playhead with a playback
+//   clock), so it is not forced into a shared base. [LAW:no-mode-explosion]
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
@@ -37,56 +36,20 @@ import {
   type Recording,
   type RecordedChunk,
 } from "./session-recording-engine.ts";
-import {
-  parseCaptureReply,
-  type ScrollbackSnapshot,
-  type Timeline,
-} from "./scrollback-engine.ts";
+import { type ScrollbackSnapshot, type Timeline } from "./scrollback-engine.ts";
 import { diffMoments, type MomentDiff } from "./moment-diff-engine.ts";
+import {
+  MAX_RECORDING_BYTES,
+  captureSeeds,
+  firstKey,
+  now,
+} from "./recording-capture.ts";
 
 /** Cadence of the live elapsed-time counter shown while recording. */
 const TICK_INTERVAL_MS = 100;
 
-/**
- * Soft cap on a single recording's captured forward bytes. Past this the store
- * auto-stops and surfaces it (`limitHit`). [LAW:no-silent-failure]
- */
-const MAX_RECORDING_BYTES = 16 * 1024 * 1024;
-
-/**
- * Cap on how many panes get seeded at record-start. Seeding is an O(panes ×
- * scrollback) burst of `capture-pane` calls; the truncation is reported
- * (`seedTruncated`), not silent. [LAW:no-silent-failure]
- */
-const MAX_SEEDED_PANES = 24;
-
 /** Discrete lifecycle. [LAW:no-mode-explosion] three states, no flags. */
 export type DiffPhase = "idle" | "recording" | "review";
-
-/** One pane as reported by `list-panes -a`: id + the geometry to seed it on. */
-interface PaneInfo {
-  readonly paneId: number;
-  readonly geometry: PaneGeometry;
-}
-
-/** Monotonic wall clock for capture timing. */
-function now(): number {
-  return performance.now();
-}
-
-/** Parse `%<id> <cols> <rows>` rows from `list-panes -a -F`. */
-function parsePaneList(lines: readonly string[]): PaneInfo[] {
-  const out: PaneInfo[] = [];
-  for (const line of lines) {
-    const m = /^%?(\d+)\s+(\d+)\s+(\d+)/.exec(line.trim());
-    if (m === null) continue;
-    const paneId = Number(m[1]);
-    const cols = Number(m[2]);
-    const rows = Number(m[3]);
-    if (cols > 0 && rows > 0) out.push({ paneId, geometry: { cols, rows } });
-  }
-  return out;
-}
 
 export class MomentDiffStore {
   phase: DiffPhase = "idle";
@@ -126,7 +89,6 @@ export class MomentDiffStore {
   private pendingSeeds = new Map<number, ScrollbackSnapshot>();
   private readonly geometry = new Map<number, PaneGeometry>();
 
-  private lastTickAt = 0;
   private readonly ticker: ReturnType<typeof setInterval>;
 
   private readonly disposeOnFirehose: () => void;
@@ -141,7 +103,6 @@ export class MomentDiffStore {
       | "captureStartedAt"
       | "pendingSeeds"
       | "geometry"
-      | "lastTickAt"
       | "ticker"
       | "disposeOnFirehose"
       | "disposeOnState"
@@ -152,7 +113,6 @@ export class MomentDiffStore {
       captureStartedAt: false,
       pendingSeeds: false,
       geometry: false,
-      lastTickAt: false,
       ticker: false,
       disposeOnFirehose: false,
       disposeOnState: false,
@@ -168,7 +128,6 @@ export class MomentDiffStore {
       if (state === "ready" && this.active) this.bridge.startFirehose();
     });
 
-    this.lastTickAt = now();
     this.ticker = setInterval(() => this.tick(), TICK_INTERVAL_MS);
   }
 
@@ -219,26 +178,29 @@ export class MomentDiffStore {
       this.selectedPaneId = null;
       this.liveDurationMs = 0;
     });
-    void this.captureSeeds().then((seeds) => {
-      // The mode may have been left while seeds were in flight — abandon if so.
-      if (!this.active) {
+    void captureSeeds(this.bridge, "moment diff").then(
+      ({ seeds, truncated }) => {
+        // The mode may have been left while seeds were in flight — abandon if so.
+        if (!this.active) {
+          runInAction(() => {
+            this.seeding = false;
+          });
+          return;
+        }
+        this.pendingSeeds = seeds;
+        this.geometry.clear();
+        for (const [paneId, snap] of seeds)
+          this.geometry.set(paneId, snap.geometry);
+        this.buffer = [];
+        this.capturedBytes = 0;
+        this.captureStartedAt = now();
         runInAction(() => {
           this.seeding = false;
+          this.seedTruncated = truncated;
+          this.phase = "recording";
         });
-        return;
-      }
-      this.pendingSeeds = seeds;
-      this.geometry.clear();
-      for (const [paneId, snap] of seeds)
-        this.geometry.set(paneId, snap.geometry);
-      this.buffer = [];
-      this.capturedBytes = 0;
-      this.captureStartedAt = now();
-      runInAction(() => {
-        this.seeding = false;
-        this.phase = "recording";
-      });
-    });
+      },
+    );
   }
 
   /** Freeze the forward buffer + seeds into the review artifacts. */
@@ -275,47 +237,6 @@ export class MomentDiffStore {
       this.limitHit = false;
       this.seedTruncated = false;
     });
-  }
-
-  /**
-   * Capture every pane's scrollback seed in parallel. Best-effort per pane: a
-   * pane that vanishes or errors is skipped (logged, not swallowed into a wrong
-   * seed). [LAW:no-silent-failure]
-   */
-  private async captureSeeds(): Promise<Map<number, ScrollbackSnapshot>> {
-    const seeds = new Map<number, ScrollbackSnapshot>();
-    let panes: PaneInfo[];
-    try {
-      const list = await this.bridge.execute(
-        "list-panes -a -F '#{pane_id} #{pane_width} #{pane_height}'",
-      );
-      panes = parsePaneList(list.output);
-    } catch (err: unknown) {
-      console.warn("moment diff: list-panes failed", err);
-      return seeds;
-    }
-    if (panes.length > MAX_SEEDED_PANES) {
-      runInAction(() => {
-        this.seedTruncated = true;
-      });
-      panes = panes.slice(0, MAX_SEEDED_PANES);
-    }
-    await Promise.all(
-      panes.map(async (p) => {
-        try {
-          const r = await this.bridge.execute(
-            `capture-pane -e -p -S - -E - -t %${p.paneId}`,
-          );
-          seeds.set(
-            p.paneId,
-            parseCaptureReply(r.output, p.geometry, p.paneId),
-          );
-        } catch (err: unknown) {
-          console.warn(`moment diff: capture-pane %${p.paneId} failed`, err);
-        }
-      }),
-    );
-    return seeds;
   }
 
   private onFirehoseBytes(paneId: number, data: Uint8Array): void {
@@ -400,17 +321,9 @@ export class MomentDiffStore {
    * [LAW:no-ambient-temporal-coupling] one owner for the only clock this store has.
    */
   private tick(): void {
-    const t = now();
-    this.lastTickAt = t;
     if (this.phase !== "recording") return;
     runInAction(() => {
-      this.liveDurationMs = t - this.captureStartedAt;
+      this.liveDurationMs = now() - this.captureStartedAt;
     });
   }
-}
-
-/** First key of a map in insertion order, or null when empty. */
-function firstKey(m: ReadonlyMap<number, unknown>): number | null {
-  for (const k of m.keys()) return k;
-  return null;
 }
