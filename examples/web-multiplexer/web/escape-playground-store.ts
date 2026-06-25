@@ -171,16 +171,28 @@ export class EscapePlaygroundStore {
     const prev = this.prevWindowId;
     this.teardownLocalState();
     if (win === null) return;
-    // Best-effort teardown. A rejection means the window/server is already gone
-    // (e.g. mid-reconnect) — exactly the case where there is nothing to clean
-    // up, so there is no failure to surface. [LAW:no-silent-failure] this
-    // swallows only teardown-of-an-already-absent-resource, never a meaningful
-    // command error.
+    // Best-effort teardown, run while leaving the mode: there is no recovery
+    // path here and no error UI mounted, so a failure is surfaced (logged), not
+    // escalated. [LAW:no-silent-failure] the catch LOGS the error rather than
+    // discarding it — the common case (window/server already gone mid-reconnect)
+    // and a genuine failure (tmux refusing the kill) are both made observable in
+    // the console instead of vanishing.
     void (async () => {
       if (prev !== null) {
-        await this.bridge.execute(`select-window -t @${prev}`).catch(() => {});
+        await this.bridge
+          .execute(`select-window -t @${prev}`)
+          .catch((err: unknown) =>
+            console.warn(`playground: restoring view to @${prev} failed`, err),
+          );
       }
-      await this.bridge.execute(`kill-window -t @${win}`).catch(() => {});
+      await this.bridge
+        .execute(`kill-window -t @${win}`)
+        .catch((err: unknown) =>
+          console.warn(
+            `playground: killing scratch window @${win} failed`,
+            err,
+          ),
+        );
     })();
   }
 
