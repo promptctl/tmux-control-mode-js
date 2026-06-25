@@ -8,6 +8,7 @@
 import { makeAutoObservable, reaction } from "mobx";
 import {
   type ConsolePersist,
+  CONSOLE_HISTORY_CAP,
   DEFAULT_CONSOLE,
   parseConsole,
 } from "./console-types.ts";
@@ -254,6 +255,21 @@ export class UiStore {
 
   setAppMode(mode: AppMode): void {
     this.appMode = mode;
+  }
+
+  /**
+   * Append a command to the persisted REPL recall list, capped at
+   * `CONSOLE_HISTORY_CAP` (oldest dropped). [LAW:one-source-of-truth] UiStore is
+   * the sole authority for the persisted console slice — `ConsoleStore` routes
+   * every write here rather than mutating `this.console` from a component.
+   * Replaces `console` wholesale so the auto-persist reaction tracks it by
+   * reference.
+   */
+  pushConsoleCommand(command: string): void {
+    const commandHistory = [...this.console.commandHistory, command].slice(
+      -CONSOLE_HISTORY_CAP,
+    );
+    this.console = { ...this.console, commandHistory };
   }
 
   isHidden(type: string): boolean {

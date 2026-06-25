@@ -17,6 +17,7 @@ import { observer } from "mobx-react-lite";
 import { Paper, Stack, Group, Title, Text, Code } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
 import type { ConsoleStore } from "../console-store.ts";
+import { ConsoleRepl } from "./ConsoleRepl.tsx";
 
 interface Props {
   readonly store: ConsoleStore;
@@ -50,15 +51,7 @@ export const ConsoleView = observer(function ConsoleView({ store, demoStore }: P
         p="md"
         style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column" }}
       >
-        <Group justify="space-between" mb="sm">
-          <Title order={5}>REPL</Title>
-          <Text size="xs" c="dimmed">
-            {store.commandHistory.length} in recall
-          </Text>
-        </Group>
-        <Text size="sm" c="dimmed">
-          Type a tmux command, see the response with timing. Lands next.
-        </Text>
+        <ConsoleRepl store={store} />
       </Paper>
 
       <Paper

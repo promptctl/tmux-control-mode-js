@@ -24,15 +24,31 @@
 // branch deciding whether a field exists. Transitions replace the entry
 // in the ring rather than mutating fields in place.
 
-import { makeAutoObservable } from "mobx";
+import { makeAutoObservable, runInAction } from "mobx";
+import { latin1ToBytes } from "@promptctl/tmux-control-mode-js/protocol";
 import type { TmuxBridge } from "./bridge.ts";
 import type { UiStore } from "./ui-store.ts";
-import type {
-  PlaygroundMode,
-  PlaygroundResult,
-  PlaygroundTarget,
-  ReplEntry,
+import {
+  REPL_RING_CAP,
+  type PlaygroundMode,
+  type PlaygroundResult,
+  type PlaygroundTarget,
+  type RecallStep,
+  type ReplEntry,
 } from "./console-types.ts";
+
+// tmux command output crosses the wire as latin1-container byte-faithful
+// strings (see CommandResponse.output). Decode once here, at the boundary where
+// wire bytes enter the store, so every `ReplEntry` carries display-ready UTF-8
+// and the view never touches byte codecs. [FRAMING:representation]
+const utf8 = new TextDecoder();
+function decodeLine(line: string): string {
+  return utf8.decode(latin1ToBytes(line));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export class ConsoleStore {
   /** Live REPL timeline. Holds full response bodies; never persisted. */
@@ -51,10 +67,21 @@ export class ConsoleStore {
   // mount/unmount of a component never starts or stops a subscription.
   // [LAW:no-ambient-temporal-coupling]
   private disposeSubscription: (() => void) | null = null;
+  // Monotonic id for REPL rows. Never reused, so resolution finds its entry by
+  // id even after the ring has shifted, and React keys stay stable.
+  private nextId = 0;
+  // Recall cursor: an index into `commandHistory` (most-recent-last), or `null`
+  // for the live (not-recalling) input line. Reset to `null` on submit.
+  private recallCursor: number | null = null;
+  // Injected clock — the sole time source for latency. [LAW:effects-at-boundaries]
+  // reading the clock is the store's one impurity; injecting it keeps latency
+  // deterministic under test without an ambient `Date.now()` reach.
+  private readonly now: () => number;
 
-  constructor(bridge: TmuxBridge, uiStore: UiStore) {
+  constructor(bridge: TmuxBridge, uiStore: UiStore, now: () => number = Date.now) {
     this.bridge = bridge;
     this.uiStore = uiStore;
+    this.now = now;
     makeAutoObservable(this);
   }
 
@@ -84,5 +111,131 @@ export class ConsoleStore {
 
   get playgroundMode(): PlaygroundMode {
     return this.uiStore.console.lastMode;
+  }
+
+  // ---------------------------------------------------------------------------
+  // REPL — submit / recall / clear.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Run a tmux command and render its result as a REPL row. The pipeline is the
+   * same on every call — push a `pending` row, await the bridge, replace it with
+   * the resolved variant — so the outcome lives in the entry's `status`, never
+   * in whether a row appears. [LAW:dataflow-not-control-flow]
+   *
+   * Empty/whitespace submits are a precondition miss (no command to run), so
+   * they short-circuit before any row or history write.
+   */
+  async submit(command: string): Promise<void> {
+    const trimmed = command.trim();
+    if (trimmed.length === 0) return;
+
+    // Persisted recall is UiStore's authority; route the write there, never
+    // mutate the slice from here or the view. [LAW:one-source-of-truth]
+    this.uiStore.pushConsoleCommand(trimmed);
+    this.recallCursor = null;
+
+    const id = this.nextId++;
+    const submittedAt = this.now();
+    this.pushEntry({ id, command: trimmed, submittedAt, status: "pending" });
+
+    const resolved = await this.runCommand(id, trimmed, submittedAt);
+    // Post-await mutation re-enters an action so MobX tracks it. The store
+    // outlives the view, so this lands even after a tab switch.
+    runInAction(() => this.replaceEntry(resolved));
+  }
+
+  /**
+   * Resolve one command into its terminal `ReplEntry` variant. The bridge's
+   * `execute` honors `Promise<CommandResponse>`: a tmux `%end` resolves with
+   * `success: true`, a `%error` resolves with `success: false` carrying the
+   * diagnostic, and a transport failure rejects. All three map to a single ok |
+   * error value — the source of the error is not represented separately, matching
+   * the `ReplEntry` error variant. [LAW:no-silent-failure] the rejection's real
+   * message rides the row; it is never swallowed to a console log.
+   */
+  private async runCommand(
+    id: number,
+    command: string,
+    submittedAt: number,
+  ): Promise<ReplEntry> {
+    const common = { id, command, submittedAt };
+    try {
+      const resp = await this.bridge.execute(command);
+      const latencyMs = this.now() - submittedAt;
+      return resp.success
+        ? { ...common, status: "ok", output: resp.output.map(decodeLine), latencyMs }
+        : {
+            ...common,
+            status: "error",
+            message: resp.output.map(decodeLine).join("\n") || "command failed (%error)",
+            latencyMs,
+          };
+    } catch (err) {
+      const latencyMs = this.now() - submittedAt;
+      return { ...common, status: "error", message: errorMessage(err), latencyMs };
+    }
+  }
+
+  /**
+   * Append a row, evicting the oldest *resolved* row once over the ring cap. A
+   * pending row is never evicted, so its resolution always finds a slot — the
+   * cap is soft against in-flight commands by design. [LAW:no-ambient-temporal-coupling]
+   */
+  private pushEntry(entry: ReplEntry): void {
+    this.replEntries.push(entry);
+    if (this.replEntries.length <= REPL_RING_CAP) return;
+    const evictIdx = this.replEntries.findIndex((e) => e.status !== "pending");
+    if (evictIdx >= 0) this.replEntries.splice(evictIdx, 1);
+  }
+
+  /**
+   * Replace a row by id with its resolved variant. A missing id is genuine
+   * absence — the user cleared the log while the command was in flight — so the
+   * now-meaningless resolution is dropped rather than re-inserted. This is not a
+   * swallowed failure: the command ran, and there is no row left to update.
+   */
+  private replaceEntry(entry: ReplEntry): void {
+    const i = this.replEntries.findIndex((e) => e.id === entry.id);
+    if (i < 0) return;
+    this.replEntries[i] = entry;
+  }
+
+  /** Empty the live ring. Persisted recall history is untouched. */
+  clear(): void {
+    this.replEntries = [];
+  }
+
+  /**
+   * Walk one step toward older history (the Up arrow). Returns the line to show,
+   * or `none` at the oldest boundary / when history is empty — no wraparound.
+   */
+  recallPrevious(): RecallStep {
+    const history = this.commandHistory;
+    if (history.length === 0) return { kind: "none" };
+    if (this.recallCursor === null) {
+      this.recallCursor = history.length - 1;
+    } else if (this.recallCursor > 0) {
+      this.recallCursor -= 1;
+    } else {
+      return { kind: "none" };
+    }
+    return { kind: "command", text: history[this.recallCursor] };
+  }
+
+  /**
+   * Walk one step toward newer history (the Down arrow). Past the newest entry
+   * the cursor returns to the live line (`live`, an empty input); already-live
+   * stays `none`. No wraparound.
+   */
+  recallNext(): RecallStep {
+    const history = this.commandHistory;
+    if (this.recallCursor === null) return { kind: "none" };
+    if (this.recallCursor < history.length - 1) {
+      this.recallCursor += 1;
+      return { kind: "command", text: history[this.recallCursor] };
+    }
+    this.recallCursor = null;
+    return { kind: "live" };
   }
 }
