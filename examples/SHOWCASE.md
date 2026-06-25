@@ -61,7 +61,9 @@ A demo that hits 3+ axes is gold. A demo that hits 1 is fine if that axis is oth
 ### New ideas
 
 #### Time travel / history
-- **"Diff two moments"** — pick two points in a pane's history and show what changed (cells, cursor, modes). Useful for debugging TUIs.
+- **"Diff two moments"** — *ships today* as the "Moment Diff" mode of `examples/web-multiplexer/`. Record a session (every pane seeded up front, then the forward firehose), then drag **two** playheads — A (before) and B (after) — over recorded time and see exactly what changed between them: each screen cell classified added / removed / changed / unchanged, plus where the cursor moved. A pure, unit-tested engine (`web/moment-diff-engine.ts`) reconstructs the pane's screen at each moment and diffs the two grids cell-by-cell; the store (`web/moment-diff-store.ts`) owns the capture-then-record ordering and the two playheads; the view paints an owned cell grid tinted by change kind. Useful for debugging a TUI redraw — "what did this frame actually touch?". Stresses: state reconciliation, parsing depth.
+  - *Reuse, not re-derivation:* the faithful screen at moment *t* is `emulate(seed ++ bytesUpTo(t))` — so the engine asks `.9`'s `momentBytes` for the exact bytes (the single authority for "how a moment looks") and folds them through `.8`'s owned VT emulator (xterm is lossy; a cell-level diff needs per-cell access). [LAW:single-enforcer]
+  - *Why seed BOTH sides with the same seed:* a shared seed makes the diff purely the forward delta between the two times. Seed only one side (the `.5` mistake) and every pre-existing cell reads as "added", burying the real change. Equality compares cell *appearance* (char/fg/bg/bold), never provenance — two moments are always written by different bytes. [LAW:no-silent-failure]
 - **Bisect a TUI bug** — given a recorded session where something broke, binary-search the byte stream to find the offending escape sequence. Pure showcase of the recording infrastructure.
 
 #### Multiplexing power moves
