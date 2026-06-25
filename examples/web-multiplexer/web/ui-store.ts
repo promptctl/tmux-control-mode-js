@@ -21,7 +21,8 @@ export type AppMode =
   | "heatmap"
   | "search"
   | "regex"
-  | "image";
+  | "image"
+  | "playground";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -38,7 +39,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "heatmap" ||
     v === "search" ||
     v === "regex" ||
-    v === "image"
+    v === "image" ||
+    v === "playground"
   );
 }
 
