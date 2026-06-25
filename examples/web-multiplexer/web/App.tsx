@@ -30,6 +30,7 @@ import { ImageExtractorStore } from "./image-extractor-store.ts";
 import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import { SessionRecorderStore } from "./session-recorder-store.ts";
 import { ByteAttributionStore } from "./byte-attribution-store.ts";
+import { ScrollbackTimeMachineStore } from "./scrollback-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -46,6 +47,7 @@ import { ImageExtractorView } from "./components/ImageExtractorView.tsx";
 import { EscapePlaygroundView } from "./components/EscapePlaygroundView.tsx";
 import { SessionRecorderView } from "./components/SessionRecorderView.tsx";
 import { ByteAttributionView } from "./components/ByteAttributionView.tsx";
+import { ScrollbackTimeMachineView } from "./components/ScrollbackTimeMachineView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -137,6 +139,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new ByteAttributionStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] ScrollbackTimeMachineStore drives the SAME bridge,
+  // seeding each pane's pre-record scrollback via capture-pane and recording the
+  // forward firehose. The store outlives the view so a captured timeline survives
+  // tab switches.
+  const timeMachineStore = useMemo(
+    () => new ScrollbackTimeMachineStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -149,6 +159,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      timeMachineStore.dispose();
       attributionStore.dispose();
       recorderStore.dispose();
       playgroundStore.dispose();
@@ -169,6 +180,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     playgroundStore,
     recorderStore,
     attributionStore,
+    timeMachineStore,
     consoleStore,
     connectUrl,
   ]);
@@ -228,6 +240,18 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, attributionStore]);
+
+  // Same firehose-only lifecycle for the scrollback time machine: taps open
+  // while the mode is active and close on leave. The store also takes a one-shot
+  // capture-pane seed of every pane at record-start.
+  // [LAW:no-ambient-temporal-coupling] one owner, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "timemachine") {
+      timeMachineStore.start();
+      return () => timeMachineStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, timeMachineStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -359,6 +383,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Escape Playground", value: "playground" },
                 { label: "Session Recorder", value: "record" },
                 { label: "Byte Attribution", value: "attribution" },
+                { label: "Time Machine", value: "timemachine" },
               ]}
             />
           </Group>
@@ -464,6 +489,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <ByteAttributionView
             demoStore={demoStore}
             store={attributionStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "timemachine" ? (
+          <ScrollbackTimeMachineView
+            demoStore={demoStore}
+            store={timeMachineStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
