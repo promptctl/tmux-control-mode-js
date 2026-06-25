@@ -34,6 +34,7 @@ import { ScrollbackTimeMachineStore } from "./scrollback-store.ts";
 import { MomentDiffStore } from "./moment-diff-store.ts";
 import { BisectStore } from "./bisect-store.ts";
 import { BroadcastStore } from "./broadcast-store.ts";
+import { SyncScrollStore } from "./sync-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -54,6 +55,7 @@ import { ScrollbackTimeMachineView } from "./components/ScrollbackTimeMachineVie
 import { MomentDiffView } from "./components/MomentDiffView.tsx";
 import { BisectView } from "./components/BisectView.tsx";
 import { BroadcastView } from "./components/BroadcastView.tsx";
+import { SyncScrollView } from "./components/SyncScrollView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -178,6 +180,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new BroadcastStore(demoStore.client, demoStore),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] SyncScrollStore drives the SAME bridge, seeding each
+  // pane and recording the forward firehose like the time machine, then scrubbing
+  // N linked panes in lockstep on the one shared recorded-time axis. The store
+  // outlives the view so a captured recording survives tab switches.
+  const syncStore = useMemo(
+    () => new SyncScrollStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -190,6 +200,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      syncStore.dispose();
       bisectStore.dispose();
       momentDiffStore.dispose();
       timeMachineStore.dispose();
@@ -216,6 +227,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     timeMachineStore,
     momentDiffStore,
     bisectStore,
+    syncStore,
     consoleStore,
     connectUrl,
   ]);
@@ -309,6 +321,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, bisectStore]);
+
+  // Same firehose-only lifecycle for synchronized scrollback: taps open while the
+  // mode is active and close on leave. Like the time machine it seeds every pane
+  // at record-start. [LAW:no-ambient-temporal-coupling] one owner, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "syncscroll") {
+      syncStore.start();
+      return () => syncStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, syncStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -444,6 +467,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Moment Diff", value: "momentdiff" },
                 { label: "Bug Bisect", value: "bisect" },
                 { label: "Smart Broadcast", value: "broadcast" },
+                { label: "Sync Scrollback", value: "syncscroll" },
               ]}
             />
           </Group>
@@ -571,6 +595,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           />
         ) : uiStore.appMode === "broadcast" ? (
           <BroadcastView store={broadcastStore} />
+        ) : uiStore.appMode === "syncscroll" ? (
+          <SyncScrollView
+            demoStore={demoStore}
+            store={syncStore}
+            uiStore={uiStore}
+          />
         ) : currentSession === null ? (
           <Text c="dimmed">
             {connState === "ready"
