@@ -31,7 +31,8 @@ export type AppMode =
   | "broadcast"
   | "syncscroll"
   | "mirror"
-  | "sniffer";
+  | "sniffer"
+  | "hyperlinks";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -58,7 +59,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "broadcast" ||
     v === "syncscroll" ||
     v === "mirror" ||
-    v === "sniffer"
+    v === "sniffer" ||
+    v === "hyperlinks"
   );
 }
 
