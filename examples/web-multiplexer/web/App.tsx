@@ -32,6 +32,7 @@ import { SessionRecorderStore } from "./session-recorder-store.ts";
 import { ByteAttributionStore } from "./byte-attribution-store.ts";
 import { ScrollbackTimeMachineStore } from "./scrollback-store.ts";
 import { MomentDiffStore } from "./moment-diff-store.ts";
+import { BisectStore } from "./bisect-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -50,6 +51,7 @@ import { SessionRecorderView } from "./components/SessionRecorderView.tsx";
 import { ByteAttributionView } from "./components/ByteAttributionView.tsx";
 import { ScrollbackTimeMachineView } from "./components/ScrollbackTimeMachineView.tsx";
 import { MomentDiffView } from "./components/MomentDiffView.tsx";
+import { BisectView } from "./components/BisectView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -157,6 +159,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new MomentDiffStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] BisectStore drives the SAME bridge, seeding each
+  // pane and recording the forward firehose like the moment diff, then
+  // git-bisecting the recorded byte stream to pin the offending escape sequence.
+  // The store outlives the view so a captured recording survives tab switches.
+  const bisectStore = useMemo(
+    () => new BisectStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -169,6 +179,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      bisectStore.dispose();
       momentDiffStore.dispose();
       timeMachineStore.dispose();
       attributionStore.dispose();
@@ -193,6 +204,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     attributionStore,
     timeMachineStore,
     momentDiffStore,
+    bisectStore,
     consoleStore,
     connectUrl,
   ]);
@@ -275,6 +287,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, momentDiffStore]);
+
+  // Same firehose-only lifecycle for the bisect demo: taps open while the mode
+  // is active and close on leave. Like the moment diff it seeds every pane at
+  // record-start. [LAW:no-ambient-temporal-coupling] one owner, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "bisect") {
+      bisectStore.start();
+      return () => bisectStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, bisectStore]);
 
   // The playground owns a scratch tmux pane only while its mode is active:
   // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
@@ -408,6 +431,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Byte Attribution", value: "attribution" },
                 { label: "Time Machine", value: "timemachine" },
                 { label: "Moment Diff", value: "momentdiff" },
+                { label: "Bug Bisect", value: "bisect" },
               ]}
             />
           </Group>
@@ -525,6 +549,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <MomentDiffView
             demoStore={demoStore}
             store={momentDiffStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "bisect" ? (
+          <BisectView
+            demoStore={demoStore}
+            store={bisectStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (

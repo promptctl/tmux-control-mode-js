@@ -26,7 +26,8 @@ export type AppMode =
   | "record"
   | "attribution"
   | "timemachine"
-  | "momentdiff";
+  | "momentdiff"
+  | "bisect";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -48,7 +49,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "record" ||
     v === "attribution" ||
     v === "timemachine" ||
-    v === "momentdiff"
+    v === "momentdiff" ||
+    v === "bisect"
   );
 }
 
