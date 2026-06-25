@@ -15,6 +15,11 @@ import {
   decodeOctalEscapes,
 } from "../../src/protocol/decode.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
+// [LAW:one-source-of-truth] The one-of-each-variant catalogue lives in the
+// conformance module and is consumed here — there is no second twin list to
+// drift. The Record<TmuxMessage["type"], …> type still enforces coverage at the
+// source.
+import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 
 // Parse a single wire line standalone (outside any response block) back into the
 // one message it encodes. The serializer omits the trailing newline; the parser
@@ -31,71 +36,10 @@ function roundTrip(msg: TmuxMessage): TmuxMessage {
   return parseOne(serializeMessage(msg));
 }
 
-// [LAW:types-are-the-program] One sample PER variant, keyed by the discriminant.
-// The Record type makes coverage a COMPILE-TIME guarantee: add a TmuxMessage
-// variant and this object fails to typecheck until it gets a sample here.
-const SAMPLES: Record<TmuxMessage["type"], TmuxMessage> = {
-  begin: { type: "begin", timestamp: 1363006971, commandNumber: 2, flags: 1 },
-  end: { type: "end", timestamp: 1363006971, commandNumber: 2, flags: 1 },
-  error: { type: "error", timestamp: 1363006971, commandNumber: 3, flags: 1 },
-  output: { type: "output", paneId: 1, data: new Uint8Array([104, 105]) },
-  "extended-output": {
-    type: "extended-output",
-    paneId: 7,
-    age: 42,
-    data: new Uint8Array([120]),
-  },
-  pause: { type: "pause", paneId: 4 },
-  continue: { type: "continue", paneId: 4 },
-  "pane-mode-changed": { type: "pane-mode-changed", paneId: 9 },
-  "window-add": { type: "window-add", windowId: 2 },
-  "window-close": { type: "window-close", windowId: 2 },
-  "window-renamed": { type: "window-renamed", windowId: 2, name: "editor" },
-  "window-pane-changed": { type: "window-pane-changed", windowId: 2, paneId: 5 },
-  "unlinked-window-add": { type: "unlinked-window-add", windowId: 8 },
-  "unlinked-window-close": { type: "unlinked-window-close", windowId: 8 },
-  "unlinked-window-renamed": {
-    type: "unlinked-window-renamed",
-    windowId: 8,
-    name: "bg",
-  },
-  "layout-change": {
-    type: "layout-change",
-    windowId: 2,
-    windowLayout: "b1f2,80x24,0,0,3",
-    windowVisibleLayout: "b1f2,80x24,0,0,3",
-    windowFlags: "*",
-  },
-  "session-changed": { type: "session-changed", sessionId: 1, name: "main" },
-  "session-renamed": { type: "session-renamed", sessionId: 1, name: "work" },
-  "sessions-changed": { type: "sessions-changed" },
-  "session-window-changed": {
-    type: "session-window-changed",
-    sessionId: 1,
-    windowId: 2,
-  },
-  "client-session-changed": {
-    type: "client-session-changed",
-    clientName: "/dev/ttys001",
-    sessionId: 1,
-    name: "main",
-  },
-  "client-detached": { type: "client-detached", clientName: "/dev/ttys001" },
-  "paste-buffer-changed": { type: "paste-buffer-changed", name: "buffer0" },
-  "paste-buffer-deleted": { type: "paste-buffer-deleted", name: "buffer0" },
-  "subscription-changed": {
-    type: "subscription-changed",
-    name: "mysub",
-    sessionId: 1,
-    windowId: 2,
-    windowIndex: 0,
-    paneId: 5,
-    value: "some-format-value",
-  },
-  message: { type: "message", message: "hello from tmux" },
-  "config-error": { type: "config-error", error: "/etc/tmux.conf:3: bad" },
-  exit: { type: "exit", reason: "server exited" },
-};
+// [LAW:one-source-of-truth] The canonical one-of-each-variant catalogue is
+// MESSAGE_SAMPLES (imported above); the Record<TmuxMessage["type"], …> type
+// there keeps coverage a compile-time guarantee. This test consumes it.
+const SAMPLES = MESSAGE_SAMPLES;
 
 // Edge-case fixtures that share a variant with SAMPLES but exercise a different
 // path through the serializer (optional ids, absent reason, control bytes).

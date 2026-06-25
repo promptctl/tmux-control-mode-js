@@ -5,6 +5,7 @@
     { "path": "src" },
     { "path": "src/mock" },
     { "path": "src/chaos" },
+    { "path": "src/conformance" },
     { "path": "src/keymap" },
     { "path": "src/connectors" },
     { "path": "packages/pane-terminal" }
