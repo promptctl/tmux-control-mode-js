@@ -7,7 +7,7 @@
 // The browser never imports the tmux-control-mode-js runtime — only types.
 // All wire-protocol parsing and encoding happens here on the Node side.
 
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { spawnTmux } from "@promptctl/tmux-control-mode-js";
@@ -28,6 +28,12 @@ import {
   type MirrorControlFrame,
 } from "../shared/mirror-frame.js";
 import { COLLAB_WS_PATH, parseCollabKeys } from "../shared/collab-frame.js";
+import {
+  COPILOT_PATH,
+  parseCopilotRequest,
+  type CopilotSuggestResponse,
+} from "../shared/copilot-frame.js";
+import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
 import { demoAttachArgs } from "./tmux-target.js";
 
 // ---------------------------------------------------------------------------
@@ -386,6 +392,61 @@ export interface BridgeHandle {
   close(): void;
 }
 
+// ---------------------------------------------------------------------------
+// AI co-pilot — the one outbound LLM effect (HTTP POST /copilot/suggest)
+// ---------------------------------------------------------------------------
+
+// [LAW:one-source-of-truth] The LLM endpoint is resolved once from the env. An
+// env read is not socket IO, so it is safe at import (the comment on startBridge
+// is about not binding ports / spawning on import).
+const copilotConfig = llmConfigFromEnv();
+
+/** Write a JSON body with the given status. */
+function writeJson(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(payload);
+}
+
+/**
+ * Handle a `/copilot/suggest` POST: read the body, validate it at the trust
+ * boundary, call the LLM, and return the raw completion (or a represented
+ * error). [LAW:no-silent-failure] an LLM failure is a `{ ok: false }` value the
+ * browser renders; a malformed request is a 400. Nothing is swallowed.
+ */
+function handleCopilotRequest(req: IncomingMessage, res: ServerResponse): void {
+  const chunks: Buffer[] = [];
+  req.on("data", (c: Buffer) => chunks.push(c));
+  req.on("error", () => writeJson(res, 400, { ok: false, error: "request stream error" }));
+  req.on("end", () => {
+    void respondToCopilot(Buffer.concat(chunks).toString("utf8"), res);
+  });
+}
+
+async function respondToCopilot(rawBody: string, res: ServerResponse): Promise<void> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch {
+    writeJson(res, 400, { ok: false, error: "invalid JSON body" });
+    return;
+  }
+  const request = parseCopilotRequest(parsed);
+  if (request === null) {
+    writeJson(res, 400, { ok: false, error: "malformed copilot request" });
+    return;
+  }
+  try {
+    const content = await chatCompletion(request.messages, copilotConfig);
+    writeJson(res, 200, { ok: true, content } satisfies CopilotSuggestResponse);
+  } catch (err) {
+    writeJson(res, 200, {
+      ok: false,
+      error: err instanceof Error ? err.message : "LLM call failed",
+    } satisfies CopilotSuggestResponse);
+  }
+}
+
 /**
  * Construct the HTTP + WebSocket bridge and start listening. Returns a handle
  * whose `close()` centralizes teardown (Ctrl+C, watcher restart, test cleanup)
@@ -396,7 +457,13 @@ export interface BridgeHandle {
  * without binding a port. [LAW:effects-at-boundaries]
  */
 export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
-  const httpServer = createServer((_req, res) => {
+  const httpServer = createServer((req, res) => {
+    // The AI co-pilot's LLM call is the one non-WebSocket route: a request /
+    // response RPC, so it is plain HTTP, not a stream. [LAW:decomposition]
+    if (req.method === "POST" && (req.url ?? "").split("?")[0] === COPILOT_PATH) {
+      handleCopilotRequest(req, res);
+      return;
+    }
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(
       "tmux-control-mode-js demo bridge — connect to /ws via WebSocket\n",
@@ -476,6 +543,9 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
     console.log(`[bridge] listening on http://localhost:${port} (WS at /ws)`);
     console.log(`[bridge] read-only pane mirror at ${MIRROR_WS_PATH}?pane=%N`);
     console.log(`[bridge] collaborative pane at ${COLLAB_WS_PATH}?pane=%N`);
+    console.log(
+      `[bridge] AI co-pilot at POST ${COPILOT_PATH} → LLM ${copilotConfig.baseUrl} (${copilotConfig.model})`,
+    );
     console.log(
       `[bridge] open the Vite dev server (default http://localhost:${WEB_PORT})`,
     );
