@@ -36,6 +36,23 @@ export type ReplEntry =
       readonly latencyMs: number;
     });
 
+/**
+ * Outcome of one recall step (Up/Down through the persisted command history).
+ * The view matches on `kind` to update its input box: `command` sets the input
+ * to a recalled line, `live` returns to the empty live line (walked past the
+ * newest entry), `none` leaves the input untouched at a boundary (oldest entry,
+ * or empty history).
+ *
+ * [LAW:dataflow-not-control-flow] The cursor-walk result is data the view
+ * matches on — not a `string | null` whose `null` ambiguously means both "no
+ * move" and "clear the input", which would push the disambiguation into caller
+ * branches.
+ */
+export type RecallStep =
+  | { readonly kind: "command"; readonly text: string }
+  | { readonly kind: "live" }
+  | { readonly kind: "none" };
+
 /** Playground evaluation channel: one-shot request vs. live subscription. */
 export type PlaygroundMode = "one-shot" | "subscribed";
 
