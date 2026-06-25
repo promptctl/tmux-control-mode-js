@@ -39,6 +39,10 @@
       "types": "./dist/chaos/index.d.ts",
       "default": "./dist/chaos/index.js"
     },
+    "./conformance": {
+      "types": "./dist/conformance/index.d.ts",
+      "default": "./dist/conformance/index.js"
+    },
     "./electron/main": {
       "types": "./dist/connectors/electron/main.d.ts",
       "default": "./dist/connectors/electron/main.js"

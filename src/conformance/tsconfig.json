@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../dist/conformance",
+    // [LAW:one-source-of-truth] keep the build cache out of the published dist/.
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
+    "rootDir": ".",
+    // Pure module: no Node types. It imports the real TmuxClient (from `..`),
+    // whose closure is browser-safe — the transport is a type-only seam — so the
+    // emitted JS runs in the browser dashboard as well as Node tests.
+    "types": []
+  },
+  "include": ["./**/*.ts"],
+  "references": [
+    { "path": ".." },
+    { "path": "../protocol" },
+    { "path": "../mock" }
+  ]
+}
