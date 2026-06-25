@@ -38,6 +38,7 @@ import { SyncScrollStore } from "./sync-store.ts";
 import { MirrorStore } from "./mirror-store.ts";
 import { DataSnifferStore } from "./data-sniff-store.ts";
 import { HyperlinkStore } from "./hyperlink-store.ts";
+import { PromptStore } from "./prompt-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -62,6 +63,7 @@ import { SyncScrollView } from "./components/SyncScrollView.tsx";
 import { MirrorView } from "./components/MirrorView.tsx";
 import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
+import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -217,6 +219,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new HyperlinkStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] PromptStore drives the SAME bridge as the rest of
+  // the app, sourcing the dedicated firehose channel (raw pty bytes of every
+  // pane) to chunk OSC 133 prompt marks into a command history. It observes via
+  // `pipe-pane` (injects nothing) and writes back ONLY on an explicit re-run.
+  // The store outlives the view so the collected history survives tab switches.
+  const promptStore = useMemo(
+    () => new PromptStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -229,6 +240,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      promptStore.dispose();
       hyperlinkStore.dispose();
       snifferStore.dispose();
       syncStore.dispose();
@@ -261,6 +273,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     syncStore,
     snifferStore,
     hyperlinkStore,
+    promptStore,
     consoleStore,
     connectUrl,
   ]);
@@ -309,6 +322,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, hyperlinkStore]);
+
+  // Same firehose-only lifecycle for the OSC 133 command palette: taps open
+  // while command mode is active and close on leave. [LAW:no-ambient-temporal-
+  // coupling] one owner: this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "commands") {
+      promptStore.start();
+      return () => promptStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, promptStore]);
 
   useEffect(() => {
     if (uiStore.appMode === "image") {
@@ -526,6 +550,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Pane Mirror", value: "mirror" },
                 { label: "Data Sniffer", value: "sniffer" },
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
+                { label: "Command Palette", value: "commands" },
               ]}
             />
           </Group>
@@ -675,6 +700,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <HyperlinkSidebarView
             demoStore={demoStore}
             store={hyperlinkStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "commands" ? (
+          <CommandPaletteView
+            demoStore={demoStore}
+            store={promptStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
