@@ -1,30 +1,30 @@
-// examples/web-multiplexer/web/scrollback-store.ts
+// examples/web-multiplexer/web/moment-diff-store.ts
 //
-// ScrollbackTimeMachineStore — the IO boundary for the bidirectional time
-// machine. It does what the .5 recorder does (capture the all-pane firehose with
-// timing, freeze it, drive one scrub clock) and adds the .9 axis: at the instant
-// recording begins it takes a `capture-pane -e -p -S - -E -` SEED of every pane —
-// each pane's full scrollback PLUS visible screen, re-encoded by tmux as
-// SGR-bearing rows. The seed is the pre-record history the browser never attached
-// to; the firehose is the forward stream. The pure `scrollback-engine` binds them
-// into one scrubbable timeline. This store owns only the clocks and the tmux IO.
+// MomentDiffStore — the IO boundary for "diff two moments in pane history". It
+// captures a session exactly as the .9 time machine does — seed every pane with
+// a `capture-pane -e -p -S - -E -` snapshot, THEN record the forward firehose —
+// and in review exposes TWO playheads (A and B) over recorded time. The pure
+// `moment-diff-engine` reconstructs the pane's screen at each, seeded from the
+// SAME snapshot, and reports cell-by-cell + cursor what changed. There is no
+// playback clock: a diff is static, not animated.
 //
 // [LAW:no-ambient-temporal-coupling] ORDERING IS OWNED, NOT INCIDENTAL: the seed
 //   capture must COMPLETE before firehose buffering opens, or a forward byte
 //   would be counted twice (once baked into a later seed, once in the stream).
 //   `startRecording` awaits every `capture-pane`, THEN flips `phase` to
-//   "recording" and stamps `captureStartedAt`; only from that flip does
-//   `onFirehoseBytes` buffer. The cost is a sub-frame gap between the capture
-//   instant and the first buffered byte — surfaced here, not hidden.
-// [LAW:effects-at-boundaries] The firehose subscription, the wall clock, and the
-//   playback ticker live here. The seed capture (list-panes + capture-pane) is
-//   shared IO lifted to `recording-capture`; the byte math it feeds —
-//   `momentBytes` / `bytesUpTo` — is pure and unit-tested.
+//   "recording"; only from that flip does `onFirehoseBytes` buffer.
+// [LAW:effects-at-boundaries] The firehose subscription + buffering live here;
+//   the wall clock too. The seed capture (list-panes + capture-pane) is shared
+//   IO lifted to `recording-capture`, and the diff math (`diffMoments`) is pure.
 // [LAW:one-source-of-truth] The frozen `Recording` + the per-pane snapshot map
-//   are the two artifacts; everything the view shows is DERIVED from them by the
-//   engine, never tracked as parallel state. The verbatim-identical capture
-//   pieces shared with the .10 moment diff (`captureSeeds`, `parsePaneList`, the
-//   caps, `firstKey`, `now`) are imported from `recording-capture`, not re-stated.
+//   are the artifacts; the `diff` getter DERIVES everything the view shows from
+//   them via the engine, never tracked as parallel state. The verbatim-identical
+//   capture pieces this store shares with the .9 time machine (`captureSeeds`,
+//   `parsePaneList`, the caps, `firstKey`, `now`) are imported from
+//   `recording-capture`, not re-stated — both seeding stores read one definition.
+//   What stays here is the firehose/phase state machine, which genuinely diverges
+//   from .9's (a static two-playhead diff vs a single playhead with a playback
+//   clock), so it is not forced into a shared base. [LAW:no-mode-explosion]
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
@@ -36,11 +36,8 @@ import {
   type Recording,
   type RecordedChunk,
 } from "./session-recording-engine.ts";
-import {
-  splitFraction,
-  type ScrollbackSnapshot,
-  type Timeline,
-} from "./scrollback-engine.ts";
+import { type ScrollbackSnapshot, type Timeline } from "./scrollback-engine.ts";
+import { diffMoments, type MomentDiff } from "./moment-diff-engine.ts";
 import {
   MAX_RECORDING_BYTES,
   captureSeeds,
@@ -48,18 +45,14 @@ import {
   now,
 } from "./recording-capture.ts";
 
-/** Playback ticker cadence — ~30fps is smooth for a scrubbing terminal. */
-const TICK_INTERVAL_MS = 33;
+/** Cadence of the live elapsed-time counter shown while recording. */
+const TICK_INTERVAL_MS = 100;
 
 /** Discrete lifecycle. [LAW:no-mode-explosion] three states, no flags. */
-export type RecorderPhase = "idle" | "recording" | "review";
+export type DiffPhase = "idle" | "recording" | "review";
 
-/** Available playback speeds. */
-export const PLAYBACK_RATES = [0.5, 1, 2, 4] as const;
-export type PlaybackRate = (typeof PLAYBACK_RATES)[number];
-
-export class ScrollbackTimeMachineStore {
-  phase: RecorderPhase = "idle";
+export class MomentDiffStore {
+  phase: DiffPhase = "idle";
   /** True while the firehose taps are open (the mode is active). */
   active = false;
 
@@ -77,13 +70,17 @@ export class ScrollbackTimeMachineStore {
   /** True while the seed `capture-pane` burst is in flight (record is arming). */
   seeding = false;
 
-  /** Which recorded pane the time machine renders. */
+  /** Which recorded pane the diff renders. */
   selectedPaneId: number | null = null;
 
-  /** Scrub position on the unified `[0,1]` history→time axis. */
-  pos = 0;
-  playing = false;
-  rate: PlaybackRate = 1;
+  /**
+   * The two playheads as fractions `[0,1]` of recorded time (A = before, B =
+   * after). A diff operates purely on recorded time — both moments share the one
+   * seed — so there is no history-scroll region to map, unlike the .9 axis.
+   * Defaults span the whole clip: "what changed from start to end".
+   */
+  posA = 0;
+  posB = 1;
 
   // --- capture buffer (non-observable; frozen into `recording` on stop) ---
   private buffer: RecordedChunk[] = [];
@@ -92,8 +89,6 @@ export class ScrollbackTimeMachineStore {
   private pendingSeeds = new Map<number, ScrollbackSnapshot>();
   private readonly geometry = new Map<number, PaneGeometry>();
 
-  // --- playback clock ---
-  private lastTickAt = 0;
   private readonly ticker: ReturnType<typeof setInterval>;
 
   private readonly disposeOnFirehose: () => void;
@@ -108,7 +103,6 @@ export class ScrollbackTimeMachineStore {
       | "captureStartedAt"
       | "pendingSeeds"
       | "geometry"
-      | "lastTickAt"
       | "ticker"
       | "disposeOnFirehose"
       | "disposeOnState"
@@ -119,7 +113,6 @@ export class ScrollbackTimeMachineStore {
       captureStartedAt: false,
       pendingSeeds: false,
       geometry: false,
-      lastTickAt: false,
       ticker: false,
       disposeOnFirehose: false,
       disposeOnState: false,
@@ -135,7 +128,6 @@ export class ScrollbackTimeMachineStore {
       if (state === "ready" && this.active) this.bridge.startFirehose();
     });
 
-    this.lastTickAt = now();
     this.ticker = setInterval(() => this.tick(), TICK_INTERVAL_MS);
   }
 
@@ -184,11 +176,9 @@ export class ScrollbackTimeMachineStore {
       this.recording = EMPTY_RECORDING;
       this.snapshots = new Map();
       this.selectedPaneId = null;
-      this.playing = false;
-      this.pos = 0;
       this.liveDurationMs = 0;
     });
-    void captureSeeds(this.bridge, "time machine").then(
+    void captureSeeds(this.bridge, "moment diff").then(
       ({ seeds, truncated }) => {
         // The mode may have been left while seeds were in flight — abandon if so.
         if (!this.active) {
@@ -218,8 +208,8 @@ export class ScrollbackTimeMachineStore {
     if (this.phase !== "recording") return;
     const rec = buildRecording(this.buffer, this.geometry);
     const seeds = this.pendingSeeds;
-    // The replayable panes are the SEEDED ones; prefer the busiest among them so
-    // review opens on the most interesting pane that can actually be scrubbed.
+    // The diffable panes are the SEEDED ones; prefer the busiest among them so
+    // review opens on the most interesting pane that can actually be diffed.
     const busiest = busiestPane(rec);
     const selected =
       busiest !== null && seeds.has(busiest) ? busiest : firstKey(seeds);
@@ -227,13 +217,10 @@ export class ScrollbackTimeMachineStore {
       this.recording = rec;
       this.snapshots = seeds;
       this.phase = "review";
-      this.playing = false;
       this.selectedPaneId = selected;
-      // Open at the "now" boundary (t=0) when there is history to scrub back
-      // into — both directions are then one drag away. A pure-forward recording
-      // opens at its end, like the .5 recorder.
-      const tl = selected === null ? null : this.timelineFor(selected);
-      this.pos = tl === null ? 0 : openingPos(tl);
+      // Open spanning the whole clip: A at the start, B at the end.
+      this.posA = 0;
+      this.posB = 1;
     });
   }
 
@@ -244,8 +231,8 @@ export class ScrollbackTimeMachineStore {
       this.recording = EMPTY_RECORDING;
       this.snapshots = new Map();
       this.selectedPaneId = null;
-      this.playing = false;
-      this.pos = 0;
+      this.posA = 0;
+      this.posB = 1;
       this.liveDurationMs = 0;
       this.limitHit = false;
       this.seedTruncated = false;
@@ -267,10 +254,10 @@ export class ScrollbackTimeMachineStore {
   }
 
   // -------------------------------------------------------------------------
-  // Review / playback
+  // Review
   // -------------------------------------------------------------------------
 
-  /** Build the per-pane timeline the engine renders. Null if the pane has no seed. */
+  /** Build the per-pane timeline the engine diffs. Null if the pane has no seed. */
   timelineFor(paneId: number): Timeline | null {
     const snapshot = this.snapshots.get(paneId);
     if (snapshot === undefined) return null;
@@ -282,94 +269,61 @@ export class ScrollbackTimeMachineStore {
     };
   }
 
-  /** The selected pane's timeline, or null if none is renderable. */
+  /** The selected pane's timeline, or null if none is diffable. */
   get timeline(): Timeline | null {
     return this.selectedPaneId === null
       ? null
       : this.timelineFor(this.selectedPaneId);
   }
 
-  selectPane(paneId: number): void {
-    this.selectedPaneId = paneId;
-    this.playing = false;
-    const tl = this.timelineFor(paneId);
-    this.pos = tl === null ? 0 : openingPos(tl);
-  }
-
-  togglePlay(): void {
-    if (this.playing) this.pause();
-    else this.play();
-  }
-
-  play(): void {
+  /** Recorded time (ms) of playhead A. */
+  get tAMs(): number {
     const tl = this.timeline;
-    if (tl === null || tl.durationMs <= 0) return;
-    // Pressing play restarts forward from the "now" boundary when parked at the
-    // end — standard transport UX.
-    if (this.pos >= 1) this.pos = splitFraction(tl);
-    this.lastTickAt = now();
-    this.playing = true;
+    return tl === null ? 0 : this.posA * tl.durationMs;
   }
 
-  pause(): void {
-    this.playing = false;
-  }
-
-  /** Scrub to an absolute fraction `[0,1]`, clamped. Dragging does not pause. */
-  seek(frac: number): void {
-    this.pos = Math.max(0, Math.min(1, frac));
-  }
-
-  setRate(rate: PlaybackRate): void {
-    this.rate = rate;
+  /** Recorded time (ms) of playhead B. */
+  get tBMs(): number {
+    const tl = this.timeline;
+    return tl === null ? 0 : this.posB * tl.durationMs;
   }
 
   /**
-   * The single timing authority. While recording it advances the live counter;
-   * while playing it advances `pos` through the LIVE region only (history is
-   * spatial, not temporal) by real elapsed time × rate, snapping into the live
-   * region first if play began from a scrollback position, and parking at the end.
-   * [LAW:no-ambient-temporal-coupling] one owner for the playhead.
+   * The diff the view renders — derived from the two playheads against the
+   * selected pane's timeline. Null when no pane is diffable. [LAW:one-source-of-
+   * truth] the single place "what changed" is computed.
+   */
+  get diff(): MomentDiff | null {
+    const tl = this.timeline;
+    if (tl === null) return null;
+    return diffMoments(tl, this.tAMs, this.tBMs);
+  }
+
+  selectPane(paneId: number): void {
+    this.selectedPaneId = paneId;
+    this.posA = 0;
+    this.posB = 1;
+  }
+
+  /** Scrub playhead A to an absolute fraction `[0,1]`, clamped. */
+  seekA(frac: number): void {
+    this.posA = Math.max(0, Math.min(1, frac));
+  }
+
+  /** Scrub playhead B to an absolute fraction `[0,1]`, clamped. */
+  seekB(frac: number): void {
+    this.posB = Math.max(0, Math.min(1, frac));
+  }
+
+  /**
+   * The single timing authority: while recording, advance the live elapsed
+   * counter. A diff is static, so the ticker does nothing outside recording.
+   * [LAW:no-ambient-temporal-coupling] one owner for the only clock this store has.
    */
   private tick(): void {
-    const t = now();
-    const dt = t - this.lastTickAt;
-    this.lastTickAt = t;
-    if (this.phase === "recording") {
-      runInAction(() => {
-        this.liveDurationMs = t - this.captureStartedAt;
-      });
-      return;
-    }
-    if (!this.playing) return;
-    const tl = this.timeline;
-    if (tl === null || tl.durationMs <= 0) {
-      this.playing = false;
-      return;
-    }
-    const split = splitFraction(tl);
-    const span = 1 - split;
+    if (this.phase !== "recording") return;
     runInAction(() => {
-      // Entering playback from history starts the clock at t=0.
-      const from = this.pos < split ? split : this.pos;
-      const dPos = span <= 0 ? 0 : ((dt * this.rate) / tl.durationMs) * span;
-      const next = from + dPos;
-      if (next >= 1) {
-        this.pos = 1;
-        this.playing = false;
-      } else {
-        this.pos = next;
-      }
+      this.liveDurationMs = now() - this.captureStartedAt;
     });
   }
-}
-
-/**
- * Where to park the scrub head when review opens: the "now" boundary when there
- * is scrollback to walk back into (so both directions are one drag away),
- * otherwise the end of the recording (a pure-forward clip, like the .5 recorder).
- */
-function openingPos(tl: Timeline): number {
-  const split = splitFraction(tl);
-  return split > 0 && split < 1 ? split : 1;
 }
