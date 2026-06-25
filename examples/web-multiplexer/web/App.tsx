@@ -37,6 +37,7 @@ import { BroadcastStore } from "./broadcast-store.ts";
 import { SyncScrollStore } from "./sync-store.ts";
 import { MirrorStore } from "./mirror-store.ts";
 import { DataSnifferStore } from "./data-sniff-store.ts";
+import { HyperlinkStore } from "./hyperlink-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -60,6 +61,7 @@ import { BroadcastView } from "./components/BroadcastView.tsx";
 import { SyncScrollView } from "./components/SyncScrollView.tsx";
 import { MirrorView } from "./components/MirrorView.tsx";
 import { DataSnifferView } from "./components/DataSnifferView.tsx";
+import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -206,6 +208,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new DataSnifferStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] HyperlinkStore drives the SAME bridge as the rest
+  // of the app, sourcing the dedicated firehose channel (raw pty bytes of every
+  // pane) to frame OSC 8 hyperlinks. It only observes — a `pipe-pane` tap injects
+  // nothing — so it sits between the user and the terminal. The store outlives
+  // the view so the collected-link registry survives tab switches.
+  const hyperlinkStore = useMemo(
+    () => new HyperlinkStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -218,6 +229,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      hyperlinkStore.dispose();
       snifferStore.dispose();
       syncStore.dispose();
       bisectStore.dispose();
@@ -248,6 +260,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     bisectStore,
     syncStore,
     snifferStore,
+    hyperlinkStore,
     consoleStore,
     connectUrl,
   ]);
@@ -285,6 +298,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, snifferStore]);
+
+  // Same firehose-only lifecycle for the OSC 8 hyperlink aggregator: taps open
+  // while hyperlink mode is active and close on leave. [LAW:no-ambient-temporal-
+  // coupling] one owner: this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "hyperlinks") {
+      hyperlinkStore.start();
+      return () => hyperlinkStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, hyperlinkStore]);
 
   useEffect(() => {
     if (uiStore.appMode === "image") {
@@ -501,6 +525,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Sync Scrollback", value: "syncscroll" },
                 { label: "Pane Mirror", value: "mirror" },
                 { label: "Data Sniffer", value: "sniffer" },
+                { label: "Hyperlink Sidebar", value: "hyperlinks" },
               ]}
             />
           </Group>
@@ -644,6 +669,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <DataSnifferView
             demoStore={demoStore}
             store={snifferStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "hyperlinks" ? (
+          <HyperlinkSidebarView
+            demoStore={demoStore}
+            store={hyperlinkStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
