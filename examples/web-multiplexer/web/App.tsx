@@ -36,6 +36,7 @@ import { BisectStore } from "./bisect-store.ts";
 import { BroadcastStore } from "./broadcast-store.ts";
 import { SyncScrollStore } from "./sync-store.ts";
 import { MirrorStore } from "./mirror-store.ts";
+import { CollabStore } from "./collab-store.ts";
 import { DataSnifferStore } from "./data-sniff-store.ts";
 import { HyperlinkStore } from "./hyperlink-store.ts";
 import { PromptStore } from "./prompt-store.ts";
@@ -61,6 +62,7 @@ import { BisectView } from "./components/BisectView.tsx";
 import { BroadcastView } from "./components/BroadcastView.tsx";
 import { SyncScrollView } from "./components/SyncScrollView.tsx";
 import { MirrorView } from "./components/MirrorView.tsx";
+import { CollabView } from "./components/CollabView.tsx";
 import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
@@ -205,6 +207,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   // the view mounts — a separate `/mirror` endpoint that never touches this
   // bridge — so this store needs no tmux client and no dispose. [LAW:decomposition]
   const mirrorStore = useMemo(() => new MirrorStore(), []);
+  // The Collaborative Pane tab holds only the operator's pane SELECTION. The
+  // live read-write connection (the IO) is owned by the `CollabBridge` the view
+  // mounts — a separate `/collab-ws` endpoint that never touches this bridge —
+  // so this store needs no tmux client and no dispose. [LAW:decomposition]
+  const collabStore = useMemo(() => new CollabStore(), []);
   // [LAW:one-source-of-truth] DataSnifferStore drives the SAME bridge as the
   // rest of the app, sourcing the dedicated firehose channel (raw pty bytes of
   // every pane). It only observes — a `pipe-pane` tap injects nothing — so it
@@ -564,6 +571,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Smart Broadcast", value: "broadcast" },
                 { label: "Sync Scrollback", value: "syncscroll" },
                 { label: "Pane Mirror", value: "mirror" },
+                { label: "Collaborative Pane", value: "collaborate" },
                 { label: "Data Sniffer", value: "sniffer" },
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
                 { label: "Command Palette", value: "commands" },
@@ -706,6 +714,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <MirrorView
             demoStore={demoStore}
             store={mirrorStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "collaborate" ? (
+          <CollabView
+            demoStore={demoStore}
+            store={collabStore}
             uiStore={uiStore}
           />
         ) : uiStore.appMode === "sniffer" ? (

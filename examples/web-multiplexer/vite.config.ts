@@ -3,10 +3,11 @@ import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import { BRIDGE_PORT, WEB_PORT } from "./shared/config";
 
-// Three HTML entries, one toolchain. Vite emits:
+// Four HTML entries, one toolchain. Vite emits:
 //   dist/index.html             (web entry, web/main.tsx → WebSocketBridge)
 //   dist/electron/index.html    (electron entry, web/main-electron.tsx → ElectronBridge)
 //   dist/mirror.html            (read-only viewer, web/main-mirror.tsx → MirrorViewerBridge)
+//   dist/collab.html            (read-write collaborator, web/main-collab.tsx → CollabBridge)
 //
 // `pnpm run dev:web` keeps serving the web entry from the project root for
 // fast iteration; the Electron path is build-only (pnpm run demo:electron).
@@ -39,6 +40,14 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      // Collaborative (read-write) pane endpoint the second-browser page dials.
+      // A path distinct from the `/collab.html` PAGE (served statically) so this
+      // prefix-matched proxy never shadows the page.
+      "/collab-ws": {
+        target: `ws://localhost:${BRIDGE_PORT}`,
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
   build: {
@@ -48,6 +57,9 @@ export default defineConfig({
         electron: resolve(__dirname, "electron/index.html"),
         // Standalone read-only viewer page (the "second browser").
         mirror: resolve(__dirname, "mirror.html"),
+        // Standalone read-write collaborator page (the "second browser" that
+        // can also type).
+        collab: resolve(__dirname, "collab.html"),
       },
     },
   },
