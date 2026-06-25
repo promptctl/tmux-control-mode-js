@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../dist/mock",
+    // [LAW:one-source-of-truth] keep the build cache out of the published dist/.
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
+    "rootDir": ".",
+    // Pure module: no Node types. TmuxTransport is a type-only import (erased),
+    // so the emitted JS pulls only the protocol layer — browser-safe.
+    "types": []
+  },
+  "include": ["./**/*.ts"],
+  "references": [
+    { "path": "../protocol" },
+    { "path": "../transport" }
+  ]
+}
