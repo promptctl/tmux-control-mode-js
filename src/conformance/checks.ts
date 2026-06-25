@@ -19,7 +19,7 @@
 // `run()`. The mock delivers synchronously, so an expected-but-absent
 // observation is detected the instant `run()` finishes driving, never a hang.
 
-import type { TmuxMessage } from "../protocol/types.js";
+import type { TmuxMessage, PaneOutputMessage } from "../protocol/types.js";
 import { isPaneOutput } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
 import { TmuxClient } from "../client.js";
@@ -129,14 +129,9 @@ function notificationCheck(sample: EmitterTmuxMessage): ConformanceCheck {
  * the default server scope, emit the sample, and assert exactly one chunk with
  * the decoded bytes and the right pane.
  */
-function paneOutputCheck(
-  sample: TmuxMessage & { paneId: number },
-): ConformanceCheck {
-  // Only output/extended-output reach here (routed by isPaneOutput below); both
-  // carry `data`. Narrowed via isPaneOutput so `sample.data` is the decoded bytes.
-  if (!isPaneOutput(sample)) {
-    throw new Error(`paneOutputCheck given non-output variant ${sample.type}`);
-  }
+function paneOutputCheck(sample: PaneOutputMessage): ConformanceCheck {
+  // The type carries the guarantee: only output/extended-output reach here (the
+  // caller narrows via isPaneOutput), and both carry decoded `data` + `paneId`.
   const type = sample.type;
   const data = sample.data;
   const paneId = sample.paneId;
@@ -257,24 +252,21 @@ function commandChecks(): readonly ConformanceCheck[] {
  * Build the full deterministic conformance catalogue: every documented
  * notification, both pane-output variants, and the command-correlation contract.
  *
- * [LAW:dataflow-not-control-flow] The notification/pane-output split is a data
- * lookup on the channel partition, mirroring TmuxClient.handleMessage — not ad
- * hoc per-variant branching. isPaneOutput narrows the sample so each runner
- * receives a precisely-typed value with no cast. The command-channel variants
- * (begin/end/error) carry no per-sample check here; their contract is the three
- * commandChecks(), so they are skipped in the loop by their channel.
+ * [LAW:dataflow-not-control-flow] The command-guard variants (begin/end/error)
+ * are excluded as a DATA step — a filter on the channel partition — not an
+ * in-loop skip; they carry no per-sample check because their contract is the
+ * three commandChecks(). Every remaining sample then maps to exactly one check:
+ * the map body always runs and always produces one. isPaneOutput selects the
+ * runner by the same partition TmuxClient.handleMessage routes on, narrowing the
+ * sample so each runner receives a precisely-typed value with no cast.
  */
 export function buildConformanceChecks(): ConformanceCheck[] {
-  const checks: ConformanceCheck[] = [];
-  for (const sample of Object.values(MESSAGE_SAMPLES)) {
-    if (isPaneOutput(sample)) {
-      checks.push(paneOutputCheck(sample));
-      continue;
-    }
-    // Here `sample` is narrowed to EmitterTmuxMessage (no pane output).
-    if (CHANNEL_OF[sample.type] === "command") continue;
-    checks.push(notificationCheck(sample));
-  }
-  checks.push(...commandChecks());
-  return checks;
+  const perSample = Object.values(MESSAGE_SAMPLES)
+    .filter((sample) => CHANNEL_OF[sample.type] !== "command")
+    .map((sample) =>
+      isPaneOutput(sample)
+        ? paneOutputCheck(sample)
+        : notificationCheck(sample),
+    );
+  return [...perSample, ...commandChecks()];
 }
