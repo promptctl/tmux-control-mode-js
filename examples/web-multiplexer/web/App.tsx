@@ -27,6 +27,7 @@ import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
 import { RegexMatcherStore } from "./regex-matcher-store.ts";
 import { ImageExtractorStore } from "./image-extractor-store.ts";
+import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -40,6 +41,7 @@ import { HeatmapView } from "./components/HeatmapView.tsx";
 import { SearchView } from "./components/SearchView.tsx";
 import { RegexMatcherView } from "./components/RegexMatcherView.tsx";
 import { ImageExtractorView } from "./components/ImageExtractorView.tsx";
+import { EscapePlaygroundView } from "./components/EscapePlaygroundView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -106,6 +108,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new ImageExtractorStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] EscapePlaygroundStore drives the SAME bridge as
+  // the rest of the app. Unlike the read-only demos it exercises the OUTBOUND
+  // path: it spawns one scratch pane and sends user-composed bytes to it via
+  // `sendKeys`. Its lifecycle (spawn/kill) is owned by the appMode effect below.
+  const playgroundStore = useMemo(
+    () => new EscapePlaygroundStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -118,6 +128,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      playgroundStore.dispose();
       imageStore.dispose();
       regexStore.dispose();
       searchStore.dispose();
@@ -132,6 +143,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     searchStore,
     regexStore,
     imageStore,
+    playgroundStore,
     consoleStore,
     connectUrl,
   ]);
@@ -166,6 +178,18 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, imageStore]);
+
+  // The playground owns a scratch tmux pane only while its mode is active:
+  // entering spawns the byte-mirror pane, leaving (or unmounting) kills it so
+  // no scratch window litters the user's session. [LAW:no-ambient-temporal-
+  // coupling] one owner per effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "playground") {
+      playgroundStore.start();
+      return () => playgroundStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, playgroundStore]);
 
   // Document-level keymap routing.
   //
@@ -282,6 +306,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Scrollback Search", value: "search" },
                 { label: "Regex Matcher", value: "regex" },
                 { label: "Image Extractor", value: "image" },
+                { label: "Escape Playground", value: "playground" },
               ]}
             />
           </Group>
@@ -369,6 +394,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <ImageExtractorView
             demoStore={demoStore}
             imageStore={imageStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "playground" ? (
+          <EscapePlaygroundView
+            demoStore={demoStore}
+            store={playgroundStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
