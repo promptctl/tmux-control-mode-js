@@ -22,7 +22,8 @@ export type AppMode =
   | "search"
   | "regex"
   | "image"
-  | "playground";
+  | "playground"
+  | "record";
 
 /**
  * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
@@ -40,7 +41,8 @@ export function isAppMode(v: unknown): v is AppMode {
     v === "search" ||
     v === "regex" ||
     v === "image" ||
-    v === "playground"
+    v === "playground" ||
+    v === "record"
   );
 }
 
