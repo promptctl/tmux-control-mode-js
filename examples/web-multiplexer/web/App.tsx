@@ -24,6 +24,7 @@ import { DemoStore } from "./store.ts";
 import { UiStore } from "./ui-store.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
+import { SearchStore } from "./search-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
 import { WindowTabs } from "./components/WindowTabs.tsx";
@@ -33,6 +34,7 @@ import { ErrorPanel } from "./components/ErrorPanel.tsx";
 import { NavbarResizer } from "./components/NavbarResizer.tsx";
 import { InspectorView } from "./components/InspectorView.tsx";
 import { HeatmapView } from "./components/HeatmapView.tsx";
+import { SearchView } from "./components/SearchView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
 export interface AppProps {
@@ -76,15 +78,28 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new HeatmapStore(demoStore.client),
     [demoStore],
   );
+  const searchStore = useMemo(
+    () => new SearchStore(demoStore.client),
+    [demoStore],
+  );
 
   useEffect(() => {
     demoStore.connect(connectUrl);
     return () => {
+      searchStore.dispose();
       heatmapStore.dispose();
       inspectorStore.dispose();
       demoStore.disconnect();
     };
-  }, [demoStore, heatmapStore, inspectorStore, connectUrl]);
+  }, [demoStore, heatmapStore, inspectorStore, searchStore, connectUrl]);
+
+  // Lazily seed the full-scrollback index the first time search mode opens —
+  // capturing every pane's history on app load would be wasteful when the
+  // user may never search. The live `%output` tail keeps the index warm
+  // regardless; this one-shot adds the pre-connection history.
+  useEffect(() => {
+    if (uiStore.appMode === "search") void searchStore.ensureBackfilled();
+  }, [uiStore.appMode, searchStore]);
 
   // Document-level keymap routing.
   //
@@ -182,6 +197,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                     ? "inspector"
                     : v === "heatmap"
                     ? "heatmap"
+                    : v === "search"
+                    ? "search"
                     : "multiplexer",
                 )
               }
@@ -189,6 +206,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Multiplexer", value: "multiplexer" },
                 { label: "Protocol Inspector", value: "inspector" },
                 { label: "Activity Heatmap", value: "heatmap" },
+                { label: "Scrollback Search", value: "search" },
               ]}
             />
           </Group>
@@ -252,6 +270,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <HeatmapView
             demoStore={demoStore}
             heatmapStore={heatmapStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "search" ? (
+          <SearchView
+            demoStore={demoStore}
+            searchStore={searchStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
