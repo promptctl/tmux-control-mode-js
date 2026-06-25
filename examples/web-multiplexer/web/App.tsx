@@ -42,6 +42,7 @@ import { HyperlinkStore } from "./hyperlink-store.ts";
 import { PromptStore } from "./prompt-store.ts";
 import { CopilotStore } from "./copilot-store.ts";
 import { HttpLlmClient } from "./llm-client.ts";
+import { ReaderStore } from "./reader-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -69,6 +70,7 @@ import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
 import { CopilotView } from "./components/CopilotView.tsx";
+import { ReaderView } from "./components/ReaderView.tsx";
 import { TutorialView } from "./components/TutorialView.tsx";
 import { TutorialStore } from "./tutorial-store.ts";
 import { ConformanceView } from "./components/ConformanceView.tsx";
@@ -250,6 +252,16 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new CopilotStore(demoStore.client, new HttpLlmClient()),
     [demoStore],
   );
+  // [LAW:one-source-of-truth] ReaderStore drives the SAME bridge as the rest of
+  // the app, sourcing the dedicated firehose channel (raw pty bytes of every
+  // pane) to accumulate each pane's stripped output for reflowed reading. It
+  // only observes — a `pipe-pane` tap injects nothing — so it sits between the
+  // user and the terminal. The store outlives the view so accumulated text
+  // survives tab switches.
+  const readerStore = useMemo(
+    () => new ReaderStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -272,6 +284,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
       tutorialStore.dispose();
       conformanceStore.dispose();
       consoleStore.dispose();
+      readerStore.dispose();
       copilotStore.dispose();
       promptStore.dispose();
       hyperlinkStore.dispose();
@@ -308,6 +321,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     hyperlinkStore,
     promptStore,
     copilotStore,
+    readerStore,
     consoleStore,
     tutorialStore,
     conformanceStore,
@@ -380,6 +394,18 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, copilotStore]);
+
+  // Same firehose-only lifecycle for the Terminal Reader: taps open while reader
+  // mode is active and close on leave. The store accumulates each pane's stripped
+  // output for reflowed reading. [LAW:no-ambient-temporal-coupling] one owner:
+  // this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "reader") {
+      readerStore.start();
+      return () => readerStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, readerStore]);
 
   useEffect(() => {
     if (uiStore.appMode === "image") {
@@ -600,6 +626,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
                 { label: "Command Palette", value: "commands" },
                 { label: "AI Co-pilot", value: "copilot" },
+                { label: "Terminal Reader", value: "reader" },
                 { label: "Protocol Tutorial", value: "tutorial" },
                 { label: "Conformance", value: "conformance" },
               ]}
@@ -771,6 +798,8 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             store={copilotStore}
             uiStore={uiStore}
           />
+        ) : uiStore.appMode === "reader" ? (
+          <ReaderView demoStore={demoStore} store={readerStore} />
         ) : uiStore.appMode === "tutorial" ? (
           <TutorialView store={tutorialStore} uiStore={uiStore} />
         ) : uiStore.appMode === "conformance" ? (
