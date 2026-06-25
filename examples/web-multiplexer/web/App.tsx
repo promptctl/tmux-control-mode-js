@@ -36,6 +36,7 @@ import { BisectStore } from "./bisect-store.ts";
 import { BroadcastStore } from "./broadcast-store.ts";
 import { SyncScrollStore } from "./sync-store.ts";
 import { MirrorStore } from "./mirror-store.ts";
+import { DataSnifferStore } from "./data-sniff-store.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -58,6 +59,7 @@ import { BisectView } from "./components/BisectView.tsx";
 import { BroadcastView } from "./components/BroadcastView.tsx";
 import { SyncScrollView } from "./components/SyncScrollView.tsx";
 import { MirrorView } from "./components/MirrorView.tsx";
+import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { ConsoleView } from "./components/ConsoleView.tsx";
 import { SegmentedControl } from "@mantine/core";
 
@@ -195,6 +197,15 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   // the view mounts — a separate `/mirror` endpoint that never touches this
   // bridge — so this store needs no tmux client and no dispose. [LAW:decomposition]
   const mirrorStore = useMemo(() => new MirrorStore(), []);
+  // [LAW:one-source-of-truth] DataSnifferStore drives the SAME bridge as the
+  // rest of the app, sourcing the dedicated firehose channel (raw pty bytes of
+  // every pane). It only observes — a `pipe-pane` tap injects nothing — so it
+  // sits between the user and the terminal without disturbing it. The store
+  // outlives the view so the block feed survives tab switches.
+  const snifferStore = useMemo(
+    () => new DataSnifferStore(demoStore.client),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -207,6 +218,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     demoStore.connect(connectUrl);
     return () => {
       consoleStore.dispose();
+      snifferStore.dispose();
       syncStore.dispose();
       bisectStore.dispose();
       momentDiffStore.dispose();
@@ -235,6 +247,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     momentDiffStore,
     bisectStore,
     syncStore,
+    snifferStore,
     consoleStore,
     connectUrl,
   ]);
@@ -262,6 +275,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   // Same firehose-only lifecycle for the inline image extractor: taps open while
   // image mode is active and close on leave. [LAW:no-ambient-temporal-coupling]
   // one owner per effect, both keyed on appMode.
+  // Same firehose-only lifecycle for the structured data sniffer: taps open
+  // while sniffer mode is active and close on leave. [LAW:no-ambient-temporal-
+  // coupling] one owner: this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "sniffer") {
+      snifferStore.start();
+      return () => snifferStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, snifferStore]);
+
   useEffect(() => {
     if (uiStore.appMode === "image") {
       imageStore.start();
@@ -476,6 +500,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Smart Broadcast", value: "broadcast" },
                 { label: "Sync Scrollback", value: "syncscroll" },
                 { label: "Pane Mirror", value: "mirror" },
+                { label: "Data Sniffer", value: "sniffer" },
               ]}
             />
           </Group>
@@ -613,6 +638,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <MirrorView
             demoStore={demoStore}
             store={mirrorStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "sniffer" ? (
+          <DataSnifferView
+            demoStore={demoStore}
+            store={snifferStore}
             uiStore={uiStore}
           />
         ) : currentSession === null ? (
