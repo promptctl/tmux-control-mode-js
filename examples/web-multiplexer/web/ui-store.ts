@@ -8,6 +8,8 @@
 import { makeAutoObservable, reaction } from "mobx";
 import {
   type ConsolePersist,
+  type PlaygroundMode,
+  type PlaygroundTarget,
   CONSOLE_HISTORY_CAP,
   DEFAULT_CONSOLE,
   parseConsole,
@@ -270,6 +272,27 @@ export class UiStore {
       -CONSOLE_HISTORY_CAP,
     );
     this.console = { ...this.console, commandHistory };
+  }
+
+  /**
+   * Persist the Playground's last format / target / mode. [LAW:one-source-of-truth]
+   * UiStore is the sole authority for the persisted console slice — `ConsoleStore`
+   * routes every Playground write through these mutators, never mutating
+   * `this.console` from a component. Each replaces `console` wholesale so the
+   * auto-persist reaction tracks it by reference. The raw format string is stored
+   * verbatim; shell-quoting is a command-callsite concern, applied only when the
+   * store builds a tmux command, never baked into the persisted value.
+   */
+  setConsoleFormat(lastFormat: string): void {
+    this.console = { ...this.console, lastFormat };
+  }
+
+  setConsoleTarget(lastTarget: PlaygroundTarget): void {
+    this.console = { ...this.console, lastTarget };
+  }
+
+  setConsoleMode(lastMode: PlaygroundMode): void {
+    this.console = { ...this.console, lastMode };
   }
 
   isHidden(type: string): boolean {
