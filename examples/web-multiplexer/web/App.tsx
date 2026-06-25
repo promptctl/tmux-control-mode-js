@@ -40,6 +40,8 @@ import { CollabStore } from "./collab-store.ts";
 import { DataSnifferStore } from "./data-sniff-store.ts";
 import { HyperlinkStore } from "./hyperlink-store.ts";
 import { PromptStore } from "./prompt-store.ts";
+import { CopilotStore } from "./copilot-store.ts";
+import { HttpLlmClient } from "./llm-client.ts";
 import { ConsoleStore } from "./console-store.ts";
 import { SessionList } from "./components/SessionList.tsx";
 import { SocketBadge } from "./components/SocketBadge.tsx";
@@ -66,6 +68,7 @@ import { CollabView } from "./components/CollabView.tsx";
 import { DataSnifferView } from "./components/DataSnifferView.tsx";
 import { HyperlinkSidebarView } from "./components/HyperlinkSidebarView.tsx";
 import { CommandPaletteView } from "./components/CommandPaletteView.tsx";
+import { CopilotView } from "./components/CopilotView.tsx";
 import { TutorialView } from "./components/TutorialView.tsx";
 import { TutorialStore } from "./tutorial-store.ts";
 import { ConformanceView } from "./components/ConformanceView.tsx";
@@ -239,6 +242,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     () => new PromptStore(demoStore.client),
     [demoStore],
   );
+  // [LAW:composability] The co-pilot COMPOSES its own command-history pipeline
+  // (a PromptStore over the same bridge) and adds the LLM round-trip via an
+  // HttpLlmClient — the network effect lives in the bridge, which holds the
+  // endpoint + key. [LAW:effects-at-boundaries] the browser sends pure data.
+  const copilotStore = useMemo(
+    () => new CopilotStore(demoStore.client, new HttpLlmClient()),
+    [demoStore],
+  );
   // [LAW:one-source-of-truth] ConsoleStore drives the SAME bridge as the
   // rest of the app and reads its persisted slice from UiStore. The store
   // outlives the view so an in-flight command resolves across tab switches.
@@ -261,6 +272,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
       tutorialStore.dispose();
       conformanceStore.dispose();
       consoleStore.dispose();
+      copilotStore.dispose();
       promptStore.dispose();
       hyperlinkStore.dispose();
       snifferStore.dispose();
@@ -295,6 +307,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     snifferStore,
     hyperlinkStore,
     promptStore,
+    copilotStore,
     consoleStore,
     tutorialStore,
     conformanceStore,
@@ -356,6 +369,17 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     }
     return undefined;
   }, [uiStore.appMode, promptStore]);
+
+  // Same firehose-only lifecycle for the AI co-pilot: it composes a PromptStore,
+  // so entering the mode opens the command-history taps and leaving closes them.
+  // [LAW:no-ambient-temporal-coupling] one owner: this effect, keyed on appMode.
+  useEffect(() => {
+    if (uiStore.appMode === "copilot") {
+      copilotStore.start();
+      return () => copilotStore.stop();
+    }
+    return undefined;
+  }, [uiStore.appMode, copilotStore]);
 
   useEffect(() => {
     if (uiStore.appMode === "image") {
@@ -575,6 +599,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 { label: "Data Sniffer", value: "sniffer" },
                 { label: "Hyperlink Sidebar", value: "hyperlinks" },
                 { label: "Command Palette", value: "commands" },
+                { label: "AI Co-pilot", value: "copilot" },
                 { label: "Protocol Tutorial", value: "tutorial" },
                 { label: "Conformance", value: "conformance" },
               ]}
@@ -738,6 +763,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <CommandPaletteView
             demoStore={demoStore}
             store={promptStore}
+            uiStore={uiStore}
+          />
+        ) : uiStore.appMode === "copilot" ? (
+          <CopilotView
+            demoStore={demoStore}
+            store={copilotStore}
             uiStore={uiStore}
           />
         ) : uiStore.appMode === "tutorial" ? (

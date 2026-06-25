@@ -48,6 +48,13 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      // AI co-pilot LLM relay — the ONE non-WebSocket bridge route (an HTTP
+      // request/response RPC). `ws` is omitted; this is a plain http proxy to
+      // the bridge, which holds the LLM endpoint + key.
+      "/copilot": {
+        target: `http://localhost:${BRIDGE_PORT}`,
+        changeOrigin: true,
+      },
     },
   },
   build: {
