@@ -102,7 +102,6 @@ export interface ServerWebSocketLike {
   ): void;
   on(event: "error", listener: (err: Error) => void): void;
   on(event: "pong" | "ping", listener: () => void): void;
-  off?(event: string, listener: (...args: unknown[]) => void): void;
 }
 
 // ---------------------------------------------------------------------------
