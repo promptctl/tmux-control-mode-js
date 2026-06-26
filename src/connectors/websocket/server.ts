@@ -951,7 +951,11 @@ class Connection {
     this.handshake.clear();
     this.heartbeat.stop();
     this.callPump.drain((id) => {
-      this.replyError(id, "BRIDGE_CLOSED", fatal?.message ?? "connection closed");
+      this.replyError(
+        id,
+        "BRIDGE_CLOSED",
+        fatal?.message ?? "connection closed",
+      );
     });
 
     if (final !== null) {
