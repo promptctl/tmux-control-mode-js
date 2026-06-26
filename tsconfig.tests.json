@@ -22,5 +22,9 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["tests/unit/**/*.ts", "tests/integration/**/*.ts"]
+  "include": [
+    "tests/unit/**/*.ts",
+    "tests/integration/**/*.ts",
+    "tests/helpers/**/*.ts"
+  ]
 }
