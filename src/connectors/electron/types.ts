@@ -108,8 +108,8 @@ export interface IpcMainLike {
 // [LAW:types-are-the-program] No fields required from the renderer event —
 // the bridge is a 1:1 pairing with a single ipcRenderer and origin is known
 // by construction. If a future feature needs to validate event origin, narrow
-// this interface or replace with IpcRendererLike.
-export interface IpcRendererEventLike {}
+// this type or replace with IpcRendererLike.
+export type IpcRendererEventLike = object;
 
 export type IpcRendererOnListener = (
   event: IpcRendererEventLike,
