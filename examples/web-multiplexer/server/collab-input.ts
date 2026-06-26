@@ -17,7 +17,7 @@
 
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
 import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "./command-response.js";
 import { spawnReadyControlClient } from "./control-client.js";
 
 export class CollabInput {
@@ -42,7 +42,7 @@ export class CollabInput {
     await this.ready;
     if (this.closed) return;
     const response = await sendKeys(this.client!, `%${paneId}`, keys).catch(
-      (r: CommandResponse) => r,
+      asCommandResponse,
     );
     if (!response.success) {
       console.warn(`[collab] sendKeys to %${paneId} failed`);

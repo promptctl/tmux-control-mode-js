@@ -14,10 +14,9 @@ import { spawnTmux } from "@promptctl/tmux-control-mode-js";
 import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { serverScope } from "@promptctl/tmux-control-mode-js";
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
-import { TmuxCommandError } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
+import { asCommandResponse } from "./command-response.js";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 import { PaneFirehose } from "./pane-firehose.js";
@@ -38,19 +37,10 @@ import {
 import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
 import { demoAttachArgs } from "./tmux-target.js";
 
-// [LAW:single-enforcer] One place translates a command rejection into the wire
-// `response` frame. The library rejects a failed command with `TmuxCommandError`
-// — an `Error` whose `.response` is the real `CommandResponse` carrying tmux's
-// `%error` output. Returning the error object itself (as the old `.catch(r => r)`
-// did) ships a serialized `Error` shell `{name, response}` over a frame typed
-// `CommandResponse`, so the browser loses `success`/`output`. Unwrap it so the
-// `response` frame always honors its declared type. [LAW:no-silent-failure] a
-// non-command rejection (transport, version precondition) is rethrown to the
-// outer handler, which surfaces it as an `error` frame rather than a fake ok.
-function asCommandResponse(err: unknown): CommandResponse {
-  if (err instanceof TmuxCommandError) return err.response;
-  throw err;
-}
+// The bridge's request handler unwraps a failed command's rejection into the
+// wire `response` frame through the shared `asCommandResponse` enforcer, so the
+// frame always honors its declared `CommandResponse` type and a non-command
+// rejection still reaches the `error`-frame path. [LAW:single-enforcer]
 
 // ---------------------------------------------------------------------------
 // Outbound forwarding: TmuxClient → WebSocket
