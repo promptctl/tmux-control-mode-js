@@ -24,7 +24,6 @@
 export interface WrapperTracker<L, W> {
   add(channel: string, listener: L, wrapper: W): void;
   remove(channel: string, listener: L): W | null;
-  size(channel: string, listener: L): number;
 }
 
 export function createWrapperTracker<
@@ -65,8 +64,5 @@ export function createWrapperTracker<
       return wrapper;
     },
 
-    size(channel, listener) {
-      return byChannel.get(channel)?.get(listener)?.length ?? 0;
-    },
   };
 }

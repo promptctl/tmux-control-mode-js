@@ -692,21 +692,6 @@ export class DemoStore {
   // UI actions
   // -------------------------------------------------------------------------
 
-  /**
-   * Resize a tmux pane to the requested cell dimensions. This is the
-   * showcase of bidirectional library use: the browser tells tmux to do
-   * something, tmux performs the change, and %layout-change flows back
-   * to update the store, which in turn drives PaneTerminal's reactive
-   * sizing to reflow the xterm.
-   *
-   * Uses `resize-pane -t %<id> -x <cols> -y <rows>`.
-   */
-  resizePane(paneId: number, cols: number, rows: number): void {
-    void this.client.execute(
-      `resize-pane -t %${paneId} -x ${cols} -y ${rows}`,
-    );
-  }
-
   // [LAW:one-source-of-truth] select* methods ONLY dispatch tmux commands.
   // The subscription-fed `sessions` tree is the source of truth for which
   // session/window/pane is active; after tmux processes the command, the
@@ -761,10 +746,6 @@ export class DemoStore {
     void this.client.execute(`select-window -t @${windowId}`);
     void this.client.execute(`select-pane -t %${paneId}`);
     void this.refreshSession(sessionId);
-  }
-
-  sendKeysToPane(paneId: number, data: string): void {
-    void this.client.sendKeys(`%${paneId}`, data);
   }
 
   /**
