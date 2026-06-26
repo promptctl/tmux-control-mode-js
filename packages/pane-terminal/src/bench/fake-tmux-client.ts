@@ -6,7 +6,7 @@
 // `FakeTmuxClient` passes to `new PaneStream({ client })` with no cast.
 //
 // [LAW:one-source-of-truth] Event/message and CommandResponse shapes come
-//   from the library — `OutputMessage`/`ExtendedOutputMessage`/`CommandResponse`/
+//   from the library — `OutputMessage`/`CommandResponse`/
 //   `SubscriptionChangedMessage` are re-used as-is, never re-declared.
 //   PaneStream consuming a real TmuxClient or a FakeTmuxClient sees
 //   structurally identical data.
@@ -30,12 +30,10 @@ import type {
 } from "@promptctl/tmux-control-mode-js/browser";
 import {
   SinkRegistry,
-  PaneTopologyManager,
   serverScope,
 } from "@promptctl/tmux-control-mode-js/browser";
 import type {
   OutputMessage,
-  ExtendedOutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
 } from "@promptctl/tmux-control-mode-js/protocol";
@@ -51,20 +49,18 @@ declare const setTimeout: (handler: () => void, ms?: number) => unknown;
 // events use the library's exact shape (paneId + `data: Uint8Array`) so
 // PaneStream does not need a real-vs-fake adapter.
 export type FakeOutputMessage = OutputMessage;
-export type FakeExtendedOutputMessage = ExtendedOutputMessage;
 
-export interface FakeConnectionStateMessage {
+interface FakeConnectionStateMessage {
   readonly type: "connection-state";
   readonly state: ConnectionState;
 }
 
-export interface FakeReconnectedMessage {
+interface FakeReconnectedMessage {
   readonly type: "reconnected";
 }
 
 export type FakeMessage =
   | FakeOutputMessage
-  | FakeExtendedOutputMessage
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
   | SubscriptionChangedMessage;
@@ -82,10 +78,7 @@ export type FakeMessageType = FakeMessage["type"];
  * must call `attachBytesSink` — the wildcard surface refuses to carry
  * them, same as production.
  */
-export type FakeEmitterMessage = Exclude<
-  FakeMessage,
-  FakeOutputMessage | FakeExtendedOutputMessage
->;
+export type FakeEmitterMessage = Exclude<FakeMessage, FakeOutputMessage>;
 
 type Handler<T> = (ev: T) => void;
 
@@ -106,13 +99,11 @@ export class FakeTmuxClient {
     Set<Handler<FakeMessage>>
   >();
 
-  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager as TmuxClient.
-  //   `attachBytesSink` delegates to `sinks.attach`; `dispatch` calls
-  //   `sinks.dispatch(msg, topology.get(paneId))` before the per-type listener
-  //   fan-out so the fake's byte-sink path matches production shape. Tests that
-  //   need scope-based dispatch use `seedTopology(entries)` to seed the table.
+  // [LAW:single-enforcer] Same SinkRegistry as TmuxClient. `attachBytesSink`
+  //   delegates to `sinks.attach`; `dispatch` calls `sinks.dispatch(msg,
+  //   undefined)` — tests attach at serverScope so topology-based routing
+  //   is not exercised.
   private readonly sinks = new SinkRegistry();
-  private readonly topology = new PaneTopologyManager();
 
   // Capture-pane invocation log + scriptable response handler. The log lets a
   // consumer assert re-mount churn on one stream issues exactly one capture;
@@ -257,11 +248,6 @@ export class FakeTmuxClient {
     this.dispatch({ type: "output", paneId, data });
   }
 
-  /** Push an extended-output (paused-pane catch-up) chunk. */
-  injectExtendedOutput(paneId: number, data: Uint8Array, age: number): void {
-    this.dispatch({ type: "extended-output", paneId, age, data });
-  }
-
   /**
    * Push a `subscription-changed` event matching `SubscriptionChangedMessage`
    * exactly. Test code drives layout/size changes through this path; the fake
@@ -319,22 +305,6 @@ export class FakeTmuxClient {
     this.roundTripMs = ms;
   }
 
-  /**
-   * Seed the topology table for tests that use session/window-scoped
-   * attachments. The fake's execute() returns empty output so the automatic
-   * bootstrap is a no-op; tests that need scope-based routing call this
-   * directly before attaching sinks.
-   */
-  seedTopology(
-    entries: readonly {
-      paneId: number;
-      windowId: number;
-      sessionId: number;
-    }[],
-  ): void {
-    this.topology.seed(entries);
-  }
-
   // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
@@ -345,13 +315,8 @@ export class FakeTmuxClient {
     //   and every bridge. The wildcard `'*'` listener (typed against
     //   `FakeEmitterMessage`) cannot reach byte messages, matching
     //   production where `EmitterMessage` excludes `PaneOutputMessage`.
-    //
-    // [LAW:types-are-the-program] `FakeOutputMessage` /
-    //   `FakeExtendedOutputMessage` ARE `OutputMessage` /
-    //   `ExtendedOutputMessage` (see the type aliases above), so the
-    //   narrowed value is a structural `TmuxMessage` with no cast.
-    if (msg.type === "output" || msg.type === "extended-output") {
-      this.sinks.dispatch(msg, this.topology.get(msg.paneId));
+    if (msg.type === "output") {
+      this.sinks.dispatch(msg, undefined);
       return;
     }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));

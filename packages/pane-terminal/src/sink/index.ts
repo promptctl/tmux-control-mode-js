@@ -80,14 +80,6 @@ export interface TerminalSink {
   resize(cols: number, rows: number): void;
 
   /**
-   * Drop everything the renderer is holding (scrollback, current screen).
-   * Used by tests and by callers that want to re-attach a stream to a
-   * cleared view without disposing the sink. NOT called on detach() —
-   * `PaneStream` does not own clearing decisions.
-   */
-  clear(): void;
-
-  /**
    * Whether this sink should be treated as visible for reseed-priority
    * purposes (the per-client `ReseedScheduler` pulls visible-attached
    * streams to the front of the dispatch queue).

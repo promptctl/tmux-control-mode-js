@@ -13,7 +13,4 @@ export {
   type FakeMessage,
   type FakeMessageType,
   type FakeOutputMessage,
-  type FakeExtendedOutputMessage,
-  type FakeConnectionStateMessage,
-  type FakeReconnectedMessage,
 } from "./fake-tmux-client.js";
