@@ -134,6 +134,10 @@ const PickerBadge = observer(function PickerBadge({
       // re-installs subscriptions on "ready" via DemoStore, which
       // refetches sessions/windows/panes against the new socket.
       demoStore.disconnect();
+      // [LAW:one-source-of-truth] clearTopology() is the single site that
+      // resets the model fields after a swap — not onStateChange("closed"),
+      // which fires for transient reconnects too.
+      demoStore.clearTopology();
       await ipc.switchSocket(name);
       demoStore.connect(connectUrl);
       // Mirror the main-side change locally so the badge re-renders
