@@ -328,7 +328,7 @@ export function createMainBridge(
   // Event forwarding.
   //
   // Two channels, disjoint by message type:
-  //   - `forwardState` (`client.on('*', …)`) for every non-byte message.
+  //   - `broadcast` (`client.on('*', …)`) for every non-byte message.
   //     `EmitterMessage` excludes `PaneOutputMessage`, so this handler
   //     cannot accidentally receive bytes — the type system enforces it.
   //   - Per-renderer BytesSink (attached in onRegister) for byte chunks.
@@ -359,11 +359,7 @@ export function createMainBridge(
     }
   };
 
-  const forwardState = (msg: EmitterMessage): void => {
-    broadcast(msg);
-  };
-
-  client.on("*", forwardState);
+  client.on("*", broadcast);
 
   // -------------------------------------------------------------------------
   // Subscribe / unsubscribe / ack channel handlers.
@@ -560,7 +556,7 @@ export function createMainBridge(
 
   return {
     dispose() {
-      client.off("*", forwardState);
+      client.off("*", broadcast);
       ipcMain.removeListener(IPC.register, onRegisterListener);
       ipcMain.removeListener(IPC.unregister, onUnregisterListener);
       ipcMain.removeListener(IPC.ack, onAckListener);
