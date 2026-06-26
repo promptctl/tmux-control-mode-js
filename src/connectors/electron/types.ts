@@ -105,22 +105,11 @@ export interface IpcMainLike {
   removeListener(channel: IpcChannel, listener: IpcMainOnListener): void;
 }
 
-export interface IpcRendererEventLike {
-  /**
-   * Real Electron exposes `event.sender` as the `IpcRenderer` instance that
-   * received the message — useful in cases where the renderer-side handler
-   * wants to send a reply or distinguish event sources (e.g. iframe frame
-   * routing, or a preload that fans events to multiple windows).
-   *
-   * The bridge does not currently use `sender`: the renderer proxy is a 1:1
-   * pairing with the `ipcRenderer` it was constructed against, so origin is
-   * already known by construction. Typing this as `unknown` keeps the
-   * structural interface honest about not depending on it. Narrow the type
-   * (or replace with `IpcRendererLike`) if a future feature needs to validate
-   * an event's origin.
-   */
-  readonly sender?: unknown;
-}
+// [LAW:types-are-the-program] No fields required from the renderer event —
+// the bridge is a 1:1 pairing with a single ipcRenderer and origin is known
+// by construction. If a future feature needs to validate event origin, narrow
+// this interface or replace with IpcRendererLike.
+export interface IpcRendererEventLike {}
 
 export type IpcRendererOnListener = (
   event: IpcRendererEventLike,
