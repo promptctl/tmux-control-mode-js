@@ -231,7 +231,7 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
 // master (pane output never rendered at all before the hz1.5 fixes). Marked
 // fixme rather than deleted so the assertion stays visible; un-fixme is the
 // acceptance criterion for tmux-reconnect-bcz.
-test.fixme("socket picker swaps the demo's TmuxClient onto a different live socket", async () => {
+test("socket picker swaps the demo's TmuxClient onto a different live socket", async () => {
   // Spin up an ALTERNATE isolated tmux server on a side socket, with a
   // shell session running. This represents "another live tmux on the
   // user's system that the picker should be able to switch into."

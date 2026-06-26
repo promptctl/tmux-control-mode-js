@@ -767,6 +767,23 @@ export class DemoStore {
     void this.client.sendKeys(`%${paneId}`, data);
   }
 
+  /**
+   * Drop all cached topology data so PaneView unmounts its stale cells.
+   * Call this before a socket swap (not a transient reconnect) so React
+   * remounts fresh PaneCells against the new socket on reconnect.
+   *
+   * [LAW:one-source-of-truth] The socket-swap initiator knows this is a swap
+   *   and explicitly drives the model clear. Generic `onStateChange("closed")`
+   *   must not do this — it conflates a swap with a transient reconnect.
+   */
+  clearTopology(): void {
+    this.latestSessions = null;
+    this.latestWindows = null;
+    this.latestPanes = null;
+    this.sessions = [];
+    this.clientSessionId = null;
+  }
+
   // -------------------------------------------------------------------------
   // Derived state
   // -------------------------------------------------------------------------
