@@ -80,6 +80,10 @@ import type {
   UpgradeRequest,
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
+import { RateLimiter } from "./rate-limiter.js";
+import { Heartbeat } from "./heartbeat.js";
+import { CallPump } from "./call-pump.js";
+import { Handshake } from "./handshake.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -307,21 +311,20 @@ class Connection {
   private state: ConnectionState = { kind: "pending-hello" };
   private identity: ConnectionIdentity = undefined;
 
-  private readonly inflight = new Map<
-    string,
-    { timer: ReturnType<typeof setTimeout>; startedAt: number }
-  >();
-  private readonly rateWindow: number[] = [];
-
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
   private readonly byteForwarder: BytesSink;
   // Disposer for `client.attachBytesSink(this.byteForwarder)`, populated
   // on hello (alongside `client.on('*', this.onAnyEventRef)`) and cleared
   // in finalize. Mirrors the off-pair for the state channel.
   private detachByteForwarder: (() => void) | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private pongDeadline: ReturnType<typeof setTimeout> | null = null;
-  private helloDeadline: ReturnType<typeof setTimeout> | null = null;
+
+  // [LAW:decomposition] These four collaborators each own one concern that
+  // was previously fused into Connection's private fields. Connection wires
+  // them with callbacks and delegates; it owns no timer or rate-window state.
+  private readonly rateLimiter: RateLimiter;
+  private readonly heartbeat: Heartbeat;
+  private readonly callPump: CallPump;
+  private readonly handshake: Handshake;
 
   private closed!: () => void;
   readonly whenClosed: Promise<void> = new Promise<void>((resolve) => {
@@ -352,17 +355,60 @@ class Connection {
         /* stateless sink */
       },
     };
+
+    this.rateLimiter = new RateLimiter(opts.rateLimit);
+
+    this.heartbeat = new Heartbeat(
+      defaults.heartbeatIntervalMs,
+      defaults.heartbeatTimeoutMs,
+      {
+        onTick: () => this.maybeFlushBuffered(),
+        ping: () => this.ws.ping(),
+        onTimeout: () =>
+          this.sendFatalAndClose(
+            "BRIDGE_CLOSED",
+            `heartbeat timeout after ${defaults.heartbeatTimeoutMs}ms`,
+          ),
+      },
+    );
+
+    this.callPump = new CallPump(
+      defaults.maxInflight,
+      defaults.requestTimeoutMs,
+      {
+        onTimeout: (id, startedAt) => {
+          this.replyError(
+            id,
+            "BRIDGE_TIMEOUT",
+            `request timed out after ${defaults.requestTimeoutMs}ms`,
+          );
+          this.emit({
+            kind: "result",
+            identity: this.identity,
+            id,
+            ok: false,
+            code: "BRIDGE_TIMEOUT",
+            durationMs: Date.now() - startedAt,
+          });
+        },
+      },
+    );
+
+    this.handshake = new Handshake(
+      defaults.helloTimeoutMs,
+      request,
+      opts.authenticate,
+    );
   }
 
   async run(): Promise<void> {
     this.installWsListeners();
-    this.helloDeadline = setTimeout(() => {
+    this.handshake.arm(() =>
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
         `no hello frame within ${this.defaults.helloTimeoutMs}ms`,
-      );
-    }, this.defaults.helloTimeoutMs);
-    this.helloDeadline.unref?.();
+      ),
+    );
     await this.whenClosed;
   }
 
@@ -406,13 +452,7 @@ class Connection {
       );
     });
 
-    this.ws.on("pong", () => {
-      // Peer is alive — clear any outstanding pong deadline.
-      if (this.pongDeadline !== null) {
-        clearTimeout(this.pongDeadline);
-        this.pongDeadline = null;
-      }
-    });
+    this.ws.on("pong", () => this.heartbeat.onPong());
 
     // No inbound-ping listener: `ws` auto-replies with pong, and a no-op
     // handler would only read as "something happens here". The outbound
@@ -486,13 +526,10 @@ class Connection {
       this.sendFatalAndClose("BRIDGE_PROTOCOL_ERROR", "duplicate hello frame");
       return;
     }
-    if (this.helloDeadline !== null) {
-      clearTimeout(this.helloDeadline);
-      this.helloDeadline = null;
-    }
+    this.handshake.clear();
 
     // authenticate()
-    const authResult = await this.safeAuthenticate();
+    const authResult = await this.handshake.authenticate();
     if (!authResult.ok) {
       this.sendFatalAndClose(
         "BRIDGE_AUTH_DENIED",
@@ -576,26 +613,12 @@ class Connection {
       },
     });
 
-    this.startHeartbeat();
+    this.heartbeat.start();
     this.emit({
       kind: "connection-opened",
       identity: this.identity,
       remoteAddress: this.request?.remoteAddress,
     });
-  }
-
-  private async safeAuthenticate(): Promise<AuthResult> {
-    const hook = this.opts.authenticate;
-    if (hook === undefined) return { ok: true, identity: undefined };
-    const req: UpgradeRequest = this.request ?? { headers: {} };
-    try {
-      return await hook(req);
-    } catch (err) {
-      return {
-        ok: false,
-        reason: `authenticate threw: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -608,7 +631,7 @@ class Connection {
   // unrepresentable.
   // -------------------------------------------------------------------------
   private async onCall(frame: CallFrame, state: RunningState): Promise<void> {
-    if (this.inflight.size >= this.defaults.maxInflight) {
+    if (this.callPump.isFull()) {
       this.replyError(
         frame.id,
         "BRIDGE_RATE_LIMITED",
@@ -616,14 +639,11 @@ class Connection {
       );
       return;
     }
-    if (!this.checkRate()) {
-      const cfg = this.opts.rateLimit;
-      const detail =
-        cfg !== undefined ? ` (${cfg.maxCalls}/${cfg.windowMs}ms)` : "";
+    if (!this.rateLimiter.check()) {
       this.replyError(
         frame.id,
         "BRIDGE_RATE_LIMITED",
-        `rate limit exceeded${detail}`,
+        `rate limit exceeded${this.rateLimiter.describe()}`,
       );
       return;
     }
@@ -659,29 +679,12 @@ class Connection {
       throw e;
     }
 
-    // Call-and-wait: dispatch + race against timeout. Every bridged method
-    // resolves to a CommandResponse, so the timing path is uniform across
-    // the dispatch table.
-    const startedAt = Date.now();
-    const timer = setTimeout(() => {
-      if (!this.inflight.has(frame.id)) return;
-      this.inflight.delete(frame.id);
-      this.replyError(
-        frame.id,
-        "BRIDGE_TIMEOUT",
-        `request timed out after ${this.defaults.requestTimeoutMs}ms`,
-      );
-      this.emit({
-        kind: "result",
-        identity: this.identity,
-        id: frame.id,
-        ok: false,
-        code: "BRIDGE_TIMEOUT",
-        durationMs: Date.now() - startedAt,
-      });
-    }, this.defaults.requestTimeoutMs);
-    timer.unref?.();
-    this.inflight.set(frame.id, { timer, startedAt });
+    // [LAW:no-ambient-temporal-coupling] Track the call before dispatch;
+    // CallPump owns the timeout race. If dispatch completes first, complete()
+    // returns timing and clears the timer. If the timer fires first, it
+    // replies and deletes the id; complete() then returns undefined and we
+    // skip the double-reply.
+    this.callPump.track(frame.id);
 
     // [LAW:single-enforcer] dispatchBridgeRequest owns the subscribe/unsubscribe
     // interception + the tmux/bridge/internal classification, shared with the
@@ -692,14 +695,10 @@ class Connection {
       state.peer,
       req,
     );
-    // [LAW:no-ambient-temporal-coupling] The timeout may have already fired,
-    // replied, and deleted the inflight slot while dispatch was in flight; if
-    // so, do not double-reply. The inflight Set is the single owner of "this
-    // call still needs a reply".
-    if (!this.inflight.has(frame.id)) return;
-    this.inflight.delete(frame.id);
-    clearTimeout(timer);
-    this.encodeOutcome(frame.id, outcome, startedAt);
+
+    const timing = this.callPump.complete(frame.id);
+    if (timing === undefined) return; // timeout already replied
+    this.encodeOutcome(frame.id, outcome, timing.startedAt);
   }
 
   // [LAW:decomposition] WS wire encoding of a BridgeOutcome — the
@@ -751,19 +750,6 @@ class Connection {
         reason: `authorize threw: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-  }
-
-  private checkRate(): boolean {
-    const cfg = this.opts.rateLimit;
-    if (cfg === undefined) return true;
-    const now = Date.now();
-    const cutoff = now - cfg.windowMs;
-    while (this.rateWindow.length > 0 && this.rateWindow[0] < cutoff) {
-      this.rateWindow.shift();
-    }
-    if (this.rateWindow.length >= cfg.maxCalls) return false;
-    this.rateWindow.push(now);
-    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -872,38 +858,6 @@ class Connection {
   }
 
   // -------------------------------------------------------------------------
-  // Heartbeats
-  // -------------------------------------------------------------------------
-  private startHeartbeat(): void {
-    if (this.defaults.heartbeatIntervalMs <= 0) return;
-    this.heartbeatTimer = setInterval(() => {
-      if (this.state.kind === "closed") return;
-      // [LAW:dataflow-not-control-flow] Heartbeat tick is the idle-path
-      // backstop for the drain sample — when no events flow in either
-      // direction (every active pane paused, no JSON traffic), neither the
-      // tmux event fan-out nor `sendFrame` runs, so the OS-buffer drain
-      // would never be re-observed. Sampling here keeps panes recoverable
-      // on idle connections; it's a passive read so it's safe to fire
-      // before/after the ping regardless of the inflight pong state.
-      this.maybeFlushBuffered();
-      if (this.pongDeadline !== null) return;
-      try {
-        this.ws.ping();
-      } catch {
-        return;
-      }
-      this.pongDeadline = setTimeout(() => {
-        this.sendFatalAndClose(
-          "BRIDGE_CLOSED",
-          `heartbeat timeout after ${this.defaults.heartbeatTimeoutMs}ms`,
-        );
-      }, this.defaults.heartbeatTimeoutMs);
-      this.pongDeadline.unref?.();
-    }, this.defaults.heartbeatIntervalMs);
-    this.heartbeatTimer.unref?.();
-  }
-
-  // -------------------------------------------------------------------------
   // Drain / terminate
   // -------------------------------------------------------------------------
   beginDrain(deadlineMs: number): void {
@@ -994,19 +948,11 @@ class Connection {
         : null;
     this.state = { kind: "closed", final };
 
-    if (this.helloDeadline !== null) clearTimeout(this.helloDeadline);
-    if (this.heartbeatTimer !== null) clearInterval(this.heartbeatTimer);
-    if (this.pongDeadline !== null) clearTimeout(this.pongDeadline);
-
-    for (const [id, pending] of this.inflight) {
-      clearTimeout(pending.timer);
-      this.replyError(
-        id,
-        "BRIDGE_CLOSED",
-        fatal?.message ?? "connection closed",
-      );
-    }
-    this.inflight.clear();
+    this.handshake.clear();
+    this.heartbeat.stop();
+    this.callPump.drain((id) => {
+      this.replyError(id, "BRIDGE_CLOSED", fatal?.message ?? "connection closed");
+    });
 
     if (final !== null) {
       final.client.off("*", this.onAnyEventRef);
