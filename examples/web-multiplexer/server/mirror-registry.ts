@@ -23,7 +23,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "./command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 import { spawnReadyControlClient } from "./control-client.js";
 import { buildMirrorSeed, type MirrorControlFrame } from "../shared/mirror-frame.js";
@@ -106,7 +106,7 @@ export class MirrorRegistry {
     // the live fan-out, so live bytes never race ahead of the seed.
     const capture = await this.client!.execute(
       `capture-pane -e -p -t %${paneId}`,
-    ).catch((r: CommandResponse) => r);
+    ).catch(asCommandResponse);
     if (!capture.success) {
       viewer.sendControl({
         kind: "error",
@@ -221,7 +221,7 @@ export class MirrorRegistry {
   ): Promise<{ cols: number; rows: number } | null> {
     const r = await this.client!.execute(
       `display-message -p -t %${paneId} -F '#{pane_width} #{pane_height}'`,
-    ).catch((resp: CommandResponse) => resp);
+    ).catch(asCommandResponse);
     if (!r.success || r.output.length === 0) return null;
     const m = /^(\d+)\s+(\d+)$/.exec(r.output[0].trim());
     if (m === null) return null;
@@ -248,7 +248,7 @@ export class MirrorRegistry {
     try {
       const r = await this.client
         .execute("list-panes -a -F '#{pane_id}'")
-        .catch((resp: CommandResponse) => resp);
+        .catch(asCommandResponse);
       // [LAW:no-silent-failure] A failed enumeration is left alone, never read
       // as "every pane vanished" (which would gone-out every live mirror).
       if (!r.success) return;
