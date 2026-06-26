@@ -13,7 +13,7 @@ export class RateLimiter {
     if (this.cfg === undefined) return true;
     const now = Date.now();
     const cutoff = now - this.cfg.windowMs;
-    while (this.window.length > 0 && this.window[0]! < cutoff) {
+    while (this.window.length > 0 && (this.window[0] as number) < cutoff) {
       this.window.shift();
     }
     if (this.window.length >= this.cfg.maxCalls) return false;
