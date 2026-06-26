@@ -21,19 +21,22 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
   it("starts empty", () => {
     const t = createWrapperTracker<object, string>();
     const fn = {};
-    expect(t.size("ch", fn)).toBe(0);
     expect(t.remove("ch", fn)).toBeNull();
   });
 
   it("add records one wrapper per call (no overwrite on duplicate listener)", () => {
     // PRE-FIX BUG: WeakMap<listener, wrapper> meant two adds collapsed to
-    // one slot. Post-fix: each add appends, so size grows.
+    // one slot. Post-fix: each add appends, so all three can be popped.
     const t = createWrapperTracker<object, string>();
     const fn = {};
     t.add("ch", fn, "wrapper-1");
     t.add("ch", fn, "wrapper-2");
     t.add("ch", fn, "wrapper-3");
-    expect(t.size("ch", fn)).toBe(3);
+    // All three must be recoverable
+    expect(t.remove("ch", fn)).toBe("wrapper-3");
+    expect(t.remove("ch", fn)).toBe("wrapper-2");
+    expect(t.remove("ch", fn)).toBe("wrapper-1");
+    expect(t.remove("ch", fn)).toBeNull();
   });
 
   it("remove pops LIFO — mirrors Node EventEmitter remove semantics", () => {
@@ -50,7 +53,6 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
     expect(t.remove("ch", fn)).toBe("second");
     expect(t.remove("ch", fn)).toBe("first");
     expect(t.remove("ch", fn)).toBeNull();
-    expect(t.size("ch", fn)).toBe(0);
   });
 
   it("isolates wrappers per channel", () => {
@@ -59,9 +61,8 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
     t.add("a", fn, "in-a");
     t.add("b", fn, "in-b");
     expect(t.remove("a", fn)).toBe("in-a");
-    expect(t.size("a", fn)).toBe(0);
-    expect(t.size("b", fn)).toBe(1);
-    expect(t.remove("b", fn)).toBe("in-b");
+    expect(t.remove("a", fn)).toBeNull(); // "a" is exhausted
+    expect(t.remove("b", fn)).toBe("in-b"); // "b" is untouched
   });
 
   it("isolates wrappers per listener within a channel", () => {
@@ -73,11 +74,10 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
     t.add("ch", fnB, "for-B-1");
 
     expect(t.remove("ch", fnA)).toBe("for-A-2");
-    expect(t.size("ch", fnA)).toBe(1);
-    expect(t.size("ch", fnB)).toBe(1);
     expect(t.remove("ch", fnB)).toBe("for-B-1");
-    expect(t.size("ch", fnB)).toBe(0);
+    expect(t.remove("ch", fnB)).toBeNull();
     expect(t.remove("ch", fnA)).toBe("for-A-1");
+    expect(t.remove("ch", fnA)).toBeNull();
   });
 
   it("remove of an unknown (channel, listener) returns null without throwing", () => {
@@ -86,7 +86,7 @@ describe("WrapperTracker — H5 listener bookkeeping", () => {
     expect(t.remove("never-added", fn)).toBeNull();
     t.add("ch", fn, "w");
     expect(t.remove("ch", {})).toBeNull(); // different listener identity
-    expect(t.size("ch", fn)).toBe(1); // bookkeeping wasn't disturbed
+    expect(t.remove("ch", fn)).toBe("w"); // bookkeeping wasn't disturbed
   });
 
   it("regression — pre-fix WeakMap behavior would lose all but the last wrapper", () => {
