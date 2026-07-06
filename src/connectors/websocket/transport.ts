@@ -17,6 +17,7 @@
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxTransport, SendResult } from "../../transport/types.js";
+import { createCloseGate } from "../../transport/close-gate.js";
 import { WEBSOCKET_OPEN, type BrowserWebSocketLike } from "./types.js";
 
 /**
@@ -48,23 +49,12 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   ws.binaryType = "arraybuffer";
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
-  const closeCallbacks: ((reason?: string) => void)[] = [];
 
-  // [LAW:one-source-of-truth] End-of-life is one value: ended, and why.
-  let closeState:
-    | { readonly closed: false }
-    | { readonly closed: true; readonly reason: string | undefined } = {
-    closed: false,
-  };
-
-  const dispatchClose = (reason?: string): void => {
-    // [LAW:single-enforcer] One synthetic close notification per transport.
-    // Browser/WebSocket runtimes commonly emit `error` and then `close` for
-    // one disconnect; TmuxClient should observe that as one exit path.
-    if (closeState.closed) return;
-    closeState = { closed: true, reason };
-    closeCallbacks.forEach((cb) => cb(reason));
-  };
+  // [LAW:single-enforcer] One synthetic close notification per transport.
+  // Browser/WebSocket runtimes commonly emit `error` and then `close` for
+  // one disconnect; the gate's exactly-once dispatch means TmuxClient
+  // observes that as one exit path.
+  const closeGate = createCloseGate();
 
   ws.addEventListener("message", (event: { data: unknown }) => {
     const chunk = decodeFrame(event.data);
@@ -72,7 +62,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   });
 
   ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
-    dispatchClose(closeReason(event));
+    closeGate.dispatch(closeReason(event));
   });
 
   // The `error` event on a browser WebSocket is intentionally information-
@@ -80,7 +70,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   // We forward a generic reason; consumers wanting richer diagnostics should
   // attach their own listener before adapting.
   ws.addEventListener("error", () => {
-    dispatchClose("websocket error");
+    closeGate.dispatch("websocket error");
   });
 
   return {
@@ -91,6 +81,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
     // ws.send — both are refused here as a typed result instead.
     send(command: string): SendResult {
+      const closeState = closeGate.state();
       if (closeState.closed) {
         return {
           ok: false,
@@ -127,7 +118,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     },
 
     onClose(callback: (reason?: string) => void): void {
-      closeCallbacks.push(callback);
+      closeGate.onClose(callback);
     },
 
     close(): void {

@@ -9,6 +9,7 @@ import {
   type StdioPipe,
 } from "node:child_process";
 import type { TmuxTransport, SendResult, SpawnOptions } from "./types.js";
+import { createCloseGate } from "./close-gate.js";
 
 // [LAW:decomposition] Argv assembly is one part: control flag and socket (-S/-L)
 // selection live at a single cut, so callers pass intent rather than a built argv.
@@ -44,7 +45,6 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   const argv = buildArgv(options?.socketPath, args);
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
-  const closeCallbacks: ((reason?: string) => void)[] = [];
 
   // [LAW:no-defensive-null-guards] Typing the options triggers the spawn overload
   // that returns ChildProcessByStdio<Writable, Readable, null> — stdin/stdout are
@@ -82,32 +82,20 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
-  // [LAW:one-source-of-truth] The transport's end-of-life is one value: whether
-  // it has ended and why. Both child events derive their dispatch from it.
-  let closeState:
-    | { readonly closed: false }
-    | { readonly closed: true; readonly reason: string | undefined } = {
-    closed: false,
-  };
-
-  // [LAW:single-enforcer] Exactly-once close dispatch. `close` and `error` can
-  // both fire for one death (e.g. ENOENT spawn failure emits error then close);
-  // the first event carries the truest reason and wins — a transport error is
-  // never re-reported as a clean exit.
-  const dispatchClose = (reason: string | undefined): void => {
-    if (closeState.closed) return;
-    closeState = { closed: true, reason };
-    closeCallbacks.forEach((cb) => cb(reason));
-  };
+  // [LAW:single-enforcer] `close` and `error` can both fire for one death
+  // (e.g. ENOENT spawn failure emits error then close); the gate's
+  // exactly-once dispatch means the first (truest) reason wins — a
+  // transport error is never re-reported as a clean exit.
+  const closeGate = createCloseGate();
 
   child.on("close", (code, signal) => {
-    dispatchClose(
+    closeGate.dispatch(
       signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined),
     );
   });
 
   child.on("error", (err) => {
-    dispatchClose(err.message);
+    closeGate.dispatch(err.message);
   });
 
   // [LAW:no-silent-failure] A Writable that emits `error` with no listener
@@ -124,6 +112,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     // [LAW:single-enforcer] LF-termination enforced here and nowhere else.
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
+      const closeState = closeGate.state();
       if (closeState.closed) {
         return {
           ok: false,
@@ -156,7 +145,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     },
 
     onClose(callback: (reason?: string) => void): void {
-      closeCallbacks.push(callback);
+      closeGate.onClose(callback);
     },
 
     close(): void {
