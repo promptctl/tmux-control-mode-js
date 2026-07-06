@@ -9,4 +9,6 @@
 // frame first, or it is asserting against a wire trace no real tmux ever
 // produces (its own first %begin/%end would otherwise be mistaken for the
 // greeting and silently swallowed).
-export const STARTUP_GREETING = "%begin 0 0 0\n%end 0 0 0\n";
+// flags=1 (CMDQ_STATE_CONTROL, SPEC.md §4) — every control-client guard block
+// carries it, including this unsolicited one.
+export const STARTUP_GREETING = "%begin 0 0 1\n%end 0 0 1\n";
