@@ -149,6 +149,11 @@ export class TmuxClient implements TmuxConnection {
         this.exitAlreadyEmitted = true;
         this.emitter.emit({ type: "exit", reason });
       }
+      // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
+      // signal (`reason`, the raw parameter above) — independent of, and
+      // free to disagree with, whichever reason the 'exit' event above just
+      // carried (tmux's own %exit reason takes priority there). See
+      // ConnectionState's doc comment in connection-state.ts for why.
       this.setConnectionState({
         status: "closed",
         reason: this.userClosed
