@@ -469,7 +469,7 @@ export class TmuxClient implements TmuxConnection {
     } else {
       const entry = this.inflight;
       this.inflight = null;
-      entry?.reject(new TmuxProtocolError(commandNumber, line, entry?.output));
+      entry?.reject(new TmuxProtocolError(commandNumber, line, entry.output));
     }
     this.emitter.emit({ type: "protocol-error", commandNumber, line });
   }
