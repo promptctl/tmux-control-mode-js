@@ -31,6 +31,7 @@ import {
   meetsTmuxVersion,
   parseTmuxVersion,
 } from "../../src/tmux-compat.js";
+import type { ConnectionStateMessage } from "../../src/connection-state.js";
 
 // [LAW:verifiable-goals] Gate every test behind the env var so the suite is
 // opt-in only; skipping rather than failing keeps the default test run green
@@ -92,15 +93,18 @@ function killServer(socketName: string): void {
 }
 
 /**
- * Create a detached tmux session on an isolated socket and return a ready
- * TmuxClient attached to it.
+ * Create a detached tmux session on an isolated socket and return a
+ * TmuxClient attached to it, once its connectionState reaches "ready".
  *
- * Protocol detail: `attach-session` in control mode sends a startup
- * %begin/%end pair before any user commands. If execute() is called before
- * that pair is consumed, the startup pair steals the first pending entry and
- * the real response is dropped. We wait for "session-changed" — which tmux
- * emits immediately after the startup pair — before resolving, ensuring
- * the handshake is complete and the FIFO queue is empty.
+ * Protocol detail: `attach-session` in control mode sends an unsolicited
+ * startup %begin/%end pair before any user command's own guard block
+ * (SPEC.md §5). TmuxClient consumes that pair internally and does not reach
+ * "ready" until it closes (see TmuxClient.awaitingGreeting) — so waiting on
+ * "ready" here is just observing the client's own lifecycle state, not a
+ * workaround. Most callers don't actually need to wait at all: execute()
+ * correlates correctly the instant a TmuxClient is constructed (see
+ * "execute() issued synchronously..." below) — this helper waits anyway so
+ * tests built on it get a clean, singular starting point.
  *
  * [LAW:dataflow-not-control-flow] Session creation and transport construction
  * always run unconditionally; variability lives in sessionName/socketName.
@@ -118,11 +122,12 @@ function createSession(
   const client = new TmuxClient(transport);
 
   return new Promise<TmuxClient>((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
+    const handler = (ev: ConnectionStateMessage) => {
+      if (ev.state.status !== "ready") return;
+      client.off("connection-state", handler);
       resolve(client);
     };
-    client.on("session-changed", handler);
+    client.on("connection-state", handler);
   });
 }
 
@@ -165,6 +170,30 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
       expect(typeof response.timestamp).toBe("number");
       expect(Array.isArray(response.output)).toBe(true);
       // list-windows always produces at least one line for the initial window
+      expect(response.output.length).toBeGreaterThan(0);
+    },
+    15000,
+  );
+
+  it(
+    "execute() issued synchronously after construction correlates to its own response, not tmux's startup greeting",
+    async () => {
+      // Deliberately bypasses createSession()'s wait-for-ready: this proves
+      // the client doesn't need it. If the startup greeting could still
+      // steal a pending entry, `execute()` here would resolve with the
+      // greeting's empty output (or hang, if the greeting is corrupted).
+      sessionName = uniqueSession("test-corr");
+      execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
+        stdio: "ignore",
+      });
+      const transport = spawnTmux(["attach-session", "-t", sessionName], {
+        socketPath: socketName,
+      });
+      client = new TmuxClient(transport);
+
+      const response: CommandResponse = await client.execute("list-windows");
+
+      expect(response.success).toBe(true);
       expect(response.output.length).toBeGreaterThan(0);
     },
     15000,

@@ -14,6 +14,7 @@ import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import { TransportClosedError, TransportSendError } from "../../src/errors.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -58,6 +59,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
   it("rejects an inflight command (%begin arrived, %end/%error never did)", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
 
     const call = client.execute("list-windows");
     t.feed("%begin 1 1 0\n");
@@ -69,6 +71,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
   it("does not disturb a command that already settled before close", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
 
     const done = client.execute("list-windows");
     t.feed("%begin 1 1 0\n%end 1 1 0\n");

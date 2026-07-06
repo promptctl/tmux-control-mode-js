@@ -110,6 +110,18 @@ export class TmuxClient implements TmuxConnection {
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
 
+  // [LAW:no-ambient-temporal-coupling] tmux emits one unsolicited %begin/%end
+  // guard pair on attach, before any caller-issued command's response — a
+  // real protocol fact (SPEC.md §5) that used to live only in folklore (a
+  // test comment, a compensating re-bootstrap in TopologyRouter). This flag
+  // is that fact made representable: true for exactly the first guard block
+  // this client ever sees. While true, "begin" must not shift the FIFO (the
+  // greeting has no caller waiting for it) and "end"/"error" must not settle
+  // an entry (there is none) — they instead close the phase and flip
+  // connectionState to "ready", which is the one place readiness is asserted
+  // once this flag is false for good.
+  private awaitingGreeting = true;
+
   // [LAW:single-enforcer] Set when a parsed %exit has already told consumers
   // (via the standard notification path in handleMessage) that this
   // connection is ending. Guards the transport's onClose handler below from
@@ -132,8 +144,12 @@ export class TmuxClient implements TmuxConnection {
       this.inflight?.output.push(line);
     };
 
+    // [LAW:no-ambient-temporal-coupling] "ready" is asserted from inside
+    // handleMessage once the startup greeting's guard block closes, not here
+    // on first byte — the greeting IS the first byte, and correlating a
+    // caller's command against it is the bug this phase gate exists to
+    // prevent (see awaitingGreeting).
     transport.onData((chunk) => {
-      this.setConnectionState({ status: "ready" });
       this.parser.feed(chunk);
     });
     transport.onClose((reason) => {
@@ -323,36 +339,59 @@ export class TmuxClient implements TmuxConnection {
     // exitAlreadyEmitted since it isn't the synthetic path.
     if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
-      const entry = this.pending.shift();
-      if (entry !== undefined) {
-        this.inflight = {
-          commandNumber: msg.commandNumber,
-          timestamp: msg.timestamp,
-          output: [],
-          resolve: entry.resolve,
-          reject: entry.reject,
-        };
+      // [LAW:no-ambient-temporal-coupling] The startup greeting's own %begin
+      // must never claim a caller's pending entry — awaitingGreeting is the
+      // one gate on that, checked here and nowhere else (single-enforcer).
+      if (this.awaitingGreeting) {
+        // No inflight is set: the greeting's output lines (if any) are
+        // captured by parser.onOutputLine into this.inflight?.output, which
+        // is null here, so they are correctly discarded.
+      } else {
+        const entry = this.pending.shift();
+        if (entry !== undefined) {
+          this.inflight = {
+            commandNumber: msg.commandNumber,
+            timestamp: msg.timestamp,
+            output: [],
+            resolve: entry.resolve,
+            reject: entry.reject,
+          };
+        }
       }
     } else if (msg.type === "end") {
-      const entry = this.inflight;
-      this.inflight = null;
-      entry?.resolve({
-        commandNumber: entry.commandNumber,
-        timestamp: entry.timestamp,
-        output: entry.output,
-        success: true,
-      });
-    } else if (msg.type === "error") {
-      const entry = this.inflight;
-      this.inflight = null;
-      entry?.reject(
-        new TmuxCommandError({
+      if (this.awaitingGreeting) {
+        this.awaitingGreeting = false;
+        this.setConnectionState({ status: "ready" });
+      } else {
+        const entry = this.inflight;
+        this.inflight = null;
+        entry?.resolve({
           commandNumber: entry.commandNumber,
           timestamp: entry.timestamp,
           output: entry.output,
-          success: false,
-        }),
-      );
+          success: true,
+        });
+      }
+    } else if (msg.type === "error") {
+      if (this.awaitingGreeting) {
+        // A tmux implementation detail failing its own startup guard block
+        // is not something a caller can retry or observe — there is no
+        // pending entry to reject. The phase still closes: correlation for
+        // every subsequent guard block must proceed normally regardless.
+        this.awaitingGreeting = false;
+        this.setConnectionState({ status: "ready" });
+      } else {
+        const entry = this.inflight;
+        this.inflight = null;
+        entry?.reject(
+          new TmuxCommandError({
+            commandNumber: entry.commandNumber,
+            timestamp: entry.timestamp,
+            output: entry.output,
+            success: false,
+          }),
+        );
+      }
     } else if (msg.type === "exit") {
       // [LAW:single-enforcer] exitAlreadyEmitted is the one guard for "has
       // exit been sent," checked here too — not just by the transport's
@@ -362,6 +401,19 @@ export class TmuxClient implements TmuxConnection {
       // can't re-fire the notification. The first %exit falls through to the
       // ordinary notification path below like every other variant (SPEC §23
       // requires %exit observable on its own).
+      //
+      // Deliberately not clearing awaitingGreeting here. Two cases:
+      //   1. %exit arrives mid-greeting: impossible through this method —
+      //      the parser enforces block purity (processLine's treatAsOutput),
+      //      so no notification, %exit included, can be dispatched while the
+      //      greeting's guard block is still open. It would be captured as
+      //      (discarded) output text of that block instead.
+      //   2. tmux dies with no trailing %end/%error at all (no closing guard
+      //      ever arrives): awaitingGreeting is stuck true, but harmlessly —
+      //      transport close makes connectionState terminal-closed, and the
+      //      guard at the top of this method returns before any
+      //      awaitingGreeting-gated branch could run again.
+      // Either way, clearing it here would be a write nothing ever observes.
       if (this.exitAlreadyEmitted) return;
       this.exitAlreadyEmitted = true;
     }
