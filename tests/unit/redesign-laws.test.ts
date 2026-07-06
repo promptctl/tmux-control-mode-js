@@ -275,6 +275,29 @@ describe("fifo-correlation", () => {
     expect(r1.commandNumber).toBe(1);
     expect(r2.commandNumber).toBe(2);
   });
+
+  it("a send that throws (contract-violating transport) rolls its entry out of the FIFO; later commands stay correlated", async () => {
+    const transport = new FakeTransport();
+    const client = new TmuxClient(transport);
+
+    // A transport that throws violates the SendResult never-throws contract;
+    // the client must reject loudly AND keep the correlation FIFO intact —
+    // an orphaned slot would silently shift every later response one command.
+    const boom = new Error("rogue transport");
+    const realSend = transport.send.bind(transport);
+    transport.send = () => {
+      transport.send = realSend;
+      throw boom;
+    };
+
+    await expect(client.execute("cmd-alpha")).rejects.toBe(boom);
+
+    // The next command correlates with the FIRST %begin/%end pair — proof
+    // the failed entry did not leak a slot.
+    const p = client.execute("cmd-beta");
+    transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
+    expect((await p).commandNumber).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

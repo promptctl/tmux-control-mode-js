@@ -137,7 +137,17 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
         return { ok: false, reason: `stdin failed: ${stdinFailure}` };
       }
       const terminated = command.endsWith("\n") ? command : command + "\n";
-      child.stdin.write(terminated);
+      // [LAW:types-are-the-program] send is total by its own contract; Node
+      // stream internals have changed synchronous-throw behavior across
+      // majors (e.g. write-after-destroy), so a foreign exception is
+      // converted to the typed result at this boundary and recorded like an
+      // async stdin failure.
+      try {
+        child.stdin.write(terminated);
+      } catch (err) {
+        stdinFailure = err instanceof Error ? err.message : String(err);
+        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
+      }
       return { ok: true };
     },
 

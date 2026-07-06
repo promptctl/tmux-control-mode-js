@@ -48,7 +48,12 @@ export type BridgeErrorCode =
   | "BRIDGE_UNKNOWN_METHOD"
   /** Per-call deadline reached before the response arrived. */
   | "BRIDGE_TIMEOUT"
-  /** Connection / dispatch closed while the call was in flight. */
+  /**
+   * Connection / dispatch closed while the call was in flight — the bridge
+   * connection itself (client close, server drain/shutdown) or the upstream
+   * tmux transport (a refused send on a dead connection). An operational
+   * state, retryable by policy; never a bug report.
+   */
   | "BRIDGE_CLOSED"
   /** Dispatch was abandoned because its sender was destroyed mid-flight. */
   | "BRIDGE_ABORTED"

@@ -24,7 +24,7 @@ import {
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { isPaneOutput } from "./protocol/types.js";
-import type { TmuxTransport } from "./transport/types.js";
+import type { TmuxTransport, SendResult } from "./transport/types.js";
 import { TmuxCommandError, TransportSendError } from "./errors.js";
 
 // Re-export for consumers that need it
@@ -145,12 +145,23 @@ export class TmuxClient implements TmuxConnection {
       // may deliver %begin within send() and must find this entry in the FIFO.
       const entry: PendingEntry = { resolve, reject };
       this.pending.push(entry);
-      const sent = this.transport.send(command + "\n");
+      let sent: SendResult;
+      try {
+        sent = this.transport.send(command + "\n");
+      } catch (err) {
+        // [LAW:no-defensive-null-guards] exception: TmuxTransport is a public
+        // seam consumers implement — a trust boundary. A throwing send
+        // violates the SendResult contract, but the FIFO's correlation
+        // integrity [LAW:one-source-of-truth] must not depend on outside code
+        // keeping promises: roll the entry back and stay loud — the rethrow
+        // rejects this promise with the original error.
+        this.dropPending(entry);
+        throw err;
+      }
       // [LAW:no-silent-failure] A refused send settles the promise now — the
       // command never reached tmux, so no %begin will ever claim this entry.
       if (!sent.ok) {
-        const idx = this.pending.indexOf(entry);
-        if (idx !== -1) this.pending.splice(idx, 1);
+        this.dropPending(entry);
         reject(new TransportSendError(sent.reason));
       }
     });
@@ -199,6 +210,13 @@ export class TmuxClient implements TmuxConnection {
   // ---------------------------------------------------------------------------
   // Internal — lifecycle state
   // ---------------------------------------------------------------------------
+
+  // Rolls an entry back out of the FIFO after a send that could not enqueue
+  // work with tmux; a no-op if a synchronous response already claimed it.
+  private dropPending(entry: PendingEntry): void {
+    const idx = this.pending.indexOf(entry);
+    if (idx !== -1) this.pending.splice(idx, 1);
+  }
 
   private setConnectionState(next: ConnectionState): void {
     if (sameConnectionState(this.currentConnectionState, next)) return;

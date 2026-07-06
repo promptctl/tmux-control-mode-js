@@ -721,12 +721,13 @@ describe("Electron IPC bridge — method dispatch", () => {
     );
   });
 
-  it("propagates a transport send refusal's reason through the error envelope", async () => {
+  it("classifies a transport send refusal as BRIDGE_CLOSED carrying the reason", async () => {
     // The DESIGNED dead-transport path (vs H3's contract-violating throw):
     // the transport refuses with a typed {ok:false}, TmuxClient.execute
-    // rejects with TransportSendError, and the bridge must carry the refusal
-    // reason to the peer — a swallowed reason would leave the renderer with
-    // an unactionable "something failed". [LAW:no-silent-failure]
+    // rejects with TransportSendError, and the bridge reports it as the
+    // operational BRIDGE_CLOSED (never BRIDGE_INTERNAL, which means "bug"),
+    // with the refusal reason intact — a swallowed reason would leave the
+    // renderer with an unactionable "something failed". [LAW:no-silent-failure]
     const hub = createIpcHub();
     const t = createFakeTransport();
     t.transport.send = () => ({
@@ -739,9 +740,10 @@ describe("Electron IPC bridge — method dispatch", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    await expect(proxy.execute("list-windows")).rejects.toThrow(
-      /BRIDGE_INTERNAL.*method=execute.*command not sent: transport closed: exit 1/,
-    );
+    await expect(proxy.execute("list-windows")).rejects.toMatchObject({
+      code: "BRIDGE_CLOSED",
+      message: "[BRIDGE_CLOSED] command not sent: transport closed: exit 1",
+    });
   });
 
   it("rejects the renderer promise when main-side execute fails", async () => {
