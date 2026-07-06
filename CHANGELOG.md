@@ -17,8 +17,26 @@ All notable changes to this project are documented here. Format follows
 - `TmuxClient.detach()` likewise returns `SendResult` instead of `void`, for the
   same reason — a refused detach is now observable instead of silently dropped.
 
+### Added
+
+- `TransportClosedError`, thrown via Promise rejection when a command was
+  queued or already inflight and the transport closed before tmux replied.
+  Distinct from `TransportSendError` (the send was refused outright) and
+  `TmuxCommandError` (tmux replied with `%error`).
+
 ### Fixed
 
+- `TmuxClient.execute()` promises no longer hang forever if the transport
+  closes while the command is queued or inflight — every outstanding promise
+  is now rejected with `TransportClosedError` when the transport closes.
+- The `exit` event now fires exactly once per connection. Previously a
+  graceful disconnect (tmux sends `%exit`, then the transport closes) fired
+  it twice; a killed server that never gets to send `%exit` still fires it
+  exactly once, synthesized from the transport's own close.
+- `TmuxClient`'s `closed` connection state is now terminal, matching its
+  documented contract: a data chunk delivered after the transport reports
+  closed (a legitimate race under delayed/chaotic delivery) no longer
+  resurrects `ready`.
 - Close dispatch is now exactly-once, with the first (truest) reason winning,
   across all three transports (spawn, websocket, mock) via a shared
   `CloseGate` — previously a second event could downgrade a real transport
