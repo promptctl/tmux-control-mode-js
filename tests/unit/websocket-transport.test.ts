@@ -261,6 +261,15 @@ describe("websocketTransport", () => {
     expect(reasons).toEqual(["websocket error"]);
   });
 
+  it("a socket already CLOSED at construction synthesizes a close dispatch — onClose is not orphaned", () => {
+    const ws = createFake();
+    ws.readyState = 3; // CLOSED — simulates dying before this adapter attached listeners
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    expect(reasons).toEqual(["websocket already closed"]);
+  });
+
   it("close() closes the underlying socket", () => {
     const ws = createFake();
     const t = websocketTransport(ws);

@@ -10,6 +10,7 @@ import {
 } from "node:child_process";
 import type { TmuxTransport, SendResult, SpawnOptions } from "./types.js";
 import { createCloseGate } from "./close-gate.js";
+import { terminateLine } from "./line-termination.js";
 
 // [LAW:decomposition] Argv assembly is one part: control flag and socket (-S/-L)
 // selection live at a single cut, so callers pass intent rather than a built argv.
@@ -113,7 +114,8 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   });
 
   const transport: TmuxTransport = {
-    // [LAW:single-enforcer] LF-termination enforced here and nowhere else.
+    // [LAW:single-enforcer] LF-termination logic itself lives in
+    // terminateLine(), shared with the websocket transport.
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
       const closeState = closeGate.state();
@@ -129,7 +131,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
       if (stdinFailure !== undefined) {
         return { ok: false, reason: `stdin failed: ${stdinFailure}` };
       }
-      const terminated = command.endsWith("\n") ? command : command + "\n";
+      const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; Node
       // stream internals have changed synchronous-throw behavior across
       // majors (e.g. write-after-destroy), so a foreign exception is

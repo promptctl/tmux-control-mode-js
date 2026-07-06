@@ -137,8 +137,20 @@ export class MockTmuxServer implements TmuxTransport {
   send(command: string): SendResult {
     // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
     // the seam's contract, not a test convenience.
-    if (this.closeGate.state().closed) {
-      return { ok: false, reason: "transport closed" };
+    // [LAW:one-source-of-truth] Same reason-formatting convention as spawn.ts
+    // and the websocket transport: no current mock close path dispatches a
+    // defined reason, but matching the pattern means a future one (e.g. a
+    // scripted-scenario close reason) surfaces instead of being silently
+    // dropped by a mock-only format.
+    const closeState = this.closeGate.state();
+    if (closeState.closed) {
+      return {
+        ok: false,
+        reason:
+          closeState.reason === undefined
+            ? "transport closed"
+            : `transport closed: ${closeState.reason}`,
+      };
     }
     this.inputBuffer += command;
 

@@ -18,7 +18,12 @@
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxTransport, SendResult } from "../../transport/types.js";
 import { createCloseGate } from "../../transport/close-gate.js";
-import { WEBSOCKET_OPEN, type BrowserWebSocketLike } from "./types.js";
+import { terminateLine } from "../../transport/line-termination.js";
+import {
+  WEBSOCKET_OPEN,
+  WEBSOCKET_CLOSED,
+  type BrowserWebSocketLike,
+} from "./types.js";
 
 /**
  * Adapt a WebSocket to the TmuxTransport interface.
@@ -78,10 +83,20 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     closeGate.dispatch("websocket error");
   });
 
+  // [LAW:no-silent-failure] A socket already CLOSED before this adapter had a
+  // chance to attach listeners (e.g. constructed on a socket that died
+  // moments earlier) will never fire another "close" event — the real one
+  // already happened and was missed. Synthesize the dispatch now so onClose
+  // listeners on this transport (even ones registered later — the gate
+  // fires them immediately once closed) are not permanently orphaned.
+  if (ws.readyState === WEBSOCKET_CLOSED) {
+    closeGate.dispatch("websocket already closed");
+  }
+
   return {
-    // [LAW:single-enforcer] LF-termination of control-mode commands enforced
-    // here, mirroring transport/spawn.ts. The relay forwards bytes verbatim
-    // to tmux's stdin, so the line terminator must travel with the command.
+    // [LAW:single-enforcer] LF-termination logic lives in terminateLine(),
+    // shared with transport/spawn.ts. The relay forwards bytes verbatim to
+    // tmux's stdin, so the line terminator must travel with the command.
     // [LAW:no-silent-failure] send is total: a socket that is not OPEN would
     // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
     // ws.send — both are refused here as a typed result instead.
@@ -105,7 +120,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
       if (sendFailure !== undefined) {
         return { ok: false, reason: `websocket send failed: ${sendFailure}` };
       }
-      const terminated = command.endsWith("\n") ? command : command + "\n";
+      const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; the
       // socket is a consumer-supplied structural object (polyfills included),
       // so a foreign synchronous throw is converted to the typed result at
