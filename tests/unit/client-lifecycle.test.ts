@@ -180,6 +180,22 @@ describe("TmuxClient — 'closed' is terminal", () => {
     });
     expect(states.at(-1)).toEqual({ status: "closed", reason: "exit" });
   });
+
+  it("a %exit that arrives after transport close does not re-emit 'exit'", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    // Close arrives first (tmux never got to send %exit) and synthesizes one.
+    t.triggerClose("ENOENT");
+    // A late chunk containing %exit — a delayed/chaotic-delivery race — must
+    // not dispatch through handleMessage at all once closed is terminal.
+    t.feed("%exit lost tty\n");
+
+    expect(exits).toHaveBeenCalledTimes(1);
+    expect(exits).toHaveBeenCalledWith({ type: "exit", reason: "ENOENT" });
+  });
 });
 
 // tmux-lifecycle-zng.4: a truncated %end/%error mid-block used to wedge the
@@ -201,6 +217,10 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
 
     const call = client.execute("list-windows");
     t.feed("%begin 5 1 0\n");
+    // Output tmux produced before the wire corrupted — this must survive on
+    // the rejection, not be discarded (the diagnostic value TmuxCommandError
+    // already preserves for a well-formed %error).
+    t.feed("@2 editor\n");
     // Truncated %end: only 2 of the 3 required fields (SPEC.md §5).
     t.feed("%end 5 1\n");
     // Real traffic after the malformed terminator — must route as a
@@ -211,6 +231,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     await expect(call).rejects.toMatchObject({
       commandNumber: 1,
       line: "%end 5 1",
+      output: ["@2 editor"],
     });
     expect(protocolErrors).toHaveBeenCalledTimes(1);
     expect(protocolErrors).toHaveBeenCalledWith({
@@ -257,23 +278,5 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     const call = client.execute("list-windows");
     t.feed("%begin 1 1 0\n%end 1 1 0\n");
     return expect(call).resolves.toMatchObject({ success: true });
-  });
-});
-
-describe("TmuxClient — 'closed' is terminal", () => {
-  it("a %exit that arrives after transport close does not re-emit 'exit'", () => {
-    const t = createFakeTransport();
-    const client = new TmuxClient(t);
-    const exits = vi.fn();
-    client.on("exit", exits);
-
-    // Close arrives first (tmux never got to send %exit) and synthesizes one.
-    t.triggerClose("ENOENT");
-    // A late chunk containing %exit — a delayed/chaotic-delivery race — must
-    // not dispatch through handleMessage at all once closed is terminal.
-    t.feed("%exit lost tty\n");
-
-    expect(exits).toHaveBeenCalledTimes(1);
-    expect(exits).toHaveBeenCalledWith({ type: "exit", reason: "ENOENT" });
   });
 });

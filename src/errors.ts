@@ -160,22 +160,34 @@ export class UnsupportedTmuxVersionError extends Error {
  * The parser still recovers (`TmuxParser`'s malformed-guard-terminator
  * tolerance): the block force-closes so subsequent traffic routes normally,
  * and this rejection is the caller's only signal that this command's true
- * outcome was never learned.
+ * outcome was never learned. `output` carries whatever lines the command
+ * produced before the corrupted terminator — the same diagnostic value
+ * {@link TmuxCommandError} preserves on a real `%error`, just without a
+ * `timestamp`/`success` to pair it with (there is no well-formed
+ * `CommandResponse` here; the terminator that would have carried it is
+ * exactly what was corrupted).
  *
  * [LAW:types-are-the-program] "The terminator itself was corrupted" is its
  * own domain category, not a command failure wearing a fake `%error` shape —
- * it carries the raw malformed line, not a fabricated `CommandResponse`.
+ * it carries the raw malformed line and partial output, not a fabricated
+ * `CommandResponse`.
  */
 export class TmuxProtocolError extends Error {
   readonly commandNumber: number;
   readonly line: string;
+  readonly output: readonly string[];
 
-  constructor(commandNumber: number, line: string) {
+  constructor(
+    commandNumber: number,
+    line: string,
+    output: readonly string[] = [],
+  ) {
     super(
       `malformed guard terminator for command ${commandNumber}: ${JSON.stringify(line)}`,
     );
     this.name = "TmuxProtocolError";
     this.commandNumber = commandNumber;
     this.line = line;
+    this.output = output;
   }
 }

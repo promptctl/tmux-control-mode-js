@@ -14,7 +14,8 @@
 // making the consumer's byte-handling branch structurally unreachable.
 //
 // [LAW:one-source-of-truth] `TmuxEventMap`'s wire arm is mechanically derived
-// from `EmitterTmuxMessage`; its synthetic arm comes from connection-state.ts.
+// from `EmitterTmuxMessage`; its synthetic arm comes from connection-state.ts
+// and protocol/types.ts.
 // [LAW:one-type-per-behavior] Single emitter type parameterized by the event map.
 
 import type {
