@@ -1321,7 +1321,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     const proxy = new TmuxClientProxy(r.ipcRenderer); // no timeout option
 
     const p = proxy.listPanes();
-    feedCommandResponse(t, 0, []);
+    feedCommandResponse(t, 1, []);
     const resp = await p;
     expect(resp.success).toBe(true);
   });
