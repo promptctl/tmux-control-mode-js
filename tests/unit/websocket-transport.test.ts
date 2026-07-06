@@ -134,6 +134,22 @@ describe("websocketTransport", () => {
     });
   });
 
+  it("a caught send throw is remembered — a later send refuses without calling ws.send again", () => {
+    const ws = createFake();
+    let calls = 0;
+    ws.send = () => {
+      calls++;
+      throw new Error("clone failure");
+    };
+    const t = websocketTransport(ws);
+    t.send("list-sessions");
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket send failed: clone failure",
+    });
+    expect(calls).toBe(1);
+  });
+
   it("forwards string message frames verbatim to onData callbacks", () => {
     const ws = createFake();
     const t = websocketTransport(ws);

@@ -56,6 +56,11 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   // observes that as one exit path.
   const closeGate = createCloseGate();
 
+  // [LAW:one-source-of-truth] Mirrors spawn.ts's stdinFailure: a caught send
+  // throw is remembered so every subsequent send refuses immediately instead
+  // of re-attempting `ws.send()` against a socket already known to reject.
+  let sendFailure: string | undefined;
+
   ws.addEventListener("message", (event: { data: unknown }) => {
     const chunk = decodeFrame(event.data);
     dataCallbacks.forEach((cb) => cb(chunk));
@@ -97,6 +102,9 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
           reason: `websocket not open (readyState ${ws.readyState})`,
         };
       }
+      if (sendFailure !== undefined) {
+        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
+      }
       const terminated = command.endsWith("\n") ? command : command + "\n";
       // [LAW:types-are-the-program] send is total by its own contract; the
       // socket is a consumer-supplied structural object (polyfills included),
@@ -105,10 +113,8 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
       try {
         ws.send(terminated);
       } catch (err) {
-        return {
-          ok: false,
-          reason: `websocket send failed: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        sendFailure = err instanceof Error ? err.message : String(err);
+        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
       }
       return { ok: true };
     },

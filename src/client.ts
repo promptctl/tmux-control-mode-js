@@ -72,6 +72,10 @@ interface PendingEntry {
   readonly reject: (err: TmuxCommandError | TransportSendError) => void;
 }
 
+// [LAW:types-are-the-program] Narrower than PendingEntry.reject on purpose:
+// a transport refusal is caught at execute()'s send() call, before an entry
+// ever becomes inflight (see handleMessage's "begin" branch), so the true
+// theorem for what reaches an inflight entry is exactly TmuxCommandError.
 interface InflightEntry {
   readonly commandNumber: number;
   readonly timestamp: number;
