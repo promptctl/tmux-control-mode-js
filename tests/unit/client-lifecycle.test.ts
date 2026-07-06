@@ -105,6 +105,15 @@ describe("TmuxClient — exactly one 'exit' event", () => {
 
     expect(exits).toHaveBeenCalledTimes(1);
     expect(exits).toHaveBeenCalledWith({ type: "exit", reason: "lost tty" });
+    // The 'exit' event's dedup and connectionState's reason classification
+    // are independent computations over the same onClose call — tmux's own
+    // %exit reason won the 'exit' event above, but connectionState still
+    // classifies by the transport's own raw close reason, which here still
+    // carried an error (EPIPE) even though tmux exited gracefully.
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
   });
 
   it("falls back to the transport's reason when tmux never sent %exit", () => {
