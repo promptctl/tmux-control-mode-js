@@ -17,12 +17,7 @@
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxTransport, SendResult } from "../../transport/types.js";
-import type { BrowserWebSocketLike } from "./types.js";
-
-// WebSocket.OPEN — the standard readyState value, identical across browser,
-// Node 22+, and the `ws` package. BrowserWebSocketLike exposes only the
-// numeric field, not the class constants.
-const WS_OPEN = 1;
+import { WEBSOCKET_OPEN, type BrowserWebSocketLike } from "./types.js";
 
 /**
  * Adapt a WebSocket to the TmuxTransport interface.
@@ -105,7 +100,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
               : `transport closed: ${closeState.reason}`,
         };
       }
-      if (ws.readyState !== WS_OPEN) {
+      if (ws.readyState !== WEBSOCKET_OPEN) {
         return {
           ok: false,
           reason: `websocket not open (readyState ${ws.readyState})`,

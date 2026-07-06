@@ -65,9 +65,11 @@ export interface TmuxConnection {
 // Internal correlation state
 // ---------------------------------------------------------------------------
 
+// [LAW:types-are-the-program] The reject channel carries exactly two shapes:
+// tmux's %error receipt, or the transport's refusal to send at all.
 interface PendingEntry {
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (err: TmuxCommandError) => void;
+  readonly reject: (err: TmuxCommandError | TransportSendError) => void;
 }
 
 interface InflightEntry {

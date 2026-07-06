@@ -721,6 +721,29 @@ describe("Electron IPC bridge — method dispatch", () => {
     );
   });
 
+  it("propagates a transport send refusal's reason through the error envelope", async () => {
+    // The DESIGNED dead-transport path (vs H3's contract-violating throw):
+    // the transport refuses with a typed {ok:false}, TmuxClient.execute
+    // rejects with TransportSendError, and the bridge must carry the refusal
+    // reason to the peer — a swallowed reason would leave the renderer with
+    // an unactionable "something failed". [LAW:no-silent-failure]
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    t.transport.send = () => ({
+      ok: false,
+      reason: "transport closed: exit 1",
+    });
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    await expect(proxy.execute("list-windows")).rejects.toThrow(
+      /BRIDGE_INTERNAL.*method=execute.*command not sent: transport closed: exit 1/,
+    );
+  });
+
   it("rejects the renderer promise when main-side execute fails", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();

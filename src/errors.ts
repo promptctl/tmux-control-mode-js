@@ -56,6 +56,27 @@ export class TmuxCommandError extends Error {
 }
 
 /**
+ * Thrown via Promise rejection when a command could not be handed to the
+ * transport at all — the transport refused the send (dead process, closed
+ * socket, failed pipe). Distinct from {@link TmuxCommandError}: the command
+ * never reached tmux, so there is no `CommandResponse` to carry.
+ *
+ * [LAW:types-are-the-program] "Never sent" is its own domain category with its
+ * own shape (a transport reason, no command number), not a command failure
+ * wearing fake response fields.
+ */
+export class TransportSendError extends Error {
+  /** The transport's stated refusal reason, verbatim. */
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`command not sent: ${reason}`);
+    this.name = "TransportSendError";
+    this.reason = reason;
+  }
+}
+
+/**
  * Thrown via Promise rejection when a command is invoked against a running
  * tmux older than the command's minimum version. This is a *precondition*
  * failure surfaced by the library before the command reaches tmux — distinct
@@ -83,27 +104,6 @@ export class TmuxCommandError extends Error {
  *       }
  *     }
  */
-/**
- * Thrown via Promise rejection when a command could not be handed to the
- * transport at all — the transport refused the send (dead process, closed
- * socket, failed pipe). Distinct from {@link TmuxCommandError}: the command
- * never reached tmux, so there is no `CommandResponse` to carry.
- *
- * [LAW:types-are-the-program] "Never sent" is its own domain category with its
- * own shape (a transport reason, no command number), not a command failure
- * wearing fake response fields.
- */
-export class TransportSendError extends Error {
-  /** The transport's stated refusal reason, verbatim. */
-  readonly reason: string;
-
-  constructor(reason: string) {
-    super(`command not sent: ${reason}`);
-    this.name = "TransportSendError";
-    this.reason = reason;
-  }
-}
-
 export class UnsupportedTmuxVersionError extends Error {
   readonly feature: string;
   readonly required: TmuxVersion;
