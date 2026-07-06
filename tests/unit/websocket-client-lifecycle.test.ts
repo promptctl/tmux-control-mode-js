@@ -482,6 +482,45 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       await client.close();
     });
 
+    it("connect() after close() starts a fresh reconnect budget", async () => {
+      const { client, hub } = makeClient({ reconnect: true }); // maxAttempts: 3
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // Burn two reconnect attempts in this episode.
+      hub.fireClose(0, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+      let deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      hub.fireClose(1, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 2,
+      });
+      deadline = Date.now() + 100;
+      while (hub.sockets.length < 3 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
+      // Consumer ends the episode, then starts a new one. The stale count
+      // (2) must not leak into the new episode's budget.
+      await client.close();
+      void client.connect();
+      hub.fireClose(hub.sockets.length - 1, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+      await client.close();
+    });
+
     it("connect() after close() re-arms the client", async () => {
       const { client, hub } = makeClient();
       void client.connect();

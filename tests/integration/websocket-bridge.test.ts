@@ -446,13 +446,25 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
     async () => {
       const fx = await startFixture("drain");
       try {
+        // [LAW:no-ambient-temporal-coupling] The drain-window facts are
+        // captured synchronously inside the onDraining callback: the client
+        // sets its drain gate immediately before invoking it, so sampling
+        // here observes the window at exactly notice delivery — the
+        // assertions below never race the server's drain deadline on the
+        // wall clock.
         let drainingDeadline: number | null = null;
+        let statusAtNotice: ConnectionState["status"] | null = null;
+        let rejectionAtNotice: Promise<unknown> | null = null;
         const client = new WebSocketTmuxClient({
           url: fx.url,
           createWebSocket: (u) =>
             new WsClient(u) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
           onDraining: (dl) => {
             drainingDeadline = dl;
+            statusAtNotice = client.connectionState.status;
+            rejectionAtNotice = client
+              .execute("list-windows")
+              .catch((e: unknown) => e);
           },
         });
         await waitForState(client, "ready");
@@ -467,11 +479,11 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
         }
         expect(drainingDeadline).not.toBeNull();
 
-        // During the drain window the connection is still "ready" (the
-        // socket is open, in-flight calls are being served) but new calls
-        // are refused with a truthful reason.
-        expect(client.connectionState.status).toBe("ready");
-        await expect(client.execute("list-windows")).rejects.toMatchObject({
+        // At notice delivery the connection was still "ready" (the socket
+        // was open, in-flight calls being served) and a new call was
+        // refused with a truthful reason.
+        expect(statusAtNotice).toBe("ready");
+        expect(await rejectionAtNotice).toMatchObject({
           code: "BRIDGE_CLOSED",
           message: expect.stringContaining("draining") as string,
         });

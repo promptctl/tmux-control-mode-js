@@ -193,6 +193,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       return;
     }
     this.userRequestedClose = false;
+    // [LAW:no-ambient-temporal-coupling] connect() is the consumer-initiated
+    // episode boundary: the retry budget and the episode's error belong to
+    // the previous episode and must not leak into this one. openSocket() is
+    // NOT the reset point — the reconnect timer also calls it, and resetting
+    // there would make maxAttempts unreachable.
+    this.attempts = 0;
+    this.lastError = undefined;
     this.openSocket();
   }
 
