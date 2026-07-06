@@ -149,9 +149,18 @@ export class TmuxClient implements TmuxConnection {
       // may deliver %begin within send() and must find this entry in the FIFO.
       const entry: PendingEntry = { resolve, reject };
       this.pending.push(entry);
-      let sent: SendResult;
       try {
-        sent = this.transport.send(command + "\n");
+        const sent = this.transport.send(command + "\n");
+        // [LAW:no-silent-failure] A refused send settles the promise now —
+        // the command never reached tmux, so no %begin will ever claim this
+        // entry. The `.ok` access stays inside this try: a contract-
+        // violating transport that returns a non-SendResult value throws
+        // here too, falling into the same rollback path below rather than
+        // leaking this entry via an uncaught TypeError.
+        if (!sent.ok) {
+          this.dropPending(entry);
+          reject(new TransportSendError(sent.reason));
+        }
       } catch (err) {
         // [LAW:no-defensive-null-guards] exception: TmuxTransport is a public
         // seam consumers implement — a trust boundary. A throwing send
@@ -161,12 +170,6 @@ export class TmuxClient implements TmuxConnection {
         // rejects this promise with the original error.
         this.dropPending(entry);
         throw err;
-      }
-      // [LAW:no-silent-failure] A refused send settles the promise now — the
-      // command never reached tmux, so no %begin will ever claim this entry.
-      if (!sent.ok) {
-        this.dropPending(entry);
-        reject(new TransportSendError(sent.reason));
       }
     });
   }

@@ -298,6 +298,29 @@ describe("fifo-correlation", () => {
     transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
     expect((await p).commandNumber).toBe(1);
   });
+
+  it("a send that returns a non-SendResult value (contract violation without a throw) still rolls its entry out of the FIFO", async () => {
+    const transport = new FakeTransport();
+    const client = new TmuxClient(transport);
+
+    // A transport that returns undefined instead of a SendResult violates
+    // the contract without throwing from send() itself — the `.ok` access
+    // throws a TypeError. That must still be caught and roll the entry back,
+    // not leak a slot via an uncaught exception inside the Promise executor.
+    const realSend = transport.send.bind(transport);
+    transport.send = () => {
+      transport.send = realSend;
+      return undefined as unknown as ReturnType<typeof realSend>;
+    };
+
+    await expect(client.execute("cmd-alpha")).rejects.toBeInstanceOf(
+      TypeError,
+    );
+
+    const p = client.execute("cmd-beta");
+    transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
+    expect((await p).commandNumber).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
