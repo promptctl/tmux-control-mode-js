@@ -335,7 +335,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     method: RpcMethod,
     args: readonly unknown[],
   ): Promise<CommandResponse> {
-    if (this.currentConnectionState.status === "closed" || this.userRequestedClose) {
+    if (
+      this.currentConnectionState.status === "closed" ||
+      this.userRequestedClose
+    ) {
       return Promise.reject(
         new BridgeError("BRIDGE_CLOSED", "client is closed"),
       );
