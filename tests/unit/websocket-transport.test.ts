@@ -94,6 +94,34 @@ describe("websocketTransport", () => {
     expect(ws.sent).toEqual(["kill-server\n"]);
   });
 
+  it("send on an open socket reports acceptance", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({ ok: true });
+  });
+
+  it("send while the socket is not open refuses instead of throwing", () => {
+    const ws = createFake();
+    ws.readyState = 0; // CONNECTING — a real ws.send here throws InvalidStateError
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket not open (readyState 0)",
+    });
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("send after the close event refuses with the close reason", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    ws.emitClose(1006, "abnormal");
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "transport closed: abnormal",
+    });
+    expect(ws.sent).toEqual([]);
+  });
+
   it("forwards string message frames verbatim to onData callbacks", () => {
     const ws = createFake();
     const t = websocketTransport(ws);

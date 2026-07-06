@@ -8,7 +8,7 @@ import {
   type StdioNull,
   type StdioPipe,
 } from "node:child_process";
-import type { TmuxTransport, SpawnOptions } from "./types.js";
+import type { TmuxTransport, SendResult, SpawnOptions } from "./types.js";
 
 // [LAW:decomposition] Argv assembly is one part: control flag and socket (-S/-L)
 // selection live at a single cut, so callers pass intent rather than a built argv.
@@ -82,25 +82,63 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
-  let closed = false;
-  child.on("close", (code, signal) => {
-    closed = true;
-    const reason =
-      signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined);
+  // [LAW:one-source-of-truth] The transport's end-of-life is one value: whether
+  // it has ended and why. Both child events derive their dispatch from it.
+  let closeState:
+    | { readonly closed: false }
+    | { readonly closed: true; readonly reason: string | undefined } = {
+    closed: false,
+  };
+
+  // [LAW:single-enforcer] Exactly-once close dispatch. `close` and `error` can
+  // both fire for one death (e.g. ENOENT spawn failure emits error then close);
+  // the first event carries the truest reason and wins — a transport error is
+  // never re-reported as a clean exit.
+  const dispatchClose = (reason: string | undefined): void => {
+    if (closeState.closed) return;
+    closeState = { closed: true, reason };
     closeCallbacks.forEach((cb) => cb(reason));
+  };
+
+  child.on("close", (code, signal) => {
+    dispatchClose(
+      signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined),
+    );
   });
 
   child.on("error", (err) => {
-    closeCallbacks.forEach((cb) => cb(err.message));
+    dispatchClose(err.message);
+  });
+
+  // [LAW:no-silent-failure] A Writable that emits `error` with no listener
+  // crashes the host process. In the window between tmux dying and the child's
+  // `close` event, a write gets EPIPE — this listener absorbs the crash and
+  // records the failure so subsequent sends refuse loudly. It does NOT dispatch
+  // close: the child's own close event owns the true exit reason.
+  let stdinFailure: string | undefined;
+  child.stdin.on("error", (err: Error) => {
+    stdinFailure = err.message;
   });
 
   const transport: TmuxTransport = {
     // [LAW:single-enforcer] LF-termination enforced here and nowhere else.
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
-    send(command: string): void {
-      if (closed) return;
+    send(command: string): SendResult {
+      if (closeState.closed) {
+        return {
+          ok: false,
+          reason:
+            closeState.reason === undefined
+              ? "transport closed"
+              : `transport closed: ${closeState.reason}`,
+        };
+      }
+      if (stdinFailure !== undefined) {
+        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
+      }
       const terminated = command.endsWith("\n") ? command : command + "\n";
       child.stdin.write(terminated);
+      return { ok: true };
     },
 
     onData(callback: (chunk: string) => void): void {

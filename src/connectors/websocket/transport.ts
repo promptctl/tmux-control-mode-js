@@ -16,8 +16,13 @@
 // observability; this is a transport-layer pipe.
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
-import type { TmuxTransport } from "../../transport/types.js";
+import type { TmuxTransport, SendResult } from "../../transport/types.js";
 import type { BrowserWebSocketLike } from "./types.js";
+
+// WebSocket.OPEN — the standard readyState value, identical across browser,
+// Node 22+, and the `ws` package. BrowserWebSocketLike exposes only the
+// numeric field, not the class constants.
+const WS_OPEN = 1;
 
 /**
  * Adapt a WebSocket to the TmuxTransport interface.
@@ -49,14 +54,20 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
   const closeCallbacks: ((reason?: string) => void)[] = [];
-  let closed = false;
+
+  // [LAW:one-source-of-truth] End-of-life is one value: ended, and why.
+  let closeState:
+    | { readonly closed: false }
+    | { readonly closed: true; readonly reason: string | undefined } = {
+    closed: false,
+  };
 
   const dispatchClose = (reason?: string): void => {
     // [LAW:single-enforcer] One synthetic close notification per transport.
     // Browser/WebSocket runtimes commonly emit `error` and then `close` for
     // one disconnect; TmuxClient should observe that as one exit path.
-    if (closed) return;
-    closed = true;
+    if (closeState.closed) return;
+    closeState = { closed: true, reason };
     closeCallbacks.forEach((cb) => cb(reason));
   };
 
@@ -81,9 +92,28 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // [LAW:single-enforcer] LF-termination of control-mode commands enforced
     // here, mirroring transport/spawn.ts. The relay forwards bytes verbatim
     // to tmux's stdin, so the line terminator must travel with the command.
-    send(command: string): void {
+    // [LAW:no-silent-failure] send is total: a socket that is not OPEN would
+    // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
+    // ws.send — both are refused here as a typed result instead.
+    send(command: string): SendResult {
+      if (closeState.closed) {
+        return {
+          ok: false,
+          reason:
+            closeState.reason === undefined
+              ? "transport closed"
+              : `transport closed: ${closeState.reason}`,
+        };
+      }
+      if (ws.readyState !== WS_OPEN) {
+        return {
+          ok: false,
+          reason: `websocket not open (readyState ${ws.readyState})`,
+        };
+      }
       const terminated = command.endsWith("\n") ? command : command + "\n";
       ws.send(terminated);
+      return { ok: true };
     },
 
     onData(callback: (chunk: string) => void): void {

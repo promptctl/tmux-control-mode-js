@@ -31,7 +31,7 @@ import {
   encodeOctalEscapes,
 } from "../../src/protocol/index.js";
 import type { TmuxMessage } from "../../src/protocol/index.js";
-import type { TmuxTransport } from "../../src/transport/types.js";
+import type { TmuxTransport, SendResult } from "../../src/transport/types.js";
 import type { EmitterMessage } from "../../src/emitter.js";
 
 // ---------------------------------------------------------------------------
@@ -44,8 +44,10 @@ class FakeTransport implements TmuxTransport {
   closed = false;
   private dataCb: ((chunk: string) => void) | undefined;
 
-  send(command: string): void {
+  send(command: string): SendResult {
+    if (this.closed) return { ok: false, reason: "transport closed" };
     this.sent.push(command);
+    return { ok: true };
   }
   onData(callback: (chunk: string) => void): void {
     this.dataCb = callback;

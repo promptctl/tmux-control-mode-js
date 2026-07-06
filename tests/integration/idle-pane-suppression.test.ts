@@ -64,7 +64,7 @@ function recordingTransport(inner: TmuxTransport): {
     transport: {
       send: (cmd) => {
         sent.push(cmd);
-        inner.send(cmd);
+        return inner.send(cmd);
       },
       onData: (cb) => inner.onData(cb),
       onClose: (cb) => inner.onClose(cb),

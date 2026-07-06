@@ -19,7 +19,7 @@ import {
 import { TmuxParser } from "../../src/protocol/parser.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxConnection } from "../../src/client.js";
-import type { TmuxTransport } from "../../src/transport/types.js";
+import type { TmuxTransport, SendResult } from "../../src/transport/types.js";
 import {
   encodePaneOutput,
   PANE_OUTPUT_MAGIC,
@@ -89,8 +89,9 @@ class FakeTransport implements TmuxTransport {
   private dataCb: ((chunk: string) => void) | null = null;
   private closeCb: ((reason?: string) => void) | null = null;
 
-  send(cmd: string): void {
+  send(cmd: string): SendResult {
     this.sent.push(cmd);
+    return { ok: true };
   }
   onData(cb: (chunk: string) => void): void {
     this.dataCb = cb;

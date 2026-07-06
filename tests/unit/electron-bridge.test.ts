@@ -60,6 +60,7 @@ function createFakeTransport(): FakeTransport {
   const transport: TmuxTransport = {
     send(cmd) {
       sent.push(cmd);
+      return { ok: true };
     },
     onData(cb) {
       dataCb = cb;
@@ -647,11 +648,12 @@ describe("Electron IPC bridge — method dispatch", () => {
     // resolution and inspects t.sent at the end.
     let respNum = 0;
     const record = t.transport.send.bind(t.transport);
-    t.transport.send = (cmd: string): void => {
-      record(cmd);
+    t.transport.send = (cmd: string) => {
+      const result = record(cmd);
       respNum += 1;
       const output = cmd.includes("#{version}") ? ["3.6a"] : [];
       feedCommandResponse(t, respNum, output);
+      return result;
     };
 
     const client = new TmuxClient(t.transport);

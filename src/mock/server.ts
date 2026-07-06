@@ -19,7 +19,7 @@
 //   import, erased at runtime), no clock unless one is injected. The same build
 //   runs in Node tests and the browser tutorial.
 
-import type { TmuxTransport } from "../transport/types.js";
+import type { TmuxTransport, SendResult } from "../transport/types.js";
 import type { TmuxMessage } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
 
@@ -130,8 +130,10 @@ export class MockTmuxServer implements TmuxTransport {
   // TmuxTransport surface
   // -------------------------------------------------------------------------
 
-  send(command: string): void {
-    if (this.closed) return;
+  send(command: string): SendResult {
+    // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
+    // the seam's contract, not a test convenience.
+    if (this.closed) return { ok: false, reason: "transport closed" };
     this.inputBuffer += command;
 
     // [LAW:dataflow-not-control-flow] Every complete line runs the same handle
@@ -144,6 +146,7 @@ export class MockTmuxServer implements TmuxTransport {
       this.handleCommandLine(line);
       newlineIdx = this.inputBuffer.indexOf("\n");
     }
+    return { ok: true };
   }
 
   onData(callback: (chunk: string) => void): void {

@@ -54,7 +54,9 @@ interface FakeTransport {
 function createFakeTransport(): FakeTransport {
   let dataCb: ((chunk: string) => void) | null = null;
   const transport: TmuxTransport = {
-    send() {},
+    send() {
+      return { ok: true } as const;
+    },
     onData(cb) {
       dataCb = cb;
     },
