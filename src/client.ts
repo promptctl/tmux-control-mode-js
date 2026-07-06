@@ -401,6 +401,13 @@ export class TmuxClient implements TmuxConnection {
       // can't re-fire the notification. The first %exit falls through to the
       // ordinary notification path below like every other variant (SPEC §23
       // requires %exit observable on its own).
+      //
+      // Deliberately not clearing awaitingGreeting here: an %exit arriving
+      // mid-greeting (tmux died before its own %end/%error) leaves it stuck
+      // true, but connectionState is terminal-closed by the time anything
+      // could read it again — the guard at the top of this method returns
+      // before any awaitingGreeting-gated branch runs. Clearing it would be
+      // a write nothing ever observes.
       if (this.exitAlreadyEmitted) return;
       this.exitAlreadyEmitted = true;
     }

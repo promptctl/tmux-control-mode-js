@@ -40,11 +40,15 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
 
   it("a sent command frames a %begin/%end block on the wire and in events", () => {
     const store = new TutorialStore();
+    // Scope to this command's own guard block: MockTmuxServer's unsolicited
+    // startup greeting already contains a %begin/%end pair, so checking the
+    // whole event history would pass on the greeting's alone.
+    const before = store.events.length;
     store.sendCommand("list-windows -a");
 
     // The outbound command line is recorded, then the framed reply comes back.
     expect(store.wire.some((l) => l.dir === "out" && l.text === "list-windows -a")).toBe(true);
-    const types = store.events.map((e) => e.message.type);
+    const types = store.events.slice(before).map((e) => e.message.type);
     expect(types).toContain("begin");
     expect(types).toContain("end");
   });
@@ -107,6 +111,14 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
     a.setChaos({ dropRate: 0.5, corruptRate: 0.3, seed: 777 });
     b.setChaos({ dropRate: 0.5, corruptRate: 0.3, seed: 777 });
     expect(a.chaosStats).toEqual(b.chaosStats);
-    expect(a.wire.map((l) => l.text)).toEqual(b.wire.map((l) => l.text));
+    // Guard timestamps use a real wall clock (tutorial-store.ts's deliberate
+    // choice, for browser authenticity) — normalize them out before
+    // comparing, or two instances constructed a second apart would fail this
+    // on timestamp drift alone rather than on an actual reproducibility bug.
+    const stripTimestamp = (text: string) =>
+      text.replace(/^%(begin|end|error) \d+/, "%$1 T");
+    expect(a.wire.map((l) => stripTimestamp(l.text))).toEqual(
+      b.wire.map((l) => stripTimestamp(l.text)),
+    );
   });
 });
