@@ -281,6 +281,16 @@ describe("websocketTransport", () => {
     expect(reasons).toEqual(["websocket error"]);
   });
 
+  it("error followed by an explicit normal closure (code 1000) stays a clean exit — the explicit code is not overridden by the vaguer error flag", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose(1000, "");
+    expect(reasons).toEqual([undefined]);
+  });
+
   it("a socket already CLOSED at construction synthesizes a close dispatch — onClose is not orphaned", () => {
     const ws = createFake();
     ws.readyState = 3; // CLOSED — simulates dying before this adapter attached listeners

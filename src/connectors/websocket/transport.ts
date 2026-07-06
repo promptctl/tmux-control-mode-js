@@ -83,8 +83,19 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   let errorOccurred = false;
 
   ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
+    // [LAW:one-source-of-truth] closeReason(event) returns undefined for two
+    // different facts that must not be conflated: "close explicitly said
+    // code 1000, genuinely clean" vs. "close carried no data at all". Only
+    // the second should defer to the errorOccurred flag — an explicit clean
+    // code is itself a real signal and must not be overridden by a vaguer
+    // one, or a genuinely clean close after an unrelated earlier error would
+    // misreport as "websocket error".
+    const closeHasData =
+      event.code !== undefined ||
+      (event.reason !== undefined && event.reason.length > 0);
     closeGate.dispatch(
-      closeReason(event) ?? (errorOccurred ? "websocket error" : undefined),
+      closeReason(event) ??
+        (!closeHasData && errorOccurred ? "websocket error" : undefined),
     );
   });
 

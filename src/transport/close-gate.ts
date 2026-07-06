@@ -29,7 +29,9 @@ export interface CloseGate {
    * The `SendResult.reason` string for a send refused because this gate is
    * closed. [LAW:single-enforcer] The one formatting of "why is send
    * refused" — previously duplicated identically across all three
-   * transports' `send()` implementations.
+   * transports' `send()` implementations. Callers must check
+   * `state().closed` first — calling this on an open gate throws rather
+   * than silently claiming "transport closed" while it is not.
    */
   readonly deniedSendReason: () => string;
 }
@@ -59,9 +61,18 @@ export function createCloseGate(): CloseGate {
       callbacks.push(callback);
     },
     deniedSendReason() {
-      return state.closed && state.reason !== undefined
-        ? `transport closed: ${state.reason}`
-        : "transport closed";
+      // [LAW:no-silent-failure] A caller that skipped the state().closed
+      // check would otherwise silently get "transport closed" back for a
+      // gate that is not, in fact, closed — a real answer to the wrong
+      // question. Fail loud instead of misrepresenting the state.
+      if (!state.closed) {
+        throw new Error(
+          "CloseGate.deniedSendReason() called on a gate that is not closed",
+        );
+      }
+      return state.reason === undefined
+        ? "transport closed"
+        : `transport closed: ${state.reason}`;
     },
   };
 }
