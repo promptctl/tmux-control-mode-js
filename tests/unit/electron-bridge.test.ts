@@ -1782,7 +1782,6 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
       t.feed(STARTUP_GREETING);
-    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1816,7 +1815,6 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
       t.feed(STARTUP_GREETING);
-    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1850,7 +1848,6 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
       t.feed(STARTUP_GREETING);
-    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1897,7 +1894,6 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
       t.feed(STARTUP_GREETING);
-    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
