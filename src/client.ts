@@ -172,6 +172,20 @@ export class TmuxClient implements TmuxConnection {
   // Plain command string in → response out. No sendRaw escape hatch for callers.
   execute(command: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
+      // [LAW:no-silent-failure] 'closed' is terminal (see setConnectionState)
+      // and settlePendingOnClose already ran once, for good, when it happened
+      // — it will never run again. TmuxTransport is a public seam third
+      // parties implement (a trust boundary, same reasoning as the throwing-
+      // send catch below); a transport that incorrectly still reports
+      // {ok: true} after its own close would otherwise hang this promise
+      // forever with no diagnostic. currentConnectionState is already the
+      // one reliably-updated source of truth for "the transport told us it
+      // closed," so this consults it rather than trusting a third-party
+      // transport to get its own closed bookkeeping right.
+      if (this.currentConnectionState.status === "closed") {
+        reject(new TransportSendError("transport closed"));
+        return;
+      }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
       // may deliver %begin within send() and must find this entry in the FIFO.
       const entry: PendingEntry = { resolve, reject };

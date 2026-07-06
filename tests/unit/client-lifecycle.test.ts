@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { ConnectionState } from "../../src/connection-state.js";
-import { TransportClosedError } from "../../src/errors.js";
+import { TransportClosedError, TransportSendError } from "../../src/errors.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -77,6 +77,19 @@ describe("TmuxClient — settles every pending promise on transport close", () =
 
     await expect(done).resolves.toMatchObject({ success: true });
     await expect(hanging).rejects.toBeInstanceOf(TransportClosedError);
+  });
+
+  it("a post-close execute() rejects immediately, even against a transport that never honors close", async () => {
+    // This fake's send() always returns {ok: true} regardless of close —
+    // deliberately misbehaving, so the guard in execute() (not good transport
+    // behavior) is what's proven to prevent the hang.
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.triggerClose();
+
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TransportSendError,
+    );
   });
 });
 
