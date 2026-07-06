@@ -247,6 +247,16 @@ export function createWebSocketBridge(
 type ConnectionState =
   /** No hello received yet; no client. Initial state. */
   | { readonly kind: "pending-hello" }
+  /**
+   * Hello frame accepted; authenticate()/createClient() in flight. No
+   * resources exist yet — everything onHello builds lives in its own local
+   * scope until it commits to `running`. A second hello arriving in this
+   * window is a protocol error (the `!== "pending-hello"` guard in onHello
+   * covers it); `finalize` running while in this phase correctly captures
+   * nothing (`final = null`) — onHello itself checks for closed on each
+   * resume and disposes whatever it already built. [LAW:no-ambient-temporal-coupling]
+   */
+  | { readonly kind: "handshaking" }
   /** Hello accepted, client created, accepting calls. */
   | {
       readonly kind: "running";
@@ -270,9 +280,9 @@ type ConnectionState =
     }
   /**
    * Terminal state. `final` is the (client, ctx, bridge, peer) captured at
-   * finalize time if we ever reached running; null if we closed before
-   * hello, in which case there is no client to dispose and no bridge to
-   * tear down.
+   * finalize time if we ever reached running; null if we closed before that
+   * (including mid-handshake), in which case onHello's own resume-time check
+   * is responsible for disposing whatever it had already built.
    */
   | {
       readonly kind: "closed";
@@ -484,8 +494,12 @@ class Connection {
   private dispatch(frame: ClientFrame): void {
     // Hello is the one frame allowed pre-hello; this single guard is the only
     // load-bearing protocol invariant left in this function. Everything else
-    // is absorbed by CLIENT_FRAME_HANDLERS below.
-    if (frame.k !== "hello" && this.state.kind === "pending-hello") {
+    // is absorbed by CLIENT_FRAME_HANDLERS below. "handshaking" counts as
+    // pre-hello too — the handshake in flight hasn't produced a client yet.
+    if (
+      frame.k !== "hello" &&
+      (this.state.kind === "pending-hello" || this.state.kind === "handshaking")
+    ) {
       this.sendFatalAndClose(
         "BRIDGE_PROTOCOL_ERROR",
         `received '${frame.k}' before hello`,
@@ -521,15 +535,37 @@ class Connection {
   // -------------------------------------------------------------------------
   // Hello / welcome
   // -------------------------------------------------------------------------
+
+  // Wrapped in a method (rather than `this.state.kind === "closed"` inline)
+  // so TypeScript's control-flow narrowing of `this.state` from the
+  // synchronous assignment above the first `await` in onHello doesn't get
+  // carried across the `await` — the compiler can't see that `finalize` may
+  // have reassigned `this.state` on the event loop while onHello was
+  // suspended, so it otherwise treats the two checks below as comparing
+  // literal types with no overlap. This call boundary forces a fresh read.
+  private isClosed(): boolean {
+    return this.state.kind === "closed";
+  }
+
   async onHello(): Promise<void> {
     if (this.state.kind !== "pending-hello") {
       this.sendFatalAndClose("BRIDGE_PROTOCOL_ERROR", "duplicate hello frame");
       return;
     }
+    // [LAW:no-ambient-temporal-coupling] Commit to the handshake synchronously,
+    // before the first await, so a second hello arriving while this one is in
+    // flight sees a state other than "pending-hello" and is rejected above —
+    // no race window between the guard and the transition.
+    this.state = { kind: "handshaking" };
     this.handshake.clear();
 
     // authenticate()
     const authResult = await this.handshake.authenticate();
+    if (this.isClosed()) {
+      // finalize ran while we were suspended (mid-handshake disconnect).
+      // Nothing was created yet — just stop.
+      return;
+    }
     if (!authResult.ok) {
       this.sendFatalAndClose(
         "BRIDGE_AUTH_DENIED",
@@ -549,10 +585,22 @@ class Connection {
     try {
       client = await this.opts.createClient(ctx);
     } catch (err) {
+      if (this.isClosed()) return;
       this.sendFatalAndClose(
         "BRIDGE_INTERNAL",
         `createClient failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return;
+    }
+    if (this.isClosed()) {
+      // finalize ran while createClient() was in flight. `client` exists but
+      // was never committed to `state`, so finalize's disposal (which only
+      // fires for running/draining) never saw it — dispose it here, the same
+      // way finalize would have, and stop before wiring any listener or sink
+      // onto the shared client.
+      if (this.opts.disposeClient !== undefined) {
+        void Promise.resolve(this.opts.disposeClient(client, ctx));
+      }
       return;
     }
 
