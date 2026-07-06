@@ -113,7 +113,10 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
       try {
         ws.send(terminated);
       } catch (err) {
-        sendFailure = err instanceof Error ? err.message : String(err);
+        // [LAW:single-enforcer] First reason wins, mirroring spawn.ts's
+        // stdinFailure — only meaningful today since there's one writer, but
+        // consistent with the sibling pattern if a second ever appears.
+        sendFailure ??= err instanceof Error ? err.message : String(err);
         return { ok: false, reason: `websocket send failed: ${sendFailure}` };
       }
       return { ok: true };

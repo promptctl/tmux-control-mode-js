@@ -165,6 +165,19 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     });
   });
 
+  it("a detach batched with a trailing command does not process the trailing command", () => {
+    const server = new MockTmuxServer();
+    const client = new TmuxClient(server);
+    server.start();
+
+    // One send() call carrying a bare-newline detach followed by another
+    // command — the detach must end the batch, not just the connection.
+    server.send("\nlist-windows\n");
+
+    expect(server.sentCommands).not.toContain("list-windows");
+    expect(client.connectionState.status).toBe("closed");
+  });
+
   it("refuses sends after close with a typed result (no throw, no delivery)", () => {
     const server = new MockTmuxServer();
     const client = new TmuxClient(server);

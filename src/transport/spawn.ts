@@ -103,9 +103,13 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // `close` event, a write gets EPIPE — this listener absorbs the crash and
   // records the failure so subsequent sends refuse loudly. It does NOT dispatch
   // close: the child's own close event owns the true exit reason.
+  // [LAW:single-enforcer] First reason wins, mirroring the close gate: this
+  // listener and send()'s synchronous catch both write here, and whichever
+  // fires first is the truest cause — a later write's error must not
+  // overwrite it.
   let stdinFailure: string | undefined;
   child.stdin.on("error", (err: Error) => {
-    stdinFailure = err.message;
+    stdinFailure ??= err.message;
   });
 
   const transport: TmuxTransport = {
@@ -134,7 +138,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
       try {
         child.stdin.write(terminated);
       } catch (err) {
-        stdinFailure = err instanceof Error ? err.message : String(err);
+        stdinFailure ??= err instanceof Error ? err.message : String(err);
         return { ok: false, reason: `stdin failed: ${stdinFailure}` };
       }
       return { ok: true };
