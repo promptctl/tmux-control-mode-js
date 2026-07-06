@@ -62,9 +62,13 @@ function recordingTransport(inner: TmuxTransport): {
   return {
     sent,
     transport: {
+      // [LAW:one-source-of-truth] `sent` means "accepted for delivery" — a
+      // refused send (ok: false) never reached tmux, so it must not appear
+      // here as if it did.
       send: (cmd) => {
-        sent.push(cmd);
-        inner.send(cmd);
+        const result = inner.send(cmd);
+        if (result.ok) sent.push(cmd);
+        return result;
       },
       onData: (cb) => inner.onData(cb),
       onClose: (cb) => inner.onClose(cb),

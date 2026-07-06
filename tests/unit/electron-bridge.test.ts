@@ -60,6 +60,7 @@ function createFakeTransport(): FakeTransport {
   const transport: TmuxTransport = {
     send(cmd) {
       sent.push(cmd);
+      return { ok: true };
     },
     onData(cb) {
       dataCb = cb;
@@ -647,11 +648,12 @@ describe("Electron IPC bridge — method dispatch", () => {
     // resolution and inspects t.sent at the end.
     let respNum = 0;
     const record = t.transport.send.bind(t.transport);
-    t.transport.send = (cmd: string): void => {
-      record(cmd);
+    t.transport.send = (cmd: string) => {
+      const result = record(cmd);
       respNum += 1;
       const output = cmd.includes("#{version}") ? ["3.6a"] : [];
       feedCommandResponse(t, respNum, output);
+      return result;
     };
 
     const client = new TmuxClient(t.transport);
@@ -717,6 +719,31 @@ describe("Electron IPC bridge — method dispatch", () => {
     await expect(proxy.execute("list-windows")).rejects.toThrow(
       /BRIDGE_INTERNAL.*method=execute.*transport offline/,
     );
+  });
+
+  it("classifies a transport send refusal as BRIDGE_CLOSED carrying the reason", async () => {
+    // The DESIGNED dead-transport path (vs H3's contract-violating throw):
+    // the transport refuses with a typed {ok:false}, TmuxClient.execute
+    // rejects with TransportSendError, and the bridge reports it as the
+    // operational BRIDGE_CLOSED (never BRIDGE_INTERNAL, which means "bug"),
+    // with the refusal reason intact — a swallowed reason would leave the
+    // renderer with an unactionable "something failed". [LAW:no-silent-failure]
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    t.transport.send = () => ({
+      ok: false,
+      reason: "transport closed: exit 1",
+    });
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    await expect(proxy.execute("list-windows")).rejects.toMatchObject({
+      code: "BRIDGE_CLOSED",
+      message: "[BRIDGE_CLOSED] command not sent: transport closed: exit 1",
+    });
   });
 
   it("rejects the renderer promise when main-side execute fails", async () => {
