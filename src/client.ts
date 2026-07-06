@@ -354,10 +354,15 @@ export class TmuxClient implements TmuxConnection {
         }),
       );
     } else if (msg.type === "exit") {
-      // [LAW:single-enforcer] Falls through to the ordinary notification path
-      // below like every other variant (SPEC §23 requires %exit observable on
-      // its own) — this only records that it happened, so the transport's
-      // onClose handler knows not to synthesize a second 'exit'.
+      // [LAW:single-enforcer] exitAlreadyEmitted is the one guard for "has
+      // exit been sent," checked here too — not just by the transport's
+      // onClose handler — so a second %exit from a misbehaving transport
+      // (TmuxTransport is a public seam, a trust boundary; SPEC guarantees
+      // tmux sends %exit at most once, but this doesn't assume that holds)
+      // can't re-fire the notification. The first %exit falls through to the
+      // ordinary notification path below like every other variant (SPEC §23
+      // requires %exit observable on its own).
+      if (this.exitAlreadyEmitted) return;
       this.exitAlreadyEmitted = true;
     }
 

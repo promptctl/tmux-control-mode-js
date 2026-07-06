@@ -37,6 +37,11 @@ All notable changes to this project are documented here. Format follows
   documented contract: a data chunk delivered after the transport reports
   closed (a legitimate race under delayed/chaotic delivery) no longer
   resurrects `ready`.
+- The bridge connectors (Electron, WebSocket) now classify `TransportClosedError`
+  as the operational `BRIDGE_CLOSED`, matching `TransportSendError` — previously
+  it fell through to the catch-all `BRIDGE_INTERNAL` (meant for bugs), so a
+  bridge consumer branching on `BridgeError.code` would misreport a normal
+  transport close as an internal error.
 - Close dispatch is now exactly-once, with the first (truest) reason winning,
   across all three transports (spawn, websocket, mock) via a shared
   `CloseGate` — previously a second event could downgrade a real transport

@@ -139,6 +139,21 @@ describe("TmuxClient — exactly one 'exit' event", () => {
     expect(exits).toHaveBeenCalledTimes(1);
     expect(exits).toHaveBeenCalledWith({ type: "exit", reason: undefined });
   });
+
+  it("a second %exit from a misbehaving transport does not re-emit", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    // SPEC guarantees tmux sends %exit at most once; this proves the guard,
+    // not tmux's good behavior, is what enforces "exactly once" here.
+    t.feed("%exit lost tty\n");
+    t.feed("%exit duplicate\n");
+
+    expect(exits).toHaveBeenCalledTimes(1);
+    expect(exits).toHaveBeenCalledWith({ type: "exit", reason: "lost tty" });
+  });
 });
 
 describe("TmuxClient — 'closed' is terminal", () => {
