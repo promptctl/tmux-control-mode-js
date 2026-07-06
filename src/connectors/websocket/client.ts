@@ -159,7 +159,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // server's intent, not a lifecycle phase of this connection — the unified
   // ConnectionState deliberately has no draining variant. The socket stays
   // open (status "ready") until the server actually closes it; this flag
-  // only gates new calls. Reset when a fresh socket is opened.
+  // only gates new calls. Connection-scoped: finalizeConnection clears it,
+  // so a drain notice never outlives the connection that carried it.
   private draining = false;
   private hasReachedReadyOnce = false;
   private lastError: Error | undefined = undefined;
@@ -390,7 +391,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Internal: socket lifecycle
   // -------------------------------------------------------------------------
   private openSocket(): void {
-    this.draining = false;
     this.setConnectionState({ status: "connecting" });
     const factory =
       this.opts.createWebSocket ??
@@ -629,6 +629,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     this.ws = null;
     this.serverLimits = null;
+    // The drain notice was scoped to the connection that just ended; calls
+    // made during reconnect backoff must queue for the new connection, not
+    // be refused with a stale drain reason.
+    this.draining = false;
 
     if (this.userRequestedClose) {
       // [LAW:no-ambient-temporal-coupling] Permanent close: end all sinks and

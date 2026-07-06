@@ -581,6 +581,58 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         message: expect.stringContaining("closed"),
       });
     });
+
+    it("a drain notice does not outlive its connection: calls during post-drain backoff queue for the new connection", async () => {
+      const { client, hub } = makeClient({ reconnect: true });
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // Drain notice on connection 0, then the server closes the socket.
+      hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "draining",
+          deadlineMs: 99,
+        } satisfies ServerFrame),
+      });
+      await new Promise((r) => setImmediate(r));
+      hub.fireClose(0, 1001, "drain complete");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+
+      // The drain fact was scoped to the dead connection. A call during
+      // backoff queues in pending — a stale "server is draining" rejection
+      // here is the regression under test.
+      const callPromise = client.execute("list-windows");
+
+      const deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      hub.open(1);
+      hub.welcome(1);
+      await new Promise((r) => setImmediate(r));
+
+      // The queued call went out on the new connection and resolves there.
+      const calls = sentFrames(hub.sockets[1]).filter((f) => f.k === "call");
+      expect(calls.length).toBe(1);
+      const id = calls[0].id;
+      expect(id).toBeDefined();
+      const result: ResultFrame = {
+        k: "result",
+        id: id as string,
+        ok: true,
+        response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
+      };
+      hub.sockets[1].fire("message", {
+        data: encodeServerFrame(result satisfies ServerFrame),
+      });
+      await expect(callPromise).resolves.toMatchObject({ success: true });
+      await client.close();
+    });
   });
 
   describe("M11: post-close calls reject; no queued frames survive", () => {
