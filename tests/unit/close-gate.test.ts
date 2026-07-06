@@ -56,4 +56,17 @@ describe("createCloseGate", () => {
     gate.dispatch("late");
     expect(reasons).toEqual(["late", "late"]);
   });
+
+  it("deniedSendReason is the bare string before any dispatch or after a clean dispatch", () => {
+    const gate = createCloseGate();
+    expect(gate.deniedSendReason()).toBe("transport closed");
+    gate.dispatch(undefined);
+    expect(gate.deniedSendReason()).toBe("transport closed");
+  });
+
+  it("deniedSendReason suffixes the dispatched reason when one is given", () => {
+    const gate = createCloseGate();
+    gate.dispatch("exit 1");
+    expect(gate.deniedSendReason()).toBe("transport closed: exit 1");
+  });
 });

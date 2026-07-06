@@ -118,15 +118,8 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     // terminateLine(), shared with the websocket transport.
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
-      const closeState = closeGate.state();
-      if (closeState.closed) {
-        return {
-          ok: false,
-          reason:
-            closeState.reason === undefined
-              ? "transport closed"
-              : `transport closed: ${closeState.reason}`,
-        };
+      if (closeGate.state().closed) {
+        return { ok: false, reason: closeGate.deniedSendReason() };
       }
       if (stdinFailure !== undefined) {
         return { ok: false, reason: `stdin failed: ${stdinFailure}` };

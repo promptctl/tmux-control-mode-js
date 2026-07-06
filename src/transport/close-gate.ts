@@ -25,6 +25,13 @@ export interface CloseGate {
   readonly dispatch: (reason: string | undefined) => void;
   /** Register a callback to run on dispatch. */
   readonly onClose: (callback: (reason?: string) => void) => void;
+  /**
+   * The `SendResult.reason` string for a send refused because this gate is
+   * closed. [LAW:single-enforcer] The one formatting of "why is send
+   * refused" — previously duplicated identically across all three
+   * transports' `send()` implementations.
+   */
+  readonly deniedSendReason: () => string;
 }
 
 export function createCloseGate(): CloseGate {
@@ -50,6 +57,11 @@ export function createCloseGate(): CloseGate {
         return;
       }
       callbacks.push(callback);
+    },
+    deniedSendReason() {
+      return state.closed && state.reason !== undefined
+        ? `transport closed: ${state.reason}`
+        : "transport closed";
     },
   };
 }

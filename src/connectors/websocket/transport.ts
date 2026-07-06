@@ -71,16 +71,29 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
+  // [LAW:single-enforcer] `close` is the sole dispatcher. Per the WebSocket
+  // spec, `close` always eventually fires — cleanly or not, including after
+  // any `error` — so there is exactly one source of the true reason, not a
+  // race between two. `error` merely records that one occurred; earlier this
+  // dispatched eagerly on `error` itself, which meant the close event's own
+  // code (1006, 1001, …) was silently discarded by the gate's exactly-once
+  // guard for every real abnormal disconnect (error always precedes close),
+  // leaving the generic "websocket error" as the only reason a consumer ever
+  // saw — exactly the representational lie [LAW:one-source-of-truth] forbids.
+  let errorOccurred = false;
+
   ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
-    closeGate.dispatch(closeReason(event));
+    closeGate.dispatch(
+      closeReason(event) ?? (errorOccurred ? "websocket error" : undefined),
+    );
   });
 
   // The `error` event on a browser WebSocket is intentionally information-
   // free (the spec hides details to avoid leaking cross-origin probe data).
-  // We forward a generic reason; consumers wanting richer diagnostics should
-  // attach their own listener before adapting.
+  // Consumers wanting richer diagnostics should attach their own listener
+  // before adapting.
   ws.addEventListener("error", () => {
-    closeGate.dispatch("websocket error");
+    errorOccurred = true;
   });
 
   // [LAW:no-silent-failure] A socket already CLOSED before this adapter had a
@@ -101,15 +114,8 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
     // ws.send — both are refused here as a typed result instead.
     send(command: string): SendResult {
-      const closeState = closeGate.state();
-      if (closeState.closed) {
-        return {
-          ok: false,
-          reason:
-            closeState.reason === undefined
-              ? "transport closed"
-              : `transport closed: ${closeState.reason}`,
-        };
+      if (closeGate.state().closed) {
+        return { ok: false, reason: closeGate.deniedSendReason() };
       }
       if (ws.readyState !== WEBSOCKET_OPEN) {
         return {

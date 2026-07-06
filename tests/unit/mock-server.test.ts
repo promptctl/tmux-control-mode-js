@@ -94,6 +94,22 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     );
   });
 
+  it("a respond() that throws (contract violation) keeps send() total — no throw, an error guard block instead", async () => {
+    const boom = new Error("scenario bug");
+    const scenario: MockScenario = {
+      respond() {
+        throw boom;
+      },
+    };
+    const server = new MockTmuxServer(scenario);
+    const client = new TmuxClient(server);
+    server.start();
+
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TmuxCommandError,
+    );
+  });
+
   it("correlates concurrent commands in FIFO order (each gets its own response)", async () => {
     const scenario: MockScenario = {
       respond: (command) => ({ kind: "ok", output: [`echo:${command}`] }),

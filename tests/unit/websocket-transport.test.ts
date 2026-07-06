@@ -242,22 +242,42 @@ describe("websocketTransport", () => {
     expect(captured).toBeUndefined();
   });
 
-  it("error event dispatches a generic reason via onClose", () => {
+  it("error alone does not dispatch onClose — close is the sole dispatcher per spec", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const reasons: (string | undefined)[] = [];
     t.onClose((r) => reasons.push(r));
     ws.emitError();
-    expect(reasons).toEqual(["websocket error"]);
+    expect(reasons).toEqual([]);
   });
 
-  it("error followed by close dispatches one onClose notification", () => {
+  it("error followed by close surfaces the close event's own reason, not the generic error string", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const reasons: (string | undefined)[] = [];
     t.onClose((r) => reasons.push(r));
     ws.emitError();
     ws.emitClose(1006, "abnormal closure");
+    expect(reasons).toEqual(["abnormal closure"]);
+  });
+
+  it("error followed by a close with only a code surfaces the code, not the generic error string", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose(1006);
+    expect(reasons).toEqual(["code 1006"]);
+  });
+
+  it("error followed by a close with no code and no reason falls back to the generic error string", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose();
     expect(reasons).toEqual(["websocket error"]);
   });
 

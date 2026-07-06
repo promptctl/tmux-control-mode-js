@@ -137,20 +137,8 @@ export class MockTmuxServer implements TmuxTransport {
   send(command: string): SendResult {
     // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
     // the seam's contract, not a test convenience.
-    // [LAW:one-source-of-truth] Same reason-formatting convention as spawn.ts
-    // and the websocket transport: no current mock close path dispatches a
-    // defined reason, but matching the pattern means a future one (e.g. a
-    // scripted-scenario close reason) surfaces instead of being silently
-    // dropped by a mock-only format.
-    const closeState = this.closeGate.state();
-    if (closeState.closed) {
-      return {
-        ok: false,
-        reason:
-          closeState.reason === undefined
-            ? "transport closed"
-            : `transport closed: ${closeState.reason}`,
-      };
+    if (this.closeGate.state().closed) {
+      return { ok: false, reason: this.closeGate.deniedSendReason() };
     }
     this.inputBuffer += command;
 
@@ -234,7 +222,20 @@ export class MockTmuxServer implements TmuxTransport {
     }
 
     this.commandLog.push(line);
-    const reply = this.scenario.respond?.(line) ?? { kind: "ok" as const };
+    // [LAW:no-defensive-null-guards] exception: MockScenario is a public
+    // policy seam consumers implement — a trust boundary, same reasoning as
+    // TmuxTransport.send()'s own contract-violation guards. A respond() that
+    // throws (violating its documented MUST-be-pure contract) must not make
+    // this method throw: send() promises SendResult, never a throw.
+    let reply: CommandReply;
+    try {
+      reply = this.scenario.respond?.(line) ?? { kind: "ok" as const };
+    } catch (err) {
+      reply = {
+        kind: "error",
+        output: [err instanceof Error ? err.message : String(err)],
+      };
+    }
     const number = ++this.commandNumber;
     const timestamp = this.now();
 
