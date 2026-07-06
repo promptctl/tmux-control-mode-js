@@ -517,10 +517,14 @@ describe("WebSocket bridge — zng.5 handshake races", () => {
     const createClientPromise = new Promise<TmuxClient>((res) => {
       resolveCreate = res;
     });
+    let disposeCalls = 0;
     const bridge = createWebSocketBridge({
       createClient: () => {
         createClientCalls++;
         return createClientPromise;
+      },
+      disposeClient: () => {
+        disposeCalls++;
       },
     });
 
@@ -544,14 +548,23 @@ describe("WebSocket bridge — zng.5 handshake races", () => {
     expect(createClientCalls).toBe(1);
     expect(ws.readyState).not.toBe(WEBSOCKET_OPEN);
 
-    // The first hello's createClient() eventually resolves — since only one
-    // call to createClient ever happened, there is structurally only one
-    // possible attach site (client.on / attachBytesSink execute exactly once,
-    // gated by that single resolution). Resolving must not throw or send
-    // anything further on the already-closed socket.
+    // `sendFatalAndClose` called `ws.close()` above, but the fake — like a
+    // real socket — doesn't fire the `close` event synchronously; drive it
+    // explicitly so `finalize` actually runs and commits state to "closed"
+    // before createClient() resolves. Without this, the assertions below
+    // would pass only because `wsSend` gates on `readyState`, never
+    // exercising onHello's own `isClosed()` abort branch.
+    ws.fireClose(1011, "duplicate hello frame");
+
+    // createClient() resolves after finalize already ran. onHello must
+    // observe the closed state and dispose the client it built instead of
+    // wiring listeners onto it — the same abort path proven in the mid-
+    // handshake-close test above, reached here via the duplicate-hello path
+    // instead of a raw disconnect.
     const before = ws.outbound.length;
     resolveCreate(client);
     await flush();
+    expect(disposeCalls).toBe(1);
     expect(ws.outbound.length).toBe(before);
   });
 });
