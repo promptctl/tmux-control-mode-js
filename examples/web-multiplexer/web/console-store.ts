@@ -420,15 +420,17 @@ export class ConsoleStore {
         this.playgroundResult = { status: "value", value: decodeLine(ev.value), updateCount };
       });
     });
-    // [LAW:no-silent-failure] Fire-and-forget by design — the subscribe/
-    // unsubscribe result is never consumed, and a rejection (e.g. bridge
-    // closed mid-flight) carries no action beyond what onState/onError
-    // already report, so it's discarded rather than left unhandled.
+    // [LAW:no-silent-failure] Fire-and-forget by design — the result is never
+    // consumed and a bridge-closed rejection is already reported via
+    // onState/onError — but log it so a future non-BRIDGE_CLOSED rejection
+    // (validation, timeout, ...) doesn't vanish with zero diagnostic.
     this.disposeSubscription = () => {
       off();
       void this.bridge
         .execute(`refresh-client -B ${PLAYGROUND_SUB}`)
-        .catch(() => {});
+        .catch((err: unknown) =>
+          console.warn("[console] unsubscribe failed", err),
+        );
     };
     this.liveSig = sig;
     this.playgroundResult = { status: "idle" };
@@ -437,7 +439,7 @@ export class ConsoleStore {
       .execute(
         `refresh-client -B ${quoteTmuxArg(`${PLAYGROUND_SUB}:${what}:${format}`)}`,
       )
-      .catch(() => {});
+      .catch((err: unknown) => console.warn("[console] subscribe failed", err));
   }
 
   /** Drop the live subscription if any: remove the listener and tell tmux to

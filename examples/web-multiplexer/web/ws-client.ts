@@ -164,6 +164,18 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
+    // [LAW:single-enforcer] Same teardown the close listener does for queued-
+    // but-undelivered messages — otherwise a message enqueued while
+    // "connecting" (never drained) survives into the next connect() and gets
+    // sent stale on a fresh socket.
+    runInAction(() => {
+      if (this.outbox.length > 0) {
+        this.emitError(
+          `bridge closed with ${this.outbox.length} undelivered message(s)`,
+        );
+        this.outbox.splice(0, this.outbox.length);
+      }
+    });
     this.settlePendingOnClose("client disconnect");
     this.setState("closed");
   }
@@ -230,6 +242,19 @@ export class WebSocketBridge implements TmuxBridge {
         message: frame.message,
       });
       this.emitError(frame.message, frame.id);
+      // [LAW:no-silent-failure] This ErrorFrame is the bridge server's outer
+      // dispatch-failure path (server/bridge.ts) — distinct from a tmux
+      // %error, which already resolves via a ResponseFrame{success:false}.
+      // If it carries the id of a still-pending execute()/sendKeys(), that
+      // promise must settle here or it hangs forever (settlePendingOnClose
+      // already ran, or never runs, for a connection that stays open).
+      if (frame.id !== undefined) {
+        const entry = this.pending.get(frame.id);
+        if (entry !== undefined) {
+          this.pending.delete(frame.id);
+          entry.reject(new BridgeError("BRIDGE_INTERNAL", frame.message));
+        }
+      }
     }
   }
 

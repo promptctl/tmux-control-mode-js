@@ -56,6 +56,10 @@ class FakeSocket {
     this.readyState = FakeSocket.CLOSED;
     this.listeners.close.forEach((l) => l());
   }
+
+  fireMessage(data: string): void {
+    this.listeners.message.forEach((l) => l({ data }));
+  }
 }
 
 let lastSocket: FakeSocket | undefined;
@@ -137,5 +141,44 @@ describe("WebSocketBridge — pending settlement on close", () => {
     expect(() => {
       bridge.disconnect();
     }).not.toThrow();
+  });
+
+  it("rejects a pending call when the server sends a correlated ErrorFrame (a bridge-dispatch failure, distinct from a tmux %error), not a hang", async () => {
+    const { bridge, socket } = connectedBridge();
+
+    const p = bridge.execute("list-sessions");
+    const sentRequest = JSON.parse(socket.sent[0]) as { id: string };
+    socket.fireMessage(
+      JSON.stringify({
+        kind: "error",
+        id: sentRequest.id,
+        message: "dispatch failed",
+      }),
+    );
+
+    await expect(p).rejects.toBeInstanceOf(BridgeError);
+    await expect(p).rejects.toMatchObject({ code: "BRIDGE_INTERNAL" });
+  });
+
+  it("disconnect() clears the outbox so a message queued but never drained isn't sent stale on the next connect()", () => {
+    const bridge = new WebSocketBridge();
+    bridge.connect("ws://test");
+    const firstSocket = lastSocket;
+    if (firstSocket === undefined) throw new Error("expected a socket");
+    // Never opened, so the drain reaction never fires — this message sits in
+    // the outbox untouched.
+    void bridge.execute("list-sessions").catch(() => {});
+    expect(firstSocket.sent).toHaveLength(0);
+
+    bridge.disconnect();
+
+    bridge.connect("ws://test");
+    const secondSocket = lastSocket;
+    if (secondSocket === undefined || secondSocket === firstSocket) {
+      throw new Error("expected a fresh socket");
+    }
+    secondSocket.fireOpen();
+
+    expect(secondSocket.sent).toHaveLength(0);
   });
 });

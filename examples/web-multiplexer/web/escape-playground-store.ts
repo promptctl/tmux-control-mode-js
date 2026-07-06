@@ -289,8 +289,18 @@ export class EscapePlaygroundStore {
     runInAction(() => {
       this.lastSentBytes = new TextEncoder().encode(interpreted).length;
     });
-    // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
-    // action beyond what onState/onError already report.
-    void this.bridge.sendKeys(`%${this.paneId}`, interpreted).catch(() => {});
+    // [LAW:no-silent-failure] The byte count above is optimistic — if the
+    // send never reached tmux, roll it back rather than displaying "Sent N
+    // bytes" for bytes that were never transmitted. A bridge-closed rejection
+    // is already reported via onState/onError; logged here too so a future
+    // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
+    void this.bridge
+      .sendKeys(`%${this.paneId}`, interpreted)
+      .catch((err: unknown) => {
+        console.warn("[escape-playground] sendKeys failed", err);
+        runInAction(() => {
+          this.lastSentBytes = null;
+        });
+      });
   }
 }

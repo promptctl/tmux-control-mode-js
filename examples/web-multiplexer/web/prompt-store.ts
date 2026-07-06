@@ -150,11 +150,12 @@ export class PromptStore {
    * shell), so a re-run lands where the command makes sense.
    */
   rerun(record: CommandRecord): void {
-    // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
-    // action beyond what onState/onError already report.
+    // [LAW:no-silent-failure] Fire-and-forget: a bridge-closed rejection is
+    // already reported via onState/onError, but log it so a future
+    // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
     void this.bridge
       .sendKeys(`%${record.paneId}`, record.command + ENTER)
-      .catch(() => {});
+      .catch((err: unknown) => console.warn("[prompt] rerun failed", err));
   }
 
   // -------------------------------------------------------------------------
