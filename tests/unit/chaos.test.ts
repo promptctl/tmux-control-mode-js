@@ -378,6 +378,38 @@ describe("parser recovery under corruption", () => {
     expect(seen).toContainEqual({ type: "session-changed", sessionId: 1, name: "main" });
     expect(seen).toContainEqual({ type: "window-add", windowId: 10 });
   });
+
+  // tmux-lifecycle-zng.4: a truncated %end mid-block used to wedge the parser
+  // in output-routing mode for the rest of the connection — this is the exact
+  // shape of corruption the repo's own chaos fuzzer produces, reproduced here
+  // with a fixed seed as a permanent regression case.
+  it("chaos regression (seed 30, truncate): a truncated %end guard terminator no longer wedges the block", () => {
+    const seen: TmuxMessage[] = [];
+    const protocolErrors: Array<{ commandNumber: number; line: string }> = [];
+    const parser = new TmuxParser((m) => seen.push(m));
+    parser.onProtocolError = (commandNumber, line) =>
+      protocolErrors.push({ commandNumber, line });
+
+    const begin = serializeMessage({ type: "begin", timestamp: 1000, commandNumber: 5, flags: 1 });
+    const end = serializeMessage({ type: "end", timestamp: 1000, commandNumber: 5, flags: 1 });
+    const after = serializeMessage({ type: "window-add", windowId: 9 });
+
+    // Seed 30's "truncate" corruption on this exact %end line drops its
+    // trailing flags field — reproducing, deterministically, the malformed
+    // terminator tmux-lifecycle-zng.4 describes (fewer than the 3 required
+    // guard fields).
+    const corruptedEnd = corruptChunk(end, mulberry32(30), ["truncate"]);
+    expect(corruptedEnd).toBe("%end 1000 5"); // sanity: still malformed post-corruption
+
+    parser.feed(begin + "\n");
+    parser.feed(corruptedEnd + "\n");
+    parser.feed(after + "\n");
+
+    expect(protocolErrors).toEqual([{ commandNumber: 5, line: corruptedEnd }]);
+    // Recovery, not a wedge: the notification after the corrupted terminator
+    // routes as a real notification, not as misrouted output for command 5.
+    expect(seen).toContainEqual({ type: "window-add", windowId: 9 });
+  });
 });
 
 // ---------------------------------------------------------------------------

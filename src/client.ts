@@ -27,6 +27,7 @@ import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import {
   TmuxCommandError,
+  TmuxProtocolError,
   TransportClosedError,
   TransportSendError,
 } from "./errors.js";
@@ -69,13 +70,18 @@ export interface TmuxConnection {
 // Internal correlation state
 // ---------------------------------------------------------------------------
 
-// [LAW:types-are-the-program] The reject channel carries exactly three shapes:
-// tmux's %error receipt, the transport's refusal to send at all, or the
-// transport dying before tmux ever replied.
+// [LAW:types-are-the-program] The reject channel carries exactly four shapes:
+// tmux's %error receipt, a malformed %end/%error guard terminator, the
+// transport's refusal to send at all, or the transport dying before tmux ever
+// replied.
 interface PendingEntry {
   readonly resolve: (response: CommandResponse) => void;
   readonly reject: (
-    err: TmuxCommandError | TransportSendError | TransportClosedError,
+    err:
+      | TmuxCommandError
+      | TmuxProtocolError
+      | TransportSendError
+      | TransportClosedError,
   ) => void;
 }
 
@@ -83,14 +89,17 @@ interface PendingEntry {
 // a transport refusal (TransportSendError) is caught at execute()'s send()
 // call, before an entry ever becomes inflight (see handleMessage's "begin"
 // branch), so the true theorem for what reaches an inflight entry is exactly
-// TmuxCommandError (a %error reply) or TransportClosedError (the transport
-// closed while this entry was still awaiting %end/%error).
+// TmuxCommandError (a %error reply), TmuxProtocolError (a malformed
+// terminator), or TransportClosedError (the transport closed while this entry
+// was still awaiting %end/%error).
 interface InflightEntry {
   readonly commandNumber: number;
   readonly timestamp: number;
   readonly output: string[];
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (err: TmuxCommandError | TransportClosedError) => void;
+  readonly reject: (
+    err: TmuxCommandError | TmuxProtocolError | TransportClosedError,
+  ) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +151,9 @@ export class TmuxClient implements TmuxConnection {
 
     this.parser.onOutputLine = (_commandNumber, line) => {
       this.inflight?.output.push(line);
+    };
+    this.parser.onProtocolError = (commandNumber, line) => {
+      this.handleProtocolError(commandNumber, line);
     };
 
     // [LAW:no-ambient-temporal-coupling] "ready" is asserted from inside
@@ -434,5 +446,31 @@ export class TmuxClient implements TmuxConnection {
     //   is responsible for emitting non-byte messages to event listeners.
     this.router.handleNotification(msg);
     this.emitter.emit(msg);
+  }
+
+  // [LAW:no-silent-failure] Mirrors handleMessage's "error" branch: a
+  // malformed guard terminator settles the block same as a real %error would,
+  // just with TmuxProtocolError instead of TmuxCommandError — the parser
+  // already recovered (activeCommandNumber reset) before calling this, so
+  // this method's only job is settling correlation state and making the
+  // failure observable, not further parser recovery.
+  private handleProtocolError(commandNumber: number, line: string): void {
+    // [LAW:no-ambient-temporal-coupling] 'closed' is terminal (see
+    // handleMessage's identical guard) — settlePendingOnClose already ran, so
+    // there is nothing left to settle here for a message arriving this late.
+    if (this.currentConnectionState.status === "closed") return;
+    if (this.awaitingGreeting) {
+      // A malformed terminator on the startup greeting itself is not
+      // something a caller can retry or observe via a rejected command —
+      // there is no pending entry. The phase still closes: correlation for
+      // every subsequent guard block must proceed normally regardless.
+      this.awaitingGreeting = false;
+      this.setConnectionState({ status: "ready" });
+    } else {
+      const entry = this.inflight;
+      this.inflight = null;
+      entry?.reject(new TmuxProtocolError(commandNumber, line, entry.output));
+    }
+    this.emitter.emit({ type: "protocol-error", commandNumber, line });
   }
 }

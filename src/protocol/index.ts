@@ -34,6 +34,7 @@ export type {
   MessageMessage,
   ConfigErrorMessage,
   ExitMessage,
+  ProtocolErrorMessage,
   TmuxMessage,
   CommandResponse,
 } from "./types.js";

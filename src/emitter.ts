@@ -14,10 +14,15 @@
 // making the consumer's byte-handling branch structurally unreachable.
 //
 // [LAW:one-source-of-truth] `TmuxEventMap`'s wire arm is mechanically derived
-// from `EmitterTmuxMessage`; its synthetic arm comes from connection-state.ts.
+// from `EmitterTmuxMessage`; its synthetic arm comes from connection-state.ts
+// and protocol/types.ts.
 // [LAW:one-type-per-behavior] Single emitter type parameterized by the event map.
 
-import type { PaneOutputMessage, TmuxMessage } from "./protocol/types.js";
+import type {
+  PaneOutputMessage,
+  ProtocolErrorMessage,
+  TmuxMessage,
+} from "./protocol/types.js";
 import type {
   ConnectionStateMessage,
   ReconnectedMessage,
@@ -38,8 +43,11 @@ export type EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>;
 
 /**
  * Every event the emitter can carry. State-shaped `TmuxMessage` variants
- * (parsed from tmux output) plus the synthetic lifecycle events client
- * classes synthesize. This is the type seen by `'*'` wildcard listeners.
+ * (parsed from tmux output) plus the synthetic events client/parser classes
+ * synthesize (lifecycle, and `ProtocolErrorMessage` — the parser's own
+ * diagnosis of a malformed guard terminator, never sent by tmux; see its doc
+ * in protocol/types.ts for why it is not a `TmuxMessage`). This is the type
+ * seen by `'*'` wildcard listeners.
  *
  * [LAW:one-source-of-truth] Wildcard listeners read this union; per-event
  * listeners read `TmuxEventMap`. Both are derived in this file only.
@@ -47,15 +55,21 @@ export type EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>;
 export type EmitterMessage =
   | EmitterTmuxMessage
   | ConnectionStateMessage
-  | ReconnectedMessage;
+  | ReconnectedMessage
+  | ProtocolErrorMessage;
 
 /**
- * Type guard separating parsed tmux messages from synthetic lifecycle events.
+ * Type guard separating parsed tmux messages from synthetic events (lifecycle
+ * and parser-diagnosed protocol errors).
  * [LAW:single-enforcer] One discriminator check used by every emitter consumer
  * that needs to skip synthetic events (stream projections, wire forwarding).
  */
 export function isTmuxMessage(ev: EmitterMessage): ev is EmitterTmuxMessage {
-  return ev.type !== "connection-state" && ev.type !== "reconnected";
+  return (
+    ev.type !== "connection-state" &&
+    ev.type !== "reconnected" &&
+    ev.type !== "protocol-error"
+  );
 }
 
 /**
@@ -68,20 +82,22 @@ export function isTmuxMessage(ev: EmitterMessage): ev is EmitterTmuxMessage {
  * structurally absent because `EmitterTmuxMessage` excludes them; an attempt
  * to write `client.on('output', cb)` is a TS error (the key is not in the
  * map), which is what makes pane-byte misdecode impossible via the emitter.
- * The synthetic arm names the lifecycle events that client classes emit but
- * tmux never sends; their shapes live in `connection-state.ts`, so they
- * cannot be derived from the wire union.
+ * The synthetic arm names the lifecycle events that client classes emit, plus
+ * `protocol-error`, but tmux never sends any of them; their shapes live in
+ * `connection-state.ts` and `protocol/types.ts` respectively, so they cannot
+ * be derived from the wire union.
  *
  * [LAW:one-source-of-truth] Each arm derives from its own single source: the
- * non-byte wire union for parsed events, `connection-state.ts` for synthetic
- * ones. The split is visible here rather than hidden, mirroring
- * `EmitterMessage`.
+ * non-byte wire union for parsed events, `connection-state.ts`/
+ * `protocol/types.ts` for synthetic ones. The split is visible here rather
+ * than hidden, mirroring `EmitterMessage`.
  */
 export type TmuxEventMap = {
   [M in EmitterTmuxMessage as M["type"]]: M;
 } & {
   "connection-state": ConnectionStateMessage;
   reconnected: ReconnectedMessage;
+  "protocol-error": ProtocolErrorMessage;
 };
 
 // Internal handler type — erases the event payload for storage.
