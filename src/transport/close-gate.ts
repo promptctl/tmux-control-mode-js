@@ -38,7 +38,17 @@ export function createCloseGate(): CloseGate {
       state = { closed: true, reason };
       callbacks.forEach((cb) => cb(reason));
     },
+    // [LAW:no-silent-failure] A callback registered after the gate has
+    // already closed — whether long after, or synchronously from within
+    // another onClose callback during dispatch (state.closed flips to true
+    // before the dispatch loop runs) — fires immediately with the recorded
+    // reason instead of being silently dropped into an array that will
+    // never be iterated again.
     onClose(callback) {
+      if (state.closed) {
+        callback(state.reason);
+        return;
+      }
       callbacks.push(callback);
     },
   };
