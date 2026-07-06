@@ -107,7 +107,18 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
         };
       }
       const terminated = command.endsWith("\n") ? command : command + "\n";
-      ws.send(terminated);
+      // [LAW:types-are-the-program] send is total by its own contract; the
+      // socket is a consumer-supplied structural object (polyfills included),
+      // so a foreign synchronous throw is converted to the typed result at
+      // this boundary, mirroring the spawn transport's stdin wrap.
+      try {
+        ws.send(terminated);
+      } catch (err) {
+        return {
+          ok: false,
+          reason: `websocket send failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       return { ok: true };
     },
 
@@ -139,6 +150,14 @@ function decodeFrame(data: unknown): string {
   return "";
 }
 
+// RFC 6455 §7.4.1 — 1000 is "normal closure".
+const WS_NORMAL_CLOSURE = 1000;
+
+// [LAW:one-source-of-truth] Reason semantics are shared across transports:
+// undefined means a clean termination (TmuxClient maps it to closed{exit}),
+// any string means abnormal. A normal closure with no server-supplied reason
+// must therefore be undefined — mirroring the spawn transport's exit-0 —
+// or a clean close would masquerade as a transport error.
 function closeReason(event: {
   code?: number;
   reason?: string;
@@ -146,7 +165,9 @@ function closeReason(event: {
   if (event.reason !== undefined && event.reason.length > 0) {
     return event.reason;
   }
-  if (event.code !== undefined) return `code ${event.code}`;
+  if (event.code !== undefined && event.code !== WS_NORMAL_CLOSURE) {
+    return `code ${event.code}`;
+  }
   return undefined;
 }
 

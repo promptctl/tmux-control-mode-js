@@ -152,10 +152,17 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     const events = collectEvents(client);
     server.start();
 
-    client.detach(); // sends "\n"
+    expect(client.detach()).toEqual({ ok: true }); // sends "\n"
 
     expect(events.some((e) => e.type === "exit")).toBe(true);
     expect(client.connectionState.status).toBe("closed");
+
+    // A second detach is refused by the now-closed transport — the result
+    // makes that observable instead of silently doing nothing.
+    expect(client.detach()).toEqual({
+      ok: false,
+      reason: "transport closed",
+    });
   });
 
   it("refuses sends after close with a typed result (no throw, no delivery)", () => {

@@ -200,11 +200,13 @@ export class TmuxClient implements TmuxConnection {
 
   // Detach is NOT in TmuxConnection and NOT a free function — it sends a bare
   // newline which has no %begin/%end correlation and cannot use execute().
-  // [LAW:no-silent-failure] exception: a refused detach means the transport is
-  // already dead — detach's postcondition (connection over) holds, and the
-  // death itself is reported through onClose, the canonical exit path.
-  detach(): void {
-    this.transport.send(detachClient());
+  // [LAW:no-silent-failure] The refusal is representable, not swallowed: a
+  // transport may refuse because it is dead (detach moot; the death reports
+  // through onClose) or because it is not yet open (detach did nothing) —
+  // the returned result lets the caller tell which, while the actual close
+  // still announces itself only through onClose, the canonical exit path.
+  detach(): SendResult {
+    return this.transport.send(detachClient());
   }
 
   // ---------------------------------------------------------------------------

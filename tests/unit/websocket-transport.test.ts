@@ -122,6 +122,18 @@ describe("websocketTransport", () => {
     expect(ws.sent).toEqual([]);
   });
 
+  it("a synchronous throw from the socket's send becomes a typed refusal", () => {
+    const ws = createFake();
+    ws.send = () => {
+      throw new Error("clone failure");
+    };
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket send failed: clone failure",
+    });
+  });
+
   it("forwards string message frames verbatim to onData callbacks", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
@@ -174,6 +186,19 @@ describe("websocketTransport", () => {
     t.onClose((r) => reasons.push(r));
     ws.emitClose(1006, "abnormal closure");
     expect(reasons).toEqual(["abnormal closure", "abnormal closure"]);
+  });
+
+  it("a normal closure (1000, no reason) yields undefined — a clean exit, not a transport error", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    let captured: string | undefined = "unset";
+    t.onClose((r) => {
+      captured = r;
+    });
+    ws.emitClose(1000, "");
+    expect(captured).toBeUndefined();
+    // The post-close refusal likewise reads as a plain clean close.
+    expect(t.send("x")).toEqual({ ok: false, reason: "transport closed" });
   });
 
   it("close event with no reason but a code surfaces the code", () => {
