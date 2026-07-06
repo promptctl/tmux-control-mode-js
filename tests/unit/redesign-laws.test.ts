@@ -34,6 +34,7 @@ import {
   WEBSOCKET_OPEN,
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Shared fakes
@@ -258,6 +259,7 @@ describe("fifo-correlation", () => {
   it("commands resolve in send order via FIFO queue; no correlation id appears on the wire", async () => {
     const transport = new FakeTransport();
     const client = new TmuxClient(transport);
+    transport.inject(STARTUP_GREETING);
 
     const p1 = client.execute("cmd-alpha");
     const p2 = client.execute("cmd-beta");
@@ -279,6 +281,7 @@ describe("fifo-correlation", () => {
   it("a send that throws (contract-violating transport) rolls its entry out of the FIFO; later commands stay correlated", async () => {
     const transport = new FakeTransport();
     const client = new TmuxClient(transport);
+    transport.inject(STARTUP_GREETING);
 
     // A transport that throws violates the SendResult never-throws contract;
     // the client must reject loudly AND keep the correlation FIFO intact —
@@ -302,6 +305,7 @@ describe("fifo-correlation", () => {
   it("a send that returns a non-SendResult value (contract violation without a throw) still rolls its entry out of the FIFO", async () => {
     const transport = new FakeTransport();
     const client = new TmuxClient(transport);
+    transport.inject(STARTUP_GREETING);
 
     // A transport that returns undefined instead of a SendResult violates
     // the contract without throwing from send() itself — the `.ok` access

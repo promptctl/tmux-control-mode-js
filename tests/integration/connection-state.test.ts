@@ -51,7 +51,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it(
-      "transitions connecting → ready on first byte, then closed{exit} on kill-server",
+      "transitions connecting → ready once the startup greeting is consumed, then closed{exit} on kill-server",
       async () => {
         const sessionName = uniqueSession("connstate");
         execSync(
@@ -74,7 +74,9 @@ describe.skipIf(!RUN_INTEGRATION)(
         // instead of widening back to `TmuxClient | null` and forcing a
         // defensive `?.` on a value that cannot be null here.
         const activeClient = client;
-        // Wait for tmux's handshake byte.
+        // Wait for the client to consume tmux's unsolicited startup
+        // %begin/%end greeting (see TmuxClient.awaitingGreeting) — that is
+        // what "ready" now means, not merely "first byte received".
         await new Promise<void>((resolve) => {
           const onState = (ev: { state: ConnectionState }) => {
             if (ev.state.status === "ready") {

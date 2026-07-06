@@ -22,6 +22,7 @@ import {
   type RpcRequest,
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
@@ -221,6 +222,7 @@ describe("dispatchRpcRequest — routing", () => {
   function makeClient(): { client: TmuxClient; sent: string[] } {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     return { client, sent: t.sent };
   }
 
@@ -231,6 +233,7 @@ describe("dispatchRpcRequest — routing", () => {
   it("listWindows → 'list-windows'", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
     expect(t.sent[0]).toContain("list-windows");
     feedOk(t.feed, 1, ["@0 zsh 1 -"]);
@@ -242,6 +245,7 @@ describe("dispatchRpcRequest — routing", () => {
   it("sendKeys forwards target+keys", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, {
       method: "sendKeys",
       args: ["%0", "hi"],
@@ -257,6 +261,7 @@ describe("dispatchRpcRequest — routing", () => {
   it("setPaneAction forwards paneId+action", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, {
       method: "setPaneAction",
       args: [3, PaneAction.Pause],
@@ -270,6 +275,7 @@ describe("dispatchRpcRequest — routing", () => {
   it("subscribeRaw forwards name+what+format", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, {
       method: "subscribeRaw",
       args: ["sub", "%0", "#{pane_pid}"],
@@ -293,6 +299,7 @@ describe("dispatchRpcRequest — admin-only", () => {
     // fail at compile time because no variant exists.
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     void client;
     void t;
 
@@ -325,6 +332,7 @@ describe("dispatchRpcRequest — error propagation", () => {
   it("rejects with TmuxCommandError when tmux replies %error", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
 
     const p = dispatchRpcRequest(client, {
       method: "execute",

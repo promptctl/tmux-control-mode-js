@@ -30,6 +30,7 @@ import {
   WEBSOCKET_OPEN,
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -183,6 +184,7 @@ describe("WebSocket bridge — qz5.5 C2 subscription scoping", () => {
   it("rejects unsubscribe of a name the connection does not own", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({ createClient: () => client });
 
     // Connection A (the only owner of "focus").
@@ -249,6 +251,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
   it("emits setPaneAction(Pause) once per-pane outstanding crosses the high watermark", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({
       createClient: () => client,
       // Tiny watermarks so the test triggers without ballooning.
@@ -285,6 +288,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
   it("clears outstanding and resumes when bufferedAmount drains below low watermark", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({
       createClient: () => client,
       outputHighWatermark: 100,
@@ -329,6 +333,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
     // unsticks a paused pane once the OS buffer drains.
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({
       createClient: () => client,
       outputHighWatermark: 100,
@@ -367,6 +372,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
     // trip the threshold even under sustained load.
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({
       createClient: () => client,
       outputHighWatermark: 100,
@@ -396,6 +402,7 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
   it("rejects re-subscribing the same name with a different (what, format) on the same connection", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createWebSocketBridge({ createClient: () => client });
 
     const ws = createFakeWs();

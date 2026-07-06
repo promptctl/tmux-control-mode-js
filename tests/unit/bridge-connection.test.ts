@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -81,6 +82,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
   it("single peer subscribes then unsubscribes while inflight: both calls succeed in tmux order", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({ client });
     const a = bridge.registerPeer();
 
@@ -124,6 +126,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
   it("peer A unsubscribes while B is queued behind inflight: B retains ownership, no spurious tmux unsubscribe", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({ client });
     const a = bridge.registerPeer();
     const b = bridge.registerPeer();
@@ -177,6 +180,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
   it("subscribe rejected by tmux while peer also unsubscribes: subscribe rejects, unsubscribe synthesizes ok, no client.unsubscribe issued", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({ client });
     const a = bridge.registerPeer();
 
@@ -209,6 +213,7 @@ describe("BridgeConnection — dispose() binding safety", () => {
   it("destructured dispose still tears down every peer", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({ client });
 
     // Register two peers; their state must be cleared after dispose runs.
