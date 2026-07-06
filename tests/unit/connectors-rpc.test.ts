@@ -37,6 +37,7 @@ function createFakeTransport(): {
   const transport: TmuxTransport = {
     send(cmd) {
       sent.push(cmd);
+      return { ok: true };
     },
     onData(cb) {
       dataCb = cb;

@@ -8,7 +8,11 @@ export type {
   TmuxClientOptions,
 } from "./client.js";
 export type { ConnectionState } from "./connection-state.js";
-export { TmuxCommandError, UnsupportedTmuxVersionError } from "./errors.js";
+export {
+  TmuxCommandError,
+  TransportSendError,
+  UnsupportedTmuxVersionError,
+} from "./errors.js";
 
 // [LAW:one-source-of-truth] tmux version-compatibility contract. These are the
 // machine-readable form of the support floors the README Compatibility table
@@ -59,7 +63,11 @@ export { attachLineSink } from "./line-sink.js";
 export type { LineEvent, LineHandler } from "./line-sink.js";
 
 export { spawnTmux } from "./transport/spawn.js";
-export type { TmuxTransport, SpawnOptions } from "./transport/types.js";
+export type {
+  TmuxTransport,
+  SendResult,
+  SpawnOptions,
+} from "./transport/types.js";
 export {
   tmuxSocketDir,
   listTmuxSocketNames,

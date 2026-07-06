@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 import { MockTmuxServer } from "../../src/mock/index.js";
 import type { MockScenario } from "../../src/mock/index.js";
 import { TmuxClient } from "../../src/client.js";
-import { TmuxCommandError } from "../../src/errors.js";
+import { TmuxCommandError, TransportSendError } from "../../src/errors.js";
 import { serverScope } from "../../src/pane-output.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import type { EmitterMessage } from "../../src/emitter.js";
@@ -94,6 +94,22 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     );
   });
 
+  it("a respond() that throws (contract violation) keeps send() total — no throw, an error guard block instead", async () => {
+    const boom = new Error("scenario bug");
+    const scenario: MockScenario = {
+      respond() {
+        throw boom;
+      },
+    };
+    const server = new MockTmuxServer(scenario);
+    const client = new TmuxClient(server);
+    server.start();
+
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TmuxCommandError,
+    );
+  });
+
   it("correlates concurrent commands in FIFO order (each gets its own response)", async () => {
     const scenario: MockScenario = {
       respond: (command) => ({ kind: "ok", output: [`echo:${command}`] }),
@@ -152,19 +168,58 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     const events = collectEvents(client);
     server.start();
 
-    client.detach(); // sends "\n"
+    expect(client.detach()).toEqual({ ok: true }); // sends "\n"
 
     expect(events.some((e) => e.type === "exit")).toBe(true);
     expect(client.connectionState.status).toBe("closed");
+
+    // A second detach is refused by the now-closed transport — the result
+    // makes that observable instead of silently doing nothing.
+    expect(client.detach()).toEqual({
+      ok: false,
+      reason: "transport closed",
+    });
   });
 
-  it("ignores sends after close (no throw, no delivery)", () => {
+  it("a detach batched with a trailing command does not process the trailing command", () => {
+    const server = new MockTmuxServer();
+    const client = new TmuxClient(server);
+    server.start();
+
+    // One send() call carrying a bare-newline detach followed by another
+    // command — the detach must end the batch, not just the connection.
+    server.send("\nlist-windows\n");
+
+    expect(server.sentCommands).not.toContain("list-windows");
+    expect(client.connectionState.status).toBe("closed");
+  });
+
+  it("refuses sends after close with a typed result (no throw, no delivery)", () => {
     const server = new MockTmuxServer();
     const client = new TmuxClient(server);
     server.start();
     server.close();
 
-    expect(() => server.send("list-windows\n")).not.toThrow();
+    expect(server.send("list-windows\n")).toEqual({
+      ok: false,
+      reason: "transport closed",
+    });
     expect(server.sentCommands).not.toContain("list-windows");
+  });
+
+  it("execute after transport close rejects with TransportSendError instead of hanging", async () => {
+    const server = new MockTmuxServer();
+    const client = new TmuxClient(server);
+    server.start();
+    server.close();
+
+    // Before the seam carried send failure, this promise never settled — the
+    // entry sat in the FIFO waiting for a %begin that could never arrive.
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TransportSendError,
+    );
+    await expect(client.execute("list-windows")).rejects.toThrow(
+      /transport closed/,
+    );
   });
 });

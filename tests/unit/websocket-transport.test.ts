@@ -94,6 +94,62 @@ describe("websocketTransport", () => {
     expect(ws.sent).toEqual(["kill-server\n"]);
   });
 
+  it("send on an open socket reports acceptance", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({ ok: true });
+  });
+
+  it("send while the socket is not open refuses instead of throwing", () => {
+    const ws = createFake();
+    ws.readyState = 0; // CONNECTING — a real ws.send here throws InvalidStateError
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket not open (readyState 0)",
+    });
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("send after the close event refuses with the close reason", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    ws.emitClose(1006, "abnormal");
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "transport closed: abnormal",
+    });
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("a synchronous throw from the socket's send becomes a typed refusal", () => {
+    const ws = createFake();
+    ws.send = () => {
+      throw new Error("clone failure");
+    };
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket send failed: clone failure",
+    });
+  });
+
+  it("a caught send throw is remembered — a later send refuses without calling ws.send again", () => {
+    const ws = createFake();
+    let calls = 0;
+    ws.send = () => {
+      calls++;
+      throw new Error("clone failure");
+    };
+    const t = websocketTransport(ws);
+    t.send("list-sessions");
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket send failed: clone failure",
+    });
+    expect(calls).toBe(1);
+  });
+
   it("forwards string message frames verbatim to onData callbacks", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
@@ -148,6 +204,19 @@ describe("websocketTransport", () => {
     expect(reasons).toEqual(["abnormal closure", "abnormal closure"]);
   });
 
+  it("a normal closure (1000, no reason) yields undefined — a clean exit, not a transport error", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    let captured: string | undefined = "unset";
+    t.onClose((r) => {
+      captured = r;
+    });
+    ws.emitClose(1000, "");
+    expect(captured).toBeUndefined();
+    // The post-close refusal likewise reads as a plain clean close.
+    expect(t.send("x")).toEqual({ ok: false, reason: "transport closed" });
+  });
+
   it("close event with no reason but a code surfaces the code", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
@@ -173,23 +242,62 @@ describe("websocketTransport", () => {
     expect(captured).toBeUndefined();
   });
 
-  it("error event dispatches a generic reason via onClose", () => {
+  it("error alone does not dispatch onClose — close is the sole dispatcher per spec", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const reasons: (string | undefined)[] = [];
     t.onClose((r) => reasons.push(r));
     ws.emitError();
-    expect(reasons).toEqual(["websocket error"]);
+    expect(reasons).toEqual([]);
   });
 
-  it("error followed by close dispatches one onClose notification", () => {
+  it("error followed by close surfaces the close event's own reason, not the generic error string", () => {
     const ws = createFake();
     const t = websocketTransport(ws);
     const reasons: (string | undefined)[] = [];
     t.onClose((r) => reasons.push(r));
     ws.emitError();
     ws.emitClose(1006, "abnormal closure");
+    expect(reasons).toEqual(["abnormal closure"]);
+  });
+
+  it("error followed by a close with only a code surfaces the code, not the generic error string", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose(1006);
+    expect(reasons).toEqual(["code 1006"]);
+  });
+
+  it("error followed by a close with no code and no reason falls back to the generic error string", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose();
     expect(reasons).toEqual(["websocket error"]);
+  });
+
+  it("error followed by an explicit normal closure (code 1000) stays a clean exit — the explicit code is not overridden by the vaguer error flag", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    ws.emitError();
+    ws.emitClose(1000, "");
+    expect(reasons).toEqual([undefined]);
+  });
+
+  it("a socket already CLOSED at construction synthesizes a close dispatch — onClose is not orphaned", () => {
+    const ws = createFake();
+    ws.readyState = 3; // CLOSED — simulates dying before this adapter attached listeners
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    expect(reasons).toEqual(["websocket already closed"]);
   });
 
   it("close() closes the underlying socket", () => {

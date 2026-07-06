@@ -5,7 +5,7 @@
 // the boundary carries no behavior; adding logic here would couple the layer's
 // face to its internals.
 
-export type { TmuxTransport, SpawnOptions } from "./types.js";
+export type { TmuxTransport, SendResult, SpawnOptions } from "./types.js";
 
 export { spawnTmux } from "./spawn.js";
 

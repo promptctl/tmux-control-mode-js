@@ -19,7 +19,8 @@
 //   import, erased at runtime), no clock unless one is injected. The same build
 //   runs in Node tests and the browser tutorial.
 
-import type { TmuxTransport } from "../transport/types.js";
+import type { TmuxTransport, SendResult } from "../transport/types.js";
+import { createCloseGate } from "../transport/close-gate.js";
 import type { TmuxMessage } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
 
@@ -88,7 +89,11 @@ export class MockTmuxServer implements TmuxTransport {
   private readonly now: () => number;
 
   private readonly dataCallbacks: ((chunk: string) => void)[] = [];
-  private readonly closeCallbacks: ((reason?: string) => void)[] = [];
+
+  // [LAW:one-source-of-truth] Same shared gate the real transports use — one
+  // definition of "closed, and why" and exactly-once dispatch, not a third
+  // independent copy of the pattern.
+  private readonly closeGate = createCloseGate();
 
   // [LAW:single-enforcer] Command numbering lives here only — one monotonic
   // counter, incremented per command, shared by a command's begin and end/error
@@ -112,7 +117,6 @@ export class MockTmuxServer implements TmuxTransport {
   private readonly outbound: string[] = [];
   private flushing = false;
 
-  private closed = false;
   private started = false;
 
   // The commands the client has sent, newline-stripped, in order — for assertions.
@@ -130,20 +134,29 @@ export class MockTmuxServer implements TmuxTransport {
   // TmuxTransport surface
   // -------------------------------------------------------------------------
 
-  send(command: string): void {
-    if (this.closed) return;
+  send(command: string): SendResult {
+    // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
+    // the seam's contract, not a test convenience.
+    if (this.closeGate.state().closed) {
+      return { ok: false, reason: this.closeGate.deniedSendReason() };
+    }
     this.inputBuffer += command;
 
     // [LAW:dataflow-not-control-flow] Every complete line runs the same handle
     // step; the line's content (empty = detach, else a command) decides the
-    // effect, not a branch on whether to process.
+    // effect, not a branch on whether to process. The `!closed` guard is not
+    // a control-flow branch on content — it stops the batch the instant a
+    // line closes the transport, since a detach mid-batch (SPEC §4.1) ends
+    // the connection and no line after it was ever going to reach a live
+    // tmux.
     let newlineIdx = this.inputBuffer.indexOf("\n");
-    while (newlineIdx !== -1) {
+    while (newlineIdx !== -1 && !this.closeGate.state().closed) {
       const line = this.inputBuffer.slice(0, newlineIdx);
       this.inputBuffer = this.inputBuffer.slice(newlineIdx + 1);
       this.handleCommandLine(line);
       newlineIdx = this.inputBuffer.indexOf("\n");
     }
+    return { ok: true };
   }
 
   onData(callback: (chunk: string) => void): void {
@@ -151,11 +164,11 @@ export class MockTmuxServer implements TmuxTransport {
   }
 
   onClose(callback: (reason?: string) => void): void {
-    this.closeCallbacks.push(callback);
+    this.closeGate.onClose(callback);
   }
 
   close(): void {
-    this.fireClose(undefined);
+    this.closeGate.dispatch(undefined);
   }
 
   // -------------------------------------------------------------------------
@@ -168,7 +181,7 @@ export class MockTmuxServer implements TmuxTransport {
    * does not double-seed.
    */
   start(): void {
-    if (this.closed || this.started) return;
+    if (this.closeGate.state().closed || this.started) return;
     this.started = true;
     for (const msg of this.scenario.greeting ?? []) this.enqueueMessage(msg);
     this.flush();
@@ -181,7 +194,7 @@ export class MockTmuxServer implements TmuxTransport {
    * (SPEC_MANIFEST §4.1) holds by construction. [LAW:single-enforcer]
    */
   emit(msg: TmuxMessage): void {
-    if (this.closed) return;
+    if (this.closeGate.state().closed) return;
     this.enqueueMessage(msg);
     this.flush();
   }
@@ -204,12 +217,25 @@ export class MockTmuxServer implements TmuxTransport {
     // A bare newline (empty command line) is the detach byte — tmux exits the
     // control client (SPEC §4.1). Faithful: end the connection.
     if (line === "") {
-      this.fireClose(undefined);
+      this.closeGate.dispatch(undefined);
       return;
     }
 
     this.commandLog.push(line);
-    const reply = this.scenario.respond?.(line) ?? { kind: "ok" as const };
+    // [LAW:no-defensive-null-guards] exception: MockScenario is a public
+    // policy seam consumers implement — a trust boundary, same reasoning as
+    // TmuxTransport.send()'s own contract-violation guards. A respond() that
+    // throws (violating its documented MUST-be-pure contract) must not make
+    // this method throw: send() promises SendResult, never a throw.
+    let reply: CommandReply;
+    try {
+      reply = this.scenario.respond?.(line) ?? { kind: "ok" as const };
+    } catch (err) {
+      reply = {
+        kind: "error",
+        output: [err instanceof Error ? err.message : String(err)],
+      };
+    }
     const number = ++this.commandNumber;
     const timestamp = this.now();
 
@@ -257,11 +283,5 @@ export class MockTmuxServer implements TmuxTransport {
       for (const cb of this.dataCallbacks) cb(chunk);
     }
     this.flushing = false;
-  }
-
-  private fireClose(reason: string | undefined): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const cb of this.closeCallbacks) cb(reason);
   }
 }

@@ -32,7 +32,9 @@ function createFakeTransport(): FakeTransport {
   const dataCallbacks: ((chunk: string) => void)[] = [];
   const closeCallbacks: ((reason?: string) => void)[] = [];
   return {
-    send(): void {},
+    send() {
+      return { ok: true } as const;
+    },
     onData(cb): void {
       dataCallbacks.push(cb);
     },

@@ -5,14 +5,31 @@
 // [LAW:one-source-of-truth] Single interface defines all transport contracts.
 
 /**
+ * The outcome of a {@link TmuxTransport.send}.
+ *
+ * `ok: true` means the transport ACCEPTED the bytes for transmission — it is
+ * not a delivery guarantee; a transport that dies after acceptance reports
+ * that through `onClose`. `ok: false` means the transport already knows it
+ * cannot deliver (closed, dead pipe, socket not open) and `reason` says why.
+ *
+ * [LAW:types-are-the-program] Send failure is a representable outcome, not an
+ * exception convention: the compiler forces every implementation to state a
+ * result, and forces no caller to guess whether a silent void succeeded.
+ * [LAW:dataflow-not-control-flow] Variability lives in the returned value.
+ */
+export type SendResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: string };
+
+/**
  * Minimal transport interface for tmux control mode communication.
  *
  * Any environment (child_process, WebSocket, IPC) can implement this.
  * Intentionally avoids EventEmitter and Node streams for portability.
  */
 export interface TmuxTransport {
-  /** Send a command string to tmux. */
-  send(command: string): void;
+  /** Send a command string to tmux. Never throws; the result is the outcome. */
+  send(command: string): SendResult;
 
   /** Register callback for incoming data chunks. */
   onData(callback: (chunk: string) => void): void;

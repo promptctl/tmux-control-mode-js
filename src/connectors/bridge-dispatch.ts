@@ -34,7 +34,7 @@
 // not in which branch a connector took.
 
 import type { TmuxConnection } from "../client.js";
-import { TmuxCommandError } from "../errors.js";
+import { TmuxCommandError, TransportSendError } from "../errors.js";
 import type { CommandResponse } from "../protocol/types.js";
 import type { BridgeConnection, Peer } from "./bridge-connection.js";
 import { BridgeError } from "./errors.js";
@@ -123,6 +123,16 @@ function classifyDispatchError(method: RpcMethod, err: unknown): BridgeOutcome {
   // surface it verbatim instead of collapsing into BRIDGE_INTERNAL.
   if (err instanceof BridgeError) {
     return { kind: "bridge-error", error: err };
+  }
+  // [LAW:one-type-per-behavior] A transport send refusal is an operational
+  // close of the upstream tmux connection — the same consumer-facing state as
+  // a bridge close, so it carries the same code, never BRIDGE_INTERNAL (which
+  // means "bug"). The refusal reason rides in the message.
+  if (err instanceof TransportSendError) {
+    return {
+      kind: "bridge-error",
+      error: new BridgeError("BRIDGE_CLOSED", err.message),
+    };
   }
   return { kind: "bridge-error", error: internalError(method, err) };
 }

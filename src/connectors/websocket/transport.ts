@@ -16,8 +16,14 @@
 // observability; this is a transport-layer pipe.
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
-import type { TmuxTransport } from "../../transport/types.js";
-import type { BrowserWebSocketLike } from "./types.js";
+import type { TmuxTransport, SendResult } from "../../transport/types.js";
+import { createCloseGate } from "../../transport/close-gate.js";
+import { terminateLine } from "../../transport/line-termination.js";
+import {
+  WEBSOCKET_OPEN,
+  WEBSOCKET_CLOSED,
+  type BrowserWebSocketLike,
+} from "./types.js";
 
 /**
  * Adapt a WebSocket to the TmuxTransport interface.
@@ -48,42 +54,104 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   ws.binaryType = "arraybuffer";
 
   const dataCallbacks: ((chunk: string) => void)[] = [];
-  const closeCallbacks: ((reason?: string) => void)[] = [];
-  let closed = false;
 
-  const dispatchClose = (reason?: string): void => {
-    // [LAW:single-enforcer] One synthetic close notification per transport.
-    // Browser/WebSocket runtimes commonly emit `error` and then `close` for
-    // one disconnect; TmuxClient should observe that as one exit path.
-    if (closed) return;
-    closed = true;
-    closeCallbacks.forEach((cb) => cb(reason));
-  };
+  // [LAW:single-enforcer] One synthetic close notification per transport.
+  // Browser/WebSocket runtimes commonly emit `error` and then `close` for
+  // one disconnect; the gate's exactly-once dispatch means TmuxClient
+  // observes that as one exit path.
+  const closeGate = createCloseGate();
+
+  // [LAW:one-source-of-truth] Mirrors spawn.ts's stdinFailure: a caught send
+  // throw is remembered so every subsequent send refuses immediately instead
+  // of re-attempting `ws.send()` against a socket already known to reject.
+  let sendFailure: string | undefined;
 
   ws.addEventListener("message", (event: { data: unknown }) => {
     const chunk = decodeFrame(event.data);
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
+  // [LAW:single-enforcer] `close` is the sole dispatcher. Per the WebSocket
+  // spec, `close` always eventually fires — cleanly or not, including after
+  // any `error` — so there is exactly one source of the true reason, not a
+  // race between two. `error` merely records that one occurred; earlier this
+  // dispatched eagerly on `error` itself, which meant the close event's own
+  // code (1006, 1001, …) was silently discarded by the gate's exactly-once
+  // guard for every real abnormal disconnect (error always precedes close),
+  // leaving the generic "websocket error" as the only reason a consumer ever
+  // saw — exactly the representational lie [LAW:one-source-of-truth] forbids.
+  let errorOccurred = false;
+
   ws.addEventListener("close", (event: { code?: number; reason?: string }) => {
-    dispatchClose(closeReason(event));
+    // [LAW:one-source-of-truth] closeReason(event) returns undefined for two
+    // different facts that must not be conflated: "close explicitly said
+    // code 1000, genuinely clean" vs. "close carried no data at all". Only
+    // the second should defer to the errorOccurred flag — an explicit clean
+    // code is itself a real signal and must not be overridden by a vaguer
+    // one, or a genuinely clean close after an unrelated earlier error would
+    // misreport as "websocket error".
+    const closeHasData =
+      event.code !== undefined ||
+      (event.reason !== undefined && event.reason.length > 0);
+    closeGate.dispatch(
+      closeReason(event) ??
+        (!closeHasData && errorOccurred ? "websocket error" : undefined),
+    );
   });
 
   // The `error` event on a browser WebSocket is intentionally information-
   // free (the spec hides details to avoid leaking cross-origin probe data).
-  // We forward a generic reason; consumers wanting richer diagnostics should
-  // attach their own listener before adapting.
+  // Consumers wanting richer diagnostics should attach their own listener
+  // before adapting.
   ws.addEventListener("error", () => {
-    dispatchClose("websocket error");
+    errorOccurred = true;
   });
 
+  // [LAW:no-silent-failure] A socket already CLOSED before this adapter had a
+  // chance to attach listeners (e.g. constructed on a socket that died
+  // moments earlier) will never fire another "close" event — the real one
+  // already happened and was missed. Synthesize the dispatch now so onClose
+  // listeners on this transport (even ones registered later — the gate
+  // fires them immediately once closed) are not permanently orphaned.
+  if (ws.readyState === WEBSOCKET_CLOSED) {
+    closeGate.dispatch("websocket already closed");
+  }
+
   return {
-    // [LAW:single-enforcer] LF-termination of control-mode commands enforced
-    // here, mirroring transport/spawn.ts. The relay forwards bytes verbatim
-    // to tmux's stdin, so the line terminator must travel with the command.
-    send(command: string): void {
-      const terminated = command.endsWith("\n") ? command : command + "\n";
-      ws.send(terminated);
+    // [LAW:single-enforcer] LF-termination logic lives in terminateLine(),
+    // shared with transport/spawn.ts. The relay forwards bytes verbatim to
+    // tmux's stdin, so the line terminator must travel with the command.
+    // [LAW:no-silent-failure] send is total: a socket that is not OPEN would
+    // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
+    // ws.send — both are refused here as a typed result instead.
+    send(command: string): SendResult {
+      if (closeGate.state().closed) {
+        return { ok: false, reason: closeGate.deniedSendReason() };
+      }
+      if (ws.readyState !== WEBSOCKET_OPEN) {
+        return {
+          ok: false,
+          reason: `websocket not open (readyState ${ws.readyState})`,
+        };
+      }
+      if (sendFailure !== undefined) {
+        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
+      }
+      const terminated = terminateLine(command);
+      // [LAW:types-are-the-program] send is total by its own contract; the
+      // socket is a consumer-supplied structural object (polyfills included),
+      // so a foreign synchronous throw is converted to the typed result at
+      // this boundary, mirroring the spawn transport's stdin wrap.
+      try {
+        ws.send(terminated);
+      } catch (err) {
+        // [LAW:single-enforcer] First reason wins, mirroring spawn.ts's
+        // stdinFailure — only meaningful today since there's one writer, but
+        // consistent with the sibling pattern if a second ever appears.
+        sendFailure ??= err instanceof Error ? err.message : String(err);
+        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
+      }
+      return { ok: true };
     },
 
     onData(callback: (chunk: string) => void): void {
@@ -91,7 +159,7 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     },
 
     onClose(callback: (reason?: string) => void): void {
-      closeCallbacks.push(callback);
+      closeGate.onClose(callback);
     },
 
     close(): void {
@@ -114,6 +182,14 @@ function decodeFrame(data: unknown): string {
   return "";
 }
 
+// RFC 6455 §7.4.1 — 1000 is "normal closure".
+const WS_NORMAL_CLOSURE = 1000;
+
+// [LAW:one-source-of-truth] Reason semantics are shared across transports:
+// undefined means a clean termination (TmuxClient maps it to closed{exit}),
+// any string means abnormal. A normal closure with no server-supplied reason
+// must therefore be undefined — mirroring the spawn transport's exit-0 —
+// or a clean close would masquerade as a transport error.
 function closeReason(event: {
   code?: number;
   reason?: string;
@@ -121,7 +197,9 @@ function closeReason(event: {
   if (event.reason !== undefined && event.reason.length > 0) {
     return event.reason;
   }
-  if (event.code !== undefined) return `code ${event.code}`;
+  if (event.code !== undefined && event.code !== WS_NORMAL_CLOSURE) {
+    return `code ${event.code}`;
+  }
   return undefined;
 }
 

@@ -24,8 +24,8 @@ import {
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { isPaneOutput } from "./protocol/types.js";
-import type { TmuxTransport } from "./transport/types.js";
-import { TmuxCommandError } from "./errors.js";
+import type { TmuxTransport, SendResult } from "./transport/types.js";
+import { TmuxCommandError, TransportSendError } from "./errors.js";
 
 // Re-export for consumers that need it
 export type { SplitOptions } from "./protocol/encoder.js";
@@ -65,11 +65,17 @@ export interface TmuxConnection {
 // Internal correlation state
 // ---------------------------------------------------------------------------
 
+// [LAW:types-are-the-program] The reject channel carries exactly two shapes:
+// tmux's %error receipt, or the transport's refusal to send at all.
 interface PendingEntry {
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (err: TmuxCommandError) => void;
+  readonly reject: (err: TmuxCommandError | TransportSendError) => void;
 }
 
+// [LAW:types-are-the-program] Narrower than PendingEntry.reject on purpose:
+// a transport refusal is caught at execute()'s send() call, before an entry
+// ever becomes inflight (see handleMessage's "begin" branch), so the true
+// theorem for what reaches an inflight entry is exactly TmuxCommandError.
 interface InflightEntry {
   readonly commandNumber: number;
   readonly timestamp: number;
@@ -139,8 +145,32 @@ export class TmuxClient implements TmuxConnection {
   // Plain command string in → response out. No sendRaw escape hatch for callers.
   execute(command: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
-      this.pending.push({ resolve, reject });
-      this.transport.send(command + "\n");
+      // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
+      // may deliver %begin within send() and must find this entry in the FIFO.
+      const entry: PendingEntry = { resolve, reject };
+      this.pending.push(entry);
+      try {
+        const sent = this.transport.send(command + "\n");
+        // [LAW:no-silent-failure] A refused send settles the promise now —
+        // the command never reached tmux, so no %begin will ever claim this
+        // entry. The `.ok` access stays inside this try: a contract-
+        // violating transport that returns a non-SendResult value throws
+        // here too, falling into the same rollback path below rather than
+        // leaking this entry via an uncaught TypeError.
+        if (!sent.ok) {
+          this.dropPending(entry);
+          reject(new TransportSendError(sent.reason));
+        }
+      } catch (err) {
+        // [LAW:no-defensive-null-guards] exception: TmuxTransport is a public
+        // seam consumers implement — a trust boundary. A throwing send
+        // violates the SendResult contract, but the FIFO's correlation
+        // integrity [LAW:one-source-of-truth] must not depend on outside code
+        // keeping promises: roll the entry back and stay loud — the rethrow
+        // rejects this promise with the original error.
+        this.dropPending(entry);
+        throw err;
+      }
     });
   }
 
@@ -177,13 +207,28 @@ export class TmuxClient implements TmuxConnection {
 
   // Detach is NOT in TmuxConnection and NOT a free function — it sends a bare
   // newline which has no %begin/%end correlation and cannot use execute().
-  detach(): void {
-    this.transport.send(detachClient());
+  // [LAW:no-silent-failure] The refusal is representable, not swallowed: a
+  // transport may refuse because it is dead (detach moot; the death reports
+  // through onClose) or because it is not yet open (detach did nothing) —
+  // the returned result lets the caller tell which, while the actual close
+  // still announces itself only through onClose, the canonical exit path.
+  detach(): SendResult {
+    return this.transport.send(detachClient());
   }
 
   // ---------------------------------------------------------------------------
   // Internal — lifecycle state
   // ---------------------------------------------------------------------------
+
+  // Rolls an entry back out of the FIFO after a send that could not enqueue
+  // work with tmux; a no-op if a synchronous response already claimed it.
+  // [LAW:decomposition] execute() pushes `entry` and calls this synchronously
+  // with no intervening push, so `entry` is either still the tail (roll back
+  // with pop) or was already shifted off the head by a synchronous %begin
+  // (already claimed, nothing to do) — never anywhere else in the array.
+  private dropPending(entry: PendingEntry): void {
+    if (this.pending[this.pending.length - 1] === entry) this.pending.pop();
+  }
 
   private setConnectionState(next: ConnectionState): void {
     if (sameConnectionState(this.currentConnectionState, next)) return;
