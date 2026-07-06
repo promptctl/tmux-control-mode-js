@@ -402,12 +402,18 @@ export class TmuxClient implements TmuxConnection {
       // ordinary notification path below like every other variant (SPEC §23
       // requires %exit observable on its own).
       //
-      // Deliberately not clearing awaitingGreeting here: an %exit arriving
-      // mid-greeting (tmux died before its own %end/%error) leaves it stuck
-      // true, but connectionState is terminal-closed by the time anything
-      // could read it again — the guard at the top of this method returns
-      // before any awaitingGreeting-gated branch runs. Clearing it would be
-      // a write nothing ever observes.
+      // Deliberately not clearing awaitingGreeting here. Two cases:
+      //   1. %exit arrives mid-greeting: impossible through this method —
+      //      the parser enforces block purity (processLine's treatAsOutput),
+      //      so no notification, %exit included, can be dispatched while the
+      //      greeting's guard block is still open. It would be captured as
+      //      (discarded) output text of that block instead.
+      //   2. tmux dies with no trailing %end/%error at all (no closing guard
+      //      ever arrives): awaitingGreeting is stuck true, but harmlessly —
+      //      transport close makes connectionState terminal-closed, and the
+      //      guard at the top of this method returns before any
+      //      awaitingGreeting-gated branch could run again.
+      // Either way, clearing it here would be a write nothing ever observes.
       if (this.exitAlreadyEmitted) return;
       this.exitAlreadyEmitted = true;
     }
