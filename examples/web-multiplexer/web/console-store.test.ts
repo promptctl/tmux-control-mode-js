@@ -674,6 +674,25 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
     expect(store.playgroundResult).toEqual({ status: "idle" });
   });
 
+  it("resets liveSig/disposeSubscription and drops the listener when the subscribe execute() rejects, so a later refresh() retries instead of no-op'ing forever", async () => {
+    const { store, rig } = subscribedStore();
+    expect(rig.eventListeners.size).toBe(1);
+    const callsBefore = rig.execCalls.length;
+
+    rig.execCalls[0].d.reject(new Error("bridge closed"));
+    await tick();
+
+    // The dead listener from the failed attempt is gone...
+    expect(rig.eventListeners.size).toBe(0);
+
+    // ...and refresh() with the SAME (mode, target, format) actually retries
+    // rather than no-op'ing on a stale liveSig that thinks a subscription
+    // is still live.
+    store.refresh();
+    expect(rig.execCalls.length).toBeGreaterThan(callsBefore);
+    expect(rig.eventListeners.size).toBe(1);
+  });
+
   it("installs the subscription when the bridge reaches ready (boot into subscribed)", () => {
     // Persisted mode is subscribed, but the store is constructed before the
     // bridge is ready: the ready handler reconciles to the desired state.

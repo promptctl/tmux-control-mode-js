@@ -439,7 +439,21 @@ export class ConsoleStore {
       .execute(
         `refresh-client -B ${quoteTmuxArg(`${PLAYGROUND_SUB}:${what}:${format}`)}`,
       )
-      .catch((err: unknown) => console.warn("[console] subscribe failed", err));
+      .catch((err: unknown) => {
+        console.warn("[console] subscribe failed", err);
+        // [LAW:no-ambient-temporal-coupling] Only unwind if this attempt is
+        // still the live one — a rejection for a subscribe that a later
+        // refresh() already tore down must not stomp the newer
+        // subscription's state. Otherwise the store would believe a
+        // subscription is live forever (refresh() no-ops on an unchanged
+        // signature) when tmux never actually installed one.
+        if (this.liveSig !== sig) return;
+        off();
+        runInAction(() => {
+          this.liveSig = null;
+          this.disposeSubscription = null;
+        });
+      });
   }
 
   /** Drop the live subscription if any: remove the listener and tell tmux to

@@ -164,20 +164,22 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
-    // [LAW:single-enforcer] Same teardown the close listener does for queued-
-    // but-undelivered messages — otherwise a message enqueued while
-    // "connecting" (never drained) survives into the next connect() and gets
-    // sent stale on a fresh socket.
+    // [LAW:no-ambient-temporal-coupling] Same order as the close listener:
+    // setState("closed") FIRST, then settlePendingOnClose. If an onState
+    // handler reacts to "closed" by synchronously issuing a new
+    // execute()/sendKeys(), that entry lands in `pending` during the
+    // setState fan-out — settling it after (not before) means it's still
+    // swept by this same teardown rather than left to hang forever.
     runInAction(() => {
+      this.setState("closed");
       if (this.outbox.length > 0) {
         this.emitError(
           `bridge closed with ${this.outbox.length} undelivered message(s)`,
         );
         this.outbox.splice(0, this.outbox.length);
       }
+      this.settlePendingOnClose("client disconnect");
     });
-    this.settlePendingOnClose("client disconnect");
-    this.setState("closed");
   }
 
   /**

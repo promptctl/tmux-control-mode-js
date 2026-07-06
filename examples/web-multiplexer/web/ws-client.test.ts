@@ -181,4 +181,20 @@ describe("WebSocketBridge — pending settlement on close", () => {
 
     expect(secondSocket.sent).toHaveLength(0);
   });
+
+  it("settles a new execute() issued synchronously from an onState('closed') reaction during disconnect(), instead of leaving it to hang", async () => {
+    const { bridge } = connectedBridge();
+
+    let reacted: Promise<unknown> | undefined;
+    bridge.onState((s) => {
+      if (s === "closed" && reacted === undefined) {
+        reacted = bridge.execute("list-sessions");
+      }
+    });
+
+    bridge.disconnect();
+
+    expect(reacted).toBeDefined();
+    await expect(reacted).rejects.toBeInstanceOf(BridgeError);
+  });
 });
