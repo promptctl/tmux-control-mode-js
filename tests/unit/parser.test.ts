@@ -16,14 +16,18 @@ function fixtureContent(name: string): string {
 function collect(content: string): {
   messages: TmuxMessage[];
   outputLines: Array<{ commandNumber: number; line: string }>;
+  protocolErrors: Array<{ commandNumber: number; line: string }>;
 } {
   const messages: TmuxMessage[] = [];
   const outputLines: Array<{ commandNumber: number; line: string }> = [];
+  const protocolErrors: Array<{ commandNumber: number; line: string }> = [];
   const parser = new TmuxParser((msg) => messages.push(msg));
   parser.onOutputLine = (commandNumber, line) =>
     outputLines.push({ commandNumber, line });
+  parser.onProtocolError = (commandNumber, line) =>
+    protocolErrors.push({ commandNumber, line });
   parser.feed(content);
-  return { messages, outputLines };
+  return { messages, outputLines, protocolErrors };
 }
 
 // ---------------------------------------------------------------------------
@@ -838,6 +842,70 @@ describe("malformed input: %layout-change with too few parts", () => {
     // needs windowId + layout + visibleLayout + flags = 4 parts
     const { messages } = collect("%layout-change @1 4b5a\n");
     expect(messages).toHaveLength(0);
+  });
+});
+
+describe("malformed guard terminator mid-block (tmux-lifecycle-zng.4)", () => {
+  it("truncated %end force-closes the block instead of wedging it", () => {
+    // Before the fix: parseGuard returns null for "%end 1699900000 7" (only 2
+    // of the required 3 fields), and the old `msg === null` branch just
+    // skipped the line — leaving activeCommandNumber set forever. Every line
+    // for the rest of the connection, including this %window-add, would then
+    // misroute as output for command 7.
+    const input =
+      "%begin 1699900000 7 0\n" +
+      "%end 1699900000 7\n" + // malformed: flags field truncated
+      "%window-add @9\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+
+    expect(protocolErrors).toEqual([
+      { commandNumber: 7, line: "%end 1699900000 7" },
+    ]);
+    // The block is closed — no output line captured for the malformed
+    // terminator or for anything after it.
+    expect(outputLines).toHaveLength(0);
+    // Line-routing mode resumed: the following notification is a real event.
+    expect(messages).toContainEqual({ type: "window-add", windowId: 9 });
+  });
+
+  it("truncated %error force-closes the block the same way as %end", () => {
+    const input =
+      "%begin 1699900000 3 0\n" +
+      "%error 1699900000\n" + // malformed: only 1 of 3 required fields
+      "%sessions-changed\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+
+    expect(protocolErrors).toEqual([
+      { commandNumber: 3, line: "%error 1699900000" },
+    ]);
+    expect(outputLines).toHaveLength(0);
+    expect(messages).toContainEqual({ type: "sessions-changed" });
+  });
+
+  it("a malformed %end outside any block is unchanged: dropped, no wedge to recover from", () => {
+    // No block was open, so there is nothing to force-close — this stays the
+    // pre-existing "malformed line for a known type, skip" behavior.
+    const { messages, protocolErrors } = collect("%end 1699900000 0\n");
+    expect(messages).toHaveLength(0);
+    expect(protocolErrors).toHaveLength(0);
+  });
+
+  it("preserves block purity: no notification is observed while the block was still open", () => {
+    // The comment left on tmux-lifecycle-zng.3 asks that recovery not let a
+    // notification interleave inside what was still an open block. The
+    // malformed terminator itself is the only thing "inside" the block here
+    // (block-purity routing already excluded it from output before the parse
+    // attempt) — assert it surfaces as a protocol-error, never as some other
+    // notification type, and that ordering is exactly [begin, protocol-error,
+    // window-add], not [begin, window-add, protocol-error] or interleaved.
+    const input =
+      "%begin 1699900000 2 0\n" + "%end 1699900000 2\n" + "%window-add @4\n";
+    const seenTypes: string[] = [];
+    const parser = new TmuxParser((msg) => seenTypes.push(msg.type));
+    parser.onProtocolError = (commandNumber) =>
+      seenTypes.push(`protocol-error:${commandNumber}`);
+    parser.feed(input);
+    expect(seenTypes).toEqual(["begin", "protocol-error:2", "window-add"]);
   });
 });
 
