@@ -25,7 +25,11 @@ import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
-import { TmuxCommandError, TransportSendError } from "./errors.js";
+import {
+  TmuxCommandError,
+  TransportClosedError,
+  TransportSendError,
+} from "./errors.js";
 
 // Re-export for consumers that need it
 export type { SplitOptions } from "./protocol/encoder.js";
@@ -65,23 +69,28 @@ export interface TmuxConnection {
 // Internal correlation state
 // ---------------------------------------------------------------------------
 
-// [LAW:types-are-the-program] The reject channel carries exactly two shapes:
-// tmux's %error receipt, or the transport's refusal to send at all.
+// [LAW:types-are-the-program] The reject channel carries exactly three shapes:
+// tmux's %error receipt, the transport's refusal to send at all, or the
+// transport dying before tmux ever replied.
 interface PendingEntry {
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (err: TmuxCommandError | TransportSendError) => void;
+  readonly reject: (
+    err: TmuxCommandError | TransportSendError | TransportClosedError,
+  ) => void;
 }
 
 // [LAW:types-are-the-program] Narrower than PendingEntry.reject on purpose:
-// a transport refusal is caught at execute()'s send() call, before an entry
-// ever becomes inflight (see handleMessage's "begin" branch), so the true
-// theorem for what reaches an inflight entry is exactly TmuxCommandError.
+// a transport refusal (TransportSendError) is caught at execute()'s send()
+// call, before an entry ever becomes inflight (see handleMessage's "begin"
+// branch), so the true theorem for what reaches an inflight entry is exactly
+// TmuxCommandError (a %error reply) or TransportClosedError (the transport
+// closed while this entry was still awaiting %end/%error).
 interface InflightEntry {
   readonly commandNumber: number;
   readonly timestamp: number;
   readonly output: string[];
   readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (err: TmuxCommandError) => void;
+  readonly reject: (err: TmuxCommandError | TransportClosedError) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +109,14 @@ export class TmuxClient implements TmuxConnection {
   // [LAW:one-source-of-truth] connectionState is the single lifecycle field.
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
+
+  // [LAW:single-enforcer] Set when a parsed %exit has already told consumers
+  // (via the standard notification path in handleMessage) that this
+  // connection is ending. Guards the transport's onClose handler below from
+  // emitting a second, synthetic 'exit' for the same disconnection — %exit
+  // itself must still flow through the ordinary notification channel (SPEC
+  // §23 requires it observable on its own, independent of transport close).
+  private exitAlreadyEmitted = false;
 
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
   //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
@@ -121,7 +138,22 @@ export class TmuxClient implements TmuxConnection {
     });
     transport.onClose((reason) => {
       this.router.onTransportClose();
-      this.emitter.emit({ type: "exit", reason });
+      this.settlePendingOnClose(reason);
+      // [LAW:single-enforcer] A synthetic 'exit' is only needed when tmux
+      // never got to send its own %exit (e.g. a killed server) — transport
+      // close is the one path guaranteed to fire on every disconnection, so
+      // it is the right place to guarantee 'exit' fires at least once, but
+      // not the right place to fire it unconditionally: a graceful shutdown
+      // already announced 'exit' via the ordinary notification path above.
+      if (!this.exitAlreadyEmitted) {
+        this.exitAlreadyEmitted = true;
+        this.emitter.emit({ type: "exit", reason });
+      }
+      // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
+      // signal (`reason`, the raw parameter above) — independent of, and
+      // free to disagree with, whichever reason the 'exit' event above just
+      // carried (tmux's own %exit reason takes priority there). See
+      // ConnectionState's doc comment in connection-state.ts for why.
       this.setConnectionState({
         status: "closed",
         reason: this.userClosed
@@ -145,6 +177,20 @@ export class TmuxClient implements TmuxConnection {
   // Plain command string in → response out. No sendRaw escape hatch for callers.
   execute(command: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
+      // [LAW:no-silent-failure] 'closed' is terminal (see setConnectionState)
+      // and settlePendingOnClose already ran once, for good, when it happened
+      // — it will never run again. TmuxTransport is a public seam third
+      // parties implement (a trust boundary, same reasoning as the throwing-
+      // send catch below); a transport that incorrectly still reports
+      // {ok: true} after its own close would otherwise hang this promise
+      // forever with no diagnostic. currentConnectionState is already the
+      // one reliably-updated source of truth for "the transport told us it
+      // closed," so this consults it rather than trusting a third-party
+      // transport to get its own closed bookkeeping right.
+      if (this.currentConnectionState.status === "closed") {
+        reject(new TransportSendError("transport closed"));
+        return;
+      }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
       // may deliver %begin within send() and must find this entry in the FIFO.
       const entry: PendingEntry = { resolve, reject };
@@ -230,7 +276,29 @@ export class TmuxClient implements TmuxConnection {
     if (this.pending[this.pending.length - 1] === entry) this.pending.pop();
   }
 
+  // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
+  // ever arrive for these commands. Reject them now instead of leaving their
+  // promises unsettled forever; clearing both collections first means a
+  // message that somehow arrives after close (see the setConnectionState
+  // terminal-state guard below) cannot double-settle an already-rejected entry.
+  private settlePendingOnClose(reason: string | undefined): void {
+    const inflight = this.inflight;
+    this.inflight = null;
+    const queued = this.pending.splice(0, this.pending.length);
+
+    inflight?.reject(new TransportClosedError(reason));
+    for (const entry of queued) {
+      entry.reject(new TransportClosedError(reason));
+    }
+  }
+
   private setConnectionState(next: ConnectionState): void {
+    // [LAW:types-are-the-program] 'closed' is documented (connection-state.ts)
+    // as terminal for TmuxClient — no automatic transition leaves it. Enforced
+    // once, here, rather than at every caller that could otherwise resurrect a
+    // dead connection (e.g. a data chunk delivered after the transport already
+    // reported close).
+    if (this.currentConnectionState.status === "closed") return;
     if (sameConnectionState(this.currentConnectionState, next)) return;
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
@@ -245,6 +313,15 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:single-enforcer] All FIFO correlation transitions happen here only.
   private handleMessage(msg: TmuxMessage): void {
+    // [LAW:no-ambient-temporal-coupling] 'closed' is terminal (see
+    // setConnectionState): once announced, nothing more should reach
+    // consumers. Without this, a chunk delivered after the transport already
+    // closed — a real race under delayed/chaotic delivery — could still
+    // dispatch here: pending/inflight are already cleared and settled, and a
+    // late %exit would re-announce an already-announced exit via the
+    // ordinary notification path below, which has no reason to check
+    // exitAlreadyEmitted since it isn't the synthetic path.
+    if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
       const entry = this.pending.shift();
       if (entry !== undefined) {
@@ -276,6 +353,17 @@ export class TmuxClient implements TmuxConnection {
           success: false,
         }),
       );
+    } else if (msg.type === "exit") {
+      // [LAW:single-enforcer] exitAlreadyEmitted is the one guard for "has
+      // exit been sent," checked here too — not just by the transport's
+      // onClose handler — so a second %exit from a misbehaving transport
+      // (TmuxTransport is a public seam, a trust boundary; SPEC guarantees
+      // tmux sends %exit at most once, but this doesn't assume that holds)
+      // can't re-fire the notification. The first %exit falls through to the
+      // ordinary notification path below like every other variant (SPEC §23
+      // requires %exit observable on its own).
+      if (this.exitAlreadyEmitted) return;
+      this.exitAlreadyEmitted = true;
     }
 
     // [LAW:single-enforcer] Pane bytes flow exclusively through the router's

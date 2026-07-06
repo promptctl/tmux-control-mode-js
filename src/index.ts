@@ -10,6 +10,7 @@ export type {
 export type { ConnectionState } from "./connection-state.js";
 export {
   TmuxCommandError,
+  TransportClosedError,
   TransportSendError,
   UnsupportedTmuxVersionError,
 } from "./errors.js";
