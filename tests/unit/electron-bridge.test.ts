@@ -746,6 +746,28 @@ describe("Electron IPC bridge — method dispatch", () => {
     });
   });
 
+  it("classifies a mid-command transport close as BRIDGE_CLOSED, not BRIDGE_INTERNAL", async () => {
+    // The OTHER dead-transport path: send() accepted the command (ok:true),
+    // but the transport dies before %end/%error arrives. TmuxClient.execute
+    // rejects with TransportClosedError — a distinct class from
+    // TransportSendError above — and it must classify the same operational
+    // way, not fall through to the catch-all BRIDGE_INTERNAL (meant for bugs).
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const callPromise = proxy.execute("list-windows");
+    t.fireClose("EPIPE");
+
+    await expect(callPromise).rejects.toMatchObject({
+      code: "BRIDGE_CLOSED",
+    });
+  });
+
   it("rejects the renderer promise when main-side execute fails", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();

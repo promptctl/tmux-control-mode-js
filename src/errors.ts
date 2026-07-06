@@ -77,6 +77,33 @@ export class TransportSendError extends Error {
 }
 
 /**
+ * Thrown via Promise rejection when a command was accepted by the transport
+ * (queued, or already inflight awaiting `%end`/`%error`) but the transport
+ * closed before tmux ever replied. Distinct from {@link TransportSendError}
+ * (the transport refused the command outright — it never left this process)
+ * and {@link TmuxCommandError} (tmux replied, and the reply was `%error`):
+ * here tmux never got the chance to decide the command's fate at all.
+ *
+ * [LAW:types-are-the-program] "Sent, but the connection died before an
+ * answer arrived" is its own domain category — it carries the transport's
+ * close reason, not a fabricated `CommandResponse`.
+ */
+export class TransportClosedError extends Error {
+  /** The transport's close reason, verbatim (`undefined` for a clean exit). */
+  readonly reason: string | undefined;
+
+  constructor(reason: string | undefined) {
+    super(
+      reason === undefined
+        ? "transport closed before command completed"
+        : `transport closed before command completed: ${reason}`,
+    );
+    this.name = "TransportClosedError";
+    this.reason = reason;
+  }
+}
+
+/**
  * Thrown via Promise rejection when a command is invoked against a running
  * tmux older than the command's minimum version. This is a *precondition*
  * failure surfaced by the library before the command reaches tmux — distinct

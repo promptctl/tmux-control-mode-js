@@ -21,6 +21,19 @@
  *                     Connectors that expose an explicit `connect()` (the
  *                     WebSocket client) re-enter `connecting` when the
  *                     consumer calls it; nothing else exits `closed`.
+ *
+ *                     This `reason` classifies the TRANSPORT's own close
+ *                     signal — it is independent of, and can disagree with,
+ *                     the `reason` on a client's `exit` event. `exit`'s
+ *                     reason is tmux's own protocol-level explanation (SPEC.md
+ *                     "Exit Reasons": `detached`, `lost tty`, …) when tmux
+ *                     sent one, falling back to the transport's signal only
+ *                     when tmux never got the chance to announce (a killed
+ *                     server). So a graceful `%exit` can still ride a
+ *                     transport close that itself reports an error (a flaky
+ *                     pipe closing right after tmux said goodbye) and land
+ *                     here as `transport-error` while `exit` carried tmux's
+ *                     benign reason, or vice versa.
  */
 export type ConnectionState =
   | { readonly status: "connecting" }
