@@ -247,6 +247,34 @@ export interface ExitMessage {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol errors (parser-synthesized, not sent by tmux)
+// ---------------------------------------------------------------------------
+
+/**
+ * Synthesized by `TmuxParser` when a `%end`/`%error` guard terminator fails
+ * to parse (fewer than the three required fields — SPEC.md §5) while a
+ * response block is open. tmux never sends this message, and unlike every
+ * `TmuxMessage` variant it cannot round-trip through a standalone
+ * `serializeMessage`/parse cycle — its meaning depends on parser state (a
+ * block being open), not on the line's content alone. That is why it is
+ * deliberately NOT a member of the `TmuxMessage` union: that union's contract
+ * (see `serializer.ts`, `conformance/samples.ts`) is "real wire message,
+ * reproducible from one line," which this is not. It is delivered via
+ * `TmuxParser.onProtocolError`, a dedicated callback alongside `onOutputLine`,
+ * and joins the emitter's synthetic arm (`EmitterMessage`) the same way
+ * `ConnectionStateMessage` does. See `TmuxParser`'s class doc for the recovery
+ * this signals, and `TmuxProtocolError` (errors.ts) for the client-side
+ * rejection it produces.
+ */
+export interface ProtocolErrorMessage {
+  readonly type: "protocol-error";
+  /** The command number of the block that was force-closed. */
+  readonly commandNumber: number;
+  /** The malformed terminator line, verbatim. */
+  readonly line: string;
+}
+
+// ---------------------------------------------------------------------------
 // Discriminated Union — every server-to-client message type
 // ---------------------------------------------------------------------------
 

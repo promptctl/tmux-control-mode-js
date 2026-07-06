@@ -306,6 +306,16 @@ export class TmuxParser {
    */
   onOutputLine: ((commandNumber: number, line: string) => void) | null = null;
 
+  /**
+   * Optional callback for a malformed guard terminator recovered mid-block
+   * (see `feed()`'s tolerance doc). Distinct from `onMessage`/`emit` because
+   * this is not a `TmuxMessage` — see `ProtocolErrorMessage`'s doc for why.
+   * The client layer sets this to reject the inflight command and surface the
+   * failure as an observable event.
+   */
+  onProtocolError: ((commandNumber: number, line: string) => void) | null =
+    null;
+
   constructor(onMessage: (msg: TmuxMessage) => void) {
     this.emit = onMessage;
   }
@@ -323,6 +333,20 @@ export class TmuxParser {
    * octal-escapes literal control bytes in pane output (see `decodeOctalEscapes`),
    * so any unescaped `\r` adjacent to LF must be transport line-driver noise, not
    * data. This is library-side defensive behavior, not a tmux protocol rule.
+   *
+   * Malformed guard terminator tolerance: a `%end`/`%error` line that arrives
+   * while a response block is open but fails to parse (fewer than the three
+   * required fields — a truncated or byte-flipped terminator, exactly what the
+   * repo's chaos fuzzer can produce) force-closes the block instead of leaving
+   * it open. Without this, `activeCommandNumber` would never reset and every
+   * line for the rest of the connection — real notifications included — would
+   * misroute as output for a command that will never settle (see
+   * `ProtocolErrorMessage`). The line is positionally unambiguous as the
+   * terminator (block-purity routing already excluded it from output before
+   * the parse attempt), so treating it as "the block's close, but a failed
+   * one" rather than "unparseable, skip" is the only reading that keeps the
+   * parser always returning to line-routing mode. This is also library-side
+   * defensive behavior, not a tmux protocol rule.
    */
   feed(chunk: string): void {
     this.buffer += chunk;
@@ -411,7 +435,16 @@ export class TmuxParser {
 
     const msg = parser(argsStr);
     if (msg === null) {
-      // Malformed line for a known type — skip.
+      // [LAW:no-silent-failure] A malformed line that was positionally the
+      // open block's terminator must not leave the block open — that is the
+      // wedge (see TmuxParser.feed's malformed-guard-terminator tolerance).
+      // Force-close and surface it; every other malformed known-type line is
+      // still a silent skip, unchanged.
+      if (inResponseBlock && isBlockTerminator) {
+        const commandNumber = this.activeCommandNumber;
+        this.activeCommandNumber = -1;
+        this.onProtocolError?.(commandNumber, line);
+      }
       return;
     }
 
