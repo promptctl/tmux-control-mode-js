@@ -136,4 +136,20 @@ describe("TmuxClient — 'closed' is terminal", () => {
     });
     expect(states.at(-1)).toEqual({ status: "closed", reason: "exit" });
   });
+
+  it("a %exit that arrives after transport close does not re-emit 'exit'", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    // Close arrives first (tmux never got to send %exit) and synthesizes one.
+    t.triggerClose("ENOENT");
+    // A late chunk containing %exit — a delayed/chaotic-delivery race — must
+    // not dispatch through handleMessage at all once closed is terminal.
+    t.feed("%exit lost tty\n");
+
+    expect(exits).toHaveBeenCalledTimes(1);
+    expect(exits).toHaveBeenCalledWith({ type: "exit", reason: "ENOENT" });
+  });
 });

@@ -146,6 +146,7 @@ export class TmuxClient implements TmuxConnection {
       // not the right place to fire it unconditionally: a graceful shutdown
       // already announced 'exit' via the ordinary notification path above.
       if (!this.exitAlreadyEmitted) {
+        this.exitAlreadyEmitted = true;
         this.emitter.emit({ type: "exit", reason });
       }
       this.setConnectionState({
@@ -293,6 +294,15 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:single-enforcer] All FIFO correlation transitions happen here only.
   private handleMessage(msg: TmuxMessage): void {
+    // [LAW:no-ambient-temporal-coupling] 'closed' is terminal (see
+    // setConnectionState): once announced, nothing more should reach
+    // consumers. Without this, a chunk delivered after the transport already
+    // closed — a real race under delayed/chaotic delivery — could still
+    // dispatch here: pending/inflight are already cleared and settled, and a
+    // late %exit would re-announce an already-announced exit via the
+    // ordinary notification path below, which has no reason to check
+    // exitAlreadyEmitted since it isn't the synthetic path.
+    if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
       const entry = this.pending.shift();
       if (entry !== undefined) {
