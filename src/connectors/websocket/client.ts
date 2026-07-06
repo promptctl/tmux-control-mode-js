@@ -78,15 +78,6 @@ import { WEBSOCKET_OPEN } from "./types.js";
 // Public types
 // ---------------------------------------------------------------------------
 
-export type WebSocketTmuxClientState =
-  | "idle"
-  | "connecting"
-  | "open"
-  | "ready"
-  | "draining"
-  | "reconnecting"
-  | "closed";
-
 export interface WebSocketTmuxClientOptions {
   /** Endpoint URL. */
   readonly url: string;
@@ -107,7 +98,6 @@ export interface WebSocketTmuxClientOptions {
   readonly heartbeatTimeoutMs?: number;
   /** Connect at construction. Default: true. */
   readonly autoConnect?: boolean;
-  readonly onState?: (state: WebSocketTmuxClientState) => void;
   readonly onError?: (error: BridgeError) => void;
   readonly onDraining?: (deadlineMs: number) => void;
 }
@@ -155,7 +145,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // staleness check exists or is needed.
   private connectionAbort: AbortController | null = null;
   private nextId = 0;
-  private currentState: WebSocketTmuxClientState = "idle";
   private attempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -163,10 +152,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private lastPingId: string | null = null;
   private serverLimits: WelcomeLimits | null = null;
   private userRequestedClose = false;
-  // [LAW:one-source-of-truth] Unified ConnectionState lives here; the legacy
-  // `currentState` (WebSocketTmuxClientState) maps onto it via mapToUnified
-  // and stays available through the @deprecated `state` getter for one minor.
+  // [LAW:one-source-of-truth] Single ConnectionState field — sole authority
+  // for all connection state. setConnectionState() is the only writer.
   private currentConnectionState: ConnectionState = { status: "connecting" };
+  // [LAW:one-source-of-truth] A server-announced drain is a fact about the
+  // server's intent, not a lifecycle phase of this connection — the unified
+  // ConnectionState deliberately has no draining variant. The socket stays
+  // open (status "ready") until the server actually closes it; this flag
+  // only gates new calls. Connection-scoped: finalizeConnection clears it,
+  // so a drain notice never outlives the connection that carried it.
+  private draining = false;
   private hasReachedReadyOnce = false;
   private lastError: Error | undefined = undefined;
 
@@ -179,16 +174,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // -------------------------------------------------------------------------
   // Public state
   // -------------------------------------------------------------------------
-  /**
-   * @deprecated Use `connectionState` instead. The legacy
-   * `WebSocketTmuxClientState` exposes connector-internal state names that
-   * differ across transports; `ConnectionState` is the unified shape every
-   * `TmuxClient`-shaped class produces. Will be removed in the next minor.
-   */
-  get state(): WebSocketTmuxClientState {
-    return this.currentState;
-  }
-
   get connectionState(): ConnectionState {
     return this.currentConnectionState;
   }
@@ -197,14 +182,25 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Connection lifecycle
   // -------------------------------------------------------------------------
   async connect(): Promise<void> {
-    if (
-      this.currentState === "open" ||
-      this.currentState === "ready" ||
-      this.currentState === "connecting"
-    ) {
+    // [LAW:one-source-of-truth] Gate on the physical connection facts — a
+    // live socket or an armed retry timer — not on connectionState. The
+    // initial state is "connecting" before any socket exists (the unified
+    // union has no idle variant), so a status guard would make connect() a
+    // permanent no-op under autoConnect: false.
+    // [LAW:no-ambient-temporal-coupling] During reconnect backoff the timer
+    // owns the retry; the timer check keeps a manual connect() from opening
+    // a second socket underneath it.
+    if (this.ws !== null || this.reconnectTimer !== null) {
       return;
     }
     this.userRequestedClose = false;
+    // [LAW:no-ambient-temporal-coupling] connect() is the consumer-initiated
+    // episode boundary: the retry budget and the episode's error belong to
+    // the previous episode and must not leak into this one. openSocket() is
+    // NOT the reset point — the reconnect timer also calls it, and resetting
+    // there would make maxAttempts unreachable.
+    this.attempts = 0;
+    this.lastError = undefined;
     this.openSocket();
   }
 
@@ -339,12 +335,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     method: RpcMethod,
     args: readonly unknown[],
   ): Promise<CommandResponse> {
-    if (this.currentState === "closed" || this.userRequestedClose) {
+    if (
+      this.currentConnectionState.status === "closed" ||
+      this.userRequestedClose
+    ) {
       return Promise.reject(
         new BridgeError("BRIDGE_CLOSED", "client is closed"),
       );
     }
-    if (this.currentState === "draining") {
+    if (this.draining) {
       return Promise.reject(
         new BridgeError("BRIDGE_CLOSED", "server is draining"),
       );
@@ -395,7 +394,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Internal: socket lifecycle
   // -------------------------------------------------------------------------
   private openSocket(): void {
-    this.transition("connecting");
+    this.setConnectionState({ status: "connecting" });
     const factory =
       this.opts.createWebSocket ??
       ((url: string, subprotocol?: string | string[]) =>
@@ -453,7 +452,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   private onOpen(): void {
-    this.transition("open");
     this.rawSend(encodeClientFrame({ k: "hello" }));
   }
 
@@ -538,11 +536,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // maps from a clean slate — a clean exit can't be misreported as
     // transport-error because of a stale error from before the last reconnect.
     this.lastError = undefined;
-    this.transition("ready");
+    this.setConnectionState({ status: "ready" });
     this.startHeartbeat();
     this.flushOutbox();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
-    //   Called after transition("ready") so execute() accepts calls from within bootstrap.
+    //   Called after setConnectionState("ready") so execute() accepts calls from within bootstrap.
     this.router.onTransportReady((cmd) => this.execute(cmd));
   }
 
@@ -566,7 +564,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   onDraining(deadlineMs: number): void {
-    this.transition("draining");
+    // The server keeps serving in-flight calls until the deadline, so the
+    // connection stays "ready"; only new calls are refused (see call()).
+    this.draining = true;
     this.opts.onDraining?.(deadlineMs);
   }
 
@@ -600,9 +600,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private finalizeConnection(err: BridgeError): void {
     // [LAW:single-enforcer] Idempotency guard. close() calls finalize
     // synchronously to settle pending before returning; the async ws.onclose
-    // that follows hits this guard and returns. Also makes finalize safe to
-    // call from any state without checking "did the socket already close".
-    if (this.currentState === "closed") return;
+    // that follows hits this guard and returns.
+    // [LAW:one-source-of-truth] The guard derives from the one state field:
+    // "closed" is exactly the condition under which a second finalize must
+    // be a no-op; openSocket() re-arms by entering "connecting".
+    if (this.currentConnectionState.status === "closed") return;
 
     // [LAW:single-enforcer] One operation tears down everything connection-
     // scoped: listeners (via AbortController), timers, pending, ws ref.
@@ -630,12 +632,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     this.ws = null;
     this.serverLimits = null;
+    // The drain notice was scoped to the connection that just ended; calls
+    // made during reconnect backoff must queue for the new connection, not
+    // be refused with a stale drain reason.
+    this.draining = false;
 
     if (this.userRequestedClose) {
       // [LAW:no-ambient-temporal-coupling] Permanent close: end all sinks and
       //   clear runCommand. NOT called on reconnect — sinks survive reconnect.
       this.router.onTransportClose();
-      this.transition("closed");
+      this.setConnectionState({ status: "closed", reason: "disposed" });
       return;
     }
 
@@ -643,7 +649,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     const policy = this.opts.reconnect;
     if (policy === undefined || policy.maxAttempts <= 0) {
       this.router.onTransportClose();
-      this.transition("closed");
+      // [LAW:one-source-of-truth] lastError distinguishes an error-driven
+      // close from a clean exit; onWelcome clears it on entry into ready.
+      this.setConnectionState({
+        status: "closed",
+        reason: this.lastError !== undefined ? "transport-error" : "exit",
+      });
       return;
     }
     if (this.attempts >= policy.maxAttempts) {
@@ -654,12 +665,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         ),
       );
       this.router.onTransportClose();
-      this.transition("closed");
+      this.setConnectionState({ status: "closed", reason: "transport-error" });
       return;
     }
     this.attempts += 1;
     const delay = this.backoffDelay(policy);
-    this.transition("reconnecting");
+    this.setConnectionState({
+      status: "reconnecting",
+      attempt: this.attempts,
+      ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
+    });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.userRequestedClose) return;
@@ -696,17 +711,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // pending caller if the server never replies, but the frame is not
   // re-sent on reconnect because the caller is already gone by then.
   //
-  // [LAW:one-source-of-truth] The gate is `state === "ready"`, not just
-  // `ws.readyState === OPEN`. The ws may be OPEN in the brief window
-  // between onOpen (transition to "open") and onWelcome (transition to
-  // "ready"), but the server rejects any non-hello frame while it is
-  // pending-hello (server.ts:423) and would close the connection with a
-  // protocol error. "ready" is the canonical "handshake complete, server
+  // [LAW:one-source-of-truth] The gate is `connectionState.status === "ready"`,
+  // not just `ws.readyState === OPEN`. The ws may be OPEN in the brief window
+  // between onOpen and onWelcome, but the server rejects any non-hello frame
+  // while it is pending-hello (server.ts) and would close the connection with
+  // a protocol error. "ready" is the canonical "handshake complete, server
   // accepting calls" predicate; checking ws.readyState is a belt-and-
   // suspenders sanity check after that.
   private transmit(p: Pending): void {
     if (p.transmitted) return;
-    if (this.currentState !== "ready") return;
+    if (this.currentConnectionState.status !== "ready") return;
     if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
     try {
       this.ws.send(p.frame);
@@ -789,26 +803,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // -------------------------------------------------------------------------
   // Internal: state + error emitters
   // -------------------------------------------------------------------------
-  private transition(next: WebSocketTmuxClientState): void {
-    if (this.currentState === next) return;
-    this.currentState = next;
-    this.opts.onState?.(next);
-    this.publishUnified();
-  }
 
-  emitError(err: BridgeError): void {
-    this.lastError = err;
-    this.opts.onError?.(err);
-    // Re-publish so a reconnecting state's lastError reflects the latest error
-    // even when the legacy state didn't change.
-    this.publishUnified();
-  }
-
-  // [LAW:one-source-of-truth] Single mapping from the legacy state machine
-  // onto the unified ConnectionState. Called after every legacy transition
-  // and after every emitError so the unified shape stays in lock-step.
-  private publishUnified(): void {
-    const next = this.mapToUnified();
+  // [LAW:one-source-of-truth] Sole writer for currentConnectionState. Emits
+  // the connection-state event and the reconnected event when transitioning
+  // into ready for the second or later time.
+  private setConnectionState(next: ConnectionState): void {
     if (sameConnectionState(this.currentConnectionState, next)) return;
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
@@ -822,37 +821,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         this.hasReachedReadyOnce = true;
       }
     }
-    // lastError lifetime is owned by onWelcome (cleared on entry into ready).
-    // Any error while in ready/reconnecting is the cause of the *current*
-    // episode and is consumed by mapToUnified for closed-reason disambiguation.
   }
 
-  private mapToUnified(): ConnectionState {
-    switch (this.currentState) {
-      case "idle":
-      case "connecting":
-      case "open":
-        return { status: "connecting" };
-      case "ready":
-        return { status: "ready" };
-      case "reconnecting":
-        return this.lastError !== undefined
-          ? {
-              status: "reconnecting",
-              attempt: this.attempts,
-              lastError: this.lastError,
-            }
-          : { status: "reconnecting", attempt: this.attempts };
-      case "draining":
-      case "closed":
-        return {
-          status: "closed",
-          reason: this.userRequestedClose
-            ? "disposed"
-            : this.lastError !== undefined
-              ? "transport-error"
-              : "exit",
-        };
+  emitError(err: BridgeError): void {
+    this.lastError = err;
+    this.opts.onError?.(err);
+    // Re-publish so a reconnecting state's lastError reflects the latest error.
+    if (this.currentConnectionState.status === "reconnecting") {
+      this.setConnectionState({
+        status: "reconnecting",
+        attempt: this.attempts,
+        lastError: err,
+      });
     }
   }
 }
