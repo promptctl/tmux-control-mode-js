@@ -22,6 +22,7 @@ import { createWebSocketBridge } from "../../src/connectors/websocket/server.js"
 import {
   encodeClientFrame,
   parseServerFrame,
+  type FatalErrorFrame,
   type ResultErrFrame,
   type ResultOkFrame,
   type ServerFrame,
@@ -306,9 +307,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
       t.feed(`%output %3 ${"x".repeat(30)}\n`);
     }
     await flush();
-    expect(
-      t.sent.filter((c) => c.includes("%3:pause")),
-    ).toHaveLength(1);
+    expect(t.sent.filter((c) => c.includes("%3:pause"))).toHaveLength(1);
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(0);
 
     // Now drain the OS buffer (simulating the slow consumer catching up).
@@ -318,9 +317,7 @@ describe("WebSocket bridge — qz5.5 C3 backpressure", () => {
     t.feed(`%output %3 ${"x".repeat(1)}\n`);
     await flush();
 
-    expect(
-      t.sent.filter((c) => c.includes("%3:continue")),
-    ).toHaveLength(1);
+    expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
   });
 
   it("resumes a paused pane when bufferedAmount drains via a non-pane-output send", async () => {
@@ -425,9 +422,7 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
     expect(
       readJsonFrames(ws).some(
         (f) =>
-          f.k === "result" &&
-          (f as ResultOkFrame).id === "s1" &&
-          f.ok === true,
+          f.k === "result" && (f as ResultOkFrame).id === "s1" && f.ok === true,
       ),
     ).toBe(true);
 
@@ -451,6 +446,126 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
     expect((errFrame as ResultErrFrame).error.code).toBe(
       "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// zng.5 — onHello's invariant across its two awaits
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — zng.5 handshake races", () => {
+  it("mid-handshake close leaves zero listeners/sinks on the shared client", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+
+    let resolveCreate!: (c: TmuxClient) => void;
+    const createClientPromise = new Promise<TmuxClient>((res) => {
+      resolveCreate = res;
+    });
+    let disposeCalls = 0;
+    const bridge = createWebSocketBridge({
+      createClient: () => createClientPromise,
+      disposeClient: () => {
+        disposeCalls++;
+      },
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    // Let authenticate() resolve (no auth hook configured) so onHello is now
+    // suspended awaiting createClient() — the exact window the ticket
+    // describes: hello accepted, client not yet committed to state.
+    await flush();
+
+    // The TCP connection drops while createClient() is still pending.
+    // finalize runs now; state was "handshaking" so it correctly finds
+    // nothing to dispose yet.
+    ws.fireClose(1006, "abnormal closure");
+
+    // createClient() now resolves with the shared client, after finalize
+    // already ran.
+    resolveCreate(client);
+    await flush();
+
+    // onHello must have observed the closed state and aborted: no welcome
+    // frame, and disposeClient was invoked for the client it created but
+    // never got to use.
+    expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(false);
+    expect(disposeCalls).toBe(1);
+
+    // Prove no listener/sink leaked: feed a tmux notification and an
+    // %output chunk through the shared client's transport — if onHello had
+    // wired `client.on("*", …)` or `client.attachBytesSink(…)` before
+    // observing closed, one of these would produce outbound traffic on a
+    // socket that is already gone.
+    const before = ws.outbound.length;
+    t.feed("%session-changed $0 main\n");
+    t.feed(`%output %1 ${"x".repeat(10)}\n`);
+    await flush();
+    expect(ws.outbound.length).toBe(before);
+  });
+
+  it("duplicate hello during handshake is rejected; exactly one createClient call and one listener attachment", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+
+    let createClientCalls = 0;
+    let resolveCreate!: (c: TmuxClient) => void;
+    const createClientPromise = new Promise<TmuxClient>((res) => {
+      resolveCreate = res;
+    });
+    let disposeCalls = 0;
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        createClientCalls++;
+        return createClientPromise;
+      },
+      disposeClient: () => {
+        disposeCalls++;
+      },
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Both hellos land synchronously, before the first onHello's initial
+    // await (authenticate()) has a chance to resolve — the exact race the
+    // old `pending-hello`-only guard missed, since state stayed
+    // "pending-hello" across both awaits.
+    ws.feedClient({ k: "hello" });
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // The duplicate is a *fatal* protocol error, per this file's existing
+    // convention (any protocol violation tears down the whole connection,
+    // not just the offending frame) — so the socket is closed here too.
+    const fatal = readJsonFrames(ws).find(
+      (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+    );
+    expect(fatal?.error.message).toMatch(/duplicate hello/);
+    expect(createClientCalls).toBe(1);
+    expect(ws.readyState).not.toBe(WEBSOCKET_OPEN);
+
+    // `sendFatalAndClose` called `ws.close()` above, but the fake — like a
+    // real socket — doesn't fire the `close` event synchronously; drive it
+    // explicitly so `finalize` actually runs and commits state to "closed"
+    // before createClient() resolves. Without this, the assertions below
+    // would pass only because `wsSend` gates on `readyState`, never
+    // exercising onHello's own `isClosed()` abort branch.
+    ws.fireClose(1011, "duplicate hello frame");
+
+    // createClient() resolves after finalize already ran. onHello must
+    // observe the closed state and dispose the client it built instead of
+    // wiring listeners onto it — the same abort path proven in the mid-
+    // handshake-close test above, reached here via the duplicate-hello path
+    // instead of a raw disconnect.
+    const before = ws.outbound.length;
+    resolveCreate(client);
+    await flush();
+    expect(disposeCalls).toBe(1);
+    expect(ws.outbound.length).toBe(before);
   });
 });
 
