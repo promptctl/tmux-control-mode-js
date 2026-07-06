@@ -21,10 +21,8 @@ import type { TmuxMessage } from "../../src/protocol/types.js";
 import type { EmitterMessage } from "../../src/emitter.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
-import {
-  WebSocketTmuxClient,
-  type WebSocketTmuxClientState,
-} from "../../src/connectors/websocket/client.js";
+import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import type { ConnectionState } from "../../src/connection-state.js";
 import { BridgeError } from "../../src/connectors/websocket/protocol.js";
 import type {
   BridgeObservabilityEvent,
@@ -197,10 +195,10 @@ function createWsBackedClient(
   }> = {},
 ): {
   client: WebSocketTmuxClient;
-  states: WebSocketTmuxClientState[];
+  states: ConnectionState[];
   errors: BridgeError[];
 } {
-  const states: WebSocketTmuxClientState[] = [];
+  const states: ConnectionState[] = [];
   const errors: BridgeError[] = [];
   const client = new WebSocketTmuxClient({
     url,
@@ -212,25 +210,25 @@ function createWsBackedClient(
     requestTimeoutMs: overrides.requestTimeoutMs,
     heartbeatIntervalMs: overrides.heartbeatIntervalMs,
     heartbeatTimeoutMs: overrides.heartbeatTimeoutMs,
-    onState: (s) => states.push(s),
     onError: (e) => errors.push(e),
   });
+  client.on("connection-state", (ev) => states.push(ev.state));
   return { client, states, errors };
 }
 
 async function waitForState(
   client: WebSocketTmuxClient,
-  target: WebSocketTmuxClientState,
+  target: ConnectionState["status"],
   timeoutMs = 5_000,
 ): Promise<void> {
-  if (client.state === target) return;
+  if (client.connectionState.status === target) return;
   await new Promise<void>((resolve, reject) => {
     const deadline = setTimeout(
-      () => reject(new Error(`timeout waiting for state '${target}'`)),
+      () => reject(new Error(`timeout waiting for status '${target}'`)),
       timeoutMs,
     );
     const iv = setInterval(() => {
-      if (client.state === target) {
+      if (client.connectionState.status === target) {
         clearTimeout(deadline);
         clearInterval(iv);
         resolve();
@@ -258,7 +256,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     async () => {
       const { client } = createWsBackedClient(fx.url);
       await waitForState(client, "ready");
-      expect(client.state).toBe("ready");
+      expect(client.connectionState.status).toBe("ready");
       await client.close();
     },
     10_000,
@@ -353,14 +351,14 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
         });
         await new Promise<void>((resolve) => {
           const iv = setInterval(() => {
-            if (client.state === "closed") {
+            if (client.connectionState.status === "closed") {
               clearInterval(iv);
               resolve();
             }
           }, 20);
           setTimeout(resolve, 3_000);
         });
-        expect(client.state).toBe("closed");
+        expect(client.connectionState.status).toBe("closed");
         // The errors list should carry at least one BRIDGE_AUTH_DENIED
         // OR the connection should have been closed without producing
         // any successful call; both are valid observable outcomes.
@@ -384,7 +382,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
           "x-auth-token": "secret",
         });
         await waitForState(client, "ready");
-        expect(client.state).toBe("ready");
+        expect(client.connectionState.status).toBe("ready");
         await client.close();
       } finally {
         await fx.shutdown();
@@ -448,30 +446,60 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
     async () => {
       const fx = await startFixture("drain");
       try {
+        // [LAW:no-ambient-temporal-coupling] The drain-window facts are
+        // captured synchronously inside the onDraining callback: the client
+        // sets its drain gate immediately before invoking it, so sampling
+        // here observes the window at exactly notice delivery — the
+        // assertions below never race the server's drain deadline on the
+        // wall clock.
         let drainingDeadline: number | null = null;
+        let statusAtNotice: ConnectionState["status"] | null = null;
+        let rejectionAtNotice: Promise<unknown> | null = null;
         const client = new WebSocketTmuxClient({
           url: fx.url,
           createWebSocket: (u) =>
             new WsClient(u) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
           onDraining: (dl) => {
             drainingDeadline = dl;
+            statusAtNotice = client.connectionState.status;
+            rejectionAtNotice = client
+              .execute("list-windows")
+              .catch((e: unknown) => e);
           },
         });
         await waitForState(client, "ready");
 
-        await fx.shutdown();
+        // Begin the drain but don't await it yet — the drain window (the
+        // server announced its deadline, the socket is still open) is the
+        // state under test.
+        const shutdownDone = fx.shutdown();
+        const noticeDeadline = Date.now() + 2_000;
+        while (drainingDeadline === null && Date.now() < noticeDeadline) {
+          await new Promise<void>((r) => setTimeout(r, 20));
+        }
+        expect(drainingDeadline).not.toBeNull();
 
-        // After drain, the client should have entered the draining state and
-        // calls should reject with BRIDGE_CLOSED.
+        // At notice delivery the connection was still "ready" (the socket
+        // was open, in-flight calls being served) and a new call was
+        // refused with a truthful reason.
+        expect(statusAtNotice).toBe("ready");
+        expect(await rejectionAtNotice).toMatchObject({
+          code: "BRIDGE_CLOSED",
+          message: expect.stringContaining("draining") as string,
+        });
+
+        await shutdownDone;
+
+        // Once the server actually closes the socket, the client reaches
+        // "closed" and calls reject with the closed reason.
         const deadline = Date.now() + 2_000;
         while (
-          client.state !== "draining" &&
-          client.state !== "closed" &&
+          client.connectionState.status !== "closed" &&
           Date.now() < deadline
         ) {
           await new Promise<void>((r) => setTimeout(r, 20));
         }
-        expect(["draining", "closed"]).toContain(client.state);
+        expect(client.connectionState.status).toBe("closed");
         expect(drainingDeadline).not.toBeNull();
       } finally {
         // fx.shutdown already called
@@ -562,10 +590,10 @@ describe.skipIf(!RUN_INTEGRATION)(
           // thinks the socket is live, which would just reject through
           // the old connection's finalize with "close 1006".
           const leftReady = Date.now() + 2_000;
-          while (client.state === "ready" && Date.now() < leftReady) {
+          while (client.connectionState.status === "ready" && Date.now() < leftReady) {
             await new Promise<void>((r) => setTimeout(r, 5));
           }
-          expect(client.state).not.toBe("ready");
+          expect(client.connectionState.status).not.toBe("ready");
 
           // Fire a call while the client is mid-flux. With the fix the
           // call is added to pending; flushOutbox transmits it on the

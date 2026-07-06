@@ -143,7 +143,9 @@ class MockWebSocketHub {
   }
 }
 
-function makeClient(opts: { reconnect?: boolean } = {}): {
+function makeClient(
+  opts: { reconnect?: boolean; onDraining?: (deadlineMs: number) => void } = {},
+): {
   client: WebSocketTmuxClient;
   hub: MockWebSocketHub;
 } {
@@ -154,6 +156,7 @@ function makeClient(opts: { reconnect?: boolean } = {}): {
     createWebSocket: hub.factory as unknown as (
       url: string,
     ) => BrowserWebSocketLike,
+    onDraining: opts.onDraining,
     reconnect: opts.reconnect
       ? {
           maxAttempts: 3,
@@ -311,7 +314,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       // State stays closed; promise still rejected with the close()'s reason
       // (NOT overwritten by the post-close event — finalize is idempotent so
       // the later onClose with reason "post-close" was a no-op).
-      expect(client.state).toBe("closed");
+      expect(client.connectionState.status).toBe("closed");
       const err = await callPromise.catch((e: unknown) => e);
       expect(err).toMatchObject({ code: "BRIDGE_CLOSED" });
       expect((err as Error).message).toContain("client close");
@@ -324,13 +327,13 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       const { client, hub } = makeClient();
       void client.connect();
 
-      // Open the socket but DO NOT send welcome yet. State transitions
-      // to "open" via onOpen; hello is sent via rawSend (immediate). The
-      // server in this state is pending-hello and would reject any
-      // non-hello frame with a protocol error.
+      // Open the socket but DO NOT send welcome yet. hello is sent via
+      // rawSend (immediate). The server in this state is pending-hello
+      // and would reject any non-hello frame with a protocol error.
+      // ConnectionState stays "connecting" until welcome arrives.
       hub.open();
       await new Promise((r) => setImmediate(r));
-      expect(client.state).toBe("open");
+      expect(client.connectionState.status).toBe("connecting");
 
       // Sanity: hello is on the wire, nothing else.
       const beforeCall = sentFrames(hub.latest()).filter(
@@ -338,7 +341,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       );
       expect(beforeCall).toEqual([]);
 
-      // Fire a call while in "open" (pre-welcome).
+      // Fire a call while in pre-welcome (socket open, welcome not yet received).
       const callPromise = client.execute("list-windows");
       // Microtask flush — transmit would have run synchronously if it
       // were going to fire.
@@ -385,7 +388,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect(hub.latest().readyState).toBe(0); // CONNECTING
 
       await client.close();
-      expect(client.state).toBe("closed");
+      expect(client.connectionState.status).toBe("closed");
 
       // Now simulate the orphaned socket completing its handshake AFTER
       // close(): open arrives first, then welcome. The AbortController
@@ -398,7 +401,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       await new Promise((r) => setImmediate(r));
 
       // State stayed closed; no resurrection.
-      expect(client.state).toBe("closed");
+      expect(client.connectionState.status).toBe("closed");
     });
 
     it("close() during CONNECTING aborts the underlying socket", async () => {
@@ -419,6 +422,216 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       // handshake, regardless of readyState. Pre-fix the OPEN-only guard
       // would have left a leaked socket alive.
       expect(closeCalled).toBe(true);
+    });
+  });
+
+  describe("wwo.5.1: connect() gates on physical facts, not connectionState", () => {
+    it("connect() with autoConnect:false opens a socket despite the initial 'connecting' state", () => {
+      const { client, hub } = makeClient();
+      // The unified union has no idle variant; the pre-connect state reads
+      // "connecting" even though no socket exists yet. connect() must not
+      // trust it.
+      expect(client.connectionState.status).toBe("connecting");
+      expect(hub.sockets.length).toBe(0);
+      void client.connect();
+      expect(hub.sockets.length).toBe(1);
+    });
+
+    it("connect() is a no-op while a live socket exists", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      void client.connect(); // during CONNECTING
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+      void client.connect(); // while ready
+      expect(hub.sockets.length).toBe(1);
+      await client.close();
+    });
+
+    it("connect() during reconnect backoff does not create a second socket", async () => {
+      const { client, hub } = makeClient({ reconnect: true });
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // Sever the connection; the client enters backoff with the retry
+      // timer armed.
+      hub.fireClose(0, 1006, "abnormal");
+      expect(client.connectionState.status).toBe("reconnecting");
+      expect(hub.sockets.length).toBe(1);
+
+      // "Retry now" during backoff must not open a socket underneath the
+      // one the timer owns.
+      void client.connect();
+      expect(hub.sockets.length).toBe(1);
+
+      // The timer fires and opens exactly one new socket.
+      const deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      expect(hub.sockets.length).toBe(2);
+
+      hub.open(1);
+      hub.welcome(1);
+      await new Promise((r) => setImmediate(r));
+      expect(client.connectionState.status).toBe("ready");
+      expect(hub.sockets.length).toBe(2);
+      await client.close();
+    });
+
+    it("connect() after close() starts a fresh reconnect budget", async () => {
+      const { client, hub } = makeClient({ reconnect: true }); // maxAttempts: 3
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // Burn two reconnect attempts in this episode.
+      hub.fireClose(0, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+      let deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      hub.fireClose(1, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 2,
+      });
+      deadline = Date.now() + 100;
+      while (hub.sockets.length < 3 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+
+      // Consumer ends the episode, then starts a new one. The stale count
+      // (2) must not leak into the new episode's budget.
+      await client.close();
+      void client.connect();
+      hub.fireClose(hub.sockets.length - 1, 1006, "abnormal");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+      await client.close();
+    });
+
+    it("connect() after close() re-arms the client", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+      await client.close();
+      expect(client.connectionState.status).toBe("closed");
+
+      void client.connect();
+      expect(hub.sockets.length).toBe(2);
+      hub.open(1);
+      hub.welcome(1);
+      await new Promise((r) => setImmediate(r));
+      expect(client.connectionState.status).toBe("ready");
+      await client.close();
+    });
+  });
+
+  describe("wwo.5.1: server drain is a fact, not a lifecycle phase", () => {
+    it("draining keeps the connection ready and refuses new calls truthfully", async () => {
+      const deadlines: number[] = [];
+      const { client, hub } = makeClient({
+        onDraining: (dl) => deadlines.push(dl),
+      });
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+      expect(client.connectionState.status).toBe("ready");
+
+      hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "draining",
+          deadlineMs: 1234,
+        } satisfies ServerFrame),
+      });
+      await new Promise((r) => setImmediate(r));
+
+      expect(deadlines).toEqual([1234]);
+      // The socket is still open and in-flight calls are still served;
+      // reporting "closed" here would be a lie.
+      expect(client.connectionState.status).toBe("ready");
+      await expect(client.execute("list-windows")).rejects.toMatchObject({
+        code: "BRIDGE_CLOSED",
+        message: expect.stringContaining("draining"),
+      });
+
+      // The server closing the socket drives the ordinary finalize path;
+      // no error occurred, so the reason is a clean exit.
+      hub.fireClose(0, 1001, "drain complete");
+      expect(client.connectionState).toEqual({
+        status: "closed",
+        reason: "exit",
+      });
+      await expect(client.execute("list-windows")).rejects.toMatchObject({
+        code: "BRIDGE_CLOSED",
+        message: expect.stringContaining("closed"),
+      });
+    });
+
+    it("a drain notice does not outlive its connection: calls during post-drain backoff queue for the new connection", async () => {
+      const { client, hub } = makeClient({ reconnect: true });
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      // Drain notice on connection 0, then the server closes the socket.
+      hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "draining",
+          deadlineMs: 99,
+        } satisfies ServerFrame),
+      });
+      await new Promise((r) => setImmediate(r));
+      hub.fireClose(0, 1001, "drain complete");
+      expect(client.connectionState).toMatchObject({
+        status: "reconnecting",
+        attempt: 1,
+      });
+
+      // The drain fact was scoped to the dead connection. A call during
+      // backoff queues in pending — a stale "server is draining" rejection
+      // here is the regression under test.
+      const callPromise = client.execute("list-windows");
+
+      const deadline = Date.now() + 100;
+      while (hub.sockets.length < 2 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      hub.open(1);
+      hub.welcome(1);
+      await new Promise((r) => setImmediate(r));
+
+      // The queued call went out on the new connection and resolves there.
+      const calls = sentFrames(hub.sockets[1]).filter((f) => f.k === "call");
+      expect(calls.length).toBe(1);
+      const id = calls[0].id;
+      expect(id).toBeDefined();
+      const result: ResultFrame = {
+        k: "result",
+        id: id as string,
+        ok: true,
+        response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
+      };
+      hub.sockets[1].fire("message", {
+        data: encodeServerFrame(result satisfies ServerFrame),
+      });
+      await expect(callPromise).resolves.toMatchObject({ success: true });
+      await client.close();
     });
   });
 

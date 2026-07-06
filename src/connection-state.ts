@@ -14,9 +14,13 @@
  *                     stdout"; for the WebSocket connector this is "post-welcome".
  * - `reconnecting`  — connector is between attempts (only emitted by
  *                     transports that auto-reconnect, currently WebSocket).
- * - `closed`        — terminal state. The `reason` distinguishes consumer-
+ * - `closed`        — no live connection, and no automatic transition leaves
+ *                     this state. The `reason` distinguishes consumer-
  *                     initiated close (`disposed`) from clean transport exit
  *                     (`exit`) and from error-driven close (`transport-error`).
+ *                     Connectors that expose an explicit `connect()` (the
+ *                     WebSocket client) re-enter `connecting` when the
+ *                     consumer calls it; nothing else exits `closed`.
  */
 export type ConnectionState =
   | { readonly status: "connecting" }
