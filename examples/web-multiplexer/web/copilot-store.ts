@@ -177,6 +177,10 @@ export class CopilotStore {
    */
   insert(command: string): void {
     if (this.selectedPaneId === null) return;
-    void this.bridge.sendKeys(`%${this.selectedPaneId}`, command);
+    // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
+    // action beyond what onState/onError already report.
+    void this.bridge
+      .sendKeys(`%${this.selectedPaneId}`, command)
+      .catch(() => {});
   }
 }

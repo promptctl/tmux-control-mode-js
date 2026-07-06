@@ -218,7 +218,9 @@ export class BroadcastStore {
     let sentBytes = 0;
     for (const p of ready) {
       sentBytes += new TextEncoder().encode(p.text).length;
-      void this.bridge.sendKeys(`%${p.paneId}`, p.text);
+      // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
+      // action beyond what onState/onError already report.
+      void this.bridge.sendKeys(`%${p.paneId}`, p.text).catch(() => {});
     }
     this.lastSend = {
       sentPanes: ready.length,

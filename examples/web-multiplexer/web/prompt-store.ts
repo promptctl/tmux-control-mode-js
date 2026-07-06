@@ -150,7 +150,11 @@ export class PromptStore {
    * shell), so a re-run lands where the command makes sense.
    */
   rerun(record: CommandRecord): void {
-    void this.bridge.sendKeys(`%${record.paneId}`, record.command + ENTER);
+    // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
+    // action beyond what onState/onError already report.
+    void this.bridge
+      .sendKeys(`%${record.paneId}`, record.command + ENTER)
+      .catch(() => {});
   }
 
   // -------------------------------------------------------------------------

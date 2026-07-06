@@ -703,7 +703,11 @@ export class DemoStore {
     // rejects the switch, the event never arrives and we stay optimistic
     // — that's fine, a subsequent real change will correct us.
     this.clientSessionId = id;
-    void this.client.execute(`switch-client -t \\$${id}`);
+    // [LAW:no-silent-failure] Optimistic and best-effort by design (see the
+    // comment above) — a rejection (e.g. bridge closed mid-flight) carries no
+    // action beyond what onState/onError already report, so it's discarded
+    // rather than left as an unhandled rejection.
+    void this.client.execute(`switch-client -t \\$${id}`).catch(() => {});
     void this.refreshSession(id);
   }
 
@@ -711,7 +715,9 @@ export class DemoStore {
     const s = this.currentSession;
     const w = s?.windows.find((x) => x.id === id);
     if (s !== null && w !== undefined) {
-      void this.client.execute(`select-window -t ${s.name}:${w.index}`);
+      void this.client
+        .execute(`select-window -t ${s.name}:${w.index}`)
+        .catch(() => {});
       void this.refreshSession(s.id);
     }
   }
@@ -720,9 +726,9 @@ export class DemoStore {
     const s = this.currentSession;
     const w = this.currentWindow;
     if (s !== null && w !== null) {
-      void this.client.execute(
-        `select-pane -t ${s.name}:${w.index}.${pane.index}`,
-      );
+      void this.client
+        .execute(`select-pane -t ${s.name}:${w.index}.${pane.index}`)
+        .catch(() => {});
       void this.refreshSession(s.id);
     }
   }
@@ -742,9 +748,12 @@ export class DemoStore {
    */
   jumpToPane(sessionId: number, windowId: number, paneId: number): void {
     this.clientSessionId = sessionId;
-    void this.client.execute(`switch-client -t \\$${sessionId}`);
-    void this.client.execute(`select-window -t @${windowId}`);
-    void this.client.execute(`select-pane -t %${paneId}`);
+    // [LAW:no-silent-failure] Best-effort, same rationale as selectSession.
+    void this.client
+      .execute(`switch-client -t \\$${sessionId}`)
+      .catch(() => {});
+    void this.client.execute(`select-window -t @${windowId}`).catch(() => {});
+    void this.client.execute(`select-pane -t %${paneId}`).catch(() => {});
     void this.refreshSession(sessionId);
   }
 

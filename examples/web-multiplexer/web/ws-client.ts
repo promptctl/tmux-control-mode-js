@@ -27,6 +27,7 @@ import type {
 import {
   isPaneOutputFrame,
   decodePaneOutput,
+  BridgeError,
 } from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import {
   isFirehoseFrame,
@@ -45,6 +46,7 @@ import type {
 
 interface Pending {
   readonly resolve: (r: CommandResponse) => void;
+  readonly reject: (e: BridgeError) => void;
   readonly sentAt: number;
   readonly request: ClientToServer;
 }
@@ -132,6 +134,7 @@ export class WebSocketBridge implements TmuxBridge {
           );
           this.outbox.splice(0, this.outbox.length);
         }
+        this.settlePendingOnClose("bridge socket closed");
       }),
     );
     ws.addEventListener("error", () => {
@@ -161,8 +164,24 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
-    this.pending.clear();
+    this.settlePendingOnClose("client disconnect");
     this.setState("closed");
+  }
+
+  /**
+   * Reject every in-flight command — the only settlement point for the
+   * `pending` map. tmux will never reply to these (the socket is gone), so
+   * an awaiting caller (DemoStore.installSubscriptions, captureSeeds,
+   * ConsoleStore commands, ...) must see a rejection, not a hang.
+   * [LAW:no-silent-failure] [LAW:single-enforcer] one settlement path for
+   * both the user-initiated disconnect() and an unplanned socket close.
+   */
+  private settlePendingOnClose(reason: string): void {
+    const entries = [...this.pending.values()];
+    this.pending.clear();
+    for (const entry of entries) {
+      entry.reject(new BridgeError("BRIDGE_CLOSED", reason));
+    }
   }
 
   private handleFrame(raw: string): void {
@@ -240,10 +259,11 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   private send(msg: ClientToServer): Promise<CommandResponse> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (msg.kind !== "detach") {
         this.pending.set(msg.id, {
           resolve,
+          reject,
           sentAt: Date.now(),
           request: msg,
         });

@@ -289,6 +289,8 @@ export class EscapePlaygroundStore {
     runInAction(() => {
       this.lastSentBytes = new TextEncoder().encode(interpreted).length;
     });
-    void this.bridge.sendKeys(`%${this.paneId}`, interpreted);
+    // Fire-and-forget: a rejection (bridge closed mid-flight) carries no
+    // action beyond what onState/onError already report.
+    void this.bridge.sendKeys(`%${this.paneId}`, interpreted).catch(() => {});
   }
 }
