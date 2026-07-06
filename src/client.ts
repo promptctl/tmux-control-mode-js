@@ -222,9 +222,12 @@ export class TmuxClient implements TmuxConnection {
 
   // Rolls an entry back out of the FIFO after a send that could not enqueue
   // work with tmux; a no-op if a synchronous response already claimed it.
+  // [LAW:decomposition] execute() pushes `entry` and calls this synchronously
+  // with no intervening push, so `entry` is either still the tail (roll back
+  // with pop) or was already shifted off the head by a synchronous %begin
+  // (already claimed, nothing to do) — never anywhere else in the array.
   private dropPending(entry: PendingEntry): void {
-    const idx = this.pending.indexOf(entry);
-    if (idx !== -1) this.pending.splice(idx, 1);
+    if (this.pending[this.pending.length - 1] === entry) this.pending.pop();
   }
 
   private setConnectionState(next: ConnectionState): void {

@@ -19,9 +19,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
-- `spawnTmux`'s close dispatch (`close`/`error` on the child process) is now
-  exactly-once with the first (truest) reason winning — previously a second
-  event could downgrade a real transport error (e.g. `ENOENT`) to a clean exit.
+- Close dispatch is now exactly-once, with the first (truest) reason winning,
+  across all three transports (spawn, websocket, mock) via a shared
+  `CloseGate` — previously a second event could downgrade a real transport
+  error (e.g. `spawnTmux`'s `ENOENT`, or a WebSocket abnormal-closure code) to
+  a clean exit.
+- The websocket transport distinguishes an explicit clean closure (code 1000)
+  from a close that carried no data — only the latter falls back to the
+  preceding `error` event's generic reason, so an unrelated non-fatal error
+  before a genuinely clean close is no longer misreported as a transport
+  error.
 - An `EPIPE` write in the window between the child dying and its `close` event
   no longer crashes the host process.
 
