@@ -130,7 +130,9 @@ export class TopologyRouter {
 
   /**
    * Called by the transport adapter when the connection is ready to accept
-   * commands (e.g., first byte from tmux stdout, or post-welcome for WebSocket).
+   * commands (e.g., once TmuxClient has consumed tmux's unsolicited startup
+   * guard block, or post-welcome for WebSocket) — i.e. connectionState
+   * reaching "ready", not merely the first byte arriving.
    *
    * Stores the runCommand callback and triggers a topology bootstrap if any
    * session- or window-scoped sinks are already attached.
@@ -251,13 +253,16 @@ export class TopologyRouter {
         break;
       case "session-changed":
       case "sessions-changed":
-        // [LAW:no-ambient-temporal-coupling] The startup `session-changed` is
-        //   the signal that the initial %begin/%end handshake has been consumed
-        //   and the FIFO queue is clean — a bootstrap issued before it races the
-        //   startup block and reads empty. Re-bootstrapping here (epoch-guarded,
-        //   so any premature onTransportReady bootstrap is superseded) is the one
-        //   correct point to load topology, and it also refreshes the table when
-        //   the attached session changes later.
+        // Re-bootstrap on a real session change (switch-client, or a session
+        // added/removed elsewhere) so the topology table reflects the newly
+        // attached session or session list. Transport adapters now call
+        // onTransportReady only once the connection's own startup handshake
+        // is consumed (see TmuxClient.awaitingGreeting), so the bootstrap
+        // that triggers is no longer racing an empty FIFO — this case is not
+        // compensating for that anymore. tmux also emits `session-changed`
+        // once, unconditionally, right after every attach's startup guard
+        // block, so this still re-fires at startup too; the epoch tracker
+        // makes that redundant-but-harmless rather than load-bearing.
         if (this.needsTopology()) {
           void this.bootstrap();
         }

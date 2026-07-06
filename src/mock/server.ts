@@ -179,10 +179,33 @@ export class MockTmuxServer implements TmuxTransport {
    * Begin the session: deliver the scenario's greeting topology. Idempotent —
    * the greeting is delivered at most once, so a double call (or a re-attach)
    * does not double-seed.
+   *
+   * [LAW:one-source-of-truth] Real tmux emits one unsolicited %begin/%end
+   * guard pair on attach, before any client-issued command's response or any
+   * notification (SPEC.md §5) — TmuxClient depends on seeing exactly this
+   * shape to leave "connecting" (see TmuxClient.awaitingGreeting). Emitting
+   * it here, ahead of the scenario's own greeting notifications, keeps this
+   * mock protocol-faithful: without it, every client attached to this server
+   * would treat its first real command's guard block as the unsolicited
+   * greeting and hang forever waiting for a response that already happened.
    */
   start(): void {
     if (this.closeGate.state().closed || this.started) return;
     this.started = true;
+    const number = ++this.commandNumber;
+    const timestamp = this.now();
+    this.enqueueMessage({
+      type: "begin",
+      timestamp,
+      commandNumber: number,
+      flags: CONTROL_FLAGS,
+    });
+    this.enqueueMessage({
+      type: "end",
+      timestamp,
+      commandNumber: number,
+      flags: CONTROL_FLAGS,
+    });
     for (const msg of this.scenario.greeting ?? []) this.enqueueMessage(msg);
     this.flush();
   }

@@ -52,8 +52,12 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
   it("a failing command surfaces an %error terminator", () => {
     const store = new TutorialStore();
     store.selectScenario("error");
+    // Scope to this command's own guard block: MockTmuxServer's unsolicited
+    // startup greeting (replayed by selectScenario) legitimately ends in its
+    // own %end, so checking the whole event history would see that %end too.
+    const before = store.events.length;
     store.sendCommand("kill-pane -t %99");
-    const types = store.events.map((e) => e.message.type);
+    const types = store.events.slice(before).map((e) => e.message.type);
     expect(types).toContain("begin");
     expect(types).toContain("error");
     expect(types).not.toContain("end");

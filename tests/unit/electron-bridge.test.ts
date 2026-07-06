@@ -37,6 +37,7 @@ import {
   type FakeRenderer,
   type IpcHub,
 } from "./_helpers/ipc-hub.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Test-only types
@@ -108,6 +109,7 @@ describe("Electron IPC bridge — C1 single-instance", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     expect(() => createMainBridge(client, hub.ipcMain)).toThrow(
@@ -119,6 +121,7 @@ describe("Electron IPC bridge — C1 single-instance", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
     handle.dispose();
 
@@ -138,6 +141,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -158,6 +162,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -190,6 +195,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -228,6 +234,7 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -253,6 +260,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     // Tiny watermarks: 100B high, 25B low. Renderer ackBatchBytes set high so
     // the renderer never acks during this test — we want main to observe
     // unbounded outstanding bytes.
@@ -279,6 +287,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain, {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
@@ -311,6 +320,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain, {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
@@ -331,6 +341,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain, {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
@@ -362,6 +373,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain, {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
@@ -389,6 +401,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain, {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
@@ -411,6 +424,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     expect(() =>
       createMainBridge(client, hub.ipcMain, {
         outputHighWatermark: 10,
@@ -429,6 +443,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -469,6 +484,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -499,6 +515,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -521,6 +538,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -540,6 +558,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -565,6 +584,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -584,6 +604,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -603,6 +624,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -621,6 +643,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -657,6 +680,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     };
 
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -679,6 +703,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -711,6 +736,7 @@ describe("Electron IPC bridge — method dispatch", () => {
       throw new Error("transport offline");
     };
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -735,6 +761,7 @@ describe("Electron IPC bridge — method dispatch", () => {
       reason: "transport closed: exit 1",
     });
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -755,6 +782,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -772,6 +800,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -920,6 +949,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
     await handle.drain();
     handle.dispose();
@@ -929,6 +959,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -963,6 +994,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -998,6 +1030,7 @@ describe("Electron IPC bridge — dispose", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1017,6 +1050,7 @@ describe("Electron IPC bridge — dispose", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1073,6 +1107,7 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1117,6 +1152,7 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1162,6 +1198,7 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
@@ -1177,6 +1214,7 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
@@ -1194,6 +1232,7 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
@@ -1220,6 +1259,7 @@ describe("Electron IPC bridge — M2 destroyed-listener cleanup", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
@@ -1274,6 +1314,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
@@ -1408,6 +1449,7 @@ describe("Electron IPC bridge — two-window scenario", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     // Renderer 1 (window 1).
@@ -1467,6 +1509,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1504,6 +1547,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1522,6 +1566,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1566,6 +1611,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1594,6 +1640,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1633,6 +1680,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1654,6 +1702,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1685,6 +1734,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     const handle = createMainBridge(client, hub.ipcMain);
 
     const a = hub.createRenderer();
@@ -1731,6 +1781,8 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const hub = createIpcHub();
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1763,6 +1815,8 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const hub = createIpcHub();
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1795,6 +1849,8 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const hub = createIpcHub();
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1840,6 +1896,8 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const hub = createIpcHub();
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+    t.feed(STARTUP_GREETING);
       createMainBridge(client, hub.ipcMain);
 
       const a = hub.createRenderer();
@@ -1926,6 +1984,7 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
       throw new Error("transport offline");
     };
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
@@ -1956,6 +2015,7 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
