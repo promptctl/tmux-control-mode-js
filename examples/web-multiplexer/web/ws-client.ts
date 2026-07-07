@@ -125,6 +125,21 @@ export class WebSocketBridge implements TmuxBridge {
       return;
     }
 
+    // A previous socket that's CLOSING (or CLOSED but hasn't yet delivered
+    // its `close` event) still owns its generation's pending/outbox
+    // entries — nothing else will ever sweep them, because that socket's
+    // own close listener no-ops once `this.ws` below is reassigned (its
+    // `this.ws !== ws` guard). Sweep the outgoing generation here so a
+    // reconnect can never orphan the connection it's replacing.
+    if (this.ws !== null) {
+      runInAction(() => {
+        this.sweepGeneration(
+          this.generation,
+          "superseded by a new connect() before the previous socket's close event fired",
+        );
+      });
+    }
+
     this.generation += 1;
     const gen = this.generation;
 
@@ -184,13 +199,15 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
-    // [LAW:no-ambient-temporal-coupling] Same order as the close listener:
-    // setState("closed") FIRST, then sweepGeneration. If an onState handler
-    // reacts to "closed" by synchronously issuing a new execute()/sendKeys()
-    // WITHOUT reconnecting first, that entry lands in `pending` tagged with
-    // this same `gen` during the setState fan-out — settling it after (not
-    // before) means it's still swept by this same teardown rather than left
-    // to hang forever.
+    // Order mirrors the close listener: setState("closed") then
+    // sweepGeneration. Doesn't gate correctness here — send()'s
+    // `state === "closed"` guard already rejects a same-generation
+    // execute()/sendKeys() issued synchronously from an onState("closed")
+    // reaction before it ever reaches `pending`, and a reconnecting
+    // reaction's entries carry a newer generation that sweepGeneration
+    // leaves alone regardless of which line ran first. Kept for symmetry
+    // with the close listener, not because reordering these two would
+    // break anything.
     runInAction(() => {
       this.setState("closed");
       this.sweepGeneration(gen, "client disconnect");

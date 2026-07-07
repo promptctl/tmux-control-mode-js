@@ -262,4 +262,25 @@ describe("WebSocketBridge — pending settlement on close", () => {
       success: true,
     });
   });
+
+  it("rejects a prior generation's in-flight call instead of orphaning it when connect() is called while the old socket is still CLOSING", async () => {
+    const { bridge, socket: firstSocket } = connectedBridge();
+
+    const p = bridge.execute("list-sessions");
+    // The old socket has entered CLOSING (e.g. a server-initiated close)
+    // but its `close` event hasn't fired yet -- readyState alone, no
+    // fireClose(). connect()'s single-connection guard only excludes
+    // OPEN/CONNECTING, so a reconnect must proceed here without ever
+    // getting a chance to run the old socket's own close-listener sweep.
+    firstSocket.readyState = FakeSocket.CLOSING;
+
+    bridge.connect("ws://test");
+    const secondSocket = lastSocket;
+    if (secondSocket === undefined || secondSocket === firstSocket) {
+      throw new Error("expected a fresh socket from the reconnect");
+    }
+
+    await expect(p).rejects.toBeInstanceOf(BridgeError);
+    await expect(p).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+  });
 });
