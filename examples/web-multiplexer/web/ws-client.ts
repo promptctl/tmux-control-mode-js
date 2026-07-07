@@ -27,6 +27,7 @@ import type {
 import {
   isPaneOutputFrame,
   decodePaneOutput,
+  BridgeError,
 } from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import {
   isFirehoseFrame,
@@ -45,6 +46,7 @@ import type {
 
 interface Pending {
   readonly resolve: (r: CommandResponse) => void;
+  readonly reject: (e: BridgeError) => void;
   readonly sentAt: number;
   readonly request: ClientToServer;
 }
@@ -132,6 +134,7 @@ export class WebSocketBridge implements TmuxBridge {
           );
           this.outbox.splice(0, this.outbox.length);
         }
+        this.settlePendingOnClose("bridge socket closed");
       }),
     );
     ws.addEventListener("error", () => {
@@ -161,8 +164,38 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
+    // [LAW:no-ambient-temporal-coupling] Same order as the close listener:
+    // setState("closed") FIRST, then settlePendingOnClose. If an onState
+    // handler reacts to "closed" by synchronously issuing a new
+    // execute()/sendKeys(), that entry lands in `pending` during the
+    // setState fan-out — settling it after (not before) means it's still
+    // swept by this same teardown rather than left to hang forever.
+    runInAction(() => {
+      this.setState("closed");
+      if (this.outbox.length > 0) {
+        this.emitError(
+          `bridge closed with ${this.outbox.length} undelivered message(s)`,
+        );
+        this.outbox.splice(0, this.outbox.length);
+      }
+      this.settlePendingOnClose("client disconnect");
+    });
+  }
+
+  /**
+   * Reject every in-flight command — the only settlement point for the
+   * `pending` map. tmux will never reply to these (the socket is gone), so
+   * an awaiting caller (DemoStore.installSubscriptions, captureSeeds,
+   * ConsoleStore commands, ...) must see a rejection, not a hang.
+   * [LAW:no-silent-failure] [LAW:single-enforcer] one settlement path for
+   * both the user-initiated disconnect() and an unplanned socket close.
+   */
+  private settlePendingOnClose(reason: string): void {
+    const entries = [...this.pending.values()];
     this.pending.clear();
-    this.setState("closed");
+    for (const entry of entries) {
+      entry.reject(new BridgeError("BRIDGE_CLOSED", reason));
+    }
   }
 
   private handleFrame(raw: string): void {
@@ -211,6 +244,19 @@ export class WebSocketBridge implements TmuxBridge {
         message: frame.message,
       });
       this.emitError(frame.message, frame.id);
+      // [LAW:no-silent-failure] This ErrorFrame is the bridge server's outer
+      // dispatch-failure path (server/bridge.ts) — distinct from a tmux
+      // %error, which already resolves via a ResponseFrame{success:false}.
+      // If it carries the id of a still-pending execute()/sendKeys(), that
+      // promise must settle here or it hangs forever (settlePendingOnClose
+      // already ran, or never runs, for a connection that stays open).
+      if (frame.id !== undefined) {
+        const entry = this.pending.get(frame.id);
+        if (entry !== undefined) {
+          this.pending.delete(frame.id);
+          entry.reject(new BridgeError("BRIDGE_INTERNAL", frame.message));
+        }
+      }
     }
   }
 
@@ -240,10 +286,24 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   private send(msg: ClientToServer): Promise<CommandResponse> {
-    return new Promise((resolve) => {
+    // [LAW:no-silent-failure] "closed" is terminal — nothing will ever drain
+    // the outbox or run settlePendingOnClose again for this instance (that
+    // only happens on the NEXT close/disconnect, and there won't be one
+    // until connect() is called again). Enqueuing here would hang forever,
+    // exactly the defect this ticket exists to fix. "connecting" is NOT
+    // terminal — a message enqueued then legitimately waits for the drain
+    // reaction once the socket opens.
+    if (this.state === "closed") {
+      const message = `cannot ${msg.kind}: bridge is not connected`;
+      this.emitWire({ dir: "in-error", ts: Date.now(), id: msg.id, message });
+      this.emitError(message, msg.id);
+      return Promise.reject(new BridgeError("BRIDGE_CLOSED", message));
+    }
+    return new Promise((resolve, reject) => {
       if (msg.kind !== "detach") {
         this.pending.set(msg.id, {
           resolve,
+          reject,
           sentAt: Date.now(),
           request: msg,
         });

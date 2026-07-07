@@ -193,6 +193,12 @@ export class SearchStore {
         this.backfilled = true;
         this.version++;
       });
+    } catch (err) {
+      // [LAW:no-silent-failure] A transport rejection (e.g. bridge closed
+      // mid-backfill) is logged, not left as an unhandled rejection on this
+      // fire-and-forget caller. Leave the latch open so a later activation
+      // retries, same as the list-panes-failed branch above.
+      console.warn("[search] backfill failed", err);
     } finally {
       runInAction(() => {
         this.backfilling = false;

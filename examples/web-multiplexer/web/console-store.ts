@@ -420,16 +420,47 @@ export class ConsoleStore {
         this.playgroundResult = { status: "value", value: decodeLine(ev.value), updateCount };
       });
     });
+    // [LAW:no-silent-failure] Fire-and-forget by design — the result is never
+    // consumed and a bridge-closed rejection is already reported via
+    // onState/onError — but log it so a future non-BRIDGE_CLOSED rejection
+    // (validation, timeout, ...) doesn't vanish with zero diagnostic.
     this.disposeSubscription = () => {
       off();
-      void this.bridge.execute(`refresh-client -B ${PLAYGROUND_SUB}`);
+      void this.bridge
+        .execute(`refresh-client -B ${PLAYGROUND_SUB}`)
+        .catch((err: unknown) =>
+          console.warn("[console] unsubscribe failed", err),
+        );
     };
     this.liveSig = sig;
     this.playgroundResult = { status: "idle" };
     const what = targetWhat(target);
-    void this.bridge.execute(
-      `refresh-client -B ${quoteTmuxArg(`${PLAYGROUND_SUB}:${what}:${format}`)}`,
-    );
+    void this.bridge
+      .execute(
+        `refresh-client -B ${quoteTmuxArg(`${PLAYGROUND_SUB}:${what}:${format}`)}`,
+      )
+      .catch((err: unknown) => {
+        console.warn("[console] subscribe failed", err);
+        // [LAW:no-ambient-temporal-coupling] Only unwind if this attempt is
+        // still the live one — a rejection for a subscribe that a later
+        // refresh() already tore down must not stomp the newer
+        // subscription's state. Otherwise the store would believe a
+        // subscription is live forever (refresh() no-ops on an unchanged
+        // signature) when tmux never actually installed one.
+        if (this.liveSig !== sig) return;
+        off();
+        runInAction(() => {
+          this.liveSig = null;
+          this.disposeSubscription = null;
+          // [LAW:no-silent-failure] Otherwise the user sees "idle" forever
+          // with no indication the subscribe command was ever rejected —
+          // runOneShot's catch surfaces the same {status:"error"} variant.
+          this.playgroundResult = {
+            status: "error",
+            message: errorMessage(err),
+          };
+        });
+      });
   }
 
   /** Drop the live subscription if any: remove the listener and tell tmux to
