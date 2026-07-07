@@ -117,17 +117,29 @@ export class EscapePlaygroundStore {
   private prevWindowId: number | null = null;
   private everReady = false;
   private readonly disposeOnState: () => void;
+  // Monotonic id identifying which send() call currently owns
+  // `lastSentBytes` — an identity guard, not a value guard. Two distinct
+  // sends can produce the same byte count (e.g. "ab" and "cd" are both 2
+  // bytes), so comparing byte counts for "is this still my value?" is an
+  // ABA hazard; a monotonic token can't collide. [LAW:types-are-the-program]
+  private sendToken = 0;
 
   constructor(private readonly bridge: TmuxBridge) {
     makeAutoObservable<
       this,
-      "bridge" | "windowId" | "prevWindowId" | "everReady" | "disposeOnState"
+      | "bridge"
+      | "windowId"
+      | "prevWindowId"
+      | "everReady"
+      | "disposeOnState"
+      | "sendToken"
     >(this, {
       bridge: false,
       windowId: false,
       prevWindowId: false,
       everReady: false,
       disposeOnState: false,
+      sendToken: false,
     });
 
     // A reconnect lands us on a (possibly new) server where the previous scratch
@@ -286,9 +298,30 @@ export class EscapePlaygroundStore {
    */
   send(interpreted: string): void {
     if (this.status !== "ready" || this.paneId === null) return;
+    const sentBytes = new TextEncoder().encode(interpreted).length;
+    const token = ++this.sendToken;
     runInAction(() => {
-      this.lastSentBytes = new TextEncoder().encode(interpreted).length;
+      this.lastSentBytes = sentBytes;
     });
-    void this.bridge.sendKeys(`%${this.paneId}`, interpreted);
+    // [LAW:no-silent-failure] The byte count above is optimistic — if the
+    // send never reached tmux, roll it back rather than displaying "Sent N
+    // bytes" for bytes that were never transmitted. A bridge-closed rejection
+    // is already reported via onState/onError; logged here too so a future
+    // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
+    void this.bridge
+      .sendKeys(`%${this.paneId}`, interpreted)
+      .catch((err: unknown) => {
+        console.warn("[escape-playground] sendKeys failed", err);
+        // [LAW:no-ambient-temporal-coupling] Only roll back if this call
+        // still owns the displayed value — identified by `token`, not by
+        // `sentBytes`. Two distinct sends can produce the same byte count
+        // ("ab" and "cd" are both 2 bytes), so comparing byte VALUES is an
+        // ABA hazard: a stale rejection could match a newer, same-length
+        // send's value and clobber it. The token can't collide.
+        if (token !== this.sendToken) return;
+        runInAction(() => {
+          this.lastSentBytes = null;
+        });
+      });
   }
 }

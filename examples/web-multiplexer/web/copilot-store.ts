@@ -177,6 +177,11 @@ export class CopilotStore {
    */
   insert(command: string): void {
     if (this.selectedPaneId === null) return;
-    void this.bridge.sendKeys(`%${this.selectedPaneId}`, command);
+    // [LAW:no-silent-failure] Fire-and-forget: a bridge-closed rejection is
+    // already reported via onState/onError, but log it so a future
+    // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
+    void this.bridge
+      .sendKeys(`%${this.selectedPaneId}`, command)
+      .catch((err: unknown) => console.warn("[copilot] sendKeys failed", err));
   }
 }
