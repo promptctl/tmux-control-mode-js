@@ -115,4 +115,25 @@ describe("EscapePlaygroundStore.send() — lastSentBytes settlement", () => {
 
     expect(store.lastSentBytes).toBe(5);
   });
+
+  it("a stale rejection does not clobber a newer send even when both produce the SAME byte count (ABA)", async () => {
+    const { store, calls } = readyStore();
+
+    store.send("ab"); // call A: 2 bytes
+    store.send("cd"); // call B: 2 bytes too — same value, different call
+    expect(store.lastSentBytes).toBe(2);
+
+    // A is the OLDER call. A byte-VALUE guard would see 2 === 2 and wrongly
+    // treat this as "still A's value" — it's actually B's.
+    calls[0].d.reject(new Error("late failure"));
+    await tick();
+
+    expect(store.lastSentBytes).toBe(2);
+
+    // B's own rejection, in contrast, must still roll back correctly.
+    calls[1].d.reject(new Error("B failed too"));
+    await tick();
+
+    expect(store.lastSentBytes).toBeNull();
+  });
 });
