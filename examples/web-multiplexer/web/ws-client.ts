@@ -49,6 +49,16 @@ interface Pending {
   readonly reject: (e: BridgeError) => void;
   readonly sentAt: number;
   readonly request: ClientToServer;
+  readonly gen: number;
+}
+
+// [LAW:types-are-the-program] Every queued message is stamped with the
+// connection generation it belongs to. A generation-blind sweep can't tell
+// "this connection's leftovers" from "the reconnect that just started" —
+// tagging the entry is what makes that distinction representable at all.
+interface OutboxEntry {
+  readonly msg: ClientToServer;
+  readonly gen: number;
 }
 
 export class WebSocketBridge implements TmuxBridge {
@@ -61,12 +71,30 @@ export class WebSocketBridge implements TmuxBridge {
   private readonly firehoseHandlers = new Set<FirehoseHandler>();
   private nextId = 0;
 
+  // [LAW:one-source-of-truth] Bumped once per connect() call; every pending
+  // and outbox entry is stamped with whichever generation was live when it
+  // was created. A teardown sweeps only its own generation's entries, so a
+  // reconnect issued synchronously from an onState("closed") reaction (see
+  // sweepGeneration) is never mistaken for stale state from the connection
+  // that just closed.
+  private generation = 0;
+
+  // [LAW:single-enforcer] Guards the window inside connect() between the
+  // pre-reconnect sweepGeneration call and `this.ws` being reassigned —
+  // the one place a reentrant connect() can't be caught by the readyState
+  // guard above it (the old, superseded socket is still assigned to
+  // `this.ws` and typically CLOSING, which that guard doesn't exclude). If
+  // sweepGeneration's emitError synchronously reaches an errorHandler that
+  // calls connect() again, this flag makes the reentrant call a no-op
+  // instead of a second socket racing to overwrite `this.ws`.
+  private connecting = false;
+
   // Observable state — connection state and the outbox size drive the
   // auto-drain reaction below. `state` and `outbox` are the only pieces
   // of MobX-observed state on this class; everything else is either a
   // static subscriber list (events/errors) or imperative bookkeeping.
   state: ConnState = "connecting";
-  outbox: ClientToServer[] = [];
+  outbox: OutboxEntry[] = [];
 
   constructor() {
     makeObservable(this, {
@@ -75,6 +103,7 @@ export class WebSocketBridge implements TmuxBridge {
       setState: action,
       enqueue: action,
       drainOutbox: action,
+      sweepGeneration: action,
     });
 
     // [LAW:dataflow-not-control-flow] The data dependency "drain the
@@ -106,54 +135,86 @@ export class WebSocketBridge implements TmuxBridge {
     ) {
       return;
     }
+    if (this.connecting) return;
+    this.connecting = true;
 
-    this.setState("connecting");
-    const ws = new WebSocket(url);
-    // Pane bytes arrive as binary pane-output frames; everything else is
-    // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
-    // frame synchronously in the message handler.
-    ws.binaryType = "arraybuffer";
-    this.ws = ws;
-
-    // Each listener just pokes an observable — the reaction above handles
-    // the "what should we do about it" part. No imperative flush call
-    // lives here; the drain reaction watches state + outbox and fires
-    // automatically when the combination is drainable.
-    ws.addEventListener("open", () => {
-      if (this.ws !== ws) return;
-      this.setState("open");
-    });
-    ws.addEventListener("close", () =>
-      runInAction(() => {
-        if (this.ws !== ws) return;
-        this.ws = null;
-        this.setState("closed");
-        if (this.outbox.length > 0) {
-          this.emitError(
-            `bridge closed with ${this.outbox.length} undelivered message(s)`,
-          );
-          this.outbox.splice(0, this.outbox.length);
-        }
-        this.settlePendingOnClose("bridge socket closed");
-      }),
-    );
-    ws.addEventListener("error", () => {
-      if (this.ws !== ws) return;
-      this.emitError("WebSocket error");
-    });
-    ws.addEventListener("message", (ev) => {
-      if (this.ws !== ws) return;
-      // [LAW:dataflow-not-control-flow] The frame's runtime type is the
-      // discriminator: ArrayBuffer → binary pane-output, string → JSON.
-      if (ev.data instanceof ArrayBuffer) {
-        this.handleBinary(ev.data);
-      } else {
-        this.handleFrame(ev.data as string);
+    try {
+      // A previous socket that's CLOSING (or CLOSED but hasn't yet
+      // delivered its `close` event) still owns its generation's
+      // pending/outbox entries — nothing else will ever sweep them,
+      // because that socket's own close listener no-ops once `this.ws`
+      // below is reassigned (its `this.ws !== ws` guard). Sweep the
+      // outgoing generation here so a reconnect can never orphan the
+      // connection it's replacing.
+      if (this.ws !== null) {
+        this.sweepGeneration(
+          this.generation,
+          "superseded by a new connect() before the previous socket's close event fired",
+        );
       }
-    });
+
+      // Constructed BEFORE bumping the generation or flipping state to
+      // "connecting" — if `new WebSocket(url)` throws (a malformed URL),
+      // nothing about this attempt has taken effect yet. Bumping first
+      // would let an onState("connecting") reaction tag a pending/outbox
+      // entry with a generation `this.ws` was never reassigned to
+      // represent, orphaning it the same way a CLOSING-race reconnect
+      // could (see the sweep above).
+      const ws = new WebSocket(url);
+      // Pane bytes arrive as binary pane-output frames; everything else is
+      // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
+      // frame synchronously in the message handler.
+      ws.binaryType = "arraybuffer";
+      this.ws = ws;
+
+      this.generation += 1;
+      const gen = this.generation;
+      this.setState("connecting");
+
+      // Each listener just pokes an observable — the reaction above handles
+      // the "what should we do about it" part. No imperative flush call
+      // lives here; the drain reaction watches state + outbox and fires
+      // automatically when the combination is drainable.
+      ws.addEventListener("open", () => {
+        if (this.ws !== ws) return;
+        this.setState("open");
+      });
+      ws.addEventListener("close", () =>
+        runInAction(() => {
+          if (this.ws !== ws) return;
+          this.ws = null;
+          this.setState("closed");
+          this.sweepGeneration(gen, "bridge socket closed");
+        }),
+      );
+      ws.addEventListener("error", () => {
+        if (this.ws !== ws) return;
+        this.emitError("WebSocket error");
+      });
+      ws.addEventListener("message", (ev) => {
+        if (this.ws !== ws) return;
+        // [LAW:dataflow-not-control-flow] The frame's runtime type is the
+        // discriminator: ArrayBuffer → binary pane-output, string → JSON.
+        if (ev.data instanceof ArrayBuffer) {
+          this.handleBinary(ev.data);
+        } else {
+          this.handleFrame(ev.data as string);
+        }
+      });
+    } finally {
+      // Cleared unconditionally, even if `new WebSocket(url)` throws (a
+      // malformed URL) — an uncleared flag would silently wedge every
+      // future connect() into a no-op with no visible error.
+      this.connecting = false;
+    }
   }
 
   disconnect(): void {
+    // Captured BEFORE setState fires the state fan-out below — if an
+    // onState("closed") reaction calls connect() synchronously, `this
+    // .generation` advances past this value, so the reconnect's entries
+    // are stamped with a generation this sweep will never match.
+    const gen = this.generation;
     if (this.ws !== null) {
       const ws = this.ws;
       this.ws = null;
@@ -164,37 +225,56 @@ export class WebSocketBridge implements TmuxBridge {
         ws.close();
       }
     }
-    // [LAW:no-ambient-temporal-coupling] Same order as the close listener:
-    // setState("closed") FIRST, then settlePendingOnClose. If an onState
-    // handler reacts to "closed" by synchronously issuing a new
-    // execute()/sendKeys(), that entry lands in `pending` during the
-    // setState fan-out — settling it after (not before) means it's still
-    // swept by this same teardown rather than left to hang forever.
+    // Order mirrors the close listener: setState("closed") then
+    // sweepGeneration. Doesn't gate correctness here — send()'s
+    // `state === "closed"` guard already rejects a same-generation
+    // execute()/sendKeys() issued synchronously from an onState("closed")
+    // reaction before it ever reaches `pending`, and a reconnecting
+    // reaction's entries carry a newer generation that sweepGeneration
+    // leaves alone regardless of which line ran first. Kept for symmetry
+    // with the close listener, not because reordering these two would
+    // break anything.
     runInAction(() => {
       this.setState("closed");
-      if (this.outbox.length > 0) {
-        this.emitError(
-          `bridge closed with ${this.outbox.length} undelivered message(s)`,
-        );
-        this.outbox.splice(0, this.outbox.length);
-      }
-      this.settlePendingOnClose("client disconnect");
+      this.sweepGeneration(gen, "client disconnect");
     });
   }
 
   /**
-   * Reject every in-flight command — the only settlement point for the
-   * `pending` map. tmux will never reply to these (the socket is gone), so
-   * an awaiting caller (DemoStore.installSubscriptions, captureSeeds,
-   * ConsoleStore commands, ...) must see a rejection, not a hang.
-   * [LAW:no-silent-failure] [LAW:single-enforcer] one settlement path for
-   * both the user-initiated disconnect() and an unplanned socket close.
+   * Tear down everything belonging to one connection generation: drop its
+   * queued-but-undrained outbox entries (emitting one error if any existed)
+   * and reject its in-flight pending calls. tmux will never reply to these
+   * (the socket is gone), so an awaiting caller (DemoStore
+   * .installSubscriptions, captureSeeds, ConsoleStore commands, ...) must
+   * see a rejection, not a hang.
+   *
+   * Entries tagged with a LATER generation — a reconnect issued
+   * synchronously from an onState("closed") reaction while this teardown is
+   * still running — are left untouched; they belong to a connection that
+   * was never closed. [LAW:no-silent-failure] [LAW:single-enforcer] one
+   * sweep path for both the user-initiated disconnect() and an unplanned
+   * socket close.
    */
-  private settlePendingOnClose(reason: string): void {
-    const entries = [...this.pending.values()];
-    this.pending.clear();
-    for (const entry of entries) {
+  sweepGeneration(gen: number, reason: string): void {
+    // [LAW:no-silent-failure] Own state first, notify last: emitError runs
+    // caller-supplied handlers synchronously, and a throwing handler must
+    // not be able to abort the outbox/pending cleanup or leave a promise
+    // unsettled. Nothing before the emitError call below invokes caller
+    // code synchronously — Promise#reject only schedules .catch() as a
+    // microtask, it never runs a handler inline.
+    const staleOutboxCount = this.outbox.filter((e) => e.gen === gen).length;
+    this.outbox = this.outbox.filter((e) => e.gen !== gen);
+
+    const stale = [...this.pending].filter(([, e]) => e.gen === gen);
+    for (const [id] of stale) this.pending.delete(id);
+    for (const [, entry] of stale) {
       entry.reject(new BridgeError("BRIDGE_CLOSED", reason));
+    }
+
+    if (staleOutboxCount > 0) {
+      this.emitError(
+        `bridge closed with ${staleOutboxCount} undelivered message(s)`,
+      );
     }
   }
 
@@ -248,7 +328,7 @@ export class WebSocketBridge implements TmuxBridge {
       // dispatch-failure path (server/bridge.ts) — distinct from a tmux
       // %error, which already resolves via a ResponseFrame{success:false}.
       // If it carries the id of a still-pending execute()/sendKeys(), that
-      // promise must settle here or it hangs forever (settlePendingOnClose
+      // promise must settle here or it hangs forever (sweepGeneration
       // already ran, or never runs, for a connection that stays open).
       if (frame.id !== undefined) {
         const entry = this.pending.get(frame.id);
@@ -306,6 +386,7 @@ export class WebSocketBridge implements TmuxBridge {
           reject,
           sentAt: Date.now(),
           request: msg,
+          gen: this.generation,
         });
       }
       this.sendRaw(msg);
@@ -324,17 +405,17 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   enqueue(msg: ClientToServer): void {
-    this.outbox.push(msg);
+    this.outbox.push({ msg, gen: this.generation });
   }
 
   drainOutbox(): void {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
     const ws = this.ws;
     while (this.outbox.length > 0) {
-      const msg = this.outbox.shift();
-      if (msg === undefined) break;
-      ws.send(JSON.stringify(msg));
-      this.emitWire({ dir: "out", ts: Date.now(), msg });
+      const entry = this.outbox.shift();
+      if (entry === undefined) break;
+      ws.send(JSON.stringify(entry.msg));
+      this.emitWire({ dir: "out", ts: Date.now(), msg: entry.msg });
     }
   }
 
