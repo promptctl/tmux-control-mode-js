@@ -63,16 +63,19 @@ class FakeSocket {
 }
 
 let lastSocket: FakeSocket | undefined;
+let socketsCreated = 0;
 
 class FakeWebSocketCtor extends FakeSocket {
   constructor(url: string) {
     super(url);
     lastSocket = this;
+    socketsCreated += 1;
   }
 }
 
 beforeEach(() => {
   lastSocket = undefined;
+  socketsCreated = 0;
   vi.stubGlobal("WebSocket", FakeWebSocketCtor);
 });
 
@@ -282,5 +285,37 @@ describe("WebSocketBridge — pending settlement on close", () => {
 
     await expect(p).rejects.toBeInstanceOf(BridgeError);
     await expect(p).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+  });
+
+  it("doesn't create an orphaned second socket when an onError handler reconnects synchronously from inside the pre-reconnect sweep", async () => {
+    const bridge = new WebSocketBridge();
+    bridge.connect("ws://test");
+    const firstSocket = lastSocket;
+    if (firstSocket === undefined) throw new Error("expected a socket");
+    firstSocket.fireOpen();
+
+    // Undrained (readyState no longer OPEN) so sweepGeneration's pre-reconnect
+    // sweep below finds it and emits an error -- the trigger for the
+    // reentrant connect() this test drives.
+    firstSocket.readyState = FakeSocket.CLOSING;
+    const stale = bridge.execute("stale-command");
+    stale.catch(() => {});
+
+    let reconnectTriggered = false;
+    bridge.onError((message) => {
+      if (message.includes("undelivered") && !reconnectTriggered) {
+        reconnectTriggered = true;
+        // A reentrant call from inside the sweep this same connect() is
+        // running -- must be a no-op, not a second socket racing the
+        // outer call's socket assignment.
+        bridge.connect("ws://test");
+      }
+    });
+
+    bridge.connect("ws://test");
+
+    expect(reconnectTriggered).toBe(true);
+    expect(socketsCreated).toBe(2);
+    await expect(stale).rejects.toBeInstanceOf(BridgeError);
   });
 });

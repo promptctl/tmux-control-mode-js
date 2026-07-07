@@ -79,6 +79,16 @@ export class WebSocketBridge implements TmuxBridge {
   // that just closed.
   private generation = 0;
 
+  // [LAW:single-enforcer] Guards the window inside connect() between the
+  // pre-reconnect sweepGeneration call and `this.ws` being reassigned —
+  // the one place a reentrant connect() can't be caught by the readyState
+  // guard above it (the old, superseded socket is still assigned to
+  // `this.ws` and typically CLOSING, which that guard doesn't exclude). If
+  // sweepGeneration's emitError synchronously reaches an errorHandler that
+  // calls connect() again, this flag makes the reentrant call a no-op
+  // instead of a second socket racing to overwrite `this.ws`.
+  private connecting = false;
+
   // Observable state — connection state and the outbox size drive the
   // auto-drain reaction below. `state` and `outbox` are the only pieces
   // of MobX-observed state on this class; everything else is either a
@@ -93,6 +103,7 @@ export class WebSocketBridge implements TmuxBridge {
       setState: action,
       enqueue: action,
       drainOutbox: action,
+      sweepGeneration: action,
     });
 
     // [LAW:dataflow-not-control-flow] The data dependency "drain the
@@ -124,63 +135,71 @@ export class WebSocketBridge implements TmuxBridge {
     ) {
       return;
     }
+    if (this.connecting) return;
+    this.connecting = true;
 
-    // A previous socket that's CLOSING (or CLOSED but hasn't yet delivered
-    // its `close` event) still owns its generation's pending/outbox
-    // entries — nothing else will ever sweep them, because that socket's
-    // own close listener no-ops once `this.ws` below is reassigned (its
-    // `this.ws !== ws` guard). Sweep the outgoing generation here so a
-    // reconnect can never orphan the connection it's replacing.
-    if (this.ws !== null) {
-      runInAction(() => {
+    try {
+      // A previous socket that's CLOSING (or CLOSED but hasn't yet
+      // delivered its `close` event) still owns its generation's
+      // pending/outbox entries — nothing else will ever sweep them,
+      // because that socket's own close listener no-ops once `this.ws`
+      // below is reassigned (its `this.ws !== ws` guard). Sweep the
+      // outgoing generation here so a reconnect can never orphan the
+      // connection it's replacing.
+      if (this.ws !== null) {
         this.sweepGeneration(
           this.generation,
           "superseded by a new connect() before the previous socket's close event fired",
         );
-      });
-    }
-
-    this.generation += 1;
-    const gen = this.generation;
-
-    this.setState("connecting");
-    const ws = new WebSocket(url);
-    // Pane bytes arrive as binary pane-output frames; everything else is
-    // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
-    // frame synchronously in the message handler.
-    ws.binaryType = "arraybuffer";
-    this.ws = ws;
-
-    // Each listener just pokes an observable — the reaction above handles
-    // the "what should we do about it" part. No imperative flush call
-    // lives here; the drain reaction watches state + outbox and fires
-    // automatically when the combination is drainable.
-    ws.addEventListener("open", () => {
-      if (this.ws !== ws) return;
-      this.setState("open");
-    });
-    ws.addEventListener("close", () =>
-      runInAction(() => {
-        if (this.ws !== ws) return;
-        this.ws = null;
-        this.setState("closed");
-        this.sweepGeneration(gen, "bridge socket closed");
-      }),
-    );
-    ws.addEventListener("error", () => {
-      if (this.ws !== ws) return;
-      this.emitError("WebSocket error");
-    });
-    ws.addEventListener("message", (ev) => {
-      if (this.ws !== ws) return;
-      // [LAW:dataflow-not-control-flow] The frame's runtime type is the
-      // discriminator: ArrayBuffer → binary pane-output, string → JSON.
-      if (ev.data instanceof ArrayBuffer) {
-        this.handleBinary(ev.data);
-      } else {
-        this.handleFrame(ev.data as string);
       }
-    });
+
+      this.generation += 1;
+      const gen = this.generation;
+
+      this.setState("connecting");
+      const ws = new WebSocket(url);
+      // Pane bytes arrive as binary pane-output frames; everything else is
+      // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
+      // frame synchronously in the message handler.
+      ws.binaryType = "arraybuffer";
+      this.ws = ws;
+
+      // Each listener just pokes an observable — the reaction above handles
+      // the "what should we do about it" part. No imperative flush call
+      // lives here; the drain reaction watches state + outbox and fires
+      // automatically when the combination is drainable.
+      ws.addEventListener("open", () => {
+        if (this.ws !== ws) return;
+        this.setState("open");
+      });
+      ws.addEventListener("close", () =>
+        runInAction(() => {
+          if (this.ws !== ws) return;
+          this.ws = null;
+          this.setState("closed");
+          this.sweepGeneration(gen, "bridge socket closed");
+        }),
+      );
+      ws.addEventListener("error", () => {
+        if (this.ws !== ws) return;
+        this.emitError("WebSocket error");
+      });
+      ws.addEventListener("message", (ev) => {
+        if (this.ws !== ws) return;
+        // [LAW:dataflow-not-control-flow] The frame's runtime type is the
+        // discriminator: ArrayBuffer → binary pane-output, string → JSON.
+        if (ev.data instanceof ArrayBuffer) {
+          this.handleBinary(ev.data);
+        } else {
+          this.handleFrame(ev.data as string);
+        }
+      });
+    } finally {
+      // Cleared unconditionally, even if `new WebSocket(url)` throws (a
+      // malformed URL) — an uncleared flag would silently wedge every
+      // future connect() into a no-op with no visible error.
+      this.connecting = false;
+    }
   }
 
   disconnect(): void {
@@ -229,7 +248,7 @@ export class WebSocketBridge implements TmuxBridge {
    * sweep path for both the user-initiated disconnect() and an unplanned
    * socket close.
    */
-  private sweepGeneration(gen: number, reason: string): void {
+  sweepGeneration(gen: number, reason: string): void {
     const staleOutbox = this.outbox.filter((e) => e.gen === gen);
     if (staleOutbox.length > 0) {
       this.emitError(
