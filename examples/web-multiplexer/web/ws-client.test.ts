@@ -197,4 +197,16 @@ describe("WebSocketBridge — pending settlement on close", () => {
     expect(reacted).toBeDefined();
     await expect(reacted).rejects.toBeInstanceOf(BridgeError);
   });
+
+  it("rejects immediately (not a hang) when execute()/sendKeys() is called after disconnect() has already completed", async () => {
+    const { bridge } = connectedBridge();
+    bridge.disconnect();
+
+    const p1 = bridge.execute("list-sessions");
+    const p2 = bridge.sendKeys("%1", "ls");
+
+    await expect(p1).rejects.toBeInstanceOf(BridgeError);
+    await expect(p1).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+    await expect(p2).rejects.toBeInstanceOf(BridgeError);
+  });
 });

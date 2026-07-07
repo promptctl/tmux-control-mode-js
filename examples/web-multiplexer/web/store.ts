@@ -229,6 +229,13 @@ export class DemoStore {
   private latestWindows: string | null = null;
   private latestPanes: string | null = null;
 
+  // Monotonic id identifying which switch-client intent (selectSession /
+  // jumpToPane) currently owns the optimistic `clientSessionId` write — an
+  // identity guard, not a value guard, so a stale rejection can't clobber a
+  // newer switch's value even when both target the same session id.
+  // [LAW:no-ambient-temporal-coupling]
+  private sessionSelectToken = 0;
+
   constructor(client: TmuxBridge, hooks: DemoStoreHooks = {}) {
     this.client = client;
     this.paneStreamClient = new BridgePaneStreamClient(client);
@@ -699,19 +706,24 @@ export class DemoStore {
   // the tree and the computed getters reflect the new active state.
   selectSession(id: number): void {
     // Optimistic: set the id we just told tmux to switch to. The
-    // %client-session-changed event will confirm it shortly. If tmux
-    // rejects the switch, the event never arrives and we stay optimistic
-    // — that's fine, a subsequent real change will correct us.
+    // %client-session-changed event will confirm it shortly.
     this.clientSessionId = id;
-    // [LAW:no-silent-failure] Optimistic and best-effort by design (see the
-    // comment above) — a bridge-closed rejection is already reported via
-    // onState/onError, but log it so a future non-BRIDGE_CLOSED rejection
-    // doesn't vanish with zero diagnostic.
+    const token = ++this.sessionSelectToken;
+    // [LAW:no-silent-failure] If tmux rejects the switch (or the bridge
+    // closes before it can), the event never arrives — revert to null so
+    // activeSessionId falls through to its attached/first-session heuristics
+    // instead of showing a session tmux never actually switched to. Guarded
+    // by `token`: a newer selectSession/jumpToPane must win over this
+    // rejection arriving late.
     void this.client
       .execute(`switch-client -t \\$${id}`)
-      .catch((err: unknown) =>
-        console.warn("[store] selectSession failed", err),
-      );
+      .catch((err: unknown) => {
+        console.warn("[store] selectSession failed", err);
+        if (token !== this.sessionSelectToken) return;
+        runInAction(() => {
+          this.clientSessionId = null;
+        });
+      });
     void this.refreshSession(id);
   }
 
@@ -756,12 +768,19 @@ export class DemoStore {
    */
   jumpToPane(sessionId: number, windowId: number, paneId: number): void {
     this.clientSessionId = sessionId;
-    // [LAW:no-silent-failure] Best-effort, same rationale as selectSession.
+    const token = ++this.sessionSelectToken;
+    // [LAW:no-silent-failure] Same revert-on-rejection rationale as
+    // selectSession — guarded by the same token, so whichever of
+    // selectSession/jumpToPane issued most recently wins.
     void this.client
       .execute(`switch-client -t \\$${sessionId}`)
-      .catch((err: unknown) =>
-        console.warn("[store] jumpToPane switch-client failed", err),
-      );
+      .catch((err: unknown) => {
+        console.warn("[store] jumpToPane switch-client failed", err);
+        if (token !== this.sessionSelectToken) return;
+        runInAction(() => {
+          this.clientSessionId = null;
+        });
+      });
     void this.client
       .execute(`select-window -t @${windowId}`)
       .catch((err: unknown) =>

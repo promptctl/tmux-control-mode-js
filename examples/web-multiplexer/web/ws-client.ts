@@ -286,6 +286,19 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   private send(msg: ClientToServer): Promise<CommandResponse> {
+    // [LAW:no-silent-failure] "closed" is terminal — nothing will ever drain
+    // the outbox or run settlePendingOnClose again for this instance (that
+    // only happens on the NEXT close/disconnect, and there won't be one
+    // until connect() is called again). Enqueuing here would hang forever,
+    // exactly the defect this ticket exists to fix. "connecting" is NOT
+    // terminal — a message enqueued then legitimately waits for the drain
+    // reaction once the socket opens.
+    if (this.state === "closed") {
+      const message = `cannot ${msg.kind}: bridge is not connected`;
+      this.emitWire({ dir: "in-error", ts: Date.now(), id: msg.id, message });
+      this.emitError(message, msg.id);
+      return Promise.reject(new BridgeError("BRIDGE_CLOSED", message));
+    }
     return new Promise((resolve, reject) => {
       if (msg.kind !== "detach") {
         this.pending.set(msg.id, {
