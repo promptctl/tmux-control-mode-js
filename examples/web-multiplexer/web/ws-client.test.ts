@@ -342,4 +342,31 @@ describe("WebSocketBridge — pending settlement on close", () => {
     expect(bridge.outbox).toHaveLength(0);
     await expect(stale).rejects.toBeInstanceOf(BridgeError);
   });
+
+  it("doesn't flip state or bump the generation until the WebSocket is successfully constructed, so a constructor throw can't orphan an entry", () => {
+    const { bridge, socket: firstSocket } = connectedBridge();
+    firstSocket.readyState = FakeSocket.CLOSING;
+
+    class ThrowingSocket extends FakeSocket {
+      constructor(url: string) {
+        super(url);
+        throw new Error("malformed url");
+      }
+    }
+    vi.stubGlobal("WebSocket", ThrowingSocket);
+
+    let connectingReactionFired = false;
+    bridge.onState((s) => {
+      if (s === "connecting") connectingReactionFired = true;
+    });
+
+    expect(() => bridge.connect("ws://bad")).toThrow("malformed url");
+
+    // The constructor never succeeded, so this attempt must not have
+    // flipped state to "connecting" or bumped the generation -- either
+    // would let a synchronous onState("connecting") reaction tag a
+    // pending/outbox entry with a generation `this.ws` (still the old,
+    // superseded socket) was never reassigned to represent.
+    expect(connectingReactionFired).toBe(false);
+  });
 });

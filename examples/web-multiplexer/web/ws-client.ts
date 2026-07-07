@@ -153,16 +153,23 @@ export class WebSocketBridge implements TmuxBridge {
         );
       }
 
-      this.generation += 1;
-      const gen = this.generation;
-
-      this.setState("connecting");
+      // Constructed BEFORE bumping the generation or flipping state to
+      // "connecting" — if `new WebSocket(url)` throws (a malformed URL),
+      // nothing about this attempt has taken effect yet. Bumping first
+      // would let an onState("connecting") reaction tag a pending/outbox
+      // entry with a generation `this.ws` was never reassigned to
+      // represent, orphaning it the same way a CLOSING-race reconnect
+      // could (see the sweep above).
       const ws = new WebSocket(url);
       // Pane bytes arrive as binary pane-output frames; everything else is
       // JSON text. arraybuffer (not Blob) lets `decodePaneOutput` read the
       // frame synchronously in the message handler.
       ws.binaryType = "arraybuffer";
       this.ws = ws;
+
+      this.generation += 1;
+      const gen = this.generation;
+      this.setState("connecting");
 
       // Each listener just pokes an observable — the reaction above handles
       // the "what should we do about it" part. No imperative flush call
