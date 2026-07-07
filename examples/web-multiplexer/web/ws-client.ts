@@ -249,18 +249,25 @@ export class WebSocketBridge implements TmuxBridge {
    * socket close.
    */
   sweepGeneration(gen: number, reason: string): void {
-    const staleOutbox = this.outbox.filter((e) => e.gen === gen);
-    if (staleOutbox.length > 0) {
-      this.emitError(
-        `bridge closed with ${staleOutbox.length} undelivered message(s)`,
-      );
-      this.outbox = this.outbox.filter((e) => e.gen !== gen);
-    }
+    // [LAW:no-silent-failure] Own state first, notify last: emitError runs
+    // caller-supplied handlers synchronously, and a throwing handler must
+    // not be able to abort the outbox/pending cleanup or leave a promise
+    // unsettled. Nothing before the emitError call below invokes caller
+    // code synchronously — Promise#reject only schedules .catch() as a
+    // microtask, it never runs a handler inline.
+    const staleOutboxCount = this.outbox.filter((e) => e.gen === gen).length;
+    this.outbox = this.outbox.filter((e) => e.gen !== gen);
 
     const stale = [...this.pending].filter(([, e]) => e.gen === gen);
     for (const [id] of stale) this.pending.delete(id);
     for (const [, entry] of stale) {
       entry.reject(new BridgeError("BRIDGE_CLOSED", reason));
+    }
+
+    if (staleOutboxCount > 0) {
+      this.emitError(
+        `bridge closed with ${staleOutboxCount} undelivered message(s)`,
+      );
     }
   }
 

@@ -318,4 +318,28 @@ describe("WebSocketBridge — pending settlement on close", () => {
     expect(socketsCreated).toBe(2);
     await expect(stale).rejects.toBeInstanceOf(BridgeError);
   });
+
+  it("settles the outbox and pending map before notifying error handlers, so a throwing errorHandler can't abort cleanup (sweepGeneration)", async () => {
+    const { bridge, socket: firstSocket } = connectedBridge();
+
+    // Undrained, so sweepGeneration's outbox cleanup has something to do
+    // and emits an error -- the trigger for the throwing handler below.
+    firstSocket.readyState = FakeSocket.CLOSING;
+    const stale = bridge.execute("stale-command");
+    stale.catch(() => {});
+
+    bridge.onError(() => {
+      throw new Error("boom from a misbehaving error handler");
+    });
+
+    expect(() => bridge.disconnect()).toThrow(
+      "boom from a misbehaving error handler",
+    );
+
+    // Despite the handler throwing, cleanup must have already happened --
+    // it runs before the (risky, caller-code-invoking) notification, not
+    // after.
+    expect(bridge.outbox).toHaveLength(0);
+    await expect(stale).rejects.toBeInstanceOf(BridgeError);
+  });
 });
