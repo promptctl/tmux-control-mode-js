@@ -286,8 +286,9 @@ export class EscapePlaygroundStore {
    */
   send(interpreted: string): void {
     if (this.status !== "ready" || this.paneId === null) return;
+    const sentBytes = new TextEncoder().encode(interpreted).length;
     runInAction(() => {
-      this.lastSentBytes = new TextEncoder().encode(interpreted).length;
+      this.lastSentBytes = sentBytes;
     });
     // [LAW:no-silent-failure] The byte count above is optimistic — if the
     // send never reached tmux, roll it back rather than displaying "Sent N
@@ -299,7 +300,11 @@ export class EscapePlaygroundStore {
       .catch((err: unknown) => {
         console.warn("[escape-playground] sendKeys failed", err);
         runInAction(() => {
-          this.lastSentBytes = null;
+          // [LAW:no-ambient-temporal-coupling] Only roll back if this call
+          // still owns the displayed value — a newer send() may have already
+          // overwritten it with a fresher (possibly successful) byte count,
+          // and a stale rejection must not clobber that.
+          if (this.lastSentBytes === sentBytes) this.lastSentBytes = null;
         });
       });
   }

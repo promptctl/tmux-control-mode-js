@@ -452,6 +452,13 @@ export class ConsoleStore {
         runInAction(() => {
           this.liveSig = null;
           this.disposeSubscription = null;
+          // [LAW:no-silent-failure] Otherwise the user sees "idle" forever
+          // with no indication the subscribe command was ever rejected —
+          // runOneShot's catch surfaces the same {status:"error"} variant.
+          this.playgroundResult = {
+            status: "error",
+            message: errorMessage(err),
+          };
         });
       });
   }
