@@ -209,4 +209,57 @@ describe("WebSocketBridge — pending settlement on close", () => {
     await expect(p1).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
     await expect(p2).rejects.toBeInstanceOf(BridgeError);
   });
+
+  it("does not sweep a fresh connection's pending/outbox when an onState('closed') reaction reconnects synchronously (tmux-ws-lifecycle-2vk)", async () => {
+    const { bridge, socket: firstSocket } = connectedBridge();
+
+    let reconnected:
+      | { promise: Promise<unknown>; socket: FakeSocket }
+      | undefined;
+    bridge.onState((s) => {
+      if (s === "closed" && reconnected === undefined) {
+        bridge.connect("ws://test");
+        const socket = lastSocket;
+        if (socket === undefined || socket === firstSocket) {
+          throw new Error(
+            "expected a fresh socket from the synchronous reconnect",
+          );
+        }
+        reconnected = { promise: bridge.execute("list-sessions"), socket };
+      }
+    });
+
+    // The old connection's close teardown is still unwinding when the
+    // reaction above reconnects and sends — that reconnect's message must
+    // not be swept as if it belonged to the connection that just closed.
+    firstSocket.fireClose();
+
+    if (reconnected === undefined) {
+      throw new Error("onState('closed') handler did not run");
+    }
+    expect(reconnected.socket.sent).toHaveLength(0);
+
+    reconnected.socket.fireOpen();
+    expect(reconnected.socket.sent).toHaveLength(1);
+
+    const sentRequest = JSON.parse(reconnected.socket.sent[0]) as {
+      id: string;
+    };
+    reconnected.socket.fireMessage(
+      JSON.stringify({
+        kind: "response",
+        id: sentRequest.id,
+        response: {
+          commandNumber: 1,
+          timestamp: Date.now(),
+          output: [],
+          success: true,
+        },
+      }),
+    );
+
+    await expect(reconnected.promise).resolves.toMatchObject({
+      success: true,
+    });
+  });
 });

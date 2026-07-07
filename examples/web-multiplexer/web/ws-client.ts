@@ -49,6 +49,16 @@ interface Pending {
   readonly reject: (e: BridgeError) => void;
   readonly sentAt: number;
   readonly request: ClientToServer;
+  readonly gen: number;
+}
+
+// [LAW:types-are-the-program] Every queued message is stamped with the
+// connection generation it belongs to. A generation-blind sweep can't tell
+// "this connection's leftovers" from "the reconnect that just started" —
+// tagging the entry is what makes that distinction representable at all.
+interface OutboxEntry {
+  readonly msg: ClientToServer;
+  readonly gen: number;
 }
 
 export class WebSocketBridge implements TmuxBridge {
@@ -61,12 +71,20 @@ export class WebSocketBridge implements TmuxBridge {
   private readonly firehoseHandlers = new Set<FirehoseHandler>();
   private nextId = 0;
 
+  // [LAW:one-source-of-truth] Bumped once per connect() call; every pending
+  // and outbox entry is stamped with whichever generation was live when it
+  // was created. A teardown sweeps only its own generation's entries, so a
+  // reconnect issued synchronously from an onState("closed") reaction (see
+  // sweepGeneration) is never mistaken for stale state from the connection
+  // that just closed.
+  private generation = 0;
+
   // Observable state — connection state and the outbox size drive the
   // auto-drain reaction below. `state` and `outbox` are the only pieces
   // of MobX-observed state on this class; everything else is either a
   // static subscriber list (events/errors) or imperative bookkeeping.
   state: ConnState = "connecting";
-  outbox: ClientToServer[] = [];
+  outbox: OutboxEntry[] = [];
 
   constructor() {
     makeObservable(this, {
@@ -107,6 +125,9 @@ export class WebSocketBridge implements TmuxBridge {
       return;
     }
 
+    this.generation += 1;
+    const gen = this.generation;
+
     this.setState("connecting");
     const ws = new WebSocket(url);
     // Pane bytes arrive as binary pane-output frames; everything else is
@@ -128,13 +149,7 @@ export class WebSocketBridge implements TmuxBridge {
         if (this.ws !== ws) return;
         this.ws = null;
         this.setState("closed");
-        if (this.outbox.length > 0) {
-          this.emitError(
-            `bridge closed with ${this.outbox.length} undelivered message(s)`,
-          );
-          this.outbox.splice(0, this.outbox.length);
-        }
-        this.settlePendingOnClose("bridge socket closed");
+        this.sweepGeneration(gen, "bridge socket closed");
       }),
     );
     ws.addEventListener("error", () => {
@@ -154,6 +169,11 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   disconnect(): void {
+    // Captured BEFORE setState fires the state fan-out below — if an
+    // onState("closed") reaction calls connect() synchronously, `this
+    // .generation` advances past this value, so the reconnect's entries
+    // are stamped with a generation this sweep will never match.
+    const gen = this.generation;
     if (this.ws !== null) {
       const ws = this.ws;
       this.ws = null;
@@ -165,35 +185,45 @@ export class WebSocketBridge implements TmuxBridge {
       }
     }
     // [LAW:no-ambient-temporal-coupling] Same order as the close listener:
-    // setState("closed") FIRST, then settlePendingOnClose. If an onState
-    // handler reacts to "closed" by synchronously issuing a new
-    // execute()/sendKeys(), that entry lands in `pending` during the
-    // setState fan-out — settling it after (not before) means it's still
-    // swept by this same teardown rather than left to hang forever.
+    // setState("closed") FIRST, then sweepGeneration. If an onState handler
+    // reacts to "closed" by synchronously issuing a new execute()/sendKeys()
+    // WITHOUT reconnecting first, that entry lands in `pending` tagged with
+    // this same `gen` during the setState fan-out — settling it after (not
+    // before) means it's still swept by this same teardown rather than left
+    // to hang forever.
     runInAction(() => {
       this.setState("closed");
-      if (this.outbox.length > 0) {
-        this.emitError(
-          `bridge closed with ${this.outbox.length} undelivered message(s)`,
-        );
-        this.outbox.splice(0, this.outbox.length);
-      }
-      this.settlePendingOnClose("client disconnect");
+      this.sweepGeneration(gen, "client disconnect");
     });
   }
 
   /**
-   * Reject every in-flight command — the only settlement point for the
-   * `pending` map. tmux will never reply to these (the socket is gone), so
-   * an awaiting caller (DemoStore.installSubscriptions, captureSeeds,
-   * ConsoleStore commands, ...) must see a rejection, not a hang.
-   * [LAW:no-silent-failure] [LAW:single-enforcer] one settlement path for
-   * both the user-initiated disconnect() and an unplanned socket close.
+   * Tear down everything belonging to one connection generation: drop its
+   * queued-but-undrained outbox entries (emitting one error if any existed)
+   * and reject its in-flight pending calls. tmux will never reply to these
+   * (the socket is gone), so an awaiting caller (DemoStore
+   * .installSubscriptions, captureSeeds, ConsoleStore commands, ...) must
+   * see a rejection, not a hang.
+   *
+   * Entries tagged with a LATER generation — a reconnect issued
+   * synchronously from an onState("closed") reaction while this teardown is
+   * still running — are left untouched; they belong to a connection that
+   * was never closed. [LAW:no-silent-failure] [LAW:single-enforcer] one
+   * sweep path for both the user-initiated disconnect() and an unplanned
+   * socket close.
    */
-  private settlePendingOnClose(reason: string): void {
-    const entries = [...this.pending.values()];
-    this.pending.clear();
-    for (const entry of entries) {
+  private sweepGeneration(gen: number, reason: string): void {
+    const staleOutbox = this.outbox.filter((e) => e.gen === gen);
+    if (staleOutbox.length > 0) {
+      this.emitError(
+        `bridge closed with ${staleOutbox.length} undelivered message(s)`,
+      );
+      this.outbox = this.outbox.filter((e) => e.gen !== gen);
+    }
+
+    const stale = [...this.pending].filter(([, e]) => e.gen === gen);
+    for (const [id] of stale) this.pending.delete(id);
+    for (const [, entry] of stale) {
       entry.reject(new BridgeError("BRIDGE_CLOSED", reason));
     }
   }
@@ -248,7 +278,7 @@ export class WebSocketBridge implements TmuxBridge {
       // dispatch-failure path (server/bridge.ts) — distinct from a tmux
       // %error, which already resolves via a ResponseFrame{success:false}.
       // If it carries the id of a still-pending execute()/sendKeys(), that
-      // promise must settle here or it hangs forever (settlePendingOnClose
+      // promise must settle here or it hangs forever (sweepGeneration
       // already ran, or never runs, for a connection that stays open).
       if (frame.id !== undefined) {
         const entry = this.pending.get(frame.id);
@@ -306,6 +336,7 @@ export class WebSocketBridge implements TmuxBridge {
           reject,
           sentAt: Date.now(),
           request: msg,
+          gen: this.generation,
         });
       }
       this.sendRaw(msg);
@@ -324,17 +355,17 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   enqueue(msg: ClientToServer): void {
-    this.outbox.push(msg);
+    this.outbox.push({ msg, gen: this.generation });
   }
 
   drainOutbox(): void {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
     const ws = this.ws;
     while (this.outbox.length > 0) {
-      const msg = this.outbox.shift();
-      if (msg === undefined) break;
-      ws.send(JSON.stringify(msg));
-      this.emitWire({ dir: "out", ts: Date.now(), msg });
+      const entry = this.outbox.shift();
+      if (entry === undefined) break;
+      ws.send(JSON.stringify(entry.msg));
+      this.emitWire({ dir: "out", ts: Date.now(), msg: entry.msg });
     }
   }
 
