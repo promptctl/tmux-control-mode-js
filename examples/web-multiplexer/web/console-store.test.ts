@@ -12,7 +12,10 @@
 // so we stub a Map-backed Storage to exercise the real persistence path.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type { CommandResponse, TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
+import type {
+  CommandResponse,
+  TmuxMessage,
+} from "@promptctl/tmux-control-mode-js/protocol";
 import { UiStore } from "./ui-store.ts";
 import { ConsoleStore, quoteTmuxArg } from "./console-store.ts";
 import {
@@ -21,7 +24,13 @@ import {
   DEFAULT_MODE,
   REPL_RING_CAP,
 } from "./console-types.ts";
-import type { ConnState, EventHandler, StateHandler, TmuxBridge } from "./bridge.ts";
+import type {
+  ConnState,
+  EventHandler,
+  StateHandler,
+  TmuxBridge,
+} from "./bridge.ts";
+import { deferred, tick, type Deferred } from "./test-utils.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 // The auto-persist reaction is debounced; give it room to flush before we
@@ -55,9 +64,19 @@ function fakeBridge(): TmuxBridge {
   const noopUnsub = (): (() => void) => noop;
   return {
     execute: () =>
-      Promise.resolve({ commandNumber: 0, timestamp: 0, output: [], success: true }),
+      Promise.resolve({
+        commandNumber: 0,
+        timestamp: 0,
+        output: [],
+        success: true,
+      }),
     sendKeys: () =>
-      Promise.resolve({ commandNumber: 0, timestamp: 0, output: [], success: true }),
+      Promise.resolve({
+        commandNumber: 0,
+        timestamp: 0,
+        output: [],
+        success: true,
+      }),
     detach: noop,
     connect: noop,
     disconnect: noop,
@@ -69,22 +88,6 @@ function fakeBridge(): TmuxBridge {
     stopFirehose: noop,
     onFirehose: noopUnsub,
   };
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
 }
 
 interface Call {
@@ -115,12 +118,6 @@ function ok(output: readonly string[]): CommandResponse {
 
 function errResp(output: readonly string[]): CommandResponse {
   return { commandNumber: 0, timestamp: 0, output, success: false };
-}
-
-/** Flush pending microtasks (and the trailing macrotask) so a fire-and-forget
- *  store evaluation settles before assertions. */
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /**
@@ -208,7 +205,10 @@ describe("UiStore — console persistence", () => {
     await sleep(PERSIST_FLUSH_MS);
 
     const b = new UiStore();
-    expect(b.console.commandHistory).toEqual(["list-sessions", "display-message test"]);
+    expect(b.console.commandHistory).toEqual([
+      "list-sessions",
+      "display-message test",
+    ]);
     expect(b.console.lastFormat).toBe("#{pane_pid}");
     expect(b.console.lastTarget).toEqual({ kind: "explicit", target: "%3" });
     expect(b.console.lastMode).toBe("subscribed");
@@ -217,7 +217,10 @@ describe("UiStore — console persistence", () => {
   it("falls back to console defaults when the persisted blob is malformed", () => {
     sessionStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ appMode: "console", console: { lastMode: "bogus", lastTarget: 42 } }),
+      JSON.stringify({
+        appMode: "console",
+        console: { lastMode: "bogus", lastTarget: 42 },
+      }),
     );
 
     const store = new UiStore();
@@ -310,7 +313,8 @@ describe("ConsoleStore — REPL submit", () => {
 
     const entry = store.replEntries[0];
     expect(entry.status).toBe("error");
-    if (entry.status === "error") expect(entry.message).toBe("bridge disconnected");
+    if (entry.status === "error")
+      expect(entry.message).toBe("bridge disconnected");
   });
 
   it("decodes latin1-container output to UTF-8 at the store boundary", async () => {
@@ -367,7 +371,9 @@ describe("ConsoleStore — REPL ring", () => {
 
     expect(store.replEntries).toHaveLength(REPL_RING_CAP);
     expect(store.replEntries[0].command).toBe("cmd5");
-    expect(store.replEntries[REPL_RING_CAP - 1].command).toBe(`cmd${REPL_RING_CAP + 4}`);
+    expect(store.replEntries[REPL_RING_CAP - 1].command).toBe(
+      `cmd${REPL_RING_CAP + 4}`,
+    );
   });
 
   it("never evicts a pending row, even when it is the oldest entry", async () => {
@@ -387,7 +393,9 @@ describe("ConsoleStore — REPL ring", () => {
 
     calls[0].d.resolve(ok(["late but landed"]));
     await pendingP;
-    expect(store.replEntries.find((e) => e.command === "slow")?.status).toBe("ok");
+    expect(store.replEntries.find((e) => e.command === "slow")?.status).toBe(
+      "ok",
+    );
   });
 
   it("clear() empties the live ring but leaves persisted recall history intact", async () => {
@@ -484,11 +492,17 @@ describe("ConsoleStore — Playground one-shot", () => {
     store.setPlaygroundFormat("#{session_name}");
 
     expect(rig.execCalls).toHaveLength(1);
-    expect(rig.execCalls[0].command).toBe("display-message -p '#{session_name}'");
+    expect(rig.execCalls[0].command).toBe(
+      "display-message -p '#{session_name}'",
+    );
 
     rig.execCalls[0].d.resolve(ok(["demo"]));
     await tick();
-    expect(store.playgroundResult).toEqual({ status: "value", value: "demo", updateCount: 1 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "demo",
+      updateCount: 1,
+    });
   });
 
   it("targets an explicit pane with -t and omits it for the active pane", () => {
@@ -511,7 +525,10 @@ describe("ConsoleStore — Playground one-shot", () => {
 
     rig.execCalls[0].d.resolve(errResp(["invalid format"]));
     await tick();
-    expect(store.playgroundResult).toEqual({ status: "error", message: "invalid format" });
+    expect(store.playgroundResult).toEqual({
+      status: "error",
+      message: "invalid format",
+    });
   });
 
   it("surfaces a transport rejection in the error variant, not a swallowed log", async () => {
@@ -532,7 +549,11 @@ describe("ConsoleStore — Playground one-shot", () => {
 
     rig.execCalls[0].d.resolve(ok(["cafÃ©"]));
     await tick();
-    expect(store.playgroundResult).toEqual({ status: "value", value: "café", updateCount: 1 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "café",
+      updateCount: 1,
+    });
   });
 
   it("drops a stale one-shot resolution superseded by a newer evaluation", async () => {
@@ -592,8 +613,12 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
 
     // Each re-subscribe is preceded by a `refresh-client -B playground` removal.
     const cmds = commandsOf(rig.execCalls);
-    expect(cmds.filter((c) => c === "refresh-client -B playground")).toHaveLength(2);
-    expect(cmds.at(-1)).toBe("refresh-client -B 'playground::#{pane_current_command}'");
+    expect(
+      cmds.filter((c) => c === "refresh-client -B playground"),
+    ).toHaveLength(2);
+    expect(cmds.at(-1)).toBe(
+      "refresh-client -B 'playground::#{pane_current_command}'",
+    );
   });
 
   it("a target change while subscribed tears down and re-subscribes (single active)", () => {
@@ -641,22 +666,38 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
     expect(store.playgroundResult).toEqual({ status: "idle" });
 
     rig.emit(subEvent("playground", "vim"));
-    expect(store.playgroundResult).toEqual({ status: "value", value: "vim", updateCount: 1 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "vim",
+      updateCount: 1,
+    });
 
     rig.emit(subEvent("playground", "nvim"));
-    expect(store.playgroundResult).toEqual({ status: "value", value: "nvim", updateCount: 2 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "nvim",
+      updateCount: 2,
+    });
   });
 
   it("decodes latin1-container subscription values", () => {
     const { store, rig } = subscribedStore();
     rig.emit(subEvent("playground", "cafÃ©"));
-    expect(store.playgroundResult).toEqual({ status: "value", value: "café", updateCount: 1 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "café",
+      updateCount: 1,
+    });
   });
 
   it("re-subscribing resets the update counter and result to idle", () => {
     const { store, rig } = subscribedStore();
     rig.emit(subEvent("playground", "a"));
-    expect(store.playgroundResult).toEqual({ status: "value", value: "a", updateCount: 1 });
+    expect(store.playgroundResult).toEqual({
+      status: "value",
+      value: "a",
+      updateCount: 1,
+    });
 
     store.setPlaygroundFormat("#{pane_pid}");
     expect(store.playgroundResult).toEqual({ status: "idle" });
@@ -667,7 +708,9 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
     store.dispose();
 
     expect(rig.eventListeners.size).toBe(0);
-    expect(commandsOf(rig.execCalls).at(-1)).toBe("refresh-client -B playground");
+    expect(commandsOf(rig.execCalls).at(-1)).toBe(
+      "refresh-client -B playground",
+    );
 
     // A late event from the dropped subscription is ignored.
     rig.emit(subEvent("playground", "late"));
@@ -723,7 +766,8 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
 describe("UiStore — pushConsoleCommand", () => {
   it("caps the persisted recall list at CONSOLE_HISTORY_CAP, dropping oldest", () => {
     const ui = new UiStore();
-    for (let i = 0; i < CONSOLE_HISTORY_CAP + 5; i++) ui.pushConsoleCommand(`c${i}`);
+    for (let i = 0; i < CONSOLE_HISTORY_CAP + 5; i++)
+      ui.pushConsoleCommand(`c${i}`);
 
     expect(ui.console.commandHistory).toHaveLength(CONSOLE_HISTORY_CAP);
     expect(ui.console.commandHistory[0]).toBe("c5");

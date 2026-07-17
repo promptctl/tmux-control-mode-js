@@ -74,9 +74,9 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
           Type once, send to many — but resolved per pane. Built-ins{" "}
           <Code>{"${pane}"}</Code> <Code>{"${title}"}</Code>{" "}
           <Code>{"${session}"}</Code> resolve from each pane; your own variables
-          like <Code>{"${host}"}</Code> take a per-pane value below. tmux's native
-          broadcast sends identical keys to one window — this transforms per target
-          across every session.
+          like <Code>{"${host}"}</Code> take a per-pane value below. tmux's
+          native broadcast sends identical keys to one window — this transforms
+          per target across every session.
         </Text>
       </div>
 
@@ -103,7 +103,11 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
           <Button size="xs" variant="default" onClick={() => store.selectAll()}>
             Select all
           </Button>
-          <Button size="xs" variant="default" onClick={() => store.selectNone()}>
+          <Button
+            size="xs"
+            variant="default"
+            onClick={() => store.selectNone()}
+          >
             Select none
           </Button>
         </Group>
@@ -139,7 +143,12 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
           <ScrollArea.Autosize mah={220}>
             <Stack gap="xs">
               {selected.map((t) => (
-                <Group key={t.facts.paneId} gap="xs" wrap="nowrap" align="center">
+                <Group
+                  key={t.facts.paneId}
+                  gap="xs"
+                  wrap="nowrap"
+                  align="center"
+                >
                   <Text
                     size="sm"
                     style={{
@@ -173,7 +182,10 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
         </>
       )}
 
-      <Divider label="Preview — exactly the bytes that go on the wire" labelPosition="left" />
+      <Divider
+        label="Preview — exactly the bytes that go on the wire"
+        labelPosition="left"
+      />
       {previews.length === 0 ? (
         <Text size="sm" c="dimmed">
           Select one or more panes to preview the resolved payloads.
@@ -182,7 +194,12 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
         <ScrollArea.Autosize mah={260}>
           <Stack gap={4}>
             {previews.map(({ label, resolution }) => (
-              <Group key={resolution.paneId} gap="xs" wrap="nowrap" align="center">
+              <Group
+                key={resolution.paneId}
+                gap="xs"
+                wrap="nowrap"
+                align="center"
+              >
                 <Text
                   size="sm"
                   style={{ fontFamily: FONT_FAMILY, width: 160, flexShrink: 0 }}
@@ -218,10 +235,14 @@ export const BroadcastView = observer(function BroadcastView({ store }: Props) {
           )}
           {store.lastSend !== null && (
             <Text size="sm" c="dimmed">
-              sent {store.lastSend.sentBytes} bytes to {store.lastSend.sentPanes}{" "}
-              pane{store.lastSend.sentPanes === 1 ? "" : "s"}
+              sent {store.lastSend.sentBytes} bytes to{" "}
+              {store.lastSend.sentPanes} pane
+              {store.lastSend.sentPanes === 1 ? "" : "s"}
               {store.lastSend.blockedPanes > 0
                 ? ` · ${store.lastSend.blockedPanes} blocked`
+                : ""}
+              {store.lastSend.failedPanes > 0
+                ? ` · ${store.lastSend.failedPanes} failed`
                 : ""}
             </Text>
           )}

@@ -14,26 +14,7 @@ import { describe, it, expect } from "vitest";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { DemoStore } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+import { deferred, tick, type Deferred } from "./test-utils.ts";
 
 interface Call {
   readonly command: string;
@@ -134,6 +115,108 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
     findCall(calls, "switch-client").d.reject(new Error("bridge closed"));
     await tick();
 
+    expect(store.activeSessionId).toBe(11);
+  });
+});
+
+describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)", () => {
+  it("does not issue select-window/select-pane when switch-client rejects", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: true, windows: [] },
+    ];
+
+    store.jumpToPane(9, 1, 1);
+    findCall(calls, "switch-client").d.reject(new Error("bridge closed"));
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
+  });
+
+  it("issues select-window/select-pane only after switch-client resolves", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [{ id: 9, name: "nine", attached: false, windows: [] }];
+
+    store.jumpToPane(9, 42, 7);
+
+    // Before switch-client resolves, the follow-ons must not have fired yet.
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
+
+    findCall(calls, "switch-client").d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: true,
+    });
+    await tick();
+
+    expect(findCall(calls, "select-window").command).toBe(
+      "select-window -t @42",
+    );
+    expect(findCall(calls, "select-pane").command).toBe("select-pane -t %7");
+  });
+
+  it("does not fire a superseded jump's select-window/select-pane once a newer jump has bumped the token", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: false, windows: [] },
+    ];
+
+    // First jump goes in-flight (switch-client pending), then a newer jump
+    // supersedes it before the first switch-client resolves.
+    store.jumpToPane(9, 42, 7);
+    const firstSwitch = calls.find((c) =>
+      c.command.includes("switch-client -t \\$9"),
+    )!;
+    store.jumpToPane(11, 99, 8);
+
+    // The stale (first) switch-client resolves last. Its success path must see
+    // the token has moved on and skip its select commands entirely.
+    firstSwitch.d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: true,
+    });
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window -t @42"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.command.includes("select-pane -t %7"))).toBe(
+      false,
+    );
+  });
+
+  it("does not issue select-window/select-pane when switch-client resolves with success:false (tmux %error)", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: true, windows: [] },
+    ];
+
+    store.jumpToPane(9, 42, 7);
+    // A tmux %error resolves (not rejects) with success:false — the client
+    // never switched, so the follow-on selects must not fire against the
+    // still-current session, and the optimistic clientSessionId reverts.
+    findCall(calls, "switch-client").d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: false,
+    });
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
     expect(store.activeSessionId).toBe(11);
   });
 });
