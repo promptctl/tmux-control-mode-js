@@ -14,26 +14,7 @@ import { describe, it, expect } from "vitest";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { DemoStore } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+import { deferred, tick, type Deferred } from "./test-utils.ts";
 
 interface Call {
   readonly command: string;
@@ -212,5 +193,30 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
     expect(calls.some((c) => c.command.includes("select-pane -t %7"))).toBe(
       false,
     );
+  });
+
+  it("does not issue select-window/select-pane when switch-client resolves with success:false (tmux %error)", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: true, windows: [] },
+    ];
+
+    store.jumpToPane(9, 42, 7);
+    // A tmux %error resolves (not rejects) with success:false — the client
+    // never switched, so the follow-on selects must not fire against the
+    // still-current session, and the optimistic clientSessionId reverts.
+    findCall(calls, "switch-client").d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: false,
+    });
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
+    expect(store.activeSessionId).toBe(11);
   });
 });

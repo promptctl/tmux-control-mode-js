@@ -11,26 +11,7 @@ import { CopilotStore } from "./copilot-store.ts";
 import type { LlmClient } from "./llm-client.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import type { CopilotSuggestResponse } from "../shared/copilot-frame.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function tick(): Promise<void> {
-  return new Promise((r) => setTimeout(r, 0));
-}
+import { deferred, tick } from "./test-utils.ts";
 
 interface SentKeys {
   readonly target: string;

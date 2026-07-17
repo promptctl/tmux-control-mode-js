@@ -13,26 +13,7 @@ import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { BroadcastStore } from "./broadcast-store.ts";
 import { DemoStore, type SessionInfo } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+import { deferred, tick, type Deferred } from "./test-utils.ts";
 
 const OK: CommandResponse = {
   commandNumber: 0,
@@ -148,6 +129,34 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
       sentPanes: 1,
       sentBytes: 2, // "hi" = 2 bytes, appendEnter is off
       blockedPanes: 0,
+      failedPanes: 1, // %102's sendKeys rejected
+    });
+  });
+
+  it("counts a fulfilled-but-%error sendKeys as failed, not sent", async () => {
+    const { bridge, calls } = fakeBridge();
+    const demo = demoWithPanes();
+    const store = new BroadcastStore(bridge, demo);
+    store.setTemplate("hi");
+    store.setAppendEnter(false);
+    store.selectAll();
+
+    store.send();
+    expect(calls).toHaveLength(2);
+
+    // A tmux %error resolves sendKeys with {success:false} — the promise
+    // fulfills, but the keys never reached the pane.
+    calls.find((c) => c.target === "%101")!.d.resolve(OK);
+    calls
+      .find((c) => c.target === "%102")!
+      .d.resolve({ ...OK, success: false });
+    await tick();
+
+    expect(store.lastSend).toEqual({
+      sentPanes: 1,
+      sentBytes: 2,
+      blockedPanes: 0,
+      failedPanes: 1, // %102 fulfilled with success:false
     });
   });
 

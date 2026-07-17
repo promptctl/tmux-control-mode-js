@@ -772,12 +772,14 @@ export class DemoStore {
    * [LAW:no-ambient-temporal-coupling] `select-window`/`select-pane` target
    *   the session `switch-client` was supposed to activate, so that ordering
    *   dependency is made explicit: they are only issued after `switch-client`
-   *   resolves. A rejected `switch-client` short-circuits the jump instead of
-   *   the other two firing regardless and moving the target session's active
-   *   window/pane while the client itself never switched there. Once
-   *   switched, `select-window`/`select-pane` use `@windowId` / `%paneId`
-   *   absolute targets that tmux resolves itself — no reliance on the
-   *   client-side model catching up between the two.
+   *   *actually switched*. A switch that failed — either a transport rejection
+   *   or a tmux `%error` (which resolves `execute()` with `{success:false}`
+   *   rather than throwing) — short-circuits the jump instead of the other two
+   *   firing regardless and moving the target session's active window/pane
+   *   while the client itself never switched there. Once switched,
+   *   `select-window`/`select-pane` use `@windowId` / `%paneId` absolute
+   *   targets that tmux resolves itself — no reliance on the client-side model
+   *   catching up between the two.
    * [LAW:single-enforcer] Selection commands stay owned by DemoStore; callers
    *   pass ids, never assemble tmux target strings themselves.
    */
@@ -785,26 +787,35 @@ export class DemoStore {
     this.clientSessionId = sessionId;
     const token = ++this.sessionSelectToken;
     void (async () => {
+      let switched = false;
       try {
-        await this.client.execute(`switch-client -t \\$${sessionId}`);
+        // A tmux %error resolves execute() with {success:false} (see
+        // ws-client.ts) rather than throwing, so "switched" means the command
+        // succeeded, not merely that the promise settled.
+        switched = (
+          await this.client.execute(`switch-client -t \\$${sessionId}`)
+        ).success;
+        if (!switched) {
+          console.warn("[store] jumpToPane switch-client returned %error");
+        }
       } catch (err) {
         console.warn("[store] jumpToPane switch-client failed", err);
-        // [LAW:no-silent-failure] Same revert-on-rejection rationale as
-        // selectSession — guarded by the same token, so whichever of
-        // selectSession/jumpToPane issued most recently wins.
-        if (token !== this.sessionSelectToken) return;
+      }
+      // [LAW:no-ambient-temporal-coupling] Everything past the await is gated
+      // on the token: a newer selectSession/jumpToPane issued while
+      // switch-client was pending owns clientSessionId now, so a stale call
+      // must neither revert it nor fire its select commands.
+      if (token !== this.sessionSelectToken) return;
+      if (!switched) {
+        // [LAW:no-silent-failure] The client never switched — revert the
+        // optimistic clientSessionId (same rationale as selectSession) and
+        // short-circuit, rather than firing select-window/select-pane against
+        // the wrong (still-current) session.
         runInAction(() => {
           this.clientSessionId = null;
         });
         return;
       }
-      // [LAW:no-ambient-temporal-coupling] The follow-on selects are gated on
-      // the token too, not just the reject path: a newer selectSession/
-      // jumpToPane issued while switch-client was pending has already bumped
-      // sessionSelectToken, and firing these stale absolute-target selects
-      // would mutate the superseded session's active window/pane after the
-      // user moved on.
-      if (token !== this.sessionSelectToken) return;
       void this.client
         .execute(`select-window -t @${windowId}`)
         .catch((err: unknown) =>

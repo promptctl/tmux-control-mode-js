@@ -60,6 +60,11 @@ export interface SendSummary {
   readonly sentPanes: number;
   readonly sentBytes: number;
   readonly blockedPanes: number;
+  // [LAW:no-silent-failure] Panes whose sendKeys rejected. Distinct from
+  // blockedPanes (never attempted, unbound variable): these were attempted and
+  // failed, so the summary would otherwise under-report the pane count and the
+  // failure would live only in console.warn.
+  readonly failedPanes: number;
 }
 
 const BUILTIN_SET: ReadonlySet<string> = new Set(BUILTIN_VARS);
@@ -245,26 +250,31 @@ export class BroadcastStore {
       );
       let sentPanes = 0;
       let sentBytes = 0;
+      let failedPanes = 0;
       for (const [i, outcome] of settled.entries()) {
         const p = ready[i];
-        if (outcome.status === "fulfilled") {
+        // A pane counts as sent only if sendKeys both settled AND tmux
+        // accepted it: a tmux %error resolves with {success:false} (see
+        // ws-client.ts) rather than rejecting, so "fulfilled" alone would
+        // over-count. [LAW:types-are-the-program]
+        if (outcome.status === "fulfilled" && outcome.value.success) {
           sentPanes++;
           sentBytes += new TextEncoder().encode(p.text).length;
         } else {
+          failedPanes++;
           // [LAW:no-silent-failure] A bridge-closed rejection is already
           // reported via onState/onError, but log it so a future
-          // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
-          console.warn(
-            `[broadcast] sendKeys to %${p.paneId} failed`,
-            outcome.reason,
-          );
+          // non-BRIDGE_CLOSED failure doesn't vanish with zero diagnostic.
+          const reason =
+            outcome.status === "rejected" ? outcome.reason : "tmux %error";
+          console.warn(`[broadcast] sendKeys to %${p.paneId} failed`, reason);
         }
       }
       // [LAW:no-ambient-temporal-coupling] Discard a stale settlement: only
       // the most recent send() call may write `lastSend`.
       if (token !== this.sendToken) return;
       runInAction(() => {
-        this.lastSend = { sentPanes, sentBytes, blockedPanes };
+        this.lastSend = { sentPanes, sentBytes, blockedPanes, failedPanes };
       });
     })();
   }
