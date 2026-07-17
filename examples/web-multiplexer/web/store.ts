@@ -318,10 +318,16 @@ export class DemoStore {
       ]);
 
       if (sessionsResp.success) {
-        this.applySubscription("sessions", encodeSnapshotLines(sessionsResp.output));
+        this.applySubscription(
+          "sessions",
+          encodeSnapshotLines(sessionsResp.output),
+        );
       }
       if (windowsResp.success) {
-        this.applySubscription("windows", encodeSnapshotLines(windowsResp.output));
+        this.applySubscription(
+          "windows",
+          encodeSnapshotLines(windowsResp.output),
+        );
       }
       if (panesResp.success) {
         this.applySubscription("panes", encodeSnapshotLines(panesResp.output));
@@ -393,7 +399,10 @@ export class DemoStore {
       void this.refreshSession(ev.sessionId);
       return;
     }
-    if (ev.type === "session-window-changed" || ev.type === "window-pane-changed") {
+    if (
+      ev.type === "session-window-changed" ||
+      ev.type === "window-pane-changed"
+    ) {
       // No local writes — just kick the refresh so the subscription-fed
       // tree picks up the new active flags in a few ms instead of ~1 s.
       const sid =
@@ -576,9 +585,7 @@ export class DemoStore {
             ...win,
             panes: win.panes.map((p) => {
               const u = updates.get(p.id);
-              return u !== undefined
-                ? { ...p, width: u.w, height: u.h }
-                : p;
+              return u !== undefined ? { ...p, width: u.w, height: u.h } : p;
             }),
           })),
         }));
@@ -616,7 +623,11 @@ export class DemoStore {
       return;
     }
 
-    const sessionRows = parseRecords(this.latestSessions, ["sid", "name", "attached"]);
+    const sessionRows = parseRecords(this.latestSessions, [
+      "sid",
+      "name",
+      "attached",
+    ]);
     const windowRows = parseRecords(this.latestWindows, [
       "sid",
       "wid",
@@ -758,39 +769,64 @@ export class DemoStore {
    * session/window is currently active. Used by cross-session jumps (e.g. a
    * search hit in another session).
    *
-   * [LAW:no-ambient-temporal-coupling] Unlike the `select*` trio — which read
-   *   the client-side `currentWindow` getter and so only resolve correctly
-   *   *after* a subscription tick flips the active flags — this issues
-   *   `@windowId` / `%paneId` absolute targets that tmux resolves itself, in
-   *   the order sent. No reliance on the model catching up between calls.
+   * [LAW:no-ambient-temporal-coupling] `select-window`/`select-pane` target
+   *   the session `switch-client` was supposed to activate, so that ordering
+   *   dependency is made explicit: they are only issued after `switch-client`
+   *   *actually switched*. A switch that failed — either a transport rejection
+   *   or a tmux `%error` (which resolves `execute()` with `{success:false}`
+   *   rather than throwing) — short-circuits the jump instead of the other two
+   *   firing regardless and moving the target session's active window/pane
+   *   while the client itself never switched there. Once switched,
+   *   `select-window`/`select-pane` use `@windowId` / `%paneId` absolute
+   *   targets that tmux resolves itself — no reliance on the client-side model
+   *   catching up between the two.
    * [LAW:single-enforcer] Selection commands stay owned by DemoStore; callers
    *   pass ids, never assemble tmux target strings themselves.
    */
   jumpToPane(sessionId: number, windowId: number, paneId: number): void {
     this.clientSessionId = sessionId;
     const token = ++this.sessionSelectToken;
-    // [LAW:no-silent-failure] Same revert-on-rejection rationale as
-    // selectSession — guarded by the same token, so whichever of
-    // selectSession/jumpToPane issued most recently wins.
-    void this.client
-      .execute(`switch-client -t \\$${sessionId}`)
-      .catch((err: unknown) => {
+    void (async () => {
+      let switched = false;
+      try {
+        // A tmux %error resolves execute() with {success:false} (see
+        // ws-client.ts) rather than throwing, so "switched" means the command
+        // succeeded, not merely that the promise settled.
+        switched = (
+          await this.client.execute(`switch-client -t \\$${sessionId}`)
+        ).success;
+        if (!switched) {
+          console.warn("[store] jumpToPane switch-client returned %error");
+        }
+      } catch (err) {
         console.warn("[store] jumpToPane switch-client failed", err);
-        if (token !== this.sessionSelectToken) return;
+      }
+      // [LAW:no-ambient-temporal-coupling] Everything past the await is gated
+      // on the token: a newer selectSession/jumpToPane issued while
+      // switch-client was pending owns clientSessionId now, so a stale call
+      // must neither revert it nor fire its select commands.
+      if (token !== this.sessionSelectToken) return;
+      if (!switched) {
+        // [LAW:no-silent-failure] The client never switched — revert the
+        // optimistic clientSessionId (same rationale as selectSession) and
+        // short-circuit, rather than firing select-window/select-pane against
+        // the wrong (still-current) session.
         runInAction(() => {
           this.clientSessionId = null;
         });
-      });
-    void this.client
-      .execute(`select-window -t @${windowId}`)
-      .catch((err: unknown) =>
-        console.warn("[store] jumpToPane select-window failed", err),
-      );
-    void this.client
-      .execute(`select-pane -t %${paneId}`)
-      .catch((err: unknown) =>
-        console.warn("[store] jumpToPane select-pane failed", err),
-      );
+        return;
+      }
+      void this.client
+        .execute(`select-window -t @${windowId}`)
+        .catch((err: unknown) =>
+          console.warn("[store] jumpToPane select-window failed", err),
+        );
+      void this.client
+        .execute(`select-pane -t %${paneId}`)
+        .catch((err: unknown) =>
+          console.warn("[store] jumpToPane select-pane failed", err),
+        );
+    })();
     void this.refreshSession(sessionId);
   }
 
@@ -872,9 +908,9 @@ export class DemoStore {
     return this.connState === "ready"
       ? "teal"
       : this.connState === "open"
-      ? "yellow"
-      : this.connState === "closed"
-      ? "red"
-      : "gray";
+        ? "yellow"
+        : this.connState === "closed"
+          ? "red"
+          : "gray";
   }
 }

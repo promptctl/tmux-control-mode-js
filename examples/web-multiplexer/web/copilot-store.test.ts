@@ -11,6 +11,7 @@ import { CopilotStore } from "./copilot-store.ts";
 import type { LlmClient } from "./llm-client.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import type { CopilotSuggestResponse } from "../shared/copilot-frame.ts";
+import { deferred, tick } from "./test-utils.ts";
 
 interface SentKeys {
   readonly target: string;
@@ -46,7 +47,10 @@ function recordingBridge(sent: SentKeys[]): TmuxBridge {
 }
 
 /** LlmClient double returning a canned response (and recording the call). */
-function fakeLlm(response: CopilotSuggestResponse, calls: number[] = []): LlmClient {
+function fakeLlm(
+  response: CopilotSuggestResponse,
+  calls: number[] = [],
+): LlmClient {
   return {
     complete: (messages) => {
       calls.push(messages.length);
@@ -69,7 +73,9 @@ describe("CopilotStore.requestSuggestions", () => {
 
     expect(store.suggest.kind).toBe("ready");
     if (store.suggest.kind !== "ready") throw new Error("expected ready");
-    expect(store.suggest.suggestions.map((s) => s.command)).toEqual(["git push"]);
+    expect(store.suggest.suggestions.map((s) => s.command)).toEqual([
+      "git push",
+    ]);
     expect(store.suggest.raw).toContain("git push");
   });
 
@@ -115,7 +121,10 @@ describe("CopilotStore.requestSuggestions", () => {
 describe("CopilotStore.insert", () => {
   it("sends the command to the selected pane WITHOUT a trailing Enter", () => {
     const sent: SentKeys[] = [];
-    const store = new CopilotStore(recordingBridge(sent), fakeLlm({ ok: true, content: "[]" }));
+    const store = new CopilotStore(
+      recordingBridge(sent),
+      fakeLlm({ ok: true, content: "[]" }),
+    );
     store.selectPane(42);
     store.insert("ls -la");
 
@@ -125,9 +134,82 @@ describe("CopilotStore.insert", () => {
 
   it("does nothing with no pane selected", () => {
     const sent: SentKeys[] = [];
-    const store = new CopilotStore(recordingBridge(sent), fakeLlm({ ok: true, content: "[]" }));
+    const store = new CopilotStore(
+      recordingBridge(sent),
+      fakeLlm({ ok: true, content: "[]" }),
+    );
     store.insert("rm -rf /");
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("CopilotStore.requestSuggestions — concurrency guard (tmux-optimistic-ui-7ue)", () => {
+  it("a stale-but-later-resolving request does not clobber a fresher one", async () => {
+    const first = deferred<CopilotSuggestResponse>();
+    const second = deferred<CopilotSuggestResponse>();
+    const replies = [first.promise, second.promise];
+    const llm: LlmClient = {
+      complete: () => replies.shift()!,
+    };
+    const store = new CopilotStore(recordingBridge([]), llm);
+    store.selectPane(1);
+
+    const firstCall = store.requestSuggestions("p");
+    const secondCall = store.requestSuggestions("p");
+
+    // The SECOND (newer) request resolves first.
+    second.resolve({ ok: true, content: '[{"command": "second"}]' });
+    await secondCall;
+    expect(store.suggest.kind).toBe("ready");
+    if (store.suggest.kind !== "ready") throw new Error("expected ready");
+    expect(store.suggest.suggestions.map((s) => s.command)).toEqual(["second"]);
+
+    // The FIRST (stale) request resolves late — it must not overwrite the
+    // fresher result the second request already wrote.
+    first.resolve({ ok: true, content: '[{"command": "first"}]' });
+    await firstCall;
+    expect(store.suggest.kind).toBe("ready");
+    if (store.suggest.kind !== "ready") throw new Error("expected ready");
+    expect(store.suggest.suggestions.map((s) => s.command)).toEqual(["second"]);
+  });
+
+  it("selectPane mid-flight invalidates the in-flight request for the old pane", async () => {
+    const pending = deferred<CopilotSuggestResponse>();
+    const llm: LlmClient = { complete: () => pending.promise };
+    const store = new CopilotStore(recordingBridge([]), llm);
+    store.selectPane(1);
+
+    const call = store.requestSuggestions("p");
+    store.selectPane(2);
+    expect(store.suggest.kind).toBe("idle");
+
+    pending.resolve({ ok: true, content: '[{"command": "stale"}]' });
+    await call;
+    await tick();
+
+    // The stale reply for pane 1 must not resurrect a suggestion after the
+    // user has already moved on to pane 2.
+    expect(store.suggest.kind).toBe("idle");
+  });
+
+  it("stop() mid-flight invalidates the in-flight request", async () => {
+    const pending = deferred<CopilotSuggestResponse>();
+    const llm: LlmClient = { complete: () => pending.promise };
+    const store = new CopilotStore(recordingBridge([]), llm);
+    store.start();
+    store.selectPane(1);
+
+    const call = store.requestSuggestions("p");
+    store.stop();
+    expect(store.suggest.kind).toBe("idle");
+
+    pending.resolve({ ok: true, content: '[{"command": "stale"}]' });
+    await call;
+    await tick();
+
+    // A reply that lands after stop() must not resurrect a suggestion — it
+    // would surface a prior session's output after the copilot was torn down.
+    expect(store.suggest.kind).toBe("idle");
   });
 });
 

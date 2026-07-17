@@ -13,26 +13,7 @@ import { describe, it, expect } from "vitest";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import type { TmuxBridge } from "./bridge.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (reason: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
+import { deferred, tick, type Deferred } from "./test-utils.ts";
 
 interface Call {
   readonly target: string;

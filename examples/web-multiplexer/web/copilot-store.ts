@@ -58,17 +58,30 @@ export class CopilotStore {
   suggest: SuggestState = { kind: "idle" };
 
   private readonly history: PromptStore;
+  // Monotonic id identifying which requestSuggestions() call currently owns
+  // `suggest` — an identity guard, not a value guard, so a stale-but-later-
+  // resolving request can't clobber a fresher one (same shape as
+  // EscapePlaygroundStore.sendToken / ConsoleStore.evalToken). Bumped on every
+  // new request, and on every abandonment of the suggestion context via
+  // `clearSuggestion()` — the single site that resets `suggest` and invalidates
+  // in-flight requests together, so no reset path can forget one.
+  // [LAW:no-ambient-temporal-coupling]
+  private requestToken = 0;
 
   constructor(
     private readonly bridge: TmuxBridge,
     private readonly llm: LlmClient,
   ) {
     this.history = new PromptStore(bridge);
-    makeAutoObservable<this, "history" | "bridge" | "llm">(this, {
-      history: false,
-      bridge: false,
-      llm: false,
-    });
+    makeAutoObservable<this, "history" | "bridge" | "llm" | "requestToken">(
+      this,
+      {
+        history: false,
+        bridge: false,
+        llm: false,
+        requestToken: false,
+      },
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -86,7 +99,7 @@ export class CopilotStore {
     this.active = false;
     this.history.stop();
     this.selectedPaneId = null;
-    this.suggest = { kind: "idle" };
+    this.clearSuggestion();
   }
 
   dispose(): void {
@@ -133,7 +146,19 @@ export class CopilotStore {
   /** Pick the pane to suggest for; clears any prior suggestion. */
   selectPane(paneId: number | null): void {
     this.selectedPaneId = paneId;
+    this.clearSuggestion();
+  }
+
+  /**
+   * [LAW:single-enforcer] The one place that abandons the current suggestion:
+   * resets `suggest` to idle AND invalidates any in-flight request in a single
+   * step. Every reset site (selectPane, stop) routes through here, so a late
+   * llm.complete() reply can never resurrect a suggestion after the context it
+   * was requested for is gone.
+   */
+  private clearSuggestion(): void {
     this.suggest = { kind: "idle" };
+    this.requestToken++;
   }
 
   // -------------------------------------------------------------------------
@@ -148,10 +173,15 @@ export class CopilotStore {
   async requestSuggestions(paneLabel: string): Promise<void> {
     if (this.selectedPaneId === null) return;
     const messages = buildCopilotMessages(this.recentCommands, { paneLabel });
+    const token = ++this.requestToken;
     runInAction(() => {
       this.suggest = { kind: "loading" };
     });
     const result = await this.llm.complete(messages);
+    // [LAW:no-ambient-temporal-coupling] Discard a stale reply: only the
+    // most recent request (by token, not by content — two replies can be
+    // textually identical) may write `suggest`.
+    if (token !== this.requestToken) return;
     runInAction(() => {
       this.suggest = result.ok
         ? {
