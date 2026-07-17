@@ -210,6 +210,26 @@ describe("CopilotStore.requestSuggestions — concurrency guard (tmux-optimistic
     // user has already moved on to pane 2.
     expect(store.suggest.kind).toBe("idle");
   });
+
+  it("stop() mid-flight invalidates the in-flight request", async () => {
+    const pending = deferred<CopilotSuggestResponse>();
+    const llm: LlmClient = { complete: () => pending.promise };
+    const store = new CopilotStore(recordingBridge([]), llm);
+    store.start();
+    store.selectPane(1);
+
+    const call = store.requestSuggestions("p");
+    store.stop();
+    expect(store.suggest.kind).toBe("idle");
+
+    pending.resolve({ ok: true, content: '[{"command": "stale"}]' });
+    await call;
+    await tick();
+
+    // A reply that lands after stop() must not resurrect a suggestion — it
+    // would surface a prior session's output after the copilot was torn down.
+    expect(store.suggest.kind).toBe("idle");
+  });
 });
 
 describe("CopilotStore.selectPane", () => {

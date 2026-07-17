@@ -179,4 +179,38 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
     );
     expect(findCall(calls, "select-pane").command).toBe("select-pane -t %7");
   });
+
+  it("does not fire a superseded jump's select-window/select-pane once a newer jump has bumped the token", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: false, windows: [] },
+    ];
+
+    // First jump goes in-flight (switch-client pending), then a newer jump
+    // supersedes it before the first switch-client resolves.
+    store.jumpToPane(9, 42, 7);
+    const firstSwitch = calls.find((c) =>
+      c.command.includes("switch-client -t \\$9"),
+    )!;
+    store.jumpToPane(11, 99, 8);
+
+    // The stale (first) switch-client resolves last. Its success path must see
+    // the token has moved on and skip its select commands entirely.
+    firstSwitch.d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: true,
+    });
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window -t @42"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.command.includes("select-pane -t %7"))).toBe(
+      false,
+    );
+  });
 });

@@ -62,8 +62,10 @@ export class CopilotStore {
   // `suggest` — an identity guard, not a value guard, so a stale-but-later-
   // resolving request can't clobber a fresher one (same shape as
   // EscapePlaygroundStore.sendToken / ConsoleStore.evalToken). Bumped on every
-  // new request AND on selectPane, since switching panes makes any in-flight
-  // request for the old pane stale too. [LAW:no-ambient-temporal-coupling]
+  // new request, and on every abandonment of the suggestion context via
+  // `clearSuggestion()` — the single site that resets `suggest` and invalidates
+  // in-flight requests together, so no reset path can forget one.
+  // [LAW:no-ambient-temporal-coupling]
   private requestToken = 0;
 
   constructor(
@@ -97,7 +99,7 @@ export class CopilotStore {
     this.active = false;
     this.history.stop();
     this.selectedPaneId = null;
-    this.suggest = { kind: "idle" };
+    this.clearSuggestion();
   }
 
   dispose(): void {
@@ -144,9 +146,18 @@ export class CopilotStore {
   /** Pick the pane to suggest for; clears any prior suggestion. */
   selectPane(paneId: number | null): void {
     this.selectedPaneId = paneId;
+    this.clearSuggestion();
+  }
+
+  /**
+   * [LAW:single-enforcer] The one place that abandons the current suggestion:
+   * resets `suggest` to idle AND invalidates any in-flight request in a single
+   * step. Every reset site (selectPane, stop) routes through here, so a late
+   * llm.complete() reply can never resurrect a suggestion after the context it
+   * was requested for is gone.
+   */
+  private clearSuggestion(): void {
     this.suggest = { kind: "idle" };
-    // Invalidate any in-flight request for the previously selected pane —
-    // it must not land after we've already moved on.
     this.requestToken++;
   }
 

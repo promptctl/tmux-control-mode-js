@@ -798,6 +798,13 @@ export class DemoStore {
         });
         return;
       }
+      // [LAW:no-ambient-temporal-coupling] The follow-on selects are gated on
+      // the token too, not just the reject path: a newer selectSession/
+      // jumpToPane issued while switch-client was pending has already bumped
+      // sessionSelectToken, and firing these stale absolute-target selects
+      // would mutate the superseded session's active window/pane after the
+      // user moved on.
+      if (token !== this.sessionSelectToken) return;
       void this.client
         .execute(`select-window -t @${windowId}`)
         .catch((err: unknown) =>
