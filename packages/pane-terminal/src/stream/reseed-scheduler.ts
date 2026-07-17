@@ -52,8 +52,22 @@ export class ReseedScheduler {
   // Pre-bound reconnect handler — created once at construction so the
   // scheduler can `off()` itself if a future API ever needs to (e.g. when
   // the WeakMap entry is replaced under a re-keyed client during testing).
+  //
+  // [LAW:no-ambient-temporal-coupling] Dispatch on the next microtask, not
+  //   synchronously inside the 'reconnected' fan-out. This scheduler's handler
+  //   is interleaved among the PaneStreams' own 'reconnected' handlers — it
+  //   registers during the first stream's construction, so a synchronous
+  //   dispatch reseeds the highest-priority stream BEFORE that stream's own
+  //   handler runs. The stream's handler would then re-mark the just-started,
+  //   in-flight capture stale, forcing a redundant second capture-pane over
+  //   the single tmux pipe. Deferring one microtask lets the whole fan-out
+  //   settle first, so every attached stream reseeds exactly once. A genuine
+  //   late reconnect (a new event arriving during an in-flight capture) still
+  //   sets the stale flag and triggers a fresh re-seed — that path is
+  //   unchanged. Uses ambient Promise only (no queueMicrotask, which the
+  //   env-agnostic core tsconfig does not type).
   private readonly onReconnected = (): void => {
-    void this.runReseed();
+    void Promise.resolve().then(() => this.runReseed());
   };
 
   constructor(client: TmuxConnection) {
