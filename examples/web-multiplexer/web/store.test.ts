@@ -137,3 +137,46 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
     expect(store.activeSessionId).toBe(11);
   });
 });
+
+describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)", () => {
+  it("does not issue select-window/select-pane when switch-client rejects", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 9, name: "nine", attached: false, windows: [] },
+      { id: 11, name: "eleven", attached: true, windows: [] },
+    ];
+
+    store.jumpToPane(9, 1, 1);
+    findCall(calls, "switch-client").d.reject(new Error("bridge closed"));
+    await tick();
+
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
+  });
+
+  it("issues select-window/select-pane only after switch-client resolves", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [{ id: 9, name: "nine", attached: false, windows: [] }];
+
+    store.jumpToPane(9, 42, 7);
+
+    // Before switch-client resolves, the follow-ons must not have fired yet.
+    expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
+    expect(calls.some((c) => c.command.includes("select-pane"))).toBe(false);
+
+    findCall(calls, "switch-client").d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: true,
+    });
+    await tick();
+
+    expect(findCall(calls, "select-window").command).toBe(
+      "select-window -t @42",
+    );
+    expect(findCall(calls, "select-pane").command).toBe("select-pane -t %7");
+  });
+});

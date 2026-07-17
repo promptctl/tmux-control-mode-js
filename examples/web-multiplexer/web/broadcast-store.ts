@@ -28,7 +28,7 @@
 //   stores this owns NO tmux resource — it writes to panes that already exist — so
 //   it has no spawn/teardown lifecycle.
 
-import { makeAutoObservable } from "mobx";
+import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
 import type { DemoStore } from "./store.ts";
 import {
@@ -75,13 +75,21 @@ export class BroadcastStore {
   appendEnter = true;
   lastSend: SendSummary | null = null;
 
+  // Monotonic id identifying which send() call currently owns `lastSend` — an
+  // identity guard, not a value guard, for the same ABA reason as
+  // EscapePlaygroundStore.sendToken: a slower, older send() settling after a
+  // newer one must not clobber the newer call's summary.
+  // [LAW:no-ambient-temporal-coupling]
+  private sendToken = 0;
+
   constructor(
     private readonly bridge: TmuxBridge,
     private readonly demo: DemoStore,
   ) {
-    makeAutoObservable<this, "bridge" | "demo">(this, {
+    makeAutoObservable<this, "bridge" | "demo" | "sendToken">(this, {
       bridge: false,
       demo: false,
+      sendToken: false,
     });
   }
 
@@ -143,22 +151,30 @@ export class BroadcastStore {
     const selected = this.selectedTargets;
     const merged = selected.map((t) => ({
       paneId: t.facts.paneId,
-      bindings: { ...builtinBindings(t.facts), ...(this.overrides[t.facts.paneId] ?? {}) },
+      bindings: {
+        ...builtinBindings(t.facts),
+        ...(this.overrides[t.facts.paneId] ?? {}),
+      },
     }));
     const resolved = resolveBroadcast(this.template, merged, {
       appendEnter: this.appendEnter,
     });
-    return selected.map((t, i) => ({ label: t.label, resolution: resolved[i] }));
+    return selected.map((t, i) => ({
+      label: t.label,
+      resolution: resolved[i],
+    }));
   }
 
   /** How many selected panes are ready to send (the rest are blocked on a var). */
   get sendableCount(): number {
-    return this.resolutions.filter((r) => r.resolution.kind === "resolved").length;
+    return this.resolutions.filter((r) => r.resolution.kind === "resolved")
+      .length;
   }
 
   /** How many selected panes are blocked on an unbound variable. */
   get blockedCount(): number {
-    return this.resolutions.filter((r) => r.resolution.kind === "unresolved").length;
+    return this.resolutions.filter((r) => r.resolution.kind === "unresolved")
+      .length;
   }
 
   // -------------------------------------------------------------------------
@@ -212,25 +228,44 @@ export class BroadcastStore {
    * Fan the resolved payloads out over `sendKeys`. ONLY resolved panes are sent;
    * panes blocked on an unbound variable are counted and surfaced, never sent with
    * an empty substitution. [LAW:no-silent-failure]
+   *
+   * `lastSend` is derived from what actually reached tmux, not from what was
+   * attempted: a rejected `sendKeys` (bridge closed mid-broadcast, one pane
+   * failing) must not be counted as sent bytes/panes, so the summary is built
+   * from `Promise.allSettled`'s outcomes rather than computed optimistically
+   * before any call resolves. [LAW:one-source-of-truth]
    */
   send(): void {
     const ready = sendablePanes(this.resolutions.map((r) => r.resolution));
-    let sentBytes = 0;
-    for (const p of ready) {
-      sentBytes += new TextEncoder().encode(p.text).length;
-      // [LAW:no-silent-failure] Fire-and-forget: a bridge-closed rejection is
-      // already reported via onState/onError, but log it so a future
-      // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
-      void this.bridge
-        .sendKeys(`%${p.paneId}`, p.text)
-        .catch((err: unknown) =>
-          console.warn(`[broadcast] sendKeys to %${p.paneId} failed`, err),
-        );
-    }
-    this.lastSend = {
-      sentPanes: ready.length,
-      sentBytes,
-      blockedPanes: this.blockedCount,
-    };
+    const blockedPanes = this.blockedCount;
+    const token = ++this.sendToken;
+    void (async () => {
+      const settled = await Promise.allSettled(
+        ready.map((p) => this.bridge.sendKeys(`%${p.paneId}`, p.text)),
+      );
+      let sentPanes = 0;
+      let sentBytes = 0;
+      for (const [i, outcome] of settled.entries()) {
+        const p = ready[i];
+        if (outcome.status === "fulfilled") {
+          sentPanes++;
+          sentBytes += new TextEncoder().encode(p.text).length;
+        } else {
+          // [LAW:no-silent-failure] A bridge-closed rejection is already
+          // reported via onState/onError, but log it so a future
+          // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
+          console.warn(
+            `[broadcast] sendKeys to %${p.paneId} failed`,
+            outcome.reason,
+          );
+        }
+      }
+      // [LAW:no-ambient-temporal-coupling] Discard a stale settlement: only
+      // the most recent send() call may write `lastSend`.
+      if (token !== this.sendToken) return;
+      runInAction(() => {
+        this.lastSend = { sentPanes, sentBytes, blockedPanes };
+      });
+    })();
   }
 }

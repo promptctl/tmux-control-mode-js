@@ -58,17 +58,28 @@ export class CopilotStore {
   suggest: SuggestState = { kind: "idle" };
 
   private readonly history: PromptStore;
+  // Monotonic id identifying which requestSuggestions() call currently owns
+  // `suggest` — an identity guard, not a value guard, so a stale-but-later-
+  // resolving request can't clobber a fresher one (same shape as
+  // EscapePlaygroundStore.sendToken / ConsoleStore.evalToken). Bumped on every
+  // new request AND on selectPane, since switching panes makes any in-flight
+  // request for the old pane stale too. [LAW:no-ambient-temporal-coupling]
+  private requestToken = 0;
 
   constructor(
     private readonly bridge: TmuxBridge,
     private readonly llm: LlmClient,
   ) {
     this.history = new PromptStore(bridge);
-    makeAutoObservable<this, "history" | "bridge" | "llm">(this, {
-      history: false,
-      bridge: false,
-      llm: false,
-    });
+    makeAutoObservable<this, "history" | "bridge" | "llm" | "requestToken">(
+      this,
+      {
+        history: false,
+        bridge: false,
+        llm: false,
+        requestToken: false,
+      },
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -134,6 +145,9 @@ export class CopilotStore {
   selectPane(paneId: number | null): void {
     this.selectedPaneId = paneId;
     this.suggest = { kind: "idle" };
+    // Invalidate any in-flight request for the previously selected pane —
+    // it must not land after we've already moved on.
+    this.requestToken++;
   }
 
   // -------------------------------------------------------------------------
@@ -148,10 +162,15 @@ export class CopilotStore {
   async requestSuggestions(paneLabel: string): Promise<void> {
     if (this.selectedPaneId === null) return;
     const messages = buildCopilotMessages(this.recentCommands, { paneLabel });
+    const token = ++this.requestToken;
     runInAction(() => {
       this.suggest = { kind: "loading" };
     });
     const result = await this.llm.complete(messages);
+    // [LAW:no-ambient-temporal-coupling] Discard a stale reply: only the
+    // most recent request (by token, not by content — two replies can be
+    // textually identical) may write `suggest`.
+    if (token !== this.requestToken) return;
     runInAction(() => {
       this.suggest = result.ok
         ? {
