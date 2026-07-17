@@ -46,6 +46,9 @@ function getGc(): ExposedGc | null {
 }
 
 describe("Gate 3 — heap delta over 60s of detached output", () => {
+    // SCRATCH-VERIFY: deliberate CI-red check (tmux-test-gates-e33.2), reverted after.
+  expect(1).toBe(2);
+
   const gc = getGc();
 
   it.skipIf(gc === null)(
