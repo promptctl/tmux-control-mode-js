@@ -36,14 +36,13 @@ jobs:
         env:
           TMUX_INTEGRATION: "1"
 
-      # Hard-requirement gates for @promptctl/pane-terminal. As of 8w9.4
-      # gates 2/3/5/7 are GREEN; gates 1/4/6 are still RED pending
-      # BufferingSink (8w9.5) and XtermSink (8w9.6). `continue-on-error: true`
-      # is preserved so the remaining red gates annotate the run without
-      # blocking merges of intermediate epic steps. Flip to `false` once 8w9.6
-      # lands and all 7 are green.
-      - name: pane-terminal — bench/test gates (red while 8w9.5/6 land)
+      # Blocking perf/unit gates for @promptctl/pane-terminal (bench:gate runs
+      # the package's unit tests plus the g1/g2/g3/g6/g7 *.bench.ts gates under
+      # --expose-gc). A regression here fails the required CI job. One flaky
+      # assertion — g7's aggregate total-burst budget — is `it.skip` at the
+      # source with a ticket ref (tmux-test-gates-e33.6), never masked here by
+      # a blanket continue-on-error over the whole package. [LAW:no-silent-failure]
+      - name: pane-terminal — bench/unit gates
         run: pnpm --filter @promptctl/pane-terminal run bench:gate
         env:
           TMUX_INTEGRATION: "1"
-        continue-on-error: true
