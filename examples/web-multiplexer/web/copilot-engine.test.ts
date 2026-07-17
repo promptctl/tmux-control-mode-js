@@ -162,3 +162,41 @@ describe("parseSuggestions", () => {
     expect(parseSuggestions("[]")).toEqual([]);
   });
 });
+
+// tmux-copilot-safety-nxj — the parse boundary is the single enforcer of the
+// no-control-char safety invariant. A CommandSuggestion.command is guaranteed
+// free of control chars, so CopilotStore.insert can send it without a `\r` and
+// know the untrusted line cannot auto-execute. The JSON below uses `\\` escapes
+// so the DECODED command carries a REAL control char (a raw one in JSON source
+// would be rejected by JSON.parse, testing the wrong thing).
+describe("parseSuggestions — control-char safety (no auto-Enter)", () => {
+  const commandsOf = (s: CommandSuggestion[]): string[] => s.map((x) => x.command);
+
+  it("drops a command whose interior \\r would auto-execute the line", () => {
+    expect(parseSuggestions('[{"command": "ls\\rrm -rf /", "reason": "sneaky"}]')).toEqual([]);
+  });
+
+  it("drops a trailing \\r rather than silently trimming it to a clean-looking command", () => {
+    // "make\r" must be REJECTED, not trimmed to "make" — trimming would alter
+    // the model's command and hide that it tried to smuggle an Enter.
+    expect(parseSuggestions('[{"command": "make\\r", "reason": "x"}]')).toEqual([]);
+  });
+
+  it("drops commands carrying ESC, ETX, newline, tab, or DEL", () => {
+    expect(
+      parseSuggestions(
+        '[{"command": "a\\u001bb"}, {"command": "c\\u0003d"}, {"command": "e\\nf"}, {"command": "g\\th"}, {"command": "i\\u007fj"}]',
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps safe commands beside a dropped control-char one", () => {
+    expect(
+      commandsOf(
+        parseSuggestions(
+          '[{"command": "ls -la", "reason": "list"}, {"command": "rm\\r-rf", "reason": "unsafe"}]',
+        ),
+      ),
+    ).toEqual(["ls -la"]);
+  });
+});

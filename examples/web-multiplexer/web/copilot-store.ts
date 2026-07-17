@@ -204,14 +204,21 @@ export class CopilotStore {
    * human stays the sole executor — they review the inserted line and press
    * Enter themselves. (Contrast PromptStore.rerun, which DOES append Enter for a
    * command the user already ran once.)
+   *
+   * Takes a whole `CommandSuggestion`, not a bare string: its `command` is
+   * control-char-free by construction (the parse boundary in copilot-engine
+   * drops any unsafe entry), so this boundary needs no re-check — an embedded
+   * `\r` that would auto-execute the untrusted line is already unrepresentable.
+   * [LAW:single-enforcer] the safety invariant lives at the parse boundary; the
+   * type carries the proof here.
    */
-  insert(command: string): void {
+  insert(suggestion: CommandSuggestion): void {
     if (this.selectedPaneId === null) return;
     // [LAW:no-silent-failure] Fire-and-forget: a bridge-closed rejection is
     // already reported via onState/onError, but log it so a future
     // non-BRIDGE_CLOSED rejection doesn't vanish with zero diagnostic.
     void this.bridge
-      .sendKeys(`%${this.selectedPaneId}`, command)
+      .sendKeys(`%${this.selectedPaneId}`, suggestion.command)
       .catch((err: unknown) => console.warn("[copilot] sendKeys failed", err));
   }
 }
