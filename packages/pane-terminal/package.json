@@ -48,9 +48,11 @@
   "scripts": {
     "build": "tsc --build",
     "clean": "tsc --build --clean",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "bench:gate": "NODE_OPTIONS=\"--expose-gc\" vitest run",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json"
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
+    "check:exports": "node ../../scripts/check-exports.mjs .",
+    "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run check:exports"
   },
   "devDependencies": {
     "@promptctl/tmux-control-mode-js": "workspace:*",
