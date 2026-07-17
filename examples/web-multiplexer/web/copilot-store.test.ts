@@ -126,7 +126,7 @@ describe("CopilotStore.insert", () => {
       fakeLlm({ ok: true, content: "[]" }),
     );
     store.selectPane(42);
-    store.insert("ls -la");
+    store.insert({ command: "ls -la", reason: "" });
 
     expect(sent).toEqual([{ target: "%42", keys: "ls -la" }]);
     expect(sent[0].keys).not.toContain("\r");
@@ -138,7 +138,7 @@ describe("CopilotStore.insert", () => {
       recordingBridge(sent),
       fakeLlm({ ok: true, content: "[]" }),
     );
-    store.insert("rm -rf /");
+    store.insert({ command: "rm -rf /", reason: "" });
     expect(sent).toHaveLength(0);
   });
 });

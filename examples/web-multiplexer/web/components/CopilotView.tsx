@@ -302,7 +302,7 @@ const SuggestionsPanel = observer(function SuggestionsPanel({
                       variant="light"
                       color="grape"
                       onClick={() => {
-                        store.insert(sug.command);
+                        store.insert(sug);
                         onJump();
                       }}
                       title={`insert into ${paneLabel} (no Enter — you run it)`}
