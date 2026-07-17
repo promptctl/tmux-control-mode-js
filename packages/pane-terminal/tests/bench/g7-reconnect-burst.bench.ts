@@ -1,15 +1,26 @@
 // packages/pane-terminal/tests/bench/g7-reconnect-burst.bench.ts
 //
-// GATE 7 — Reconnect with N attached streams:
-//          ENFORCED: visible stream reseeds first and paints in < 100ms;
-//          SKIPPED (tmux-test-gates-e33.6): total burst < 50ms serialization.
+// GATE 7 — Reconnect with N attached streams, two enforced properties:
+//          (1) the visible stream reseeds first and paints in < 100ms;
+//          (2) the burst issues exactly one capture-pane per attached
+//              stream — no redundant serialization over the tmux pipe.
 //
 // Validates O6 from the design doc: reseeds dispatch in priority order
 // (visible-attached → other-attached → detached) over a single tmux pipe,
 // so the *first* visible stream paints fast even when the fleet is large.
-// The 50ms "total burst" budget covers FakeTmuxClient-side serialization of
-// every capture-pane request — not real tmux throughput, which is gate 1's
-// domain.
+//
+// The "serialization budget" is the COUNT of capture-pane requests the
+// burst issues (FakeTmuxClient.capturePaneCount()), not wall-clock. That
+// count IS the serialization work — one capture-pane per attached reseed —
+// and it is invariant to GC pauses, Node's timer floor, and system load,
+// so it cannot flake. A prior revision (pre tmux-test-gates-e33.6) asserted
+// a 50ms wall-clock budget spanning 32 setTimeout(0) macrotasks; that
+// number measured scheduler latency, not serialization, and its name lied
+// about what it stood for. Counting the requests measures the work the
+// budget always named. [FRAMING:representation] [LAW:no-silent-failure]
+//
+// Real tmux throughput is gate 1's domain (single-attach p99 against a
+// live process); this gate owns the fake-side aggregate request shape.
 //
 // Status: GREEN as of 8w9.4. Updated in 8w9.5 to use BufferingSink as the
 // canonical fixture; visibility is now owned by the sink (per design doc
@@ -17,11 +28,13 @@
 // `new BufferingSink({ visible: false })`.
 //
 // The scenario is driven once (beforeAll) and asserted by two separate
-// gates so a noise-dominated metric can't poison a deterministic one
-// [LAW:decomposition]. The ordering + first-paint gate is enforced; the
-// aggregate total-burst gate is `it.skip` pending re-specification — it
-// measures 32× macrotask scheduler latency, not serialization, and flakes
-// under GC/load contention. See tmux-test-gates-e33.6. [FRAMING:representation]
+// gates, each reading the property at its own seam [LAW:decomposition]:
+// the ordering + first-paint gate reads the sink-side seed callbacks; the
+// serialization gate reads the pipe-side capture-pane request log. The
+// seams are distinct — a regression that double-issues capture-pane but
+// drops the stale second result would keep the seed count at one yet
+// double the request count, so the request gate catches what the seed
+// gate cannot see.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
@@ -29,7 +42,6 @@ import { PaneStream } from "../../src/stream/index.js";
 import { BufferingSink } from "../../src/sink/index.js";
 
 const FIRST_PAINT_BUDGET_MS = 100;
-const TOTAL_BURST_BUDGET_MS = 50;
 const ATTACHED_STREAM_COUNT = 8;
 // One stream's sink is `visible:true` so the priority lane is meaningfully
 // exercised; the rest are `visible:false` (still attached, lower priority).
@@ -59,7 +71,10 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
   let visibleAt = 0;
   let earliestOther = 0;
   let firstPaintMs = 0;
-  let totalBurstMs = 0;
+  // Count of capture-pane requests the reconnect burst issued (delta of the
+  // fake's capture-pane log across the burst window). Deterministic — the
+  // serialization work the "budget" always named, read at the pipe seam.
+  let burstCaptureCount = 0;
 
   beforeAll(async () => {
     const client = new FakeTmuxClient();
@@ -85,6 +100,9 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
 
     // Drive the reconnect. FakeTmuxClient must transition through
     // 'reconnecting' first so the next 'ready' synthesizes 'reconnected'.
+    // Snapshot the capture-pane request log immediately before the burst so
+    // the delta after the sweep is exactly the burst's serialization work.
+    const captureBefore = client.capturePaneCount();
     client.setConnectionState({ status: "reconnecting", attempt: 1 });
     const burstStart = performance.now();
     client.setConnectionState({ status: "ready" });
@@ -92,7 +110,6 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
     // Run the scheduled reseed sweep to completion. Each capture-pane
     // resolves on the next macrotask (FakeTmuxClient default 0ms RTT).
     for (let i = 0; i < ATTACHED_STREAM_COUNT * 4; i++) await tick();
-    const burstEnd = performance.now();
 
     reseedCounts = sinks.map((s) => s.seedCalls.length);
     visibleAt = sinks[VISIBLE_INDEX].lastSeedAt;
@@ -101,7 +118,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
       .filter((t) => Number.isFinite(t));
     earliestOther = Math.min(...otherSeedTimes);
     firstPaintMs = visibleAt - burstStart;
-    totalBurstMs = burstEnd - burstStart;
+    burstCaptureCount = client.capturePaneCount() - captureBefore;
   });
 
   afterAll(() => {
@@ -127,16 +144,16 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
     },
   );
 
-  // SKIPPED pending tmux-test-gates-e33.6. `totalBurstMs` spans 32 macrotask
-  // ticks (setTimeout(0)); its wall-clock is dominated by Node's timer floor
-  // and GC pauses, not the capture-pane serialization the budget names — so
-  // it flakes under full-suite contention (passes in isolation, ~40% fail in
-  // `bench:gate`). Do not un-skip by widening the budget; re-specify the
-  // metric to measure deterministic work. [LAW:no-silent-failure]
-  it.skip(`total reseed burst < ${TOTAL_BURST_BUDGET_MS}ms serialization budget`, () => {
+  // The burst must serialize exactly one capture-pane per attached stream —
+  // no redundant captures over the single tmux pipe. `===` is the strongest
+  // true theorem: more means redundant serialization, fewer means a stream
+  // failed to reseed; both are defects. This is deterministic (a request
+  // count, not wall-clock) so it holds under any GC/timer/load conditions.
+  // [FRAMING:representation] [LAW:types-are-the-program]
+  it(`reconnect burst issues exactly ${ATTACHED_STREAM_COUNT} capture-pane requests (one per attached stream)`, () => {
     expect(
-      totalBurstMs,
-      `total burst ${totalBurstMs.toFixed(3)}ms (budget ${TOTAL_BURST_BUDGET_MS}ms)`,
-    ).toBeLessThan(TOTAL_BURST_BUDGET_MS);
+      burstCaptureCount,
+      `burst issued ${burstCaptureCount} capture-pane requests (expected one per attached stream = ${ATTACHED_STREAM_COUNT})`,
+    ).toBe(ATTACHED_STREAM_COUNT);
   });
 });
