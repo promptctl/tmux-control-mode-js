@@ -31,9 +31,12 @@ import type { ChatMessage } from "../shared/copilot-frame.ts";
 import type { CommandRecord } from "./prompt-engine.ts";
 
 /**
- * One suggested next command. `command` is non-empty by construction (the parse
- * drops any entry lacking a usable command). `reason` is a short justification
- * and may be "" when the model omitted one.
+ * One suggested next command. `command` is a single runnable command line,
+ * non-empty AND free of control characters by construction — the parse drops any
+ * entry lacking a usable command, and any whose command carries a control char
+ * (a `\r` reaching `send-keys` would auto-execute the untrusted line, defeating
+ * the co-pilot's no-auto-Enter safety invariant). `reason` is a short
+ * justification and may be "" when the model omitted one.
  */
 export interface CommandSuggestion {
   readonly command: string;
@@ -98,8 +101,9 @@ function truncate(s: string, max: number): string {
  *   - a leading `<think>…</think>` block (stripped),
  *   - the JSON array wrapped in markdown fences or surrounding prose (extracted
  *     by a string-aware bracket walk, not a regex),
- *   - object entries missing `command`, or with a non-string / empty command
- *     (dropped — a suggestion with no command is unrepresentable),
+ *   - object entries missing `command`, or with a non-string / empty command,
+ *     or whose command carries a control character (all dropped — a suggestion
+ *     with no usable, safe command is unrepresentable),
  *   - duplicate commands (first kept).
  * A reply with no extractable array yields `[]`. [LAW:no-silent-failure]
  */
@@ -128,10 +132,34 @@ export function parseSuggestions(content: string): CommandSuggestion[] {
 function toSuggestion(item: unknown): CommandSuggestion | null {
   if (typeof item !== "object" || item === null) return null;
   const rec = item as Record<string, unknown>;
-  const command = typeof rec.command === "string" ? rec.command.trim() : "";
+  if (typeof rec.command !== "string") return null;
+  // [LAW:single-enforcer] The one boundary where an LLM-sourced command becomes a
+  // CommandSuggestion — so the sole place the control-char safety invariant is
+  // enforced. Test the RAW string before trimming: a trailing `\r` must be
+  // rejected, not silently trimmed away into a command that looks clean but was
+  // altered. An interior control char (`\r`, ESC, ETX, …) would reach send-keys
+  // and auto-execute the untrusted line, so the whole entry is dropped — never
+  // stripped. [LAW:types-are-the-program] downstream (CopilotStore.insert) can
+  // then treat every CommandSuggestion.command as safe to send with no re-check.
+  if (hasControlChar(rec.command)) return null;
+  const command = rec.command.trim();
   if (command === "") return null;
   const reason = typeof rec.reason === "string" ? rec.reason.trim() : "";
   return { command, reason };
+}
+
+/**
+ * True if `s` contains any C0 control character (`\x00`–`\x1f`, which includes
+ * `\r`, `\n`, `\t`, `\x03` ETX and `\x1b` ESC) or DEL (`\x7f`). A runnable
+ * command line contains none — a codepoint scan rather than a regex so no
+ * intentional control-char literal lives in the source.
+ */
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 /** Remove well-formed `<think>…</think>` reasoning blocks. */
