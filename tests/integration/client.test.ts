@@ -604,7 +604,16 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
           },
           end() {},
         });
-        void client.execute("send-keys 'echo hello-output' Enter");
+        // If provocation fails, reject with the real error (clearing the timer
+        // and sink) instead of hanging until the opaque %output timeout.
+        // [LAW:no-silent-failure]
+        client.execute("send-keys 'echo hello-output' Enter").catch(
+          (e: unknown) => {
+            clearTimeout(timer);
+            detach();
+            reject(e);
+          },
+        );
       }),
   },
 
