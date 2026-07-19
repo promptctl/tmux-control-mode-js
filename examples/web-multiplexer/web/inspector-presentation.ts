@@ -125,8 +125,12 @@ export function formatDelta(ms: number): string {
 // [LAW:single-enforcer] The per-code-unit escape decision is owned by
 // escapeByte in ./format-bytes.ts; this only adapts a string's code units
 // to it, so the inspector and prettyBytes share one escape table.
+//
+// Iterate UTF-16 code units, not code points: an astral character escapes
+// both of its surrogates rather than silently dropping the low half.
+// [LAW:no-silent-failure]
 function escapeForDisplay(s: string): string {
   let out = "";
-  for (const ch of s) out += escapeByte(ch.charCodeAt(0));
+  for (let i = 0; i < s.length; i++) out += escapeByte(s.charCodeAt(i));
   return out;
 }

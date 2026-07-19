@@ -121,6 +121,10 @@ describe("summarizeEvent — full branch coverage", () => {
       },
       "@3 layout=abcd,80x24",
     ],
+    [
+      { type: "unlinked-window-renamed", windowId: 7, name: "scratch" },
+      `@7 → "scratch"`,
+    ],
     [{ type: "session-renamed", sessionId: 2, name: "work" }, `$2 "work"`],
     [{ type: "session-window-changed", sessionId: 2, windowId: 3 }, "$2 → @3"],
     [

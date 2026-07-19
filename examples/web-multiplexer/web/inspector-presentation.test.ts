@@ -45,6 +45,16 @@ describe("presentFor — direction → display shape", () => {
     expect(p.summary).toBe("%5  a\\r");
   });
 
+  it("escapes an astral character by both surrogates, dropping neither", () => {
+    const w: WireEntry = {
+      dir: "out",
+      ts: 0,
+      msg: { kind: "sendKeys", id: "8", target: "%5", keys: "😀" },
+    };
+    // U+1F600 = surrogate pair 0xD83D 0xDE00 — both units must appear.
+    expect(presentFor(w, labels).summary).toBe("%5  \\xd83d\\xde00");
+  });
+
   it("labels payload-less outbound kinds by their own kind, not detach", () => {
     // The type column derives its label from msg.kind, so firehose
     // toggles and detaches each read truthfully with an empty summary —
