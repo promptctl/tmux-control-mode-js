@@ -19,14 +19,15 @@
 //   - typed BridgeError rejections — consumers branch on `error.code`
 //   - graceful `draining` handling: no new calls accepted after drain signal
 //
-// [LAW:one-source-of-truth] Request correlation lives in `pending`, period.
-// The same `pending` Map is also the queue of un-transmitted call frames —
-// each Pending carries its encoded frame and a `transmitted` flag. No
-// separate outbox exists, because two structures that must agree are an
-// invariant the type cannot enforce; one structure makes drift impossible.
+// [LAW:decomposition] Three collaborators each own one concern that was
+// previously fused into this class: `Outbox` (call correlation + timeout + the
+// un-transmitted send queue), `Heartbeat` (ping/pong liveness), and
+// `ReconnectController` (retry budget + backoff + retry timer). This class is
+// the wiring shell + protocol spine: it owns connection-state authority, frame
+// ingress/dispatch, socket open/close, and the RPC-proxy facade.
 // [LAW:single-enforcer] `finalizeConnection` is the only cleanup site; every
-// close/error/reconnect flows through it. Teardown timers + pending rejection
-// live there together so callers cannot observe a half-closed client.
+// close/error/reconnect flows through it. It drains the outbox and stops the
+// heartbeat together so callers cannot observe a half-closed client.
 
 import {
   sameConnectionState,
@@ -73,6 +74,9 @@ import {
 
 import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
+import { Heartbeat } from "./heartbeat.js";
+import { Outbox } from "./outbox.js";
+import { ReconnectController } from "./reconnect-controller.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -116,21 +120,6 @@ const DEFAULTS = Object.freeze({
 // WebSocketTmuxClient
 // ---------------------------------------------------------------------------
 
-// [LAW:one-source-of-truth] A Pending entry IS the queue entry. `frame` is
-// the encoded wire frame, re-sendable on reconnect; `transmitted` flips to
-// true the moment the underlying ws accepts the frame. flushOutbox iterates
-// pending in insertion order (FIFO) and re-tries any entry still untransmitted.
-// finalizeConnection clears the whole Map in one operation — there is no
-// second structure that can drift out of sync.
-interface Pending {
-  readonly method: RpcMethod;
-  readonly frame: string;
-  resolve(r: CommandResponse): void;
-  reject(e: BridgeError): void;
-  timer: ReturnType<typeof setTimeout>;
-  transmitted: boolean;
-}
-
 export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly emitter = new TypedEmitter();
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
@@ -141,7 +130,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly router = new TopologyRouter((error) =>
     this.emitter.emit({ type: "topology-error", error }),
   );
-  private readonly pending = new Map<string, Pending>();
+  // [LAW:decomposition] Call correlation + timeout + the un-transmitted send
+  // queue live in one collaborator; this shell holds no in-flight call state.
+  private readonly outbox: Outbox;
+  // [LAW:decomposition] Reconnect budget + backoff + retry timer.
+  private readonly reconnect: ReconnectController;
+  // [LAW:decomposition] Ping/pong liveness. Connection-scoped: a fresh probe is
+  // built each welcome (its cadence is only known then, from the server limits)
+  // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
+  private heartbeat: Heartbeat<string> | null = null;
 
   private ws: BrowserWebSocketLike | null = null;
   // [LAW:single-enforcer] One controller per connection scopes the lifetime
@@ -150,11 +147,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // staleness check exists or is needed.
   private connectionAbort: AbortController | null = null;
   private nextId = 0;
-  private attempts = 0;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private pongTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastPingId: string | null = null;
   private serverLimits: WelcomeLimits | null = null;
   private userRequestedClose = false;
   // [LAW:one-source-of-truth] Single ConnectionState field — sole authority
@@ -171,6 +163,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private lastError: Error | undefined = undefined;
 
   constructor(private readonly opts: WebSocketTmuxClientOptions) {
+    // [LAW:decomposition] Wire the collaborators: the outbox transmits through
+    // the shell's ready/OPEN gate; the reconnect controller reopens the socket
+    // when its backoff timer fires. Neither knows connection state directly.
+    this.outbox = new Outbox((frame) => this.transmitFrame(frame));
+    this.reconnect = new ReconnectController(opts.reconnect, {
+      onRetry: () => this.openSocket(),
+    });
     if (opts.autoConnect ?? true) {
       void this.connect();
     }
@@ -195,7 +194,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // [LAW:no-ambient-temporal-coupling] During reconnect backoff the timer
     // owns the retry; the timer check keeps a manual connect() from opening
     // a second socket underneath it.
-    if (this.ws !== null || this.reconnectTimer !== null) {
+    if (this.ws !== null || this.reconnect.isPending()) {
       return;
     }
     this.userRequestedClose = false;
@@ -204,7 +203,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // the previous episode and must not leak into this one. openSocket() is
     // NOT the reset point — the reconnect timer also calls it, and resetting
     // there would make maxAttempts unreachable.
-    this.attempts = 0;
+    this.reconnect.reset();
     this.lastError = undefined;
     this.openSocket();
   }
@@ -217,10 +216,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // Driving finalize inline closes that window; the later ws.onclose hits
     // finalize's idempotency guard and returns.
     this.userRequestedClose = true;
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    // [LAW:single-enforcer] The controller is the sole owner of the retry
+    // timer's teardown; cancelling here guarantees no scheduled retry fires
+    // after this close.
+    this.reconnect.cancel();
     // rawSend gates on OPEN internally — bye only goes on a live socket.
     this.rawSend(encodeClientFrame({ k: "bye" }));
     // [LAW:single-enforcer] Abort the underlying socket regardless of
@@ -356,32 +355,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
     const id = this.id();
     const frame = encodeClientFrame({ k: "call", id, method, args });
-    const timeoutMs = this.effectiveTimeoutMs();
-    return new Promise<CommandResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        const p = this.pending.get(id);
-        if (p === undefined) return;
-        this.pending.delete(id);
-        reject(
-          new BridgeError(
-            "BRIDGE_TIMEOUT",
-            `request '${method}' timed out after ${timeoutMs}ms`,
-          ),
-        );
-      }, timeoutMs);
-      (timer as unknown as { unref?: () => void }).unref?.();
-
-      const entry: Pending = {
-        method,
-        frame,
-        resolve,
-        reject,
-        timer,
-        transmitted: false,
-      };
-      this.pending.set(id, entry);
-      this.transmit(entry);
-    });
+    return this.outbox.enqueue(id, method, frame, this.effectiveTimeoutMs());
   }
 
   private id(): string {
@@ -535,7 +509,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   onWelcome(frame: WelcomeFrame): void {
     this.serverLimits = frame.limits;
-    this.attempts = 0;
+    // Reaching ready is the success point: reset the retry budget for the next
+    // episode. This is the single reset that covers both entry paths — it is
+    // load-bearing for the retry-timer path (onRetry → openSocket → onWelcome,
+    // where connect() never ran) and redundant-but-harmless (reset() is
+    // idempotent) for the manual connect() path.
+    this.reconnect.reset();
     // [LAW:one-source-of-truth] lastError describes the current reconnecting
     // episode only. Wiping it on entry into ready means any *subsequent* close
     // maps from a clean slate — a clean exit can't be misreported as
@@ -543,29 +522,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.lastError = undefined;
     this.setConnectionState({ status: "ready" });
     this.startHeartbeat();
-    this.flushOutbox();
+    this.outbox.flush();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
     //   Called after setConnectionState("ready") so execute() accepts calls from within bootstrap.
     this.router.onTransportReady((cmd) => this.execute(cmd));
   }
 
   onResult(frame: ResultFrame): void {
-    const p = this.pending.get(frame.id);
-    if (p === undefined) return;
-    this.pending.delete(frame.id);
-    clearTimeout(p.timer);
-    if (frame.ok) {
-      p.resolve(frame.response);
-    } else {
-      p.reject(BridgeError.fromPayload(frame.error));
-    }
+    this.outbox.settle(frame);
   }
 
   onPong(id: string): void {
-    if (this.lastPingId !== id || this.pongTimer === null) return;
-    clearTimeout(this.pongTimer);
-    this.pongTimer = null;
-    this.lastPingId = null;
+    this.heartbeat?.onPong(id);
   }
 
   onDraining(deadlineMs: number): void {
@@ -620,22 +588,19 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       this.connectionAbort.abort();
       this.connectionAbort = null;
     }
-    this.teardownTimers();
-
-    // [LAW:one-source-of-truth] pending is the only structure holding
-    // in-flight calls or queued frames; clearing it drops both. The
-    // pre-fix bug (M2) was a separate outbox surviving this loop, then
-    // re-sending frames whose pending was already rejected.
-    for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
-      try {
-        p.reject(err);
-      } catch {
-        // ignore
-      }
-      this.pending.delete(id);
-    }
+    this.heartbeat?.stop();
+    // [LAW:no-ambient-temporal-coupling] Null the socket BEFORE draining. A
+    // rejection handler running synchronously inside drain() must never observe
+    // a logically-dead socket — with the reference already cleared, any code
+    // that reaches for this.ws sees null, not a zombie. drain() itself only
+    // rejects/clears the pending map, so the order is safe.
     this.ws = null;
+
+    // [LAW:one-source-of-truth] The outbox is the only structure holding
+    // in-flight calls or queued frames; draining it rejects both. The
+    // pre-fix bug (M2) was a separate outbox surviving teardown, then
+    // re-sending frames whose caller was already rejected.
+    this.outbox.drain(err);
     this.serverLimits = null;
     // The drain notice was scoped to the connection that just ended; calls
     // made during reconnect backoff must queue for the new connection, not
@@ -650,51 +615,43 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       return;
     }
 
-    // Decide whether to reconnect.
-    const policy = this.opts.reconnect;
-    if (policy === undefined || policy.maxAttempts <= 0) {
-      this.router.onTransportClose();
-      // [LAW:one-source-of-truth] lastError distinguishes an error-driven
-      // close from a clean exit; onWelcome clears it on entry into ready.
-      this.setConnectionState({
-        status: "closed",
-        reason: this.lastError !== undefined ? "transport-error" : "exit",
-      });
-      return;
+    // [LAW:dataflow-not-control-flow] The controller returns one decision
+    // value; this switch maps it onto connection state and does nothing else.
+    // The retry timer (if any) is armed inside schedule() — its sole owner.
+    const decision = this.reconnect.schedule();
+    switch (decision.kind) {
+      case "disabled":
+        this.router.onTransportClose();
+        // [LAW:one-source-of-truth] lastError distinguishes an error-driven
+        // close from a clean exit; onWelcome clears it on entry into ready.
+        this.setConnectionState({
+          status: "closed",
+          reason: this.lastError !== undefined ? "transport-error" : "exit",
+        });
+        return;
+      case "exhausted":
+        this.emitError(
+          new BridgeError(
+            "BRIDGE_CLOSED",
+            `reconnect gave up after ${decision.maxAttempts} attempts`,
+          ),
+        );
+        this.router.onTransportClose();
+        this.setConnectionState({
+          status: "closed",
+          reason: "transport-error",
+        });
+        return;
+      case "scheduled":
+        this.setConnectionState({
+          status: "reconnecting",
+          attempt: decision.attempt,
+          ...(this.lastError !== undefined
+            ? { lastError: this.lastError }
+            : {}),
+        });
+        return;
     }
-    if (this.attempts >= policy.maxAttempts) {
-      this.emitError(
-        new BridgeError(
-          "BRIDGE_CLOSED",
-          `reconnect gave up after ${policy.maxAttempts} attempts`,
-        ),
-      );
-      this.router.onTransportClose();
-      this.setConnectionState({ status: "closed", reason: "transport-error" });
-      return;
-    }
-    this.attempts += 1;
-    const delay = this.backoffDelay(policy);
-    this.setConnectionState({
-      status: "reconnecting",
-      attempt: this.attempts,
-      ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
-    });
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (this.userRequestedClose) return;
-      this.openSocket();
-    }, delay);
-    (this.reconnectTimer as unknown as { unref?: () => void }).unref?.();
-  }
-
-  private backoffDelay(policy: ReconnectPolicy): number {
-    const initial = policy.initialDelayMs ?? 250;
-    const max = policy.maxDelayMs ?? 10_000;
-    const factor = policy.factor ?? 2;
-    const jitter = policy.jitterMs ?? 250;
-    const base = Math.min(initial * Math.pow(factor, this.attempts - 1), max);
-    return base + Math.random() * jitter;
   }
 
   // -------------------------------------------------------------------------
@@ -702,8 +659,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //
   // Two send paths exist because frames have different lifecycles:
   //   - Call frames carry a pending caller. They must persist across
-  //     reconnect attempts until either delivered or finalized. They live
-  //     on the Pending entry and are transmitted via `transmit()`.
+  //     reconnect attempts until either delivered or finalized. The Outbox
+  //     owns them and transmits through the `transmitFrame` gate below.
   //   - Hello / ping / bye are connection-scoped fire-and-forget. They
   //     make no sense across a connection boundary (a stale hello on a new
   //     socket would be a protocol error; a stale ping would corrupt the
@@ -711,10 +668,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //     the socket is not OPEN — the next reconnect emits fresh ones.
   // -------------------------------------------------------------------------
 
-  // [LAW:single-enforcer] Sole transmitter of call frames. transmitted=true
-  // means the ws has accepted the frame; finalize will still reject the
-  // pending caller if the server never replies, but the frame is not
-  // re-sent on reconnect because the caller is already gone by then.
+  // [LAW:effects-at-boundaries] The ready/OPEN gate the outbox transmits
+  // through. Returns true iff the ws accepted the frame; never throws.
   //
   // [LAW:one-source-of-truth] The gate is `connectionState.status === "ready"`,
   // not just `ws.readyState === OPEN`. The ws may be OPEN in the brief window
@@ -723,33 +678,20 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // a protocol error. "ready" is the canonical "handshake complete, server
   // accepting calls" predicate; checking ws.readyState is a belt-and-
   // suspenders sanity check after that.
-  private transmit(p: Pending): void {
-    if (p.transmitted) return;
-    if (this.currentConnectionState.status !== "ready") return;
-    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
+  private transmitFrame(frame: string): boolean {
+    if (this.currentConnectionState.status !== "ready") return false;
+    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return false;
     try {
-      this.ws.send(p.frame);
-      p.transmitted = true;
+      this.ws.send(frame);
+      return true;
     } catch {
-      // Stays untransmitted; flushOutbox will retry on next ready transition.
-    }
-  }
-
-  // [LAW:dataflow-not-control-flow] Same loop every call: walk pending in
-  // FIFO order, ask `transmit` to send each entry. If `transmit` cannot
-  // deliver (send threw inside its own try/catch, so p.transmitted stays
-  // false), stop — preserving FIFO ordering for the next ready transition.
-  private flushOutbox(): void {
-    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
-    for (const p of this.pending.values()) {
-      this.transmit(p);
-      if (!p.transmitted) return;
+      return false;
     }
   }
 
   // Fire-and-forget for hello/ping/bye. No retry, no queue — if the socket
-  // is not OPEN the frame is simply dropped. The caller (onOpen / sendPing /
-  // close) treats success as best-effort.
+  // is not OPEN the frame is simply dropped. The caller (onOpen / the
+  // heartbeat's ping / close) treats success as best-effort.
   private rawSend(frame: string): void {
     if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
     try {
@@ -761,48 +703,64 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   // -------------------------------------------------------------------------
   // Internal: heartbeats
+  //
+  // [LAW:no-ambient-temporal-coupling] A heartbeat is connection-scoped: its
+  // cadence is only known once the server's welcome limits arrive, and its
+  // outstanding ping must not survive the socket it was sent on. So a fresh
+  // Heartbeat is built per welcome and stopped in finalize — no probe state
+  // outlives its connection.
   // -------------------------------------------------------------------------
   private startHeartbeat(): void {
-    const interval =
+    this.heartbeat?.stop();
+    const config = this.heartbeatConfig();
+    // [LAW:dataflow-not-control-flow] A disabled heartbeat is the absence of a
+    // probe, not a probe that never ticks: null it out so `this.heartbeat`
+    // being non-null always means an active heartbeat, and nothing is allocated.
+    if (config === null) {
+      this.heartbeat = null;
+      return;
+    }
+    // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
+    // (Token = string); ping() emits the frame and returns the id the matching
+    // pong will carry, so the shell holds no ping-id state.
+    const heartbeat = new Heartbeat<string>(
+      config.intervalMs,
+      config.timeoutMs,
+      {
+        ping: () => {
+          const id = this.id();
+          this.rawSend(encodeClientFrame({ k: "ping", id }));
+          return id;
+        },
+        onTimeout: () => {
+          // No pong — kill the socket and let the close/reconnect path run.
+          try {
+            this.ws?.close(4000, "heartbeat timeout");
+          } catch {
+            // ignore
+          }
+        },
+      },
+    );
+    this.heartbeat = heartbeat;
+    heartbeat.start();
+  }
+
+  // [LAW:decomposition] Cadence policy, separate from probe construction:
+  // reconcile caller opts, server welcome limits, and defaults into the probe's
+  // interval/timeout. null means the heartbeat is disabled (interval <= 0).
+  private heartbeatConfig(): {
+    intervalMs: number;
+    timeoutMs: number;
+  } | null {
+    const intervalMs =
       this.opts.heartbeatIntervalMs ??
       this.serverLimits?.heartbeatIntervalMs ??
       DEFAULTS.heartbeatIntervalMs;
-    if (interval <= 0) return;
-    this.heartbeatTimer = setInterval(() => {
-      this.sendPing();
-    }, interval);
-    (this.heartbeatTimer as unknown as { unref?: () => void }).unref?.();
-  }
-
-  private sendPing(): void {
-    if (this.pongTimer !== null) return;
-    const id = this.id();
-    this.lastPingId = id;
-    this.rawSend(encodeClientFrame({ k: "ping", id }));
-    const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
-    this.pongTimer = setTimeout(() => {
-      // No pong — kill the socket and let the close/reconnect path run.
-      this.lastPingId = null;
-      this.pongTimer = null;
-      try {
-        this.ws?.close(4000, "heartbeat timeout");
-      } catch {
-        // ignore
-      }
-    }, timeout);
-    (this.pongTimer as unknown as { unref?: () => void }).unref?.();
-  }
-
-  private teardownTimers(): void {
-    if (this.heartbeatTimer !== null) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-    if (this.pongTimer !== null) {
-      clearTimeout(this.pongTimer);
-      this.pongTimer = null;
-    }
-    this.lastPingId = null;
+    if (intervalMs <= 0) return null;
+    const timeoutMs =
+      this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
+    return { intervalMs, timeoutMs };
   }
 
   // -------------------------------------------------------------------------
@@ -835,7 +793,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     if (this.currentConnectionState.status === "reconnecting") {
       this.setConnectionState({
         status: "reconnecting",
-        attempt: this.attempts,
+        attempt: this.reconnect.currentAttempt,
         lastError: err,
       });
     }
