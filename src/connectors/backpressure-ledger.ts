@@ -92,7 +92,12 @@ const resumeFailureToBridgeError = (
         `terminator; the pane's flow-control state is unknown: ${err.message}`,
     );
   }
-  const detail = err instanceof Error ? err.message : "unknown error";
+  // [LAW:no-silent-failure] A non-Error reject on this path is already the
+  // unexpected case; preserve a diagnostic hint. `typeof` never throws (the
+  // reason this branch avoids `String()`, which throws on a null-proto cause)
+  // and at least distinguishes a string / number / raw object rejection.
+  const detail =
+    err instanceof Error ? err.message : `non-Error rejection (${typeof err})`;
   return new BridgeError(
     "BRIDGE_INTERNAL",
     `resume (continue) failed unexpectedly for pane %${paneId}: ${detail}`,

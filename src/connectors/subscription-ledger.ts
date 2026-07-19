@@ -97,7 +97,7 @@ export class SubscriptionLedger {
     if (owned === undefined) {
       throw new BridgeError(
         "BRIDGE_INTERNAL",
-        "subscribeForPeer called for a peer that is not registered",
+        "subscribe called for a peer that is not registered",
       );
     }
     const existing = this.subscriptions.get(name);
@@ -172,7 +172,7 @@ export class SubscriptionLedger {
     if (owned === undefined) {
       throw new BridgeError(
         "BRIDGE_INTERNAL",
-        "unsubscribeForPeer called for a peer that is not registered",
+        "unsubscribe called for a peer that is not registered",
       );
     }
     if (!owned.has(name)) {
