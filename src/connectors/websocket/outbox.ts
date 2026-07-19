@@ -13,7 +13,6 @@ import type { CommandResponse } from "../../protocol/types.js";
 import { BridgeError, type ResultFrame, type RpcMethod } from "./protocol.js";
 
 interface Pending {
-  readonly method: RpcMethod;
   readonly frame: string;
   resolve(r: CommandResponse): void;
   reject(e: BridgeError): void;
@@ -55,7 +54,6 @@ export class Outbox {
       (timer as unknown as { unref?: () => void }).unref?.();
 
       const entry: Pending = {
-        method,
         frame,
         resolve,
         reject,

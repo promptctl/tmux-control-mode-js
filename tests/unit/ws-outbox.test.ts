@@ -158,4 +158,21 @@ describe("Outbox — drain", () => {
     outbox.flush();
     expect(sent).toEqual([]);
   });
+
+  it("rejects entries that transmitted but whose result never arrived", async () => {
+    // The lost-result-frame path: send succeeds, but the connection dies before
+    // the result comes back. drain() must still reject the caller.
+    const outbox = new Outbox(() => true); // always transmits
+    const p1 = outbox.enqueue("r1", "execute", "frame-1", 1000);
+    const p2 = outbox.enqueue("r2", "execute", "frame-2", 1000);
+    const c1 = p1.catch((e: unknown) => e);
+    const c2 = p2.catch((e: unknown) => e);
+
+    outbox.drain(new BridgeError("BRIDGE_CLOSED", "gone"));
+
+    expect((await c1) as BridgeError).toMatchObject({ code: "BRIDGE_CLOSED" });
+    expect((await c2) as BridgeError).toMatchObject({ code: "BRIDGE_CLOSED" });
+    // A late result for a drained call is a no-op — the entry is gone.
+    expect(() => outbox.settle(okResult("r1"))).not.toThrow();
+  });
 });

@@ -45,6 +45,13 @@ export class Heartbeat<Token = void> {
       }
       this.outstanding = token;
       this.pongDeadline = setTimeout(() => {
+        // [LAW:composability] Reset before firing so the probe self-heals: a
+        // consumer that keeps the heartbeat running past a missed pong resumes
+        // pinging on the next tick instead of wedging on a stale deadline. The
+        // collaborator must be correct standalone, not only when the consumer
+        // happens to stop-and-rebuild it on timeout.
+        this.pongDeadline = null;
+        this.outstanding = undefined;
         this.handlers.onTimeout();
       }, this.timeoutMs);
       this.pongDeadline.unref?.();

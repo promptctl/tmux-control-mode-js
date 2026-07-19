@@ -84,6 +84,21 @@ describe("Heartbeat — normal operation", () => {
     vi.advanceTimersByTime(100); // tick 2 — ping #2 allowed
     expect(ping).toHaveBeenCalledTimes(2);
   });
+
+  it("resumes pinging after a pong timeout (self-heals; does not wedge)", () => {
+    vi.useFakeTimers();
+    const ping = vi.fn();
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    hb.start();
+    vi.advanceTimersByTime(100); // tick 1 — ping #1
+    vi.advanceTimersByTime(50); // deadline expires → onTimeout fires
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+    // The deadline must have been cleared: the next interval tick sends a
+    // fresh ping rather than skipping forever on a stale (expired) deadline.
+    vi.advanceTimersByTime(100); // tick 2
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Heartbeat — correlation token", () => {

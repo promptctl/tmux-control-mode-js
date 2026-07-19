@@ -585,13 +585,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       this.connectionAbort = null;
     }
     this.heartbeat?.stop();
+    // [LAW:no-ambient-temporal-coupling] Null the socket BEFORE draining. A
+    // rejection handler running synchronously inside drain() must never observe
+    // a logically-dead socket — with the reference already cleared, any code
+    // that reaches for this.ws sees null, not a zombie. drain() itself only
+    // rejects/clears the pending map, so the order is safe.
+    this.ws = null;
 
     // [LAW:one-source-of-truth] The outbox is the only structure holding
     // in-flight calls or queued frames; draining it rejects both. The
     // pre-fix bug (M2) was a separate outbox surviving teardown, then
     // re-sending frames whose caller was already rejected.
     this.outbox.drain(err);
-    this.ws = null;
     this.serverLimits = null;
     // The drain notice was scoped to the connection that just ended; calls
     // made during reconnect backoff must queue for the new connection, not
@@ -707,6 +712,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       this.opts.heartbeatIntervalMs ??
       this.serverLimits?.heartbeatIntervalMs ??
       DEFAULTS.heartbeatIntervalMs;
+    // [LAW:dataflow-not-control-flow] A disabled heartbeat is the absence of a
+    // probe, not a probe that never ticks: null it out so `this.heartbeat`
+    // being non-null always means an active heartbeat, and nothing is allocated.
+    if (interval <= 0) {
+      this.heartbeat = null;
+      return;
+    }
     const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
     // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
     // (Token = string); ping() emits the frame and returns the id the matching

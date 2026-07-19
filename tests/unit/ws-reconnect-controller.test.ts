@@ -8,6 +8,7 @@ import type { ReconnectPolicy } from "../../src/connectors/websocket/types.js";
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const POLICY: ReconnectPolicy = {
@@ -75,6 +76,36 @@ describe("ReconnectController — schedule + budget", () => {
     ctl.schedule(); // attempt 3 → 400ms clamped to 300ms
     vi.advanceTimersByTime(300);
     expect(onRetry).toHaveBeenCalledTimes(3);
+  });
+
+  it("adds jitter of random * jitterMs on top of the base delay", () => {
+    vi.useFakeTimers();
+    // Fixed random → a deterministic jitter contribution we can pin exactly.
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const onRetry = vi.fn();
+    const ctl = new ReconnectController(
+      // base = initial * factor^(attempt-1) = 100 * 1^0 = 100; jitter = 400
+      { maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 10_000, factor: 1, jitterMs: 400 },
+      { onRetry },
+    );
+    ctl.schedule(); // delay = 100 + 0.5 * 400 = 300ms
+    vi.advanceTimersByTime(299);
+    expect(onRetry).toHaveBeenCalledTimes(0);
+    vi.advanceTimersByTime(1);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("never exhausts when maxAttempts is Infinity", () => {
+    vi.useFakeTimers();
+    const ctl = new ReconnectController(
+      { maxAttempts: Infinity, initialDelayMs: 1, maxDelayMs: 1, factor: 1, jitterMs: 0 },
+      { onRetry: vi.fn() },
+    );
+    for (let i = 1; i <= 1000; i += 1) {
+      const decision = ctl.schedule();
+      expect(decision).toEqual({ kind: "scheduled", attempt: i });
+    }
+    ctl.cancel();
   });
 });
 
