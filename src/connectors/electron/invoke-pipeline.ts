@@ -10,7 +10,7 @@
 // ONLY the Electron wire encoding of the outcome (the InvokeResultEnvelope
 // discriminated union) and the RpcError → BridgeError mapping at the IPC seam.
 
-import type { TmuxClient } from "../../client.js";
+import type { TmuxConnection } from "../../client.js";
 import {
   mapRpcCode,
   parseRpcRequest,
@@ -95,7 +95,10 @@ function encodeOutcome(outcome: BridgeOutcome): InvokeResultEnvelope {
 
 export interface InvokePipelineDeps {
   readonly bridge: BridgeConnection;
-  readonly client: TmuxClient;
+  // [LAW:types-are-the-program] The pipeline forwards `client` only to
+  // `dispatchBridgeRequest`, which accepts the `TmuxConnection` interface — so
+  // that, not the concrete `TmuxClient` class, is the honest dependency type.
+  readonly client: TmuxConnection;
   readonly registry: Pick<SenderRegistry, "getOrCreate">;
 }
 
