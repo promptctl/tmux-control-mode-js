@@ -162,6 +162,47 @@ describe("Heartbeat — start() is idempotent", () => {
   });
 });
 
+describe("Heartbeat — ping() throws", () => {
+  it("skips arming the deadline and retries on the next tick", () => {
+    vi.useFakeTimers();
+    const ping = vi.fn().mockImplementationOnce(() => {
+      throw new Error("send failed");
+    });
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    hb.start();
+    vi.advanceTimersByTime(100); // tick 1 — ping throws, no deadline armed
+    // No deadline was armed, so the pong-timeout can never fire...
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).not.toHaveBeenCalled();
+    // ...and the next tick retries the ping from a clean slate.
+    vi.advanceTimersByTime(50); // completes tick 2's interval (100ms total)
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Heartbeat — stop() then start()", () => {
+  it("re-arms from a clean slate; a stale token cannot clear the new deadline", () => {
+    vi.useFakeTimers();
+    let next = 0;
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat<string>(100, 50, {
+      ping: () => `p${(next += 1)}`,
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100); // ping "p1", deadline armed
+    hb.stop(); // clears timer, deadline, and outstanding
+    hb.start();
+    vi.advanceTimersByTime(100); // ping "p2", deadline armed anew
+    // A pong for the pre-restart ping must not clear the new deadline —
+    // `outstanding` was reset by stop(), so "p1" no longer matches.
+    hb.onPong("p1");
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Heartbeat — stop()", () => {
   it("stop() prevents further ticks", () => {
     vi.useFakeTimers();
