@@ -509,7 +509,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   onWelcome(frame: WelcomeFrame): void {
     this.serverLimits = frame.limits;
-    // A successful handshake resets the retry budget for the next episode.
+    // Reaching ready is the success point: reset the retry budget for the next
+    // episode. This is the single reset that covers both entry paths — it is
+    // load-bearing for the retry-timer path (onRetry → openSocket → onWelcome,
+    // where connect() never ran) and redundant-but-harmless (reset() is
+    // idempotent) for the manual connect() path.
     this.reconnect.reset();
     // [LAW:one-source-of-truth] lastError describes the current reconnecting
     // episode only. Wiping it on entry into ready means any *subsequent* close
