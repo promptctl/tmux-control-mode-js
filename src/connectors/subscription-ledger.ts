@@ -261,4 +261,13 @@ export class SubscriptionLedger {
       }
     }
   }
+
+  /**
+   * Tear down every peer this ledger holds (last-owner unsubscribes fire). The
+   * ledger owns its own peer roster, so the composing façade fans `dispose`
+   * out to here rather than tracking a separate peer set. [LAW:one-source-of-truth]
+   */
+  dispose(): void {
+    for (const peer of [...this.ownedByPeer.keys()]) this.releasePeer(peer);
+  }
 }

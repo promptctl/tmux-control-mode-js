@@ -333,4 +333,15 @@ export class BackpressureLedger {
     }
     this.pausedPanes.clear();
   }
+
+  /**
+   * Tear down every peer this ledger holds (resuming panes whose remaining sum
+   * hits zero), then flush any pane still paused but not being resumed. The
+   * ledger owns its own peer roster, so the composing façade fans `dispose` out
+   * to here rather than tracking a separate peer set. [LAW:one-source-of-truth]
+   */
+  dispose(): void {
+    for (const peer of [...this.outstanding.keys()]) this.releasePeer(peer);
+    this.flushPausedPanes();
+  }
 }

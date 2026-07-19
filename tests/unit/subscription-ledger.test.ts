@@ -285,4 +285,19 @@ describe("SubscriptionLedger (isolation)", () => {
     expect(() => ledger.register(a)).toThrow(BridgeError);
     expect(() => ledger.register(a)).toThrow(/already registered/);
   });
+
+  it("dispose releases every peer, firing a last-owner unsubscribe per name", async () => {
+    const runner = createFakeRunner();
+    const ledger = new SubscriptionLedger(runner.deps);
+    const a = { id: 1 };
+    const b = { id: 2 };
+    ledger.register(a);
+    ledger.register(b);
+    await ledger.subscribe(a, "win", "%*", "#{window_name}");
+    await ledger.subscribe(b, "win", "%*", "#{window_name}"); // shared; refcount 2
+
+    ledger.dispose(); // releases both peers → last owner fires one tmux unsubscribe
+    await Promise.resolve();
+    expect(unsubscribes(runner.sent)).toHaveLength(1);
+  });
 });

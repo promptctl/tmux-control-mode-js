@@ -176,36 +176,29 @@ export function createBridgeConnection(
   });
   const subscription = new SubscriptionLedger({ client });
 
-  // [LAW:one-source-of-truth] The roster of live peer tokens. Registration and
-  // teardown touch the roster and both ledgers together, so a peer is either
-  // live in all three or absent from all three — there is no drift surface.
-  const peers = new Set<Peer>();
+  // [LAW:one-source-of-truth] The façade holds NO peer roster of its own — each
+  // ledger is the single source of truth for its own peers (keyed by the shared
+  // `Peer` token) and owns their teardown. This closure keeps only the token
+  // counter; every peer-scoped call is pure fan-out to the two ledgers.
   let nextPeerId = 1;
-
-  // Closure-scoped so both the returned object's `removePeer` member and
-  // `dispose` reference it directly. A destructured `const { dispose } =
-  // bridge; dispose();` would otherwise lose its `this` binding and
-  // silently no-op the teardown loop.
-  const removePeer = (peer: Peer): void => {
-    if (!peers.has(peer)) return;
-    peers.delete(peer);
-    // Outstanding-release FIRST (resumes panes whose remaining sum drops below
-    // the low watermark), THEN subscription-release (last-owner unsubscribe) —
-    // the two are independent tmux commands; this preserves the original order.
-    backpressure.releasePeer(peer);
-    subscription.releasePeer(peer);
-  };
 
   return {
     registerPeer(): Peer {
       const peer: Peer = { id: nextPeerId++ };
-      peers.add(peer);
       subscription.register(peer);
       backpressure.register(peer);
       return peer;
     },
 
-    removePeer,
+    removePeer(peer: Peer): void {
+      // Idempotent: both `releasePeer` methods no-op on a peer they don't hold,
+      // so a second call against an unknown peer does nothing — no roster guard
+      // needed. Outstanding-release FIRST (resumes panes whose remaining sum
+      // drops to or below the low watermark), THEN subscription-release
+      // (last-owner unsubscribe); the two are independent tmux commands.
+      backpressure.releasePeer(peer);
+      subscription.releasePeer(peer);
+    },
 
     subscribeForPeer(peer, name, what, format) {
       return subscription.subscribe(peer, name, what, format);
@@ -228,18 +221,14 @@ export function createBridgeConnection(
     },
 
     dispose(): void {
-      // [LAW:single-enforcer] One peer-teardown path: dispose tears every peer
-      // down through the same `removePeer` closure the returned object exposes,
-      // so a future change to refcount / outstanding semantics lands in exactly
-      // one place. [LAW:locality-or-seam] It calls the closure-scoped
-      // `removePeer` (not `this.removePeer`) so a destructured
-      // `const { dispose } = bridge; dispose();` still tears down correctly.
-      for (const peer of [...peers]) removePeer(peer);
-      // Final defense: removePeer's resume already fired a Continue for every
-      // pane whose sum reached zero. Flush the panes NOT already being resumed
-      // so a programming error that left one stranded still gets a Continue,
-      // without double-sending one already in flight.
-      backpressure.flushPausedPanes();
+      // [LAW:decomposition] Each ledger tears down its own peers: the backpressure
+      // ledger releases every peer (resuming drained panes) then flushes any pane
+      // still paused, and the subscription ledger releases every peer (firing
+      // last-owner unsubscribes). The façade owns no roster to iterate — it fans
+      // out to the two owners. `dispose` closes over the ledger locals, so a
+      // destructured `const { dispose } = bridge; dispose();` still works.
+      backpressure.dispose();
+      subscription.dispose();
     },
   };
 }

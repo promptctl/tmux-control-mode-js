@@ -144,6 +144,33 @@ describe("BackpressureLedger (isolation)", () => {
     expect(h.sent).toHaveLength(0);
   });
 
+  it("clearPeer zeroes one peer's bytes and resumes only when the shared sum drops below low", async () => {
+    // clearPeer (used by the WS bridge on ws.bufferedAmount → 0) zeroes just the
+    // caller's slice and keeps others' accounting — distinct from releasePeer,
+    // which drops the peer entirely. The pane resumes only once the SHARED sum
+    // (across surviving peers) falls to or below the low watermark.
+    const h = createHarness({
+      outputHighWatermark: 1000,
+      outputLowWatermark: 400,
+    });
+    const ledger = new BackpressureLedger(h.deps);
+    const a = { id: 1 };
+    const b = { id: 2 };
+    ledger.register(a);
+    ledger.register(b);
+    ledger.account(a, 7, 600);
+    ledger.account(b, 7, 600); // sum 1200 → pause
+    expect(pauses(h.sent)).toHaveLength(1);
+
+    ledger.clearPeer(a); // a → 0, but b's 600 keeps the sum above low → stays paused
+    await Promise.resolve();
+    expect(continues(h.sent)).toHaveLength(0);
+
+    ledger.clearPeer(b); // sum now 0 ≤ low → resume
+    await Promise.resolve();
+    expect(continues(h.sent)).toHaveLength(1);
+  });
+
   it("releasePeer drops a peer's bytes from the sum and resumes drained panes", async () => {
     const h = createHarness({
       outputHighWatermark: 1000,
@@ -280,5 +307,24 @@ describe("BackpressureLedger (isolation)", () => {
     ledger.register(a);
     expect(() => ledger.register(a)).toThrow(BridgeError);
     expect(() => ledger.register(a)).toThrow(/already registered/);
+  });
+
+  it("dispose releases every peer, resuming panes whose sum drains to zero", async () => {
+    const h = createHarness({
+      outputHighWatermark: 1000,
+      outputLowWatermark: 400,
+    });
+    const ledger = new BackpressureLedger(h.deps);
+    const a = { id: 1 };
+    const b = { id: 2 };
+    ledger.register(a);
+    ledger.register(b);
+    ledger.account(a, 7, 600);
+    ledger.account(b, 8, 1200); // pane 8 paused; pane 7 stays below high
+    expect(pauses(h.sent)).toHaveLength(1);
+
+    ledger.dispose(); // releases both peers → pane 8's sum hits 0 → resume
+    await Promise.resolve();
+    expect(continues(h.sent).filter((c) => c.includes("%8:"))).toHaveLength(1);
   });
 });
