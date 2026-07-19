@@ -90,10 +90,22 @@ export class SenderRegistry {
    * handler) on first sight. Called by both `register` and the invoke pipeline,
    * so a renderer that only ever invoke()s — never register()s — still cleans up
    * when its webContents dies.
+   *
+   * Returns `undefined` for an already-destroyed WebContents (see below):
+   * callers abort rather than resurrect a sender that can never be torn down.
    */
-  getOrCreate(wc: WebContentsLike): SenderState {
+  getOrCreate(wc: WebContentsLike): SenderState | undefined {
     const existing = this.senders.get(wc);
     if (existing !== undefined) return existing;
+    // [LAW:types-are-the-program] [LAW:no-silent-failure] Refuse to resurrect a
+    // sender for an already-destroyed WebContents. Its `destroyed` event has
+    // already fired (that is what drove teardown), so a fresh peer + a new
+    // `wc.once("destroyed")` listener would leak forever — the only trigger for
+    // teardown never comes again. This is the post-teardown race: a queued
+    // invoke lands after the renderer died. A destroyed wc has no live sender;
+    // the type says so, and the pipeline turns it into an aborted reply instead
+    // of billing a peer and running a real command for a dead renderer.
+    if (wc.isDestroyed()) return undefined;
     // [LAW:single-enforcer] One destroyed-handler per sender. The handler is
     // stored on the sender so `teardown` can detach it when the unregister
     // path runs and wc is still alive.
@@ -119,6 +131,9 @@ export class SenderRegistry {
    */
   register(wc: WebContentsLike): void {
     const state = this.getOrCreate(wc);
+    // A register that lands after the renderer was destroyed has no live sender
+    // to subscribe — nothing to attach, nothing to snapshot to a dead wc.
+    if (state === undefined) return;
     state.isSubscribed = true;
     // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
     // exactly once per registration. Each renderer's sink is the routing

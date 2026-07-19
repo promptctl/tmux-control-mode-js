@@ -25,8 +25,20 @@ import {
 import {
   SenderRegistry,
   type PendingDispatch,
+  type SenderState,
 } from "../../src/connectors/electron/sender-registry.js";
 import { createIpcHub, type FakeRenderer } from "./_helpers/ipc-hub.js";
+
+// getOrCreate returns `SenderState | undefined` (undefined for a destroyed wc).
+// In tests that pass a live wc, narrow explicitly rather than asserting non-null.
+function mustCreate(
+  registry: SenderRegistry,
+  wc: WebContentsLike,
+): SenderState {
+  const state = registry.getOrCreate(wc);
+  if (state === undefined) throw new Error("expected a live sender for wc");
+  return state;
+}
 
 // A WebContentsLike whose destroyed state is set directly, WITHOUT firing the
 // `destroyed` once-handler. Lets a test drive the broadcast reaping path
@@ -136,8 +148,8 @@ describe("SenderRegistry — peer lifecycle", () => {
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
 
-    const a = registry.getOrCreate(r.sender);
-    const b = registry.getOrCreate(r.sender);
+    const a = mustCreate(registry, r.sender);
+    const b = mustCreate(registry, r.sender);
 
     expect(a).toBe(b);
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
@@ -149,13 +161,32 @@ describe("SenderRegistry — peer lifecycle", () => {
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
 
-    const state = registry.getOrCreate(r.sender);
+    const state = mustCreate(registry, r.sender);
     expect(r.destroyHandlerCount()).toBe(1);
 
     r.destroy();
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     // The destroyed handler was consumed by `once` firing.
     expect(r.destroyHandlerCount()).toBe(0);
+  });
+
+  it("refuses to resurrect a sender for an already-destroyed wc (post-teardown invoke race)", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const dead = makeControllableWc();
+
+    mustCreate(registry, dead.wc); // live: one peer registered
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
+
+    // Renderer dies: teardown runs (as its destroyed handler would) and the wc
+    // now reports destroyed. A queued invoke then lands and calls getOrCreate.
+    registry.teardown(dead.wc);
+    dead.setDestroyed();
+
+    // No new sender, no leaked peer, no never-firing destroyed listener.
+    expect(registry.getOrCreate(dead.wc)).toBeUndefined();
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
+    expect(dead.destroyHandlerCount()).toBe(0);
   });
 });
 
@@ -186,7 +217,7 @@ describe("SenderRegistry — register", () => {
     const r = createIpcHub().createRenderer();
     const events = captureEvents(r);
     registry.register(r.sender);
-    const state = registry.getOrCreate(r.sender);
+    const state = mustCreate(registry, r.sender);
 
     const chunk: ChunkPayload = {
       paneId: 7,
@@ -216,7 +247,7 @@ describe("SenderRegistry — ack", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
-    const state = registry.getOrCreate(r.sender);
+    const state = mustCreate(registry, r.sender);
 
     registry.ack(r.sender, { paneId: 3, bytes: 128 });
     expect(bridge.ackOutput).toHaveBeenCalledWith(state.peer, 3, 128);
@@ -246,7 +277,7 @@ describe("SenderRegistry — teardown", () => {
     const registry = new SenderRegistry({ bridge, client });
     const r = createIpcHub().createRenderer();
     registry.register(r.sender);
-    const state = registry.getOrCreate(r.sender);
+    const state = mustCreate(registry, r.sender);
 
     registry.teardown(r.sender);
     registry.teardown(r.sender); // idempotent
@@ -262,7 +293,7 @@ describe("SenderRegistry — teardown", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
-    const state = registry.getOrCreate(r.sender);
+    const state = mustCreate(registry, r.sender);
 
     // Stand in for the invoke pipeline: two in-flight dispatches on this sender.
     const a: PendingDispatch = { aborted: false };
@@ -323,7 +354,7 @@ describe("SenderRegistry — broadcast", () => {
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const dead = makeControllableWc();
     registry.register(dead.wc);
-    const state = registry.getOrCreate(dead.wc);
+    const state = mustCreate(registry, dead.wc);
     dead.sends.length = 0; // drop the register-time connection-state snapshot
 
     dead.setDestroyed(); // destroyed, but the once-handler did NOT fire

@@ -40,11 +40,12 @@ import type { PendingDispatch, SenderRegistry } from "./sender-registry.js";
 // ---------------------------------------------------------------------------
 
 function rpcErrorToBridge(err: RpcError): BridgeError {
-  // RpcError prepends `[CODE] ` to its `.message`; the bridge code on the
-  // BridgeError already supplies that prefix, so strip RpcError's first to
-  // avoid double-prefixed messages like `[BRIDGE_INVALID_ARG] [INVALID_ARG] ...`.
-  const stripped = err.message.replace(/^\[[A-Z_]+\] /, "");
-  return new BridgeError(mapRpcCode(err.code), stripped);
+  // [LAW:one-source-of-truth] Read RpcError's own unprefixed message rather than
+  // regex-stripping the `[CODE] ` prefix off `.message`. The BridgeError code
+  // re-supplies its own prefix, so passing the bare text avoids double-prefixed
+  // messages like `[BRIDGE_INVALID_ARG] [INVALID_ARG] ...` without coupling to
+  // RpcError's message format.
+  return new BridgeError(mapRpcCode(err.code), err.original);
 }
 
 function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
@@ -59,6 +60,17 @@ function abortedEnvelope(method: string): InvokeResultEnvelope {
       `dispatch for method=${method} aborted: sender destroyed`,
     ).toPayload(),
   };
+}
+
+// Best-effort method name for labelling an aborted reply when the sender is
+// already gone. A malformed request has no method — the label falls back rather
+// than surfacing a parse error the moot reply doesn't need.
+function methodLabel(raw: unknown): string {
+  try {
+    return parseRpcRequest(raw).method;
+  } catch {
+    return "<unknown>";
+  }
 }
 
 // [LAW:single-enforcer] The BRIDGE_INTERNAL construction (method-labelled
@@ -168,6 +180,11 @@ export class InvokePipeline {
     // [LAW:single-enforcer] parseRpcRequest is still the only validation site;
     // RpcError never escapes — it is mapped to BridgeError at this seam.
     const sender = this.deps.registry.getOrCreate(event.sender);
+    // [LAW:no-ambient-temporal-coupling] The wc was already destroyed when this
+    // queued invoke ran (its teardown fired first). There is no live sender to
+    // bill and no point running a real command for a dead renderer — the reply
+    // is moot. Abort before creating any state, so no peer is resurrected.
+    if (sender === undefined) return abortedEnvelope(methodLabel(args[0]));
     const dispatch: PendingDispatch = { aborted: false };
     sender.pending.add(dispatch);
 
