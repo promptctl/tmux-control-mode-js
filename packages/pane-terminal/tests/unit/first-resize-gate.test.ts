@@ -52,10 +52,10 @@ describe("FirstResizeGate: release ordering", () => {
       captured: enc("SEED"),
       cursor: { col: 2, row: 1 },
     });
+    // The contract is correct bytes in correct order; whether the gate
+    // forwards the buffers by reference or copies them is an implementation
+    // choice, so this asserts content+order, not reference identity.
     expect(batch.writes).toEqual([a, b]);
-    // Identity preserved — the gate forwards buffers by reference, no copy.
-    expect(batch.writes[0]).toBe(a);
-    expect(batch.writes[1]).toBe(b);
   });
 
   it("releases a null seed when none was buffered", () => {

@@ -288,8 +288,14 @@ export class XtermSink implements TerminalSink {
         this.firstResizeQueued = false;
         if (this.isDisposed) return;
         if (this.cols <= 0 || this.rows <= 0) return;
-        this.firstResizeDone = true;
+        // [LAW:no-ambient-temporal-coupling] Advance the phase only AFTER the
+        // resize it names actually happens. If `terminal.resize()` threw, the
+        // flag would stay false, so the next resize() re-queues this rAF (a
+        // retry) and the gate stays buffering (its byte cap still bounds the
+        // no-resize path) — never a "past first resize but never released"
+        // limbo.
         this.terminal.resize(this.cols, this.rows);
+        this.firstResizeDone = true;
         // Resize precedes the drain so content lays out at the correct
         // dimensions from the start (no reflow, no broken scroll area). The
         // gate releases any pending seed, then the buffered live bytes in
