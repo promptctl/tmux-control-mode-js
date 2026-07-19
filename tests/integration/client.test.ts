@@ -96,6 +96,30 @@ function killServer(socketName: string): void {
 }
 
 /**
+ * Resolve once `client` reaches connection state "ready"; reject with a legible
+ * message if it has not within `ms`. The single source of readiness-waiting —
+ * `createSession` and `withSecondClient` both delegate here. A client that
+ * never becomes ready (broken transport, hung tmux, stale socket) fails with a
+ * named error and a cleaned-up handler, not an opaque suite timeout.
+ * [LAW:one-source-of-truth] [LAW:no-silent-failure]
+ */
+function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const h = (e: ConnectionStateMessage) => {
+      if (e.state.status !== "ready") return;
+      clearTimeout(timer);
+      client.off("connection-state", h);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      client.off("connection-state", h);
+      reject(new Error(`client did not reach ready state within ${ms}ms`));
+    }, ms);
+    client.on("connection-state", h);
+  });
+}
+
+/**
  * Create a detached tmux session on an isolated socket and return a
  * TmuxClient attached to it, once its connectionState reaches "ready".
  *
@@ -112,26 +136,22 @@ function killServer(socketName: string): void {
  * [LAW:dataflow-not-control-flow] Session creation and transport construction
  * always run unconditionally; variability lives in sessionName/socketName.
  */
-function createSession(
+async function createSession(
   socketName: string,
   sessionName: string,
 ): Promise<TmuxClient> {
   execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
     stdio: "ignore",
   });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = (ev: ConnectionStateMessage) => {
-      if (ev.state.status !== "ready") return;
-      client.off("connection-state", handler);
-      resolve(client);
-    };
-    client.on("connection-state", handler);
-  });
+  const client = new TmuxClient(
+    spawnTmux(["attach-session", "-t", sessionName], { socketPath: socketName }),
+  );
+  // [LAW:one-source-of-truth] Readiness-waiting lives only in waitReady; this
+  // delegates rather than re-implementing the connection-state handler, and so
+  // inherits its legible timeout — a hung attach rejects (the caller's finally
+  // still runs) instead of leaking the spawned child until the suite timeout.
+  await waitReady(client);
+  return client;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,29 +478,6 @@ function waitForEvent<K extends keyof TmuxEventMap>(
       reject(new Error(`did not observe %${type} within ${ms}ms`));
     }, ms);
     client.on(type, handler);
-  });
-}
-
-/**
- * Resolve once a freshly-constructed client reaches connection state "ready";
- * reject with a legible message if it has not within `ms`. Mirrors
- * `waitForEvent`: a client that never becomes ready (broken transport, hung
- * tmux, stale socket) fails with a named error and a cleaned-up handler, not an
- * opaque suite timeout. [LAW:no-silent-failure]
- */
-function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const h = (e: ConnectionStateMessage) => {
-      if (e.state.status !== "ready") return;
-      clearTimeout(timer);
-      client.off("connection-state", h);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      client.off("connection-state", h);
-      reject(new Error(`client did not reach ready state within ${ms}ms`));
-    }, ms);
-    client.on("connection-state", h);
   });
 }
 
