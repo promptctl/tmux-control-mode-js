@@ -35,6 +35,14 @@ All notable changes to this project are documented here. Format follows
   queued or already inflight and the transport closed before tmux replied.
   Distinct from `TransportSendError` (the send was refused outright) and
   `TmuxCommandError` (tmux replied with `%error`).
+- `pane-resume-failed` observability event on the WebSocket bridge server
+  (`onEvent`) and a matching `onResumeFailure` hook on the Electron
+  `MainBridgeOptions`, emitted when a live tmux refuses a pane's resume
+  (`refresh-client -A %<pane>:continue`) while the watermark loop wants it
+  flowing. Carries the pane id and a typed `BridgeError`. Both are opt-in: a
+  host that does not observe them is making an informed choice — the bridge
+  never swallows the failure internally. The `ResumeFailure` type is exported
+  from the bridge-connection module and re-exported from Electron `main`.
 
 ### Fixed
 
@@ -47,6 +55,20 @@ All notable changes to this project are documented here. Format follows
   post-close bootstrap rejection is suppressed (the newer bootstrap or the
   `connection-state: closed` event owns that outcome) so the signal stays
   truthful rather than crying wolf.
+- A failed pane resume no longer strands the pane paused in tmux while the
+  bridge's ledger claims it resumed. Previously `bridge-connection`'s
+  `maybeResume` deleted the pane from its paused ledger _before_ the `continue`
+  command settled and swallowed every rejection, so a transient failure on a
+  live pane left it paused in tmux forever — no retry, no signal, the ledger
+  lying that it had resumed. The ledger transition now follows the command's
+  outcome: on success the pane leaves the ledger; on a connection-gone
+  rejection (transport refused/closed — a moot pane on a dead connection) it is
+  dropped quietly; on any live-tmux failure (`%error`, corrupted terminator) the
+  pane stays paused so the next watermark crossing retries, and the failure is
+  surfaced (see the `pane-resume-failed` / `onResumeFailure` additions above).
+  The in-flight resume is guarded by the pane's flow-record identity, so a
+  settling `continue` cannot disturb a re-paused pane from a newer episode
+  (ABA-safe).
 - `TmuxClient.execute()` promises no longer hang forever if the transport
   closes while the command is queued or inflight — every outstanding promise
   is now rejected with `TransportClosedError` when the transport closes.

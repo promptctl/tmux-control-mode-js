@@ -49,6 +49,12 @@ import {
   refreshClientSubscribe,
   refreshClientUnsubscribe,
 } from "../protocol/encoder.js";
+import {
+  TmuxCommandError,
+  TmuxProtocolError,
+  TransportClosedError,
+  TransportSendError,
+} from "../errors.js";
 
 import { BridgeError } from "./errors.js";
 
@@ -61,11 +67,87 @@ export const DEFAULT_OUTPUT_HIGH_WATERMARK = 1 << 20;
 /** Default per-pane low watermark (256 KiB summed across peers). */
 export const DEFAULT_OUTPUT_LOW_WATERMARK = 1 << 18;
 
+/**
+ * A resume (Continue) command that tmux was alive to answer but did NOT apply
+ * — the pane is still paused in tmux while the watermark loop wanted it flowing.
+ * The bridge keeps the pane in its ledger (so the next watermark crossing
+ * retries) and hands this description to the transport, which performs the
+ * observable emission on its own channel. Connection-gone rejections are NOT
+ * reported here (a paused pane on a dead connection is moot) — only failures
+ * that leave a LIVE pane stranded reach the reporter.
+ *
+ * [LAW:effects-at-boundaries] The bridge DESCRIBES the failure; the transport
+ * (websocket server, electron main) PERFORMS the emission — mirroring the
+ * topology-error reporter seam.
+ */
+export interface ResumeFailure {
+  /** The pane whose Continue tmux refused. */
+  readonly paneId: number;
+  /** Classified, self-describing failure — carries the tmux/transport cause. */
+  readonly error: BridgeError;
+}
+
 export interface BridgeConnectionOptions {
   readonly client: TmuxClient;
   readonly outputHighWatermark?: number;
   readonly outputLowWatermark?: number;
+  /**
+   * Surface a resume failure that stranded a LIVE pane paused. REQUIRED — a
+   * bridge that could silently drop such a failure must not be constructible.
+   * [LAW:no-silent-failure] There is deliberately no default no-op: a default
+   * would let every caller reintroduce the swallowed strand this seam removes.
+   * The transport decides where the report goes (its own observability channel);
+   * whether a host observes that channel is the host's informed choice.
+   */
+  readonly reportResumeFailure: (failure: ResumeFailure) => void;
 }
+
+// ---------------------------------------------------------------------------
+// Resume-failure classification
+//
+// [LAW:no-silent-failure] The old blanket `.catch(swallow)` conflated two
+// domain categories with opposite correct handling. Split them by error CLASS
+// (the mechanically-checked signal), never by parsing tmux's English:
+//   - connection-gone: the transport refused the send or closed mid-flight, so
+//     tmux never applied the resume AND is now unreachable. A paused pane on a
+//     dead connection is moot — the whole connection is tearing down. Quiet.
+//   - everything else (tmux replied %error, a corrupted terminator, or an
+//     unexpected throw): tmux was ALIVE and the pane is still paused. This is
+//     the meaning-altering strand the epic targets — keep it paused, retry,
+//     and surface it.
+// ---------------------------------------------------------------------------
+
+const isConnectionGone = (err: unknown): boolean =>
+  err instanceof TransportClosedError || err instanceof TransportSendError;
+
+// [LAW:types-are-the-program] Map each rejection class onto the existing
+// BridgeError taxonomy so the surfaced error is transport-agnostic and typed.
+// TOTAL by construction: the fallthrough never calls String() (which throws on
+// null-proto causes — the kwv.1 lesson), only reads `.message` off a checked
+// Error. A throw here would itself be the silence we are removing.
+const resumeFailureToBridgeError = (
+  paneId: number,
+  err: unknown,
+): BridgeError => {
+  if (err instanceof TmuxCommandError) {
+    return new BridgeError(
+      "TMUX_ERROR",
+      `resume (continue) rejected by tmux for pane %${paneId}: ${err.message}`,
+    );
+  }
+  if (err instanceof TmuxProtocolError) {
+    return new BridgeError(
+      "BRIDGE_PROTOCOL_ERROR",
+      `resume (continue) response for pane %${paneId} had a corrupted ` +
+        `terminator; the pane's flow-control state is unknown: ${err.message}`,
+    );
+  }
+  const detail = err instanceof Error ? err.message : "unknown error";
+  return new BridgeError(
+    "BRIDGE_INTERNAL",
+    `resume (continue) failed unexpectedly for pane %${paneId}: ${detail}`,
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Peer token
@@ -86,6 +168,16 @@ interface PeerState {
   readonly peer: Peer;
   readonly subscriptions: Set<string>;
   readonly outstanding: Map<number, number>;
+}
+
+/**
+ * Per-pane flow-control state. Presence in the pause ledger means "paused (per
+ * our belief)"; `resuming` is true while a Continue for this pane is in flight,
+ * which both suppresses duplicate sends and — via this object's identity — lets
+ * a settling Continue recognize its own episode after an intervening teardown.
+ */
+interface PaneFlow {
+  resuming: boolean;
 }
 
 interface SubscriptionRecord {
@@ -203,7 +295,7 @@ export interface BridgeConnection {
 export function createBridgeConnection(
   opts: BridgeConnectionOptions,
 ): BridgeConnection {
-  const { client } = opts;
+  const { client, reportResumeFailure } = opts;
   const high = opts.outputHighWatermark ?? DEFAULT_OUTPUT_HIGH_WATERMARK;
   const low = opts.outputLowWatermark ?? DEFAULT_OUTPUT_LOW_WATERMARK;
   // [LAW:single-enforcer] Shared validation site: invalid watermark config
@@ -218,12 +310,23 @@ export function createBridgeConnection(
 
   const peers = new Map<Peer, PeerState>();
   const subscriptions = new Map<string, SubscriptionRecord>();
-  const pausedPanes = new Set<number>();
+
+  // [LAW:types-are-the-program] The pause ledger is NOT a bare `Set<number>`
+  // (paused | not) — too weak to represent a resume in flight, which is what
+  // let the old code delete the entry BEFORE the Continue settled and then
+  // swallow the outcome. Presence in this map means "paused (per our belief)";
+  // the value carries the resume-in-flight state. The PaneFlow OBJECT identity
+  // is the episode token: a captured reference that a later dispose/re-pause
+  // replaces, so a settling Continue can tell its own episode from a new one.
+  // The guard compares identity, never a value — a value check would be
+  // ABA-blind (paused → resumed → re-paused reads as "unchanged").
+  const pausedPanes = new Map<number, PaneFlow>();
   let nextPeerId = 1;
 
-  // Fire-and-forget pause/continue/unsubscribe — tmux's response carries no
-  // actionable information at this layer; a rejection means the pane or
-  // subscription already went away, which is fine on cleanup paths.
+  // Fire-and-forget on the genuinely-moot cleanup seams only: a Pause that
+  // races a vanishing pane, and last-owner unsubscribe / dispose teardown.
+  // The resume seam does NOT use this — see maybeResume, which classifies the
+  // failure instead of swallowing it ([LAW:no-silent-failure]).
   const swallow = (): void => undefined;
 
   const totalOutstanding = (paneId: number): number => {
@@ -235,19 +338,52 @@ export function createBridgeConnection(
   const maybePause = (paneId: number): void => {
     if (pausedPanes.has(paneId)) return;
     if (totalOutstanding(paneId) < high) return;
-    pausedPanes.add(paneId);
+    pausedPanes.set(paneId, { resuming: false });
     void client
       .execute(refreshClientPaneAction(paneId, PaneAction.Pause))
       .catch(swallow);
   };
 
+  // [LAW:one-source-of-truth] The ledger transition FOLLOWS the effect outcome
+  // instead of racing ahead of it: the pane leaves `pausedPanes` only when tmux
+  // confirms the Continue. On a live-pane failure the entry stays, so the next
+  // watermark crossing retries (event-driven — no ambient retry timer,
+  // [LAW:no-ambient-temporal-coupling]); the failure is surfaced, never dropped.
   const maybeResume = (paneId: number): void => {
-    if (!pausedPanes.has(paneId)) return;
-    if (totalOutstanding(paneId) > low) return;
-    pausedPanes.delete(paneId);
+    const flow = pausedPanes.get(paneId);
+    if (flow === undefined) return; // not paused per the ledger
+    if (totalOutstanding(paneId) > low) return; // still above low → stay paused
+    if (flow.resuming) return; // a Continue is already in flight; don't double-send
+    flow.resuming = true;
     void client
       .execute(refreshClientPaneAction(paneId, PaneAction.Continue))
-      .catch(swallow);
+      .then(
+        () => {
+          // Identity guard: only this episode's entry may be cleared. A dispose
+          // (or, defensively, a future path that re-pauses under a NEW PaneFlow)
+          // makes `get(paneId) !== flow`, so a stale outcome cannot touch the
+          // current episode. While paused tmux emits no output, so outstanding
+          // cannot have re-crossed high in the interim — no reconcile needed.
+          if (pausedPanes.get(paneId) === flow) pausedPanes.delete(paneId);
+        },
+        (err: unknown) => {
+          if (pausedPanes.get(paneId) !== flow) return; // superseded episode → ignore
+          flow.resuming = false; // clear in-flight so the next crossing may retry
+          if (isConnectionGone(err)) {
+            // Transport/bridge gone: the pane's flow-control no longer matters.
+            // The genuine cleanup case the old blanket catch conflated with the
+            // strand — drop the entry quietly.
+            pausedPanes.delete(paneId);
+            return;
+          }
+          // tmux is alive and the pane is still paused. Keep the entry (retry on
+          // the next crossing) and surface the failure.
+          reportResumeFailure({
+            paneId,
+            error: resumeFailureToBridgeError(paneId, err),
+          });
+        },
+      );
   };
 
   const releaseName = (name: string, peer: Peer): boolean => {
@@ -475,11 +611,15 @@ export function createBridgeConnection(
       // (not `this.removePeer`) so a destructured `const { dispose } =
       // bridge; dispose();` still tears down the helper correctly.
       for (const peer of [...peers.keys()]) removePeerImpl(peer);
-      // Final defense: removePeer's maybeResume should have cleared every
-      // entry from pausedPanes by now (totalOutstanding goes to 0 once the
-      // last peer leaves), but flush unconditionally so a programming error
-      // that left pausedPanes populated does not leave tmux stuck.
-      for (const paneId of pausedPanes) {
+      // Final defense: removePeer's maybeResume already fired a Continue for
+      // every pane whose sum reached zero (those entries sit in the ledger with
+      // `resuming: true` until tmux confirms). Flush only the panes NOT already
+      // being resumed so a programming error that left one stranded still gets
+      // a Continue, without double-sending one already in flight. Teardown is a
+      // genuinely-moot cleanup seam (the bridge is done; nothing left to retry
+      // or report to), so a failed Continue here is swallowed.
+      for (const [paneId, flow] of pausedPanes) {
+        if (flow.resuming) continue;
         void client
           .execute(refreshClientPaneAction(paneId, PaneAction.Continue))
           .catch(swallow);
