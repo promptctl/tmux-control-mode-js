@@ -223,10 +223,15 @@ export interface ReconnectPolicy {
   readonly maxAttempts: number;
   /** First retry delay ms. Default: 250. */
   readonly initialDelayMs?: number;
-  /** Ceiling on retry delay ms. Default: 10_000. */
+  /**
+   * Ceiling on the exponential *base* delay ms, before jitter. Default: 10_000.
+   * `jitterMs` is added on top, so the effective maximum delay is
+   * `maxDelayMs + jitterMs` — the cap bounds the exponential growth; jitter then
+   * de-synchronizes reconnecting clients.
+   */
   readonly maxDelayMs?: number;
   /** Exponential backoff factor. Default: 2. */
   readonly factor?: number;
-  /** Random jitter ms added to each delay. Default: 250. */
+  /** Random jitter ms added on top of the (capped) base delay. Default: 250. */
   readonly jitterMs?: number;
 }
