@@ -52,8 +52,7 @@ import {
 import {
   TmuxCommandError,
   TmuxProtocolError,
-  TransportClosedError,
-  TransportSendError,
+  isConnectionGone,
 } from "../errors.js";
 
 import { BridgeError } from "./errors.js";
@@ -116,9 +115,9 @@ export interface BridgeConnectionOptions {
 //     the meaning-altering strand the epic targets — keep it paused, retry,
 //     and surface it.
 // ---------------------------------------------------------------------------
-
-const isConnectionGone = (err: unknown): boolean =>
-  err instanceof TransportClosedError || err instanceof TransportSendError;
+// [LAW:single-enforcer] `isConnectionGone` is the shared taxonomy predicate
+//   from ../errors.js — the pane-terminal subscribe/seed seam splits
+//   quiet-vs-surface through the same check, so the two sites cannot drift.
 
 // [LAW:types-are-the-program] Map each rejection class onto the existing
 // BridgeError taxonomy so the surfaced error is transport-agnostic and typed.

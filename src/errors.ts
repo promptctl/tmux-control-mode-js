@@ -191,3 +191,22 @@ export class TmuxProtocolError extends Error {
     this.output = output;
   }
 }
+
+/**
+ * Classify a command rejection as "the connection is already gone" — the
+ * transport refused the send ({@link TransportSendError}) or closed before
+ * tmux replied ({@link TransportClosedError}). Both mean the command never got
+ * a verdict from a live tmux, so the operation it drove is *moot*: the pane /
+ * subscription it targeted is being torn down and, on reconnect, re-driven.
+ *
+ * Any other rejection class ({@link TmuxCommandError}, {@link TmuxProtocolError},
+ * anything else) means tmux was ALIVE and the effect's real outcome matters —
+ * that is the meaning-altering failure a seam must surface, not swallow.
+ *
+ * [LAW:single-enforcer] The connection-gone predicate lives once, here, beside
+ *   the taxonomy it classifies. Both the bridge resume-strand seam and the
+ *   pane-terminal subscribe/seed seam split quiet-vs-surface through this one
+ *   check, so the two sites cannot drift on what "gone" means.
+ */
+export const isConnectionGone = (err: unknown): boolean =>
+  err instanceof TransportClosedError || err instanceof TransportSendError;

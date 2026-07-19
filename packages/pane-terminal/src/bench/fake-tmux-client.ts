@@ -110,15 +110,14 @@ export class FakeTmuxClient {
   // the handler scripts the response payload.
   private readonly captureLog: string[] = [];
   private captureHandler: (target: string) => string = () => "";
+  // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
+  // (modelling tmux's `%error`/transport failures), or `null` to resolve
+  // normally. Both of PaneStream's tmux seams — the pane-size subscription
+  // (`refresh-client -B …`) and the seed (`capture-pane`/`display-message`) —
+  // flow through `execute()`, so this one knob drives both failure paths.
+  // Default: never fail.
+  private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
-
-  // Subscription RPC log. PaneStream calls `subscribeRaw` at construction and
-  // `unsubscribe` at dispose; the log lets a consumer assert exactly that
-  // wiring — one subscribe per pane, one matching unsubscribe.
-  private readonly subscriptionLog: (
-    | { kind: "subscribe"; name: string; what: string; format: string }
-    | { kind: "unsubscribe"; name: string }
-  )[] = [];
 
   // Round-trip latency injected into `execute()`. A consumer varies this to
   // measure visibility-toggle / reconnect-burst timing against a known
@@ -178,42 +177,52 @@ export class FakeTmuxClient {
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
-    const payload = this.captureHandler(command);
+    const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
-    return new Promise((resolve) => {
-      setTimeout(
-        () =>
-          resolve({
-            commandNumber,
-            timestamp: Date.now(),
-            output: payload === "" ? [] : payload.split("\n"),
-            success: true,
-          }),
-        this.roundTripMs,
-      );
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        // [LAW:no-silent-failure] A scripted failure rejects — same shape as
+        // TmuxClient.execute, which rejects with a typed error on %error /
+        // transport loss. Resolution and rejection share the one macrotask
+        // boundary so timing stays deterministic across both paths.
+        if (failure !== null) {
+          reject(failure);
+          return;
+        }
+        // [LAW:dataflow-not-control-flow] Compute the success payload only on
+        // the path that consumes it — the failure path never needs it.
+        // [LAW:no-silent-failure] A captureHandler that throws models a command
+        // that failed to produce a body; reject (never let the throw escape the
+        // timer as an unhandled exception, and never resolve a bogus body). This
+        // keeps execute() total: it ALWAYS returns a promise that settles, like
+        // the real TmuxClient.execute, which never throws synchronously.
+        let payload: string;
+        try {
+          payload = this.captureHandler(command);
+        } catch (err) {
+          reject(
+            err instanceof Error ? err : new Error("capture handler failed"),
+          );
+          return;
+        }
+        resolve({
+          commandNumber,
+          timestamp: Date.now(),
+          output: payload === "" ? [] : payload.split("\n"),
+          success: true,
+        });
+      }, this.roundTripMs);
     });
   }
 
-  /**
-   * Models `TmuxClient.subscribeRaw` — appended to `subscriptionLog` and
-   * resolved via the same `setTimeout(..., roundTripMs)` ladder as
-   * `execute()`, so timing stays deterministic across both call sites.
-   * No-op behaviorally: the fake does not auto-emit `subscription-changed`
-   * messages. Use `injectSubscriptionChanged()` to drive the listener.
-   */
-  subscribeRaw(
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse> {
-    this.subscriptionLog.push({ kind: "subscribe", name, what, format });
-    return this.resolveAck();
-  }
-
-  unsubscribe(name: string): Promise<CommandResponse> {
-    this.subscriptionLog.push({ kind: "unsubscribe", name });
-    return this.resolveAck();
-  }
+  // [LAW:single-enforcer] No `subscribeRaw`/`unsubscribe` methods: `execute()`
+  //   is the fake's ONE command path, matching production, where PaneStream's
+  //   subscribe/unsubscribe flow through the free `subscribeRaw(client, …)` /
+  //   `unsubscribe(client, …)` helpers → `client.execute(refresh-client …)`. A
+  //   second method here would be a divergent path that bypasses the
+  //   `executeFailure` failure-scripting hook (and it went unused). A test that
+  //   wants to assert subscribe wiring asserts against the execute() command —
+  //   the path PaneStream actually uses.
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside
   //   the fake's internal `dispatch` path — same shape as every other
@@ -284,20 +293,19 @@ export class FakeTmuxClient {
     this.captureHandler = handler;
   }
 
-  capturePaneCount(): number {
-    return this.captureLog.length;
+  /**
+   * Script which `execute()` commands REJECT and with what error. The handler
+   * receives the full command string and returns an `Error` to reject with, or
+   * `null` to resolve normally. Match on the command prefix to target a seam —
+   * `refresh-client -B` for the pane-size subscription, `capture-pane` /
+   * `display-message` for the seed. Persistent, like `setCapturePaneResponse`.
+   */
+  setExecuteFailure(handler: (command: string) => Error | null): void {
+    this.executeFailure = handler;
   }
 
-  /**
-   * Frozen snapshot of the subscribe/unsubscribe RPC log in arrival order, so a
-   * consumer can assert PaneStream issues exactly one `subscribeRaw` per pane
-   * and one matching `unsubscribe` at dispose.
-   */
-  subscriptionLogEntries(): readonly (
-    | { kind: "subscribe"; name: string; what: string; format: string }
-    | { kind: "unsubscribe"; name: string }
-  )[] {
-    return this.subscriptionLog;
+  capturePaneCount(): number {
+    return this.captureLog.length;
   }
 
   /** Set round-trip latency (ms) for `execute()`. Used by attach + reconnect benches. */
@@ -321,22 +329,6 @@ export class FakeTmuxClient {
     }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
     this.listeners.get("*")?.forEach((h) => h(msg));
-  }
-
-  private resolveAck(): Promise<CommandResponse> {
-    const commandNumber = ++this.commandCounter;
-    return new Promise((resolve) => {
-      setTimeout(
-        () =>
-          resolve({
-            commandNumber,
-            timestamp: Date.now(),
-            output: [],
-            success: true,
-          }),
-        this.roundTripMs,
-      );
-    });
   }
 }
 
