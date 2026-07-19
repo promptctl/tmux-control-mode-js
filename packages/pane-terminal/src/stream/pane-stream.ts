@@ -716,6 +716,10 @@ export class PaneStream implements ReseedTarget {
     // Invalidated by the reconnect handler and by detached-mode bytes.
     if (captureSucceeded) {
       this.lastSeed = { captured, cursor };
+      // The seed seam just succeeded (past the stale-drop guard above), so any
+      // outstanding seed failure is moot — clear it so lastError stops
+      // reporting a recovered transient failure.
+      this.clearError("seed");
     }
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
@@ -744,6 +748,9 @@ export class PaneStream implements ReseedTarget {
     if (this.sink === null) return;
     const dims = parseDimensions(ev.value);
     if (dims === null) return;
+    // The subscription just delivered a pane size, so the subscribe seam is
+    // demonstrably working — clear any outstanding subscribe failure.
+    this.clearError("subscribe");
     this.sink.resize(dims.cols, dims.rows);
   }
 
@@ -772,6 +779,18 @@ export class PaneStream implements ReseedTarget {
     const error: PaneStreamError = { phase, paneId: this.paneId, cause };
     this.lastErrorValue = error;
     for (const h of this.errorListeners) h(error);
+  }
+
+  // [LAW:one-source-of-truth] `lastError` claims "an outstanding failure at this
+  //   seam." That claim is superseded the moment the SAME seam demonstrates
+  //   success — a recovered seed for the "seed" phase, a delivered pane size for
+  //   the "subscribe" phase. Clearing then (and only then) keeps the pull-model
+  //   value honest instead of stranding a stale error after recovery. Phase-
+  //   gated so a seed success never wipes an outstanding subscribe failure, and
+  //   vice versa. (Reconnect is NOT a clear point: it re-drives only the seed,
+  //   not the subscription, so it cannot vouch for the subscribe seam.)
+  private clearError(phase: PaneStreamErrorPhase): void {
+    if (this.lastErrorValue?.phase === phase) this.lastErrorValue = null;
   }
 
   private listenerSet<E extends EventName>(event: E): Set<Listener<E>> {

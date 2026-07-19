@@ -119,14 +119,6 @@ export class FakeTmuxClient {
   private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
 
-  // Subscription RPC log. PaneStream calls `subscribeRaw` at construction and
-  // `unsubscribe` at dispose; the log lets a consumer assert exactly that
-  // wiring — one subscribe per pane, one matching unsubscribe.
-  private readonly subscriptionLog: (
-    | { kind: "subscribe"; name: string; what: string; format: string }
-    | { kind: "unsubscribe"; name: string }
-  )[] = [];
-
   // Round-trip latency injected into `execute()`. A consumer varies this to
   // measure visibility-toggle / reconnect-burst timing against a known
   // simulated tmux response time. Default 0 = next-macrotask resolution.
@@ -208,26 +200,14 @@ export class FakeTmuxClient {
     });
   }
 
-  /**
-   * Models `TmuxClient.subscribeRaw` — appended to `subscriptionLog` and
-   * resolved via the same `setTimeout(..., roundTripMs)` ladder as
-   * `execute()`, so timing stays deterministic across both call sites.
-   * No-op behaviorally: the fake does not auto-emit `subscription-changed`
-   * messages. Use `injectSubscriptionChanged()` to drive the listener.
-   */
-  subscribeRaw(
-    name: string,
-    what: string,
-    format: string,
-  ): Promise<CommandResponse> {
-    this.subscriptionLog.push({ kind: "subscribe", name, what, format });
-    return this.resolveAck();
-  }
-
-  unsubscribe(name: string): Promise<CommandResponse> {
-    this.subscriptionLog.push({ kind: "unsubscribe", name });
-    return this.resolveAck();
-  }
+  // [LAW:single-enforcer] No `subscribeRaw`/`unsubscribe` methods: `execute()`
+  //   is the fake's ONE command path, matching production, where PaneStream's
+  //   subscribe/unsubscribe flow through the free `subscribeRaw(client, …)` /
+  //   `unsubscribe(client, …)` helpers → `client.execute(refresh-client …)`. A
+  //   second method here would be a divergent path that bypasses the
+  //   `executeFailure` failure-scripting hook (and it went unused). A test that
+  //   wants to assert subscribe wiring asserts against the execute() command —
+  //   the path PaneStream actually uses.
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside
   //   the fake's internal `dispatch` path — same shape as every other
@@ -313,18 +293,6 @@ export class FakeTmuxClient {
     return this.captureLog.length;
   }
 
-  /**
-   * Frozen snapshot of the subscribe/unsubscribe RPC log in arrival order, so a
-   * consumer can assert PaneStream issues exactly one `subscribeRaw` per pane
-   * and one matching `unsubscribe` at dispose.
-   */
-  subscriptionLogEntries(): readonly (
-    | { kind: "subscribe"; name: string; what: string; format: string }
-    | { kind: "unsubscribe"; name: string }
-  )[] {
-    return this.subscriptionLog;
-  }
-
   /** Set round-trip latency (ms) for `execute()`. Used by attach + reconnect benches. */
   setRoundTripLatencyMs(ms: number): void {
     this.roundTripMs = ms;
@@ -346,22 +314,6 @@ export class FakeTmuxClient {
     }
     this.listeners.get(msg.type)?.forEach((h) => h(msg));
     this.listeners.get("*")?.forEach((h) => h(msg));
-  }
-
-  private resolveAck(): Promise<CommandResponse> {
-    const commandNumber = ++this.commandCounter;
-    return new Promise((resolve) => {
-      setTimeout(
-        () =>
-          resolve({
-            commandNumber,
-            timestamp: Date.now(),
-            output: [],
-            success: true,
-          }),
-        this.roundTripMs,
-      );
-    });
   }
 }
 

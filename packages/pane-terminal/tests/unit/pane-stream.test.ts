@@ -15,6 +15,7 @@ import {
   TmuxCommandError,
   TmuxProtocolError,
   TransportClosedError,
+  TransportSendError,
 } from "@promptctl/tmux-control-mode-js/browser";
 
 // A live-tmux command failure (tmux replied %error). `reportError` must SURFACE
@@ -583,6 +584,53 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     stream.dispose();
   });
 
+  it("a TransportSendError subscribe failure also stays quiet (the other connection-gone class)", async () => {
+    // isConnectionGone classifies BOTH TransportClosedError and
+    // TransportSendError as quiet; this pins the TransportSendError branch so a
+    // silent removal of it would fail here.
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("refresh-client -B")
+        ? new TransportSendError("transport refused the send")
+        : null,
+    );
+    const errors: PaneStreamError[] = [];
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.on("error", (e) => errors.push(e));
+    await flushTicks();
+
+    expect(stream.lastError).toBeNull();
+    expect(errors).toEqual([]);
+    stream.dispose();
+  });
+
+  it("a delivered pane size clears an outstanding subscribe failure", async () => {
+    // The subscribe seam's recovery point: a subscription-changed carrying a
+    // valid size proves the subscription is working, so lastError must clear.
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message") ? "0;0" : "",
+    );
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("refresh-client -B") ? tmuxError("no such pane") : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(stream.lastError?.phase).toBe("subscribe");
+
+    // tmux later reports the pane size on the same subscription name.
+    client.injectSubscriptionChanged(
+      `pane-terminal-size-${PANE_ID}`,
+      PANE_ID,
+      "80;24",
+    );
+    expect(stream.lastError).toBeNull();
+    stream.dispose();
+  });
+
   it("a failed capture-pane seed surfaces on the 'error' seam yet the stream still goes live", async () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
@@ -670,6 +718,9 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     expect(sink.seedTexts.some((t) => t.includes("recovered-screen"))).toBe(
       true,
     );
+    // The seed seam recovered, so the pull-model signal must stop reporting the
+    // now-moot transient failure (no stale error stranded).
+    expect(stream.lastError).toBeNull();
     stream.dispose();
   });
 });
