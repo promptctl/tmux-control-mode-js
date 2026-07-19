@@ -109,7 +109,7 @@ export function renderPayload(w: WireEntry): string {
 export function formatMs(ms: number): string {
   const abs = Math.abs(ms);
   const sign = ms < 0 ? "-" : "";
-  if (abs < 1) return "<1ms";
+  if (abs < 1) return `${sign}<1ms`;
   if (abs < 1000) return `${sign}${Math.round(abs)}ms`;
   return `${sign}${(abs / 1000).toFixed(2)}s`;
 }

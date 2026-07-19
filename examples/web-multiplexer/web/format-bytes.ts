@@ -33,11 +33,15 @@ export function escapeByte(code: number): string {
  */
 export function prettyBytes(bytes: Uint8Array, max: number = 48): string {
   let out = "";
-  for (let i = 0; i < bytes.length && out.length < max; i++) {
-    const c = bytes[i];
-    if (c === undefined) break;
+  let rendered = 0;
+  for (const c of bytes) {
+    if (out.length >= max) break;
     out += escapeByte(c);
+    rendered++;
   }
-  if (bytes.length > max) out += `… (${bytes.length} bytes)`;
+  // Truncated iff the char budget stopped us short of the last byte — count
+  // bytes actually rendered, not bytes.length, since one byte can escape to
+  // several characters. [LAW:no-silent-failure]
+  if (rendered < bytes.length) out += `… (${bytes.length} bytes)`;
   return out;
 }

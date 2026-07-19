@@ -41,4 +41,12 @@ describe("prettyBytes", () => {
     expect(out.startsWith("xxxxxxxxxx")).toBe(true);
     expect(out).toContain("… (100 bytes)");
   });
+
+  it("flags truncation when multi-char escapes overrun the budget below the byte count", () => {
+    // 8 NUL bytes, each escaping to "\x00" (4 chars). Only ~2 fit in a
+    // 10-char budget, so rendering stops with 6 bytes unshown — even though
+    // the byte count (8) is under max (10). The suffix must still appear.
+    const out = prettyBytes(new Uint8Array(8), 10);
+    expect(out).toContain("… (8 bytes)");
+  });
 });

@@ -189,7 +189,10 @@ describe("formatMs", () => {
     // used to force it. The unit comes from |ms|; the sign stays.
     expect(formatMs(-42)).toBe("-42ms");
     expect(formatMs(-1000)).toBe("-1.00s");
-    expect(formatMs(-0.4)).toBe("<1ms");
+    // The sign is preserved even in the sub-ms bucket, so a tiny negative is
+    // distinguishable from a tiny positive.
+    expect(formatMs(-0.4)).toBe("-<1ms");
+    expect(formatMs(0.4)).toBe("<1ms");
   });
 });
 
