@@ -84,19 +84,27 @@ export class FirstResizeGate {
 
   /**
    * Buffer a seed snapshot. Latest wins: a second seed before release simply
-   * overwrites the first (newer content supersedes any re-seed). Precondition:
-   * `buffering` is true.
+   * overwrites the first (newer content supersedes any re-seed).
+   *
+   * Precondition: `buffering` is true — enforced loudly (throws), not merely
+   * documented. Buffering after the gate opened would strand the content in a
+   * field no later call drains, a silent data loss; surface it instead.
    */
   bufferSeed(content: SeedContent): void {
+    this.assertBuffering("bufferSeed");
     this.pendingSeed = content;
   }
 
   /**
    * Buffer a live write. Returns `null` while under the cap, or a `DrainBatch`
    * (and transitions to `open`) when the accumulated bytes cross the cap — the
-   * no-resize safety valve. Precondition: `buffering` is true.
+   * no-resize safety valve.
+   *
+   * Precondition: `buffering` is true — enforced loudly (throws), see
+   * `bufferSeed`.
    */
   bufferWrite(data: Uint8Array): DrainBatch | null {
+    this.assertBuffering("bufferWrite");
     this.pendingWrites.push(data);
     this.pendingWritesBytes += data.byteLength;
     if (this.pendingWritesBytes > this.capBytes) {
@@ -121,6 +129,20 @@ export class FirstResizeGate {
     this.pendingSeed = null;
     this.pendingWrites = [];
     this.pendingWritesBytes = 0;
+  }
+
+  // [LAW:no-silent-failure] The buffer methods are only meaningful before the
+  // gate opens; calling them afterwards would push content into a field that no
+  // later call drains (the caller, seeing an open gate, writes directly and
+  // never touches the gate again). Rather than lose that data silently, fail
+  // loudly. Unreachable via the sole caller (XtermSink checks `buffering`
+  // first), but the right failure mode if a future caller forgets to.
+  private assertBuffering(method: string): void {
+    if (this.phase !== "buffering") {
+      throw new Error(
+        `FirstResizeGate.${method} called after the gate opened — content would be lost`,
+      );
+    }
   }
 
   private drain(): DrainBatch {

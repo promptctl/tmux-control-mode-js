@@ -115,3 +115,31 @@ describe("FirstResizeGate: byte cap (no-resize safety valve)", () => {
     expect(DEFAULT_PENDING_WRITES_CAP_BYTES).toBeGreaterThan(1024 * 1024);
   });
 });
+
+describe("FirstResizeGate: precondition is enforced loudly", () => {
+  // Buffering after the gate opened would strand content in a field no later
+  // call drains — a silent data loss. The gate throws instead of accepting it.
+  it("bufferWrite after release() throws rather than losing the write", () => {
+    const gate = new FirstResizeGate();
+    gate.release();
+    expect(() => gate.bufferWrite(enc("late"))).toThrow(
+      /after the gate opened/,
+    );
+  });
+
+  it("bufferSeed after release() throws rather than losing the seed", () => {
+    const gate = new FirstResizeGate();
+    gate.release();
+    expect(() =>
+      gate.bufferSeed({ captured: enc("late"), cursor: null }),
+    ).toThrow(/after the gate opened/);
+  });
+
+  it("bufferWrite after a cap-forced drain throws", () => {
+    const gate = new FirstResizeGate(4);
+    gate.bufferWrite(new Uint8Array(8)); // overflow → gate opens
+    expect(() => gate.bufferWrite(enc("late"))).toThrow(
+      /after the gate opened/,
+    );
+  });
+});
