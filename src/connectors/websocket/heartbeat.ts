@@ -63,11 +63,19 @@ export class Heartbeat<Token = void> {
     this.timer.unref?.();
   }
 
-  // [LAW:types-are-the-program] The token is required. TS lets a `void`
-  // parameter be omitted at the call site, so `Heartbeat<void>` still calls
-  // `onPong()`, while `Heartbeat<string>` must pass its id — the type enforces
-  // the token exactly where the protocol carries one.
-  onPong(token: Token): void {
+  // [LAW:types-are-the-program] The token is required exactly when the protocol
+  // carries one: `Heartbeat<string>.onPong(id)` must pass its id, while
+  // `Heartbeat<void>.onPong()` takes none. The conditional rest-tuple states
+  // this precisely — no optional `?` that would let a string-token caller drop
+  // the id, and no reliance on the void-parameter-omission rule (which fails
+  // when `Token` infers as `any`, e.g. from a test's untyped `ping` mock).
+  // The `void` below is the correct discriminant of the "no correlation token"
+  // case in a conditional type; `no-invalid-void-type` doesn't model
+  // conditional-type checks, and the type is exactly right (token required iff
+  // Token is not void). The disable is scoped to this one line.
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
+  onPong(...args: [Token] extends [void] ? [] : [token: Token]): void;
+  onPong(token?: Token): void {
     // [LAW:dataflow-not-control-flow] The deadline's presence is the "is a ping
     // outstanding" signal; the token only disambiguates which ping. A pong that
     // does not match the outstanding token (a stale or duplicate reply) is
