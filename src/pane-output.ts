@@ -655,6 +655,14 @@ export class PaneInterestTracker {
  */
 export class TopologyEpochTracker {
   private bootstrapGen = 0;
+  // [LAW:types-are-the-program] The gen of the most recently *started* bootstrap.
+  //   Distinct from bootstrapGen, which is also bumped by invalidateWindow: a
+  //   window-close invalidates an in-flight bootstrap's SUCCESS (its seed would
+  //   re-add the closed window's panes) but does NOT start a replacement, so it
+  //   must not make a genuine bootstrap FAILURE look superseded. The success path
+  //   asks isBootstrapCurrent; the failure path asks isLatestBootstrap — two
+  //   distinct staleness questions, one enforcer. [LAW:single-enforcer]
+  private latestBootstrapStartGen = 0;
   private readonly windowGens = new Map<number, number>();
   // [LAW:types-are-the-program] Global monotone counter — each startWindowRefresh
   // call gets a strictly-greater-than-all-prior token. After startBootstrap()
@@ -675,12 +683,28 @@ export class TopologyEpochTracker {
    */
   startBootstrap(): number {
     this.windowGens.clear();
-    return ++this.bootstrapGen;
+    this.latestBootstrapStartGen = ++this.bootstrapGen;
+    return this.latestBootstrapStartGen;
   }
 
   /** Call before applying seed(). Returns false if a newer event superseded this query. */
   isBootstrapCurrent(gen: number): boolean {
     return this.bootstrapGen === gen;
+  }
+
+  /**
+   * Call on the bootstrap FAILURE path. True iff this bootstrap is still the
+   * most recently *started* one — i.e. no newer bootstrap has superseded it.
+   *
+   * A newer bootstrap owns the topology outcome (it will seed a healthy table or
+   * report its own failure), so a superseded attempt's rejection must stay
+   * silent to avoid a false alarm on an already-repaired connection. A failure
+   * that is NOT superseded by a newer *start* — including one whose gen was
+   * bumped only by `invalidateWindow` — is the authoritative topology state and
+   * must be reported. [LAW:no-silent-failure]
+   */
+  isLatestBootstrap(gen: number): boolean {
+    return this.latestBootstrapStartGen === gen;
   }
 
   /** Call immediately before the `list-panes -t @W` execute(). Returns captured gen. */

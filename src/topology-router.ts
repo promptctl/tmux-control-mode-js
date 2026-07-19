@@ -61,9 +61,13 @@ type RunCommand = (cmd: string) => Promise<CommandResponse>;
 export type ReportTopologyError = (error: Error) => void;
 
 // [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
-//   to Error so the seam's contract is exact and consumers never re-narrow.
-function toError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
+//   to Error and give it a self-describing prefix so a consumer that logs only
+//   `ev.error.message` sees the bootstrap context (not a bare `close 1006`),
+//   while the original is preserved as `.cause` — the underlying reason (a real
+//   tmux error, or a transport close) is not lost. [FRAMING:representation]
+function bootstrapError(value: unknown): Error {
+  const cause = value instanceof Error ? value : new Error(String(value));
+  return new Error(`topology bootstrap failed: ${cause.message}`, { cause });
 }
 
 /**
@@ -322,6 +326,14 @@ export class TopologyRouter {
       this.topology.seed(entries);
       this.interest?.recompute();
     } catch (err) {
+      // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
+      //   path too: if a newer bootstrap has since started, it owns the outcome
+      //   (it will seed a healthy topology or report its own failure), so this
+      //   superseded rejection stays silent — reporting it would be a false alarm
+      //   on an already-repaired connection. A failure that is still the latest
+      //   bootstrap — including one whose gen was bumped only by a window-close —
+      //   IS the authoritative topology state and must surface.
+      if (!this.epoch.isLatestBootstrap(gen)) return;
       // [LAW:no-silent-failure] The bootstrap effect failed. An empty topology
       //   is NOT a handled fallback here: with no topology, dispatch matches only
       //   pane- and server-scoped sinks (meta === undefined), so every
@@ -332,7 +344,7 @@ export class TopologyRouter {
       //   window events, a new topology-scoped attach) re-attempt this, so a
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
-      this.reportTopologyError(toError(err));
+      this.reportTopologyError(bootstrapError(err));
     }
   }
 

@@ -366,7 +366,13 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     // (a) The failure is a consumer-visible signal, not a swallowed catch.
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(Error);
+    // Self-describing prefix so a consumer logging only `.message` sees the
+    // bootstrap context; the original is preserved as `.cause`.
+    expect(errors[0]?.message).toMatch(/^topology bootstrap failed:/);
     expect(errors[0]?.message).toContain("list-panes failed");
+    expect((errors[0] as Error & { cause?: unknown })?.cause).toBeInstanceOf(
+      Error,
+    );
   });
 
   it("does NOT report when the bootstrap succeeds (empty tmux is not a failure)", async () => {
@@ -406,5 +412,72 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     // Pane 1 (session 100) is now in topology, so the session sink receives it.
     router.dispatchBytes(makeChunk(1));
     expect(sink.chunks).toHaveLength(1);
+  });
+
+  // A router driving a NON-FIFO transport: bootstrap A hangs while a newer
+  // bootstrap B runs to completion, then A rejects. This is the reviewer's
+  // concurrent-bootstrap scenario.
+  it("suppresses a superseded bootstrap's failure — a newer bootstrap owns the outcome", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    let rejectA!: (e: Error) => void;
+    let call = 0;
+    const run = (cmd: string): Promise<CommandResponse> => {
+      if (cmd.includes("list-panes -a")) {
+        call++;
+        if (call === 1) {
+          // Bootstrap A: hangs until we reject it below.
+          return new Promise<CommandResponse>((_res, rej) => {
+            rejectA = rej;
+          });
+        }
+        // Bootstrap B (the superseding attempt): succeeds and seeds.
+        return Promise.resolve(makeOkResponse(["%1 @10 $100"]));
+      }
+      return Promise.resolve(makeOkResponse());
+    };
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(run); // starts bootstrap A (hangs)
+    router.handleNotification({ type: "sessions-changed" }); // starts bootstrap B
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // B has seeded a healthy topology. A's late rejection is superseded, so it
+    // must NOT raise a false alarm on the now-healthy connection.
+    rejectA(new Error("stale A failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  // Distinguishes the correct guard (`isLatestBootstrap`) from the naive one
+  // (`isBootstrapCurrent`): a window-close bumps the bootstrap epoch but starts
+  // NO replacement, so a genuine failure here would be silently swallowed by the
+  // naive guard — the exact silent-starve this PR removes.
+  it("reports a failure whose epoch was bumped only by a window-close (no successor bootstrap)", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    let rejectA!: (e: Error) => void;
+    const run = (cmd: string): Promise<CommandResponse> => {
+      if (cmd.includes("list-panes -a")) {
+        return new Promise<CommandResponse>((_res, rej) => {
+          rejectA = rej;
+        });
+      }
+      return Promise.resolve(makeOkResponse());
+    };
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(run); // bootstrap A (hangs)
+    // window-close invalidates the in-flight bootstrap's epoch but starts none.
+    router.handleNotification({ type: "window-close", windowId: 5 });
+    rejectA(new Error("real bootstrap failure"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("real bootstrap failure");
   });
 });

@@ -19,6 +19,7 @@
 import type { ConnectionState } from "../../connection-state.js";
 import {
   TypedEmitter,
+  isTmuxMessage,
   type EmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
@@ -30,7 +31,6 @@ import {
   type CommandResponse,
   type PaneAction,
   type PaneOutputMessage,
-  type TmuxMessage,
 } from "../../protocol/types.js";
 import { TopologyRouter } from "../../topology-router.js";
 import type { RpcProxyApi } from "../rpc.js";
@@ -155,9 +155,13 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
         } else if (msg.state.status === "closed") {
           this.router.onTransportClose();
         }
-      } else {
+      } else if (isTmuxMessage(msg)) {
         // [LAW:single-enforcer] All topology mutations route through the router.
-        this.router.handleNotification(msg as TmuxMessage);
+        // [LAW:types-are-the-program] Only true wire messages enter the topology
+        //   path — `isTmuxMessage` keeps synthetic lifecycle events (reconnected,
+        //   protocol-error, topology-error) out by construction, so no cast is
+        //   needed and none can smuggle a non-TmuxMessage into handleNotification.
+        this.router.handleNotification(msg);
       }
       this.emitter.emit(msg);
     };
