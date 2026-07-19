@@ -259,6 +259,10 @@ export function createMainBridge(
       client,
       outputHighWatermark: options.outputHighWatermark,
       outputLowWatermark: options.outputLowWatermark,
+      // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
+      // main PERFORMS the surfacing through the host's opt-in hook. Undefined
+      // means the host chose not to observe — the bridge never swallows it.
+      reportResumeFailure: (f) => options.onResumeFailure?.(f),
     });
   } catch (err) {
     REGISTERED_IPC_MAINS.delete(ipcMain);
@@ -704,6 +708,7 @@ export type {
   IpcMainLike,
   MainBridgeHandle,
   MainBridgeOptions,
+  ResumeFailure,
   WebContentsLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";
