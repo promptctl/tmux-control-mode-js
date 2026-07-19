@@ -92,7 +92,7 @@ function demoWithPanes(): DemoStore {
       ],
     },
   ];
-  demo.sessions = sessions;
+  demo.setSessionsForTest(sessions);
   return demo;
 }
 
