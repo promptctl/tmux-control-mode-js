@@ -73,6 +73,11 @@ jobs:
   # or this job will redden while passing on newer local tmux.
   e2e:
     runs-on: ubuntu-latest
+    # Observed CI runtime is ~1.5 min; a hung Electron/xvfb launch, an
+    # unmaterialized tmux socket, or a stuck Playwright retry would otherwise
+    # run to GitHub's 360-min default and silently burn CI minutes. Cap it so a
+    # hang fails loud instead. [LAW:no-silent-failure]
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
