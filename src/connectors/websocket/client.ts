@@ -135,7 +135,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly emitter = new TypedEmitter();
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
   //   lives in TopologyRouter. This client injects execute() as the command runner.
-  private readonly router = new TopologyRouter();
+  // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
+  //   adapter performs the emission (emitter is declared above, so its
+  //   initializer has already run when this one does).
+  private readonly router = new TopologyRouter((error) =>
+    this.emitter.emit({ type: "topology-error", error }),
+  );
   private readonly pending = new Map<string, Pending>();
 
   private ws: BrowserWebSocketLike | null = null;

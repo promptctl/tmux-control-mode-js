@@ -82,8 +82,9 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   private readonly emitter: TypedEmitter;
   // [LAW:one-source-of-truth] TopologyRouter is the shared substrate for byte
   //   routing. It owns the topology table, sink registry, and epoch tracker so
-  //   none of them are duplicated here.
-  private readonly router = new TopologyRouter();
+  //   none of them are duplicated here. Constructed in the body, after `emitter`,
+  //   so its bootstrap-failure seam can perform emission.
+  private readonly router: TopologyRouter;
   private readonly eventHandler: IpcRendererOnListener;
   private readonly ackBatchBytes: number;
   /**
@@ -116,6 +117,11 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   ) {
     this.ipc = ipcRenderer;
     this.emitter = new TypedEmitter();
+    // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
+    //   adapter owns the emitter and performs the emission.
+    this.router = new TopologyRouter((error) =>
+      this.emitter.emit({ type: "topology-error", error }),
+    );
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 

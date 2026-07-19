@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { TopologyRouter } from "../../src/topology-router.js";
+import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
@@ -44,13 +45,20 @@ function makeSink(): BytesSink & {
 const noop: (cmd: string) => Promise<CommandResponse> = () =>
   Promise.resolve(makeOkResponse());
 
+// Most tests do not exercise bootstrap failure — supply a no-op topology-error
+// reporter. The failure/recovery suite below builds its own router with a
+// capturing reporter.
+function newRouter(options?: TopologyRouterOptions): TopologyRouter {
+  return new TopologyRouter(() => undefined, options);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Transport lifecycle
 // ---------------------------------------------------------------------------
 
 describe("TopologyRouter — transport lifecycle", () => {
   it("onTransportReady provides the runCommand and triggers bootstrap when topology-dependent sinks exist", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const calls: string[] = [];
     const run = (cmd: string) => {
       calls.push(cmd);
@@ -68,7 +76,7 @@ describe("TopologyRouter — transport lifecycle", () => {
   });
 
   it("onTransportReady does NOT trigger bootstrap when only server-scoped sinks exist", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const calls: string[] = [];
     const run = (cmd: string) => {
       calls.push(cmd);
@@ -82,7 +90,7 @@ describe("TopologyRouter — transport lifecycle", () => {
   });
 
   it("onTransportClose calls end() on all attached sinks", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const a = makeSink();
     const b = makeSink();
     router.attachBytesSink(a);
@@ -94,7 +102,7 @@ describe("TopologyRouter — transport lifecycle", () => {
   });
 
   it("onTransportClose makes subsequent disposer calls no-ops (end fires exactly once)", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const sink = makeSink();
     const dispose = router.attachBytesSink(sink);
 
@@ -110,7 +118,7 @@ describe("TopologyRouter — transport lifecycle", () => {
 
 describe("TopologyRouter — sink registration", () => {
   it("dispatchBytes reaches a server-scoped sink for any paneId", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const sink = makeSink();
     router.attachBytesSink(sink); // default scope = server
 
@@ -121,7 +129,7 @@ describe("TopologyRouter — sink registration", () => {
   });
 
   it("dispatchBytes reaches a pane-scoped sink only for the matching paneId", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const a = makeSink();
     const b = makeSink();
     router.attachBytesSink(a, { scope: paneScope(1) });
@@ -133,7 +141,7 @@ describe("TopologyRouter — sink registration", () => {
   });
 
   it("disposer calls end() exactly once regardless of how many chunks arrived", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const sink = makeSink();
     const dispose = router.attachBytesSink(sink);
 
@@ -145,7 +153,7 @@ describe("TopologyRouter — sink registration", () => {
   });
 
   it("attachBytesSink triggers bootstrap for session-scoped sink when transport is already ready", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const calls: string[] = [];
     const run = (cmd: string) => {
       calls.push(cmd);
@@ -167,7 +175,7 @@ describe("TopologyRouter — sink registration", () => {
 
 describe("TopologyRouter — handleNotification topology updates", () => {
   it("window-close removes panes in that window from subsequent dispatch", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     // Seed topology: pane 1 in window 10, session 100
     const run = () =>
       Promise.resolve(makeOkResponse(["%1 @10 $100"]));
@@ -192,7 +200,7 @@ describe("TopologyRouter — handleNotification topology updates", () => {
   });
 
   it("window-add triggers a window refresh when topology-dependent sinks exist", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const calls: string[] = [];
     router.onTransportReady((cmd) => {
       calls.push(cmd);
@@ -210,7 +218,7 @@ describe("TopologyRouter — handleNotification topology updates", () => {
   });
 
   it("sessions-changed triggers a full bootstrap when topology-dependent sinks exist", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const calls: string[] = [];
     router.onTransportReady((cmd) => {
       calls.push(cmd);
@@ -227,7 +235,7 @@ describe("TopologyRouter — handleNotification topology updates", () => {
   });
 
   it("pane-scope and server-scope sinks still receive bytes after window-close (topology race safe)", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     router.onTransportReady(noop);
     await Promise.resolve();
 
@@ -249,7 +257,7 @@ describe("TopologyRouter — handleNotification topology updates", () => {
 
 describe("TopologyRouter — topology race protection (single epoch mechanism)", () => {
   it("synchronous window-close supersedes a stale async list-panes response", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     let resolveListPanes!: (r: CommandResponse) => void;
     const run = (cmd: string) => {
       if (cmd.includes("list-panes -a")) {
@@ -285,7 +293,7 @@ describe("TopologyRouter — topology race protection (single epoch mechanism)",
 
 describe("TopologyRouter — onTransportClose endAll contract", () => {
   it("ends all sinks across all scope types", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const server = makeSink();
     const session = makeSink();
     const window = makeSink();
@@ -303,12 +311,100 @@ describe("TopologyRouter — onTransportClose endAll contract", () => {
   });
 
   it("ends sinks only once when both onTransportClose and disposer are called", () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const sink = makeSink();
     const dispose = router.attachBytesSink(sink);
 
     router.onTransportClose();
     dispose();
     expect(sink.ended).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Bootstrap failure is observable and non-terminal
+//
+// [LAW:no-silent-failure] A failed `list-panes -a` must not silently leave
+//   session/window-scoped sinks starved. The router reports the failure through
+//   its injected seam, and the failure is recoverable via the existing
+//   event-driven bootstrap triggers.
+// ---------------------------------------------------------------------------
+
+describe("TopologyRouter — bootstrap failure surfacing", () => {
+  // A router whose reporter captures reported errors, plus a controllable
+  // list-panes runCommand that can be flipped from rejecting to succeeding.
+  function makeFailingSetup(firstOutcome: "reject" | "ok") {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    let listPanesShouldReject = firstOutcome === "reject";
+    const run = (cmd: string): Promise<CommandResponse> => {
+      if (cmd.includes("list-panes -a")) {
+        return listPanesShouldReject
+          ? Promise.reject(new Error("list-panes failed: no server"))
+          : Promise.resolve(makeOkResponse(["%1 @10 $100"]));
+      }
+      return Promise.resolve(makeOkResponse());
+    };
+    return {
+      errors,
+      router,
+      run,
+      recover() {
+        listPanesShouldReject = false;
+      },
+    };
+  }
+
+  it("reports a topology error when the bootstrap command rejects", async () => {
+    const { errors, router, run } = makeFailingSetup("reject");
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(run);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // (a) The failure is a consumer-visible signal, not a swallowed catch.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(errors[0]?.message).toContain("list-panes failed");
+  });
+
+  it("does NOT report when the bootstrap succeeds (empty tmux is not a failure)", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    // Succeeds with zero panes — a genuinely empty tmux, not a failure.
+    router.onTransportReady(() => Promise.resolve(makeOkResponse([])));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  it("a session-scoped sink starts receiving after a later bootstrap succeeds (non-terminal)", async () => {
+    const { errors, router, run, recover } = makeFailingSetup("reject");
+
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    router.onTransportReady(run);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Failure surfaced, and the sink is (correctly) starved: topology is empty,
+    // so a session-scoped chunk matches nothing.
+    expect(errors).toHaveLength(1);
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+
+    // (b) Recovery: the command heals and an existing re-bootstrap trigger fires.
+    recover();
+    router.handleNotification({ type: "sessions-changed" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Pane 1 (session 100) is now in topology, so the session sink receives it.
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(1);
   });
 });

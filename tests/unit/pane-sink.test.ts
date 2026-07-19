@@ -12,8 +12,9 @@ import { describe, expect, it } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
-import { paneScope, serverScope } from "../../src/pane-output.js";
+import { paneScope, serverScope, sessionScope } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
+import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 // ---------------------------------------------------------------------------
 // Test rigging
@@ -406,5 +407,40 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
 
     expect(a.messages).toHaveLength(1);
     expect(b.messages).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bootstrap failure reaches the public event surface
+//
+// [LAW:no-silent-failure] When the topology bootstrap (`list-panes -a`) fails,
+//   a session-scoped consumer would otherwise be silently starved. The failure
+//   must reach the consumer through the public `on("topology-error")` surface.
+// ---------------------------------------------------------------------------
+
+describe("TmuxClient — topology bootstrap failure is observable", () => {
+  it("emits topology-error when the bootstrap list-panes fails", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const errors: Error[] = [];
+    client.on("topology-error", (ev) => errors.push(ev.error));
+
+    // A session-scoped sink makes the client topology-dependent, so reaching
+    // ready triggers the bootstrap.
+    client.attachBytesSink(createRecordingSink(), { scope: sessionScope(100) });
+
+    // Consume tmux's unsolicited startup guard block → client reaches ready →
+    // bootstrap sends `list-panes -a` as the first caller command (number 1).
+    t.feed(STARTUP_GREETING);
+    expect(t.sentCommands.some((c) => c.includes("list-panes -a"))).toBe(true);
+
+    // tmux answers that command with a %error guard block → execute() rejects →
+    // the router lifts the failure to the topology-error seam.
+    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
   });
 });

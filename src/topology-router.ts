@@ -48,6 +48,25 @@ export interface TopologyRouterOptions {
 type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
 /**
+ * Reporting seam for a failed topology bootstrap.
+ *
+ * [LAW:effects-at-boundaries] The router is a pure substrate with no emitter; it
+ *   cannot perform the notification itself. It DESCRIBES the failure by calling
+ *   this seam, and the transport adapter (which owns an emitter) PERFORMS the
+ *   emission — wiring it to a `topology-error` event.
+ * [LAW:no-silent-failure] This is a required construction dependency, not an
+ *   optional callback: a TopologyRouter that silently drops bootstrap failures
+ *   is not constructible.
+ */
+export type ReportTopologyError = (error: Error) => void;
+
+// [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
+//   to Error so the seam's contract is exact and consumers never re-narrow.
+function toError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
+}
+
+/**
  * TopologyRouter is the extracted, shared substrate for pane-output routing.
  *
  * It owns the topology table, the sink registry, the epoch/generation counter
@@ -86,7 +105,15 @@ export class TopologyRouter {
   private readonly suppressor: IdlePaneSuppressor | null;
   private readonly interest: PaneInterestTracker | null;
 
-  constructor(options?: TopologyRouterOptions) {
+  // [LAW:effects-at-boundaries] The one seam from a failed bootstrap effect to
+  //   the outside world. The router computes; this reports.
+  private readonly reportTopologyError: ReportTopologyError;
+
+  constructor(
+    reportTopologyError: ReportTopologyError,
+    options?: TopologyRouterOptions,
+  ) {
+    this.reportTopologyError = reportTopologyError;
     if (options?.idlePaneSuppression === true) {
       // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
       //   sender, which the router gates on the live runCommand.
@@ -294,9 +321,18 @@ export class TopologyRouter {
       });
       this.topology.seed(entries);
       this.interest?.recompute();
-    } catch {
-      // Non-fatal: topology races are handled at dispatch time via the fallback
-      // to server-scope and pane-scope buckets even when meta is undefined.
+    } catch (err) {
+      // [LAW:no-silent-failure] The bootstrap effect failed. An empty topology
+      //   is NOT a handled fallback here: with no topology, dispatch matches only
+      //   pane- and server-scoped sinks (meta === undefined), so every
+      //   session/window-scoped consumer would silently receive zero bytes,
+      //   indistinguishable from a genuinely empty tmux. Lift the failure to the
+      //   seam so the consumer can tell the two apart. [LAW:effects-at-boundaries]
+      //   Non-terminal: the event-driven bootstrap triggers (session-changed,
+      //   window events, a new topology-scoped attach) re-attempt this, so a
+      //   later success recovers a starved sink — no ambient retry timer needed.
+      //   [LAW:no-ambient-temporal-coupling]
+      this.reportTopologyError(toError(err));
     }
   }
 
