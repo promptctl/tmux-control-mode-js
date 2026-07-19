@@ -27,14 +27,36 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: pnpm
 
+      # Real tmux for the integration gate below. A release can be cut from
+      # any tag/SHA and nothing forces that SHA to have passed CI first, so
+      # the publish path re-verifies with real tmux rather than trusting the
+      # sibling CI workflow to have run. [LAW:no-ambient-temporal-coupling]
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: tmux -V
+
       - run: pnpm install --frozen-lockfile
 
-      # Full CI gate before publishing — if tests fail, the release tag is
-      # created but nothing ships.
+      # Full CI gate before publishing — if any check fails, the release tag
+      # is created but nothing ships. This deliberately mirrors CI's
+      # verification *including* real-tmux integration (test:integration): the
+      # release path must not ship an artifact CI never exercised against a
+      # real daemon.
       - run: pnpm run lint
       - run: pnpm run format:check
       - run: pnpm run typecheck
+      # `pnpm test` no longer carries --passWithNoTests: a broken glob or a
+      # renamed tests/ dir that collects zero files must fail the publish
+      # loudly, not exit 0 green on an untested tarball. [LAW:no-silent-failure]
       - run: pnpm test
+      - run: pnpm run test:integration
+        env:
+          TMUX_INTEGRATION: "1"
+      # bench:gate (the g-series perf budgets) is intentionally NOT on the
+      # publish path: it is a wall-clock-sensitive perf regression gate, run
+      # blocking in CI on every push/PR to master. Re-running it on release
+      # would add timing flake to the ship path without covering a distinct
+      # correctness risk. Correctness/conformance is covered by test +
+      # test:integration above. [LAW:verifiable-goals]
 
       # `--filter` names the target package explicitly so this stays correct
       # if the workspace grows additional publishable packages, and avoids
