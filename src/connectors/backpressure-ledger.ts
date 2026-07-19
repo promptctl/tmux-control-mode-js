@@ -2,10 +2,11 @@
 // [LAW:decomposition] Per-peer per-pane outstanding-byte accounting and the
 // watermark loop that pauses / resumes panes, extracted from
 // createBridgeConnection. This ledger's ONE invariant is: a pane is paused iff
-// the SUM of outstanding bytes across every peer subscribed to it has crossed
-// the high watermark and not yet fallen back below the low watermark. It shares
-// nothing with the subscription ledger except the opaque `Peer` token it
-// indexes on.
+// the SUM of outstanding bytes across every peer subscribed to it has reached
+// the high watermark and not yet fallen back to or below the low watermark. The
+// two boundaries are inclusive and symmetric — pause at `sum >= high`, resume
+// at `sum <= low` — so the hysteresis band is `(low, high)`. It shares nothing
+// with the subscription ledger except the opaque `Peer` token it indexes on.
 //
 // [LAW:dataflow-not-control-flow] Pause/resume decisions are pure functions of
 // the per-peer `outstanding` maps; the same account / ack pipeline runs every
@@ -199,7 +200,9 @@ export class BackpressureLedger {
   private maybeResume(paneId: number): void {
     const flow = this.pausedPanes.get(paneId);
     if (flow === undefined) return; // not paused per the ledger
-    if (this.totalOutstanding(paneId) > this.low) return; // above low → stay paused
+    // Inclusive boundary, symmetric with maybePause's `>= high`: resume once the
+    // sum is at or below low; stay paused while strictly above it.
+    if (this.totalOutstanding(paneId) > this.low) return;
     if (flow.resuming) return; // a Continue is already in flight; don't double-send
     flow.resuming = true;
     void this.client
@@ -253,8 +256,9 @@ export class BackpressureLedger {
 
   /**
    * Apply an ack: `peer` reports it has consumed `bytes` for `paneId`. Subtracts
-   * from the peer's outstanding tally and, when the per-pane sum drops below the
-   * low watermark, fires `client.setPaneAction(paneId, Continue)` exactly once.
+   * from the peer's outstanding tally and, when the per-pane sum drops to or
+   * below the low watermark, fires `client.setPaneAction(paneId, Continue)`
+   * exactly once.
    *
    * Negative or oversized acks are clamped to the peer's current outstanding —
    * bad acks can only starve the peer that sent them, never confuse the shared

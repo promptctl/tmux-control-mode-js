@@ -117,9 +117,20 @@ export class SubscriptionLedger {
       if (existing.inflight !== undefined) {
         await existing.inflight;
       }
-      // After settle, the record might still exist (success — the common
-      // case) or have been deleted (failure — the await above already
-      // propagated the rejection, so we never reach here in that case).
+      // [LAW:one-source-of-truth] After the inflight settles, the record we
+      // queued on may have been torn down WHILE we waited: a concurrent
+      // last-owner `releasePeer` deletes it from `subscriptions` and fires the
+      // tmux unsubscribe, even though our await resolved OK (the failure case
+      // rethrows above and never reaches here). Claiming ownership on that
+      // detached record would strand us with a phantom — a `name` in
+      // `ownedByPeer` with no record in `subscriptions` — so we would believe
+      // we are subscribed while tmux, having unsubscribed, sends us nothing.
+      // Re-check record identity; if it was superseded, retry from the top so
+      // we either join the live record or become a fresh first owner. (When no
+      // await happened the map is unchanged and this is trivially true.)
+      if (this.subscriptions.get(name) !== existing) {
+        return this.subscribe(peer, name, what, format);
+      }
       // Claim ownership of the surviving record.
       if (!owned.has(name)) {
         owned.add(name);

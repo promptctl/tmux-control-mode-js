@@ -180,4 +180,48 @@ describe("SubscriptionLedger (isolation)", () => {
     await Promise.resolve();
     expect(unsubscribes(runner.sent)).toHaveLength(1);
   });
+
+  it("releasePeer during a pending inflight does not strand a queued joiner with a phantom", async () => {
+    // The race: peer A's subscribe is still in flight when peer B queues on the
+    // same record, then A is torn down (last-owner releasePeer deletes the
+    // record + fires unsubscribe) BEFORE the inflight settles. When it settles,
+    // B must NOT claim ownership on the detached record — it must re-subscribe.
+    //
+    // Controllable runner: each execute() parks; the test resolves calls in
+    // order so it can interleave releasePeer with the pending inflight.
+    const sent: string[] = [];
+    const deferrals: (() => void)[] = [];
+    const deps: SubscriptionLedgerDeps = {
+      client: {
+        execute(command: string): Promise<CommandResponse> {
+          sent.push(command);
+          return new Promise<CommandResponse>((resolve) => {
+            deferrals.push(() => resolve(okResponse()));
+          });
+        },
+      },
+    };
+    const ledger = new SubscriptionLedger(deps);
+    const a = { id: 1 };
+    const b = { id: 2 };
+    ledger.register(a);
+    ledger.register(b);
+
+    const aSub = ledger.subscribe(a, "win", "%*", "#{window_name}"); // subscribe #1
+    const bSub = ledger.subscribe(b, "win", "%*", "#{window_name}"); // queues on #1
+    ledger.releasePeer(a); // last owner (B not yet claimed) → delete record + unsubscribe #2
+
+    deferrals[0](); // resolve the original subscribe #1
+    await aSub; // A settles; B's continuation sees the superseded record and retries
+    await Promise.resolve(); // let B's retry issue a fresh subscribe #3
+    for (const settle of deferrals.slice(1)) settle(); // unsubscribe #2 + subscribe #3
+    await expect(bSub).resolves.toBeDefined(); // B settles cleanly, not rejected
+
+    // B is a REAL owner, not a phantom: unsubscribing fires a genuine last-owner
+    // tmux unsubscribe. A phantom (name in ownedByPeer with no record) would
+    // instead return a synthesized OK with no command sent.
+    const before = unsubscribes(sent).length;
+    void ledger.unsubscribe(b, "win"); // fires the unsubscribe synchronously
+    expect(unsubscribes(sent).length).toBe(before + 1);
+  });
 });

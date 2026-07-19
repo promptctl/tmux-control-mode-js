@@ -126,7 +126,7 @@ export interface BridgeConnection {
   /**
    * Apply an ack: peer reports it has consumed `bytes` for `paneId`. The
    * helper subtracts from the peer's outstanding tally and, when the per-pane
-   * sum drops below `outputLowWatermark`, fires
+   * sum drops to or below `outputLowWatermark`, fires
    * `client.setPaneAction(paneId, Continue)` exactly once.
    *
    * Negative or oversized acks are clamped to the peer's current outstanding
