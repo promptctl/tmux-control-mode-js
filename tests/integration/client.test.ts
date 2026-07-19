@@ -979,6 +979,12 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
             execSync(tmuxCmd(socketName, args), { stdio: "ignore" }),
         });
       } finally {
+        // Uniform cleanup for every probe, regardless of what it did to the
+        // client — the runner stays unaware of any one probe's behavior.
+        // [LAW:dataflow-not-control-flow] [LAW:locality-or-seam] This is safe
+        // even for the `exit` probe, which detaches the client itself: close()
+        // is idempotent (transport.close() → child.kill(), a no-op on an
+        // already-exited process). [LAW:no-ambient-temporal-coupling]
         client?.close();
         killServer(socketName);
       }
