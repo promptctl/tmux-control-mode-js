@@ -178,7 +178,6 @@ export class FakeTmuxClient {
       this.captureLog.push(command);
     }
     const failure = this.executeFailure(command);
-    const payload = this.captureHandler(command);
     const commandNumber = ++this.commandCounter;
     return new Promise((resolve, reject) => {
       setTimeout(() => {
@@ -188,6 +187,22 @@ export class FakeTmuxClient {
         // boundary so timing stays deterministic across both paths.
         if (failure !== null) {
           reject(failure);
+          return;
+        }
+        // [LAW:dataflow-not-control-flow] Compute the success payload only on
+        // the path that consumes it — the failure path never needs it.
+        // [LAW:no-silent-failure] A captureHandler that throws models a command
+        // that failed to produce a body; reject (never let the throw escape the
+        // timer as an unhandled exception, and never resolve a bogus body). This
+        // keeps execute() total: it ALWAYS returns a promise that settles, like
+        // the real TmuxClient.execute, which never throws synchronously.
+        let payload: string;
+        try {
+          payload = this.captureHandler(command);
+        } catch (err) {
+          reject(
+            err instanceof Error ? err : new Error("capture handler failed"),
+          );
           return;
         }
         resolve({

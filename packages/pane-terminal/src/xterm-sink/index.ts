@@ -229,6 +229,16 @@ export class XtermSink implements TerminalSink {
     // early drain — seed applies immediately, in call order with the direct
     // writes that follow it. Gating on pendingWrites (not firstResizeDone
     // alone) keeps seed-before-live ordering correct in bypass mode too.
+    //
+    // Why applying inline after a cap-forced drain is correct (not stale): a
+    // seed can only arrive AFTER live bytes were drained when the stream
+    // re-entered seeding, i.e. it is a RESEED — its capture-pane snapshot
+    // postdates the drained bytes, so overdrawing them with it shows CURRENT
+    // state, never stale content. (On first attach, seed() always precedes the
+    // live writes via pendingSeed, so no drain happens before the seed.) The
+    // deeper unification of seed / first-resize / write-ordering is owned by
+    // tmux-complexity-lkg.12 (SD2); this narrow bypass window rides on that
+    // reseed-is-newer invariant rather than a re-apply mechanism.
     if (!this.firstResizeDone && this.pendingWrites !== null) {
       // terminal.resize() is deferred to the first rAF. Writing content
       // before resize means xterm renders at wrong dimensions, then reflows

@@ -138,11 +138,7 @@ export interface PaneStreamOptions {
   readonly activityThrottleMs?: number;
 }
 
-type EventName =
-  | "state-changed"
-  | "activity-changed"
-  | "reconnected"
-  | "error";
+type EventName = "state-changed" | "activity-changed" | "reconnected" | "error";
 
 // `reconnected` listeners take no payload. We model them with `[]` instead
 // of `void` so the listener type stays a plain function with zero params,
@@ -211,13 +207,23 @@ export class PaneStream implements ReseedTarget {
   private readonly reconnectedListeners = new Set<Listener<"reconnected">>();
   private readonly errorListeners = new Set<Listener<"error">>();
 
-  // [LAW:no-silent-failure] Last surfaced seam failure, retained for the
-  //   pull model (`get lastError()`). The subscribe effect fires in the
-  //   constructor, before any consumer can attach an `'error'` listener, so a
-  //   push-only signal would emit into the void; retaining it lets a consumer
-  //   that subscribes afterwards still observe the failure. Mirrors the dual
+  // [LAW:no-silent-failure] Outstanding seam failures, retained for the pull
+  //   model (`get lastError()`). The subscribe effect fires in the constructor,
+  //   before any consumer can attach an `'error'` listener, so a push-only
+  //   signal would emit into the void; retaining it lets a consumer that
+  //   subscribes afterwards still observe the failure. Mirrors the dual
   //   push/pull the class already uses for state and activity.
-  private lastErrorValue: PaneStreamError | null = null;
+  //
+  // [LAW:one-source-of-truth] Keyed PER PHASE, not a single slot: subscribe and
+  //   seed are independent seams that can BOTH be outstanding. A single slot
+  //   would let a recovery at one seam (`clearError`) erase a still-live failure
+  //   at the other — re-manufacturing the silent failure this ticket removes.
+  //   Insertion order is recency (report re-inserts), so `lastError` can return
+  //   the most-recent still-outstanding failure.
+  private readonly seamErrors = new Map<
+    PaneStreamErrorPhase,
+    PaneStreamError
+  >();
 
   // Pre-bound handlers for the non-byte events PaneStream still consumes
   // from the emitter (`reconnected`, `subscription-changed`) and for the
@@ -332,14 +338,21 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * The most recent surfaced seam failure, or `null` if none has occurred.
-   * `null` after a connection-gone failure too — those are deliberately not
-   * surfaced (see {@link PaneStreamError}). Pull-model companion to the
-   * `'error'` event, for consumers that subscribe after a construction-time
-   * subscribe failure.
+   * The most recent STILL-OUTSTANDING seam failure, or `null` if every seam is
+   * healthy. A failure at one seam that has since recovered does not mask a
+   * failure still outstanding at the other — each seam is tracked independently,
+   * so a subscribe failure remains visible here even after a seed failure was
+   * reported and then recovered. `null` after a connection-gone failure too —
+   * those are deliberately not surfaced (see {@link PaneStreamError}).
+   * Pull-model companion to the `'error'` event, for consumers that subscribe
+   * after a construction-time subscribe failure.
    */
   get lastError(): PaneStreamError | null {
-    return this.lastErrorValue;
+    // Map iterates in insertion order and `reportError` re-inserts, so the last
+    // value is the most-recently-surfaced outstanding failure.
+    let latest: PaneStreamError | null = null;
+    for (const err of this.seamErrors.values()) latest = err;
+    return latest;
   }
 
   /**
@@ -459,6 +472,10 @@ export class PaneStream implements ReseedTarget {
     this.activityListeners.clear();
     this.reconnectedListeners.clear();
     this.errorListeners.clear();
+    // [LAW:single-enforcer] dispose() is the one teardown — drop the retained
+    //   error chain too, so a consumer holding a disposed stream can't read a
+    //   stale failure and the PaneStreamError.cause chain is free to GC.
+    this.seamErrors.clear();
     getScheduler(this.client).unregister(this);
   }
 
@@ -777,7 +794,10 @@ export class PaneStream implements ReseedTarget {
     if (this.currentState === "disposed") return;
     if (isConnectionGone(cause)) return;
     const error: PaneStreamError = { phase, paneId: this.paneId, cause };
-    this.lastErrorValue = error;
+    // Delete-then-set so a re-reported phase moves to the end of the Map's
+    // insertion order — keeps `lastError` recency-correct across both seams.
+    this.seamErrors.delete(phase);
+    this.seamErrors.set(phase, error);
     for (const h of this.errorListeners) h(error);
   }
 
@@ -790,7 +810,7 @@ export class PaneStream implements ReseedTarget {
   //   vice versa. (Reconnect is NOT a clear point: it re-drives only the seed,
   //   not the subscription, so it cannot vouch for the subscribe seam.)
   private clearError(phase: PaneStreamErrorPhase): void {
-    if (this.lastErrorValue?.phase === phase) this.lastErrorValue = null;
+    this.seamErrors.delete(phase);
   }
 
   private listenerSet<E extends EventName>(event: E): Set<Listener<E>> {

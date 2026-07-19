@@ -723,4 +723,40 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     expect(stream.lastError).toBeNull();
     stream.dispose();
   });
+
+  it("a recovered seed does not mask a still-outstanding subscribe failure", async () => {
+    // Two independent seams fail. lastError is per-phase, so recovering one must
+    // not erase knowledge of the other — otherwise the epic's own silent
+    // failure creeps back in through the pull model.
+    vi.useRealTimers();
+    let failCapture = true;
+    const client = new FakeTmuxClient();
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message") ? "0;0" : "screen",
+    );
+    client.setExecuteFailure((cmd) => {
+      // subscribe fails permanently (no pane geometry will ever arrive)...
+      if (cmd.startsWith("refresh-client -B")) return tmuxError("no such pane");
+      // ...seed fails only transiently.
+      if (failCapture && cmd.startsWith("capture-pane")) {
+        return tmuxError("transient");
+      }
+      return null;
+    });
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    // Both surfaced; the most-recent (seed) is on top.
+    expect(stream.lastError?.phase).toBe("seed");
+
+    // Seed recovers via reseed — but the subscribe seam is still broken.
+    failCapture = false;
+    await stream.reseed();
+    await flushTicks();
+    expect(stream.lastError?.phase).toBe("subscribe");
+
+    // dispose() drops the retained error chain.
+    stream.dispose();
+    expect(stream.lastError).toBeNull();
+  });
 });
