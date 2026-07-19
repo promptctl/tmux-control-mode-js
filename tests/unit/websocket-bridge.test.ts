@@ -19,6 +19,7 @@ import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
+import type { BridgeObservabilityEvent } from "../../src/connectors/websocket/types.js";
 import {
   encodeClientFrame,
   parseServerFrame,
@@ -586,3 +587,60 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+// ---------------------------------------------------------------------------
+// Resume-failure surfacing (kwv.2)
+//
+// Proves the bridge's ResumeFailure reporter reaches the WS server's own
+// observability channel as a `pane-resume-failed` event — the transport
+// performing the emission the pure bridge only described.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — resume-failure observability", () => {
+  it("surfaces a live-pane Continue rejection as a pane-resume-failed event", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.setBuffered(80);
+
+    // Cross the high watermark → Pause (execute #1). Settle it so the FIFO
+    // advances to the Continue.
+    for (let i = 0; i < 5; i++) {
+      t.feed(`%output %3 ${"x".repeat(30)}\n`);
+    }
+    await flush();
+    expect(t.sent.filter((c) => c.includes("%3:pause"))).toHaveLength(1);
+    feedCommandResponse(t, 1);
+    await flush();
+
+    // Drain the OS buffer → Continue (execute #2). Reject it as a tmux %error.
+    ws.setBuffered(0);
+    t.feed(`%output %3 ${"x".repeat(1)}\n`);
+    await flush();
+    expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
+    t.feed(`%begin 2 2 0\n`);
+    t.feed(`no current target\n`);
+    t.feed(`%error 2 2 0\n`);
+    await flush();
+
+    const failures = events.filter((e) => e.kind === "pane-resume-failed");
+    expect(failures).toHaveLength(1);
+    const f = failures[0];
+    // Narrow to the event variant so paneId/code are accessible.
+    if (f.kind !== "pane-resume-failed") throw new Error("unreachable");
+    expect(f.paneId).toBe(3);
+    expect(f.code).toBe("TMUX_ERROR");
+  });
+});

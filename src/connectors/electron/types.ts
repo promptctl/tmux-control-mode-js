@@ -17,6 +17,7 @@
 
 import type { CommandResponse } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
+import type { ResumeFailure } from "../bridge-connection.js";
 import type { RpcRequest } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
@@ -221,6 +222,17 @@ export interface MainBridgeOptions {
    * Must be < outputHighWatermark. Default: 256 KiB.
    */
   readonly outputLowWatermark?: number;
+  /**
+   * Observe a resume (Continue) that a live tmux refused, leaving a pane
+   * stranded paused while the watermark loop wanted it flowing. The bridge
+   * still retries on the next watermark crossing; this hook is the observable
+   * signal that replaces the old silent swallow. [LAW:no-silent-failure]
+   *
+   * Opt-in, like the WebSocket server's `onEvent`: a main process that does
+   * not set it does not observe these failures. The failure is never dropped
+   * inside the bridge — the choice to look lives with the host.
+   */
+  readonly onResumeFailure?: (failure: ResumeFailure) => void;
 }
 
 // [LAW:one-source-of-truth] Watermark defaults live in
@@ -232,6 +244,9 @@ export {
   DEFAULT_OUTPUT_HIGH_WATERMARK,
   DEFAULT_OUTPUT_LOW_WATERMARK,
 } from "../bridge-connection.js";
+// A main-process consumer wiring `onResumeFailure` names this type; re-export
+// it here so `./types` stays the single import site.
+export type { ResumeFailure } from "../bridge-connection.js";
 
 // ---------------------------------------------------------------------------
 // Renderer-bridge tunables.

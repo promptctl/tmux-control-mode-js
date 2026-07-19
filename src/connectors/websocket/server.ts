@@ -633,6 +633,16 @@ class Connection {
         client,
         outputHighWatermark: this.opts.outputHighWatermark,
         outputLowWatermark: this.opts.outputLowWatermark,
+        // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
+        // the transport PERFORMS the emission on its own observability channel.
+        reportResumeFailure: (f) =>
+          this.emit({
+            kind: "pane-resume-failed",
+            identity: this.identity,
+            paneId: f.paneId,
+            code: f.error.code,
+            message: f.error.message,
+          }),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

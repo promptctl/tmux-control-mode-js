@@ -10,6 +10,8 @@
 // bridge implementation wants a new method on the underlying socket, it
 // extends the relevant *Like interface here.
 
+import type { BridgeErrorCode } from "../errors.js";
+
 // ---------------------------------------------------------------------------
 // Common constants
 // ---------------------------------------------------------------------------
@@ -185,6 +187,19 @@ export type BridgeObservabilityEvent =
   | {
       readonly kind: "protocol-error";
       readonly identity: ConnectionIdentity;
+      readonly message: string;
+    }
+  | {
+      // A pane's resume (Continue) was refused by a live tmux while the
+      // watermark loop wanted it flowing — the pane is still paused in tmux.
+      // The bridge keeps retrying on the next watermark crossing; this event
+      // is the observable signal that a live pane was stranded, replacing the
+      // silent swallow that made a stuck pane indistinguishable from a quiet
+      // one. [LAW:no-silent-failure]
+      readonly kind: "pane-resume-failed";
+      readonly identity: ConnectionIdentity;
+      readonly paneId: number;
+      readonly code: BridgeErrorCode;
       readonly message: string;
     };
 
