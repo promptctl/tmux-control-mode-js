@@ -54,10 +54,16 @@ export class RefreshPolicy {
       ev.type === "session-window-changed" ||
       ev.type === "window-pane-changed"
     ) {
+      // session-window-changed names its session explicitly; window-pane-changed
+      // is about our client's active pane, so refresh the session the UI is
+      // actually showing (activeSessionId, which resolves the attached/first
+      // fallback) rather than the raw clientSessionId — otherwise the fast-path
+      // silently skips while clientSessionId is transiently null (e.g. just
+      // after a reverted optimistic switch). [LAW:no-silent-failure]
       const sid =
         ev.type === "session-window-changed"
           ? ev.sessionId
-          : this.model.clientSessionId;
+          : this.model.activeSessionId;
       if (sid !== null) void this.refreshSession(sid);
       return;
     }

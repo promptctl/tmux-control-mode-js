@@ -192,7 +192,9 @@ export function buildSessionTree(
     const list = panesByWindow.get(p.wid) ?? [];
     list.push({
       id: stripPrefix(p.pid),
-      index: parseInt(p.idx, 10),
+      // numOr (not bare parseInt) so a degenerate row can't put NaN into the
+      // index — the pane sort below needs a total order to be deterministic.
+      index: numOr(p.idx, 0),
       active: p.active === "1",
       width: numOr(p.width, 80),
       height: numOr(p.height, 24),
@@ -206,7 +208,7 @@ export function buildSessionTree(
     const list = windowsBySession.get(w.sid) ?? [];
     list.push({
       id: stripPrefix(w.wid),
-      index: parseInt(w.idx, 10),
+      index: numOr(w.idx, 0), // total order for the window sort below
       name: w.name,
       active: w.active === "1",
       zoomed: w.zoomed === "1",

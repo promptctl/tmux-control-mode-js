@@ -154,7 +154,7 @@ export class TmuxModel {
       // window_id appears in the fresh window rows (field 1 = window_id).
       const freshWindowIds = new Set(
         windowRows
-          .map((line) => line.split("|")[1])
+          .map((line) => line.split("|")[1] ?? "") // ?? "" mirrors parseRecords
           .filter((s) => s.length > 0),
       );
       this.latestPanes = mergePaneRowsByWindow(

@@ -115,6 +115,17 @@ describe("TmuxModel.mergeSession", () => {
     m.mergeSession(1, ["$1|@10|0|w|1|0"], ["@10|%100|0|1|80|24|p"]);
     expect(m.sessions).toEqual([]);
   });
+
+  it("empty windowRows removes the session's windows; orphaned pane rows are ignored by the rebuild", () => {
+    const m = loadedModel(); // session $1 with window @10 and two panes
+    // Merge with NO fresh windows for session 1: mergeSessionRows strips $1's
+    // window rows, leaving the pane rows for @10 orphaned (no window to attach
+    // to). buildSessionTree silently drops orphans, so the session ends up with
+    // no windows and the tree stays well-formed.
+    m.mergeSession(1, [], []);
+    expect(m.sessions).toHaveLength(1);
+    expect(m.sessions[0].windows).toEqual([]);
+  });
 });
 
 describe("TmuxModel.applyPaneDimensions", () => {
