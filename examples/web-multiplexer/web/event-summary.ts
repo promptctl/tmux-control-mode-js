@@ -73,5 +73,18 @@ export function summarizeEvent(
   if (ev.type === "config-error") return ev.error;
   if (ev.type === "paste-buffer-changed" || ev.type === "paste-buffer-deleted")
     return ev.name;
-  return "";
+  // sessions-changed carries no fields — there is nothing to summarize, so an
+  // empty line is the correct (not accidental) result.
+  if (ev.type === "sessions-changed") return "";
+  return assertNever(ev);
+}
+
+// [LAW:types-are-the-program] If a TmuxMessage variant is added upstream
+// without a branch above, `ev` is no longer `never` here and this fails to
+// compile — the summarizer stays total by construction, never silently
+// returning an empty line for an unhandled type. [LAW:no-silent-failure]
+function assertNever(ev: never): never {
+  throw new Error(
+    `summarizeEvent: unhandled message variant ${JSON.stringify(ev)}`,
+  );
 }

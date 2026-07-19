@@ -10,7 +10,7 @@
 // data (the Presentation record), not as branches in the view.
 
 import type { WireEntry } from "./bridge.ts";
-import { prettyBytes } from "./format-bytes.ts";
+import { prettyBytes, escapeByte } from "./format-bytes.ts";
 import { summarizeEvent } from "./event-summary.ts";
 
 export interface Presentation {
@@ -121,16 +121,12 @@ export function formatDelta(ms: number): string {
   return ms >= 0 ? `+${formatMs(ms)}` : formatMs(ms);
 }
 
+// The key string for a sendKeys entry, escaped for one-line display.
+// [LAW:single-enforcer] The per-code-unit escape decision is owned by
+// escapeByte in ./format-bytes.ts; this only adapts a string's code units
+// to it, so the inspector and prettyBytes share one escape table.
 function escapeForDisplay(s: string): string {
   let out = "";
-  for (const ch of s) {
-    const c = ch.charCodeAt(0);
-    if (c === 0x1b) out += "\\x1b";
-    else if (c === 0x0a) out += "\\n";
-    else if (c === 0x0d) out += "\\r";
-    else if (c === 0x09) out += "\\t";
-    else if (c >= 0x20 && c <= 0x7e) out += ch;
-    else out += `\\x${c.toString(16).padStart(2, "0")}`;
-  }
+  for (const ch of s) out += escapeByte(ch.charCodeAt(0));
   return out;
 }
