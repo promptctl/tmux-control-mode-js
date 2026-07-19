@@ -480,4 +480,51 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toContain("real bootstrap failure");
   });
+
+  it("does NOT report a bootstrap failure that arrives after onTransportClose (shutdown artifact)", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    let rejectA!: (e: Error) => void;
+    const run = (cmd: string): Promise<CommandResponse> => {
+      if (cmd.includes("list-panes -a")) {
+        return new Promise<CommandResponse>((_res, rej) => {
+          rejectA = rej;
+        });
+      }
+      return Promise.resolve(makeOkResponse());
+    };
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(run); // bootstrap A (hangs)
+    router.onTransportClose(); // nulls runCommand — connection-state:closed owns this
+    rejectA(new Error("close 1006"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The close event already represents the failure; no misleading second signal.
+    expect(errors).toHaveLength(0);
+  });
+
+  it("normalizes a non-Error, non-string-coercible rejection without itself throwing", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    // A null-prototype object: `String(value)` throws on it, so bootstrapError
+    // must fall back rather than convert the rejection into an unhandled one.
+    const weird = Object.create(null) as object;
+    const run = (cmd: string): Promise<CommandResponse> =>
+      cmd.includes("list-panes -a")
+        ? Promise.reject(weird)
+        : Promise.resolve(makeOkResponse());
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(run);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(errors[0]?.message).toMatch(/^topology bootstrap failed:/);
+    // The raw thrown value is preserved as `.cause`.
+    expect((errors[0] as Error & { cause?: unknown })?.cause).toBe(weird);
+  });
 });

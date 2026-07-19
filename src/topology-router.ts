@@ -65,9 +65,18 @@ export type ReportTopologyError = (error: Error) => void;
 //   `ev.error.message` sees the bootstrap context (not a bare `close 1006`),
 //   while the original is preserved as `.cause` — the underlying reason (a real
 //   tmux error, or a transport close) is not lost. [FRAMING:representation]
+//   This runs on the failure path, so it must be TOTAL: `String(value)` throws
+//   for a null-prototype object or a throwing `toString`, and a throw here would
+//   convert the caught rejection into an unhandled one — the exact silence this
+//   removes. The coercion is guarded with a structural-tag fallback.
 function bootstrapError(value: unknown): Error {
-  const cause = value instanceof Error ? value : new Error(String(value));
-  return new Error(`topology bootstrap failed: ${cause.message}`, { cause });
+  let detail: string;
+  try {
+    detail = value instanceof Error ? value.message : String(value);
+  } catch {
+    detail = Object.prototype.toString.call(value);
+  }
+  return new Error(`topology bootstrap failed: ${detail}`, { cause: value });
 }
 
 /**
@@ -326,6 +335,12 @@ export class TopologyRouter {
       this.topology.seed(entries);
       this.interest?.recompute();
     } catch (err) {
+      // [FRAMING:representation] A bootstrap that rejects because the transport
+      //   already closed is a shutdown artifact, not a topology fault — the
+      //   `connection-state: closed` event already represents that failure, so a
+      //   follow-on topology-error would be a misleading second signal. This is
+      //   not a silent drop: the close event owns the representation.
+      if (this.runCommand === null) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
       //   path too: if a newer bootstrap has since started, it owns the outcome
       //   (it will seed a healthy topology or report its own failure), so this
