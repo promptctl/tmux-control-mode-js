@@ -219,18 +219,14 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
   }
 });
 
-// [LAW:no-silent-failure] KNOWN-BROKEN, tracked by tmux-reconnect-bcz. The
-// swap completes (badge updates to the new socket, keystrokes reach the new
-// pane server-side — both verified) but the pane renders BLANK: after the
-// disconnect→switch→reconnect cycle the store keeps stale topology on
-// `closed`, so the PaneView is reused (same pane id %0) rather than remounted,
-// and PaneStream's in-place reconnect re-seed never lands — neither the
-// capture-pane seed nor live %output reach the rendered xterm. This is a
-// reconnect/re-seed coordination bug ORTHOGONAL to the single-handler
-// invariant this file's multi-window test covers, and was already red on
-// master (pane output never rendered at all before the hz1.5 fixes). Marked
-// fixme rather than deleted so the assertion stays visible; un-fixme is the
-// acceptance criterion for tmux-reconnect-bcz.
+// The socket-picker swap: disconnect the demo's TmuxClient, switch sockets,
+// reconnect, and prove the new socket's pane renders AND round-trips. This was
+// the acceptance criterion for tmux-reconnect-bcz (now CLOSED, fixed in #142):
+// before the fix the pane rendered BLANK after a swap because DemoStore kept
+// stale topology on `closed`, so React reused the PaneView (same pane id %0)
+// instead of remounting and the in-place re-seed never landed. clearTopology()
+// on swap fixed it; this test is the live guard that the swap keeps rendering.
+// [LAW:no-silent-failure]
 test("socket picker swaps the demo's TmuxClient onto a different live socket", async () => {
   // Spin up an ALTERNATE isolated tmux server on a side socket, with a
   // shell session running. This represents "another live tmux on the
