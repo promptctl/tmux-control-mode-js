@@ -42,7 +42,7 @@ import type { CommandResponse } from "../../protocol/types.js";
 
 import {
   BridgeError,
-  BridgeProtocolError,
+  toBridgeProtocolError,
   encodePaneOutput,
   encodeServerFrame,
   parseClientFrame,
@@ -476,10 +476,11 @@ class Connection {
     try {
       frame = parseClientFrame(raw);
     } catch (err) {
-      const msg =
-        err instanceof BridgeProtocolError
-          ? err.message
-          : `protocol error: ${err instanceof Error ? err.message : String(err)}`;
+      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+      // The parser only throws BridgeProtocolError, whose `.message` already
+      // carries the `[BRIDGE_PROTOCOL_ERROR]` prefix — the value this event
+      // and the fatal frame have always carried.
+      const msg = toBridgeProtocolError(err).message;
       this.emit({
         kind: "protocol-error",
         identity: this.identity,
