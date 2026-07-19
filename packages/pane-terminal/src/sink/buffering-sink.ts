@@ -62,9 +62,17 @@ export class BufferingSink implements TerminalSink {
   // TerminalSink
   // ---------------------------------------------------------------------------
 
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
     if (this.isDisposed) return;
     this.seedCalls.push({ captured, cursor });
+    // Record the trailing live bytes as ordinary writes, in order — the same
+    // behavioral events a sink observes when it applies snapshot-then-trailing.
+    // A test asserting seed-before-live sees `seedCalls` then these `writes`.
+    for (const chunk of trailing) this.writes.push(chunk);
   }
 
   write(data: Uint8Array): void {
