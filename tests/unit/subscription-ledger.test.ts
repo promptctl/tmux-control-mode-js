@@ -14,6 +14,10 @@ import {
 import { BridgeError } from "../../src/connectors/errors.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import {
+  refreshClientSubscribe,
+  refreshClientUnsubscribe,
+} from "../../src/protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Minimal fake: a command runner that records every command and lets a test
@@ -53,12 +57,18 @@ function createFakeRunner(): FakeRunner {
   return runner;
 }
 
-// refresh-client -B is overloaded: `'name':...` is subscribe, bare `'name'` is
-// unsubscribe (mirrors bridge-connection.test.ts's discrimination).
+// [LAW:behavior-not-structure] Discriminate subscribe vs unsubscribe commands by
+// the encoder's own output for the subscription every test uses, not by a
+// wire-format regex. The encoder is the oracle: if its format changes, the
+// expected command changes with it, so these assert the ledger's SEMANTIC
+// behavior (it issued the canonical subscribe / unsubscribe for this name), not
+// a literal byte shape.
+const SUBSCRIBE_WIN = refreshClientSubscribe("win", "%*", "#{window_name}");
+const UNSUBSCRIBE_WIN = refreshClientUnsubscribe("win");
 const subscribes = (sent: readonly string[]): string[] =>
-  sent.filter((c) => c.startsWith("refresh-client -B") && /'[^']*':/.test(c));
+  sent.filter((c) => c === SUBSCRIBE_WIN);
 const unsubscribes = (sent: readonly string[]): string[] =>
-  sent.filter((c) => c.startsWith("refresh-client -B") && !/'[^']*':/.test(c));
+  sent.filter((c) => c === UNSUBSCRIBE_WIN);
 
 describe("SubscriptionLedger (isolation)", () => {
   it("is constructible standalone with only a command runner", () => {
@@ -135,6 +145,11 @@ describe("SubscriptionLedger (isolation)", () => {
     await expect(
       ledger.subscribe(ghost, "win", "%*", "#{window_name}"),
     ).rejects.toMatchObject({ code: "BRIDGE_INTERNAL" });
+
+    // The parallel early-exit guard in unsubscribe rejects the same way.
+    await expect(ledger.unsubscribe(ghost, "win")).rejects.toMatchObject({
+      code: "BRIDGE_INTERNAL",
+    });
   });
 
   it("inflight-race: a tmux rejection strands no queued joiner with a phantom", async () => {

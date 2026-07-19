@@ -234,18 +234,19 @@ describe("BackpressureLedger (isolation)", () => {
     expect(continues(h.sent)).toHaveLength(1);
   });
 
-  it("flushPausedPanes skips a pane whose Continue is already in flight", () => {
-    // Never-resolving execute so the Continue from maybeResume stays in flight:
-    // the pane keeps `resuming: true` and stays in the ledger, so flush hits the
-    // `if (flow.resuming) continue` skip branch and issues no second Continue.
+  it("flushPausedPanes skips a pane whose Continue is already in flight", async () => {
+    // Deferred execute so the Continue from maybeResume stays in flight across
+    // the flush: the pane keeps `resuming: true` and stays in the ledger, so
+    // flush hits the `if (flow.resuming) continue` skip branch. The resolvers
+    // are settled before the test ends, so no promise dangles.
     const sent: string[] = [];
+    const settlers: (() => void)[] = [];
     const deps: BackpressureLedgerDeps = {
       client: {
         execute(command: string): Promise<CommandResponse> {
           sent.push(command);
-          // Never settles: the Continue stays in flight so `resuming` sticks.
-          return new Promise<CommandResponse>(() => {
-            /* intentionally never resolves */
+          return new Promise<CommandResponse>((resolve) => {
+            settlers.push(() => resolve(okResponse()));
           });
         },
       },
@@ -258,12 +259,18 @@ describe("BackpressureLedger (isolation)", () => {
     const ledger = new BackpressureLedger(deps);
     const a = { id: 1 };
     ledger.register(a);
-    ledger.account(a, 7, 1200); // pause
-    ledger.ack(a, 7, 900); // resume → resuming:true, Continue in flight (never settles)
+    ledger.account(a, 7, 1200); // pause (Pause in flight)
+    ledger.ack(a, 7, 900); // resume → resuming:true, Continue in flight
     expect(continues(sent)).toHaveLength(1);
 
     ledger.flushPausedPanes(); // pane 7 is resuming → skipped
     expect(continues(sent)).toHaveLength(1); // no second Continue
+
+    // Settle the in-flight commands so nothing dangles past the test; flush
+    // already cleared the ledger, so these resolutions are no-ops.
+    for (const settle of settlers) settle();
+    await Promise.resolve();
+    expect(continues(sent)).toHaveLength(1);
   });
 
   it("register throws loudly on double-registration instead of silently overwriting", () => {
