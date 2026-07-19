@@ -1369,14 +1369,18 @@ function collectModuleEdges(sourceText: string, fileName: string): string[] {
   const specs: string[] = [];
 
   // `import { type A, type B } from "m"` with no default/namespace binding is
-  // fully erased; if ANY binding is a value, a runtime edge remains.
+  // fully erased; if ANY binding is a value, a runtime edge remains. Note the
+  // `length > 0` guard: `import {} from "m"` has zero specifiers, and an empty
+  // `.every()` is vacuously true — but empty braces are a *side-effect* import
+  // (the module still loads at runtime), so they must NOT be classified as
+  // type-only, else a `import {} from "node:fs"` edge slips the gate.
   const importClauseIsTypeOnly = (clause: ts.ImportClause): boolean => {
     if (clause.isTypeOnly) return true; // `import type { ... }`
     if (clause.name !== undefined) return false; // default binding is a value
     const b = clause.namedBindings;
     if (b !== undefined && ts.isNamespaceImport(b)) return false; // `* as ns`
     if (b !== undefined && ts.isNamedImports(b)) {
-      return b.elements.every((e) => e.isTypeOnly);
+      return b.elements.length > 0 && b.elements.every((e) => e.isTypeOnly);
     }
     return false;
   };
@@ -1395,10 +1399,13 @@ function collectModuleEdges(sourceText: string, fileName: string): string[] {
       node.moduleSpecifier !== undefined
     ) {
       // `export ... from "m"`. isTypeOnly covers `export type { X } from`;
-      // a fully-inline-type named re-export is erased too — mirror imports.
+      // a fully-inline-type named re-export is erased too — mirror imports,
+      // including the `length > 0` guard so `export {} from "m"` (a runtime
+      // side-effect re-export) is not vacuously classified as type-only.
       const allInlineType =
         node.exportClause !== undefined &&
         ts.isNamedExports(node.exportClause) &&
+        node.exportClause.elements.length > 0 &&
         node.exportClause.elements.every((e) => e.isTypeOnly);
       if (
         !node.isTypeOnly &&
@@ -1548,11 +1555,15 @@ describe("Electron IPC bridge — renderer import graph", () => {
       `export type { U } from "../../src/transport/types.js";`, // type re-export — NOT an edge
       `async function load() { return import("os"); }`, // dynamic — edge (regex MISSED this)
       `import { type Only } from "node:crypto";`, // all-inline-type — NOT an edge
+      `import {} from "node:dns";`, // empty-brace side-effect — edge (loads at runtime)
+      `export {} from "node:tls";`, // empty-brace re-export — edge (runtime dependency)
     ].join("\n");
 
     const specs = collectModuleEdges(src, "/synthetic/renderer.ts");
 
     // Every runtime-edge form is collected — the smuggling routes are closed.
+    // Empty-brace forms (node:dns, node:tls) must NOT be vacuously erased: they
+    // are side-effect edges that still load the module at runtime.
     expect(specs).toEqual(
       expect.arrayContaining([
         "./local.js",
@@ -1560,6 +1571,8 @@ describe("Electron IPC bridge — renderer import graph", () => {
         "child_process",
         "node:net",
         "os",
+        "node:dns",
+        "node:tls",
       ]),
     );
     // Every type-only form is erased — no false positives on legit type imports.
