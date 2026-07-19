@@ -74,6 +74,32 @@ export interface ReconnectedMessage {
 }
 
 /**
+ * Emitted when a topology bootstrap effect (`list-panes -a`) fails.
+ *
+ * The pure topology substrate keeps computing — an empty topology table is a
+ * representable value — but an empty table cannot silently stand in for a
+ * failed bootstrap: with no topology, byte dispatch matches only pane- and
+ * server-scoped sinks, so every session/window-scoped consumer would receive
+ * zero bytes, indistinguishable from a genuinely empty tmux. This event is the
+ * observable distinction between "empty because bootstrap failed" and "empty
+ * because tmux has no panes."
+ *
+ * [LAW:no-silent-failure] The bootstrap effect's failure is surfaced, not
+ *   swallowed. [LAW:effects-at-boundaries] The router (pure substrate) describes
+ *   the failure through an injected seam; the transport adapter (which owns the
+ *   emitter) performs this emission.
+ *
+ * Non-terminal: the router's existing event-driven bootstrap triggers
+ * (`session-changed`, window events, a new topology-scoped attach) re-attempt
+ * the bootstrap, so a later success recovers a starved sink.
+ */
+export interface TopologyErrorMessage {
+  readonly type: "topology-error";
+  /** The error the bootstrap command rejected with, normalized to `Error`. */
+  readonly error: Error;
+}
+
+/**
  * Structural equality for `ConnectionState` values. Used by client
  * implementations to make `setConnectionState` idempotent — a transition to
  * the same effective state is a no-op and emits no event.

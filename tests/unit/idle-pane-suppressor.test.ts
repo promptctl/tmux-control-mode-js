@@ -9,11 +9,18 @@ import { describe, expect, it } from "vitest";
 
 import { IdlePaneSuppressor } from "../../src/idle-pane-suppressor.js";
 import { TopologyRouter } from "../../src/topology-router.js";
+import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import { PaneAction } from "../../src/protocol/types.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import { paneScope, type BytesSink } from "../../src/pane-output.js";
 
 const sink: BytesSink = { write: () => undefined, end: () => undefined };
+
+// These tests exercise idle-suppression wiring, not bootstrap failure — supply
+// a no-op topology-error reporter.
+function newRouter(options?: TopologyRouterOptions): TopologyRouter {
+  return new TopologyRouter(() => undefined, options);
+}
 
 // ---------------------------------------------------------------------------
 // IdlePaneSuppressor — pure transition → action
@@ -90,7 +97,7 @@ describe("TopologyRouter — idle suppression wiring", () => {
     commands.some((c) => c.includes(`%${paneId}:${PaneAction.Continue}`));
 
   it("bootstraps topology and pauses idle panes when no sink is attached", async () => {
-    const router = new TopologyRouter({ idlePaneSuppression: true });
+    const router = newRouter({ idlePaneSuppression: true });
     const { commands, run } = runner(["%1 @10 $100"]);
     router.onTransportReady(run);
     await Promise.resolve();
@@ -100,7 +107,7 @@ describe("TopologyRouter — idle suppression wiring", () => {
   });
 
   it("does NOT bootstrap or pause when suppression is off (default)", async () => {
-    const router = new TopologyRouter();
+    const router = newRouter();
     const { commands, run } = runner(["%1 @10 $100"]);
     router.onTransportReady(run);
     await Promise.resolve();
@@ -109,7 +116,7 @@ describe("TopologyRouter — idle suppression wiring", () => {
   });
 
   it("continues a pane when a sink attaches to it, pauses again on detach", async () => {
-    const router = new TopologyRouter({ idlePaneSuppression: true });
+    const router = newRouter({ idlePaneSuppression: true });
     const { commands, run } = runner(["%1 @10 $100"]);
     router.onTransportReady(run);
     await Promise.resolve();

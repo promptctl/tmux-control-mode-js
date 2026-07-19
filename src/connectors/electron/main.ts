@@ -342,6 +342,16 @@ export function createMainBridge(
   // -------------------------------------------------------------------------
 
   const broadcast = (msg: EmitterMessage): void => {
+    // [LAW:one-source-of-truth] `topology-error` is per-router-instance: the
+    //   renderer proxy owns its own TopologyRouter (it routes the renderer's
+    //   sinks and reports its own bootstrap failures), so forwarding the main
+    //   client's topology-error would give a renderer consumer a second,
+    //   differently-sourced signal about a topology table it does not route
+    //   against. Each client instance is the sole source of its own topology-
+    //   bootstrap signal; this one event does not cross the bridge. Other
+    //   synthetic events (connection-state, reconnected) DO forward — they
+    //   reflect the shared connection, not a per-router bootstrap.
+    if (msg.type === "topology-error") return;
     // Snapshot the senders entries before iterating: teardownSender below
     // calls senders.delete(wc), and a destroyed wc detected mid-loop must
     // not perturb the iteration order of the rest of the senders.
