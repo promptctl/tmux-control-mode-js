@@ -86,6 +86,55 @@ describe("Heartbeat — normal operation", () => {
   });
 });
 
+describe("Heartbeat — correlation token", () => {
+  it("clears the deadline only for a pong that matches the outstanding ping", () => {
+    vi.useFakeTimers();
+    let next = 0;
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat<string>(100, 50, {
+      ping: () => `p${(next += 1)}`,
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100); // ping "p1" sent, deadline armed
+    hb.onPong("stale"); // a mismatched pong must not clear the deadline
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the deadline when the matching pong arrives", () => {
+    vi.useFakeTimers();
+    let next = 0;
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat<string>(100, 50, {
+      ping: () => `p${(next += 1)}`,
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100); // ping "p1"
+    hb.onPong("p1");
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).not.toHaveBeenCalled();
+  });
+
+  it("correlates against the newest ping after a pong cycle", () => {
+    vi.useFakeTimers();
+    let next = 0;
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat<string>(100, 50, {
+      ping: () => `p${(next += 1)}`,
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100); // ping "p1"
+    hb.onPong("p1"); // cleared
+    vi.advanceTimersByTime(100); // ping "p2"
+    hb.onPong("p1"); // the *old* id must not clear the new deadline
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Heartbeat — stop()", () => {
   it("stop() prevents further ticks", () => {
     vi.useFakeTimers();
