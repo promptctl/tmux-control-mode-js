@@ -171,8 +171,9 @@ export class PaneStream implements ReseedTarget {
 
   private currentState: PaneStreamState = "idle";
   private sink: TerminalSink | null = null;
-  // Buffer for live bytes that arrive during seeding. Drained synchronously
-  // inside finishSeed() so no live byte interleaves the seed write.
+  // Buffer for live bytes that arrive during seeding. Handed to the sink as the
+  // seed's `trailing` argument when the capture resolves, so the snapshot and
+  // the bytes captured behind it cross the seam as one ordered value.
   private buffer: Uint8Array[] = [];
   // Last successful seed payload — kept so subsequent re-attaches can hand
   // the new sink the same starting picture WITHOUT a fresh capture-pane
@@ -381,8 +382,10 @@ export class PaneStream implements ReseedTarget {
 
     if (this.lastSeed !== null) {
       // Re-attach fast path. Synchronous: hand the new sink the cached
-      // payload and flip straight to live. No capture-pane is issued.
-      sink.seed(this.lastSeed.captured, this.lastSeed.cursor);
+      // payload and flip straight to live. No capture-pane is issued, and no
+      // live bytes are pending (detach() drained the buffer), so `trailing` is
+      // empty — the cached snapshot is the whole picture.
+      sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
     }
@@ -678,12 +681,13 @@ export class PaneStream implements ReseedTarget {
     }
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
-    // No `await` from here to the state flip — no live byte can interleave.
+    // No `await` from here to the state flip — nothing can mutate `this.buffer`
+    // between reading it as `trailing` and handing it to the sink.
     //
     // The pure capture-grid reconstruction (flag→escape selection, blank-row
     // padding, Latin-1→bytes) lives in `buildSeed`; PaneStream owns only the
     // effects around it — the RPCs that produced these inputs, the cache, and
-    // the sink write below.
+    // the sink handoff below.
     const { captured, cursor } = buildSeed(
       captureOutput,
       stateLine,
@@ -710,13 +714,13 @@ export class PaneStream implements ReseedTarget {
     const liveSink = this.sink;
     if (liveSink === null) return;
 
-    liveSink.seed(captured, cursor);
-
-    // Drain buffered live bytes synchronously, then flip state.
-    for (const bytes of this.buffer) {
-      liveSink.write(bytes);
-    }
+    // Hand the snapshot and the bytes captured behind it over as one ordered
+    // value. Reset `this.buffer` to a fresh array BEFORE the call so the field
+    // is never observably non-empty after the handoff, and so the sink owns the
+    // array we pass (PaneStream keeps no alias into it).
+    const trailing = this.buffer;
     this.buffer = [];
+    liveSink.seed(captured, cursor, trailing);
     this.setState("live");
   }
 

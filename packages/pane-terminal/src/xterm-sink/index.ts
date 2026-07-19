@@ -184,26 +184,37 @@ export class XtermSink implements TerminalSink {
   // TerminalSink contract
   // ---------------------------------------------------------------------------
 
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
     if (this.isDisposed) return;
-    // While the gate is buffering (first resize not yet fired, cap not yet
-    // forced a drain), hold the seed — writing content before term.resize()
-    // renders at wrong dimensions and breaks the scroll area / CUP. The gate
-    // keeps latest-wins semantics (a second seed overwrites the first).
-    //
-    // Once open, seed applies immediately, in call order with the direct writes
-    // that follow it. Applying inline after a cap-forced drain is correct (not
-    // stale): a seed can only arrive after live bytes were drained when the
-    // stream re-entered seeding — i.e. it is a RESEED whose capture-pane
-    // snapshot postdates the drained bytes, so overdrawing them shows CURRENT
-    // state. The deeper unification of seed / first-resize / write-ordering is
-    // owned by tmux-complexity-lkg.12 (SD2); this bypass rides on that
-    // reseed-is-newer invariant.
+    // The snapshot and its `trailing` live bytes are one ordered unit (see
+    // TerminalSink.seed). Apply the snapshot, then route each trailing chunk
+    // through `write()` so it shares the gate/cap path — the gate never needs to
+    // interleave a separately-arriving seed with separately-arriving live bytes,
+    // because they arrive together and in order here.
     if (this.gate.buffering) {
+      // First resize not yet fired: hold the snapshot; the trailing chunks land
+      // in the same gate buffer via write() below, after it. Latest-wins — a
+      // later reseed's snapshot overwrites this one.
       this.gate.bufferSeed({ captured, cursor });
-      return;
+    } else {
+      // Gate open — apply the snapshot inline. This is authoritative by
+      // construction, WITHOUT a clear: a reseed's `captured` is a snapshot
+      // normalized to exactly `pane_height` rows (tested: PaneStream
+      // "normalizes the seed to exactly pane_height rows") led by a screen-mode
+      // preamble that homes the cursor, so writing it rewrites EVERY visible row
+      // — no stale visible row can survive underneath. That holds equally for a
+      // steady-state reseed and for one arriving in the post-cap-drain window
+      // (gate opened early because the pane-size subscription was silent), so it
+      // no longer rides on "this reseed's capture postdates the drained bytes"
+      // folklore. Scrollback above the visible screen is deliberately preserved
+      // (a clear would discard the history xterm accumulated during a drain).
+      this.applySeed(captured, cursor);
     }
-    this.applySeed(captured, cursor);
+    for (const chunk of trailing) this.write(chunk);
   }
 
   private applySeed(captured: Uint8Array, cursor: SeedCursor | null): void {

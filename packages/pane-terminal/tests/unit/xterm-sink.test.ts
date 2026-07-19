@@ -161,7 +161,7 @@ describe("XtermSink: seed", () => {
     // Advance past the first-resize gate so seed() is applied immediately.
     sink.resize(80, 24);
     flushRaf();
-    sink.seed(enc("hello\r\nworld"), { col: 4, row: 1 });
+    sink.seed(enc("hello\r\nworld"), { col: 4, row: 1 }, []);
     // Two writes: captured bytes, then the cursor escape + scrollToBottom cb.
     expect(term.write).toHaveBeenCalledTimes(2);
     expect(term.write).toHaveBeenNthCalledWith(1, enc("hello\r\nworld"));
@@ -173,7 +173,7 @@ describe("XtermSink: seed", () => {
     const { sink, term } = newSink();
     sink.resize(80, 24);
     flushRaf();
-    sink.seed(enc("only text"), null);
+    sink.seed(enc("only text"), null, []);
     expect(term.write).toHaveBeenCalledTimes(1);
     expect(term.write).toHaveBeenCalledWith(enc("only text"), expect.any(Function));
     sink.dispose();
@@ -182,13 +182,13 @@ describe("XtermSink: seed", () => {
   it("seed after dispose is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed(enc("late"), { col: 0, row: 0 });
+    sink.seed(enc("late"), { col: 0, row: 0 }, []);
     expect(term.write).not.toHaveBeenCalled();
   });
 
   it("seed before first resize is buffered; applied in the first-resize rAF", () => {
     const { sink, term } = newSink();
-    sink.seed(enc("buffered"), { col: 2, row: 0 });
+    sink.seed(enc("buffered"), { col: 2, row: 0 }, []);
     // rAF not yet fired — seed must be held, not applied.
     expect(term.write).not.toHaveBeenCalled();
     sink.resize(80, 24);
@@ -204,8 +204,8 @@ describe("XtermSink: seed", () => {
 
   it("a second seed() before the first rAF overwrites the first (latest wins)", () => {
     const { sink, term } = newSink();
-    sink.seed(enc("first"), null);
-    sink.seed(enc("second"), null);
+    sink.seed(enc("first"), null, []);
+    sink.seed(enc("second"), null, []);
     sink.resize(80, 24);
     flushRaf();
     // Only the second seed must reach xterm.
@@ -234,7 +234,7 @@ describe("XtermSink: write (live byte path)", () => {
     const { sink, term } = newSink();
     const bytes1 = new Uint8Array([0x41]);
     const bytes2 = new Uint8Array([0x42]);
-    sink.seed(enc("snap"), null);
+    sink.seed(enc("snap"), null, []);
     sink.write(bytes1);
     sink.write(bytes2);
     // Nothing forwarded to xterm yet.
@@ -355,7 +355,7 @@ describe("XtermSink: pre-resize write buffer is bounded (kwv.3)", () => {
   it("a cap-forced drain applies a pending seed BEFORE the buffered live bytes", () => {
     const { sink, term } = newSink();
     // Seed arrives before the first resize → held as pendingSeed.
-    sink.seed(enc("SEED"), null);
+    sink.seed(enc("SEED"), null, []);
     expect(term.write).not.toHaveBeenCalled();
 
     // Live bytes cross the cap → drain applies the seed first, then the bytes.
@@ -363,6 +363,34 @@ describe("XtermSink: pre-resize write buffer is bounded (kwv.3)", () => {
     for (let i = 0; i < 8; i++) sink.write(chunk);
     expect(term.write.mock.calls[0]?.[0]).toEqual(enc("SEED"));
     expect(term.write).toHaveBeenCalledTimes(9); // 1 seed + 8 chunks
+    sink.dispose();
+  });
+
+  it("a reseed after a cap-forced drain applies inline WITHOUT clearing (SD2)", () => {
+    // After a cap-forced drain the gate is open but the first real resize has
+    // not happened, so drained content + its scrollback sit on screen. A seed
+    // arriving now is always a RESEED — a full pane_height-normalized snapshot
+    // led by a screen-mode preamble, so writing it rewrites every visible row
+    // by construction. It must NOT clear: a clear would blank the screen on a
+    // failed (empty) reseed and discard the scrollback xterm accumulated during
+    // the drain. Correctness rides on the tested normalization invariant, not a
+    // reset. [LAW:no-ambient-temporal-coupling]
+    const { sink, term } = newSink();
+    const chunk = new Uint8Array(MiB);
+    for (let i = 0; i < 8; i++) sink.write(chunk); // overflow → cap-forced drain
+    expect(term.resize).not.toHaveBeenCalled();
+    const beforeReseed = term.write.mock.calls.length;
+
+    // Reseed arrives (still pre-first-resize): snapshot then trailing, no clear.
+    sink.seed(enc("RESEED"), null, [new Uint8Array([0x41])]);
+
+    expect(term.clear).not.toHaveBeenCalled();
+    // The snapshot, then its trailing live byte, in order — nothing wiped.
+    expect(term.write).toHaveBeenCalledTimes(beforeReseed + 2);
+    expect(term.write.mock.calls[beforeReseed]?.[0]).toEqual(enc("RESEED"));
+    expect(
+      Array.from(term.write.mock.calls[beforeReseed + 1]?.[0] as Uint8Array),
+    ).toEqual([0x41]);
     sink.dispose();
   });
 });
@@ -438,7 +466,7 @@ describe("XtermSink: dispose lifecycle", () => {
   it("post-dispose: write, seed, resize, setFontSize all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed(enc("x"), null);
+    sink.seed(enc("x"), null, []);
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     flushRaf();
