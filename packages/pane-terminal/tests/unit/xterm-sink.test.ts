@@ -169,6 +169,24 @@ describe("XtermSink: seed", () => {
     sink.dispose();
   });
 
+  it("applies captured, CUP escape, THEN trailing bytes when cursor and trailing are both present", () => {
+    // Gate-open path with the full combination: a non-null cursor makes
+    // applySeed emit two term.write calls (captured + CUP), and non-empty
+    // trailing follows — so the ordering is captured → CUP → each trailing chunk.
+    const { sink, term } = newSink();
+    sink.resize(80, 24);
+    flushRaf();
+    const t1 = new Uint8Array([0x41]);
+    const t2 = new Uint8Array([0x42]);
+    sink.seed(enc("grid"), { col: 4, row: 1 }, [t1, t2]);
+    expect(term.write).toHaveBeenCalledTimes(4);
+    expect(term.write).toHaveBeenNthCalledWith(1, enc("grid"));
+    expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[2;5H", expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(3, t1);
+    expect(term.write).toHaveBeenNthCalledWith(4, t2);
+    sink.dispose();
+  });
+
   it("writes captured text without the CUP escape when cursor is null", () => {
     const { sink, term } = newSink();
     sink.resize(80, 24);

@@ -715,12 +715,14 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes captured behind it over as one ordered
-    // value. Reset `this.buffer` to a fresh array BEFORE the call so the field
-    // is never observably non-empty after the handoff, and so the sink owns the
-    // array we pass (PaneStream keeps no alias into it).
-    const trailing = this.buffer;
+    // value. Clear the buffer AFTER the handoff, not before: a sink consumes
+    // `trailing` synchronously and never retains the array, so aliasing is safe
+    // for the duration of the call, and reassigning to a fresh array afterward
+    // means PaneStream never mutates the handed-off array in place. Clearing
+    // after also matches the pre-SD2 failure path — if the sink throws, the
+    // buffered bytes survive in `this.buffer` rather than being dropped.
+    liveSink.seed(captured, cursor, this.buffer);
     this.buffer = [];
-    liveSink.seed(captured, cursor, trailing);
     this.setState("live");
   }
 

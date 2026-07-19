@@ -230,7 +230,8 @@
     seed(captured: Uint8Array, cursor: { col: number; row: number } | null, trailing: readonly Uint8Array[]): void
     write(data: Uint8Array): void
     resize(cols: number, rows: number): void
-    clear(): void
+    isVisible(): boolean
+    dispose(): void
   }
   export class BufferingSink implements TerminalSink { /* records calls */ }
 
