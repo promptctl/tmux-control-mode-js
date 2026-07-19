@@ -70,6 +70,18 @@ const DEFAULT_FONT_MAX = 16;
 const DEFAULT_SCROLLBACK = 10000;
 const FONT_WEIGHT = "normal";
 
+// [LAW:no-silent-failure] Upper bound on bytes held in `pendingWrites` before
+// the first `resize()`. The buffer exists to preserve seed-before-live ordering
+// across the one-rAF first-resize defer — normally drained within a round-trip
+// of attach. But `resize()` is driven ONLY by tmux's pane-size subscription; if
+// that subscription failed (PaneStream surfaces this on its 'error' seam), the
+// resize never comes and this buffer would grow without limit behind a
+// permanently blank screen. On crossing the cap we DRAIN (never drop — dropping
+// would lose data while still reporting success), rendering at xterm's current
+// dimensions; a later real resize reflows. 4 MiB is generous for the transient
+// window yet bounds the pathological no-resize path.
+const PENDING_WRITES_CAP_BYTES = 4 * 1024 * 1024;
+
 export interface XtermSinkOptions {
   readonly container: HTMLElement;
   readonly fontFamily?: string;
@@ -126,6 +138,10 @@ export class XtermSink implements TerminalSink {
   // the seed and the trailing live bytes in the correct order. Nulled after
   // drain so subsequent write() calls bypass the buffer entirely.
   private pendingWrites: Uint8Array[] | null = [];
+  // Running byte total of `pendingWrites`, so the cap check is O(1) per write
+  // instead of re-summing the array. Bounds the no-resize path (see
+  // PENDING_WRITES_CAP_BYTES).
+  private pendingWritesBytes = 0;
 
   private ro: ResizeObserver | null = null;
   private io: IntersectionObserver | null = null;
@@ -207,13 +223,29 @@ export class XtermSink implements TerminalSink {
 
   seed(captured: Uint8Array, cursor: SeedCursor | null): void {
     if (this.isDisposed) return;
-    if (!this.firstResizeDone) {
+    // Buffer the seed ONLY while the pre-resize write buffer is still active
+    // (pendingWrites non-null AND first resize not yet done). Once the buffer
+    // has been bypassed — either the first resize fired, or the cap forced an
+    // early drain — seed applies immediately, in call order with the direct
+    // writes that follow it. Gating on pendingWrites (not firstResizeDone
+    // alone) keeps seed-before-live ordering correct in bypass mode too.
+    //
+    // Why applying inline after a cap-forced drain is correct (not stale): a
+    // seed can only arrive AFTER live bytes were drained when the stream
+    // re-entered seeding, i.e. it is a RESEED — its capture-pane snapshot
+    // postdates the drained bytes, so overdrawing them with it shows CURRENT
+    // state, never stale content. (On first attach, seed() always precedes the
+    // live writes via pendingSeed, so no drain happens before the seed.) The
+    // deeper unification of seed / first-resize / write-ordering is owned by
+    // tmux-complexity-lkg.12 (SD2); this narrow bypass window rides on that
+    // reseed-is-newer invariant rather than a re-apply mechanism.
+    if (!this.firstResizeDone && this.pendingWrites !== null) {
       // terminal.resize() is deferred to the first rAF. Writing content
       // before resize means xterm renders at wrong dimensions, then reflows
       // when resize fires — breaking the scroll area and misaligning the
-      // CUP. Buffer instead; the first-resize rAF will call applySeed().
-      // A second seed() call before the rAF fires simply overwrites (newer
-      // content wins, same as any re-seed).
+      // CUP. Buffer instead; the first-resize rAF (or the cap-forced drain)
+      // will call applySeed(). A second seed() call before then simply
+      // overwrites (newer content wins, same as any re-seed).
       this.pendingSeed = { captured, cursor };
       return;
     }
@@ -257,9 +289,48 @@ export class XtermSink implements TerminalSink {
     // queue. We hold them here until the first-resize rAF applies both.
     if (this.pendingWrites !== null) {
       this.pendingWrites.push(data);
+      this.pendingWritesBytes += data.byteLength;
+      // [LAW:no-silent-failure] The resize that would drain this buffer is
+      // driven only by tmux's pane-size subscription; if that subscription
+      // failed the resize never comes and this buffer would grow unbounded
+      // behind a blank screen. Cap it: on overflow, drain now (render at
+      // xterm's current dimensions) rather than buffer forever. A later real
+      // resize still reflows — recovery is not sacrificed for the bound.
+      if (this.pendingWritesBytes > PENDING_WRITES_CAP_BYTES) {
+        this.drainPendingBeforeResize();
+      }
       return;
     }
     this.terminal.write(data);
+  }
+
+  // Flush the pre-resize buffers WITHOUT a terminal.resize(). Applies the
+  // pending seed (if any) then the buffered live bytes, preserving the
+  // seed-before-live ordering, and nulls `pendingWrites` so subsequent
+  // write()/seed() calls go straight to xterm. term.write() is safe before the
+  // first resize (only term.resize() dereferences the not-yet-initialised
+  // renderer dimensions); content renders at xterm's default geometry until a
+  // real resize arrives and reflows. Shared by the cap-forced drain and the
+  // first-resize rAF.
+  private drainPendingBeforeResize(): void {
+    // [LAW:composability] Self-guard the disposed state rather than trust each
+    //   caller to have checked it — this helper writes to the terminal, so it
+    //   owns the "no writes after dispose" invariant (invariant #5) locally and
+    //   asks nothing of its callers. A disposed terminal must never be written.
+    if (this.isDisposed) return;
+    if (this.pendingSeed !== null) {
+      const { captured, cursor } = this.pendingSeed;
+      this.pendingSeed = null;
+      this.applySeed(captured, cursor);
+    }
+    const writes = this.pendingWrites;
+    this.pendingWrites = null;
+    this.pendingWritesBytes = 0;
+    if (writes !== null) {
+      for (const chunk of writes) {
+        this.terminal.write(chunk);
+      }
+    }
   }
 
   resize(cols: number, rows: number): void {
@@ -283,24 +354,12 @@ export class XtermSink implements TerminalSink {
         if (this.cols <= 0 || this.rows <= 0) return;
         this.firstResizeDone = true;
         this.terminal.resize(this.cols, this.rows);
-        // Apply any seed that arrived while the first resize was deferred.
-        // Resize must precede the write so content is laid out at the correct
-        // dimensions from the start (no reflow, no broken scroll area).
-        if (this.pendingSeed !== null) {
-          const { captured, cursor } = this.pendingSeed;
-          this.pendingSeed = null;
-          this.applySeed(captured, cursor);
-        }
-        // Drain any live bytes that arrived before the first resize completed.
-        // These were buffered in pendingWrites to preserve ordering: seed
-        // content always precedes live bytes in the xterm write queue.
-        const writes = this.pendingWrites;
-        this.pendingWrites = null;
-        if (writes !== null) {
-          for (const chunk of writes) {
-            this.terminal.write(chunk);
-          }
-        }
+        // Resize precedes the drain so content lays out at the correct
+        // dimensions from the start (no reflow, no broken scroll area). The
+        // drain applies any pending seed, then the buffered live bytes in
+        // order. If the cap already forced an early drain, both buffers are
+        // null here and this is a no-op — the resize alone reflows.
+        this.drainPendingBeforeResize();
       });
       return;
     }
@@ -329,6 +388,7 @@ export class XtermSink implements TerminalSink {
     this.isDisposed = true;
     this.pendingSeed = null;
     this.pendingWrites = null;
+    this.pendingWritesBytes = 0;
 
     if (this.ro !== null) {
       this.ro.disconnect();

@@ -300,6 +300,73 @@ describe("XtermSink: resize (first-resize defer)", () => {
   });
 });
 
+describe("XtermSink: pre-resize write buffer is bounded (kwv.3)", () => {
+  // The buffer that holds live bytes before the first resize is drained ONLY
+  // by a resize(), which is driven ONLY by tmux's pane-size subscription. If
+  // that subscription failed the resize never comes — without a cap this buffer
+  // grows forever behind a blank screen (the kwv.3 memory-leak-wearing-a-blank-
+  // screen). These tests use ~1 MiB chunks; the cap is a few MiB, so a handful
+  // of chunks crosses it while a single chunk does not.
+  const MiB = 1024 * 1024;
+
+  it("drains the buffer once it overflows — WITHOUT waiting for a resize", () => {
+    const { sink, term } = newSink();
+    const chunk = new Uint8Array(MiB);
+
+    // Under the cap: buffered behind the first-resize defer, nothing to xterm.
+    sink.write(chunk);
+    expect(term.write).not.toHaveBeenCalled();
+    expect(term.resize).not.toHaveBeenCalled();
+
+    // Cross the cap (8 MiB total). The overflow forces a drain even though no
+    // resize ever arrived: every chunk reaches the terminal (bounded there by
+    // xterm's own scrollback), none stranded in an unbounded buffer.
+    for (let i = 1; i < 8; i++) sink.write(chunk);
+    expect(term.resize).not.toHaveBeenCalled();
+    expect(term.write).toHaveBeenCalledTimes(8);
+
+    // Post-drain writes go straight through — the buffer is not re-accumulating.
+    sink.write(chunk);
+    expect(term.write).toHaveBeenCalledTimes(9);
+    sink.dispose();
+  });
+
+  it("a late resize after a cap-forced drain still reflows — rendering recovers", () => {
+    const { sink, term } = newSink();
+    const chunk = new Uint8Array(MiB);
+    for (let i = 0; i < 8; i++) sink.write(chunk);
+    expect(term.resize).not.toHaveBeenCalled();
+    const drained = term.write.mock.calls.length;
+
+    // The pane-size subscription finally succeeds (or a manual resize arrives):
+    // the deferred first-resize still fires and reflows the already-written
+    // content to the real geometry. Recovery, not a permanently wrong screen.
+    sink.resize(80, 24);
+    flushRaf();
+    expect(term.resize).toHaveBeenCalledTimes(1);
+    expect(term.resize).toHaveBeenLastCalledWith(80, 24);
+
+    // Live bytes after recovery flow straight through.
+    sink.write(chunk);
+    expect(term.write).toHaveBeenCalledTimes(drained + 1);
+    sink.dispose();
+  });
+
+  it("a cap-forced drain applies a pending seed BEFORE the buffered live bytes", () => {
+    const { sink, term } = newSink();
+    // Seed arrives before the first resize → held as pendingSeed.
+    sink.seed(enc("SEED"), null);
+    expect(term.write).not.toHaveBeenCalled();
+
+    // Live bytes cross the cap → drain applies the seed first, then the bytes.
+    const chunk = new Uint8Array(MiB);
+    for (let i = 0; i < 8; i++) sink.write(chunk);
+    expect(term.write.mock.calls[0]?.[0]).toEqual(enc("SEED"));
+    expect(term.write).toHaveBeenCalledTimes(9); // 1 seed + 8 chunks
+    sink.dispose();
+  });
+});
+
 describe("XtermSink: in-place option setters (O10)", () => {
   it("setFontSize writes options.fontSize without disposing the Terminal", () => {
     const { sink, term } = newSink();
