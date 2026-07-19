@@ -13,6 +13,10 @@
 // every entry. Per-direction variation lives in data (icon, color,
 // summary string) — not in control flow branches that render different
 // JSX per type.
+//
+// [LAW:decomposition] Presentation policy (WireEntry → arrow/color/type/
+// summary/payload) lives in ./inspector-presentation.ts; event-line
+// summarization lives in ../event-summary.ts. This file is pure JSX.
 
 import { observer } from "mobx-react-lite";
 import {
@@ -31,8 +35,13 @@ import {
 } from "@mantine/core";
 import type { InspectorStore, InspectorEntry } from "../inspector-store.ts";
 import type { WireEntry } from "../bridge.ts";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
-import { prettyBytes } from "../format-bytes.ts";
+import {
+  presentFor,
+  badgeColor,
+  renderPayload,
+  formatMs,
+  formatDelta,
+} from "../inspector-presentation.ts";
 import type { DemoStore } from "../store.ts";
 
 interface Props {
@@ -79,7 +88,12 @@ export const InspectorView = observer(function InspectorView({
             style={{ minWidth: 280 }}
           />
           <Divider orientation="vertical" />
-          <DirectionChip store={store} dir="out" label={`↑ out ${counts.out}`} color="blue" />
+          <DirectionChip
+            store={store}
+            dir="out"
+            label={`↑ out ${counts.out}`}
+            color="blue"
+          />
           <DirectionChip
             store={store}
             dir="in-event"
@@ -117,34 +131,43 @@ export const InspectorView = observer(function InspectorView({
         </Group>
 
         {/* Event-type chips — only meaningful when in-event is visible */}
-        {store.knownEventTypes.length > 0 && !store.hiddenDirections["in-event"] && (
-          <Group gap={4} wrap="wrap" mt={6}>
-            <Text size="xs" c="dimmed">
-              event types:
-            </Text>
-            {store.knownEventTypes.map((t) => {
-              const hidden = store.hiddenEventTypes[t] === true;
-              return (
-                <Badge
-                  key={t}
-                  size="xs"
-                  variant={hidden ? "outline" : "light"}
-                  color={hidden ? "gray" : "teal"}
-                  style={{ cursor: "pointer", opacity: hidden ? 0.45 : 1 }}
-                  onClick={() => store.toggleEventType(t)}
-                >
-                  %{t}
-                </Badge>
-              );
-            })}
-          </Group>
-        )}
+        {store.knownEventTypes.length > 0 &&
+          !store.hiddenDirections["in-event"] && (
+            <Group gap={4} wrap="wrap" mt={6}>
+              <Text size="xs" c="dimmed">
+                event types:
+              </Text>
+              {store.knownEventTypes.map((t) => {
+                const hidden = store.hiddenEventTypes[t] === true;
+                return (
+                  <Badge
+                    key={t}
+                    size="xs"
+                    variant={hidden ? "outline" : "light"}
+                    color={hidden ? "gray" : "teal"}
+                    style={{ cursor: "pointer", opacity: hidden ? 0.45 : 1 }}
+                    onClick={() => store.toggleEventType(t)}
+                  >
+                    %{t}
+                  </Badge>
+                );
+              })}
+            </Group>
+          )}
       </Paper>
 
       {/* -------------------------- Split view -------------------------- */}
       <Group align="stretch" gap="xs" style={{ flex: 1, minHeight: 0 }}>
         {/* Timeline */}
-        <Paper withBorder style={{ flex: 1.6, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <Paper
+          withBorder
+          style={{
+            flex: 1.6,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
           <ScrollArea type="auto" style={{ flex: 1 }}>
             <table
               style={{
@@ -162,7 +185,12 @@ export const InspectorView = observer(function InspectorView({
                   zIndex: 1,
                 }}
               >
-                <tr style={{ textAlign: "left", color: "var(--mantine-color-dimmed)" }}>
+                <tr
+                  style={{
+                    textAlign: "left",
+                    color: "var(--mantine-color-dimmed)",
+                  }}
+                >
                   <th style={thStyle}>time</th>
                   <th style={thStyle}>Δ</th>
                   <th style={thStyle}>dir</th>
@@ -184,7 +212,13 @@ export const InspectorView = observer(function InspectorView({
                 ))}
                 {visible.length === 0 && (
                   <tr>
-                    <td colSpan={6} style={{ padding: 12, color: "var(--mantine-color-dimmed)" }}>
+                    <td
+                      colSpan={6}
+                      style={{
+                        padding: 12,
+                        color: "var(--mantine-color-dimmed)",
+                      }}
+                    >
                       {store.entries.length === 0
                         ? "No wire activity yet. Interact with a pane to generate traffic."
                         : "No entries match the current filter."}
@@ -197,7 +231,16 @@ export const InspectorView = observer(function InspectorView({
         </Paper>
 
         {/* Detail panel */}
-        <Paper withBorder p="sm" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <Paper
+          withBorder
+          p="sm"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
           <DetailPanel store={store} paneLabels={paneLabels} />
         </Paper>
       </Group>
@@ -228,7 +271,11 @@ const DirectionChip = observer(function DirectionChip({
       size="sm"
       variant={hidden ? "outline" : "filled"}
       color={hidden ? "gray" : color}
-      style={{ cursor: "pointer", opacity: hidden ? 0.5 : 1, userSelect: "none" }}
+      style={{
+        cursor: "pointer",
+        opacity: hidden ? 0.5 : 1,
+        userSelect: "none",
+      }}
       onClick={() => store.toggleDirection(dir)}
     >
       {label}
@@ -260,7 +307,13 @@ const tdStyle: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-function TimelineRow({ entry, prev, selected, onSelect, paneLabels }: RowProps) {
+function TimelineRow({
+  entry,
+  prev,
+  selected,
+  onSelect,
+  paneLabels,
+}: RowProps) {
   const delta = prev !== null ? entry.ts - prev.ts : 0;
   const presentation = presentFor(entry.wire, paneLabels);
   return (
@@ -275,8 +328,14 @@ function TimelineRow({ entry, prev, selected, onSelect, paneLabels }: RowProps) 
       <td style={{ ...tdStyle, color: "var(--mantine-color-dimmed)" }}>
         {formatTs(entry.ts)}
       </td>
-      <td style={{ ...tdStyle, color: "var(--mantine-color-dimmed)", textAlign: "right" }}>
-        {prev !== null ? `+${formatMs(delta)}` : ""}
+      <td
+        style={{
+          ...tdStyle,
+          color: "var(--mantine-color-dimmed)",
+          textAlign: "right",
+        }}
+      >
+        {prev !== null ? formatDelta(delta) : ""}
       </td>
       <td style={{ ...tdStyle, color: presentation.color }}>
         {presentation.arrow}
@@ -295,7 +354,13 @@ function TimelineRow({ entry, prev, selected, onSelect, paneLabels }: RowProps) 
       >
         {presentation.summary}
       </td>
-      <td style={{ ...tdStyle, textAlign: "right", color: "var(--mantine-color-dimmed)" }}>
+      <td
+        style={{
+          ...tdStyle,
+          textAlign: "right",
+          color: "var(--mantine-color-dimmed)",
+        }}
+      >
         {entry.latencyMs !== null ? `${formatMs(entry.latencyMs)}` : ""}
       </td>
     </tr>
@@ -352,7 +417,8 @@ const DetailPanel = observer(function DetailPanel({
               size="xs"
               variant="subtle"
               onClick={() =>
-                entry.responseEntryId !== null && store.select(entry.responseEntryId)
+                entry.responseEntryId !== null &&
+                store.select(entry.responseEntryId)
               }
             >
               →
@@ -370,7 +436,8 @@ const DetailPanel = observer(function DetailPanel({
             color={entry.wire.response.success ? "grape" : "red"}
             variant="light"
           >
-            {formatMs(entry.wire.latencyMs)} — {entry.wire.response.success ? "ok" : "error"}
+            {formatMs(entry.wire.latencyMs)} —{" "}
+            {entry.wire.response.success ? "ok" : "error"}
           </Badge>
         </Group>
       )}
@@ -396,152 +463,6 @@ const DetailPanel = observer(function DetailPanel({
 });
 
 // ---------------------------------------------------------------------------
-// Presentation
-// ---------------------------------------------------------------------------
-
-interface Presentation {
-  readonly arrow: string;
-  readonly color: string;
-  readonly type: string;
-  readonly summary: string;
-}
-
-function presentFor(w: WireEntry, paneLabels: Map<number, string>): Presentation {
-  if (w.dir === "out") {
-    const msg = w.msg;
-    if (msg.kind === "execute") {
-      return {
-        arrow: "↑",
-        color: "var(--mantine-color-blue-6)",
-        type: `execute #${msg.id}`,
-        summary: msg.command,
-      };
-    }
-    if (msg.kind === "sendKeys") {
-      return {
-        arrow: "↑",
-        color: "var(--mantine-color-blue-6)",
-        type: `sendKeys #${msg.id}`,
-        summary: `${msg.target}  ${escapeForDisplay(msg.keys)}`,
-      };
-    }
-    return {
-      arrow: "↑",
-      color: "var(--mantine-color-blue-6)",
-      type: `detach #${msg.id}`,
-      summary: "",
-    };
-  }
-  if (w.dir === "in-event") {
-    return {
-      arrow: "↓",
-      color: "var(--mantine-color-teal-6)",
-      type: `%${w.event.type}`,
-      summary: summarizeEvent(w.event, paneLabels),
-    };
-  }
-  if (w.dir === "in-response") {
-    const head = w.response.output[0] ?? "";
-    const more = w.response.output.length > 1 ? ` …+${w.response.output.length - 1}` : "";
-    return {
-      arrow: "↓",
-      color: "var(--mantine-color-grape-6)",
-      type: `response #${w.id}${w.response.success ? "" : " !err"}`,
-      summary: `${head}${more}`,
-    };
-  }
-  return {
-    arrow: "⚠",
-    color: "var(--mantine-color-red-6)",
-    type: `error${w.id !== null ? ` #${w.id}` : ""}`,
-    summary: w.message,
-  };
-}
-
-function badgeColor(dir: WireEntry["dir"]): string {
-  if (dir === "out") return "blue";
-  if (dir === "in-event") return "teal";
-  if (dir === "in-response") return "grape";
-  return "red";
-}
-
-function renderPayload(w: WireEntry): string {
-  if (w.dir === "out") return JSON.stringify(w.msg, null, 2);
-  if (w.dir === "in-event") {
-    const ev = w.event;
-    if (ev.type === "output" || ev.type === "extended-output") {
-      // Render the Uint8Array bytes as escaped ASCII so the inspector
-      // can serve as a raw-byte viewer.
-      const ageNote =
-        ev.type === "extended-output" ? `  age=${ev.age}ms` : "";
-      return `paneId=%${ev.paneId}${ageNote}\nbytes=${prettyBytes(ev.data, 96)}\n\n${JSON.stringify({ ...ev, data: `<${ev.data.byteLength} bytes>` }, null, 2)}`;
-    }
-    return JSON.stringify(ev, null, 2);
-  }
-  if (w.dir === "in-response") {
-    const req = w.request !== null ? JSON.stringify(w.request, null, 2) : "(request evicted from ring)";
-    return `latency: ${formatMs(w.latencyMs)}\nsuccess: ${w.response.success}\n\n--- request ---\n${req}\n\n--- response ---\n${JSON.stringify(w.response, null, 2)}`;
-  }
-  return JSON.stringify({ id: w.id, message: w.message }, null, 2);
-}
-
-// ---------------------------------------------------------------------------
-// Event summarization (shared shape with DebugPanel, duplicated here
-// intentionally — the inspector's summary needs to stay on a single
-// line, whereas the debug panel is more forgiving)
-// ---------------------------------------------------------------------------
-
-function paneLabel(id: number, labels: Map<number, string>): string {
-  return labels.get(id) ?? `%${id}`;
-}
-
-function summarizeEvent(ev: TmuxMessage, labels: Map<number, string>): string {
-  if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  "${prettyBytes(ev.data, 64)}"`;
-  }
-  if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  "${prettyBytes(ev.data, 64)}"`;
-  }
-  if (ev.type === "pause" || ev.type === "continue" || ev.type === "pane-mode-changed") {
-    return paneLabel(ev.paneId, labels);
-  }
-  if (ev.type === "window-pane-changed") {
-    return `@${ev.windowId} → ${paneLabel(ev.paneId, labels)}`;
-  }
-  if (
-    ev.type === "window-add" ||
-    ev.type === "window-close" ||
-    ev.type === "unlinked-window-add" ||
-    ev.type === "unlinked-window-close"
-  ) {
-    return `@${ev.windowId}`;
-  }
-  if (ev.type === "window-renamed" || ev.type === "unlinked-window-renamed") {
-    return `@${ev.windowId} → "${ev.name}"`;
-  }
-  if (ev.type === "layout-change") return `@${ev.windowId} layout=${ev.windowLayout}`;
-  if (ev.type === "session-changed" || ev.type === "session-renamed") {
-    return `$${ev.sessionId} "${ev.name}"`;
-  }
-  if (ev.type === "session-window-changed") return `$${ev.sessionId} → @${ev.windowId}`;
-  if (ev.type === "client-session-changed") {
-    return `${ev.clientName} → $${ev.sessionId} "${ev.name}"`;
-  }
-  if (ev.type === "client-detached") return ev.clientName;
-  if (ev.type === "subscription-changed") {
-    return `"${ev.name}" $${ev.sessionId}:@${ev.windowId}.${paneLabel(ev.paneId, labels)}`;
-  }
-  if (ev.type === "begin" || ev.type === "end" || ev.type === "error") {
-    return `cmd #${ev.commandNumber}`;
-  }
-  if (ev.type === "exit") return ev.reason ?? "(clean)";
-  if (ev.type === "message") return ev.message;
-  if (ev.type === "config-error") return ev.error;
-  if (ev.type === "paste-buffer-changed" || ev.type === "paste-buffer-deleted") return ev.name;
-  return "";
-}
-
-// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -553,24 +474,3 @@ function formatTs(ts: number): string {
   const ms = String(d.getMilliseconds()).padStart(3, "0");
   return `${hh}:${mm}:${ss}.${ms}`;
 }
-
-function formatMs(ms: number): string {
-  if (ms < 1) return "<1ms";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
-}
-
-function escapeForDisplay(s: string): string {
-  let out = "";
-  for (const ch of s) {
-    const c = ch.charCodeAt(0);
-    if (c === 0x1b) out += "\\x1b";
-    else if (c === 0x0a) out += "\\n";
-    else if (c === 0x0d) out += "\\r";
-    else if (c === 0x09) out += "\\t";
-    else if (c >= 0x20 && c <= 0x7e) out += ch;
-    else out += `\\x${c.toString(16).padStart(2, "0")}`;
-  }
-  return out;
-}
-
