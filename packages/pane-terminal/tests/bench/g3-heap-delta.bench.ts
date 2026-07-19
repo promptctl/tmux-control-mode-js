@@ -16,6 +16,18 @@
 // measurement needs. Manual `vitest run` against this file falls back to
 // "skip with reason" if --expose-gc is absent; without it, generational
 // behaviour makes the comparison too noisy to gate on.
+//
+// Noise-floor audit (tmux-test-gates-e33.3.1): this gate shares the
+// single-absolute-`heapUsed`-delta SHAPE that made g6 false-positive on CI,
+// but NOT the pathology. g6 broke because its no-leak noise floor (~1.18MB)
+// exceeded its budget (1MB); here the measured no-leak delta is ~0 (a few
+// tens of KB either side of baseline) against a 2MB budget — ~70× headroom, so
+// GC variance cannot cross the threshold. The distinction is deliberate: g3
+// measures near-zero STEADY-STATE hot-path allocation (pre-allocated chunks,
+// no per-tick construction), whereas g6 measures construct/dispose reclaim
+// where the retained-instance cost of a leak sits right in the noise band.
+// If this gate ever tightens toward its noise floor, adopt g6's MIN-over-N
+// estimator rather than widening the budget.
 
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
