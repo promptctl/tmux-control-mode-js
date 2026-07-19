@@ -275,6 +275,17 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
   ["exit", parseExit],
 ]);
 
+/**
+ * Every SPEC §23 server→client wire type the parser recognises, derived from
+ * the one dispatch table above. This is the runtime enumeration of the §23
+ * catalogue — the conformance gate reconciles it against SPEC.md §23 and its
+ * own coverage table so the doc, the parser, and the tests cannot drift apart.
+ *
+ * [LAW:one-source-of-truth] Adding a `%name` to `PARSERS` adds it here with no
+ * second edit; there is no hand-maintained parallel list to fall out of sync.
+ */
+export const WIRE_MESSAGE_TYPES: ReadonlySet<string> = new Set(PARSERS.keys());
+
 // ---------------------------------------------------------------------------
 // TmuxParser
 // ---------------------------------------------------------------------------

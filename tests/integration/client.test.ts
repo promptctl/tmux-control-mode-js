@@ -7,8 +7,13 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
+import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
+import type { TmuxEventMap } from "../../src/emitter.js";
 import {
   listWindows,
   listPanes,
@@ -420,186 +425,522 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Notification coverage (Phase 4 — every notification in SPEC §23 that we
-// can trigger end-to-end without flaky timing assumptions)
+// 3. Notification coverage (SPEC §23) — the conformance gate
+//
+// The README claim "the integration suite observes every SPEC §23 server→client
+// event, or records an in-code exemption saying why it can't" is only true if a
+// gate enforces it. Three representations of the §23 catalogue are reconciled at
+// one seam so none can drift: the SPEC.md §23 table (doc), WIRE_MESSAGE_TYPES
+// (the parser's dispatch keys), and the COVERAGE table below (the tests). A new
+// §23 event, a dropped probe, or a stale coverage entry each redden the gate.
+// [LAW:one-source-of-truth] [LAW:verifiable-goals] [FRAMING:representation]
 // ---------------------------------------------------------------------------
 
 /**
- * Wait for the next message of the given type from a client. Returns the
- * full event object. Times out via vitest's per-test timeout.
+ * Resolve when `client` next emits `type`; reject with a legible message if it
+ * has not within `ms`, so a missing notification fails as "did not observe %X"
+ * rather than an opaque vitest timeout. The handler is registered synchronously,
+ * so a caller that binds `const p = waitForEvent(...)` BEFORE provoking cannot
+ * miss an event that fires between the two calls.
+ * [LAW:no-ambient-temporal-coupling] Observation is armed before provocation.
  */
-function nextMessage<K extends keyof import("../../src/emitter.js").TmuxEventMap>(
+function waitForEvent<K extends keyof TmuxEventMap>(
   client: TmuxClient,
   type: K,
-): Promise<import("../../src/emitter.js").TmuxEventMap[K]> {
-  return new Promise((resolve) => {
-    const handler = (ev: import("../../src/emitter.js").TmuxEventMap[K]) => {
+  ms = 12000,
+): Promise<TmuxEventMap[K]> {
+  return new Promise((resolve, reject) => {
+    const handler = (ev: TmuxEventMap[K]) => {
+      clearTimeout(timer);
       client.off(type, handler);
       resolve(ev);
     };
+    const timer = setTimeout(() => {
+      client.off(type, handler);
+      reject(new Error(`did not observe %${type} within ${ms}ms`));
+    }, ms);
     client.on(type, handler);
   });
 }
 
-describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
-  let sessionName: string;
-  let socketName = "";
-  let client: TmuxClient | null = null;
-
-  beforeEach(() => {
-    socketName = uniqueSocket("notif");
+/** Resolve once a freshly-constructed client reaches connection state "ready". */
+function waitReady(client: TmuxClient): Promise<void> {
+  return new Promise((resolve) => {
+    const h = (e: ConnectionStateMessage) => {
+      if (e.state.status !== "ready") return;
+      client.off("connection-state", h);
+      resolve();
+    };
+    client.on("connection-state", h);
   });
+}
 
-  afterEach(() => {
-    client?.close();
-    client = null;
-    if (socketName !== "") killServer(socketName);
-    socketName = "";
-  });
+/**
+ * What a probe is handed: the attached control client plus the isolated
+ * socket/session, so a probe can drive side channels (a second client, a
+ * window in another session) on the SAME server. `exec` runs a raw tmux
+ * command against the isolated socket.
+ * [LAW:single-enforcer] Only the probe runner builds the tmux command line
+ * (via tmuxCmd); probes ask for effects, they don't format sockets.
+ */
+interface ProbeCtx {
+  readonly client: TmuxClient;
+  readonly socketName: string;
+  readonly sessionName: string;
+  exec(args: string): void;
+}
 
-  it(
-    "INT-01: receives %output bytes from a real pane",
-    async () => {
-      sessionName = uniqueSession("int-output");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      // Pane bytes flow through `attachBytesSink` (server scope = all panes)
-      // — the emitter no longer carries `OutputMessage` so this is the only
-      // way to observe bytes without knowing a paneId up front.
-      const outputPromise = new Promise<{
-        paneId: number;
-        byteLength: number;
-      }>((resolve) => {
-        const detach = c.attachBytesSink({
+/**
+ * Per §23 event: either a live probe that provokes it and resolves once it is
+ * observed (rejecting otherwise), or an exemption naming why it cannot be
+ * provoked deterministically from this harness. "Observed" is not a label — it
+ * is backed by a probe that must actually fire the event, so the partition
+ * cannot lie about what is verified.
+ * [LAW:dataflow-not-control-flow] Coverage is data; the live tests are a
+ * uniform projection of it, not a hand-maintained parallel list.
+ */
+type Coverage =
+  | {
+      readonly kind: "observed";
+      readonly probe: (ctx: ProbeCtx) => Promise<void>;
+    }
+  | { readonly kind: "exempt"; readonly reason: string };
+
+/**
+ * The recorded §23 partition — the single source the README claim and the gate
+ * both derive from. Keys are wire type-strings without the leading `%`. The
+ * catalogue-integrity test asserts these keys equal SPEC.md §23 exactly, so a
+ * `%name` cannot be silently dropped or invented here.
+ * [LAW:one-source-of-truth]
+ */
+const COVERAGE: Readonly<Record<string, Coverage>> = {
+  // Guard framing: every command round-trip emits %begin then %end; an invalid
+  // command emits %error. These are the most-exercised events in the suite —
+  // observed directly here, and pervasively by the Command Correlation tests.
+  begin: {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "begin");
+      await client.execute("list-windows");
+      await p;
+    },
+  },
+  end: {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "end");
+      await client.execute("list-windows");
+      await p;
+    },
+  },
+  error: {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "error");
+      // Rejects with TmuxCommandError; we only care that %error was emitted.
+      void client.execute("this-is-not-a-command").catch(() => {});
+      await p;
+    },
+  },
+
+  // Pane bytes flow through attachBytesSink, not the emitter, so %output is
+  // observed via a sink rather than waitForEvent.
+  output: {
+    kind: "observed",
+    probe: ({ client }) =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          detach();
+          reject(new Error("did not observe %output within 12000ms"));
+        }, 12000);
+        const detach = client.attachBytesSink({
           write(msg) {
+            if (msg.data.byteLength === 0) return;
+            clearTimeout(timer);
             detach();
-            resolve({ paneId: msg.paneId, byteLength: msg.data.byteLength });
+            resolve();
           },
           end() {},
         });
-      });
-      // No target = active pane in active window of attached session.
-      await c.execute("send-keys 'echo hello-output' Enter");
-      const out = await outputPromise;
-      expect(typeof out.paneId).toBe("number");
-      expect(out.byteLength).toBeGreaterThan(0);
-    },
-    15000,
-  );
+        void client.execute("send-keys 'echo hello-output' Enter");
+      }),
+  },
 
-  it(
-    "INT-02a: %window-add fires when a new window is created",
-    async () => {
-      sessionName = uniqueSession("int-winadd");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const evt = nextMessage(c, "window-add");
-      await c.execute("new-window");
-      const ev = await evt;
-      expect(typeof ev.windowId).toBe("number");
+  "window-add": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "window-add");
+      await client.execute("new-window");
+      await p;
     },
-    15000,
-  );
+  },
+  "window-renamed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "window-renamed");
+      await client.execute("rename-window renamed-target");
+      await p;
+    },
+  },
+  "window-pane-changed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      await client.execute("split-window -h");
+      const p = waitForEvent(client, "window-pane-changed");
+      await client.execute("select-pane -t :.+");
+      await p;
+    },
+  },
+  "layout-change": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "layout-change");
+      await client.execute("split-window -h");
+      await p;
+    },
+  },
+  "unlinked-window-close": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      // kill-window unlinks the window from the session before the close
+      // notification fires, so a control client sees the unlinked variant
+      // (SPEC §6.2).
+      await client.execute("new-window -d -n closeme");
+      const p = waitForEvent(client, "unlinked-window-close");
+      await client.execute("kill-window -t closeme");
+      await p;
+    },
+  },
+  "unlinked-window-add": {
+    kind: "observed",
+    probe: async ({ client, exec }) => {
+      // A window created in ANOTHER session on the same server is unlinked from
+      // this client's session, so it arrives as %unlinked-window-add.
+      const other = uniqueSession("cov-unlinkadd");
+      exec(`new-session -d -s ${other}`);
+      const p = waitForEvent(client, "unlinked-window-add");
+      exec(`new-window -d -t ${other}`);
+      await p;
+    },
+  },
+  "unlinked-window-renamed": {
+    kind: "observed",
+    probe: async ({ client, exec }) => {
+      const other = uniqueSession("cov-unlinkren");
+      exec(`new-session -d -s ${other}`);
+      const p = waitForEvent(client, "unlinked-window-renamed");
+      exec(`rename-window -t ${other} cov-unlinked-renamed`);
+      await p;
+    },
+  },
+  "sessions-changed": {
+    kind: "observed",
+    probe: async ({ client, exec }) => {
+      const p = waitForEvent(client, "sessions-changed");
+      exec(`new-session -d -s ${uniqueSession("cov-sesadd")}`);
+      await p;
+    },
+  },
+  "session-renamed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "session-renamed");
+      await client.execute("rename-session cov-renamed");
+      await p;
+    },
+  },
+  "session-changed": {
+    kind: "observed",
+    probe: async ({ client, exec }) => {
+      const other = uniqueSession("cov-sesswitch");
+      exec(`new-session -d -s ${other}`);
+      const p = waitForEvent(client, "session-changed");
+      await client.execute(`switch-client -t ${other}`);
+      await p;
+    },
+  },
+  "session-window-changed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      // Add a second window without switching, then move the session's current
+      // window to it — that transition is %session-window-changed.
+      await client.execute("new-window -d");
+      const p = waitForEvent(client, "session-window-changed");
+      await client.execute("next-window");
+      await p;
+    },
+  },
+  "client-session-changed": {
+    kind: "observed",
+    probe: async ({ client, socketName, sessionName, exec }) => {
+      // %client-session-changed is sent to OTHER control clients when a client
+      // switches session — the switching client itself gets %session-changed.
+      // So a SECOND client must do the switching while the primary observes.
+      const other = uniqueSession("cov-cliswitch");
+      exec(`new-session -d -s ${other}`);
+      const c2 = new TmuxClient(
+        spawnTmux(["attach-session", "-t", sessionName], {
+          socketPath: socketName,
+        }),
+      );
+      await waitReady(c2);
+      const p = waitForEvent(client, "client-session-changed");
+      await c2.execute(`switch-client -t ${other}`);
+      await p;
+      c2.close();
+    },
+  },
+  "client-detached": {
+    kind: "observed",
+    probe: async ({ client, socketName, sessionName }) => {
+      // Attach a SECOND control client to the same session; when it detaches,
+      // the primary client observes %client-detached.
+      const c2 = new TmuxClient(
+        spawnTmux(["attach-session", "-t", sessionName], {
+          socketPath: socketName,
+        }),
+      );
+      await waitReady(c2);
+      const p = waitForEvent(client, "client-detached");
+      c2.detach();
+      await p;
+      c2.close();
+    },
+  },
+  "paste-buffer-changed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "paste-buffer-changed");
+      await client.execute("set-buffer cov-buffer-content");
+      await p;
+    },
+  },
+  "paste-buffer-deleted": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      await client.execute("set-buffer -b cov-delbuf cov-x");
+      const p = waitForEvent(client, "paste-buffer-deleted");
+      await client.execute("delete-buffer -b cov-delbuf");
+      await p;
+    },
+  },
+  "subscription-changed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      // Subscribing to a format makes the server emit its initial value as
+      // %subscription-changed.
+      const p = waitForEvent(client, "subscription-changed");
+      await subscribeRaw(client, "cov-sub", "", "#{window_id}");
+      await p;
+    },
+  },
+  "pane-mode-changed": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "pane-mode-changed");
+      await client.execute("copy-mode");
+      await p;
+    },
+  },
+  message: {
+    kind: "observed",
+    probe: async ({ client, socketName, sessionName }) => {
+      // A control client's OWN display-message returns as command output, not
+      // %message. %message is delivered when ANOTHER actor displays a message
+      // ON this client — so discover this client's name and target it from a
+      // second client.
+      const nameResp = await client.execute(
+        "display-message -p '#{client_name}'",
+      );
+      const clientName = nameResp.output.join("").trim();
+      if (clientName.length === 0) {
+        throw new Error("could not resolve control client name for %message");
+      }
+      const c2 = new TmuxClient(
+        spawnTmux(["attach-session", "-t", sessionName], {
+          socketPath: socketName,
+        }),
+      );
+      await waitReady(c2);
+      const p = waitForEvent(client, "message");
+      await c2.execute(`display-message -c '${clientName}' cov-status-message`);
+      await p;
+      c2.close();
+    },
+  },
+  "config-error": {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const badCfg = join(tmpdir(), `cov-badcfg-${Date.now()}.conf`);
+      writeFileSync(badCfg, "this-is-not-a-tmux-command\n");
+      try {
+        const p = waitForEvent(client, "config-error");
+        // source-file surfaces the bad line as a %config-error notification.
+        void client.execute(`source-file ${badCfg}`).catch(() => {});
+        await p;
+      } finally {
+        rmSync(badCfg, { force: true });
+      }
+    },
+  },
+  exit: {
+    kind: "observed",
+    probe: async ({ client }) => {
+      const p = waitForEvent(client, "exit");
+      client.detach();
+      await p;
+    },
+  },
 
-  it(
-    "INT-02b: %window-renamed fires when a window is renamed",
-    async () => {
-      sessionName = uniqueSession("int-winren");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const evt = nextMessage(c, "window-renamed");
-      await c.execute("rename-window renamed-target");
-      const ev = await evt;
-      expect(ev.name).toBe("renamed-target");
-    },
-    15000,
-  );
+  // ---- Exemptions: not deterministically provokable from this harness ----
+  // [LAW:no-silent-failure] Each records precisely WHY, so a green run never
+  // overstates what was verified.
+  "window-close": {
+    kind: "exempt",
+    reason:
+      "tmux delivers window teardown to a control client as %unlinked-window-close (the window is unlinked from the session before the close notification — SPEC §6.2, see the %unlinked-window-close observation). The linked %window-close variant is not reachable by a single-session control client in this harness.",
+  },
+  pause: {
+    kind: "exempt",
+    reason:
+      "Server→client %pause fires only when tmux measures THIS control client's output as more than `pause-after` seconds behind (backpressure). A promptly-draining transport never falls behind; forcing it requires artificially stalling reads, which is timing-dependent and flaky. The client→server pause/continue commands this responds to are covered by tests/integration/idle-pane-suppression.test.ts.",
+  },
+  continue: {
+    kind: "exempt",
+    reason:
+      "Emitted only to resume a pane previously %pause'd by backpressure; unreachable without first provoking %pause (see the %pause exemption).",
+  },
+  "extended-output": {
+    kind: "exempt",
+    reason:
+      "Emitted in place of %output only for a flow-controlled pane draining its backlog after a %pause; unreachable without first provoking %pause (see the %pause exemption).",
+  },
+};
 
-  it(
-    "INT-02c: %unlinked-window-close fires when a window is closed",
-    async () => {
-      sessionName = uniqueSession("int-winclose");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      // Create a uniquely-named window we can target by name.
-      await c.execute("new-window -d -n closeme");
-      // Per SPEC §6.2: tmux's kill-window unlinks the window from the
-      // session BEFORE the close notification fires, so the receiving
-      // client (us) sees %unlinked-window-close, not %window-close.
-      // Both are valid spec-compliant variants of "window-close".
-      const evt = nextMessage(c, "unlinked-window-close");
-      await c.execute("kill-window -t closeme");
-      const ev = await evt;
-      expect(typeof ev.windowId).toBe("number");
-    },
-    15000,
+/**
+ * Parse the authoritative §23 server→client catalogue straight from SPEC.md so
+ * the gate measures the tests against the spec itself, not a copy of it. Throws
+ * loudly if the section or table can't be found or yields nothing — an empty
+ * catalogue would make the coverage assertion vacuously pass, exactly the
+ * can't-fail gate this epic exists to kill.
+ * [LAW:one-source-of-truth] [LAW:no-silent-failure]
+ */
+function readSpec23ServerEvents(): ReadonlySet<string> {
+  const spec = readFileSync(new URL("../../SPEC.md", import.meta.url), "utf8");
+  const lines = spec.split("\n");
+  const sectionIdx = lines.findIndex((l) => /^## 23\. /.test(l));
+  if (sectionIdx === -1) throw new Error("SPEC.md §23 header not found");
+  const tableIdx = lines.findIndex(
+    (l, i) => i > sectionIdx && /^### Server-to-Client Messages/.test(l),
   );
+  if (tableIdx === -1) {
+    throw new Error("SPEC.md §23 Server-to-Client subsection not found");
+  }
+  const names = new Set<string>();
+  for (let i = tableIdx + 1; i < lines.length; i++) {
+    if (/^#{2,3} /.test(lines[i])) break; // next (sub)section ends the table
+    const m = lines[i].match(/^\|\s*`%([a-z-]+)`/);
+    if (m) names.add(m[1]);
+  }
+  if (names.size === 0) {
+    throw new Error("SPEC.md §23 table yielded no server→client events");
+  }
+  return names;
+}
 
-  it(
-    "INT-02d: %window-pane-changed fires when the active pane changes",
-    async () => {
-      sessionName = uniqueSession("int-paneact");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      await c.execute("split-window -h");
-      const evt = nextMessage(c, "window-pane-changed");
-      await c.execute("select-pane -t :.+");
-      const ev = await evt;
-      expect(typeof ev.windowId).toBe("number");
-      expect(typeof ev.paneId).toBe("number");
-    },
-    15000,
-  );
+// ---------------------------------------------------------------------------
+// 3a. Structural conformance gate — pure, runs with or without tmux.
+//
+// This is the load-bearing claim: SPEC §23, the parser, and the coverage table
+// describe the same set of events, and every event is either probed live or
+// exempted with a reason. It needs no tmux, so it fails on a tmux-less CI host
+// too. [LAW:verifiable-goals]
+// ---------------------------------------------------------------------------
 
-  it(
-    "INT-03a: %sessions-changed fires when a new session is created",
-    async () => {
-      sessionName = uniqueSession("int-sescre");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const evt = nextMessage(c, "sessions-changed");
-      const otherName = uniqueSession("int-other");
-      // Same isolated server — must use the same -L socket so the attached
-      // control-mode client actually sees %sessions-changed.
-      execSync(tmuxCmd(socketName, `new-session -d -s ${otherName}`), {
-        stdio: "ignore",
-      });
-      await evt;
-      execSync(tmuxCmd(socketName, `kill-session -t ${otherName}`), {
-        stdio: "ignore",
-      });
-    },
-    15000,
-  );
+describe("SPEC §23 conformance gate (structural)", () => {
+  const spec23 = [...readSpec23ServerEvents()].sort();
 
-  it(
-    "INT-04: %layout-change fires after split-window",
-    async () => {
-      sessionName = uniqueSession("int-layout");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const evt = nextMessage(c, "layout-change");
-      await c.execute("split-window -h");
-      const ev = await evt;
-      expect(typeof ev.windowId).toBe("number");
-      expect(typeof ev.windowLayout).toBe("string");
-      expect(ev.windowLayout.length).toBeGreaterThan(0);
-    },
-    15000,
-  );
+  it("catalogue integrity: SPEC §23 == parser wire types == coverage keys", () => {
+    expect([...WIRE_MESSAGE_TYPES].sort()).toEqual(spec23);
+    expect(Object.keys(COVERAGE).sort()).toEqual(spec23);
+  });
 
-  it(
-    "INT-05: %exit fires on detach",
-    async () => {
-      sessionName = uniqueSession("int-exit");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const evt = nextMessage(c, "exit");
-      c.detach();
-      await evt;
-      client = null;
+  it("every §23 event is either observed live or exempted with a reason", () => {
+    for (const name of spec23) {
+      const cov = COVERAGE[name];
+      // Exhaustive: kind is "observed" | "exempt". A non-empty reason is the
+      // only thing an exemption may claim as its justification.
+      if (cov.kind === "exempt") {
+        expect(
+          cov.reason.trim().length,
+          `exemption for %${name} must cite a reason`,
+        ).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("README's stated partition matches the coverage table", () => {
+    // [LAW:one-source-of-truth] The README count and named exemptions are a
+    // representation of COVERAGE; this reconciles them so the prose cannot
+    // become a hand-drifted approximation of what the gate actually verifies.
+    const readme = readFileSync(
+      new URL("../../README.md", import.meta.url),
+      "utf8",
+    );
+    const observed = Object.values(COVERAGE).filter(
+      (c) => c.kind === "observed",
+    ).length;
+    const exemptNames = Object.entries(COVERAGE).flatMap(([n, c]) =>
+      c.kind === "exempt" ? [n] : [],
+    );
+
+    const m = readme.match(/(\d+) of the (\d+) events are observed live/);
+    expect(
+      m,
+      "README must state '<N> of the <M> events are observed live'",
+    ).not.toBeNull();
+    expect(Number(m![1])).toBe(observed);
+    expect(Number(m![2])).toBe(spec23.length);
+    for (const name of exemptNames) {
+      expect(
+        readme.includes(`\`%${name}\``),
+        `README must name the exempt event %${name}`,
+      ).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Live notification coverage — provokes each observed §23 event against a
+// real tmux. Generated from COVERAGE so "observed" is proven, never asserted.
+// ---------------------------------------------------------------------------
+
+const OBSERVED_ENTRIES = Object.entries(COVERAGE).flatMap(([name, cov]) =>
+  cov.kind === "observed" ? [[name, cov.probe] as const] : [],
+);
+
+describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
+  it.each(OBSERVED_ENTRIES)(
+    "observes %%%s live from a real tmux",
+    async (name, probe) => {
+      const socketName = uniqueSocket("cov");
+      const sessionName = uniqueSession(`cov-${name}`);
+      let client: TmuxClient | null = null;
+      try {
+        client = await createSession(socketName, sessionName);
+        await probe({
+          client,
+          socketName,
+          sessionName,
+          exec: (args) =>
+            execSync(tmuxCmd(socketName, args), { stdio: "ignore" }),
+        });
+      } finally {
+        client?.close();
+        killServer(socketName);
+      }
     },
-    15000,
+    20000,
   );
 });
 
