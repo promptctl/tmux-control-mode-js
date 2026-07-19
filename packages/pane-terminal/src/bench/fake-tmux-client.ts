@@ -110,6 +110,13 @@ export class FakeTmuxClient {
   // the handler scripts the response payload.
   private readonly captureLog: string[] = [];
   private captureHandler: (target: string) => string = () => "";
+  // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
+  // (modelling tmux's `%error`/transport failures), or `null` to resolve
+  // normally. Both of PaneStream's tmux seams — the pane-size subscription
+  // (`refresh-client -B …`) and the seed (`capture-pane`/`display-message`) —
+  // flow through `execute()`, so this one knob drives both failure paths.
+  // Default: never fail.
+  private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
 
   // Subscription RPC log. PaneStream calls `subscribeRaw` at construction and
@@ -178,19 +185,26 @@ export class FakeTmuxClient {
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
+    const failure = this.executeFailure(command);
     const payload = this.captureHandler(command);
     const commandNumber = ++this.commandCounter;
-    return new Promise((resolve) => {
-      setTimeout(
-        () =>
-          resolve({
-            commandNumber,
-            timestamp: Date.now(),
-            output: payload === "" ? [] : payload.split("\n"),
-            success: true,
-          }),
-        this.roundTripMs,
-      );
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        // [LAW:no-silent-failure] A scripted failure rejects — same shape as
+        // TmuxClient.execute, which rejects with a typed error on %error /
+        // transport loss. Resolution and rejection share the one macrotask
+        // boundary so timing stays deterministic across both paths.
+        if (failure !== null) {
+          reject(failure);
+          return;
+        }
+        resolve({
+          commandNumber,
+          timestamp: Date.now(),
+          output: payload === "" ? [] : payload.split("\n"),
+          success: true,
+        });
+      }, this.roundTripMs);
     });
   }
 
@@ -282,6 +296,17 @@ export class FakeTmuxClient {
    */
   setCapturePaneResponse(handler: (target: string) => string): void {
     this.captureHandler = handler;
+  }
+
+  /**
+   * Script which `execute()` commands REJECT and with what error. The handler
+   * receives the full command string and returns an `Error` to reject with, or
+   * `null` to resolve normally. Match on the command prefix to target a seam —
+   * `refresh-client -B` for the pane-size subscription, `capture-pane` /
+   * `display-message` for the seed. Persistent, like `setCapturePaneResponse`.
+   */
+  setExecuteFailure(handler: (command: string) => Error | null): void {
+    this.executeFailure = handler;
   }
 
   capturePaneCount(): number {

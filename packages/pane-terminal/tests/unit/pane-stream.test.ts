@@ -8,8 +8,24 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../src/bench/index.js";
 import { PaneStream } from "../../src/stream/index.js";
+import type { PaneStreamError } from "../../src/stream/index.js";
 import type { TerminalSink } from "../../src/sink/index.js";
 import type { SeedCursor } from "../../src/sink/index.js";
+import {
+  TmuxCommandError,
+  TmuxProtocolError,
+  TransportClosedError,
+} from "@promptctl/tmux-control-mode-js/browser";
+
+// A live-tmux command failure (tmux replied %error). `reportError` must SURFACE
+// this class — tmux was alive, so the blank pane is a real failure.
+const tmuxError = (line: string): TmuxCommandError =>
+  new TmuxCommandError({
+    commandNumber: 1,
+    timestamp: 0,
+    output: [line],
+    success: false,
+  });
 
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
@@ -517,5 +533,143 @@ describe("PaneStream — activity counter coalescing", () => {
     await new Promise((r) => setTimeout(r, 150));
 
     expect(events).toEqual([1, 3]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// kwv.3 — subscribe/seed effect failures are observable, not blank screens.
+// Both seams flow through client.execute(); the fake's setExecuteFailure knob
+// scripts a rejection per command. reportError classifies by error CLASS: a
+// live-tmux failure surfaces on the 'error' seam; a connection-gone failure is
+// the quiet, reconnect-re-driven case.
+// ---------------------------------------------------------------------------
+
+describe("PaneStream — seam failure observability (kwv.3)", () => {
+  it("a failed pane-size subscribe surfaces on lastError and the 'error' event", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("refresh-client -B") ? tmuxError("no such pane") : null,
+    );
+    const errors: PaneStreamError[] = [];
+    // The subscribe fires in the constructor; a listener attached synchronously
+    // after construction still catches the async rejection, and lastError is
+    // retained for a consumer that subscribes even later.
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.on("error", (e) => errors.push(e));
+    await flushTicks();
+
+    expect(stream.lastError?.phase).toBe("subscribe");
+    expect(stream.lastError?.paneId).toBe(PANE_ID);
+    expect(errors.map((e) => e.phase)).toEqual(["subscribe"]);
+    stream.dispose();
+  });
+
+  it("a connection-gone subscribe failure stays quiet (reconnect re-drives it)", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("refresh-client -B")
+        ? new TransportClosedError("socket closed")
+        : null,
+    );
+    const errors: PaneStreamError[] = [];
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.on("error", (e) => errors.push(e));
+    await flushTicks();
+
+    expect(stream.lastError).toBeNull();
+    expect(errors).toEqual([]);
+    stream.dispose();
+  });
+
+  it("a failed capture-pane seed surfaces on the 'error' seam yet the stream still goes live", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
+        ? tmuxError("capture failed")
+        : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const errors: PaneStreamError[] = [];
+    stream.on("error", (e) => errors.push(e));
+    stream.attach(new RecordingSink());
+    await flushTicks();
+
+    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
+    expect(stream.lastError?.phase).toBe("seed");
+    // Still went live — live bytes must render, not wedge forever in 'seeding'.
+    expect(stream.state).toBe("live");
+    stream.dispose();
+  });
+
+  it("a corrupted-terminator (TmuxProtocolError) seed failure also surfaces", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("capture-pane")
+        ? new TmuxProtocolError(1, "%end 2 3") // truncated guard terminator
+        : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const errors: PaneStreamError[] = [];
+    stream.on("error", (e) => errors.push(e));
+    stream.attach(new RecordingSink());
+    await flushTicks();
+
+    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
+    expect(stream.state).toBe("live");
+    stream.dispose();
+  });
+
+  it("a connection-gone seed failure stays quiet but still transitions to live", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
+        ? new TransportClosedError("socket closed")
+        : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.on("error", () => {
+      throw new Error("connection-gone seed failure must not surface");
+    });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+
+    expect(stream.lastError).toBeNull();
+    expect(stream.state).toBe("live");
+    stream.dispose();
+  });
+
+  it("recovers after a transient seed failure: a later reseed paints the captured screen", async () => {
+    vi.useRealTimers();
+    let failCapture = true;
+    const client = new FakeTmuxClient();
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message") ? "0;0" : "recovered-screen",
+    );
+    client.setExecuteFailure((cmd) =>
+      failCapture && cmd.startsWith("capture-pane")
+        ? tmuxError("transient")
+        : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.lastError?.phase).toBe("seed");
+    expect(stream.state).toBe("live");
+
+    // The transient failure clears; a reseed now succeeds and paints the
+    // screen. The failed seed was deliberately not cached, so the retry works.
+    failCapture = false;
+    await stream.reseed();
+    await flushTicks();
+    expect(sink.seedTexts.some((t) => t.includes("recovered-screen"))).toBe(
+      true,
+    );
+    stream.dispose();
   });
 });

@@ -10,6 +10,8 @@ export type {
   PaneStreamOptions,
   TmuxConnection,
   PaneActivity,
+  PaneStreamError,
+  PaneStreamErrorPhase,
 } from "./pane-stream.js";
 export { ReseedScheduler, getScheduler } from "./reseed-scheduler.js";
 export type { ReseedPriority, ReseedTarget } from "./reseed-scheduler.js";
