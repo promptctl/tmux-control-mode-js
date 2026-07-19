@@ -249,6 +249,31 @@ describe("XtermSink: write (live byte path)", () => {
     sink.dispose();
   });
 
+  it("seed carrying trailing bytes before first resize drains snapshot → trailing → live, in order (SD2)", () => {
+    // Exercises the seed()→trailing-loop→bufferWrite path directly: seed carries
+    // its trailing bytes WHILE the gate is still buffering (no resize yet), so
+    // the ordering flows through the seed value, not separate write() calls. The
+    // first-resize rAF releases snapshot, then the seed's trailing, then any
+    // subsequent live write — all in order.
+    const { sink, term } = newSink();
+    const t1 = new Uint8Array([0x41]);
+    const t2 = new Uint8Array([0x42]);
+    const live = new Uint8Array([0x43]);
+    sink.seed(enc("SNAP"), null, [t1, t2]);
+    sink.write(live);
+    // Nothing reaches xterm before the first resize.
+    expect(term.write).not.toHaveBeenCalled();
+    sink.resize(80, 24);
+    flushRaf();
+    expect(term.resize).toHaveBeenCalledWith(80, 24);
+    expect(term.write).toHaveBeenCalledTimes(4);
+    expect(term.write).toHaveBeenNthCalledWith(1, enc("SNAP"), expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(2, t1);
+    expect(term.write).toHaveBeenNthCalledWith(3, t2);
+    expect(term.write).toHaveBeenNthCalledWith(4, live);
+    sink.dispose();
+  });
+
   it("post-dispose write is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
