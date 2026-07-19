@@ -500,6 +500,39 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(rendererTopoErrors).toHaveLength(0);
   });
 
+  it("surfaces the renderer proxy's OWN bootstrap failure to proxy consumers via topology-error", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING); // main reaches ready
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+    // Let the register-time connection-state snapshot reach the proxy so its
+    // router is ready before we attach a topology-dependent sink.
+    await Promise.resolve();
+
+    const errors: Error[] = [];
+    proxy.on("topology-error", (ev) => errors.push(ev.error));
+
+    // A session-scoped sink on the PROXY drives its own router to bootstrap:
+    // execute("list-panes -a") → IPC → main client → transport.
+    proxy.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
+    await Promise.resolve();
+    expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
+
+    // Reject that bootstrap invoke with an %error guard block. The rejection
+    // round-trips over IPC back to the proxy's router, which reports it.
+    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(errors[0]?.message).toMatch(/^topology bootstrap failed:/);
+    expect((errors[0] as Error & { cause?: unknown })?.cause).toBeDefined();
+  });
+
   it("preserves Uint8Array contents through OutputMessage round-trip", () => {
     // Electron IPC uses structured clone, which preserves Uint8Array natively.
     // The hub now mirrors that with `cloneArgs` (structuredClone per arg) so
