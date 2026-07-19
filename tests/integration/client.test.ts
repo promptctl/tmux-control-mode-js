@@ -7,9 +7,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
@@ -768,21 +766,6 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       c2.close();
     },
   },
-  "config-error": {
-    kind: "observed",
-    probe: async ({ client }) => {
-      const badCfg = join(tmpdir(), `cov-badcfg-${Date.now()}.conf`);
-      writeFileSync(badCfg, "this-is-not-a-tmux-command\n");
-      try {
-        const p = waitForEvent(client, "config-error");
-        // source-file surfaces the bad line as a %config-error notification.
-        void client.execute(`source-file ${badCfg}`).catch(() => {});
-        await p;
-      } finally {
-        rmSync(badCfg, { force: true });
-      }
-    },
-  },
   exit: {
     kind: "observed",
     probe: async ({ client }) => {
@@ -799,6 +782,11 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     kind: "exempt",
     reason:
       "tmux delivers window teardown to a control client as %unlinked-window-close (the window is unlinked from the session before the close notification — SPEC §6.2, see the %unlinked-window-close observation). The linked %window-close variant is not reachable by a single-session control client in this harness.",
+  },
+  "config-error": {
+    kind: "exempt",
+    reason:
+      "Runtime `source-file` of a bad config emits %config-error only on newer tmux (observed on 3.6a, silent on the 3.4 baseline the CI/publish path runs). Startup config-load errors do fire on 3.4, but before a control client can attach — and a notification arriving inside the attach greeting's %begin/%end block is captured as greeting output, not dispatched. So it is not deterministically observable across the supported range (floor 3.2).",
   },
   pause: {
     kind: "exempt",

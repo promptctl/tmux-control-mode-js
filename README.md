@@ -90,10 +90,11 @@ stating why it cannot be provoked deterministically from the test harness. The
 that partition — a structural test reconciles it against the SPEC §23 catalogue
 and the parser's own message types, so the doc, the parser, and the tests
 cannot drift apart, and the gate reddens if any §23 event is left unaccounted.
-At present 24 of the 28 events are observed live; the 4 exemptions are the
-linked-window `%window-close` variant and the flow-control trio (`%pause`,
-`%continue`, `%extended-output`), which require backpressure the harness cannot
-create deterministically.
+At present 23 of the 28 events are observed live; the 5 exemptions are the
+linked-window `%window-close` variant, `%config-error` (whose runtime
+provocation is version-gated — silent on the tmux 3.4 baseline), and the
+flow-control trio (`%pause`, `%continue`, `%extended-output`), which require
+backpressure the harness cannot create deterministically.
 
 ## Demo
 
