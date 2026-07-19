@@ -150,6 +150,18 @@ describe("Heartbeat — correlation token", () => {
   });
 });
 
+describe("Heartbeat — start() is idempotent", () => {
+  it("a second start() without stop() does not arm a second interval", () => {
+    vi.useFakeTimers();
+    const ping = vi.fn();
+    const hb = new Heartbeat(100, 50, { ping, onTimeout: vi.fn() });
+    hb.start();
+    hb.start(); // must be a no-op — not a second racing interval
+    vi.advanceTimersByTime(100);
+    expect(ping).toHaveBeenCalledTimes(1); // one interval, one ping
+  });
+});
+
 describe("Heartbeat — stop()", () => {
   it("stop() prevents further ticks", () => {
     vi.useFakeTimers();

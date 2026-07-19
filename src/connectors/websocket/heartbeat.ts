@@ -33,6 +33,10 @@ export class Heartbeat<Token = void> {
   ) {}
 
   start(): void {
+    // [LAW:composability] Idempotent: a second start() without an intervening
+    // stop() is a no-op, so the instance owns at most one interval by
+    // construction — no leaked timer racing on pongDeadline/outstanding.
+    if (this.timer !== null) return;
     if (this.intervalMs <= 0) return;
     this.timer = setInterval(() => {
       this.handlers.onTick?.();
