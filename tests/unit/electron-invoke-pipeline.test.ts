@@ -35,8 +35,12 @@ function makeRig(): Rig {
     onData(cb) {
       dataCb = cb;
     },
-    onClose() {},
-    close() {},
+    onClose() {
+      // No close handling needed — these tests never close the transport.
+    },
+    close() {
+      // No-op: the pipeline surface under test never closes the transport.
+    },
   };
   const feed = (chunk: string): void => dataCb?.(chunk);
   const client = new TmuxClient(transport);
@@ -44,7 +48,9 @@ function makeRig(): Rig {
   feed(STARTUP_GREETING);
   const bridge = createBridgeConnection({
     client,
-    reportResumeFailure: () => {},
+    reportResumeFailure: () => {
+      // No stranded-resume surfacing asserted by these tests.
+    },
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });
@@ -76,9 +82,7 @@ describe("InvokePipeline — validation → envelope", () => {
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });
-    await expect(
-      pipeline.handle(event, { args: [] }),
-    ).resolves.toMatchObject({
+    await expect(pipeline.handle(event, { args: [] })).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });

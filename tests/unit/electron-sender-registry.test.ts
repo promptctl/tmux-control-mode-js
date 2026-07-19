@@ -18,9 +18,53 @@ import type {
   ChunkPayload,
 } from "../../src/pane-output.js";
 import type { ConnectionState } from "../../src/connection-state.js";
-import { IPC } from "../../src/connectors/electron/types.js";
-import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js";
+import {
+  IPC,
+  type WebContentsLike,
+} from "../../src/connectors/electron/types.js";
+import {
+  SenderRegistry,
+  type PendingDispatch,
+} from "../../src/connectors/electron/sender-registry.js";
 import { createIpcHub, type FakeRenderer } from "./_helpers/ipc-hub.js";
+
+// A WebContentsLike whose destroyed state is set directly, WITHOUT firing the
+// `destroyed` once-handler. Lets a test drive the broadcast reaping path
+// (isDestroyed → teardown) in isolation from the destroy-handler teardown path.
+interface ControllableWc {
+  readonly wc: WebContentsLike;
+  readonly sends: unknown[];
+  setDestroyed(): void;
+  destroyHandlerCount(): number;
+}
+
+function makeControllableWc(): ControllableWc {
+  let destroyed = false;
+  const sends: unknown[] = [];
+  const listeners = new Set<() => void>();
+  const wc: WebContentsLike = {
+    send(_channel, ...args) {
+      sends.push(args[0]);
+    },
+    once(event, listener) {
+      if (event === "destroyed") listeners.add(listener);
+    },
+    removeListener(event, listener) {
+      if (event === "destroyed") listeners.delete(listener);
+    },
+    isDestroyed() {
+      return destroyed;
+    },
+  };
+  return {
+    wc,
+    sends,
+    setDestroyed() {
+      destroyed = true;
+    },
+    destroyHandlerCount: () => listeners.size,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Fakes — the two injected seams, typed to the exact Pick the registry needs.
@@ -214,6 +258,26 @@ describe("SenderRegistry — teardown", () => {
     expect(r.destroyHandlerCount()).toBe(0);
   });
 
+  it("flags every in-flight dispatch of the torn-down sender aborted", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = registry.getOrCreate(r.sender);
+
+    // Stand in for the invoke pipeline: two in-flight dispatches on this sender.
+    const a: PendingDispatch = { aborted: false };
+    const b: PendingDispatch = { aborted: false };
+    state.pending.add(a);
+    state.pending.add(b);
+
+    registry.teardown(r.sender);
+
+    // The abort channel — the whole reason `pending` exists — is flipped so the
+    // pipeline returns BRIDGE_ABORTED instead of delivering to a dead wc.
+    expect(a.aborted).toBe(true);
+    expect(b.aborted).toBe(true);
+  });
+
   it("teardownAll tears down every registered sender", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
@@ -229,28 +293,52 @@ describe("SenderRegistry — teardown", () => {
 });
 
 describe("SenderRegistry — broadcast", () => {
-  it("delivers to subscribed senders, skips unsubscribed, and tears down destroyed ones", () => {
+  it("delivers to subscribed senders and skips unsubscribed ones", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const hub = createIpcHub();
     const subscribed = hub.createRenderer();
     const unsubscribed = hub.createRenderer();
-    const dead = hub.createRenderer();
 
     const subEvents = captureEvents(subscribed);
     const unsubEvents = captureEvents(unsubscribed);
 
     registry.register(subscribed.sender); // isSubscribed = true
     registry.getOrCreate(unsubscribed.sender); // never register → not subscribed
-    registry.register(dead.sender);
     subEvents.length = 0; // drop the register-time connection-state snapshot
 
-    dead.destroy();
     registry.broadcast({ type: "reconnected" });
 
     expect(subEvents).toContainEqual({ type: "reconnected" });
     expect(unsubEvents).not.toContainEqual({ type: "reconnected" });
-    // The destroyed sender was reaped mid-broadcast.
+    expect(bridge.removePeer).not.toHaveBeenCalled();
+  });
+
+  it("reaps a sender that became destroyed without firing its destroyed handler", () => {
+    // A sender whose wc is destroyed but whose destroyed handler never ran (a
+    // real Electron race: `destroyed` may fire asynchronously) is still in the
+    // map when broadcast iterates. This exercises broadcast's OWN isDestroyed →
+    // teardown reaping path — not the destroy-handler teardown path.
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const dead = makeControllableWc();
+    registry.register(dead.wc);
+    const state = registry.getOrCreate(dead.wc);
+    dead.sends.length = 0; // drop the register-time connection-state snapshot
+
+    dead.setDestroyed(); // destroyed, but the once-handler did NOT fire
+    registry.broadcast({ type: "reconnected" });
+
+    // Broadcast itself detected the dead sender and tore it down: removePeer
+    // fired with this sender's peer (the destroy handler never ran), no event
+    // was delivered, and the destroyed listener was detached.
+    expect(bridge.removePeer).toHaveBeenCalledTimes(1);
+    expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
+    expect(dead.sends).toEqual([]);
+    expect(dead.destroyHandlerCount()).toBe(0);
+
+    // Reaped: a second broadcast finds nothing to tear down.
+    registry.broadcast({ type: "reconnected" });
     expect(bridge.removePeer).toHaveBeenCalledTimes(1);
   });
 });
