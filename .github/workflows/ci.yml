@@ -46,3 +46,77 @@ jobs:
         run: pnpm --filter @promptctl/pane-terminal run bench:gate
         env:
           TMUX_INTEGRATION: "1"
+
+  # ---------------------------------------------------------------------------
+  # Playwright e2e — the ONLY real-runtime check of the Electron connector's
+  # renderer path and the web-multiplexer showcase's mounted DOM. Everything
+  # else (unit, integration) verifies the library through fakes or the raw
+  # protocol; this job launches a real Electron shell against a real tmux and
+  # asserts keystroke → IPC → tmux → %output → rendered xterm grid.
+  #
+  # TRIGGER CHOICE — blocking PR check, same push/PR triggers as `check`, NOT a
+  # scheduled/release-only run. Justification (the ticket requires the choice be
+  # recorded here): the suite is fast (~1–2 min incl. builds) and fully isolated
+  # (per-PID tmux sockets, retries:1 in CI), so it can gate every PR without
+  # slowing the queue. A scheduled-only trigger would let a renderer regression
+  # merge to master and only surface hours later — the gate would then report a
+  # break that has *already* shipped, which is the exact decorative-gate failure
+  # this epic exists to remove. Blocking-on-PR catches it before merge.
+  # [LAW:verifiable-goals] [LAW:no-silent-failure]
+  #
+  # tmux VERSION: the e2e path exercises only the library's declared 3.2 floor
+  # (format subscriptions + capture-pane seeding). It does NOT reach
+  # requestReport / refresh-client -r (3.5+) — the demo never calls it — so
+  # apt's tmux (3.4 on noble) is sufficient and no version guard is needed.
+  # If a future e2e assertion starts depending on a >3.4 feature, skipIf-guard
+  # it on `tmux -V` (see TMUX_SUPPORTS_REQUEST_REPORT in the integration suite)
+  # or this job will redden while passing on newer local tmux.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # tmux for the real server the tests spawn on isolated sockets; xvfb so
+      # Electron's Chromium has a display on the headless runner.
+      - run: sudo apt-get update && sudo apt-get install -y tmux xvfb
+      - run: tmux -V
+
+      - run: pnpm install --frozen-lockfile
+
+      # Electron reuses Chromium's shared libraries; install-deps pulls the
+      # exact OS packages Playwright's Chromium (== Electron's runtime) needs.
+      # No browser download — the specs drive the `electron` npm binary via
+      # Playwright's _electron launcher, not a Playwright-managed browser.
+      - run: pnpm exec playwright install-deps chromium
+
+      # The demo resolves @promptctl/{tmux-control-mode-js,pane-terminal} to
+      # their built dist/ (exports map → ./dist/*), so the library must be
+      # built before the demo's Vite/esbuild bundle (run by test:e2e itself).
+      - run: pnpm run build
+
+      # xvfb-run -a picks a free display; test:e2e builds the demo's electron
+      # bundle then runs the Playwright config. CI=true (GH sets it) flips the
+      # config to the github reporter, retries:1, and forbidOnly.
+      - name: e2e — Playwright (Electron) under xvfb
+        run: xvfb-run -a pnpm run test:e2e
+
+      # A red e2e is only actionable with the trace. retain-on-failure (config)
+      # writes traces under test-results/; publish them so failures are
+      # debuggable without a local repro. [LAW:no-silent-failure]
+      - name: upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-traces
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore

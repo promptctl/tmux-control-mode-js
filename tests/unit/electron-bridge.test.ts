@@ -13,6 +13,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
+
 import { TmuxClient } from "../../src/client.js";
 import { isTmuxMessage } from "../../src/emitter.js";
 import { TmuxCommandError } from "../../src/errors.js";
@@ -1331,6 +1333,105 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
 // Import-graph smoke test: renderer must not transitively pull Node modules.
 // ---------------------------------------------------------------------------
 
+// Extract every RUNTIME module-graph edge from a TS source. An edge is a
+// specifier that pulls its target into the renderer's runtime bundle — the
+// thing a Node import would ride into the browser. Type-only forms are erased
+// by tsc and create NO runtime edge, so they are deliberately excluded (the
+// renderer legitimately imports TYPES from Node-only files, e.g. an
+// `implements TmuxConnection` clause whose declaration lives in client.ts).
+//
+// The set of forms is grammar-defined by the TS parser rather than matched by
+// a hand-rolled regex: a regex must enumerate syntactic shapes and silently
+// misses every one it forgot (this gate previously missed `export ... from`
+// re-exports and dynamic `import()` — a Node import smuggled through either
+// slipped past the renderer/Node boundary check). The parser closes that
+// enumeration gap by construction. [LAW:types-are-the-program] [LAW:no-silent-failure]
+//
+//   COLLECT (runtime edge)              │ SKIP (type-only, fully erased)
+//   ────────────────────────────────────┼───────────────────────────────────
+//   import d from "m"                    │ import type { X } from "m"
+//   import { a } from "m"                │ export type { X } from "m"
+//   import * as n from "m"               │ import { type X } from "m"  (all-type)
+//   import "m"          (side-effect)    │ export { type X } from "m"  (all-type)
+//   import d, { a } from "m"             │
+//   export { a } from "m"    (re-export) │
+//   export * from "m"        (re-export) │
+//   export * as n from "m"   (re-export) │
+//   import("m")         (dynamic literal)│
+function collectModuleEdges(sourceText: string, fileName: string): string[] {
+  const sf = ts.createSourceFile(
+    fileName,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    /* setParentNodes */ true,
+    fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const specs: string[] = [];
+
+  // `import { type A, type B } from "m"` with no default/namespace binding is
+  // fully erased; if ANY binding is a value, a runtime edge remains.
+  const importClauseIsTypeOnly = (clause: ts.ImportClause): boolean => {
+    if (clause.isTypeOnly) return true; // `import type { ... }`
+    if (clause.name !== undefined) return false; // default binding is a value
+    const b = clause.namedBindings;
+    if (b !== undefined && ts.isNamespaceImport(b)) return false; // `* as ns`
+    if (b !== undefined && ts.isNamedImports(b)) {
+      return b.elements.every((e) => e.isTypeOnly);
+    }
+    return false;
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      // No importClause → `import "m"`, a pure side-effect runtime edge.
+      const typeOnly =
+        node.importClause !== undefined &&
+        importClauseIsTypeOnly(node.importClause);
+      if (!typeOnly && ts.isStringLiteral(node.moduleSpecifier)) {
+        specs.push(node.moduleSpecifier.text);
+      }
+    } else if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier !== undefined
+    ) {
+      // `export ... from "m"`. isTypeOnly covers `export type { X } from`;
+      // a fully-inline-type named re-export is erased too — mirror imports.
+      const allInlineType =
+        node.exportClause !== undefined &&
+        ts.isNamedExports(node.exportClause) &&
+        node.exportClause.elements.every((e) => e.isTypeOnly);
+      if (
+        !node.isTypeOnly &&
+        !allInlineType &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        specs.push(node.moduleSpecifier.text);
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword
+    ) {
+      // Dynamic `import("m")` — always a runtime edge. A non-literal specifier
+      // can't be resolved statically; surface it loudly rather than silently
+      // dropping an unanalyzable edge past the gate. [LAW:no-silent-failure]
+      const arg = node.arguments[0];
+      if (arg !== undefined && ts.isStringLiteral(arg)) {
+        specs.push(arg.text);
+      } else {
+        throw new Error(
+          `[import-graph] non-literal dynamic import in ${fileName} — the ` +
+            `renderer-purity gate cannot statically resolve its target; make ` +
+            `the specifier a string literal so the edge stays analyzable.`,
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sf);
+  return specs;
+}
+
 describe("Electron IPC bridge — renderer import graph", () => {
   const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1382,17 +1483,10 @@ describe("Electron IPC bridge — renderer import graph", () => {
       if (files.has(f)) continue;
       files.add(f);
       const src = await readFile(f, "utf-8");
-      // Match value/side-effect imports only. `import type { ... } from "..."`
-      // is fully erased at compile time and produces no runtime edge, so it is
-      // safe even when the target lives in Node-only code (e.g. an
-      // `implements TmuxConnection` clause whose declaration lives in
-      // `src/client.ts`). The negative lookahead after `import` rejects the
-      // `import type` statement form while still flagging
-      // `import { type X, Y } from "..."` (Y is a value).
-      const re =
-        /(?<!\/\/[^\n]*)\bimport\b(?!\s+type\b)\s+(?:[^'"]+?\s+from\s+)?["']([^"']+)["']/g;
-      for (const m of src.matchAll(re)) {
-        const spec = m[1]!;
+      // Grammar-defined runtime edges only — see collectModuleEdges. Type-only
+      // imports/re-exports are excluded there, so the walk never traverses into
+      // Node-only files via a compile-time-erased edge.
+      for (const spec of collectModuleEdges(src, f)) {
         allImports.push({ from: f, spec });
         if (spec.startsWith(".")) {
           const abs = resolve(dirname(f), spec.replace(/\.js$/, ".ts"));
@@ -1435,6 +1529,63 @@ describe("Electron IPC bridge — renderer import graph", () => {
       expect(f).not.toMatch(/\/src\/transport\//);
       expect(f).not.toMatch(/\/src\/client\.ts$/);
     }
+  });
+
+  // Negative test for the enumeration gap this gate previously had. The old
+  // regex matched only `import` statements, so a Node import smuggled through
+  // an `export ... from` re-export or a dynamic `import()` slipped past both
+  // assertions above. Prove the parser-based extractor collects every runtime
+  // edge form (so the gate would flag them) and still erases type-only forms
+  // (so it doesn't false-positive on legitimate type imports from Node-only
+  // files). [LAW:no-silent-failure]
+  it("catches re-exports and dynamic imports; erases type-only edges", () => {
+    const src = [
+      `import { real } from "./local.js";`, // value import — edge
+      `import type { T } from "../../src/client.js";`, // type-only stmt — NOT an edge
+      `export { fs } from "node:fs";`, // re-export — edge (regex MISSED this)
+      `export * from "child_process";`, // re-export-all — edge (regex MISSED this)
+      `export * as net from "node:net";`, // re-export-ns — edge (regex MISSED this)
+      `export type { U } from "../../src/transport/types.js";`, // type re-export — NOT an edge
+      `async function load() { return import("os"); }`, // dynamic — edge (regex MISSED this)
+      `import { type Only } from "node:crypto";`, // all-inline-type — NOT an edge
+    ].join("\n");
+
+    const specs = collectModuleEdges(src, "/synthetic/renderer.ts");
+
+    // Every runtime-edge form is collected — the smuggling routes are closed.
+    expect(specs).toEqual(
+      expect.arrayContaining([
+        "./local.js",
+        "node:fs",
+        "child_process",
+        "node:net",
+        "os",
+      ]),
+    );
+    // Every type-only form is erased — no false positives on legit type imports.
+    expect(specs).not.toContain("../../src/client.js");
+    expect(specs).not.toContain("../../src/transport/types.js");
+    expect(specs).not.toContain("node:crypto");
+
+    // The smuggled Node imports are exactly what the "zero Node built-ins"
+    // assertion flags — so a re-export or dynamic import of a Node module now
+    // fails the gate instead of passing silently.
+    const forbidden = specs.filter((spec) => {
+      const bare = spec.replace(/^node:/, "");
+      return spec.startsWith("node:") || NODE_BUILTIN.has(bare);
+    });
+    expect(forbidden).toEqual(
+      expect.arrayContaining(["node:fs", "child_process", "node:net", "os"]),
+    );
+  });
+
+  // The extractor must refuse to silently pass an edge it cannot analyze,
+  // rather than dropping it. [LAW:no-silent-failure]
+  it("throws on a non-literal dynamic import (unanalyzable edge)", () => {
+    const src = `const mod = "os"; async function f() { return import(mod); }`;
+    expect(() => collectModuleEdges(src, "/synthetic/x.ts")).toThrow(
+      /non-literal dynamic import/,
+    );
   });
 });
 
