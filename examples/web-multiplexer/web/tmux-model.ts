@@ -182,6 +182,11 @@ export class TmuxModel {
     this.latestPanes = null;
     this.sessions = [];
     this.clientSession = null;
+    // [LAW:no-ambient-temporal-coupling] A socket swap is a hard teardown:
+    // advance the token so any optimistic select still in flight on the OLD
+    // connection can't land its revert on the NEW connection's bootstrap. Its
+    // stale `revertSelectIfCurrent(oldToken)` becomes a no-op.
+    this.sessionSelectToken++;
   }
 
   private rebuild(): void {

@@ -202,7 +202,10 @@ export function buildSessionTree(
       name: w.name,
       active: w.active === "1",
       zoomed: w.zoomed === "1",
-      panes: panesByWindow.get(w.wid) ?? [],
+      // Sort panes by index for the same reason windows are sorted below:
+      // tmux's delivery order for the nested `#{P:...}` loop is not a
+      // guaranteed contract, so the tree's order must not depend on it.
+      panes: (panesByWindow.get(w.wid) ?? []).sort((a, b) => a.index - b.index),
     });
     windowsBySession.set(w.sid, list);
   }

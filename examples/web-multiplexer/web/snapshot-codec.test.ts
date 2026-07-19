@@ -81,6 +81,12 @@ describe("mergePaneRowsByWindow", () => {
     );
   });
 
+  it("merging into an empty snapshot yields just the fresh rows", () => {
+    expect(
+      mergePaneRowsByWindow("", new Set(["@1"]), ["@1|%1|0|1|80|24|fresh"]),
+    ).toBe("@1|%1|0|1|80|24|fresh");
+  });
+
   it("removes nothing when the fresh window set does not overlap existing rows", () => {
     const existing = encodeSnapshotLines([
       "@1|%1|0|1|80|24|a",
@@ -126,6 +132,26 @@ describe("buildSessionTree", () => {
     expect(tree[0].windows[0].zoomed).toBe(false);
     expect(tree[0].windows[0].panes[0].active).toBe(true);
     expect(tree[0].windows[0].panes[1].active).toBe(false);
+  });
+
+  it("sorts panes within a window by index, regardless of delivery order", () => {
+    // Pane rows delivered out of index order must still assemble in index
+    // order — the tree's order can't depend on tmux's nested-loop emission.
+    const tree = buildSessionTree(
+      "$1|main|1",
+      "$1|@10|0|w|1|0",
+      encodeSnapshotLines([
+        "@10|%102|2|0|80|24|c",
+        "@10|%100|0|1|80|24|a",
+        "@10|%101|1|0|80|24|b",
+      ]),
+    );
+    expect(tree[0].windows[0].panes.map((p) => p.index)).toEqual([0, 1, 2]);
+    expect(tree[0].windows[0].panes.map((p) => p.title)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
   });
 
   it("sorts windows within a session by index", () => {
