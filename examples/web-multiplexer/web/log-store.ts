@@ -6,9 +6,13 @@
 // failures), it holds no model state and answers no queries beyond "what are
 // the last N". [LAW:decomposition]
 //
-// NOTE: this duplicates InspectorStore.entries (a second, larger ring over
-// the same wire). Collapsing the two into one WireLog is SD5's job
-// (tmux-complexity-lkg.15) — GM7 only lifts the buffer out of DemoStore.
+// NOTE: this is a parallel ring-buffer sink to InspectorStore.entries — both
+// are fed from the same wire, but they hold different representations:
+// LogStore keeps parsed `TmuxMessage` events (+ timestamped error strings)
+// while InspectorStore keeps richer protocol-level `WireEntry` records
+// (direction, timing, request/response correlation). Collapsing them (SD5,
+// tmux-complexity-lkg.15) therefore needs a shared transform layer, not a
+// trivial merge. GM7 only lifts this buffer out of DemoStore.
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";

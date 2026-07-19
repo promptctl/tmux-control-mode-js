@@ -91,6 +91,14 @@ function stripPrefix(raw: string): number {
   return parseInt(raw.replace(/^[$@%]/, ""), 10);
 }
 
+// Parse an integer field, substituting `fallback` only when the field is
+// absent/non-numeric — NOT when tmux legitimately reports 0. (`parseInt(x) ||
+// fallback` would wrongly override a real 0.)
+function numOr(raw: string, fallback: number): number {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function parseRecords(
   value: string,
   keys: readonly string[],
@@ -186,8 +194,8 @@ export function buildSessionTree(
       id: stripPrefix(p.pid),
       index: parseInt(p.idx, 10),
       active: p.active === "1",
-      width: parseInt(p.width, 10) || 80,
-      height: parseInt(p.height, 10) || 24,
+      width: numOr(p.width, 80),
+      height: numOr(p.height, 24),
       title: p.title,
     });
     panesByWindow.set(p.wid, list);
@@ -213,6 +221,11 @@ export function buildSessionTree(
   return sessionRows.map((s) => ({
     id: stripPrefix(s.sid),
     name: s.name,
+    // [LAW:types-are-the-program] `#{session_attached}` is the NUMBER OF
+    // clients attached (0/1/2/...), not a boolean — so any non-zero count is
+    // "attached". This is deliberately NOT the `=== "1"` rule used for the
+    // genuinely-boolean `window_active` / `window_zoomed_flag` below: `=== "1"`
+    // would misread a session with 2+ attached clients as detached.
     attached: s.attached !== "0" && s.attached !== "",
     windows: (windowsBySession.get(s.sid) ?? []).sort(
       (a, b) => a.index - b.index,

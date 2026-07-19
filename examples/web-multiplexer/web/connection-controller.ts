@@ -29,15 +29,23 @@ export type { ConnState } from "./bridge.ts";
 export class ConnectionController {
   connState: ConnState = "connecting";
 
+  // [LAW:no-ambient-temporal-coupling] Re-entrancy guard: the bridge can
+  // re-enter "ready" (reconnect) while a prior install is still awaiting its
+  // list-*/bootstrap round-trips. This owner runs at most one install at a
+  // time so two invocations can't race redundant queries; a genuinely fresh
+  // reconnect (after the prior install settled) still re-subscribes.
+  private installing = false;
+
   constructor(
     private readonly client: TmuxBridge,
     private readonly model: TmuxModel,
     private readonly log: LogStore,
   ) {
-    makeAutoObservable<this, "client" | "model" | "log">(this, {
+    makeAutoObservable<this, "client" | "model" | "log" | "installing">(this, {
       client: false,
       model: false,
       log: false,
+      installing: false,
     });
   }
 
@@ -66,6 +74,8 @@ export class ConnectionController {
    * so there is no need to ever poll after this.
    */
   private async installSubscriptions(): Promise<void> {
+    if (this.installing) return;
+    this.installing = true;
     try {
       await Promise.all([
         this.client.execute(
@@ -130,6 +140,8 @@ export class ConnectionController {
       this.log.pushError(
         `subscribe failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+    } finally {
+      this.installing = false;
     }
   }
 

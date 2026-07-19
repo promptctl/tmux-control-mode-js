@@ -45,6 +45,10 @@ export class SelectionController {
       } catch (err) {
         console.warn("[store] selectSession failed", err);
       }
+      // Gate on the token before acting, symmetric with jumpToPane: a newer
+      // select/jump issued while switch-client was pending owns the pointer
+      // now, so a stale call must neither revert nor log. [LAW:no-ambient-temporal-coupling]
+      if (!this.model.isCurrentSelect(token)) return;
       if (!switched) this.model.revertSelectIfCurrent(token);
     })();
     void this.refresh.refreshSession(id);

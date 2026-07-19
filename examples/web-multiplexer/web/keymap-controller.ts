@@ -42,22 +42,18 @@ export interface KeymapHooks {
 }
 
 export class KeymapController {
-  // [LAW:one-source-of-truth] `prefixActive` is the demo's UI-facing
-  // projection of the keymap engine's state. The engine is the source of
-  // truth; this field mirrors `engineState.mode === "prefix"` and is set from
-  // exactly one place (handleKeyEvent below).
-  prefixActive = false;
-
   // When a destructive action (kill-pane, kill-window) is dispatched, the demo
   // shows a confirm modal backed by this observable. Setting it non-null opens
   // the modal; confirming dispatches; cancelling discards.
   pendingConfirm: PendingConfirm | null = null;
 
-  // [LAW:one-source-of-truth] One keymap engine per client session. The
-  // engine's state (root vs. prefix) is shared across all pane mounts so
-  // pressing C-b in one pane doesn't leave the others in a stale mode.
-  private readonly keymapConfig: Keymap = defaultTmuxKeymap();
+  // [LAW:one-source-of-truth] The keymap engine's state (root vs. prefix) is
+  // the single source of truth for "is the prefix active". It is observable so
+  // the UI-facing `prefixActive` can be a pure COMPUTED projection of it —
+  // there is no separately-writable mirror field to drift or be clobbered from
+  // outside. It stays private: the only writer is handleKeyEvent.
   private engineState: KeymapState = INITIAL_STATE;
+  private readonly keymapConfig: Keymap = defaultTmuxKeymap();
 
   constructor(
     private readonly client: TmuxBridge,
@@ -65,21 +61,23 @@ export class KeymapController {
     private readonly refresh: RefreshPolicy,
     private readonly hooks: KeymapHooks,
   ) {
-    // engineState is a non-observable plumbing detail — the UI observes
-    // `prefixActive` instead, which is set whenever the engine transitions.
-    // [LAW:no-shared-mutable-globals] Exposing raw engine state would create a
-    // second source of truth for "is the prefix active".
     makeAutoObservable<
       this,
-      "client" | "model" | "refresh" | "hooks" | "keymapConfig" | "engineState"
+      "client" | "model" | "refresh" | "hooks" | "keymapConfig"
     >(this, {
       client: false,
       model: false,
       refresh: false,
       hooks: false,
       keymapConfig: false,
-      engineState: false,
     });
+  }
+
+  // [LAW:one-source-of-truth] Derived, not mirrored: computed straight from the
+  // engine state, so it cannot disagree with the engine and no consumer can
+  // write it.
+  get prefixActive(): boolean {
+    return this.engineState.mode === "prefix";
   }
 
   /**
@@ -91,8 +89,9 @@ export class KeymapController {
     const prev = this.engineState;
     const result = handleKey(ev, prev, this.keymapConfig);
     if (result.state !== prev) {
+      // prefixActive is a computed off engineState, so this single write is the
+      // whole transition — no mirror field to keep in sync.
       this.engineState = result.state;
-      this.prefixActive = result.state.mode === "prefix";
     }
     for (const action of result.actions) this.dispatchWithConfirm(action);
     return result.handled;

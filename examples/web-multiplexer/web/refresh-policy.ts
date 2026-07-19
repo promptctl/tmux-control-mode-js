@@ -79,7 +79,12 @@ export class RefreshPolicy {
           `list-panes -s -t $${sessionId} -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'`,
         ),
       ]);
-      if (!windowsResp.success || !panesResp.success) return;
+      if (!windowsResp.success || !panesResp.success) {
+        // A tmux %error resolves with success:false rather than throwing, so
+        // it bypasses the catch — surface it here too. [LAW:no-silent-failure]
+        console.warn(`[refresh] refreshSession($${sessionId}) returned %error`);
+        return;
+      }
       this.model.mergeSession(sessionId, windowsResp.output, panesResp.output);
     } catch (err) {
       // Non-fatal: the ~1 Hz subscription will correct the model. But surface
@@ -94,7 +99,13 @@ export class RefreshPolicy {
       const resp = await this.client.execute(
         `list-panes -t @${windowId} -F '#{pane_id}|#{pane_width}|#{pane_height}'`,
       );
-      if (!resp.success) return;
+      if (!resp.success) {
+        // %error bypasses the catch; surface it. [LAW:no-silent-failure]
+        console.warn(
+          `[refresh] refreshWindowDimensions(@${windowId}) returned %error`,
+        );
+        return;
+      }
       const updates = new Map<number, PaneDimensions>();
       for (const line of resp.output) {
         if (line.length === 0) continue;
