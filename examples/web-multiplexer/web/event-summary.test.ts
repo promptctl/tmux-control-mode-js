@@ -99,3 +99,50 @@ describe("summarizeEvent — exit and empty fallthrough", () => {
     expect(summarizeEvent({ type: "sessions-changed" }, labels)).toBe("");
   });
 });
+
+// One representative per remaining branch, so every arm of the summarizer
+// has its contract pinned before SD5 consolidates the three copies.
+describe("summarizeEvent — full branch coverage", () => {
+  const cases: ReadonlyArray<readonly [TmuxMessage, string]> = [
+    [{ type: "pause", paneId: 5 }, "$0:@1.%5"],
+    [{ type: "continue", paneId: 9 }, "%9"],
+    [{ type: "pane-mode-changed", paneId: 5 }, "$0:@1.%5"],
+    [{ type: "window-add", windowId: 3 }, "@3"],
+    [{ type: "window-close", windowId: 3 }, "@3"],
+    [{ type: "unlinked-window-add", windowId: 4 }, "@4"],
+    [{ type: "unlinked-window-close", windowId: 4 }, "@4"],
+    [
+      {
+        type: "layout-change",
+        windowId: 3,
+        windowLayout: "abcd,80x24",
+        windowVisibleLayout: "abcd,80x24",
+        windowFlags: "*",
+      },
+      "@3 layout=abcd,80x24",
+    ],
+    [{ type: "session-renamed", sessionId: 2, name: "work" }, `$2 "work"`],
+    [{ type: "session-window-changed", sessionId: 2, windowId: 3 }, "$2 → @3"],
+    [
+      {
+        type: "client-session-changed",
+        clientName: "cli",
+        sessionId: 2,
+        name: "work",
+      },
+      `cli → $2 "work"`,
+    ],
+    [{ type: "client-detached", clientName: "cli" }, "cli"],
+    [{ type: "begin", timestamp: 0, commandNumber: 7, flags: 0 }, "cmd #7"],
+    [{ type: "end", timestamp: 0, commandNumber: 7, flags: 0 }, "cmd #7"],
+    [{ type: "error", timestamp: 0, commandNumber: 7, flags: 0 }, "cmd #7"],
+    [{ type: "message", message: "hello" }, "hello"],
+    [{ type: "config-error", error: "bad config" }, "bad config"],
+    [{ type: "paste-buffer-changed", name: "buffer0" }, "buffer0"],
+    [{ type: "paste-buffer-deleted", name: "buffer0" }, "buffer0"],
+  ];
+
+  it.each(cases)("summarizes %o", (ev, expected) => {
+    expect(summarizeEvent(ev, labels)).toBe(expected);
+  });
+});

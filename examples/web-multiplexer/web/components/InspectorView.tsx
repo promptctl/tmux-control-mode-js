@@ -40,6 +40,7 @@ import {
   badgeColor,
   renderPayload,
   formatMs,
+  formatDelta,
 } from "../inspector-presentation.ts";
 import type { DemoStore } from "../store.ts";
 
@@ -334,7 +335,7 @@ function TimelineRow({
           textAlign: "right",
         }}
       >
-        {prev !== null ? `+${formatMs(delta)}` : ""}
+        {prev !== null ? formatDelta(delta) : ""}
       </td>
       <td style={{ ...tdStyle, color: presentation.color }}>
         {presentation.arrow}

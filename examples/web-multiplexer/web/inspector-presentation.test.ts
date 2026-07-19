@@ -12,6 +12,7 @@ import {
   badgeColor,
   renderPayload,
   formatMs,
+  formatDelta,
 } from "./inspector-presentation.ts";
 import type { WireEntry } from "./bridge.ts";
 
@@ -171,5 +172,21 @@ describe("formatMs", () => {
     expect(formatMs(0.4)).toBe("<1ms");
     expect(formatMs(42)).toBe("42ms");
     expect(formatMs(1500)).toBe("1.50s");
+  });
+
+  it("is honest for negative durations — magnitude buckets, sign preserved", () => {
+    // A negative must not collapse into the sub-ms bucket the way `ms < 1`
+    // used to force it. The unit comes from |ms|; the sign stays.
+    expect(formatMs(-42)).toBe("-42ms");
+    expect(formatMs(-1000)).toBe("-1.00s");
+    expect(formatMs(-0.4)).toBe("<1ms");
+  });
+});
+
+describe("formatDelta", () => {
+  it("prefixes a non-negative gap with + and defers negatives to the signed formatMs", () => {
+    expect(formatDelta(0)).toBe("+<1ms");
+    expect(formatDelta(42)).toBe("+42ms");
+    expect(formatDelta(-1000)).toBe("-1.00s");
   });
 });

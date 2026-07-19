@@ -102,11 +102,23 @@ export function renderPayload(w: WireEntry): string {
 }
 
 // Duration formatter shared by the payload renderer and the inspector's
-// JSX (round-trip badges, per-row latency column).
+// JSX (round-trip badges, per-row latency column). Honest across the whole
+// numeric domain: the magnitude picks the unit bucket and the sign is
+// preserved, so a negative input reads as a negative duration rather than
+// collapsing into "<1ms". [LAW:types-are-the-program]
 export function formatMs(ms: number): string {
-  if (ms < 1) return "<1ms";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
+  const abs = Math.abs(ms);
+  const sign = ms < 0 ? "-" : "";
+  if (abs < 1) return "<1ms";
+  if (abs < 1000) return `${sign}${Math.round(abs)}ms`;
+  return `${sign}${(abs / 1000).toFixed(2)}s`;
+}
+
+// Inter-event delta for the timeline: a non-negative gap reads `+42ms`;
+// an out-of-order (negative) delta defers to formatMs's own sign so it
+// reads `-1.00s`, never the misleading `+<1ms`.
+export function formatDelta(ms: number): string {
+  return ms >= 0 ? `+${formatMs(ms)}` : formatMs(ms);
 }
 
 function escapeForDisplay(s: string): string {
