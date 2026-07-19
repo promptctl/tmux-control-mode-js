@@ -233,4 +233,45 @@ describe("BackpressureLedger (isolation)", () => {
     await Promise.resolve();
     expect(continues(h.sent)).toHaveLength(1);
   });
+
+  it("flushPausedPanes skips a pane whose Continue is already in flight", () => {
+    // Never-resolving execute so the Continue from maybeResume stays in flight:
+    // the pane keeps `resuming: true` and stays in the ledger, so flush hits the
+    // `if (flow.resuming) continue` skip branch and issues no second Continue.
+    const sent: string[] = [];
+    const deps: BackpressureLedgerDeps = {
+      client: {
+        execute(command: string): Promise<CommandResponse> {
+          sent.push(command);
+          // Never settles: the Continue stays in flight so `resuming` sticks.
+          return new Promise<CommandResponse>(() => {
+            /* intentionally never resolves */
+          });
+        },
+      },
+      reportResumeFailure: () => {
+        /* no strand expected in this test */
+      },
+      outputHighWatermark: 1000,
+      outputLowWatermark: 400,
+    };
+    const ledger = new BackpressureLedger(deps);
+    const a = { id: 1 };
+    ledger.register(a);
+    ledger.account(a, 7, 1200); // pause
+    ledger.ack(a, 7, 900); // resume → resuming:true, Continue in flight (never settles)
+    expect(continues(sent)).toHaveLength(1);
+
+    ledger.flushPausedPanes(); // pane 7 is resuming → skipped
+    expect(continues(sent)).toHaveLength(1); // no second Continue
+  });
+
+  it("register throws loudly on double-registration instead of silently overwriting", () => {
+    const h = createHarness();
+    const ledger = new BackpressureLedger(h.deps);
+    const a = { id: 1 };
+    ledger.register(a);
+    expect(() => ledger.register(a)).toThrow(BridgeError);
+    expect(() => ledger.register(a)).toThrow(/already registered/);
+  });
 });

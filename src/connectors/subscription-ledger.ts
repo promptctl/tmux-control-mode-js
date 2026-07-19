@@ -63,6 +63,16 @@ export class SubscriptionLedger {
   /** Seed this peer's owned-names slot. Called once by the façade's
    *  `registerPeer`; presence of the slot is this ledger's registration truth. */
   register(peer: Peer): void {
+    // [LAW:no-silent-failure] The façade mints a fresh `Peer` per registerPeer,
+    // so a re-register is unreachable — but if it ever happened, a silent
+    // `Map.set` overwrite would drop this peer's owned names without a trace.
+    // Fail loud instead of overwriting.
+    if (this.ownedByPeer.has(peer)) {
+      throw new BridgeError(
+        "BRIDGE_INTERNAL",
+        `peer ${peer.id} is already registered with the subscription ledger`,
+      );
+    }
     this.ownedByPeer.set(peer, new Set());
   }
 

@@ -224,4 +224,50 @@ describe("SubscriptionLedger (isolation)", () => {
     void ledger.unsubscribe(b, "win"); // fires the unsubscribe synchronously
     expect(unsubscribes(sent).length).toBe(before + 1);
   });
+
+  it("unsubscribe drains a still-in-flight subscribe before evaluating last-owner", async () => {
+    // The first subscriber owns the name while its subscribe is still in flight
+    // (ownership is claimed before the await). Unsubscribing in that window must
+    // park on `rec.inflight` + yield a microtask (so any queued joiners settle)
+    // BEFORE last-owner is evaluated — exercising the explicit inflight-drain.
+    const sent: string[] = [];
+    const deferrals: (() => void)[] = [];
+    const deps: SubscriptionLedgerDeps = {
+      client: {
+        execute(command: string): Promise<CommandResponse> {
+          sent.push(command);
+          return new Promise<CommandResponse>((resolve) => {
+            deferrals.push(() => resolve(okResponse()));
+          });
+        },
+      },
+    };
+    const ledger = new SubscriptionLedger(deps);
+    const a = { id: 1 };
+    ledger.register(a);
+
+    const aSub = ledger.subscribe(a, "win", "%*", "#{window_name}"); // subscribe #1, inflight pending
+    const aUnsub = ledger.unsubscribe(a, "win"); // parks on the inflight subscribe
+    // Parked: no unsubscribe command until the subscribe settles.
+    expect(unsubscribes(sent)).toHaveLength(0);
+
+    deferrals[0](); // resolve subscribe #1
+    await aSub;
+    await Promise.resolve();
+    await Promise.resolve();
+    for (const settle of deferrals.slice(1)) settle(); // resolve last-owner unsubscribe #2
+    await aUnsub;
+
+    // Drain completed, then a genuine last-owner unsubscribe fired.
+    expect(unsubscribes(sent)).toHaveLength(1);
+  });
+
+  it("register throws loudly on double-registration instead of silently overwriting", () => {
+    const runner = createFakeRunner();
+    const ledger = new SubscriptionLedger(runner.deps);
+    const a = { id: 1 };
+    ledger.register(a);
+    expect(() => ledger.register(a)).toThrow(BridgeError);
+    expect(() => ledger.register(a)).toThrow(/already registered/);
+  });
 });

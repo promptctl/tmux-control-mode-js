@@ -174,6 +174,15 @@ export class BackpressureLedger {
   /** Seed this peer's outstanding-bytes slot. Called once by the façade's
    *  `registerPeer`; presence of the slot is this ledger's registration truth. */
   register(peer: Peer): void {
+    // [LAW:no-silent-failure] Symmetric with SubscriptionLedger.register: a
+    // re-register is unreachable (fresh `Peer` per registerPeer), but a silent
+    // overwrite would drop this peer's outstanding accounting. Fail loud.
+    if (this.outstanding.has(peer)) {
+      throw new BridgeError(
+        "BRIDGE_INTERNAL",
+        `peer ${peer.id} is already registered with the backpressure ledger`,
+      );
+    }
     this.outstanding.set(peer, new Map());
   }
 
