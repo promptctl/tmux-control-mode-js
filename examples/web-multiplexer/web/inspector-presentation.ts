@@ -26,27 +26,23 @@ export function presentFor(
 ): Presentation {
   if (w.dir === "out") {
     const msg = w.msg;
-    if (msg.kind === "execute") {
-      return {
-        arrow: "↑",
-        color: "var(--mantine-color-blue-6)",
-        type: `execute #${msg.id}`,
-        summary: msg.command,
-      };
-    }
-    if (msg.kind === "sendKeys") {
-      return {
-        arrow: "↑",
-        color: "var(--mantine-color-blue-6)",
-        type: `sendKeys #${msg.id}`,
-        summary: `${msg.target}  ${escapeForDisplay(msg.keys)}`,
-      };
-    }
+    // [LAW:dataflow-not-control-flow] Every outbound kind labels the same
+    // way — `<kind> #<id>` — so the type is derived from the value, not a
+    // per-branch literal. Only the summary carries payload-specific detail;
+    // the payload-less kinds (detach, startFirehose, stopFirehose) have none.
+    // Deriving the label keeps it truthful for any kind added to
+    // ClientToServer later, with no branch to forget.
+    const summary =
+      msg.kind === "execute"
+        ? msg.command
+        : msg.kind === "sendKeys"
+          ? `${msg.target}  ${escapeForDisplay(msg.keys)}`
+          : "";
     return {
       arrow: "↑",
       color: "var(--mantine-color-blue-6)",
-      type: `detach #${msg.id}`,
-      summary: "",
+      type: `${msg.kind} #${msg.id}`,
+      summary,
     };
   }
   if (w.dir === "in-event") {

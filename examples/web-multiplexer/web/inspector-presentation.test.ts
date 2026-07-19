@@ -44,6 +44,23 @@ describe("presentFor — direction → display shape", () => {
     expect(p.summary).toBe("%5  a\\r");
   });
 
+  it("labels payload-less outbound kinds by their own kind, not detach", () => {
+    // The type column derives its label from msg.kind, so firehose
+    // toggles and detaches each read truthfully with an empty summary —
+    // never the old fallthrough that mislabeled everything "detach".
+    const cases: WireEntry[] = [
+      { dir: "out", ts: 0, msg: { kind: "detach", id: "1" } },
+      { dir: "out", ts: 0, msg: { kind: "startFirehose", id: "2" } },
+      { dir: "out", ts: 0, msg: { kind: "stopFirehose", id: "3" } },
+    ];
+    expect(cases.map((w) => presentFor(w, labels).type)).toEqual([
+      "detach #1",
+      "startFirehose #2",
+      "stopFirehose #3",
+    ]);
+    for (const w of cases) expect(presentFor(w, labels).summary).toBe("");
+  });
+
   it("presents an inbound event via the shared summarizer", () => {
     const w: WireEntry = {
       dir: "in-event",
@@ -111,6 +128,17 @@ describe("renderPayload", () => {
     };
     expect(renderPayload(w)).toBe(
       JSON.stringify({ kind: "detach", id: "1" }, null, 2),
+    );
+  });
+
+  it("pretty-prints a firehose-toggle message verbatim as JSON", () => {
+    const w: WireEntry = {
+      dir: "out",
+      ts: 0,
+      msg: { kind: "startFirehose", id: "2" },
+    };
+    expect(renderPayload(w)).toBe(
+      JSON.stringify({ kind: "startFirehose", id: "2" }, null, 2),
     );
   });
 
