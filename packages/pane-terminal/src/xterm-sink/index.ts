@@ -303,6 +303,11 @@ export class XtermSink implements TerminalSink {
   // real resize arrives and reflows. Shared by the cap-forced drain and the
   // first-resize rAF.
   private drainPendingBeforeResize(): void {
+    // [LAW:composability] Self-guard the disposed state rather than trust each
+    //   caller to have checked it — this helper writes to the terminal, so it
+    //   owns the "no writes after dispose" invariant (invariant #5) locally and
+    //   asks nothing of its callers. A disposed terminal must never be written.
+    if (this.isDisposed) return;
     if (this.pendingSeed !== null) {
       const { captured, cursor } = this.pendingSeed;
       this.pendingSeed = null;
