@@ -15,7 +15,9 @@
 //   is just a snapshot of the same terminal byte stream the live path delivers,
 //   so it has the same type — and the terminal emulator is the single decoding
 //   authority for both. `seed` adds a cursor because the snapshot also restores
-//   a position; that is the only difference.
+//   a position, and `trailing` — the live bytes that arrived while the snapshot
+//   was in flight — so that the snapshot→live ORDERING is one value's shape, not
+//   a convention re-enforced across separate `seed()`/`write()` calls.
 
 /**
  * Cursor coordinates as reported by tmux's `#{cursor_x};#{cursor_y}` format
@@ -37,33 +39,49 @@ export interface SeedCursor {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.seed(captured, cursor)   (snapshot bytes)
+ *   stream.attach(sink)  →  sink.seed(captured, cursor, trailing)  (snapshot +
+ *                        →                                          the live bytes
+ *                        →                                          captured behind it)
  *                        →  sink.write(data) ×N          (live byte stream)
  *                        →  sink.resize(cols, rows) ×M   (layout changes)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
- * `seed` is called exactly once per attach, BEFORE any `write`. The
- * transition from seeding to live happens synchronously after `seed`
- * returns — no `await` between `seed` and the first buffered-byte `write`,
- * so no live byte can interleave the seed.
+ * `seed` is called exactly once per attach, BEFORE any `write`. The snapshot and
+ * its `trailing` bytes are one ordered unit, so the seed-before-live guarantee
+ * rides on the value's shape — a sink applies `captured` then `trailing` in
+ * order and nothing downstream re-derives that order from call sequencing.
  */
 export interface TerminalSink {
   /**
-   * Seed the view with a snapshot captured from tmux. Called exactly once per
-   * `attach()`, BEFORE any `write()`. `captured` is RAW BYTES: the joined
-   * `capture-pane` rows as tmux produced them, wrapped by library-synthesized
-   * mode-restore escapes (alt-screen/autowrap before the grid, cursor/keypad/
-   * insert after) that PaneStream derives from `display-message` state — those
-   * escapes are injected by the library, not emitted by `capture-pane`. The
-   * stream is the same kind `write()` carries, so the renderer is the single
+   * Seed the view with a snapshot captured from tmux, followed by `trailing` —
+   * the live bytes that arrived while that snapshot was being fetched, in
+   * arrival order. Called exactly once per `attach()`, BEFORE any `write()`.
+   *
+   * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
+   * them, wrapped by library-synthesized mode-restore escapes (alt-screen/
+   * autowrap before the grid, cursor/keypad/insert after) that PaneStream
+   * derives from `display-message` state — those escapes are injected by the
+   * library, not emitted by `capture-pane`. Each element of `trailing` is the
+   * same raw byte stream `write()` carries, so the renderer is the single
    * decoding authority; the library never interprets the captured grid bytes.
+   *
+   * `trailing` makes the seed-before-live ordering a property of THIS value:
+   * the snapshot and the bytes that immediately follow it cross the seam as one
+   * ordered unit, so no consumer re-establishes that order from the arrival
+   * sequence of separate calls. It is empty on a re-attach (the cached seed has
+   * no pending live bytes) and whenever nothing arrived during the capture
+   * window. A sink MUST apply `captured` then each `trailing` chunk in order.
    *
    * `cursor` is `null` when tmux did not return a parsable cursor reply;
    * sinks should leave the cursor at the natural end of the captured bytes
    * in that case.
    */
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void;
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void;
 
   /**
    * Forward a chunk of live bytes to the renderer. Bytes are byte-identical

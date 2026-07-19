@@ -50,8 +50,15 @@ export class WebGLGridSink implements TerminalSink {
 
   // --- TerminalSink ---------------------------------------------------------
 
-  seed(captured: Uint8Array, _cursor: SeedCursor | null): void {
+  seed(
+    captured: Uint8Array,
+    _cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
+    // Snapshot then the live bytes captured behind it, in order — same ingest
+    // path as write(), so the seed-before-live ordering is preserved.
     this.ingest(captured);
+    for (const chunk of trailing) this.ingest(chunk);
   }
 
   write(data: Uint8Array): void {

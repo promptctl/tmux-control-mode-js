@@ -16,12 +16,14 @@
 //   order; it never touches xterm. XtermSink (the effect boundary) performs the
 //   writes returned in a `DrainBatch`. A pure gate is unit-testable with zero
 //   DOM.
-// [LAW:one-source-of-truth] The seed-before-live ordering lived scattered
-//   across XtermSink's seed()/write()/resize()/drain before; it now lives here,
-//   in one class. tmux-complexity-lkg.12 (SD2) unifies the two-scheduler
-//   handshake across PaneStream + this gate — concentrating the ordering here
-//   is what makes that a change to one collaborator's input contract, not a
-//   cross-file untangle.
+// [LAW:one-source-of-truth] The gate buffers an ALREADY-ORDERED stream and only
+//   spans it across the one-rAF defer — it never re-establishes seed-vs-live
+//   order. The snapshot and the live bytes captured behind it reach XtermSink as
+//   one ordered value (TerminalSink.seed's `captured` + `trailing`, SD2 /
+//   tmux-complexity-lkg.12); XtermSink applies the snapshot then routes the
+//   trailing chunks through the same write() path that feeds this buffer, so the
+//   seed is buffered before them by construction. The gate's job is purely the
+//   first-resize defer, not the ordering.
 // [LAW:no-ambient-temporal-coupling] The gate holds no timer of its own. The
 //   rAF that drives the first-resize defer stays in XtermSink (its single
 //   timing authority); the gate only reacts to `release()` being called.

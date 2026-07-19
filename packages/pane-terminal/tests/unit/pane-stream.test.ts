@@ -33,7 +33,11 @@ class RecordingSink implements TerminalSink {
   readonly writes: Uint8Array[] = [];
   readonly seedTexts: string[] = [];
   private visible = true;
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
     // seed carries raw bytes (same kind as write); decode Latin-1 (lossless
     // for the ASCII fixtures these tests use) for human-readable assertions.
     const text = new TextDecoder("latin1").decode(captured);
@@ -41,6 +45,9 @@ class RecordingSink implements TerminalSink {
     this.events.push(
       `seed(${captured.byteLength} bytes, cursor=${JSON.stringify(cursor)})`,
     );
+    // Trailing live bytes are applied after the snapshot, in order — record
+    // them as the same behavioral write events a renderer would emit.
+    for (const chunk of trailing) this.write(chunk);
   }
   write(bytes: Uint8Array): void {
     this.events.push(`write(${bytes.byteLength}B)`);
