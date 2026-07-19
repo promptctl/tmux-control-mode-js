@@ -8,17 +8,23 @@
 // lifecycle + bootstrap. [LAW:decomposition]
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { TmuxBridge } from "./bridge.ts";
+import type { ConnState, TmuxBridge } from "./bridge.ts";
 import {
   SESSIONS_FORMAT,
   WINDOWS_FORMAT,
   PANES_FORMAT,
+  SESSIONS_SUB,
+  WINDOWS_SUB,
+  PANES_SUB,
   encodeSnapshotLines,
 } from "./snapshot-codec.ts";
 import type { LogStore } from "./log-store.ts";
 import type { TmuxModel } from "./tmux-model.ts";
 
-export type ConnState = "connecting" | "open" | "ready" | "closed";
+// [LAW:one-source-of-truth] `ConnState` is owned by bridge.ts, where the
+// connection state machine lives; re-exported (not redefined) so store.ts and
+// any other consumer keep one definition that can't drift from the bridge's.
+export type { ConnState } from "./bridge.ts";
 
 export class ConnectionController {
   connState: ConnState = "connecting";
@@ -62,9 +68,13 @@ export class ConnectionController {
   private async installSubscriptions(): Promise<void> {
     try {
       await Promise.all([
-        this.client.execute(`refresh-client -B sessions::${SESSIONS_FORMAT}`),
-        this.client.execute(`refresh-client -B windows::${WINDOWS_FORMAT}`),
-        this.client.execute(`refresh-client -B panes::${PANES_FORMAT}`),
+        this.client.execute(
+          `refresh-client -B ${SESSIONS_SUB}::${SESSIONS_FORMAT}`,
+        ),
+        this.client.execute(
+          `refresh-client -B ${WINDOWS_SUB}::${WINDOWS_FORMAT}`,
+        ),
+        this.client.execute(`refresh-client -B ${PANES_SUB}::${PANES_FORMAT}`),
       ]);
 
       // [LAW:one-source-of-truth] The live model remains driven by the
@@ -85,19 +95,19 @@ export class ConnectionController {
       runInAction(() => {
         if (sessionsResp.success) {
           this.model.applySnapshot(
-            "sessions",
+            SESSIONS_SUB,
             encodeSnapshotLines(sessionsResp.output),
           );
         }
         if (windowsResp.success) {
           this.model.applySnapshot(
-            "windows",
+            WINDOWS_SUB,
             encodeSnapshotLines(windowsResp.output),
           );
         }
         if (panesResp.success) {
           this.model.applySnapshot(
-            "panes",
+            PANES_SUB,
             encodeSnapshotLines(panesResp.output),
           );
         }

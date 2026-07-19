@@ -59,6 +59,12 @@ describe("mergeSessionRows", () => {
     const merged = mergeSessionRows(existing, 1, ["w9|$1|new"], 1);
     expect(merged.split(NL).sort()).toEqual(["w2|$2|rest", "w9|$1|new"].sort());
   });
+
+  it("merging into an empty snapshot yields just the fresh rows", () => {
+    expect(mergeSessionRows("", 1, ["$1|w1|0|new|1|0"], 0)).toBe(
+      "$1|w1|0|new|1|0",
+    );
+  });
 });
 
 describe("mergePaneRowsByWindow", () => {
@@ -72,6 +78,19 @@ describe("mergePaneRowsByWindow", () => {
     ]);
     expect(merged.split(NL).sort()).toEqual(
       ["@2|%2|0|1|80|24|keep", "@1|%9|0|1|80|24|fresh"].sort(),
+    );
+  });
+
+  it("removes nothing when the fresh window set does not overlap existing rows", () => {
+    const existing = encodeSnapshotLines([
+      "@1|%1|0|1|80|24|a",
+      "@2|%2|0|1|80|24|b",
+    ]);
+    const merged = mergePaneRowsByWindow(existing, new Set(["@9"]), [
+      "@9|%9|0|1|80|24|new",
+    ]);
+    expect(merged.split(NL).sort()).toEqual(
+      ["@1|%1|0|1|80|24|a", "@2|%2|0|1|80|24|b", "@9|%9|0|1|80|24|new"].sort(),
     );
   });
 });
@@ -148,5 +167,18 @@ describe("buildSessionTree", () => {
   it("gives a window with no panes an empty panes array", () => {
     const tree = buildSessionTree("$1|main|1", "$1|@10|0|w|1|0", "");
     expect(tree[0].windows[0].panes).toEqual([]);
+  });
+
+  it("treats any non-'1' active/zoomed flag value as false (only '1' is truthy)", () => {
+    // Pins that active/zoomed use exact '1' equality, not JS truthiness — a
+    // stray '2'/'true' from a malformed row reads as false, never true.
+    const tree = buildSessionTree(
+      "$1|main|1",
+      "$1|@10|0|w|2|true",
+      "@10|%100|0|yes|80|24|t",
+    );
+    expect(tree[0].windows[0].active).toBe(false);
+    expect(tree[0].windows[0].zoomed).toBe(false);
+    expect(tree[0].windows[0].panes[0].active).toBe(false);
   });
 });

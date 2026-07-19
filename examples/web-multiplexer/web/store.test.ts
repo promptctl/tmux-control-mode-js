@@ -80,6 +80,31 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
     expect(store.activeSessionId).toBe(7);
   });
 
+  it("reverts clientSessionId when switch-client resolves with success:false (tmux %error), falling back to the attached session", async () => {
+    const { bridge, calls } = fakeBridge();
+    const store = new DemoStore(bridge);
+    store.sessions = [
+      { id: 5, name: "five", attached: false, windows: [] },
+      { id: 7, name: "seven", attached: true, windows: [] },
+    ];
+
+    store.selectSession(5);
+    expect(store.activeSessionId).toBe(5);
+
+    // A tmux %error resolves (not rejects) with success:false — the client
+    // never switched, so the optimistic pointer must revert just as it does on
+    // a transport rejection.
+    findCall(calls, "switch-client").d.resolve({
+      commandNumber: 0,
+      timestamp: 0,
+      output: [],
+      success: false,
+    });
+    await tick();
+
+    expect(store.activeSessionId).toBe(7);
+  });
+
   it("a stale switch-client rejection does not clobber a newer selectSession", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);

@@ -7,8 +7,10 @@
 // they adopt the target immediately and roll back through TmuxModel's
 // token-guarded protocol if tmux never actually switched. [LAW:decomposition]
 //
-// [LAW:single-enforcer] Selection commands stay owned here; callers pass ids,
-// never assemble tmux target strings themselves.
+// [LAW:single-enforcer] The demo's primary session/window/pane navigation is
+// owned here; callers pass ids, never assemble these tmux target strings
+// themselves. (Standalone playground features that issue their own unrelated
+// commands are a separate concern, not routed through this controller.)
 
 import type { TmuxBridge } from "./bridge.ts";
 import type { PaneInfo, TmuxModel } from "./tmux-model.ts";
@@ -25,18 +27,26 @@ export class SelectionController {
     // Optimistic: adopt the id we just told tmux to switch to. The
     // %client-session-changed event will confirm it shortly.
     const token = this.model.beginSelect(id);
-    // [LAW:no-silent-failure] If tmux rejects the switch (or the bridge
-    // closes before it can), the event never arrives — revert so
-    // activeSessionId falls through to its attached/first-session heuristics
-    // instead of showing a session tmux never actually switched to. Guarded
-    // by `token`: a newer selectSession/jumpToPane must win over this
-    // rejection arriving late.
-    void this.client
-      .execute(`switch-client -t \\$${id}`)
-      .catch((err: unknown) => {
+    // [LAW:no-silent-failure] If the switch doesn't land — a transport
+    // rejection, OR a tmux %error which resolves execute() with
+    // {success:false} rather than throwing (same contract jumpToPane checks) —
+    // the confirming event never arrives, so revert the optimistic pointer.
+    // Otherwise activeSessionId would keep pointing at a session tmux never
+    // switched to. Guarded by `token`: a newer selectSession/jumpToPane must
+    // win over this reversion arriving late.
+    void (async () => {
+      let switched = false;
+      try {
+        switched = (await this.client.execute(`switch-client -t \\$${id}`))
+          .success;
+        if (!switched) {
+          console.warn("[store] selectSession switch-client returned %error");
+        }
+      } catch (err) {
         console.warn("[store] selectSession failed", err);
-        this.model.revertSelectIfCurrent(token);
-      });
+      }
+      if (!switched) this.model.revertSelectIfCurrent(token);
+    })();
     void this.refresh.refreshSession(id);
   }
 

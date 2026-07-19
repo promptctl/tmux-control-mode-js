@@ -81,8 +81,11 @@ export class RefreshPolicy {
       ]);
       if (!windowsResp.success || !panesResp.success) return;
       this.model.mergeSession(sessionId, windowsResp.output, panesResp.output);
-    } catch {
-      // Non-fatal: subscriptions will catch up.
+    } catch (err) {
+      // Non-fatal: the ~1 Hz subscription will correct the model. But surface
+      // the fast-path failure so a systematically-failing refresh isn't
+      // invisible. [LAW:no-silent-failure]
+      console.warn(`[refresh] refreshSession($${sessionId}) failed`, err);
     }
   }
 
@@ -104,8 +107,14 @@ export class RefreshPolicy {
         }
       }
       this.model.applyPaneDimensions(updates);
-    } catch {
-      // Non-fatal; the subscription's 1 Hz cadence will correct any miss.
+    } catch (err) {
+      // Non-fatal; the subscription's 1 Hz cadence will correct any miss. Still
+      // surfaced so a persistently-failing fast-path is observable.
+      // [LAW:no-silent-failure]
+      console.warn(
+        `[refresh] refreshWindowDimensions(@${windowId}) failed`,
+        err,
+      );
     }
   }
 }

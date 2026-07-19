@@ -67,10 +67,26 @@ export const WINDOWS_FORMAT =
 export const PANES_FORMAT =
   "'#{S:#{W:#{P:#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}\\n}}}'";
 
+// [LAW:one-source-of-truth] The subscription NAMES are a contract between the
+// install site (`refresh-client -B <name>::<format>` in connection-controller)
+// and the match site (`TmuxModel.applySnapshot`, which routes a
+// `%subscription-changed <name>` event by comparing against these). Defining
+// them once here — beside the formats they pair with — keeps a rename from
+// silently desyncing the two ends into a subscription that never applies.
+export const SESSIONS_SUB = "sessions";
+export const WINDOWS_SUB = "windows";
+export const PANES_SUB = "panes";
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
+// Precondition: `raw` is a well-formed tmux object id — `$N` / `@N` / `%N`,
+// which is all tmux's `#{session_id}` / `#{window_id}` / `#{pane_id}`
+// expansions ever emit. The trust boundary is the tmux wire; a malformed id
+// (only reachable if the server itself produced a truncated row) yields NaN,
+// so callers must guarantee well-formed input rather than this parsing it
+// defensively. [LAW:no-defensive-null-guards]
 function stripPrefix(raw: string): number {
   return parseInt(raw.replace(/^[$@%]/, ""), 10);
 }

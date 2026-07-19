@@ -13,6 +13,9 @@ import {
   buildSessionTree,
   mergeSessionRows,
   mergePaneRowsByWindow,
+  SESSIONS_SUB,
+  WINDOWS_SUB,
+  PANES_SUB,
   type PaneInfo,
   type SessionInfo,
   type WindowInfo,
@@ -99,11 +102,11 @@ export class TmuxModel {
    * `%subscription-changed` and the connect-time snapshots both flow here.
    */
   applySnapshot(name: string, value: string): void {
-    if (name === "sessions") {
+    if (name === SESSIONS_SUB) {
       this.latestSessions = value;
-    } else if (name === "windows") {
+    } else if (name === WINDOWS_SUB) {
       this.latestWindows = value;
-    } else if (name === "panes") {
+    } else if (name === PANES_SUB) {
       this.latestPanes = value;
     } else {
       return; // unknown subscription name — ignore
