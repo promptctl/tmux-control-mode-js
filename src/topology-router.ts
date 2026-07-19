@@ -335,12 +335,17 @@ export class TopologyRouter {
       this.topology.seed(entries);
       this.interest?.recompute();
     } catch (err) {
-      // [FRAMING:representation] A bootstrap that rejects because the transport
-      //   already closed is a shutdown artifact, not a topology fault — the
-      //   `connection-state: closed` event already represents that failure, so a
-      //   follow-on topology-error would be a misleading second signal. This is
-      //   not a silent drop: the close event owns the representation.
-      if (this.runCommand === null) return;
+      // [FRAMING:representation] A bootstrap that settles after its transport
+      //   episode ended is a shutdown/reconnect artifact, not a topology fault of
+      //   the CURRENT connection — `connection-state` already represents that,
+      //   so a follow-on topology-error would be a misleading second signal.
+      //   Compare IDENTITY, not a value: `run` is the exact runner this bootstrap
+      //   used, captured at entry. `this.runCommand !== run` is true both when the
+      //   transport closed (now null) AND when it closed-then-reopened (now a new
+      //   runner) — the value-only `=== null` check misses the reconnect (ABA)
+      //   case, where a stale rejection would fire on a healthy new connection.
+      //   Not a silent drop: the current connection's own bootstrap still reports.
+      if (this.runCommand !== run) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
       //   path too: if a newer bootstrap has since started, it owns the outcome
       //   (it will seed a healthy topology or report its own failure), so this

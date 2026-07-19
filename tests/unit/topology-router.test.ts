@@ -505,6 +505,40 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     expect(errors).toHaveLength(0);
   });
 
+  // Isolates the IDENTITY guard (`this.runCommand !== run`) from the value-only
+  // `=== null` check: the transport closes and REOPENS (ABA) before the stale
+  // bootstrap rejects. onTransportClose ends the sinks, so the reopen starts no
+  // new bootstrap — `isLatestBootstrap` stays true for the stale attempt, and
+  // only the identity comparison suppresses it. A `=== null` guard would report
+  // on the healthy reconnected connection (runCommand is the new, non-null runner).
+  it("does NOT report a stale bootstrap failure after the transport closed and reopened (reconnect/ABA)", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    let rejectA!: (e: Error) => void;
+    const runA = (cmd: string): Promise<CommandResponse> =>
+      cmd.includes("list-panes -a")
+        ? new Promise<CommandResponse>((_res, rej) => {
+            rejectA = rej;
+          })
+        : Promise.resolve(makeOkResponse());
+
+    router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
+    router.onTransportReady(runA); // bootstrap A on transport episode 1 (hangs)
+    await Promise.resolve();
+
+    // Reconnect: close (ends sinks) then reopen with a NEW runner.
+    router.onTransportClose();
+    router.onTransportReady(() => Promise.resolve(makeOkResponse()));
+
+    // A (dead episode 1) finally rejects. runCommand is now the new runner, so a
+    // value-only guard would misreport; the identity guard suppresses it.
+    rejectA(new Error("close 1006"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(0);
+  });
+
   it("normalizes a non-Error, non-string-coercible rejection without itself throwing", async () => {
     const errors: Error[] = [];
     const router = new TopologyRouter((e) => errors.push(e));

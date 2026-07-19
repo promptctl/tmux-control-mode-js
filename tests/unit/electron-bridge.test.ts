@@ -513,8 +513,12 @@ describe("Electron IPC bridge — event forwarding", () => {
     // router is ready before we attach a topology-dependent sink.
     await Promise.resolve();
 
-    const errors: Error[] = [];
-    proxy.on("topology-error", (ev) => errors.push(ev.error));
+    // Event-driven: resolve when the proxy surfaces the failure, so the test
+    // waits exactly as long as the real IPC round-trip needs — no fixed
+    // microtask-depth flush, and a broken path fails by timeout, not vacuously.
+    const topologyError = new Promise<Error>((resolve) => {
+      proxy.on("topology-error", (ev) => resolve(ev.error));
+    });
 
     // A session-scoped sink on the PROXY drives its own router to bootstrap:
     // execute("list-panes -a") → IPC → main client → transport.
@@ -525,12 +529,11 @@ describe("Electron IPC bridge — event forwarding", () => {
     // Reject that bootstrap invoke with an %error guard block. The rejection
     // round-trips over IPC back to the proxy's router, which reports it.
     t.feed("%begin 1 1 0\n%error 1 1 0\n");
-    for (let i = 0; i < 6; i++) await Promise.resolve();
 
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toBeInstanceOf(Error);
-    expect(errors[0]?.message).toMatch(/^topology bootstrap failed:/);
-    expect((errors[0] as Error & { cause?: unknown })?.cause).toBeDefined();
+    const err = await topologyError;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/^topology bootstrap failed:/);
+    expect((err as Error & { cause?: unknown }).cause).toBeDefined();
   });
 
   it("preserves Uint8Array contents through OutputMessage round-trip", () => {
