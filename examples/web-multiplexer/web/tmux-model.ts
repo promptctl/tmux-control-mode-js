@@ -63,8 +63,22 @@ export class TmuxModel {
     return this.clientSession;
   }
 
-  /** Authoritative write of the attached-session pointer (from the
-   *  `%client-session-changed` event, or the connect-time bootstrap). */
+  /**
+   * Authoritative write of the attached-session pointer (from the
+   * `%client-session-changed` event, or the connect-time bootstrap).
+   *
+   * Deliberately does NOT advance `sessionSelectToken`: a successful jumpToPane
+   * fires `%client-session-changed` as its own confirmation, and its post-await
+   * `isCurrentSelect(token)` gate would then skip the follow-on
+   * select-window/select-pane if this bumped the token (the event can be
+   * processed before the switch-client await's continuation runs, depending on
+   * read chunking). The concrete teardown race — a stale optimistic revert
+   * landing on a new connection's bootstrap — is handled at the real teardown
+   * boundary instead (`clearTopology` advances the token). The residual pure
+   * race (an unrelated external session change during our own failing
+   * optimistic switch) is rare and pre-existing; a fully-safe fix would need to
+   * decouple the revert guard from the select-supersession guard.
+   */
   setClientSession(id: number | null): void {
     this.clientSession = id;
   }

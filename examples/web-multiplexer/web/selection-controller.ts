@@ -40,10 +40,12 @@ export class SelectionController {
         switched = (await this.client.execute(`switch-client -t \\$${id}`))
           .success;
         if (!switched) {
-          console.warn("[store] selectSession switch-client returned %error");
+          console.warn(
+            "[selection] selectSession switch-client returned %error",
+          );
         }
       } catch (err) {
-        console.warn("[store] selectSession failed", err);
+        console.warn("[selection] selectSession failed", err);
       }
       // Gate on the token before acting, symmetric with jumpToPane: a newer
       // select/jump issued while switch-client was pending owns the pointer
@@ -61,7 +63,7 @@ export class SelectionController {
       void this.client
         .execute(`select-window -t ${s.name}:${w.index}`)
         .catch((err: unknown) =>
-          console.warn("[store] selectWindow failed", err),
+          console.warn("[selection] selectWindow failed", err),
         );
       void this.refresh.refreshSession(s.id);
     }
@@ -74,7 +76,7 @@ export class SelectionController {
       void this.client
         .execute(`select-pane -t ${s.name}:${w.index}.${pane.index}`)
         .catch((err: unknown) =>
-          console.warn("[store] selectPane failed", err),
+          console.warn("[selection] selectPane failed", err),
         );
       void this.refresh.refreshSession(s.id);
     }
@@ -109,10 +111,10 @@ export class SelectionController {
           await this.client.execute(`switch-client -t \\$${sessionId}`)
         ).success;
         if (!switched) {
-          console.warn("[store] jumpToPane switch-client returned %error");
+          console.warn("[selection] jumpToPane switch-client returned %error");
         }
       } catch (err) {
-        console.warn("[store] jumpToPane switch-client failed", err);
+        console.warn("[selection] jumpToPane switch-client failed", err);
       }
       // [LAW:no-ambient-temporal-coupling] Everything past the await is gated
       // on the token: a newer selectSession/jumpToPane issued while
@@ -130,12 +132,12 @@ export class SelectionController {
       void this.client
         .execute(`select-window -t @${windowId}`)
         .catch((err: unknown) =>
-          console.warn("[store] jumpToPane select-window failed", err),
+          console.warn("[selection] jumpToPane select-window failed", err),
         );
       void this.client
         .execute(`select-pane -t %${paneId}`)
         .catch((err: unknown) =>
-          console.warn("[store] jumpToPane select-pane failed", err),
+          console.warn("[selection] jumpToPane select-pane failed", err),
         );
     })();
     void this.refresh.refreshSession(sessionId);

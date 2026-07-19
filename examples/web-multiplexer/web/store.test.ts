@@ -66,10 +66,10 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   it("reverts clientSessionId to null when switch-client rejects, falling back to the attached session", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
       { id: 7, name: "seven", attached: true, windows: [] },
-    ];
+    ]);
 
     store.selectSession(5);
     expect(store.activeSessionId).toBe(5);
@@ -83,10 +83,10 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   it("reverts clientSessionId when switch-client resolves with success:false (tmux %error), falling back to the attached session", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
       { id: 7, name: "seven", attached: true, windows: [] },
-    ];
+    ]);
 
     store.selectSession(5);
     expect(store.activeSessionId).toBe(5);
@@ -108,10 +108,10 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   it("a stale switch-client rejection does not clobber a newer selectSession", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
       { id: 7, name: "seven", attached: false, windows: [] },
-    ];
+    ]);
 
     store.selectSession(5);
     const firstSwitch = findCall(calls, "switch-client");
@@ -129,10 +129,10 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   it("jumpToPane reverts clientSessionId to null when switch-client rejects, falling back to the attached session", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
       { id: 11, name: "eleven", attached: true, windows: [] },
-    ];
+    ]);
 
     store.jumpToPane(9, 1, 1);
     expect(store.activeSessionId).toBe(9);
@@ -148,10 +148,10 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   it("does not issue select-window/select-pane when switch-client rejects", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
       { id: 11, name: "eleven", attached: true, windows: [] },
-    ];
+    ]);
 
     store.jumpToPane(9, 1, 1);
     findCall(calls, "switch-client").d.reject(new Error("bridge closed"));
@@ -164,7 +164,9 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   it("issues select-window/select-pane only after switch-client resolves", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [{ id: 9, name: "nine", attached: false, windows: [] }];
+    store.setSessionsForTest([
+      { id: 9, name: "nine", attached: false, windows: [] },
+    ]);
 
     store.jumpToPane(9, 42, 7);
 
@@ -189,10 +191,10 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   it("does not fire a superseded jump's select-window/select-pane once a newer jump has bumped the token", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
       { id: 11, name: "eleven", attached: false, windows: [] },
-    ];
+    ]);
 
     // First jump goes in-flight (switch-client pending), then a newer jump
     // supersedes it before the first switch-client resolves.
@@ -223,10 +225,10 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   it("does not issue select-window/select-pane when switch-client resolves with success:false (tmux %error)", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
-    store.sessions = [
+    store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
       { id: 11, name: "eleven", attached: true, windows: [] },
-    ];
+    ]);
 
     store.jumpToPane(9, 42, 7);
     // A tmux %error resolves (not rejects) with success:false — the client

@@ -27,26 +27,26 @@ import type { TmuxModel } from "./tmux-model.ts";
 export type { ConnState } from "./bridge.ts";
 
 export class ConnectionController {
-  connState: ConnState = "connecting";
-
-  // [LAW:no-ambient-temporal-coupling] Re-entrancy guard: the bridge can
-  // re-enter "ready" (reconnect) while a prior install is still awaiting its
-  // list-*/bootstrap round-trips. This owner runs at most one install at a
-  // time so two invocations can't race redundant queries; a genuinely fresh
-  // reconnect (after the prior install settled) still re-subscribes.
-  private installing = false;
+  // [LAW:single-enforcer] `onStateChange` is the ONE writer of connState — it
+  // updates the state AND triggers installSubscriptions on "ready". Exposing a
+  // public settable field would let a stray write flip to "ready" without the
+  // install side-effect, so the field is private and read through a getter.
+  private _connState: ConnState = "connecting";
 
   constructor(
     private readonly client: TmuxBridge,
     private readonly model: TmuxModel,
     private readonly log: LogStore,
   ) {
-    makeAutoObservable<this, "client" | "model" | "log" | "installing">(this, {
+    makeAutoObservable<this, "client" | "model" | "log">(this, {
       client: false,
       model: false,
       log: false,
-      installing: false,
     });
+  }
+
+  get connState(): ConnState {
+    return this._connState;
   }
 
   connect(url: string): void {
@@ -62,8 +62,13 @@ export class ConnectionController {
   }
 
   onStateChange(s: ConnState): void {
-    this.connState = s;
+    this._connState = s;
     if (s === "ready") {
+      // Re-install on every "ready". A reconnect gives a NEW connection whose
+      // server-side subscriptions must be re-established, so this must run
+      // again — tmux keys subscriptions by name (a re-add replaces, not
+      // duplicates), and the bridge's event handlers are wired once in
+      // DemoStore, so a re-install never multiplies event delivery.
       void this.installSubscriptions();
     }
   }
@@ -74,8 +79,6 @@ export class ConnectionController {
    * so there is no need to ever poll after this.
    */
   private async installSubscriptions(): Promise<void> {
-    if (this.installing) return;
-    this.installing = true;
     try {
       await Promise.all([
         this.client.execute(
@@ -140,17 +143,15 @@ export class ConnectionController {
       this.log.pushError(
         `subscribe failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-    } finally {
-      this.installing = false;
     }
   }
 
   get statusColor(): string {
-    return this.connState === "ready"
+    return this._connState === "ready"
       ? "teal"
-      : this.connState === "open"
+      : this._connState === "open"
         ? "yellow"
-        : this.connState === "closed"
+        : this._connState === "closed"
           ? "red"
           : "gray";
   }

@@ -148,11 +148,15 @@ export class DemoStore {
     return this.model.sessions;
   }
 
-  // Test seam only. Production model state flows exclusively through
-  // TmuxModel.applySnapshot / mergeSession off tmux subscriptions — nothing in
-  // the app assigns store.sessions. Tests set it to stage a tree directly; no
-  // subscriptions arrive there, so no rebuild overwrites it. [LAW:one-source-of-truth]
-  set sessions(value: SessionInfo[]) {
+  /**
+   * TEST ONLY — stage a session tree directly, bypassing the snapshot pipeline.
+   * Production model state flows exclusively through TmuxModel.applySnapshot /
+   * mergeSession off tmux subscriptions; nothing in the app writes the tree.
+   * Named (not a `set sessions` setter) so an accidental production write is a
+   * visibly-wrong call at review, not a legitimate-looking assignment.
+   * [LAW:one-source-of-truth]
+   */
+  setSessionsForTest(value: SessionInfo[]): void {
     this.model.sessions = value;
   }
 
