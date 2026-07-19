@@ -723,7 +723,15 @@ export class PaneStream implements ReseedTarget {
     // state. Drop it. If anyone is still attached, kick off a fresh seed —
     // through `startSeedCycle` so `this.seedCycle` follows the new cycle.
     if (this.seedCycle.phase === "capturing" && this.seedCycle.stale) {
-      if (this.sink !== null && this.lastSeed === null) {
+      // No `lastSeed === null` guard: every stale trigger (`onReconnected`,
+      // the detached-byte path) unconditionally invalidates the cache BEFORE
+      // marking stale, so a stale in-flight capture provably has no cache to
+      // fall back on. Guarding on it here would be dead control-flow whose
+      // only reachable-false behavior — silently skipping the re-issue and
+      // leaving a stale screen — is exactly the [LAW:no-silent-failure] trap
+      // to avoid; re-issuing when a sink is still attached is the fail-safe
+      // direction regardless.
+      if (this.sink !== null) {
         // [LAW:one-source-of-truth] Clear the buffer before issuing the new
         // capture-pane. Bytes buffered during the stale seeding window arrived
         // before the new capture is issued and will be included in the new
