@@ -63,14 +63,19 @@ export class ReconnectController {
     if (policy === undefined || policy.maxAttempts <= 0) {
       return { kind: "disabled" };
     }
+    // [LAW:one-source-of-truth] Idempotent while a retry is pending: a second
+    // schedule() before the armed timer fires returns the already-scheduled
+    // decision rather than burning another attempt and re-arming. This keeps
+    // `attempts` = retries actually scheduled, and holds the controller to one
+    // armed timer by construction (symmetric with Heartbeat.start()).
+    if (this.timer !== null) {
+      return { kind: "scheduled", attempt: this.attempts };
+    }
     if (this.attempts >= policy.maxAttempts) {
       return { kind: "exhausted", maxAttempts: policy.maxAttempts };
     }
     this.attempts += 1;
     const delay = this.backoffDelay(policy);
-    // [LAW:one-source-of-truth] The controller owns at most one armed retry;
-    // cancel any prior timer so a second schedule() cannot leave two live.
-    this.cancel();
     this.timer = setTimeout(() => {
       this.timer = null;
       this.handlers.onRetry();

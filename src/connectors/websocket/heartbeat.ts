@@ -63,7 +63,11 @@ export class Heartbeat<Token = void> {
     this.timer.unref?.();
   }
 
-  onPong(token?: Token): void {
+  // [LAW:types-are-the-program] The token is required. TS lets a `void`
+  // parameter be omitted at the call site, so `Heartbeat<void>` still calls
+  // `onPong()`, while `Heartbeat<string>` must pass its id — the type enforces
+  // the token exactly where the protocol carries one.
+  onPong(token: Token): void {
     // [LAW:dataflow-not-control-flow] The deadline's presence is the "is a ping
     // outstanding" signal; the token only disambiguates which ping. A pong that
     // does not match the outstanding token (a stale or duplicate reply) is

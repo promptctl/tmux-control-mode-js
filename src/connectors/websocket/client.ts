@@ -708,38 +708,55 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // -------------------------------------------------------------------------
   private startHeartbeat(): void {
     this.heartbeat?.stop();
-    const interval =
-      this.opts.heartbeatIntervalMs ??
-      this.serverLimits?.heartbeatIntervalMs ??
-      DEFAULTS.heartbeatIntervalMs;
+    const config = this.heartbeatConfig();
     // [LAW:dataflow-not-control-flow] A disabled heartbeat is the absence of a
     // probe, not a probe that never ticks: null it out so `this.heartbeat`
     // being non-null always means an active heartbeat, and nothing is allocated.
-    if (interval <= 0) {
+    if (config === null) {
       this.heartbeat = null;
       return;
     }
-    const timeout = this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
     // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
     // (Token = string); ping() emits the frame and returns the id the matching
     // pong will carry, so the shell holds no ping-id state.
-    const heartbeat = new Heartbeat<string>(interval, timeout, {
-      ping: () => {
-        const id = this.id();
-        this.rawSend(encodeClientFrame({ k: "ping", id }));
-        return id;
+    const heartbeat = new Heartbeat<string>(
+      config.intervalMs,
+      config.timeoutMs,
+      {
+        ping: () => {
+          const id = this.id();
+          this.rawSend(encodeClientFrame({ k: "ping", id }));
+          return id;
+        },
+        onTimeout: () => {
+          // No pong — kill the socket and let the close/reconnect path run.
+          try {
+            this.ws?.close(4000, "heartbeat timeout");
+          } catch {
+            // ignore
+          }
+        },
       },
-      onTimeout: () => {
-        // No pong — kill the socket and let the close/reconnect path run.
-        try {
-          this.ws?.close(4000, "heartbeat timeout");
-        } catch {
-          // ignore
-        }
-      },
-    });
+    );
     this.heartbeat = heartbeat;
     heartbeat.start();
+  }
+
+  // [LAW:decomposition] Cadence policy, separate from probe construction:
+  // reconcile caller opts, server welcome limits, and defaults into the probe's
+  // interval/timeout. null means the heartbeat is disabled (interval <= 0).
+  private heartbeatConfig(): {
+    intervalMs: number;
+    timeoutMs: number;
+  } | null {
+    const intervalMs =
+      this.opts.heartbeatIntervalMs ??
+      this.serverLimits?.heartbeatIntervalMs ??
+      DEFAULTS.heartbeatIntervalMs;
+    if (intervalMs <= 0) return null;
+    const timeoutMs =
+      this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
+    return { intervalMs, timeoutMs };
   }
 
   // -------------------------------------------------------------------------

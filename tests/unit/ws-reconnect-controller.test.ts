@@ -104,7 +104,21 @@ describe("ReconnectController — schedule + budget", () => {
     for (let i = 1; i <= 1000; i += 1) {
       const decision = ctl.schedule();
       expect(decision).toEqual({ kind: "scheduled", attempt: i });
+      // Fire the retry timer, mirroring the real loop where each retry fires
+      // (openSocket → … → finalize) before the next schedule() is called.
+      vi.advanceTimersByTime(2);
     }
+    ctl.cancel();
+  });
+
+  it("is idempotent while a retry is pending: a second schedule() does not burn budget", () => {
+    vi.useFakeTimers();
+    const ctl = new ReconnectController(POLICY, { onRetry: vi.fn() });
+    expect(ctl.schedule()).toEqual({ kind: "scheduled", attempt: 1 });
+    // No intervening timer fire — the retry is still pending. A second call
+    // must return the same decision and neither advance the budget nor re-arm.
+    expect(ctl.schedule()).toEqual({ kind: "scheduled", attempt: 1 });
+    expect(ctl.currentAttempt).toBe(1);
     ctl.cancel();
   });
 });
@@ -126,8 +140,8 @@ describe("ReconnectController — cancel + reset", () => {
     vi.useFakeTimers();
     const onRetry = vi.fn();
     const ctl = new ReconnectController(POLICY, { onRetry });
-    ctl.schedule(); // attempt 1 (arms timer A)
-    ctl.schedule(); // attempt 2 (cancels A, arms timer B)
+    ctl.schedule(); // attempt 1 (arms a timer)
+    ctl.schedule(); // idempotent while pending — still attempt 1
     ctl.reset();
     expect(ctl.currentAttempt).toBe(0);
     expect(ctl.isPending()).toBe(false);
