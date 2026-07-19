@@ -340,7 +340,26 @@ describe("topology-race", () => {
     // This supersedes the in-flight bootstrap — its result must not be applied.
     tracker.invalidateWindow(5);
 
+    // The SUCCESS path is superseded (a stale seed would re-add the closed
+    // window's panes)...
     expect(tracker.isBootstrapCurrent(gen)).toBe(false);
+    // ...but the FAILURE path is NOT: a window-close starts no replacement
+    // bootstrap, so a genuine failure here is still the authoritative topology
+    // state and must be reported, not silently swallowed. [LAW:no-silent-failure]
+    expect(tracker.isLatestBootstrap(gen)).toBe(true);
+  });
+
+  it("a newer bootstrap supersedes an older one on BOTH the success and failure paths", () => {
+    const tracker = new TopologyEpochTracker();
+    const genA = tracker.startBootstrap();
+    const genB = tracker.startBootstrap();
+
+    // A newer bootstrap owns the topology outcome: the older attempt's result is
+    // stale for seeding AND its failure must stay silent (B will seed or report).
+    expect(tracker.isBootstrapCurrent(genA)).toBe(false);
+    expect(tracker.isLatestBootstrap(genA)).toBe(false);
+    expect(tracker.isBootstrapCurrent(genB)).toBe(true);
+    expect(tracker.isLatestBootstrap(genB)).toBe(true);
   });
 });
 

@@ -145,8 +145,13 @@ export class TmuxClient implements TmuxConnection {
 
   constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
-    this.router = new TopologyRouter(options);
     this.emitter = new TypedEmitter();
+    // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
+    //   adapter owns the emitter and performs the emission.
+    this.router = new TopologyRouter(
+      (error) => this.emitter.emit({ type: "topology-error", error }),
+      options,
+    );
     this.parser = new TmuxParser((msg) => this.handleMessage(msg));
 
     this.parser.onOutputLine = (_commandNumber, line) => {

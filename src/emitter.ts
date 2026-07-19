@@ -25,6 +25,7 @@ import type {
 import type {
   ConnectionStateMessage,
   ReconnectedMessage,
+  TopologyErrorMessage,
 } from "./connection-state.js";
 
 /**
@@ -55,7 +56,8 @@ export type EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>;
 export type SyntheticEmitterMessage =
   | ConnectionStateMessage
   | ReconnectedMessage
-  | ProtocolErrorMessage;
+  | ProtocolErrorMessage
+  | TopologyErrorMessage;
 
 /**
  * Every event the emitter can carry. State-shaped `TmuxMessage` variants
@@ -77,6 +79,7 @@ const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
   "connection-state": true,
   reconnected: true,
   "protocol-error": true,
+  "topology-error": true,
 };
 
 /**

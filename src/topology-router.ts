@@ -48,6 +48,38 @@ export interface TopologyRouterOptions {
 type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
 /**
+ * Reporting seam for a failed topology bootstrap.
+ *
+ * [LAW:effects-at-boundaries] The router is a pure substrate with no emitter; it
+ *   cannot perform the notification itself. It DESCRIBES the failure by calling
+ *   this seam, and the transport adapter (which owns an emitter) PERFORMS the
+ *   emission — wiring it to a `topology-error` event.
+ * [LAW:no-silent-failure] This is a required construction dependency, not an
+ *   optional callback: a TopologyRouter that silently drops bootstrap failures
+ *   is not constructible.
+ */
+export type ReportTopologyError = (error: Error) => void;
+
+// [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
+//   to Error and give it a self-describing prefix so a consumer that logs only
+//   `ev.error.message` sees the bootstrap context (not a bare `close 1006`),
+//   while the original is preserved as `.cause` — the underlying reason (a real
+//   tmux error, or a transport close) is not lost. [FRAMING:representation]
+//   This runs on the failure path, so it must be TOTAL: `String(value)` throws
+//   for a null-prototype object or a throwing `toString`, and a throw here would
+//   convert the caught rejection into an unhandled one — the exact silence this
+//   removes. The coercion is guarded with a structural-tag fallback.
+function bootstrapError(value: unknown): Error {
+  let detail: string;
+  try {
+    detail = value instanceof Error ? value.message : String(value);
+  } catch {
+    detail = Object.prototype.toString.call(value);
+  }
+  return new Error(`topology bootstrap failed: ${detail}`, { cause: value });
+}
+
+/**
  * TopologyRouter is the extracted, shared substrate for pane-output routing.
  *
  * It owns the topology table, the sink registry, the epoch/generation counter
@@ -86,7 +118,15 @@ export class TopologyRouter {
   private readonly suppressor: IdlePaneSuppressor | null;
   private readonly interest: PaneInterestTracker | null;
 
-  constructor(options?: TopologyRouterOptions) {
+  // [LAW:effects-at-boundaries] The one seam from a failed bootstrap effect to
+  //   the outside world. The router computes; this reports.
+  private readonly reportTopologyError: ReportTopologyError;
+
+  constructor(
+    reportTopologyError: ReportTopologyError,
+    options?: TopologyRouterOptions,
+  ) {
+    this.reportTopologyError = reportTopologyError;
     if (options?.idlePaneSuppression === true) {
       // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
       //   sender, which the router gates on the live runCommand.
@@ -294,9 +334,37 @@ export class TopologyRouter {
       });
       this.topology.seed(entries);
       this.interest?.recompute();
-    } catch {
-      // Non-fatal: topology races are handled at dispatch time via the fallback
-      // to server-scope and pane-scope buckets even when meta is undefined.
+    } catch (err) {
+      // [FRAMING:representation] A bootstrap that settles after its transport
+      //   episode ended is a shutdown/reconnect artifact, not a topology fault of
+      //   the CURRENT connection — `connection-state` already represents that,
+      //   so a follow-on topology-error would be a misleading second signal.
+      //   Compare IDENTITY, not a value: `run` is the exact runner this bootstrap
+      //   used, captured at entry. `this.runCommand !== run` is true both when the
+      //   transport closed (now null) AND when it closed-then-reopened (now a new
+      //   runner) — the value-only `=== null` check misses the reconnect (ABA)
+      //   case, where a stale rejection would fire on a healthy new connection.
+      //   Not a silent drop: the current connection's own bootstrap still reports.
+      if (this.runCommand !== run) return;
+      // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
+      //   path too: if a newer bootstrap has since started, it owns the outcome
+      //   (it will seed a healthy topology or report its own failure), so this
+      //   superseded rejection stays silent — reporting it would be a false alarm
+      //   on an already-repaired connection. A failure that is still the latest
+      //   bootstrap — including one whose gen was bumped only by a window-close —
+      //   IS the authoritative topology state and must surface.
+      if (!this.epoch.isLatestBootstrap(gen)) return;
+      // [LAW:no-silent-failure] The bootstrap effect failed. An empty topology
+      //   is NOT a handled fallback here: with no topology, dispatch matches only
+      //   pane- and server-scoped sinks (meta === undefined), so every
+      //   session/window-scoped consumer would silently receive zero bytes,
+      //   indistinguishable from a genuinely empty tmux. Lift the failure to the
+      //   seam so the consumer can tell the two apart. [LAW:effects-at-boundaries]
+      //   Non-terminal: the event-driven bootstrap triggers (session-changed,
+      //   window events, a new topology-scoped attach) re-attempt this, so a
+      //   later success recovers a starved sink — no ambient retry timer needed.
+      //   [LAW:no-ambient-temporal-coupling]
+      this.reportTopologyError(bootstrapError(err));
     }
   }
 

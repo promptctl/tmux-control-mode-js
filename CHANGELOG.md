@@ -16,9 +16,21 @@ All notable changes to this project are documented here. Format follows
   now rejects with the new `TransportSendError` when a send is refused.
 - `TmuxClient.detach()` likewise returns `SendResult` instead of `void`, for the
   same reason — a refused detach is now observable instead of silently dropped.
+- `TopologyRouter`'s constructor takes a required `reportTopologyError` reporter
+  as its first argument (`new TopologyRouter(reportTopologyError, options?)`).
+  The router is a pure substrate with no emitter, so a failed topology bootstrap
+  is lifted to this seam and the transport adapter performs the emission. The
+  reporter is mandatory by design: a router that silently drops bootstrap
+  failures must not be constructible. External consumers constructing a
+  `TopologyRouter` directly (an advanced path — building a custom transport
+  adapter) must supply it.
 
 ### Added
 
+- `topology-error` event on every `TmuxClient`-shaped connection, emitted when a
+  topology bootstrap (`list-panes -a`) fails. Distinguishes "topology empty
+  because bootstrap failed" from "topology empty because tmux has no panes" — a
+  session/window-scoped consumer is no longer silently starved with no signal.
 - `TransportClosedError`, thrown via Promise rejection when a command was
   queued or already inflight and the transport closed before tmux replied.
   Distinct from `TransportSendError` (the send was refused outright) and
@@ -26,6 +38,15 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A failed topology bootstrap no longer silently starves session/window-scoped
+  byte sinks. Previously the bootstrap's `list-panes -a` rejection was swallowed
+  by a `catch {}`, leaving an empty topology that routed every session/window
+  consumer to zero bytes with no error — indistinguishable from a quiet tmux.
+  The failure now surfaces as a `topology-error` event, and the existing
+  event-driven bootstrap triggers make recovery non-terminal. A superseded or
+  post-close bootstrap rejection is suppressed (the newer bootstrap or the
+  `connection-state: closed` event owns that outcome) so the signal stays
+  truthful rather than crying wolf.
 - `TmuxClient.execute()` promises no longer hang forever if the transport
   closes while the command is queued or inflight — every outstanding promise
   is now rejected with `TransportClosedError` when the transport closes.
