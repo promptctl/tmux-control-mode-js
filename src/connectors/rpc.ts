@@ -115,10 +115,19 @@ export type RpcErrorCode =
 
 export class RpcError extends Error {
   readonly code: RpcErrorCode;
+  /**
+   * The unprefixed message, before the `[CODE] ` prefix that `.message`
+   * carries. [LAW:one-source-of-truth] The bare text has one authoritative home
+   * here so consumers that re-wrap the error (e.g. the Electron bridge mapping
+   * RpcError → BridgeError) read it structurally instead of regex-stripping the
+   * prefix off `.message` and coupling to this constructor's format.
+   */
+  readonly original: string;
   constructor(code: RpcErrorCode, message: string) {
     super(`[${code}] ${message}`);
     this.name = "RpcError";
     this.code = code;
+    this.original = message;
   }
 }
 

@@ -2,121 +2,48 @@
 // Electron main-process bridge: forwards TmuxClient events to registered
 // renderers and routes renderer command invocations to the client.
 //
-// Everything in this file is electron-specific; for example:
-//   - Single-instance enforcement on the ipcMain singleton.
-//   - Per-sender IPC-side wiring (one unified SenderState per renderer with
-//     the destroyed-listener handle, in-flight invoke set, isSubscribed flag).
-//   - Forwarding TmuxClient events as Electron IPC messages.
-//   - Ack-frame parsing (an electron-specific channel; not part of the
-//     transport-agnostic RPC).
-//   - Envelope-shaped invoke replies (real Electron's IPC serializer drops
-//     subclass props on rejected Errors, so every outcome rides the
-//     `InvokeResultEnvelope` discriminated union).
+// This file is the wiring shell. The three concerns it used to fuse now live
+// in dedicated collaborators, mirroring the websocket/ split:
+//   - SenderRegistry (./sender-registry.ts) — the set of registered renderers,
+//     their per-sender lifecycle, per-renderer byte forwarding, and event
+//     fan-out.
+//   - InvokePipeline (./invoke-pipeline.ts) — renderer command invocation
+//     (parse → dispatch → encode), abort-on-teardown, and drain.
+//   - WebContentsSink (./sink.ts) — the one BytesSink for the Electron main
+//     transport (mirrors websocket/sink.ts).
 //
-// All the bookkeeping that is NOT electron-specific — subscription
-// ownership/refcount, per-peer per-pane outstanding-byte accounting, the
-// watermark loop that drives `setPaneAction(Pause/Continue)` — lives in
-// `../bridge-connection.ts` and is shared with the WebSocket bridge.
-//
-// RPC validation, dispatch, and method allowlist all live in `../rpc.ts`.
-// Adding a TmuxClient method = one file edit.
+// Everything here is electron-specific: the single-instance ipcMain guard, the
+// ipcMain listener installation, the forwarding policy at the client-event
+// seam, and the returned handle's dispose/drain. The transport-agnostic
+// bookkeeping — subscription ownership/refcount, per-peer outstanding-byte
+// accounting, the watermark loop that drives setPaneAction(Pause/Continue) —
+// lives in `../bridge-connection.ts` and is shared with the WebSocket bridge.
+// RPC validation, dispatch, and method allowlist live in `../rpc.ts`.
 //
 // [LAW:single-enforcer] One ipcMain.handle("tmux:invoke") per process; the
-// invoke handler delegates parsing+dispatching to ../rpc, with subscription
+// invoke pipeline delegates parsing+dispatching to ../rpc, with subscription
 // RPCs intercepted at the bridge boundary so the shared `BridgeConnection`
 // helper enforces refcount + ownership in exactly one place.
-// [LAW:one-source-of-truth] One SenderState entry per renderer, and one
-// `Peer` token per renderer registered with the helper; teardownSender is
-// the only path that releases both.
 // [LAW:one-source-of-truth] IPC channel names from ./types.js; RPC behavior
 // from ../rpc.js; subscription/refcount/watermark from ../bridge-connection.js.
 
-import type { TmuxConnection } from "../../client.js";
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
 import {
-  serverScope,
-  type AttachOptions,
-  type BytesSink,
-  type ChunkPayload,
-} from "../../pane-output.js";
-import type { PaneOutputMessage } from "../../protocol/types.js";
-import {
-  mapRpcCode,
-  parseRpcRequest,
-  RpcError,
-  type RpcRequest,
-} from "../rpc.js";
-import {
-  type BridgeOutcome,
-  dispatchBridgeRequest,
-  internalError,
-} from "../bridge-dispatch.js";
-import {
   createBridgeConnection,
   type BridgeConnection,
-  type Peer,
 } from "../bridge-connection.js";
 import {
   BridgeError,
   IPC,
-  parseAckMessage,
-  type InvokeResultEnvelope,
   type IpcMainEventLike,
-  type IpcMainInvokeEventLike,
   type IpcMainLike,
   type IpcMainOnListener,
   type MainBridgeHandle,
   type MainBridgeOptions,
-  type WebContentsLike,
 } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// RpcError → BridgeError mapping at the IPC trust boundary.
-//
-// [LAW:single-enforcer] RpcError is connector-internal; it is mapped to a
-// `BridgeError` here so the wire taxonomy is unified across both transports.
-// The taxonomy translation (mapRpcCode) is single-sourced in `../rpc.js`; this
-// seam keeps only the Electron-specific envelope (the message-prefix strip).
-// ---------------------------------------------------------------------------
-
-function rpcErrorToBridge(err: RpcError): BridgeError {
-  // RpcError prepends `[CODE] ` to its `.message`; the bridge code on the
-  // BridgeError already supplies that prefix, so strip RpcError's first to
-  // avoid double-prefixed messages like `[BRIDGE_INVALID_ARG] [INVALID_ARG] ...`.
-  const stripped = err.message.replace(/^\[[A-Z_]+\] /, "");
-  return new BridgeError(mapRpcCode(err.code), stripped);
-}
-
-function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
-  return { status: "bridge-error", error: rpcErrorToBridge(err).toPayload() };
-}
-
-function abortedEnvelope(method: string): InvokeResultEnvelope {
-  return {
-    status: "bridge-error",
-    error: new BridgeError(
-      "BRIDGE_ABORTED",
-      `dispatch for method=${method} aborted: sender destroyed`,
-    ).toPayload(),
-  };
-}
-
-// [LAW:single-enforcer] The BRIDGE_INTERNAL construction (method-labelled
-// message + chained cause stack) lives once in `../bridge-dispatch.js`. This
-// fallback covers only the pre-parse path, where the method is not yet known
-// (`parseRpcRequest` threw something other than RpcError — defensive: it only
-// ever throws RpcError). The post-parse dispatch path is classified inside
-// dispatchBridgeRequest.
-function internalErrorEnvelope(
-  method: string,
-  err: unknown,
-): InvokeResultEnvelope {
-  return {
-    status: "bridge-error",
-    error: internalError(method, err).toPayload(),
-  };
-}
+import { SenderRegistry } from "./sender-registry.js";
+import { InvokePipeline } from "./invoke-pipeline.js";
 
 // ---------------------------------------------------------------------------
 // Single-instance ipcMain registration tracking.
@@ -128,53 +55,6 @@ function internalErrorEnvelope(
 // ---------------------------------------------------------------------------
 
 const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
-
-// ---------------------------------------------------------------------------
-// Per-sender state.
-//
-// Subscription ownership, refcount, and outstanding-byte accounting all live
-// inside the shared BridgeConnection helper, keyed by the `peer` token below.
-// SenderState carries only what is electron-specific: the WebContents, the
-// destroyed-listener handle, the in-flight invoke set, and the isSubscribed
-// flag that gates event forwarding.
-// ---------------------------------------------------------------------------
-
-interface PendingDispatch {
-  /**
-   * Set true when the sender's WebContents is destroyed (or unregisters)
-   * while this dispatch's await is in-flight. The TmuxClient FIFO is
-   * intentionally NOT purged — the underlying %begin/%end pair still pops
-   * the pending entry in order so subsequent dispatches stay correlated.
-   * The post-await branch in invokeHandler observes `aborted` and returns
-   * a `BRIDGE_ABORTED` envelope instead of trying to send a result to a
-   * dead webContents.
-   */
-  aborted: boolean;
-}
-
-interface SenderState {
-  readonly wc: WebContentsLike;
-  /** Token returned by BridgeConnection.registerPeer — the Map key the helper
-   *  uses internally for refcount + outstanding-byte accounting. */
-  readonly peer: Peer;
-  /** True once the renderer has sent IPC.register; toggled off by unregister. */
-  isSubscribed: boolean;
-  /** In-flight invoke dispatches owned by this sender. */
-  readonly pending: Set<PendingDispatch>;
-  /**
-   * The exact `destroyed` listener registered with `wc.once`. Stored so
-   * `teardownSender` can call `wc.removeListener` when teardown is driven
-   * by `unregister` instead of by the WebContents actually being destroyed
-   * — otherwise the once-handler stays attached on a still-alive emitter,
-   * fires later (as a no-op against a sender that no longer exists), and
-   * keeps a closure-reference path alive on the emitter for the rest of
-   * the WebContents's lifetime.
-   */
-  readonly onDestroyed: () => void;
-  /** Disposer for this renderer's per-peer byte forwarder sink. Null before
-   * the first IPC.register call; set once and cleared on teardown. */
-  detachBytes: (() => void) | null;
-}
 
 // ---------------------------------------------------------------------------
 // createMainBridge
@@ -202,36 +82,23 @@ interface SenderState {
  *     reach an unknown TmuxClient method or trigger a prototype-chain lookup.
  *   - Subscribe / unsubscribe are intercepted at the bridge boundary and
  *     routed through the shared `BridgeConnection` helper, which holds the
- *     refcount and ownership map. A renderer attempting to unsubscribe a
- *     name it does not own is rejected with `BRIDGE_UNKNOWN_SUBSCRIPTION`;
- *     a divergent re-subscribe (existing name, different what/format) is
- *     rejected with `BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT`.
+ *     refcount and ownership map.
  *
  * Backpressure:
  *   - For every `%output` / `%extended-output` byte forwarded, the helper
  *     accounts it as outstanding for that (renderer, pane) pair. When the
- *     per-pane total (summed across renderers) crosses
- *     `outputHighWatermark`, the helper calls
- *     `client.setPaneAction(paneId, Pause)`. When the renderer replies with
- *     `tmux:ack` and the total falls below `outputLowWatermark`, the helper
- *     resumes the pane.
+ *     per-pane total crosses `outputHighWatermark`, the helper calls
+ *     `client.setPaneAction(paneId, Pause)`; the renderer's `tmux:ack` drops
+ *     the total below `outputLowWatermark` and the helper resumes the pane.
  *
  * Renderer death:
- *   - `webContents.once("destroyed", ...)` fires `teardownSender` once per
- *     sender. That single path:
- *       (1) marks all in-flight invoke dispatches `aborted` so the await
- *           resolves but the result is discarded with a BridgeError
- *           (the TmuxClient FIFO stays intact — no purge → no desync);
- *       (2) calls `bridge.removePeer(peer)` which drops outstanding-byte
- *           accounting (resuming any panes paused only because of this
- *           renderer's lag) and refcount-decrements every subscription this
- *           sender owned (firing `client.unsubscribe` on last drop).
+ *   - `webContents.once("destroyed", ...)` drives `SenderRegistry.teardown`
+ *     once per sender, which flags in-flight invokes aborted (via the invoke
+ *     pipeline), detaches the byte forwarder, and `bridge.removePeer`s.
  *
  * Returns a handle whose `dispose()` removes every installed IPC handler,
- * tears down every sender, calls `bridge.dispose()` (which resumes any panes
- * the bridge had paused and refcount-cleans every subscription the bridge
- * created), and frees the ipcMain for a subsequent createMainBridge. The
- * caller still owns `client.close()`.
+ * tears down every sender, calls `bridge.dispose()`, and frees the ipcMain for
+ * a subsequent createMainBridge. The caller still owns `client.close()`.
  */
 export function createMainBridge(
   client: TmuxClient,
@@ -269,308 +136,63 @@ export function createMainBridge(
     throw err;
   }
 
-  const senders = new Map<WebContentsLike, SenderState>();
+  // -------------------------------------------------------------------------
+  // Collaborators. The dependency runs one way: the invoke pipeline resolves a
+  // sender's peer through the registry (`getOrCreate`), and the registry flags
+  // that sender's in-flight dispatches aborted on teardown — both act on the
+  // single per-sender record, so there is no back-reference to wire.
+  // [LAW:one-way-deps]
+  // -------------------------------------------------------------------------
+  const registry = new SenderRegistry({ bridge, client });
+  const invokePipeline = new InvokePipeline({ bridge, client, registry });
 
   // -------------------------------------------------------------------------
-  // Sender state lifecycle.
-  // -------------------------------------------------------------------------
-
-  const getOrCreateSender = (wc: WebContentsLike): SenderState => {
-    const existing = senders.get(wc);
-    if (existing !== undefined) return existing;
-    // [LAW:single-enforcer] One destroyed-handler per sender. Attaching here
-    // (not in onRegister) means a renderer that only ever invoke()s — never
-    // register()s — still cleans up correctly when its webContents dies.
-    // The handler is stored on the sender so teardownSender can detach it
-    // when the unregister path runs and wc is still alive.
-    const onDestroyed = (): void => teardownSender(wc);
-    const peer = bridge.registerPeer();
-    const state: SenderState = {
-      wc,
-      peer,
-      isSubscribed: false,
-      pending: new Set(),
-      onDestroyed,
-      detachBytes: null,
-    };
-    senders.set(wc, state);
-    wc.once("destroyed", onDestroyed);
-    return state;
-  };
-
-  const teardownSender = (wc: WebContentsLike): void => {
-    const state = senders.get(wc);
-    if (state === undefined) return;
-    senders.delete(wc);
-
-    // (0) Detach the destroyed handler. If we got here BECAUSE the wc was
-    //     destroyed, removeListener is harmless (the listener has already
-    //     fired and been removed by `once`). If we got here from unregister
-    //     while the wc is still alive, this is the only thing that prevents
-    //     a leaked listener on the emitter — see SenderState.onDestroyed.
-    state.wc.removeListener("destroyed", state.onDestroyed);
-
-    // (1) Mark in-flight invokes aborted. The TmuxClient FIFO stays intact —
-    //     the underlying %begin/%end still resolves the pending entry in
-    //     order — but the post-await branch in invokeHandler observes the
-    //     aborted flag and returns a BRIDGE_ABORTED envelope instead of
-    //     trying to deliver to a dead webContents.
-    for (const p of state.pending) p.aborted = true;
-
-    // (2) Detach the per-renderer byte forwarder so no further bytes are
-    //     routed to this renderer's sink from the substrate.
-    state.detachBytes?.();
-
-    // (3) Drop helper-side accounting + subscription refcounts in one call.
-    //     bridge.removePeer fires setPaneAction(Continue) for any pane this
-    //     sender's outstanding bytes were keeping paused, and unsubscribes
-    //     from tmux for any subscription this sender was the last owner of.
-    bridge.removePeer(state.peer);
-  };
-
-  // -------------------------------------------------------------------------
-  // Event forwarding.
+  // Forwarding policy at the client-event seam.
   //
-  // Two channels, disjoint by message type:
-  //   - `broadcast` (`client.on('*', …)`) for every non-byte message.
-  //     `EmitterMessage` excludes `PaneOutputMessage`, so this handler
-  //     cannot accidentally receive bytes — the type system enforces it.
-  //   - Per-renderer BytesSink (attached in onRegister) for byte chunks.
-  //     Each renderer's sink routes directly from the substrate — no
-  //     per-chunk broadcast loop. [LAW:dataflow-not-control-flow]
+  // [LAW:one-source-of-truth] `topology-error` is per-router-instance: the
+  //   renderer proxy owns its own TopologyRouter (it routes the renderer's
+  //   sinks and reports its own bootstrap failures), so forwarding the main
+  //   client's topology-error would give a renderer consumer a second,
+  //   differently-sourced signal about a topology table it does not route
+  //   against. Each client instance is the sole source of its own topology-
+  //   bootstrap signal; this one event does not cross the bridge. Other
+  //   synthetic events (connection-state, reconnected) DO forward — they
+  //   reflect the shared connection, not a per-router bootstrap.
   //
-  // Both write to IPC.event so the renderer's event handler sees a single
-  // stream (the renderer narrows on `isPaneOutput`). The wire format is the
-  // boundary type that admits both, but the local emitter on either side
-  // never carries bytes through its API.
-  // -------------------------------------------------------------------------
-
-  const broadcast = (msg: EmitterMessage): void => {
-    // [LAW:one-source-of-truth] `topology-error` is per-router-instance: the
-    //   renderer proxy owns its own TopologyRouter (it routes the renderer's
-    //   sinks and reports its own bootstrap failures), so forwarding the main
-    //   client's topology-error would give a renderer consumer a second,
-    //   differently-sourced signal about a topology table it does not route
-    //   against. Each client instance is the sole source of its own topology-
-    //   bootstrap signal; this one event does not cross the bridge. Other
-    //   synthetic events (connection-state, reconnected) DO forward — they
-    //   reflect the shared connection, not a per-router bootstrap.
+  // `EmitterMessage` excludes `PaneOutputMessage`, so this forwarder cannot
+  // receive bytes — the type system enforces it. Byte chunks route through each
+  // renderer's per-peer sink (attached in SenderRegistry.register), not here.
+  const forwardEvent = (msg: EmitterMessage): void => {
     if (msg.type === "topology-error") return;
-    // Snapshot the senders entries before iterating: teardownSender below
-    // calls senders.delete(wc), and a destroyed wc detected mid-loop must
-    // not perturb the iteration order of the rest of the senders.
-    const snapshot = [...senders];
-    for (const [wc, state] of snapshot) {
-      // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
-      // Electron may fire "destroyed" asynchronously, so a send could race a
-      // teardown. Guarding here avoids a native crash inside wc.send.
-      if (wc.isDestroyed()) {
-        teardownSender(wc);
-        continue;
-      }
-      if (!state.isSubscribed) continue;
-      wc.send(IPC.event, msg);
-    }
+    registry.broadcast(msg);
   };
-
-  client.on("*", broadcast);
+  client.on("*", forwardEvent);
 
   // -------------------------------------------------------------------------
-  // Subscribe / unsubscribe / ack channel handlers.
+  // ipcMain listener installation.
+  //
+  // [LAW:locality-or-seam] IpcMainOnListener — the registered listener shape —
+  // is the SAME for `on` and `removeListener`, so the same named reference
+  // passed to `on` is the one passed to `removeListener` in dispose(). No cast
+  // at either site means a refactor cannot silently make dispose() a no-op.
   // -------------------------------------------------------------------------
+  const onRegisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
+    registry.register(event.sender);
+  const onUnregisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
+    registry.teardown(event.sender);
+  const onAckListener: IpcMainOnListener = (
+    event: IpcMainEventLike,
+    ...args: unknown[]
+  ) => registry.ack(event.sender, args[0]);
 
-  const onRegister = (event: IpcMainEventLike): void => {
-    const state = getOrCreateSender(event.sender);
-    state.isSubscribed = true;
-    // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
-    // exactly once per registration. Each renderer's sink is the routing
-    // primitive — the substrate's SinkRegistry.dispatch fans out; no
-    // per-chunk broadcast loop exists in the bridge. [LAW:one-source-of-truth]
-    if (state.detachBytes === null) {
-      const wc = state.wc;
-      // [LAW:one-source-of-truth] The IPC envelope shaping (ChunkPayload →
-      // PaneOutputMessage) and wire send live solely in WebContentsSink.write;
-      // this internal sink wraps that one forwarder and adds backpressure
-      // accounting. Previously both paths hand-built the envelope and could
-      // silently diverge.
-      const forwarder = new WebContentsSink(wc);
-      const rendererSink: BytesSink = {
-        write(msg): void {
-          // [LAW:no-defensive-null-guards] Trust-boundary guard gating the
-          // accounting: never bill a renderer whose WebContents Electron has
-          // already destroyed (a stray account could pause a pane that never
-          // acks). The send-side lifecycle guard is WebContentsSink's own.
-          if (wc.isDestroyed()) return;
-          // Account BEFORE the send so a synchronous ack during dispatch
-          // subtracts from the right baseline.
-          bridge.accountOutput(state.peer, msg.paneId, msg.data.byteLength);
-          forwarder.write(msg);
-        },
-        end(): void {
-          forwarder.end();
-        },
-      };
-      state.detachBytes = client.attachBytesSink(rendererSink, {
-        scope: serverScope,
-      });
-    }
-    // [LAW:dataflow-not-control-flow] Late-joining renderers need the current
-    // lifecycle state immediately, not just when the next transition happens.
-    // Send a snapshot through the same IPC.event channel the live transitions
-    // use — receivers treat it identically.
-    if (!event.sender.isDestroyed()) {
-      event.sender.send(IPC.event, {
-        type: "connection-state",
-        state: client.connectionState,
-      });
-    }
-  };
-
-  const onUnregister = (event: IpcMainEventLike): void => {
-    // Unregister is the proxy.close() path: full teardown for this sender
-    // (matches the destroyed-handler behavior). The proxy will not receive
-    // further events; pending invokes abort; subscriptions refcount-clean.
-    //
-    // [LAW:single-enforcer] Idempotent by construction: teardownSender
-    // returns immediately when the sender is already gone. A misbehaving or
-    // double-firing renderer that re-sends `tmux:unregister` is a noop and
-    // cannot tear anything down twice (no duplicate refcount decrements,
-    // no duplicate dispatch aborts).
-    teardownSender(event.sender);
-  };
-
-  const onAck = (event: IpcMainEventLike, ...args: unknown[]): void => {
-    const state = senders.get(event.sender);
-    if (state === undefined) return;
-    // [LAW:single-enforcer] Validation happens at the IPC trust boundary.
-    // Bad acks from a compromised renderer are dropped silently — they can
-    // only starve the renderer that sent them, never reach tmux.
-    const ack = (() => {
-      try {
-        return parseAckMessage(args[0]);
-      } catch {
-        return null;
-      }
-    })();
-    if (ack === null) return;
-    bridge.ackOutput(state.peer, ack.paneId, ack.bytes);
-  };
-
-  // [LAW:locality-or-seam] IpcMainOnListener — the registered listener
-  // shape — is the SAME for `on` and `removeListener`, so the same named
-  // reference passed to `on` is the one passed to `removeListener` below.
-  // No cast at either site means a refactor that wraps `onRegister` cannot
-  // silently make `dispose()` a no-op.
-  const onRegisterListener: IpcMainOnListener = onRegister;
-  const onUnregisterListener: IpcMainOnListener = onUnregister;
-  const onAckListener: IpcMainOnListener = onAck;
   ipcMain.on(IPC.register, onRegisterListener);
   ipcMain.on(IPC.unregister, onUnregisterListener);
   ipcMain.on(IPC.ack, onAckListener);
-
-  // -------------------------------------------------------------------------
-  // Single invoke handler — parse, run the shared bridge dispatch pipeline
-  // (subscribe/unsubscribe interception + tmux/bridge/internal classification,
-  // shared with the WS server), then encode the BridgeOutcome as an
-  // InvokeResultEnvelope.
-  //
-  // [LAW:single-enforcer] parseRpcRequest is the only validation site;
-  // dispatchBridgeRequest is the only dispatch+classify site. This handler
-  // owns ONLY the Electron wire encoding of the outcome.
-  // -------------------------------------------------------------------------
-
-  // [LAW:decomposition] Electron wire encoding of a BridgeOutcome — the
-  // transport-specific half. `ok` and `tmux-error` keep their distinct
-  // envelope `status` tags; `bridge-error` serializes the typed BridgeError
-  // via `toPayload()` (structured-clone drops Error subclass fields, so the
-  // payload is what survives the IPC hop).
-  const encodeOutcome = (outcome: BridgeOutcome): InvokeResultEnvelope => {
-    switch (outcome.kind) {
-      case "ok":
-        return { status: "ok", response: outcome.response };
-      case "tmux-error":
-        return { status: "tmux-error", response: outcome.response };
-      case "bridge-error":
-        return { status: "bridge-error", error: outcome.error.toPayload() };
-    }
-  };
-
-  const invokeHandler = async (
-    event: IpcMainInvokeEventLike,
-    ...args: unknown[]
-  ): Promise<InvokeResultEnvelope> => {
-    // [LAW:dataflow-not-control-flow] The handler ALWAYS returns an
-    // InvokeResultEnvelope — every outcome (success, tmux %error, bridge
-    // failure) becomes a value in the envelope's discriminated union. The
-    // handler never rejects.
-    //
-    // Why never reject: real Electron's `ipcMain.handle` serializes a
-    // promise rejection by reading `.message` (and `.stack` in dev mode);
-    // structured-clone DROPS subclass properties like `.code`. Throwing
-    // BridgeError out of this handler loses the very piece of information
-    // the renderer needs to branch on. The wire envelope carries
-    // `BridgeErrorPayload` (`{code, message}`) so the renderer
-    // reconstructs a typed BridgeError via `BridgeError.fromPayload`.
-    //
-    // [LAW:single-enforcer] parseRpcRequest is still the only validation
-    // site; RpcError never escapes — it is mapped to BridgeError at this
-    // seam (rpcErrorToBridge below).
-    const senderState = getOrCreateSender(event.sender);
-    const dispatch: PendingDispatch = { aborted: false };
-    senderState.pending.add(dispatch);
-
-    try {
-      let req: RpcRequest;
-      try {
-        req = parseRpcRequest(args[0]);
-      } catch (err) {
-        if (err instanceof RpcError) return rpcErrorEnvelope(err);
-        return internalErrorEnvelope("<unknown>", err);
-      }
-      const outcome = await dispatchBridgeRequest(
-        bridge,
-        client,
-        senderState.peer,
-        req,
-      );
-      // [LAW:no-ambient-temporal-coupling] If the sender was destroyed while
-      // the dispatch was in flight, the abort flag is the single owner of
-      // "this reply is moot" — it overrides any outcome.
-      if (dispatch.aborted) return abortedEnvelope(req.method);
-      return encodeOutcome(outcome);
-    } finally {
-      senderState.pending.delete(dispatch);
-    }
-  };
-
-  // [LAW:one-source-of-truth] One Set tracks every handler-call promise so
-  // `drain()` can await them. Per-sender `pending` Sets carry the abort
-  // signal (the PendingDispatch flag); this Set carries the await target.
-  // They serve different purposes — keeping them separate is cheaper than
-  // promoting PendingDispatch into a deferred.
-  const pendingHandlerCalls = new Set<Promise<InvokeResultEnvelope>>();
-
-  const trackedInvokeHandler = (
-    event: IpcMainInvokeEventLike,
-    ...args: unknown[]
-  ): Promise<InvokeResultEnvelope> => {
-    const p = invokeHandler(event, ...args);
-    pendingHandlerCalls.add(p);
-    // The envelope-returning handler never rejects under normal flow, but
-    // keep the symmetric cleanup so a programming error (a rejection that
-    // somehow escapes the try/catch) does not leak into the tracking Set.
-    const cleanup = (): void => {
-      pendingHandlerCalls.delete(p);
-    };
-    p.then(cleanup, cleanup);
-    return p;
-  };
-
-  ipcMain.handle(IPC.invoke, trackedInvokeHandler);
+  ipcMain.handle(IPC.invoke, invokePipeline.handle);
 
   return {
     dispose() {
-      client.off("*", broadcast);
+      client.off("*", forwardEvent);
       ipcMain.removeListener(IPC.register, onRegisterListener);
       ipcMain.removeListener(IPC.unregister, onUnregisterListener);
       ipcMain.removeListener(IPC.ack, onAckListener);
@@ -579,126 +201,22 @@ export function createMainBridge(
       // dispatches, removes destroyed listeners from still-alive wcs (so
       // dispose doesn't leak handlers across bridge re-installations), and
       // calls bridge.removePeer for each. Then bridge.dispose() flushes any
-      // residual pause state and unsubscribes any names the bridge created
-      // but no peer was holding (defense in depth — removePeer should have
-      // taken care of all of them).
-      for (const wc of [...senders.keys()]) teardownSender(wc);
+      // residual pause state and unsubscribes any names the bridge created but
+      // no peer was holding (defense in depth — teardown should have taken care
+      // of all of them).
+      registry.teardownAll();
       bridge.dispose();
       REGISTERED_IPC_MAINS.delete(ipcMain);
     },
-    async drain(timeoutMs?: number): Promise<void> {
-      if (pendingHandlerCalls.size === 0) return;
-      const all = Promise.allSettled([...pendingHandlerCalls]).then(
-        () => undefined,
-      );
-      if (timeoutMs === undefined) {
-        await all;
-        return;
-      }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
-      });
-      try {
-        await Promise.race([all, timeout]);
-      } finally {
-        if (timer !== undefined) clearTimeout(timer);
-      }
+    drain(timeoutMs?: number): Promise<void> {
+      return invokePipeline.drain(timeoutMs);
     },
   };
 }
 
-// ---------------------------------------------------------------------------
-// WebContentsSink — Electron main → renderer byte forwarder (BytesSink).
-//
-// [LAW:one-type-per-behavior] WebContentsSink is the one BytesSink
-//   implementation for the Electron main-process transport. Every
-//   byte-consuming renderer destination is an instance of this class.
-// [LAW:single-enforcer] Wire channel (`IPC.event`) and envelope shaping
-//   (`PaneOutputMessage`) live in write() — one place, not per-caller.
-// [LAW:dataflow-not-control-flow] write() always runs the same path;
-//   the `wc.isDestroyed()` guard is a trust-boundary check on Electron's
-//   lifecycle (a state the type system cannot encode), not a missing
-//   invariant in the body.
-// [LAW:composability] WebContentsSink does one thing: shape and send.
-//   No exclusivity registry, no lifecycle state beyond BytesSink.
-// ---------------------------------------------------------------------------
-
-/**
- * `BytesSink` that forwards each pane chunk to a WebContents via IPC.
- *
- * Sends `PaneOutputMessage` objects on `IPC.event` — the same channel
- * `createMainBridge`'s event fan-out uses. Renderer-side code already
- * handles these via `isPaneOutput()` in the unified event handler.
- *
- * ## Usage
- *
- * ```ts
- * const sink = new WebContentsSink(wc);
- * const dispose = client.attachBytesSink(sink, { scope: sessionScope(id) });
- * // or via the convenience function:
- * const dispose = attachWebContentsSink(client, wc, { scope: paneScope(42) });
- * ```
- *
- * ## Contract
- *
- * - `write(msg)` is a no-op when `wc.isDestroyed()`.
- * - `end()` is a no-op. There is no per-attachment wire terminator on
- *   the IPC.event channel; pane lifecycle surfaces via tmux notifications.
- *
- * @see attachWebContentsSink for the one-line convenience wrapper.
- */
-export class WebContentsSink implements BytesSink {
-  constructor(private readonly wc: WebContentsLike) {}
-
-  write(msg: ChunkPayload): void {
-    // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check
-    // on Electron's WebContents lifecycle. Not a workaround for a missing
-    // invariant; the lifecycle is external.
-    if (this.wc.isDestroyed()) return;
-    // Shape ChunkPayload → PaneOutputMessage so renderer's isPaneOutput()
-    // check routes correctly through the shared IPC.event handler.
-    const ipcMsg: PaneOutputMessage = {
-      type: "output",
-      paneId: msg.paneId,
-      data: msg.data,
-    };
-    this.wc.send(IPC.event, ipcMsg);
-  }
-
-  end(): void {
-    // No wire-level pane-end frame on IPC.event; pane lifecycle surfaces
-    // via tmux notifications on the same channel.
-  }
-}
-
-// ---------------------------------------------------------------------------
-// attachWebContentsSink — one-line convenience wrapper
-// ---------------------------------------------------------------------------
-
-/**
- * Attach a `WebContentsSink` to `client` and return an idempotent disposer.
- *
- * Equivalent to:
- * ```ts
- * client.attachBytesSink(new WebContentsSink(wc), options)
- * ```
- *
- * `options.scope` defaults to `serverScope` (all panes on the server).
- * Pass `{ scope: paneScope(id) }` or `{ scope: sessionScope(id) }` to narrow.
- *
- * Unlike the previous per-pane API there is no exclusivity registry —
- * multiple attachments with different scopes on the same `wc` are valid.
- *
- * @see WebContentsSink for the underlying BytesSink implementation.
- */
-export function attachWebContentsSink(
-  client: Pick<TmuxConnection, "attachBytesSink">,
-  wc: WebContentsLike,
-  options?: AttachOptions,
-): () => void {
-  return client.attachBytesSink(new WebContentsSink(wc), options);
-}
+// Re-export the Electron byte forwarder from its own module so a main-process
+// consumer keeps a single import site (`./electron/main`). [LAW:one-source-of-truth]
+export { WebContentsSink, attachWebContentsSink } from "./sink.js";
 
 // Re-export the types a main-process consumer might need without forcing a
 // second import site.
