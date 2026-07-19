@@ -23,8 +23,11 @@ import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 interface Rig {
   readonly pipeline: InvokePipeline;
+  readonly registry: SenderRegistry;
   readonly event: IpcMainInvokeEventLike;
   readonly sent: string[];
+  /** Feed a raw control-mode chunk (e.g. a command's %begin/%end reply). */
+  feed(chunk: string): void;
 }
 
 function makeRig(): Rig {
@@ -60,7 +63,7 @@ function makeRig(): Rig {
   const event: IpcMainInvokeEventLike = {
     sender: createIpcHub().createRenderer().sender,
   };
-  return { pipeline, event, sent };
+  return { pipeline, registry, event, sent, feed };
 }
 
 describe("InvokePipeline — validation → envelope", () => {
@@ -93,6 +96,34 @@ describe("InvokePipeline — validation → envelope", () => {
   });
 });
 
+describe("InvokePipeline — outcome encoding", () => {
+  it("encodes a successful command as an `ok` envelope with the response", async () => {
+    const { pipeline, event, feed } = makeRig();
+
+    const p = pipeline.handle(event, {
+      method: "execute",
+      args: ["list-windows"],
+    });
+    // First post-greeting command is numbered 1; resolve it successfully.
+    feed("%begin 1 1 0\n@0 zsh 1 -\n%end 1 1 0\n");
+
+    await expect(p).resolves.toMatchObject({
+      status: "ok",
+      response: { success: true, output: ["@0 zsh 1 -"] },
+    });
+  });
+
+  it("encodes a tmux %error as a `tmux-error` envelope (a successful bridge call)", async () => {
+    const { pipeline, event, feed } = makeRig();
+
+    const p = pipeline.handle(event, { method: "execute", args: ["bogus"] });
+    // The command reached tmux, which rejected it with an %error guard block.
+    feed("%begin 1 1 0\n%error 1 1 0\n");
+
+    await expect(p).resolves.toMatchObject({ status: "tmux-error" });
+  });
+});
+
 describe("InvokePipeline — destroyed sender", () => {
   it("aborts an invoke whose sender is already destroyed, without dispatching", async () => {
     const { pipeline, sent } = makeRig();
@@ -119,6 +150,28 @@ describe("InvokePipeline — destroyed sender", () => {
     });
     // No real tmux command ran for the dead renderer.
     expect(sent).toEqual([]);
+  });
+
+  it("aborts an in-flight dispatch when its sender is torn down mid-flight", async () => {
+    const { pipeline, registry, event, sent, feed } = makeRig();
+
+    // Dispatch is in flight, awaiting the command's %begin/%end.
+    const p = pipeline.handle(event, {
+      method: "execute",
+      args: ["list-windows"],
+    });
+    expect(sent.length).toBeGreaterThan(0);
+
+    // Sender torn down WHILE the dispatch awaits — flags its PendingDispatch.
+    registry.teardown(event.sender);
+    // Now the command resolves; the pipeline sees the abort flag and returns
+    // BRIDGE_ABORTED instead of delivering the result to a dead renderer.
+    feed("%begin 1 1 0\n%end 1 1 0\n");
+
+    await expect(p).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_ABORTED" },
+    });
   });
 });
 
