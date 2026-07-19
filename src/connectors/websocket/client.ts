@@ -65,6 +65,7 @@ import {
   encodeClientFrame,
   isPaneOutputFrame,
   parseServerFrame,
+  toBridgeProtocolError,
   type ResultFrame,
   type RpcMethod,
   type ServerFrame,
@@ -468,14 +469,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     try {
       msg = decodePaneOutput(buf);
     } catch (err) {
-      this.emitError(
-        err instanceof BridgeError
-          ? err
-          : new BridgeError(
-              "BRIDGE_PROTOCOL_ERROR",
-              err instanceof Error ? err.message : String(err),
-            ),
-      );
+      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+      this.emitError(toBridgeProtocolError(err));
       return;
     }
     this.dispatchEvent(msg);
@@ -486,14 +481,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     try {
       frame = parseServerFrame(raw);
     } catch (err) {
-      this.emitError(
-        err instanceof BridgeError
-          ? err
-          : new BridgeError(
-              "BRIDGE_PROTOCOL_ERROR",
-              err instanceof Error ? err.message : String(err),
-            ),
-      );
+      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+      this.emitError(toBridgeProtocolError(err));
       return;
     }
     this.handleFrame(frame);

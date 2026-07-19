@@ -41,6 +41,7 @@ export type { PaneOutputMessage } from "../../protocol/types.js";
 export {
   BridgeError,
   BridgeProtocolError,
+  toBridgeProtocolError,
   type BridgeErrorCode,
   type BridgeErrorPayload,
 } from "../errors.js";

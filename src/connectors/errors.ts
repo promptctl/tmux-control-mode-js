@@ -167,3 +167,28 @@ export class BridgeProtocolError extends BridgeError {
     this.name = "BridgeProtocolError";
   }
 }
+
+// ---------------------------------------------------------------------------
+// toBridgeProtocolError — the single home for "an unknown value was thrown by
+// a wire decode/parse; give me the canonical typed error".
+//
+// [LAW:single-enforcer] Every catch around a wire parser (client onBinary /
+// onText, server onFrame) routes through here instead of re-deriving the
+// `err instanceof BridgeError ? … : new BridgeError(…)` narrowing inline.
+// [LAW:no-defensive-null-guards] The wire decoders (`decodePaneOutput`,
+// `parseServerFrame`/`parseClientFrame`) only ever throw `BridgeProtocolError`,
+// so the wrap branch is unreachable in practice — it exists solely because
+// `catch` widens the thrown value to `unknown`. Concentrating it here keeps
+// that one narrowing in a single place rather than scattered at each seam.
+// An existing BridgeError (including the BridgeProtocolError the decoders
+// throw) passes through untouched so its specific code and message survive.
+// ---------------------------------------------------------------------------
+
+export function toBridgeProtocolError(err: unknown): BridgeError {
+  return err instanceof BridgeError
+    ? err
+    : new BridgeError(
+        "BRIDGE_PROTOCOL_ERROR",
+        err instanceof Error ? err.message : String(err),
+      );
+}
