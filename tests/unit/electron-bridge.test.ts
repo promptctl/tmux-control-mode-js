@@ -20,7 +20,7 @@ import { isTmuxMessage } from "../../src/emitter.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
-import { paneScope } from "../../src/pane-output.js";
+import { paneScope, sessionScope } from "../../src/pane-output.js";
 import {
   IPC,
   type IpcRendererLike,
@@ -472,6 +472,32 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(wildcard).toHaveLength(2);
     expect(wildcard[0]?.type).toBe("window-add");
     expect(wildcard[1]?.type).toBe("session-renamed");
+  });
+
+  it("does NOT forward the main client's topology-error to renderers (each client owns its own bootstrap)", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING); // main reaches ready
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    const rendererTopoErrors: unknown[] = [];
+    proxy.on("topology-error", (ev) => rendererTopoErrors.push(ev));
+
+    // Make the MAIN client topology-dependent so its own router bootstraps
+    // (already ready → bootstrap fires immediately) and issues `list-panes -a`.
+    client.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
+    expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
+
+    // Reject that bootstrap → the MAIN client emits topology-error locally.
+    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+
+    // The renderer proxy has its own router and reports its own failures; the
+    // main client's per-instance topology-error must not cross the bridge.
+    expect(rendererTopoErrors).toHaveLength(0);
   });
 
   it("preserves Uint8Array contents through OutputMessage round-trip", () => {
