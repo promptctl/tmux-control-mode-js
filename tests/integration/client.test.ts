@@ -461,16 +461,50 @@ function waitForEvent<K extends keyof TmuxEventMap>(
   });
 }
 
-/** Resolve once a freshly-constructed client reaches connection state "ready". */
-function waitReady(client: TmuxClient): Promise<void> {
-  return new Promise((resolve) => {
+/**
+ * Resolve once a freshly-constructed client reaches connection state "ready";
+ * reject with a legible message if it has not within `ms`. Mirrors
+ * `waitForEvent`: a client that never becomes ready (broken transport, hung
+ * tmux, stale socket) fails with a named error and a cleaned-up handler, not an
+ * opaque suite timeout. [LAW:no-silent-failure]
+ */
+function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+  return new Promise((resolve, reject) => {
     const h = (e: ConnectionStateMessage) => {
       if (e.state.status !== "ready") return;
+      clearTimeout(timer);
       client.off("connection-state", h);
       resolve();
     };
+    const timer = setTimeout(() => {
+      client.off("connection-state", h);
+      reject(new Error(`client did not reach ready state within ${ms}ms`));
+    }, ms);
     client.on("connection-state", h);
   });
+}
+
+/**
+ * Spawn a second control client attached to `sessionName` on `socketName`, run
+ * `body` with it once ready, and always close it — even if `body` throws — so a
+ * failing probe can never leak the spawned transport process.
+ * [LAW:composability] One part owns the second-client lifecycle; probes borrow
+ * it and never hand-manage cleanup.
+ */
+async function withSecondClient(
+  socketName: string,
+  sessionName: string,
+  body: (c2: TmuxClient) => Promise<void>,
+): Promise<void> {
+  const c2 = new TmuxClient(
+    spawnTmux(["attach-session", "-t", sessionName], { socketPath: socketName }),
+  );
+  try {
+    await waitReady(c2);
+    await body(c2);
+  } finally {
+    c2.close();
+  }
 }
 
 /**
@@ -535,8 +569,18 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     kind: "observed",
     probe: async ({ client }) => {
       const p = waitForEvent(client, "error");
-      // Rejects with TmuxCommandError; we only care that %error was emitted.
-      void client.execute("this-is-not-a-command").catch(() => {});
+      // The invalid command must reject with TmuxCommandError (that IS the
+      // %error round-trip). Rethrow anything else instead of swallowing it, so
+      // an unexpected transport failure surfaces rather than hanging on `p`.
+      // [LAW:no-silent-failure]
+      await client.execute("this-is-not-a-command").then(
+        () => {
+          throw new Error("expected invalid command to emit %error");
+        },
+        (e: unknown) => {
+          if (!(e instanceof TmuxCommandError)) throw e;
+        },
+      );
       await p;
     },
   },
@@ -676,16 +720,11 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       // So a SECOND client must do the switching while the primary observes.
       const other = uniqueSession("cov-cliswitch");
       exec(`new-session -d -s ${other}`);
-      const c2 = new TmuxClient(
-        spawnTmux(["attach-session", "-t", sessionName], {
-          socketPath: socketName,
-        }),
-      );
-      await waitReady(c2);
-      const p = waitForEvent(client, "client-session-changed");
-      await c2.execute(`switch-client -t ${other}`);
-      await p;
-      c2.close();
+      await withSecondClient(socketName, sessionName, async (c2) => {
+        const p = waitForEvent(client, "client-session-changed");
+        await c2.execute(`switch-client -t ${other}`);
+        await p;
+      });
     },
   },
   "client-detached": {
@@ -693,16 +732,11 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     probe: async ({ client, socketName, sessionName }) => {
       // Attach a SECOND control client to the same session; when it detaches,
       // the primary client observes %client-detached.
-      const c2 = new TmuxClient(
-        spawnTmux(["attach-session", "-t", sessionName], {
-          socketPath: socketName,
-        }),
-      );
-      await waitReady(c2);
-      const p = waitForEvent(client, "client-detached");
-      c2.detach();
-      await p;
-      c2.close();
+      await withSecondClient(socketName, sessionName, async (c2) => {
+        const p = waitForEvent(client, "client-detached");
+        c2.detach();
+        await p;
+      });
     },
   },
   "paste-buffer-changed": {
@@ -754,16 +788,13 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       if (clientName.length === 0) {
         throw new Error("could not resolve control client name for %message");
       }
-      const c2 = new TmuxClient(
-        spawnTmux(["attach-session", "-t", sessionName], {
-          socketPath: socketName,
-        }),
-      );
-      await waitReady(c2);
-      const p = waitForEvent(client, "message");
-      await c2.execute(`display-message -c '${clientName}' cov-status-message`);
-      await p;
-      c2.close();
+      await withSecondClient(socketName, sessionName, async (c2) => {
+        const p = waitForEvent(client, "message");
+        await c2.execute(
+          `display-message -c '${clientName}' cov-status-message`,
+        );
+        await p;
+      });
     },
   },
   exit: {
@@ -826,9 +857,20 @@ function readSpec23ServerEvents(): ReadonlySet<string> {
   }
   const names = new Set<string>();
   for (let i = tableIdx + 1; i < lines.length; i++) {
-    if (/^#{2,3} /.test(lines[i])) break; // next (sub)section ends the table
-    const m = lines[i].match(/^\|\s*`%([a-z-]+)`/);
-    if (m) names.add(m[1]);
+    const line = lines[i];
+    if (/^#{2,3} /.test(line)) break; // next (sub)section ends the table
+    // A data row names its event in the first cell: `| `%name` | … |`. Only
+    // such rows are events; headers, separators, and blanks are skipped. A row
+    // that opens like an event but whose name doesn't parse is a malformed
+    // catalogue — fail loudly rather than drop it silently, which would let the
+    // integrity cross-check surface only as a confusing downstream mismatch.
+    // [LAW:no-silent-failure]
+    if (!/^\|\s*`%/.test(line)) continue;
+    const m = line.match(/^\|\s*`%([a-z0-9-]+)`/);
+    if (m === null) {
+      throw new Error(`SPEC.md §23 row has an unparseable event name: ${line}`);
+    }
+    names.add(m[1]);
   }
   if (names.size === 0) {
     throw new Error("SPEC.md §23 table yielded no server→client events");
@@ -854,8 +896,12 @@ describe("SPEC §23 conformance gate (structural)", () => {
   });
 
   it("every §23 event is either observed live or exempted with a reason", () => {
-    for (const name of spec23) {
-      const cov = COVERAGE[name];
+    // Iterate the table itself — every entry's `cov` is defined by
+    // construction, so there is no index-into-record undefined path. The
+    // catalogue-integrity test above is the single enforcer that these keys
+    // equal §23, so covering the table transitively covers every §23 event.
+    // [LAW:single-enforcer]
+    for (const [name, cov] of Object.entries(COVERAGE)) {
       // Exhaustive: kind is "observed" | "exempt". A non-empty reason is the
       // only thing an exemption may claim as its justification.
       if (cov.kind === "exempt") {
