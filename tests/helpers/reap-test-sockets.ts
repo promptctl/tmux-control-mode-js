@@ -67,10 +67,13 @@ export interface ReapOptions {
   killServer?: (socket: string) => void;
 }
 
-function killTmuxServer(socket: string): void {
+// Exported so every test file's own teardown helper can share this one
+// implementation instead of re-declaring it. [LAW:one-source-of-truth]
+export function killTmuxServer(socket: string): void {
   try {
     const names = execSync(`tmux -L ${socket} list-sessions -F '#{session_name}'`, {
       encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
     })
       .split("\n")
       .filter((line) => line.length > 0);

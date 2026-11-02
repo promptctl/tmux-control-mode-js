@@ -15,6 +15,7 @@
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import { sendKeys, setSize } from "../../src/commands/index.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
@@ -40,18 +41,7 @@ function tmuxCmd(socket: string, args: string): string {
 }
 
 function killServer(socket: string): void {
-  try {
-    const names = execSync(tmuxCmd(socket, "list-sessions -F '#{session_name}'"), {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      execSync(tmuxCmd(socket, `kill-session -t ${name}`), { stdio: "ignore" });
-    }
-  } catch {
-    /* already gone, or no sessions left */
-  }
+  killTmuxServer(socket);
 }
 
 function createSession(socket: string, session: string): Promise<TmuxClient> {

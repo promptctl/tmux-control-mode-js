@@ -7,6 +7,7 @@ import { execSync } from "node:child_process";
 import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -23,18 +24,7 @@ function tmuxCmd(socketName: string, args: string): string {
 }
 
 function killServer(socketName: string): void {
-  try {
-    const names = execSync(tmuxCmd(socketName, "list-sessions -F '#{session_name}'"), {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      execSync(tmuxCmd(socketName, `kill-session -t ${name}`), { stdio: "ignore" });
-    }
-  } catch {
-    // already gone, or no sessions left
-  }
+  killTmuxServer(socketName);
 }
 
 describe.skipIf(!RUN_INTEGRATION)(

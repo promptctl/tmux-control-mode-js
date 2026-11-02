@@ -32,6 +32,7 @@ import { execSync } from "node:child_process";
 import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "../../src/stream/index.js";
 import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
+import { killTmuxServer } from "../../../../tests/helpers/reap-test-sockets.js";
 
 const P99_BUDGET_MS = 100;
 const ITERATIONS = 50; // Real tmux RTT × 50 keeps the bench under ~3 s wall time.
@@ -47,18 +48,7 @@ function tmuxCmd(socket: string, args: string): string {
   return `tmux -L ${socket} ${args}`;
 }
 function killServer(socket: string): void {
-  try {
-    const names = execSync(tmuxCmd(socket, "list-sessions -F '#{session_name}'"), {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      execSync(tmuxCmd(socket, `kill-session -t ${name}`), { stdio: "ignore" });
-    }
-  } catch {
-    /* already gone, or no sessions left */
-  }
+  killTmuxServer(socket);
 }
 
 function createSession(socket: string, session: string): Promise<TmuxClient> {

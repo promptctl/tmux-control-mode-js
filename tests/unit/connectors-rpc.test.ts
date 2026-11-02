@@ -236,7 +236,7 @@ describe("dispatchRpcRequest — routing", () => {
     t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
     expect(t.sent[0]).toContain("list-windows");
-    feedOk(t.feed, 1, ["1\tmain\t0\tzsh\t80\t24"]);
+    feedOk(t.feed, 1, ["$1\tmain\t@0\tzsh\t80\t24"]);
     const r = await p;
     expect(r).toEqual([
       {

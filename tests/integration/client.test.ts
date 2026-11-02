@@ -9,6 +9,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
@@ -64,11 +65,14 @@ const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
 // Isolation: every test spawns its OWN tmux server via `-L <socket>`. This
 // prevents ANY tmux invocation here — including `new-session`, `kill-session`,
 // and the `-C` control-mode attach — from reaching the developer's default
-// tmux server. Teardown lists and kills every session on the isolated
-// socket; tmux's exit-empty default then terminates the now-empty server.
+// tmux server. Teardown delegates to the shared `killTmuxServer()` helper,
+// which lists and kills every session on the isolated socket; tmux's
+// exit-empty default then terminates the now-empty server.
 //
 // [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
 // `tmux -L <socket> ...` command line in this file.
+// [LAW:one-source-of-truth] Teardown itself lives in
+// `tests/helpers/reap-test-sockets.ts` so it isn't re-implemented per file.
 
 function uniqueSocket(prefix: string): string {
   return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -88,18 +92,7 @@ function tmuxCmd(socketName: string, args: string): string {
  * Used in afterEach so no isolated server (and no session in it) leaks.
  */
 function killServer(socketName: string): void {
-  try {
-    const names = execSync(tmuxCmd(socketName, "list-sessions -F '#{session_name}'"), {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      execSync(tmuxCmd(socketName, `kill-session -t ${name}`), { stdio: "ignore" });
-    }
-  } catch {
-    // Server may already be gone, or have no sessions left — not an error.
-  }
+  killTmuxServer(socketName);
 }
 
 /**

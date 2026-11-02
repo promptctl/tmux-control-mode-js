@@ -21,6 +21,7 @@ import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
 import type { ConnectionState } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "@promptctl/pane-terminal/stream";
 import { BufferingSink } from "@promptctl/pane-terminal/sink";
+import { killTmuxServer } from "../../../../tests/helpers/reap-test-sockets.js";
 
 const integrationOn = process.env.TMUX_INTEGRATION === "1";
 
@@ -38,18 +39,7 @@ function tmuxCmd(socket: string, args: string): string {
   return `tmux -L ${socket} ${args}`;
 }
 function killServer(socket: string): void {
-  try {
-    const names = execSync(tmuxCmd(socket, "list-sessions -F '#{session_name}'"), {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      execSync(tmuxCmd(socket, `kill-session -t ${name}`), { stdio: "ignore" });
-    }
-  } catch {
-    /* already gone, or no sessions left */
-  }
+  killTmuxServer(socket);
 }
 
 async function createSession(socket: string, session: string): Promise<TmuxClient> {

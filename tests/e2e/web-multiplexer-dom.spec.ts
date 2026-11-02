@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { e2eSocketName } from "./socket-naming.js";
 import { cleanSessionArgs } from "./tmux-shell.js";
 
@@ -45,18 +46,7 @@ function freshSocket(): string {
 }
 
 function killSocket(name: string): void {
-  try {
-    const names = execFileSync("tmux", ["-L", name, "list-sessions", "-F", "#{session_name}"], {
-      encoding: "utf8",
-    })
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const sessionName of names) {
-      tmux(name, ["kill-session", "-t", sessionName]);
-    }
-  } catch {
-    // Server already gone, or had no sessions left.
-  }
+  killTmuxServer(name);
   try {
     rmSync(join(tmuxSocketDir(), name), { force: true });
   } catch {
