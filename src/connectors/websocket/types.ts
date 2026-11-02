@@ -230,6 +230,19 @@ export type BridgeObservabilityEvent =
       readonly kind: "client-dispose-failed";
       readonly identity: ConnectionIdentity;
       readonly message: string;
+    }
+  | {
+      // One release in onHello's acquire-then-unwind stack threw while
+      // unwinding a partially-acquired connection. Each release tears down
+      // one resource independently of the others, so a throw here must not
+      // stop the releases still below it on the stack from running (a
+      // skipped disposeClientSafely leaks the client; a skipped
+      // sendFatalAndClose leaves the peer with no fatal frame) — swallowing
+      // it outright would hide that from the caller instead.
+      // [LAW:no-silent-failure]
+      readonly kind: "release-failed";
+      readonly identity: ConnectionIdentity;
+      readonly message: string;
     };
 
 // ---------------------------------------------------------------------------

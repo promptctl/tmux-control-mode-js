@@ -739,6 +739,94 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(disposeCalls).toBe(1);
   });
 
+  it("a throw from registerPeer()/listener wiring after createBridgeConnection succeeds disposes the client and bridge instead of leaking them (tmux-lifecycle-zng.7k0)", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let disposeCalls = 0;
+    // client.on is a plain method on the instance's prototype, not internally
+    // relied on by TmuxClient itself (grep confirms no `this.on(` call site),
+    // so overriding it to throw once exercises onHello's registerPeer/wiring
+    // catch block without disturbing the client's own setup.
+    const originalOn = client.on.bind(client);
+    client.on = ((event: "*", handler: never) => {
+      throw new Error("listener wiring boom");
+    }) as typeof client.on;
+    const bridge = createWebSocketBridge({
+      createClient: () => Promise.resolve(client),
+      disposeClient: (c) => {
+        expect(c).toBe(client);
+        disposeCalls++;
+      },
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Without the fix, this catch block didn't exist — the throw propagated
+    // out of onHello with no disposeClient call and no fatal frame, leaking
+    // both the client and the just-constructed bridge.
+    const fatal = readJsonFrames(ws).find(
+      (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+    );
+    expect(fatal).toBeDefined();
+    expect(fatal?.error.code).toBe("BRIDGE_INTERNAL");
+    expect(disposeCalls).toBe(1);
+
+    client.on = originalOn;
+    ws.fireClose(1011, "registerPeer/listener wiring failed");
+  });
+
+  it("a release that throws during unwind does not block the releases below it on the stack", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let disposeCalls = 0;
+    // client.off is pushed onto the release stack right after client.on
+    // succeeds, so it is popped FIRST during unwind — above bridge.dispose()
+    // and disposeClientSafely, both further down the stack. Making it throw
+    // (via attachBytesSink failing, which triggers the catch after client.on
+    // already succeeded) proves those two still run despite it.
+    const originalOff = client.off.bind(client);
+    client.off = ((event: "*", handler: never) => {
+      throw new Error("client.off boom");
+    }) as typeof client.off;
+    client.attachBytesSink = (() => {
+      throw new Error("attachBytesSink boom");
+    }) as typeof client.attachBytesSink;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => Promise.resolve(client),
+      disposeClient: (c) => {
+        expect(c).toBe(client);
+        disposeCalls++;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Without the fix, client.off's throw aborted unwind() mid-stack:
+    // bridge.dispose() and disposeClientSafely (below it on the stack) never
+    // ran, and the escaping exception skipped sendFatalAndClose entirely,
+    // becoming an unhandled rejection instead of a reported BRIDGE_INTERNAL.
+    const fatal = readJsonFrames(ws).find(
+      (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+    );
+    expect(fatal).toBeDefined();
+    expect(fatal?.error.code).toBe("BRIDGE_INTERNAL");
+    expect(disposeCalls).toBe(1);
+    expect(events.find((e) => e.kind === "release-failed")).toBeDefined();
+
+    client.off = originalOff;
+    ws.fireClose(1011, "release failed during unwind");
+  });
+
   it("a disposeClient hook that throws surfaces client-dispose-failed instead of an unhandled rejection or a swallowed failure", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);

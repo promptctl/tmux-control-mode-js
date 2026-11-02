@@ -623,6 +623,38 @@ class Connection {
       request: this.request,
     };
 
+    // [LAW:single-enforcer] [LAW:carrying-cost] onHello acquires a strict
+    // prefix of { client, bridge, peer+listeners } and must leave nothing
+    // committed-but-unreleased on any exit before the atomic `state =
+    // running` transition below. Rather than one hand-unwound catch per
+    // acquisition step — which re-copies and extends the same release
+    // sequence at every step (tmux-lifecycle-zng.s5u added the bridge step,
+    // tmux-lifecycle-zng.7k0 found the peer/listener step missing it) —
+    // each acquisition pushes its own release onto `releases` the instant
+    // it succeeds. One `unwind()` at the bottom releases exactly the prefix
+    // that was actually acquired, in reverse order, however far onHello got.
+    // Adding the epic's next resource to this chain is a `releases.push(...)`
+    // at its acquisition site, not a new catch block.
+    const releases: (() => void)[] = [];
+    const unwind = (): void => {
+      let release: (() => void) | undefined;
+      while ((release = releases.pop()) !== undefined) {
+        // Each release tears down one resource independently of the others
+        // — a throw here must not skip the releases still below it on the
+        // stack (most importantly disposeClientSafely, pushed first and so
+        // popped last). [LAW:no-silent-failure]
+        try {
+          release();
+        } catch (err) {
+          this.emit({
+            kind: "release-failed",
+            identity: this.identity,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    };
+
     // createClient()
     let client: TmuxClient;
     try {
@@ -641,6 +673,7 @@ class Connection {
       this.sendFatalAndClose("BRIDGE_INTERNAL", message);
       return;
     }
+    releases.push(() => this.disposeClientSafely(client, ctx));
     if (this.isTearingDown()) {
       // Either finalize ran while createClient() was in flight, or an
       // earlier fatal is already pending (same race the auth-denied and
@@ -648,10 +681,10 @@ class Connection {
       // connection's outcome is already fixed to something other than
       // "running". `client` exists but was never committed to `state`, so
       // finalize's disposal (which only fires for running/draining) never
-      // saw it — dispose it here, the same way finalize would have, and
-      // stop before wiring any listener, sink, or "connection-opened" onto
-      // a connection that is not actually opening. [LAW:no-silent-failure]
-      this.disposeClientSafely(client, ctx);
+      // saw it — unwind here, the same way finalize would have, and stop
+      // before wiring any listener, sink, or "connection-opened" onto a
+      // connection that is not actually opening. [LAW:no-silent-failure]
+      unwind();
       return;
     }
 
@@ -697,21 +730,41 @@ class Connection {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // client was created above but never committed to `state`, so
-      // finalize's disposal (which only fires for running/draining) never
-      // sees it — dispose it here, the same way the isTearingDown() branch
-      // above does. [LAW:no-silent-failure]
-      this.disposeClientSafely(client, ctx);
+      unwind();
       this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
       return;
     }
-    const peer = bridge.registerPeer();
+    releases.push(() => bridge.dispose());
 
-    // Wire up tmux event fan-out. The state channel rides the wildcard
-    // emitter; the byte channel rides the all-panes sink — two disjoint
-    // attachments because they are two disjoint channels.
-    client.on("*", this.onAnyEventRef);
-    this.detachByteForwarder = client.attachBytesSink(this.byteForwarder);
+    // registerPeer() and the fan-out wiring below run after the bridge
+    // exists but before anything is committed to `state`, so a throw here
+    // needs the same unwind as every step above it — otherwise client AND
+    // bridge leak with no disposeClient call and no sendFatalAndClose
+    // (tmux-lifecycle-zng.7k0). registerPeer() mints a fresh Peer token per
+    // call, so SubscriptionLedger/BackpressureLedger's own re-register
+    // guards are unreachable in practice; client.on and attachBytesSink are
+    // ordinary synchronous registration calls not documented to throw.
+    // None of that makes the throw impossible by type, so it is guarded
+    // rather than assumed away. [LAW:no-silent-failure]
+    let peer: Peer;
+    try {
+      peer = bridge.registerPeer();
+      // Wire up tmux event fan-out. The state channel rides the wildcard
+      // emitter; the byte channel rides the all-panes sink — two disjoint
+      // attachments because they are two disjoint channels.
+      client.on("*", this.onAnyEventRef);
+      releases.push(() => client.off("*", this.onAnyEventRef));
+      this.detachByteForwarder = client.attachBytesSink(this.byteForwarder);
+      releases.push(() => {
+        this.detachByteForwarder?.();
+        this.detachByteForwarder = null;
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      unwind();
+      this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
+      return;
+    }
 
     // Atomic state transition: pending-hello → running. From here on, every
     // call site that needs `client`/`ctx`/`bridge`/`peer` reads them off
