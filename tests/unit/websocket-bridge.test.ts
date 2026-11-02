@@ -644,3 +644,108 @@ describe("WebSocket bridge — resume-failure observability", () => {
     expect(f.code).toBe("TMUX_ERROR");
   });
 });
+
+// ---------------------------------------------------------------------------
+// onHello failure-path observability (zng.5.1)
+//
+// Every onHello failure now surfaces a BridgeErrorCode to onEvent: either as
+// connection-closed.errorCode (routed through sendFatalAndClose/finalize, the
+// file's existing single close-enforcer) or, for the one branch with no
+// enforcer left to route through (createClient rejecting after the peer
+// already disconnected), as its own create-client-failed-after-close event.
+// ---------------------------------------------------------------------------
+describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", () => {
+  it("auth-denied surfaces as connection-closed.errorCode BRIDGE_AUTH_DENIED", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      authenticate: () => ({ ok: false, reason: "no credentials" }),
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    // sendFatalAndClose called ws.close() above; the fake, like a real
+    // socket, doesn't fire the "close" event synchronously — drive it
+    // explicitly so finalize runs and emits connection-closed, matching the
+    // zng.5 handshake-races tests' existing convention in this file.
+    ws.fireClose(4401, "no credentials");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_AUTH_DENIED");
+    expect(c.reason).toMatch(/no credentials/);
+  });
+
+  it("createClient failure surfaces as connection-closed.errorCode BRIDGE_INTERNAL", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        throw new Error("tmux spawn failed");
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.fireClose(1011, "createClient failed: tmux spawn failed");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_INTERNAL");
+    expect(c.reason).toMatch(/tmux spawn failed/);
+  });
+
+  it("createClient failing after the peer already disconnected surfaces as create-client-failed-after-close", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+
+    let rejectCreate!: (err: Error) => void;
+    const createClientPromise = new Promise<TmuxClient>((_res, rej) => {
+      rejectCreate = rej;
+    });
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => createClientPromise,
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Peer disconnects while createClient() is still in flight — finalize
+    // runs now and emits its own connection-closed with no internal failure
+    // info (the same window proven in the zng.5 handshake-races tests above).
+    ws.fireClose(1006, "abnormal closure");
+    events.length = 0;
+
+    // createClient() rejects after finalize already ran. No peer left to
+    // notify, no open connection-closed event left to carry it.
+    rejectCreate(new Error("tmux spawn failed"));
+    await flush();
+
+    expect(events).toHaveLength(1);
+    const e = events[0];
+    expect(e.kind).toBe("create-client-failed-after-close");
+    if (e.kind !== "create-client-failed-after-close") {
+      throw new Error("unreachable");
+    }
+    expect(e.code).toBe("BRIDGE_INTERNAL");
+    expect(e.message).toMatch(/tmux spawn failed/);
+  });
+});

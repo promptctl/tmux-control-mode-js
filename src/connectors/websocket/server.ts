@@ -321,6 +321,11 @@ class Connection {
   // the variant that needs them, not as parallel nullable fields.
   private state: ConnectionState = { kind: "pending-hello" };
   private identity: ConnectionIdentity = undefined;
+  // Set by sendFatalAndClose; read by the "close" listener once the real
+  // close event lands, so finalize's one connection-closed emission can
+  // carry the BridgeErrorCode a peer-initiated close never has.
+  // [LAW:single-enforcer]
+  private fatal: BridgeError | undefined = undefined;
 
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
   private readonly byteForwarder: BytesSink;
@@ -450,7 +455,12 @@ class Connection {
     });
 
     this.ws.on("close", (code: number, reason: Buffer | string) => {
-      this.finalize(undefined, {
+      // [LAW:single-enforcer] `this.fatal` carries the BridgeErrorCode when
+      // this close was triggered by sendFatalAndClose rather than a
+      // peer-initiated disconnect — set there, read here, so the one
+      // existing emission site (finalize) can report it without a second,
+      // manually-paired event at each sendFatalAndClose call site.
+      this.finalize(this.fatal, {
         code,
         reason: typeof reason === "string" ? reason : reason.toString("utf8"),
       });
@@ -587,11 +597,21 @@ class Connection {
     try {
       client = await this.opts.createClient(ctx);
     } catch (err) {
-      if (this.isClosed()) return;
-      this.sendFatalAndClose(
-        "BRIDGE_INTERNAL",
-        `createClient failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const message = `createClient failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (this.isClosed()) {
+        // finalize already ran for an unrelated reason (the peer disconnected
+        // while createClient() was still in flight) and already emitted its
+        // own connection-closed — idempotent-guarded, so this failure has no
+        // open event left to carry it. [LAW:no-silent-failure]
+        this.emit({
+          kind: "create-client-failed-after-close",
+          identity: this.identity,
+          code: "BRIDGE_INTERNAL",
+          message,
+        });
+        return;
+      }
+      this.sendFatalAndClose("BRIDGE_INTERNAL", message);
       return;
     }
     if (this.isClosed()) {
@@ -978,6 +998,10 @@ class Connection {
     wsCode = 1011,
   ): void {
     sendFatal(this.ws, code, message);
+    // Stashed for the "close" listener to read once the real close event
+    // lands — finalize's one emission site then has the BridgeErrorCode a
+    // peer-initiated close never carries. [LAW:single-enforcer]
+    this.fatal = new BridgeError(code, message);
     try {
       this.ws.close(wsCode, message.slice(0, 123));
     } catch {
@@ -1040,6 +1064,7 @@ class Connection {
       identity: this.identity,
       code: closeInfo?.code,
       reason: closeInfo?.reason ?? fatal?.message,
+      errorCode: fatal?.code,
     });
 
     this.closed();

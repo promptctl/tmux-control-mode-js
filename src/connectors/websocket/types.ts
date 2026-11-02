@@ -161,6 +161,10 @@ export type BridgeObservabilityEvent =
       readonly identity: ConnectionIdentity;
       readonly code?: number;
       readonly reason?: string;
+      // Set when the close was triggered by sendFatalAndClose rather than a
+      // peer-initiated disconnect — the BridgeErrorCode the caller already
+      // had in hand at the fatal-close site. [LAW:single-enforcer]
+      readonly errorCode?: BridgeErrorCode;
     }
   | {
       readonly kind: "call";
@@ -199,6 +203,17 @@ export type BridgeObservabilityEvent =
       readonly kind: "pane-resume-failed";
       readonly identity: ConnectionIdentity;
       readonly paneId: number;
+      readonly code: BridgeErrorCode;
+      readonly message: string;
+    }
+  | {
+      // createClient() was still in flight when the peer disconnected, so
+      // finalize already ran and reported that closure with no internal
+      // failure info; createClient then rejected anyway, with no peer left
+      // to notify and no open connection-closed event left to carry it. The
+      // one onHello failure path with no other signal. [LAW:no-silent-failure]
+      readonly kind: "create-client-failed-after-close";
+      readonly identity: ConnectionIdentity;
       readonly code: BridgeErrorCode;
       readonly message: string;
     };
