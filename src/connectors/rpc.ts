@@ -36,82 +36,102 @@ import {
 import type { BridgeErrorCode } from "./errors.js";
 
 // ---------------------------------------------------------------------------
-// RpcRequest discriminated union — one variant per bridged TmuxClient method.
+// RpcSpec — one declaration site per bridged TmuxClient method, carrying
+// both its args tuple and its response shape together. RpcRequest and
+// RpcResponseMap are both *derived* from this table rather than hand-written
+// separately, so a method's args and response can't drift apart the way a
+// hand-maintained `RpcResponseMap` conditional chain could: forgetting to
+// add a non-CommandResponse method there was not a compile error, it was a
+// silent wrong default. Here, `response` is a mandatory field per method, so
+// a missing one fails to compile instead.
 //
 // `detach` is intentionally NOT bridged: it tears down the tmux client for
 // every renderer that shares the main-process bridge. It is an admin-only
 // operation owned by the host application; renderers must not be able to
 // invoke it. Removing it from the dispatch table makes a renderer attempt
 // fail with `UNKNOWN_METHOD` at the trust boundary.
-// ---------------------------------------------------------------------------
-
-export type RpcRequest =
-  | { readonly method: "execute"; readonly args: readonly [command: string] }
-  | { readonly method: "listWindows"; readonly args: readonly [] }
-  | { readonly method: "listPanes"; readonly args: readonly [] }
-  | { readonly method: "listSessions"; readonly args: readonly [] }
-  | {
-      readonly method: "sendKeys";
-      readonly args: readonly [target: string, keys: string];
-    }
-  | {
-      readonly method: "splitWindow";
-      readonly args: readonly [options?: SplitOptions];
-    }
-  | {
-      readonly method: "setSize";
-      readonly args: readonly [width: number, height: number];
-    }
-  | {
-      readonly method: "setPaneAction";
-      readonly args: readonly [paneId: number, action: PaneAction];
-    }
-  | {
-      readonly method: "subscribeRaw";
-      readonly args: readonly [name: string, what: string, format: string];
-    }
-  | {
-      readonly method: "unsubscribe";
-      readonly args: readonly [name: string];
-    }
-  | {
-      readonly method: "setFlags";
-      readonly args: readonly [flags: readonly string[]];
-    }
-  | {
-      readonly method: "clearFlags";
-      readonly args: readonly [flags: readonly string[]];
-    }
-  | {
-      readonly method: "requestReport";
-      readonly args: readonly [paneId: number, report: string];
-    }
-  | { readonly method: "queryClipboard"; readonly args: readonly [] };
-
-export type RpcMethod = RpcRequest["method"];
-
-// ---------------------------------------------------------------------------
-// RpcResponseMap — the true response shape per method.
 //
-// Every bridged method answers with a CommandResponse EXCEPT listWindows,
-// listPanes, and listSessions, which answer with their structured records
-// (see commands/index.ts) — a raw CommandResponse for those three is exactly
-// the shape the public API no longer returns. This map is the one place that
-// distinction is recorded; RpcProxyApi and Dispatcher (rpc-dispatch.ts) both
-// index into it instead of each hardcoding CommandResponse.
-// [LAW:types-are-the-program] The response type states what is actually
-// true per method rather than the uniform shape that was only true by
+// [LAW:types-are-the-program] A method's response type states what is
+// actually true for it rather than the uniform shape that was only true by
 // coincidence.
+// [LAW:one-source-of-truth] Args and response live once, at the method's own
+// declaration, instead of args in one union and response in a separate
+// conditional chain that must be kept in sync by hand.
 // ---------------------------------------------------------------------------
+
+interface RpcSpec {
+  readonly execute: {
+    readonly args: readonly [command: string];
+    readonly response: CommandResponse;
+  };
+  readonly listWindows: {
+    readonly args: readonly [];
+    readonly response: readonly WindowRecord[];
+  };
+  readonly listPanes: {
+    readonly args: readonly [];
+    readonly response: readonly PaneRecord[];
+  };
+  readonly listSessions: {
+    readonly args: readonly [];
+    readonly response: readonly SessionRecord[];
+  };
+  readonly sendKeys: {
+    readonly args: readonly [target: string, keys: string];
+    readonly response: CommandResponse;
+  };
+  readonly splitWindow: {
+    readonly args: readonly [options?: SplitOptions];
+    readonly response: CommandResponse;
+  };
+  readonly setSize: {
+    readonly args: readonly [width: number, height: number];
+    readonly response: CommandResponse;
+  };
+  readonly setPaneAction: {
+    readonly args: readonly [paneId: number, action: PaneAction];
+    readonly response: CommandResponse;
+  };
+  readonly subscribeRaw: {
+    readonly args: readonly [name: string, what: string, format: string];
+    readonly response: CommandResponse;
+  };
+  readonly unsubscribe: {
+    readonly args: readonly [name: string];
+    readonly response: CommandResponse;
+  };
+  readonly setFlags: {
+    readonly args: readonly [flags: readonly string[]];
+    readonly response: CommandResponse;
+  };
+  readonly clearFlags: {
+    readonly args: readonly [flags: readonly string[]];
+    readonly response: CommandResponse;
+  };
+  readonly requestReport: {
+    readonly args: readonly [paneId: number, report: string];
+    readonly response: CommandResponse;
+  };
+  readonly queryClipboard: {
+    readonly args: readonly [];
+    readonly response: CommandResponse;
+  };
+}
+
+export type RpcMethod = keyof RpcSpec;
+
+// RpcRequest stays a discriminated union — every downstream consumer narrows
+// on `method` the same way it always did. Deriving it from RpcSpec is what
+// keeps a method's args tied to its own response at one declaration site.
+export type RpcRequest = {
+  readonly [M in RpcMethod]: {
+    readonly method: M;
+    readonly args: RpcSpec[M]["args"];
+  };
+}[RpcMethod];
 
 export type RpcResponseMap = {
-  readonly [M in RpcMethod]: M extends "listWindows"
-    ? readonly WindowRecord[]
-    : M extends "listPanes"
-      ? readonly PaneRecord[]
-      : M extends "listSessions"
-        ? readonly SessionRecord[]
-        : CommandResponse;
+  readonly [M in RpcMethod]: RpcSpec[M]["response"];
 };
 
 // ---------------------------------------------------------------------------

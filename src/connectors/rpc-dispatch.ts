@@ -1,66 +1,75 @@
 // src/connectors/rpc-dispatch.ts
 // Server-side dispatcher for RpcRequest.
 //
-// [LAW:single-enforcer] One dispatch table for every bridge connector. Every
-// dispatch goes through dispatchRpcRequest; the resolved shape is looked up
-// per-method via RpcResponseMap (rpc.ts) so callers never special-case any
-// variant themselves — they already know the shape from the method name.
-// [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
-// RpcRequest is what decides which free-function call runs.
-// [LAW:one-type-per-behavior] One Dispatcher mapped type covers every method;
-// the satisfies clause forces compile-time exhaustiveness.
+// [LAW:single-enforcer] Every dispatch goes through dispatchRpcRequest; the
+// resolved shape is RpcResponseMap[M] (rpc.ts) so callers never special-case
+// any variant themselves — they already know the shape from the method name.
+// [LAW:types-are-the-program] A switch on `req.method` narrows `req` to the
+// exact RpcRequest member inside each case, so `req.args` and the handler
+// call are provably sound — no cast. The old lookup-table form (`DISPATCH[
+// req.method]`) lost that correlation at the point of indexing a mapped
+// object type by a union key, which is exactly where TypeScript cannot
+// verify soundness and required an `as` cast instead.
 // [LAW:types-are-the-program] Typed against TmuxConnection, not TmuxClient —
-// the dispatch table needs execute + on/off only; the class is over-specified.
+// the dispatcher needs execute + on/off only; the class is over-specified.
+//
+// Exhaustiveness: the `default` branch assigns `req` to a `never`-typed
+// binding. Adding a new RpcRequest variant without a matching `case` makes
+// that assignment a compile error — the same guarantee the old table's
+// `satisfies Dispatcher` gave, without needing a cast to call through it.
 
 import type { TmuxConnection } from "../client.js";
 import type { RpcRequest, RpcResponseMap } from "./rpc.js";
 import * as commands from "../commands/index.js";
 
-// ---------------------------------------------------------------------------
-// Dispatcher — single exhaustive table mapping method → invocation.
-//
-// Backed by Object.create(null) for defense-in-depth: a payload reaching here
-// has already been validated by parseRpcRequest, but the null prototype means
-// even a hypothetical bypass cannot resolve `constructor`/`__proto__` to a
-// built-in function.
-// ---------------------------------------------------------------------------
-
-type Dispatcher = {
-  readonly [R in RpcRequest as R["method"]]: (
-    client: TmuxConnection,
-    args: R["args"],
-  ) => Promise<RpcResponseMap[R["method"]]> | RpcResponseMap[R["method"]];
-};
-
-const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
-  execute: (c, [command]) => c.execute(command),
-  listWindows: (c) => commands.listWindows(c),
-  listPanes: (c) => commands.listPanes(c),
-  listSessions: (c) => commands.listSessions(c),
-  sendKeys: (c, [target, keys]) => commands.sendKeys(c, target, keys),
-  splitWindow: (c, [options]) => commands.splitWindow(c, options),
-  setSize: (c, [width, height]) => commands.setSize(c, width, height),
-  setPaneAction: (c, [paneId, action]) =>
-    commands.setPaneAction(c, paneId, action),
-  subscribeRaw: (c, [name, what, format]) =>
-    commands.subscribeRaw(c, name, what, format),
-  unsubscribe: (c, [name]) => commands.unsubscribe(c, name),
-  setFlags: (c, [flags]) => commands.setFlags(c, flags),
-  clearFlags: (c, [flags]) => commands.clearFlags(c, flags),
-  requestReport: (c, [paneId, report]) =>
-    commands.requestReport(c, paneId, report),
-  queryClipboard: (c) => commands.queryClipboard(c),
-} satisfies Dispatcher);
-
 export function dispatchRpcRequest(
   client: TmuxConnection,
   req: RpcRequest,
 ): Promise<RpcResponseMap[RpcRequest["method"]]> {
-  const fn = DISPATCH[req.method] as (
-    c: TmuxConnection,
-    a: RpcRequest["args"],
-  ) =>
-    | Promise<RpcResponseMap[RpcRequest["method"]]>
-    | RpcResponseMap[RpcRequest["method"]];
-  return Promise.resolve(fn(client, req.args));
+  switch (req.method) {
+    case "execute":
+      return Promise.resolve(client.execute(req.args[0]));
+    case "listWindows":
+      return Promise.resolve(commands.listWindows(client));
+    case "listPanes":
+      return Promise.resolve(commands.listPanes(client));
+    case "listSessions":
+      return Promise.resolve(commands.listSessions(client));
+    case "sendKeys":
+      return Promise.resolve(
+        commands.sendKeys(client, req.args[0], req.args[1]),
+      );
+    case "splitWindow":
+      return Promise.resolve(commands.splitWindow(client, req.args[0]));
+    case "setSize":
+      return Promise.resolve(
+        commands.setSize(client, req.args[0], req.args[1]),
+      );
+    case "setPaneAction":
+      return Promise.resolve(
+        commands.setPaneAction(client, req.args[0], req.args[1]),
+      );
+    case "subscribeRaw":
+      return Promise.resolve(
+        commands.subscribeRaw(client, req.args[0], req.args[1], req.args[2]),
+      );
+    case "unsubscribe":
+      return Promise.resolve(commands.unsubscribe(client, req.args[0]));
+    case "setFlags":
+      return Promise.resolve(commands.setFlags(client, req.args[0]));
+    case "clearFlags":
+      return Promise.resolve(commands.clearFlags(client, req.args[0]));
+    case "requestReport":
+      return Promise.resolve(
+        commands.requestReport(client, req.args[0], req.args[1]),
+      );
+    case "queryClipboard":
+      return Promise.resolve(commands.queryClipboard(client));
+    default: {
+      const _exhaustive: never = req;
+      throw new Error(
+        `unhandled RPC method: ${(_exhaustive as RpcRequest).method}`,
+      );
+    }
+  }
 }
