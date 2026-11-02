@@ -14,6 +14,7 @@
 import type { TmuxConnection } from "../client.js";
 import type {
   CommandResponse,
+  PaneCapture,
   PaneRecord,
   SessionRecord,
   WindowRecord,
@@ -35,12 +36,14 @@ import {
   listSessionsCommand,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
+  capturePane as encodeCapturePane,
 } from "../protocol/encoder.js";
 import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
 } from "../pane-output.js";
+import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
@@ -82,6 +85,36 @@ export async function listSessions(
   return response.output
     .map(parseSessionRecordLine)
     .filter((record): record is SessionRecord => record !== null);
+}
+
+// [LAW:one-source-of-truth] `response.output` is already one latin1-container
+// string per captured line (the same boundary every other command's output
+// crosses); every element crosses it through `latin1ToBytes`, matching
+// `byte-codec.ts`'s single-enforcer contract — never a hand-rolled
+// charCodeAt loop here instead.
+// [LAW:carrying-cost] `-S -` makes this the one command whose output can be
+// arbitrarily large (a full scrollback, not a bounded `-F` list). Converting
+// per line into one preallocated buffer avoids materializing a second
+// full-size copy as an intermediate `response.output.join("\n")` string
+// (which `String.fromCharCode`-based latin1 content doubles again, being
+// UTF-16) before it is ever reduced to bytes.
+export async function capturePane(
+  client: TmuxConnection,
+  paneId: number,
+): Promise<PaneCapture> {
+  const response = await client.execute(encodeCapturePane(paneId));
+  const lines = response.output.map(latin1ToBytes);
+  const separatorCount = lines.length > 0 ? lines.length - 1 : 0;
+  const bytes = new Uint8Array(
+    lines.reduce((total, line) => total + line.length, separatorCount),
+  );
+  let offset = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (i > 0) bytes[offset++] = 0x0a; // "\n" between captured lines
+    bytes.set(lines[i], offset);
+    offset += lines[i].length;
+  }
+  return { bytes, lineCount: response.output.length };
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

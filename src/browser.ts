@@ -40,6 +40,7 @@ export type {
 
 export type {
   CommandResponse,
+  PaneCapture,
   PaneRecord,
   SessionRecord,
   TmuxMessage,
@@ -92,4 +93,5 @@ export {
   requestReport,
   queryClipboard,
   queryTmuxVersion,
+  capturePane,
 } from "./commands/index.js";
