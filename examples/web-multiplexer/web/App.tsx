@@ -1,6 +1,6 @@
 // examples/web-multiplexer/web/App.tsx
 // Top-level component. Two MobX stores:
-//   - DemoStore: tmux model (sessions, windows, panes, events)
+//   - DemoStore: tmux model (sessions, windows, panes)
 //   - UiStore:   UI preferences (navbar width, aside collapsed, filters)
 // UiStore auto-persists to sessionStorage.
 
@@ -111,11 +111,13 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     [bridge, uiStore],
   );
   // [LAW:one-source-of-truth] InspectorStore subscribes to the SAME
-  // TmuxBridge as DemoStore. Both stores are pure projections of the
-  // wire — InspectorStore sees everything, DemoStore sees only events.
+  // TmuxBridge as DemoStore and is the sole event ring in the app —
+  // DebugPanel reads events from it too (SD5, tmux-complexity-lkg.15).
+  // It also takes uiStore so event-type visibility has one owner instead
+  // of a second copy of its own.
   const inspectorStore = useMemo(
-    () => new InspectorStore(demoStore.client),
-    [demoStore],
+    () => new InspectorStore(demoStore.client, uiStore),
+    [demoStore, uiStore],
   );
   const heatmapStore = useMemo(
     () => new HeatmapStore(demoStore.client),
@@ -571,7 +573,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     };
   }, [demoStore]);
 
-  const { currentSession, currentWindow, connState, sessions, events, errors } =
+  const { currentSession, currentWindow, connState, sessions, errors } =
     demoStore;
 
   return (
@@ -717,7 +719,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
         {uiStore.appMode === "console" ? (
           <ConsoleView store={consoleStore} demoStore={demoStore} />
         ) : uiStore.appMode === "inspector" ? (
-          <InspectorView store={inspectorStore} demoStore={demoStore} />
+          <InspectorView
+            store={inspectorStore}
+            demoStore={demoStore}
+            uiStore={uiStore}
+          />
         ) : uiStore.appMode === "heatmap" ? (
           <HeatmapView
             demoStore={demoStore}
@@ -854,7 +860,9 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           onChange={(v) => v !== null && uiStore.setActiveAsideTab(v)}
         >
           <Tabs.List>
-            <Tabs.Tab value="debug">Debug ({events.length})</Tabs.Tab>
+            <Tabs.Tab value="debug">
+              Debug ({inspectorStore.counts["in-event"]})
+            </Tabs.Tab>
             <Tabs.Tab
               value="errors"
               color={errors.length > 0 ? "red" : undefined}
@@ -863,7 +871,12 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="debug" pt="xs">
-            <DebugPanel demoStore={demoStore} uiStore={uiStore} key="debug" />
+            <DebugPanel
+              demoStore={demoStore}
+              uiStore={uiStore}
+              inspectorStore={inspectorStore}
+              key="debug"
+            />
           </Tabs.Panel>
           <Tabs.Panel value="errors" pt="xs">
             <ErrorPanel demoStore={demoStore} />

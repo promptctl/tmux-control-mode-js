@@ -29,7 +29,7 @@
 // The real work lives in the parts it composes:
 //   - snapshot-codec       — pure wire↔tree translation
 //   - TmuxModel            — the reactive tree + derived active pointers
-//   - LogStore             — event / error ring buffers
+//   - LogStore             — error ring buffer
 //   - ConnectionController — connection state + subscription install
 //   - RefreshPolicy        — event routing + fast-path refreshes
 //   - SelectionController  — optimistic session/window/pane selection
@@ -37,7 +37,6 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { TmuxBridge } from "./bridge.ts";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { KeyEvent } from "@promptctl/tmux-control-mode-js/keymap";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 import type { PaneInfo, SessionInfo, WindowInfo } from "./snapshot-codec.ts";
@@ -110,14 +109,7 @@ export class DemoStore {
       runInAction(() => this.connection.onStateChange(s)),
     );
     this.client.onError((m) => runInAction(() => this.log.pushError(m)));
-    this.client.onEvent((ev) =>
-      runInAction(() => {
-        // Every event is logged; RefreshPolicy additionally routes the ones
-        // that drive the model. One transaction so observers update once.
-        this.log.pushEvent(ev);
-        this.refresh.handleEvent(ev);
-      }),
-    );
+    this.client.onEvent((ev) => runInAction(() => this.refresh.handleEvent(ev)));
   }
 
   // -------------------------------------------------------------------------
@@ -185,19 +177,11 @@ export class DemoStore {
   }
 
   // -------------------------------------------------------------------------
-  // Event / error log (→ LogStore)
+  // Error log (→ LogStore). Events live in InspectorStore — see its header.
   // -------------------------------------------------------------------------
-
-  get events(): TmuxMessage[] {
-    return this.log.events;
-  }
 
   get errors(): string[] {
     return this.log.errors;
-  }
-
-  clearEvents(): void {
-    this.log.clearEvents();
   }
 
   clearErrors(): void {

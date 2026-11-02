@@ -19,6 +19,8 @@
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { UiStore } from "./ui-store.ts";
+import { summarizeEvent } from "./event-summary.ts";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -47,7 +49,6 @@ export class InspectorStore {
     "in-response": false,
     "in-error": false,
   };
-  hiddenEventTypes: Record<string, true> = {};
   selectedId: number | null = null;
 
   private nextId = 1;
@@ -60,8 +61,14 @@ export class InspectorStore {
   private readonly pendingByWireId = new Map<string, number>();
   private readonly disposeWire: () => void;
 
-  constructor(client: TmuxBridge) {
-    makeAutoObservable(this);
+  constructor(
+    client: TmuxBridge,
+    // [LAW:one-source-of-truth] Event-type visibility is owned by UiStore
+    // (persisted, already the single UI-prefs authority); InspectorStore no
+    // longer keeps its own copy. SD5 (tmux-complexity-lkg.15).
+    private readonly uiStore: UiStore,
+  ) {
+    makeAutoObservable<this, "uiStore">(this, { uiStore: false });
     this.disposeWire = client.onWire((e) => this.ingest(e));
   }
 
@@ -150,14 +157,6 @@ export class InspectorStore {
     this.hiddenDirections[dir] = !this.hiddenDirections[dir];
   }
 
-  toggleEventType(type: string): void {
-    if (this.hiddenEventTypes[type] === true) {
-      delete this.hiddenEventTypes[type];
-    } else {
-      this.hiddenEventTypes[type] = true;
-    }
-  }
-
   clearFilters(): void {
     this.hiddenDirections = {
       out: false,
@@ -165,7 +164,7 @@ export class InspectorStore {
       "in-response": false,
       "in-error": false,
     };
-    this.hiddenEventTypes = {};
+    this.uiStore.clearHidden();
     this.search = "";
   }
 
@@ -187,17 +186,34 @@ export class InspectorStore {
   }
 
   /**
+   * The `in-event` slice of `entries`, newest first — the showcase Debug
+   * tab's event list. A MobX computed, not a React `useMemo`: `entries` is
+   * mutated in place on the hot path (`.push()`/`.shift()` below), so its
+   * reference rarely changes even though its contents do, and a `useMemo`
+   * keyed on that reference would go stale after the first render.
+   * [LAW:one-source-of-truth]
+   */
+  get eventMessages(): TmuxMessage[] {
+    const out: TmuxMessage[] = [];
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      const wire = this.entries[i].wire;
+      if (wire.dir === "in-event") out.push(wire.event);
+    }
+    return out;
+  }
+
+  /**
    * Entries passing the current filter set. The filter pipeline is
    * deliberately flat and unconditional — direction filter → event-type
    * filter → search substring — so adding a new dimension means adding
    * one more clause, not restructuring control flow.
    */
   get visibleEntries(): InspectorEntry[] {
-    const { hiddenDirections, hiddenEventTypes } = this;
+    const { hiddenDirections, uiStore } = this;
     const needle = this.search.trim().toLowerCase();
     return this.entries.filter((e) => {
       if (hiddenDirections[e.wire.dir]) return false;
-      if (e.wire.dir === "in-event" && hiddenEventTypes[e.wire.event.type]) {
+      if (e.wire.dir === "in-event" && uiStore.isHidden(e.wire.event.type)) {
         return false;
       }
       if (needle.length === 0) return true;
@@ -227,12 +243,23 @@ export class InspectorStore {
 // Search surface
 // ---------------------------------------------------------------------------
 
+// [LAW:single-enforcer] No pane-label lookup is threaded into the search
+// path — search matches raw ids (summarizeEvent's own fallback for an
+// unknown pane), not pretty labels — so one shared empty map suffices
+// instead of allocating one per filter pass.
+const NO_LABELS = new Map<number, string>();
+
 /**
  * Flatten a wire entry to a single searchable string. Includes the
  * type/direction, pane/window/session ids where relevant, and for
  * outbound `execute` the literal command text. The inspector's search
  * box matches against this string so users can type `resize-pane`,
  * `%output`, `r12`, or a pane id like `%5` and get hits.
+ *
+ * [LAW:single-enforcer] The in-event branch routes through the one shared
+ * `summarizeEvent` (event-summary.ts) instead of a parallel hand-maintained
+ * switch — SD5 (tmux-complexity-lkg.15) collapsed the three copies that
+ * used to exist.
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
@@ -241,23 +268,11 @@ function summarizeForSearch(w: WireEntry): string {
       return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
     return `out detach ${w.msg.id}`;
   }
-  if (w.dir === "in-event") return `in event %${w.event.type} ${eventSearchTail(w.event)}`;
+  if (w.dir === "in-event") {
+    return `in event %${w.event.type} ${summarizeEvent(w.event, NO_LABELS)}`;
+  }
   if (w.dir === "in-response") {
     return `in response ${w.id} ${w.response.success ? "ok" : "err"} ${w.response.output.join(" ")}`;
   }
   return `in error ${w.id ?? ""} ${w.message}`;
-}
-
-function eventSearchTail(ev: TmuxMessage): string {
-  // Keep this cheap — it runs per filter pass. Include only the fields
-  // users will realistically search for (ids + names).
-  const bag: string[] = [];
-  if ("paneId" in ev) bag.push(`%${ev.paneId}`);
-  if ("windowId" in ev) bag.push(`@${ev.windowId}`);
-  if ("sessionId" in ev) bag.push(`$${ev.sessionId}`);
-  if ("name" in ev && typeof ev.name === "string") bag.push(ev.name);
-  if ("clientName" in ev) bag.push(ev.clientName);
-  if ("reason" in ev && typeof ev.reason === "string") bag.push(ev.reason);
-  if ("message" in ev && typeof ev.message === "string") bag.push(ev.message);
-  return bag.join(" ");
 }

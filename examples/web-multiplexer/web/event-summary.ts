@@ -8,10 +8,16 @@
 // summary stays on ONE line (the timeline is a dense table), which is why
 // byte previews are capped short and labels are terse.
 //
-// [LAW:single-enforcer] SD5 (tmux-complexity-lkg.15) collapses the three
+// [LAW:single-enforcer] SD5 (tmux-complexity-lkg.15) collapsed the three
 // hand-maintained TmuxMessage summarizers (this one, DebugPanel's `summarize`,
-// inspector-store's `eventSearchTail`) into one exhaustive switch routed
-// through this module. GM8 establishes the seam; the collapse lands in SD5.
+// inspector-store's `eventSearchTail`) into this one exhaustive switch; GM8
+// established the seam, SD5 landed the collapse.
+//
+// The byte preview is wrapped in ⟨…⟩, not a quote: `escapeByte` (format-
+// bytes.ts) deliberately passes 0x22 (`"`) through unescaped in its
+// printable range — that table's job is byte-safety, not protecting a
+// caller's chosen delimiter — so a literal quote in pane output would
+// otherwise terminate the wrapper early and read as two values.
 
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { prettyBytes } from "./format-bytes.ts";
@@ -25,10 +31,10 @@ export function summarizeEvent(
   labels: Map<number, string>,
 ): string {
   if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  "${prettyBytes(ev.data, 64)}"`;
+    return `${paneLabel(ev.paneId, labels)}  ⟨${prettyBytes(ev.data, 64)}⟩`;
   }
   if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  "${prettyBytes(ev.data, 64)}"`;
+    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  ⟨${prettyBytes(ev.data, 64)}⟩`;
   }
   if (
     ev.type === "pause" ||
