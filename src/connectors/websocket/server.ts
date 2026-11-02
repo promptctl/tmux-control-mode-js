@@ -997,10 +997,16 @@ class Connection {
     message: string,
     wsCode = 1011,
   ): void {
+    // write-once: `ws.close()` itself is one-shot at the wire — a second
+    // call can't change the code/reason already sent to the peer — so a
+    // second sendFatalAndClose before the real "close" event lands must not
+    // overwrite the BridgeError the first call already fixed. Without this
+    // guard, two synchronous fatal paths (e.g. a malformed frame immediately
+    // followed by a binary frame, both landing before any await yields)
+    // would report the second's code against the first's wire-level close.
+    // [LAW:single-enforcer] [LAW:one-source-of-truth]
+    if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
-    // Stashed for the "close" listener to read once the real close event
-    // lands — finalize's one emission site then has the BridgeErrorCode a
-    // peer-initiated close never carries. [LAW:single-enforcer]
     this.fatal = new BridgeError(code, message);
     try {
       this.ws.close(wsCode, message.slice(0, 123));

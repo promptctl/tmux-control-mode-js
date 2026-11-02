@@ -748,4 +748,39 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(e.code).toBe("BRIDGE_INTERNAL");
     expect(e.message).toMatch(/tmux spawn failed/);
   });
+
+  it("a second fatal-close before the real close event lands does not overwrite the first's BridgeErrorCode", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => new TmuxClient(t.transport),
+      // Never reached: the duplicate-hello fatal below fires first and the
+      // write-once guard must block this one from overwriting it.
+      authenticate: () => ({ ok: false, reason: "no creds" }),
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Hello #1 commits synchronously to "handshaking" and suspends at
+    // authenticate(). Hello #2, landing in the same synchronous dispatch
+    // before that await resolves, is rejected as a duplicate — the first
+    // sendFatalAndClose, fixing BRIDGE_PROTOCOL_ERROR as the connection's
+    // one fatal BridgeError.
+    ws.feedClient({ k: "hello" });
+    ws.feedClient({ k: "hello" });
+    // Hello #1 then resumes past authenticate() and tries its own
+    // sendFatalAndClose(BRIDGE_AUTH_DENIED) — the write-once guard must
+    // make this a no-op rather than overwrite the duplicate-hello fatal.
+    await flush();
+
+    ws.fireClose(1011, "duplicate hello frame");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_PROTOCOL_ERROR");
+  });
 });
