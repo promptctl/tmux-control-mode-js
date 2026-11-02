@@ -1109,4 +1109,22 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     // as a real message, not swallowed as still-open-block output.
     expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
   });
+
+  it("a truncated, space-less %end\\r over CRLF still force-closes the block", () => {
+    // Regression: a malformed terminator with no space at all (every field
+    // lost, not just the flags field — e.g. "%end\r") has no argsStr, so
+    // typeStr used to be line.slice(1) verbatim: "end\r". Since this line
+    // arrives inside an open block, feed() no longer strips that \r, and
+    // "end\r" !== "end" made isBlockTerminator false — the malformed-guard-
+    // terminator recovery (onProtocolError) never fired, wedging the block
+    // open forever and swallowing every line after it, including real
+    // notifications, as output for a command that will never settle.
+    const input = "%begin 1699900000 5 0\r\n%end\r\n%sessions-changed\r\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+    // `line` itself still carries the raw \r — only the internal `typeStr`
+    // comparison is \r-tolerant; the surfaced error line is byte-faithful.
+    expect(protocolErrors).toEqual([{ commandNumber: 5, line: "%end\r" }]);
+    expect(outputLines).toHaveLength(0);
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
 });

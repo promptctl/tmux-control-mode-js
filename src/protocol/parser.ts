@@ -416,11 +416,21 @@ export class TmuxParser {
     // Extract the notification type up front so the response-block routing
     // decision below can be data-driven rather than a nested branch tree.
     const spaceIdx = isNotification ? line.indexOf(" ", 1) : -1;
-    const typeStr = !isNotification
+    const rawTypeStr = !isNotification
       ? ""
       : spaceIdx === -1
         ? line.slice(1)
         : line.slice(1, spaceIdx);
+    // `typeStr` is a fixed protocol keyword (never user data), so a trailing
+    // `\r` here is always transport noise, even inside an open response
+    // block where feed() otherwise preserves it for byte-faithful output. A
+    // malformed, space-less terminator (`%end\r` — e.g. the chaos fuzzer's
+    // truncated guards) would otherwise fail the `isBlockTerminator` check
+    // below, bypass the malformed-guard-terminator recovery, and wedge the
+    // block open forever (see TmuxParser.feed's doc comment on that path).
+    const typeStr = rawTypeStr.endsWith("\r")
+      ? rawTypeStr.slice(0, -1)
+      : rawTypeStr;
     const argsStr =
       !isNotification || spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
 
