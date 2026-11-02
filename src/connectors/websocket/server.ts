@@ -699,6 +699,13 @@ class Connection {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // client was created above but never committed to `state`, so
+      // finalize's disposal (which only fires for running/draining) never
+      // sees it — dispose it here, the same way the isTearingDown() branch
+      // above does. [LAW:no-silent-failure]
+      if (this.opts.disposeClient !== undefined) {
+        void Promise.resolve(this.opts.disposeClient(client, ctx));
+      }
       this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
       return;
     }
