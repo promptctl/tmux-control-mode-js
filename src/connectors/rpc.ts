@@ -30,6 +30,7 @@ import {
   PaneAction,
   type CommandResponse,
   type PaneRecord,
+  type SessionRecord,
   type WindowRecord,
 } from "../protocol/types.js";
 import type { BridgeErrorCode } from "./errors.js";
@@ -48,6 +49,7 @@ export type RpcRequest =
   | { readonly method: "execute"; readonly args: readonly [command: string] }
   | { readonly method: "listWindows"; readonly args: readonly [] }
   | { readonly method: "listPanes"; readonly args: readonly [] }
+  | { readonly method: "listSessions"; readonly args: readonly [] }
   | {
       readonly method: "sendKeys";
       readonly args: readonly [target: string, keys: string];
@@ -91,10 +93,10 @@ export type RpcMethod = RpcRequest["method"];
 // ---------------------------------------------------------------------------
 // RpcResponseMap — the true response shape per method.
 //
-// Every bridged method answers with a CommandResponse EXCEPT listWindows and
-// listPanes, which answer with their structured records (see
-// commands/index.ts) — a raw CommandResponse for those two is exactly the
-// shape the public API no longer returns. This map is the one place that
+// Every bridged method answers with a CommandResponse EXCEPT listWindows,
+// listPanes, and listSessions, which answer with their structured records
+// (see commands/index.ts) — a raw CommandResponse for those three is exactly
+// the shape the public API no longer returns. This map is the one place that
 // distinction is recorded; RpcProxyApi and Dispatcher (rpc-dispatch.ts) both
 // index into it instead of each hardcoding CommandResponse.
 // [LAW:types-are-the-program] The response type states what is actually
@@ -107,7 +109,9 @@ export type RpcResponseMap = {
     ? readonly WindowRecord[]
     : M extends "listPanes"
       ? readonly PaneRecord[]
-      : CommandResponse;
+      : M extends "listSessions"
+        ? readonly SessionRecord[]
+        : CommandResponse;
 };
 
 // ---------------------------------------------------------------------------
@@ -223,6 +227,7 @@ const VALIDATORS: Validators = Object.assign(
     execute: (args) => [requireString(args, 0, "command")] as const,
     listWindows: (args) => requireNoArgs(args),
     listPanes: (args) => requireNoArgs(args),
+    listSessions: (args) => requireNoArgs(args),
     sendKeys: (args) =>
       [
         requireString(args, 0, "target"),

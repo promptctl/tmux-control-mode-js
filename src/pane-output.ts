@@ -2,7 +2,11 @@
 // Scope-based pane output subscriptions.
 //
 
-import type { PaneRecord, WindowRecord } from "./protocol/types.js";
+import type {
+  PaneRecord,
+  SessionRecord,
+  WindowRecord,
+} from "./protocol/types.js";
 import { latin1ToBytes } from "./protocol/byte-codec.js";
 
 // [LAW:types-are-the-program] BytesSink is the byte contract; PaneScope
@@ -839,5 +843,29 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     currentCommand: decodeField(currentCommand),
     width: Number(width),
     height: Number(height),
+  };
+}
+
+/**
+ * Parse one line from the fixed, library-owned `list-sessions -F '...'`
+ * format built by `listSessionsCommand()` (protocol/encoder.ts): tab-separated
+ * `#{session_id} #{session_name} #{session_windows} #{session_attached}`.
+ *
+ * Returns null for an unparseable line, same discipline as
+ * `parseWindowRecordLine`/`parsePaneRecordLine`.
+ *
+ * `#{session_attached}` is tmux's count of attached clients (0/1/2/...), not
+ * a boolean flag, so `attached` is any non-zero (non-empty) count rather than
+ * an `=== "1"` check.
+ */
+export function parseSessionRecordLine(line: string): SessionRecord | null {
+  const fields = line.split("\t");
+  if (fields.length !== 4) return null;
+  const [sessionId, sessionName, windowCount, attached] = fields;
+  return {
+    sessionId: parseSigilId(sessionId),
+    sessionName: decodeField(sessionName),
+    windowCount: Number(windowCount),
+    attached: attached !== "0" && attached !== "",
   };
 }

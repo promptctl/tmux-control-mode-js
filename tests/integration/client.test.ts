@@ -16,6 +16,7 @@ import type { TmuxEventMap } from "../../src/emitter.js";
 import {
   listWindows,
   listPanes,
+  listSessions,
   sendKeys,
   setSize,
   setPaneAction,
@@ -1060,6 +1061,26 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       expect(typeof p.currentCommand).toBe("string");
       expect(Number.isInteger(p.width)).toBe(true);
       expect(Number.isInteger(p.height)).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "CMD-03: listSessions() returns structured SessionRecords with at least one entry",
+    async () => {
+      sessionName = uniqueSession("cmd-ls");
+      client = await createSession(socketName, sessionName);
+
+      const sessions = await listSessions(client);
+
+      expect(sessions.length).toBeGreaterThan(0);
+      const session = sessions.find((s) => s.sessionName === sessionName);
+      expect(session).toBeDefined();
+      const s = session!;
+      expect(Number.isInteger(s.sessionId)).toBe(true);
+      expect(Number.isInteger(s.windowCount)).toBe(true);
+      expect(s.windowCount).toBeGreaterThan(0);
+      expect(typeof s.attached).toBe("boolean");
     },
     15000,
   );

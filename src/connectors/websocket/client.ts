@@ -53,6 +53,7 @@ import {
   type CommandResponse,
   type PaneAction,
   type PaneRecord,
+  type SessionRecord,
   type TmuxMessage,
   type WindowRecord,
 } from "../../protocol/types.js";
@@ -279,6 +280,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   listPanes(): Promise<readonly PaneRecord[]> {
     return this.call("listPanes", []);
+  }
+
+  listSessions(): Promise<readonly SessionRecord[]> {
+    return this.call("listSessions", []);
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
