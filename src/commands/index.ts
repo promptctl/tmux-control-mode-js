@@ -15,6 +15,7 @@ import type { TmuxConnection } from "../client.js";
 import type {
   CommandResponse,
   PaneRecord,
+  SessionRecord,
   WindowRecord,
 } from "../protocol/types.js";
 import { PaneAction, emptyKeysResponse } from "../protocol/types.js";
@@ -31,10 +32,15 @@ import {
   displayMessageVersion,
   listWindowsCommand,
   listPanesCommand,
+  listSessionsCommand,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
 } from "../protocol/encoder.js";
-import { parseWindowRecordLine, parsePaneRecordLine } from "../pane-output.js";
+import {
+  parseWindowRecordLine,
+  parsePaneRecordLine,
+  parseSessionRecordLine,
+} from "../pane-output.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
@@ -67,6 +73,15 @@ export async function listPanes(
   return response.output
     .map(parsePaneRecordLine)
     .filter((record): record is PaneRecord => record !== null);
+}
+
+export async function listSessions(
+  client: TmuxConnection,
+): Promise<readonly SessionRecord[]> {
+  const response = await client.execute(listSessionsCommand());
+  return response.output
+    .map(parseSessionRecordLine)
+    .filter((record): record is SessionRecord => record !== null);
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

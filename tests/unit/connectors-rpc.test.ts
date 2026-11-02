@@ -112,6 +112,7 @@ describe("parseRpcRequest — allowlist", () => {
       { method: "execute", args: ["list-windows"] },
       { method: "listWindows", args: [] },
       { method: "listPanes", args: [] },
+      { method: "listSessions", args: [] },
       { method: "sendKeys", args: ["%0", "echo hi"] },
       { method: "splitWindow", args: [{ vertical: true }] },
       { method: "splitWindow", args: [] }, // optional arg
@@ -183,6 +184,7 @@ describe("parseRpcRequest — arg shape", () => {
     [{ method: "setFlags", args: ["not-an-array"] }],
     [{ method: "splitWindow", args: ["not-an-object"] }],
     [{ method: "listWindows", args: ["extra"] }],
+    [{ method: "listSessions", args: ["extra"] }],
   ])("rejects invalid args: %j", (req) => {
     expect(() => parseRpcRequest(req)).toThrow(/INVALID_ARG/);
   });
@@ -246,6 +248,27 @@ describe("dispatchRpcRequest — routing", () => {
         windowName: "zsh",
         width: 80,
         height: 24,
+      },
+    ]);
+  });
+
+  it("listSessions → 'list-sessions' parsed into SessionRecord[]", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const p = dispatchRpcRequest(client, {
+      method: "listSessions",
+      args: [],
+    });
+    expect(t.sent[0]).toContain("list-sessions");
+    feedOk(t.feed, 1, ["$1\tmain\t2\t1"]);
+    const r = await p;
+    expect(r).toEqual([
+      {
+        sessionId: 1,
+        sessionName: "main",
+        windowCount: 2,
+        attached: true,
       },
     ]);
   });
@@ -317,6 +340,7 @@ describe("dispatchRpcRequest — admin-only", () => {
       "execute",
       "listWindows",
       "listPanes",
+      "listSessions",
       "sendKeys",
       "splitWindow",
       "setSize",
@@ -383,6 +407,7 @@ describe("RpcRequest exhaustiveness", () => {
       "execute",
       "listWindows",
       "listPanes",
+      "listSessions",
       "sendKeys",
       "splitWindow",
       "setSize",
@@ -394,7 +419,7 @@ describe("RpcRequest exhaustiveness", () => {
       "requestReport",
       "queryClipboard",
     ];
-    expect(methods.length).toBe(13);
+    expect(methods.length).toBe(14);
     // Round-trip type narrowing via the union to confirm the discriminator
     // is load-bearing.
     const r: RpcRequest = { method: "listWindows", args: [] };

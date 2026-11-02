@@ -32,6 +32,7 @@ export { PaneAction } from "./protocol/types.js";
 export type {
   CommandResponse,
   PaneRecord,
+  SessionRecord,
   TmuxMessage,
   WindowRecord,
 } from "./protocol/types.js";
@@ -86,6 +87,7 @@ export {
 export {
   listWindows,
   listPanes,
+  listSessions,
   sendKeys,
   splitWindow,
   setSize,

@@ -46,6 +46,13 @@ export function listPanesCommand(): string {
   );
 }
 
+export function listSessionsCommand(): string {
+  return (
+    "list-sessions -F '#{session_id}\t#{session_name}\t#{session_windows}\t" +
+    "#{session_attached}'"
+  );
+}
+
 export function refreshClientPaneAction(
   paneId: number,
   action: PaneAction,

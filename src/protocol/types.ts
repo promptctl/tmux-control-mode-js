@@ -368,6 +368,20 @@ export interface PaneRecord {
   readonly height: number;
 }
 
+/**
+ * One session from `listSessions()` — a structured record, decoded the same
+ * way as {@link WindowRecord}/{@link PaneRecord}. `sessionName` is already
+ * decoded to real Unicode text. `attached` is derived from
+ * `#{session_attached}`, tmux's count of attached clients, not a flag — any
+ * non-zero count is "attached".
+ */
+export interface SessionRecord {
+  readonly sessionId: number;
+  readonly sessionName: string;
+  readonly windowCount: number;
+  readonly attached: boolean;
+}
+
 // [LAW:one-source-of-truth] The canonical synthetic response for any operation
 // that resolves without issuing a correlated tmux command: an empty `sendKeys`
 // input, or a bridge refcounted no-op (a subscribe/unsubscribe that only bumps

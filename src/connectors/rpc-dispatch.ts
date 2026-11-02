@@ -36,6 +36,7 @@ const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
   execute: (c, [command]) => c.execute(command),
   listWindows: (c) => commands.listWindows(c),
   listPanes: (c) => commands.listPanes(c),
+  listSessions: (c) => commands.listSessions(c),
   sendKeys: (c, [target, keys]) => commands.sendKeys(c, target, keys),
   splitWindow: (c, [options]) => commands.splitWindow(c, options),
   setSize: (c, [width, height]) => commands.setSize(c, width, height),

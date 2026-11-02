@@ -32,6 +32,7 @@ import {
   type PaneAction,
   type PaneOutputMessage,
   type PaneRecord,
+  type SessionRecord,
   type WindowRecord,
 } from "../../protocol/types.js";
 import { TopologyRouter } from "../../topology-router.js";
@@ -224,6 +225,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
 
   listPanes(): Promise<readonly PaneRecord[]> {
     return this.invoke({ method: "listPanes", args: [] });
+  }
+
+  listSessions(): Promise<readonly SessionRecord[]> {
+    return this.invoke({ method: "listSessions", args: [] });
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {
