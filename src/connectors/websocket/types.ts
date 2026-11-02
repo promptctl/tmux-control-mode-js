@@ -219,6 +219,17 @@ export type BridgeObservabilityEvent =
       readonly identity: ConnectionIdentity;
       readonly code: BridgeErrorCode;
       readonly message: string;
+    }
+  | {
+      // The caller-supplied disposeClient hook threw or rejected while this
+      // connection was disposing a client (orphaned mid-handshake, orphaned
+      // by a bridge-construction failure, or the normal finalize teardown).
+      // The client leaks either way; swallowing the hook's failure or
+      // letting it become an unhandled rejection would hide that from the
+      // caller who configured the hook. [LAW:no-silent-failure]
+      readonly kind: "client-dispose-failed";
+      readonly identity: ConnectionIdentity;
+      readonly message: string;
     };
 
 // ---------------------------------------------------------------------------

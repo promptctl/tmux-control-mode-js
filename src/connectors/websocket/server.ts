@@ -651,9 +651,7 @@ class Connection {
       // saw it — dispose it here, the same way finalize would have, and
       // stop before wiring any listener, sink, or "connection-opened" onto
       // a connection that is not actually opening. [LAW:no-silent-failure]
-      if (this.opts.disposeClient !== undefined) {
-        void Promise.resolve(this.opts.disposeClient(client, ctx));
-      }
+      this.disposeClientSafely(client, ctx);
       return;
     }
 
@@ -699,6 +697,11 @@ class Connection {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // client was created above but never committed to `state`, so
+      // finalize's disposal (which only fires for running/draining) never
+      // sees it — dispose it here, the same way the isTearingDown() branch
+      // above does. [LAW:no-silent-failure]
+      this.disposeClientSafely(client, ctx);
       this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
       return;
     }
@@ -1091,9 +1094,7 @@ class Connection {
       // paused, since the helper is per-Connection and is going away.
       final.bridge.removePeer(final.peer);
       final.bridge.dispose();
-      if (this.opts.disposeClient !== undefined) {
-        void Promise.resolve(this.opts.disposeClient(final.client, final.ctx));
-      }
+      this.disposeClientSafely(final.client, final.ctx);
     }
 
     this.emit({
@@ -1113,6 +1114,36 @@ class Connection {
       this.opts.onEvent(ev);
     } catch {
       // Swallow — observability hooks must never break the connection.
+    }
+  }
+
+  // [LAW:composability] [LAW:carrying-cost] Single place for "dispose the
+  // client if the caller configured a hook" — every call site (orphaned
+  // mid-handshake-race, orphaned by a bridge-construction failure, and the
+  // normal finalize teardown) needs the same guard. disposeClient is
+  // caller-supplied, arbitrary code: a throw or rejection here must not
+  // propagate into the caller of this method (same rule as emit()), but
+  // swallowing it outright would be the exact silent failure this method
+  // exists to prevent — so a failing hook is surfaced as
+  // client-dispose-failed instead. [LAW:no-silent-failure]
+  private disposeClientSafely(
+    client: TmuxClient,
+    ctx: ConnectionContext,
+  ): void {
+    if (this.opts.disposeClient === undefined) return;
+    const onFailure = (err: unknown): void => {
+      this.emit({
+        kind: "client-dispose-failed",
+        identity: this.identity,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    };
+    try {
+      void Promise.resolve(this.opts.disposeClient(client, ctx)).catch(
+        onFailure,
+      );
+    } catch (err) {
+      onFailure(err);
     }
   }
 }

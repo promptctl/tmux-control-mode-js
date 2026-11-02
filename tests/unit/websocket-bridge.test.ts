@@ -709,6 +709,72 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(c.reason).toMatch(/tmux spawn failed/);
   });
 
+  it("createBridgeConnection failure disposes the already-created client (tmux-lifecycle-zng.s5u)", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let disposeCalls = 0;
+    const bridge = createWebSocketBridge({
+      createClient: () => Promise.resolve(client),
+      // low > high is rejected by BackpressureLedger's constructor —
+      // the single enforcer of watermark-config validity — so
+      // createBridgeConnection throws BRIDGE_INVALID_ARG before any peer
+      // state or listener is wired, landing in onHello's catch block.
+      outputHighWatermark: 1,
+      outputLowWatermark: 2,
+      disposeClient: (c) => {
+        expect(c).toBe(client);
+        disposeCalls++;
+      },
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.fireClose(1011, "bridge construction failed");
+
+    // Without the fix, this catch block returned after sendFatalAndClose
+    // with no disposeClient call — the client createClient() built leaks.
+    expect(disposeCalls).toBe(1);
+  });
+
+  it("a disposeClient hook that throws surfaces client-dispose-failed instead of an unhandled rejection or a swallowed failure", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => Promise.resolve(client),
+      outputHighWatermark: 1,
+      outputLowWatermark: 2,
+      disposeClient: () => {
+        throw new Error("client.dispose boom");
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // The throw from disposeClient must not skip sendFatalAndClose — the
+    // peer still gets a fatal frame and the socket still closes.
+    const fatal = readJsonFrames(ws).find(
+      (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+    );
+    expect(fatal).toBeDefined();
+    ws.fireClose(1011, "bridge construction failed");
+
+    const failed = events.find((e) => e.kind === "client-dispose-failed");
+    expect(failed).toBeDefined();
+    if (failed === undefined || failed.kind !== "client-dispose-failed") {
+      throw new Error("unreachable");
+    }
+    expect(failed.message).toMatch(/client.dispose boom/);
+  });
+
   it("createClient failing after the peer already disconnected surfaces as handshake-failure-unreported", async () => {
     const t = createFakeTransport();
     t.feed(STARTUP_GREETING);
