@@ -147,9 +147,9 @@ export type RpcResponseMap = {
 // ---------------------------------------------------------------------------
 
 export type RpcProxyApi = {
-  readonly [R in RpcRequest as R["method"]]: (
-    ...args: [...R["args"]]
-  ) => Promise<RpcResponseMap[R["method"]]>;
+  readonly [M in RpcMethod]: (
+    ...args: [...RpcSpec[M]["args"]]
+  ) => Promise<RpcResponseMap[M]>;
 };
 
 // ---------------------------------------------------------------------------
@@ -226,12 +226,12 @@ export function mapRpcCode(code: RpcErrorCode): BridgeErrorCode {
 // allowlist check above is the primary gate; this is defense in depth.
 // ---------------------------------------------------------------------------
 
-type ArgValidator<R extends RpcRequest> = (
+type ArgValidator<M extends RpcMethod> = (
   args: readonly unknown[],
-) => R["args"];
+) => RpcSpec[M]["args"];
 
 type Validators = {
-  readonly [R in RpcRequest as R["method"]]: ArgValidator<R>;
+  readonly [M in RpcMethod]: ArgValidator<M>;
 };
 
 // Module-scoped allowlist for splitWindow options. Hoisted from the
@@ -353,6 +353,15 @@ export function parseRpcRequest(raw: unknown): RpcRequest {
     throw new RpcError("INVALID_REQUEST", "request.args must be an array");
   }
   const method = obj.method as RpcMethod;
+  // This cast has the same shape as the one `dispatchRpcRequest` used to
+  // need (indexing a mapped type by a widened key loses TS's per-method
+  // correlation) and is NOT converted to a switch for the same reason that
+  // fix doesn't apply here: RPC_METHOD_NAMES above derives its allowlist
+  // from `Object.keys(VALIDATORS)`, so VALIDATORS has to stay an
+  // introspectable runtime value. `dispatchRpcRequest` had nothing else
+  // deriving from its table, so trading dataflow for a sound switch cost
+  // nothing; doing the same here would cost one-source-of-truth on the
+  // allowlist instead.
   const validator = VALIDATORS[method] as (
     args: readonly unknown[],
   ) => RpcRequest["args"];

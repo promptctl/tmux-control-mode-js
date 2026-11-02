@@ -10,16 +10,30 @@
 // req.method]`) lost that correlation at the point of indexing a mapped
 // object type by a union key, which is exactly where TypeScript cannot
 // verify soundness and required an `as` cast instead.
+// [LAW:dataflow-not-control-flow] Traded deliberately, not silently: the old
+// table WAS the one-indexed-lookup shape this law prefers, but that shape is
+// exactly what lost the method/args/response correlation above. A plain
+// `function` per method would restore dataflow but reintroduce the
+// drift-prone "N places to edit" this file's comment above has always
+// warned against. The switch is the narrower violation — one file, one
+// control-flow fan-out, still exhaustive by construction — chosen because
+// soundness here outweighs the dataflow preference.
 // [LAW:types-are-the-program] Typed against TmuxConnection, not TmuxClient —
 // the dispatcher needs execute + on/off only; the class is over-specified.
 //
-// Exhaustiveness: the `default` branch assigns `req` to a `never`-typed
-// binding. Adding a new RpcRequest variant without a matching `case` makes
-// that assignment a compile error — the same guarantee the old table's
-// `satisfies Dispatcher` gave, without needing a cast to call through it.
+// Exhaustiveness: the `default` branch hands `req` to `assertNever`, whose
+// parameter type is `never`. Adding a new RpcRequest variant without a
+// matching `case` makes that call a compile error — the same guarantee the
+// old table's `satisfies Dispatcher` gave, without needing a cast to call
+// through it.
+//
+// Every commands.* function (and TmuxConnection.execute) already returns a
+// Promise, so each case returns it directly — no per-case `Promise.resolve`
+// wrapper to keep in sync as cases are added.
 
 import type { TmuxConnection } from "../client.js";
 import type { RpcRequest, RpcResponseMap } from "./rpc.js";
+import { assertNever } from "../protocol/assert-never.js";
 import * as commands from "../commands/index.js";
 
 export function dispatchRpcRequest(
@@ -28,48 +42,39 @@ export function dispatchRpcRequest(
 ): Promise<RpcResponseMap[RpcRequest["method"]]> {
   switch (req.method) {
     case "execute":
-      return Promise.resolve(client.execute(req.args[0]));
+      return client.execute(req.args[0]);
     case "listWindows":
-      return Promise.resolve(commands.listWindows(client));
+      return commands.listWindows(client);
     case "listPanes":
-      return Promise.resolve(commands.listPanes(client));
+      return commands.listPanes(client);
     case "listSessions":
-      return Promise.resolve(commands.listSessions(client));
+      return commands.listSessions(client);
     case "sendKeys":
-      return Promise.resolve(
-        commands.sendKeys(client, req.args[0], req.args[1]),
-      );
+      return commands.sendKeys(client, req.args[0], req.args[1]);
     case "splitWindow":
-      return Promise.resolve(commands.splitWindow(client, req.args[0]));
+      return commands.splitWindow(client, req.args[0]);
     case "setSize":
-      return Promise.resolve(
-        commands.setSize(client, req.args[0], req.args[1]),
-      );
+      return commands.setSize(client, req.args[0], req.args[1]);
     case "setPaneAction":
-      return Promise.resolve(
-        commands.setPaneAction(client, req.args[0], req.args[1]),
-      );
+      return commands.setPaneAction(client, req.args[0], req.args[1]);
     case "subscribeRaw":
-      return Promise.resolve(
-        commands.subscribeRaw(client, req.args[0], req.args[1], req.args[2]),
+      return commands.subscribeRaw(
+        client,
+        req.args[0],
+        req.args[1],
+        req.args[2],
       );
     case "unsubscribe":
-      return Promise.resolve(commands.unsubscribe(client, req.args[0]));
+      return commands.unsubscribe(client, req.args[0]);
     case "setFlags":
-      return Promise.resolve(commands.setFlags(client, req.args[0]));
+      return commands.setFlags(client, req.args[0]);
     case "clearFlags":
-      return Promise.resolve(commands.clearFlags(client, req.args[0]));
+      return commands.clearFlags(client, req.args[0]);
     case "requestReport":
-      return Promise.resolve(
-        commands.requestReport(client, req.args[0], req.args[1]),
-      );
+      return commands.requestReport(client, req.args[0], req.args[1]);
     case "queryClipboard":
-      return Promise.resolve(commands.queryClipboard(client));
-    default: {
-      const _exhaustive: never = req;
-      throw new Error(
-        `unhandled RPC method: ${(_exhaustive as RpcRequest).method}`,
-      );
-    }
+      return commands.queryClipboard(client);
+    default:
+      return assertNever(req, "dispatchRpcRequest");
   }
 }
