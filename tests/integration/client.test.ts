@@ -1224,16 +1224,22 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
         `printf '\\033[31mcapture-test-marker\\033[0m\\n'\r`,
       );
 
-      // Wait for the actual rendered ESC byte, not just the marker text:
-      // the still-unexecuted command line (typed but not yet run) also
-      // contains the literal 4-character "\033" substring, which would
-      // otherwise satisfy a plain text match before printf ever runs.
+      // Wait for the actual rendered ESC byte, not just the marker text: the
+      // still-unexecuted command line (typed but not yet run) also contains
+      // the literal 4-character "\033" substring, which would otherwise
+      // satisfy a plain text match before printf ever runs. Match the SGR
+      // sequence loosely (`\x1b[` + any digits/semicolons + `31m`) rather
+      // than the minimal `\x1b[31m` form: tmux's `-e` re-synthesis is not
+      // guaranteed to emit the minimal form and commonly emits a compound
+      // parameter list (e.g. `\x1b[0;31m`) depending on tmux
+      // version/terminfo/active cell attributes.
+      const redMarker = /\x1b\[[0-9;]*31mcapture-test-marker/;
       const decoder = new TextDecoder();
       const deadline = Date.now() + 8000;
       let capture: Awaited<ReturnType<typeof capturePane>> | undefined;
       for (;;) {
         capture = await capturePane(client, paneId);
-        if (decoder.decode(capture.bytes).includes("\x1b[31mcapture-test-marker")) {
+        if (redMarker.test(decoder.decode(capture.bytes))) {
           break;
         }
         if (Date.now() >= deadline) {
@@ -1246,7 +1252,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       expect(text).toContain("capture-test-marker");
       // -e: the coloured marker survived capture with its SGR escape
       // sequence intact, not just the plain text.
-      expect(text).toContain("\x1b[31m");
+      expect(text).toMatch(redMarker);
       // The one invariant join("\n") + lineCount must hold regardless of
       // pane geometry or shell prompt content: lineCount is exactly the
       // number of "\n"-separated lines actually present in bytes.

@@ -388,8 +388,15 @@ export interface SessionRecord {
  * included, soft-wrapped lines rejoined, lines separated by `\n`) — the
  * same latin1-container boundary as {@link CommandResponse.output}, already
  * unwrapped via `latin1ToBytes`. A caller that needs text decodes further,
- * e.g. `new TextDecoder().decode(bytes)`. `lineCount` is the number of
- * logical (post-`-J`) lines `bytes` contains.
+ * e.g. `new TextDecoder().decode(bytes)`.
+ *
+ * `lineCount` is the authoritative captured-line count (tmux's own
+ * `response.output.length`), not a value re-derivable from `bytes`: a
+ * zero-line capture joins to an empty byte string, and decoding and
+ * splitting that on `"\n"` yields one empty line, not zero — so `lineCount`
+ * and "lines in `bytes`" agree for every non-empty capture but diverge at
+ * the empty one. `bytes` is a join of the same lines `lineCount` counts,
+ * not an independent value.
  */
 export interface PaneCapture {
   readonly bytes: Uint8Array;
