@@ -207,12 +207,15 @@ export type BridgeObservabilityEvent =
       readonly message: string;
     }
   | {
-      // createClient() was still in flight when the peer disconnected, so
-      // finalize already ran and reported that closure with no internal
-      // failure info; createClient then rejected anyway, with no peer left
-      // to notify and no open connection-closed event left to carry it. The
-      // one onHello failure path with no other signal. [LAW:no-silent-failure]
-      readonly kind: "create-client-failed-after-close";
+      // An onHello failure (auth denial or createClient rejection)
+      // discovered after this connection's one close-enforcer
+      // (sendFatalAndClose/finalize) was already claimed — either a real
+      // peer-initiated close already ran finalize with no failure info to
+      // carry, or an earlier, unrelated fatal is already pending and
+      // sendFatalAndClose's write-once guard would otherwise silently drop
+      // this one. Surfaced on its own rather than lost.
+      // [LAW:no-silent-failure]
+      readonly kind: "handshake-failure-unreported";
       readonly identity: ConnectionIdentity;
       readonly code: BridgeErrorCode;
       readonly message: string;

@@ -559,6 +559,27 @@ class Connection {
     return this.state.kind === "closed";
   }
 
+  // True once this connection's one close-enforcer (sendFatalAndClose /
+  // finalize) has been claimed — either the real close already ran, or an
+  // earlier fatal is pending and sendFatalAndClose's write-once guard will
+  // suppress a second one. A failure discovered past this point has no live
+  // channel to route through and must self-report. [LAW:single-enforcer]
+  private isTearingDown(): boolean {
+    return this.isClosed() || this.fatal !== undefined;
+  }
+
+  private emitUnreportedHandshakeFailure(
+    code: BridgeErrorCode,
+    message: string,
+  ): void {
+    this.emit({
+      kind: "handshake-failure-unreported",
+      identity: this.identity,
+      code,
+      message,
+    });
+  }
+
   async onHello(): Promise<void> {
     if (this.state.kind !== "pending-hello") {
       this.sendFatalAndClose("BRIDGE_PROTOCOL_ERROR", "duplicate hello frame");
@@ -579,6 +600,16 @@ class Connection {
       return;
     }
     if (!authResult.ok) {
+      if (this.isTearingDown()) {
+        // An earlier, unrelated fatal (e.g. a racing duplicate hello) is
+        // already pending — sendFatalAndClose's write-once guard would
+        // otherwise silently drop this denial. [LAW:no-silent-failure]
+        this.emitUnreportedHandshakeFailure(
+          "BRIDGE_AUTH_DENIED",
+          authResult.reason,
+        );
+        return;
+      }
       this.sendFatalAndClose(
         "BRIDGE_AUTH_DENIED",
         authResult.reason,
@@ -598,17 +629,13 @@ class Connection {
       client = await this.opts.createClient(ctx);
     } catch (err) {
       const message = `createClient failed: ${err instanceof Error ? err.message : String(err)}`;
-      if (this.isClosed()) {
-        // finalize already ran for an unrelated reason (the peer disconnected
-        // while createClient() was still in flight) and already emitted its
-        // own connection-closed — idempotent-guarded, so this failure has no
-        // open event left to carry it. [LAW:no-silent-failure]
-        this.emit({
-          kind: "create-client-failed-after-close",
-          identity: this.identity,
-          code: "BRIDGE_INTERNAL",
-          message,
-        });
+      if (this.isTearingDown()) {
+        // Either finalize already ran for an unrelated reason (the peer
+        // disconnected while createClient() was still in flight, reporting
+        // that closure with no failure info) or an earlier fatal is already
+        // pending (write-once guard would silently drop this one too).
+        // [LAW:no-silent-failure]
+        this.emitUnreportedHandshakeFailure("BRIDGE_INTERNAL", message);
         return;
       }
       this.sendFatalAndClose("BRIDGE_INTERNAL", message);
