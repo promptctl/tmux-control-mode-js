@@ -26,6 +26,7 @@ import {
   clearFlags,
   queryClipboard,
   requestReport,
+  capturePane,
 } from "../../src/commands/index.js";
 import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
@@ -1193,6 +1194,63 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
       dispose();
       expect(received()).toContain("cmd-test-marker");
+    },
+    15000,
+  );
+
+  it(
+    "CMD-04: capturePane() returns the pane's full history as byte-faithful bytes with a matching line count",
+    async () => {
+      sessionName = uniqueSession("cmd-cap");
+      client = await createSession(socketName, sessionName);
+
+      const panesResp = await client.execute(
+        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+      );
+      const panes = panesResp.output.flatMap((line) => {
+        const p = parsePaneListLine(line);
+        return p !== null ? [p] : [];
+      });
+      expect(panes.length).toBeGreaterThan(0);
+      const paneId = panes[0].paneId;
+
+      // A marker with an embedded SGR colour escape, so -e's claim (escape
+      // sequences, not just plain text) has something real to round-trip:
+      // tmux re-emits the pane's current attributes as escape sequences
+      // around the captured text.
+      await sendKeys(
+        client,
+        `%${paneId}`,
+        `printf '\\033[31mcapture-test-marker\\033[0m\\n'\r`,
+      );
+
+      // Wait for the actual rendered ESC byte, not just the marker text:
+      // the still-unexecuted command line (typed but not yet run) also
+      // contains the literal 4-character "\033" substring, which would
+      // otherwise satisfy a plain text match before printf ever runs.
+      const decoder = new TextDecoder();
+      const deadline = Date.now() + 8000;
+      let capture: Awaited<ReturnType<typeof capturePane>> | undefined;
+      for (;;) {
+        capture = await capturePane(client, paneId);
+        if (decoder.decode(capture.bytes).includes("\x1b[31mcapture-test-marker")) {
+          break;
+        }
+        if (Date.now() >= deadline) {
+          throw new Error("timeout: capture-test-marker not captured");
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      const text = decoder.decode(capture!.bytes);
+      expect(text).toContain("capture-test-marker");
+      // -e: the coloured marker survived capture with its SGR escape
+      // sequence intact, not just the plain text.
+      expect(text).toContain("\x1b[31m");
+      // The one invariant join("\n") + lineCount must hold regardless of
+      // pane geometry or shell prompt content: lineCount is exactly the
+      // number of "\n"-separated lines actually present in bytes.
+      expect(capture!.lineCount).toBe(text.split("\n").length);
     },
     15000,
   );

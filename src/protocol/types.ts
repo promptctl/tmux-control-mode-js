@@ -382,6 +382,20 @@ export interface SessionRecord {
   readonly attached: boolean;
 }
 
+/**
+ * One pane's full history from `capturePane()` — `capture-pane -p -e -J -S -`
+ * for one pane. `bytes` are the raw captured bytes (escape sequences
+ * included, soft-wrapped lines rejoined, lines separated by `\n`) — the
+ * same latin1-container boundary as {@link CommandResponse.output}, already
+ * unwrapped via `latin1ToBytes`. A caller that needs text decodes further,
+ * e.g. `new TextDecoder().decode(bytes)`. `lineCount` is the number of
+ * logical (post-`-J`) lines `bytes` contains.
+ */
+export interface PaneCapture {
+  readonly bytes: Uint8Array;
+  readonly lineCount: number;
+}
+
 // [LAW:one-source-of-truth] The canonical synthetic response for any operation
 // that resolves without issuing a correlated tmux command: an empty `sendKeys`
 // input, or a bridge refcounted no-op (a subscribe/unsubscribe that only bumps

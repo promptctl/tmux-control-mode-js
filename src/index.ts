@@ -31,6 +31,7 @@ export {
 export { PaneAction } from "./protocol/types.js";
 export type {
   CommandResponse,
+  PaneCapture,
   PaneRecord,
   SessionRecord,
   TmuxMessage,
@@ -99,4 +100,5 @@ export {
   requestReport,
   queryClipboard,
   queryTmuxVersion,
+  capturePane,
 } from "./commands/index.js";

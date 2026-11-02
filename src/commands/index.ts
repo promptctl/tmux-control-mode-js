@@ -14,6 +14,7 @@
 import type { TmuxConnection } from "../client.js";
 import type {
   CommandResponse,
+  PaneCapture,
   PaneRecord,
   SessionRecord,
   WindowRecord,
@@ -35,12 +36,14 @@ import {
   listSessionsCommand,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
+  capturePane as encodeCapturePane,
 } from "../protocol/encoder.js";
 import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
 } from "../pane-output.js";
+import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
@@ -82,6 +85,22 @@ export async function listSessions(
   return response.output
     .map(parseSessionRecordLine)
     .filter((record): record is SessionRecord => record !== null);
+}
+
+// [LAW:one-source-of-truth] `response.output` is already one latin1-container
+// string per captured line (the same boundary every other command's output
+// crosses); rejoining with "\n" before the single `latin1ToBytes` call is the
+// only place that boundary is crossed, matching `byte-codec.ts`'s
+// single-enforcer contract.
+export async function capturePane(
+  client: TmuxConnection,
+  paneId: number,
+): Promise<PaneCapture> {
+  const response = await client.execute(encodeCapturePane(paneId));
+  return {
+    bytes: latin1ToBytes(response.output.join("\n")),
+    lineCount: response.output.length,
+  };
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

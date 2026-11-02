@@ -102,6 +102,15 @@ export function refreshClientPaneAction(
   return `refresh-client -A ${tmuxEscape(`%${paneId}:${action}`)}`;
 }
 
+// [LAW:one-source-of-truth] capture-pane wire format lives here only.
+// -p: print to the control-mode reply. -e: include escape sequences
+// (colour/attrs), not just plain text. -J: join soft-wrapped lines back into
+// one logical line. -S -: start from the beginning of history, not just the
+// visible screen.
+export function capturePane(paneId: number): string {
+  return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
+}
+
 export function refreshClientSubscribe(
   name: string,
   what: string,
