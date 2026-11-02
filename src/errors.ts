@@ -45,10 +45,16 @@ export class TmuxCommandError extends Error {
 
   constructor(response: CommandResponse) {
     // First non-empty output line is usually tmux's diagnostic; fall back to
-    // a generic message when tmux returned no body.
+    // a generic message when tmux returned no body. A response-block line
+    // may carry a trailing \r (TmuxParser.feed() no longer strips it there,
+    // for capture-pane byte fidelity — see CommandResponse.output's doc), so
+    // strip it before judging "empty" and before using the line as the
+    // message, or a lone \r line would silently become the headline instead
+    // of being skipped as blank.
     const headline =
-      response.output.find((line) => line.length > 0) ??
-      "tmux command failed (%error)";
+      response.output
+        .map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+        .find((line) => line.length > 0) ?? "tmux command failed (%error)";
     super(headline);
     this.name = "TmuxCommandError";
     this.response = response;

@@ -1127,4 +1127,16 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     expect(outputLines).toHaveLength(0);
     expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
   });
+
+  it("tolerates a doubled trailing \\r\\r on a truncated terminator too", () => {
+    // A single stray strip (`endsWith("\r") ? slice(0, -1) : ...`) only
+    // removes one \r, so "%end\r\r" would still fail `typeStr === "end"` and
+    // wedge exactly like the single-\r case above. The fix strips the whole
+    // trailing \r run, not just one.
+    const input = "%begin 1699900000 6 0\r\n%end\r\r\n%sessions-changed\r\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+    expect(protocolErrors).toEqual([{ commandNumber: 6, line: "%end\r\r" }]);
+    expect(outputLines).toHaveLength(0);
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
 });

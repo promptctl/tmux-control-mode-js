@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  parsePaneListLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
   parseWindowRecordLine,
@@ -137,6 +138,30 @@ describe("parseSessionRecordLine", () => {
       sessionName: "main",
       windowCount: 3,
       attached: false,
+    });
+  });
+});
+
+describe("parsePaneListLine", () => {
+  it("parses a plain line", () => {
+    expect(parsePaneListLine("%5 @2 $1")).toEqual({
+      paneId: 5,
+      windowId: 2,
+      sessionId: 1,
+    });
+  });
+
+  // Regression: this is response-block output, where TmuxParser.feed() no
+  // longer strips a trailing \r (needed for raw capture-pane byte
+  // fidelity), so the last line of this list can carry one on a CRLF
+  // transport. The old strict end-anchored regex failed to match, so every
+  // entry returned null — topology-router.ts's bootstrap()/refreshWindow()
+  // then silently wiped the whole pane topology with an empty seed/update.
+  it("tolerates a trailing \\r (CRLF transport noise)", () => {
+    expect(parsePaneListLine("%5 @2 $1\r")).toEqual({
+      paneId: 5,
+      windowId: 2,
+      sessionId: 1,
     });
   });
 });
