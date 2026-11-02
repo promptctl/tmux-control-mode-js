@@ -230,16 +230,24 @@ describe("dispatchRpcRequest — routing", () => {
   // (transport, client) pair so it can both observe `sent` and feed responses.
   void makeClient;
 
-  it("listWindows → 'list-windows'", async () => {
+  it("listWindows → 'list-windows' parsed into WindowRecord[]", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
     expect(t.sent[0]).toContain("list-windows");
-    feedOk(t.feed, 1, ["@0 zsh 1 -"]);
+    feedOk(t.feed, 1, ["1\tmain\t0\tzsh\t80\t24"]);
     const r = await p;
-    expect(r.success).toBe(true);
-    expect(r.output).toEqual(["@0 zsh 1 -"]);
+    expect(r).toEqual([
+      {
+        sessionId: 1,
+        sessionName: "main",
+        windowId: 0,
+        windowName: "zsh",
+        width: 80,
+        height: 24,
+      },
+    ]);
   });
 
   it("sendKeys forwards target+keys", async () => {

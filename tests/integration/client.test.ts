@@ -1016,35 +1016,50 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   });
 
   it(
-    "CMD-01: listWindows() returns a successful response with at least one output line",
+    "CMD-01: listWindows() returns structured WindowRecords with at least one entry",
     async () => {
       sessionName = uniqueSession("cmd-lw");
       client = await createSession(socketName, sessionName);
 
       // [LAW:types-are-the-program] Type the client as TmuxConnection — the
       // free function takes the minimal interface, not the full TmuxClient.
-      const r = await listWindows(client);
+      const windows = await listWindows(client);
 
-      expect(r.success).toBe(true);
-      expect(typeof r.commandNumber).toBe("number");
-      expect(Array.isArray(r.output)).toBe(true);
-      // list-windows always has at least one line (the initial window).
-      expect(r.output.length).toBeGreaterThan(0);
+      // list-windows always has at least one entry (the initial window).
+      expect(windows.length).toBeGreaterThan(0);
+      const [w] = windows;
+      expect(typeof w.sessionId).toBe("number");
+      expect(w.sessionName).toBe(sessionName);
+      expect(typeof w.windowId).toBe("number");
+      expect(typeof w.windowName).toBe("string");
+      expect(typeof w.width).toBe("number");
+      expect(typeof w.height).toBe("number");
     },
     15000,
   );
 
   it(
-    "CMD-02: listPanes() returns a successful response with at least one output line",
+    "CMD-02: listPanes() returns structured PaneRecords with at least one entry",
     async () => {
       sessionName = uniqueSession("cmd-lp");
       client = await createSession(socketName, sessionName);
 
-      const r = await listPanes(client);
+      const panes = await listPanes(client);
 
-      expect(r.success).toBe(true);
-      expect(Array.isArray(r.output)).toBe(true);
-      expect(r.output.length).toBeGreaterThan(0);
+      expect(panes.length).toBeGreaterThan(0);
+      const [p] = panes;
+      expect(typeof p.sessionId).toBe("number");
+      expect(p.sessionName).toBe(sessionName);
+      expect(typeof p.windowId).toBe("number");
+      expect(typeof p.windowName).toBe("string");
+      expect(typeof p.paneId).toBe("number");
+      expect(typeof p.cwd).toBe("string");
+      expect(p.cwd.length).toBeGreaterThan(0);
+      expect(typeof p.pid).toBe("number");
+      expect(typeof p.startCommand).toBe("string");
+      expect(typeof p.currentCommand).toBe("string");
+      expect(typeof p.width).toBe("number");
+      expect(typeof p.height).toBe("number");
     },
     15000,
   );

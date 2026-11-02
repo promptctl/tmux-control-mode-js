@@ -14,11 +14,7 @@
 // [LAW:one-type-per-behavior] ClientFrame and ServerFrame are discriminated
 // unions — a single `k` field dispatches every receiver.
 
-import type {
-  CommandResponse,
-  PaneOutputMessage,
-  TmuxMessage,
-} from "../../protocol/types.js";
+import type { PaneOutputMessage, TmuxMessage } from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
@@ -65,7 +61,7 @@ import {
  */
 export type { RpcMethod } from "../rpc.js";
 
-import type { RpcMethod } from "../rpc.js";
+import type { RpcMethod, RpcResponseMap } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
 // Event messages (control plane)
@@ -133,7 +129,9 @@ export interface ResultOkFrame {
   readonly k: "result";
   readonly id: string;
   readonly ok: true;
-  readonly response: CommandResponse;
+  // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
+  // structured records for listWindows/listPanes (see rpc.ts).
+  readonly response: RpcResponseMap[RpcMethod];
 }
 
 export interface ResultErrFrame {
@@ -422,7 +420,7 @@ function parseResult(x: unknown): ResultFrame {
       k: "result",
       id: o.id,
       ok: true,
-      response: o.response as CommandResponse,
+      response: o.response as RpcResponseMap[RpcMethod],
     };
   }
   if (o.ok === false) {

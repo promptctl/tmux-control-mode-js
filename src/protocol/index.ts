@@ -37,6 +37,8 @@ export type {
   ProtocolErrorMessage,
   TmuxMessage,
   CommandResponse,
+  PaneRecord,
+  WindowRecord,
 } from "./types.js";
 
 export { PaneAction, emptyKeysResponse } from "./types.js";

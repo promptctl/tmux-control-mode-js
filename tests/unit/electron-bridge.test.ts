@@ -1387,7 +1387,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     const p = proxy.listPanes();
     feedCommandResponse(t, 1, []);
     const resp = await p;
-    expect(resp.success).toBe(true);
+    expect(resp).toEqual([]);
   });
 });
 

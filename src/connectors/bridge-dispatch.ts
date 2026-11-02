@@ -43,17 +43,22 @@ import type { CommandResponse } from "../protocol/types.js";
 import type { BridgeConnection, Peer } from "./bridge-connection.js";
 import { BridgeError } from "./errors.js";
 import { dispatchRpcRequest } from "./rpc-dispatch.js";
-import type { RpcMethod, RpcRequest } from "./rpc.js";
+import type { RpcMethod, RpcRequest, RpcResponseMap } from "./rpc.js";
 
 // ---------------------------------------------------------------------------
 // BridgeOutcome — the normalized result of dispatching one RpcRequest.
 //
-// `ok` and `tmux-error` BOTH carry a CommandResponse and BOTH are successful
-// at the bridge layer; they are kept distinct because the Electron envelope
-// reports them under different `status` tags, while the WS server collapses
-// both to a `replyOk` frame. A `bridge-error` carries the typed BridgeError
-// instance itself — WS reads `.code`/`.message`, Electron calls `.toPayload()`,
-// so handing both the instance lets each take exactly what its wire needs.
+// `ok` and `tmux-error` are BOTH successful at the bridge layer; they are
+// kept distinct because the Electron envelope reports them under different
+// `status` tags, while the WS server collapses both to a `replyOk` frame.
+// `tmux-error`'s response is always a CommandResponse (a tmux `%error` reply
+// to the underlying `execute()`, independent of which method issued it).
+// `ok`'s response is whatever RpcResponseMap says the dispatched method
+// actually returns — a CommandResponse for most methods, but the structured
+// records for listWindows/listPanes. A `bridge-error` carries the typed
+// BridgeError instance itself — WS reads `.code`/`.message`, Electron calls
+// `.toPayload()`, so handing both the instance lets each take exactly what
+// its wire needs.
 //
 // [LAW:types-are-the-program] Three logical outcomes, three variants; an
 // illegal mix (an "ok" with an error, a "bridge-error" with no error) is
@@ -61,7 +66,7 @@ import type { RpcMethod, RpcRequest } from "./rpc.js";
 // ---------------------------------------------------------------------------
 
 export type BridgeOutcome =
-  | { readonly kind: "ok"; readonly response: CommandResponse }
+  | { readonly kind: "ok"; readonly response: RpcResponseMap[RpcMethod] }
   | { readonly kind: "tmux-error"; readonly response: CommandResponse }
   | { readonly kind: "bridge-error"; readonly error: BridgeError };
 
@@ -103,7 +108,7 @@ function runBridgeDispatch(
   client: TmuxConnection,
   peer: Peer,
   req: RpcRequest,
-): Promise<CommandResponse> {
+): Promise<RpcResponseMap[RpcMethod]> {
   if (req.method === "subscribeRaw") {
     const [name, what, format] = req.args;
     return bridge.subscribeForPeer(peer, name, what, format);

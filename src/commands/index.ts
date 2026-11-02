@@ -12,7 +12,11 @@
 // are thin wrappers, not an alternate escape hatch.
 
 import type { TmuxConnection } from "../client.js";
-import type { CommandResponse } from "../protocol/types.js";
+import type {
+  CommandResponse,
+  PaneRecord,
+  WindowRecord,
+} from "../protocol/types.js";
 import { PaneAction, emptyKeysResponse } from "../protocol/types.js";
 import type { SplitOptions } from "../protocol/encoder.js";
 import {
@@ -25,9 +29,12 @@ import {
   refreshClientReport,
   refreshClientQueryClipboard,
   displayMessageVersion,
+  listWindowsCommand,
+  listPanesCommand,
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
 } from "../protocol/encoder.js";
+import { parseWindowRecordLine, parsePaneRecordLine } from "../pane-output.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
@@ -39,12 +46,27 @@ import { UnsupportedTmuxVersionError } from "../errors.js";
 export { PaneAction };
 export type { SplitOptions };
 
-export function listWindows(client: TmuxConnection): Promise<CommandResponse> {
-  return client.execute("list-windows");
+// [LAW:one-source-of-truth] The command string lives in encoder.ts, the line
+// grammar lives in pane-output.ts; this function is pure dispatch + filter,
+// same as every other free function here. Structured records, never a raw
+// CommandResponse for the caller to parse — that parsing is exactly what
+// cc-tmux-lifeboat's founding doc forbids downstream.
+export async function listWindows(
+  client: TmuxConnection,
+): Promise<readonly WindowRecord[]> {
+  const response = await client.execute(listWindowsCommand());
+  return response.output
+    .map(parseWindowRecordLine)
+    .filter((record): record is WindowRecord => record !== null);
 }
 
-export function listPanes(client: TmuxConnection): Promise<CommandResponse> {
-  return client.execute("list-panes");
+export async function listPanes(
+  client: TmuxConnection,
+): Promise<readonly PaneRecord[]> {
+  const response = await client.execute(listPanesCommand());
+  return response.output
+    .map(parsePaneRecordLine)
+    .filter((record): record is PaneRecord => record !== null);
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

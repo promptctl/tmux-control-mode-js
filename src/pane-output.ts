@@ -1,6 +1,10 @@
 // src/pane-output.ts
 // Scope-based pane output subscriptions.
 //
+
+import type { PaneRecord, WindowRecord } from "./protocol/types.js";
+import { latin1ToBytes } from "./protocol/byte-codec.js";
+
 // [LAW:types-are-the-program] BytesSink is the byte contract; PaneScope
 //   encodes membership as a value (a discriminated union), not as a method.
 //   The four scope kinds are four arms of one union, not four entry points.
@@ -755,5 +759,77 @@ export function parsePaneListLine(
     paneId: Number(m[1]),
     windowId: Number(m[2]),
     sessionId: Number(m[3]),
+  };
+}
+
+// [LAW:one-source-of-truth] Decode a single latin1-container field to real
+// Unicode text, once, at this boundary — the exact idiom CommandResponse's
+// own doc comment names. Every text field on WindowRecord/PaneRecord passes
+// through here; no downstream consumer re-decodes.
+function decodeField(latin1Field: string): string {
+  return new TextDecoder().decode(latin1ToBytes(latin1Field));
+}
+
+/**
+ * Parse one line from the fixed, library-owned `list-windows -a -F '...'`
+ * format built by `listWindowsCommand()` (protocol/encoder.ts): tab-separated
+ * `#{session_id} #{session_name} #{window_id} #{window_name}
+ * #{window_width} #{window_height}`.
+ *
+ * Returns null for an unparseable line (trailing blank, unexpected field
+ * count) — the caller filters, matching `parsePaneListLine`'s discipline.
+ */
+export function parseWindowRecordLine(line: string): WindowRecord | null {
+  const fields = line.split("\t");
+  if (fields.length !== 6) return null;
+  const [sessionId, sessionName, windowId, windowName, width, height] = fields;
+  return {
+    sessionId: Number(sessionId),
+    sessionName: decodeField(sessionName),
+    windowId: Number(windowId),
+    windowName: decodeField(windowName),
+    width: Number(width),
+    height: Number(height),
+  };
+}
+
+/**
+ * Parse one line from the fixed, library-owned `list-panes -a -F '...'`
+ * format built by `listPanesCommand()` (protocol/encoder.ts): tab-separated
+ * `#{session_id} #{session_name} #{window_id} #{window_name} #{pane_id}
+ * #{pane_current_path} #{pane_pid} #{pane_start_command}
+ * #{pane_current_command} #{pane_width} #{pane_height}`.
+ *
+ * Returns null for an unparseable line, same discipline as
+ * `parseWindowRecordLine`.
+ */
+export function parsePaneRecordLine(line: string): PaneRecord | null {
+  const fields = line.split("\t");
+  if (fields.length !== 11) return null;
+  const [
+    sessionId,
+    sessionName,
+    windowId,
+    windowName,
+    paneId,
+    cwd,
+    pid,
+    startCommand,
+    currentCommand,
+    width,
+    height,
+  ] = fields;
+  return {
+    sessionId: Number(sessionId),
+    sessionName: decodeField(sessionName),
+    windowId: Number(windowId),
+    windowName: decodeField(windowName),
+    paneId: Number(paneId),
+    cwd: decodeField(cwd),
+    pid: Number(pid),
+    startCommand: decodeField(startCommand),
+    currentCommand: decodeField(currentCommand),
+    width: Number(width),
+    height: Number(height),
   };
 }

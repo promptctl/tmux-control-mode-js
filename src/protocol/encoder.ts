@@ -23,6 +23,29 @@ export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
 
+// [LAW:one-source-of-truth] The fixed `-F` format strings behind the public
+// listWindows/listPanes records live here only; commands/index.ts just
+// executes them and pane-output.ts just parses their output. Tab-separated:
+// unlike the ids, several of these fields (names, paths, commands) are free
+// text that can contain spaces, so space cannot be the delimiter. A literal
+// tab is the conventional tmux-scripting delimiter for exactly this reason —
+// names/paths essentially never contain one.
+export function listWindowsCommand(): string {
+  return (
+    "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
+    "#{window_name}\t#{window_width}\t#{window_height}'"
+  );
+}
+
+export function listPanesCommand(): string {
+  return (
+    "list-panes -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
+    "#{window_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_pid}\t" +
+    "#{pane_start_command}\t#{pane_current_command}\t#{pane_width}\t" +
+    "#{pane_height}'"
+  );
+}
+
 export function refreshClientPaneAction(
   paneId: number,
   action: PaneAction,
