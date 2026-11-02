@@ -1090,13 +1090,27 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           ),
           { stdio: "ignore" },
         );
-        const panes = await listPanes(client);
-        const pane = panes.find((p) => p.windowName === "tabtest");
-        expect(pane).toBeDefined();
+        // pane_current_path is queried live from the OS, not snapshotted at
+        // spawn time: the window-creation command can return before the
+        // forked child has finished its own chdir(), so an immediate query
+        // can transiently read the inherited (parent) cwd under CI load —
+        // observed as a flake in CI, never locally. Poll rather than
+        // single-shot the read.
+        const deadline = Date.now() + 8000;
+        let found: Awaited<ReturnType<typeof listPanes>>[number] | undefined;
+        for (;;) {
+          const panes = await listPanes(client);
+          found = panes.find(
+            (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
+          );
+          if (found !== undefined || Date.now() >= deadline) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        expect(found).toBeDefined();
         // Confirmed not dropped by the split-by-tab desync, and the cwd
         // decoded back to the literal backslash/tab it was created with —
         // not the escaped wire form, and not truncated at the tab.
-        expect(pane!.cwd).toContain("a\\b\tc");
+        expect(found!.cwd).toContain("a\\b\tc");
       } finally {
         rmSync(weirdDir, { recursive: true, force: true });
       }
