@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
@@ -27,6 +27,7 @@ import {
   queryClipboard,
   requestReport,
 } from "../../src/commands/index.js";
+import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
 import { TmuxCommandError } from "../../src/errors.js";
@@ -1061,6 +1062,32 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       expect(typeof p.currentCommand).toBe("string");
       expect(Number.isInteger(p.width)).toBe(true);
       expect(Number.isInteger(p.height)).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash",
+    async () => {
+      sessionName = uniqueSession("cmd-lp-tab");
+      client = await createSession(socketName, sessionName);
+
+      const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
+      mkdirSync(weirdDir, { recursive: true });
+      try {
+        await client.execute(
+          `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
+        );
+        const panes = await listPanes(client);
+        const pane = panes.find((p) => p.windowName === "tabtest");
+        expect(pane).toBeDefined();
+        // Confirmed not dropped by the split-by-tab desync, and the cwd
+        // decoded back to the literal backslash/tab it was created with —
+        // not the escaped wire form, and not truncated at the tab.
+        expect(pane!.cwd).toContain("a\\b\tc");
+      } finally {
+        rmSync(weirdDir, { recursive: true, force: true });
+      }
     },
     15000,
   );

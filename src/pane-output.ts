@@ -782,6 +782,36 @@ function parseSigilId(field: string): number {
   return Number(field.slice(1));
 }
 
+// Reverses protocol/encoder.ts's `escapeFreeTextField`: a backslash-prefixed
+// `t` is a literal tab, a backslash-prefixed backslash is a literal
+// backslash. Only `pane_current_path` is encoded this way (see that
+// function's doc comment for why the other free-text pane fields need no
+// such treatment) — this is the sole reverse, and the two must only ever
+// change together. Scanning left to right and consuming exactly one escape
+// pair per backslash keeps a run of escapes unambiguous regardless of what
+// precedes it in the field.
+function unescapeFreeTextField(field: string): string {
+  let out = "";
+  for (let i = 0; i < field.length; i++) {
+    const ch = field[i];
+    if (ch === "\\") {
+      const next = field[i + 1];
+      if (next === "\\") {
+        out += "\\";
+        i++;
+        continue;
+      }
+      if (next === "t") {
+        out += "\t";
+        i++;
+        continue;
+      }
+    }
+    out += ch;
+  }
+  return out;
+}
+
 /**
  * Parse one line from the fixed, library-owned `list-windows -a -F '...'`
  * format built by `listWindowsCommand()` (protocol/encoder.ts): tab-separated
@@ -810,7 +840,10 @@ export function parseWindowRecordLine(line: string): WindowRecord | null {
  * format built by `listPanesCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{window_id} #{window_name} #{pane_id}
  * #{pane_current_path} #{pane_pid} #{pane_start_command}
- * #{pane_current_command} #{pane_width} #{pane_height}`.
+ * #{pane_current_command} #{pane_width} #{pane_height}`, with
+ * `pane_current_path` backslash-escaped by the encoder (see
+ * `escapeFreeTextField` there) so a literal tab or backslash in the cwd
+ * cannot desync this split.
  *
  * Returns null for an unparseable line, same discipline as
  * `parseWindowRecordLine`.
@@ -837,7 +870,7 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     windowId: parseSigilId(windowId),
     windowName: decodeField(windowName),
     paneId: parseSigilId(paneId),
-    cwd: decodeField(cwd),
+    cwd: decodeField(unescapeFreeTextField(cwd)),
     pid: Number(pid),
     startCommand: decodeField(startCommand),
     currentCommand: decodeField(currentCommand),

@@ -27,9 +27,19 @@ export function refreshClientSize(width: number, height: number): string {
 // listWindows/listPanes records live here only; commands/index.ts just
 // executes them and pane-output.ts just parses their output. Tab-separated:
 // unlike the ids, several of these fields (names, paths, commands) are free
-// text that can contain spaces, so space cannot be the delimiter. A literal
-// tab is the conventional tmux-scripting delimiter for exactly this reason —
-// names/paths essentially never contain one.
+// text that can contain spaces, so space cannot be the delimiter. tmux
+// rejects a literal tab in a window or session name outright ("invalid
+// window name", confirmed live on tmux 3.8), so those two fields are safe
+// as plain values. `pane_current_path`, by contrast, is a raw filesystem
+// path with no such restriction and tmux emits it byte-for-byte — a literal
+// tab in the cwd (confirmed live: `new-session -c $'/tmp/x\ty'`) desyncs a
+// flat split-by-tab. `pane_start_command`/`pane_current_command` need no
+// such treatment either: they come from tmux's own argv-reconstruction,
+// which already backslash-escapes (confirmed live: a literal backslash in
+// the command renders as `\\`, a literal tab as `\t`) before we ever see
+// them — escaping them again here would double-escape tmux's own encoding.
+// `escapeFreeTextField` below applies the equivalent treatment to
+// `pane_current_path`, which gets none of that protection natively.
 export function listWindowsCommand(): string {
   return (
     "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
@@ -37,12 +47,42 @@ export function listWindowsCommand(): string {
   );
 }
 
+// One real backslash byte / one real tab byte, used to build the `s///`
+// pattern and replacement arguments below without hand-counting backslashes
+// in a template literal — tmux's own replacement-text parser consumes a
+// backslash to escape the next character, so the JS-source backslash count
+// and the wire-level backslash count are not the same number, and getting
+// that mismatch wrong by eye is exactly the class of bug this function
+// exists to prevent. Verified against a real tmux 3.8 process (see
+// escapeFreeTextField below for the exact byte counts).
+const BACKSLASH = "\\";
+const TAB = "\t";
+
+// Escapes backslash and tab in a free-text format expression so the result
+// can never contain either byte literally, while staying losslessly
+// reversible. Order matters: backslash is escaped first so the tab step
+// cannot misinterpret a backslash this function introduced.
+// [LAW:one-source-of-truth] `unescapeFreeTextField` (pane-output.ts) is the
+// sole reverse of this encoding; the two must only ever change together.
+function escapeFreeTextField(expr: string): string {
+  // tmux's replacement-text parser collapses each escaped backslash pair to
+  // one literal backslash, so a 2-byte pattern (one escaped backslash) with
+  // a 4-byte replacement (two escaped backslash pairs) doubles every
+  // backslash in the value.
+  const backslashEscaped = `#{s/${BACKSLASH}${BACKSLASH}/${BACKSLASH.repeat(4)}/:${expr}}`;
+  // A literal tab needs no pattern-side escaping (not an ERE metacharacter).
+  // The 3-byte replacement is one escaped backslash pair (-> one literal
+  // backslash) followed by a literal `t`, so the net effect is the two-byte
+  // sequence `\t`.
+  return `#{s/${TAB}/${BACKSLASH}${BACKSLASH}t/:${backslashEscaped}}`;
+}
+
 export function listPanesCommand(): string {
   return (
     "list-panes -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
-    "#{window_name}\t#{pane_id}\t#{pane_current_path}\t#{pane_pid}\t" +
-    "#{pane_start_command}\t#{pane_current_command}\t#{pane_width}\t" +
-    "#{pane_height}'"
+    `#{window_name}\t#{pane_id}\t${escapeFreeTextField("#{pane_current_path}")}\t` +
+    "#{pane_pid}\t#{pane_start_command}\t#{pane_current_command}\t" +
+    "#{pane_width}\t#{pane_height}'"
   );
 }
 
