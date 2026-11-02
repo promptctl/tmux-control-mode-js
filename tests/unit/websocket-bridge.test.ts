@@ -644,3 +644,230 @@ describe("WebSocket bridge — resume-failure observability", () => {
     expect(f.code).toBe("TMUX_ERROR");
   });
 });
+
+// ---------------------------------------------------------------------------
+// onHello failure-path observability (zng.5.1)
+//
+// Every onHello failure now surfaces a BridgeErrorCode to onEvent: either as
+// connection-closed.errorCode (routed through sendFatalAndClose/finalize, the
+// file's existing single close-enforcer) or, once that one enforcer is
+// already claimed by an unrelated close/fatal, as its own
+// handshake-failure-unreported event.
+// ---------------------------------------------------------------------------
+describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", () => {
+  it("auth-denied surfaces as connection-closed.errorCode BRIDGE_AUTH_DENIED", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      authenticate: () => ({ ok: false, reason: "no credentials" }),
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    // sendFatalAndClose called ws.close() above; the fake, like a real
+    // socket, doesn't fire the "close" event synchronously — drive it
+    // explicitly so finalize runs and emits connection-closed, matching the
+    // zng.5 handshake-races tests' existing convention in this file.
+    ws.fireClose(4401, "no credentials");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_AUTH_DENIED");
+    expect(c.reason).toMatch(/no credentials/);
+  });
+
+  it("createClient failure surfaces as connection-closed.errorCode BRIDGE_INTERNAL", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        throw new Error("tmux spawn failed");
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.fireClose(1011, "createClient failed: tmux spawn failed");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_INTERNAL");
+    expect(c.reason).toMatch(/tmux spawn failed/);
+  });
+
+  it("createClient failing after the peer already disconnected surfaces as handshake-failure-unreported", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+
+    let rejectCreate!: (err: Error) => void;
+    const createClientPromise = new Promise<TmuxClient>((_res, rej) => {
+      rejectCreate = rej;
+    });
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => createClientPromise,
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Peer disconnects while createClient() is still in flight — finalize
+    // runs now and emits its own connection-closed with no internal failure
+    // info (the same window proven in the zng.5 handshake-races tests above).
+    ws.fireClose(1006, "abnormal closure");
+    events.length = 0;
+
+    // createClient() rejects after finalize already ran. No peer left to
+    // notify, no open connection-closed event left to carry it.
+    rejectCreate(new Error("tmux spawn failed"));
+    await flush();
+
+    expect(events).toHaveLength(1);
+    const e = events[0];
+    expect(e.kind).toBe("handshake-failure-unreported");
+    if (e.kind !== "handshake-failure-unreported") {
+      throw new Error("unreachable");
+    }
+    expect(e.code).toBe("BRIDGE_INTERNAL");
+    expect(e.message).toMatch(/tmux spawn failed/);
+  });
+
+  it("auth-denied racing a pending fatal from elsewhere surfaces as handshake-failure-unreported instead of being silently dropped", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+
+    let resolveAuth!: (r: { ok: false; reason: string }) => void;
+    const authPromise = new Promise<{ ok: false; reason: string }>((res) => {
+      resolveAuth = res;
+    });
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => new TmuxClient(t.transport),
+      authenticate: () => authPromise,
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Hello #1 commits to "handshaking" and suspends at authenticate().
+    ws.feedClient({ k: "hello" });
+    await flush();
+    // Hello #2 is rejected as a duplicate — the connection's one fatal is
+    // now claimed by BRIDGE_PROTOCOL_ERROR, with the real close not yet
+    // landed (state stays "handshaking").
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Hello #1's authenticate() now resolves denied. Without isTearingDown()
+    // routing this to its own event, sendFatalAndClose's write-once guard
+    // would silently drop the auth-denial with zero signal.
+    resolveAuth({ ok: false, reason: "no credentials" });
+    await flush();
+
+    const unreported = events.filter(
+      (e) => e.kind === "handshake-failure-unreported",
+    );
+    expect(unreported).toHaveLength(1);
+    const u = unreported[0];
+    if (u.kind !== "handshake-failure-unreported") {
+      throw new Error("unreachable");
+    }
+    expect(u.code).toBe("BRIDGE_AUTH_DENIED");
+    expect(u.message).toMatch(/no credentials/);
+  });
+
+  it("createClient succeeding after an unrelated fatal is already pending disposes the client instead of opening the connection", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+
+    let resolveCreate!: (c: TmuxClient) => void;
+    const createClientPromise = new Promise<TmuxClient>((res) => {
+      resolveCreate = res;
+    });
+    let disposeCalls = 0;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => createClientPromise,
+      disposeClient: () => {
+        disposeCalls++;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Hello #1 commits to "handshaking", authenticates (no hook configured),
+    // and suspends at createClient().
+    ws.feedClient({ k: "hello" });
+    await flush();
+    // Hello #2 is rejected as a duplicate — the connection's one fatal is now
+    // claimed by BRIDGE_PROTOCOL_ERROR, with the real close not yet landed
+    // (state stays "handshaking").
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // createClient() now resolves successfully. The old `isClosed()` gate
+    // here was false (state never reached "closed"), so the connection
+    // would wire itself into "running" and emit a false connection-opened
+    // for a connection already fatally sealed. isTearingDown() must gate
+    // this instead. [LAW:no-silent-failure]
+    resolveCreate(client);
+    await flush();
+
+    expect(disposeCalls).toBe(1);
+    expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+  });
+
+  it("a second fatal-close before the real close event lands does not overwrite the first's BridgeErrorCode", async () => {
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => new TmuxClient(t.transport),
+      // Never reached: the duplicate-hello fatal below fires first and the
+      // write-once guard must block this one from overwriting it.
+      authenticate: () => ({ ok: false, reason: "no creds" }),
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Hello #1 commits synchronously to "handshaking" and suspends at
+    // authenticate(). Hello #2, landing in the same synchronous dispatch
+    // before that await resolves, is rejected as a duplicate — the first
+    // sendFatalAndClose, fixing BRIDGE_PROTOCOL_ERROR as the connection's
+    // one fatal BridgeError.
+    ws.feedClient({ k: "hello" });
+    ws.feedClient({ k: "hello" });
+    // Hello #1 then resumes past authenticate() and tries its own
+    // sendFatalAndClose(BRIDGE_AUTH_DENIED) — the write-once guard must
+    // make this a no-op rather than overwrite the duplicate-hello fatal.
+    await flush();
+
+    ws.fireClose(1011, "duplicate hello frame");
+
+    const closed = events.filter((e) => e.kind === "connection-closed");
+    expect(closed).toHaveLength(1);
+    const c = closed[0];
+    if (c.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_PROTOCOL_ERROR");
+  });
+});

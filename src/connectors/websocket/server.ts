@@ -321,6 +321,11 @@ class Connection {
   // the variant that needs them, not as parallel nullable fields.
   private state: ConnectionState = { kind: "pending-hello" };
   private identity: ConnectionIdentity = undefined;
+  // Set by sendFatalAndClose; read by the "close" listener once the real
+  // close event lands, so finalize's one connection-closed emission can
+  // carry the BridgeErrorCode a peer-initiated close never has.
+  // [LAW:single-enforcer]
+  private fatal: BridgeError | undefined = undefined;
 
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
   private readonly byteForwarder: BytesSink;
@@ -450,7 +455,12 @@ class Connection {
     });
 
     this.ws.on("close", (code: number, reason: Buffer | string) => {
-      this.finalize(undefined, {
+      // [LAW:single-enforcer] `this.fatal` carries the BridgeErrorCode when
+      // this close was triggered by sendFatalAndClose rather than a
+      // peer-initiated disconnect — set there, read here, so the one
+      // existing emission site (finalize) can report it without a second,
+      // manually-paired event at each sendFatalAndClose call site.
+      this.finalize(this.fatal, {
         code,
         reason: typeof reason === "string" ? reason : reason.toString("utf8"),
       });
@@ -549,6 +559,27 @@ class Connection {
     return this.state.kind === "closed";
   }
 
+  // True once this connection's one close-enforcer (sendFatalAndClose /
+  // finalize) has been claimed — either the real close already ran, or an
+  // earlier fatal is pending and sendFatalAndClose's write-once guard will
+  // suppress a second one. A failure discovered past this point has no live
+  // channel to route through and must self-report. [LAW:single-enforcer]
+  private isTearingDown(): boolean {
+    return this.isClosed() || this.fatal !== undefined;
+  }
+
+  private emitUnreportedHandshakeFailure(
+    code: BridgeErrorCode,
+    message: string,
+  ): void {
+    this.emit({
+      kind: "handshake-failure-unreported",
+      identity: this.identity,
+      code,
+      message,
+    });
+  }
+
   async onHello(): Promise<void> {
     if (this.state.kind !== "pending-hello") {
       this.sendFatalAndClose("BRIDGE_PROTOCOL_ERROR", "duplicate hello frame");
@@ -569,6 +600,16 @@ class Connection {
       return;
     }
     if (!authResult.ok) {
+      if (this.isTearingDown()) {
+        // An earlier, unrelated fatal (e.g. a racing duplicate hello) is
+        // already pending — sendFatalAndClose's write-once guard would
+        // otherwise silently drop this denial. [LAW:no-silent-failure]
+        this.emitUnreportedHandshakeFailure(
+          "BRIDGE_AUTH_DENIED",
+          authResult.reason,
+        );
+        return;
+      }
       this.sendFatalAndClose(
         "BRIDGE_AUTH_DENIED",
         authResult.reason,
@@ -587,19 +628,29 @@ class Connection {
     try {
       client = await this.opts.createClient(ctx);
     } catch (err) {
-      if (this.isClosed()) return;
-      this.sendFatalAndClose(
-        "BRIDGE_INTERNAL",
-        `createClient failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const message = `createClient failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (this.isTearingDown()) {
+        // Either finalize already ran for an unrelated reason (the peer
+        // disconnected while createClient() was still in flight, reporting
+        // that closure with no failure info) or an earlier fatal is already
+        // pending (write-once guard would silently drop this one too).
+        // [LAW:no-silent-failure]
+        this.emitUnreportedHandshakeFailure("BRIDGE_INTERNAL", message);
+        return;
+      }
+      this.sendFatalAndClose("BRIDGE_INTERNAL", message);
       return;
     }
-    if (this.isClosed()) {
-      // finalize ran while createClient() was in flight. `client` exists but
-      // was never committed to `state`, so finalize's disposal (which only
-      // fires for running/draining) never saw it — dispose it here, the same
-      // way finalize would have, and stop before wiring any listener or sink
-      // onto the shared client.
+    if (this.isTearingDown()) {
+      // Either finalize ran while createClient() was in flight, or an
+      // earlier fatal is already pending (same race the auth-denied and
+      // createClient-catch branches above now guard against) — this
+      // connection's outcome is already fixed to something other than
+      // "running". `client` exists but was never committed to `state`, so
+      // finalize's disposal (which only fires for running/draining) never
+      // saw it — dispose it here, the same way finalize would have, and
+      // stop before wiring any listener, sink, or "connection-opened" onto
+      // a connection that is not actually opening. [LAW:no-silent-failure]
       if (this.opts.disposeClient !== undefined) {
         void Promise.resolve(this.opts.disposeClient(client, ctx));
       }
@@ -977,7 +1028,17 @@ class Connection {
     message: string,
     wsCode = 1011,
   ): void {
+    // write-once: `ws.close()` itself is one-shot at the wire — a second
+    // call can't change the code/reason already sent to the peer — so a
+    // second sendFatalAndClose before the real "close" event lands must not
+    // overwrite the BridgeError the first call already fixed. Without this
+    // guard, two synchronous fatal paths (e.g. a malformed frame immediately
+    // followed by a binary frame, both landing before any await yields)
+    // would report the second's code against the first's wire-level close.
+    // [LAW:single-enforcer] [LAW:one-source-of-truth]
+    if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
+    this.fatal = new BridgeError(code, message);
     try {
       this.ws.close(wsCode, message.slice(0, 123));
     } catch {
@@ -1040,6 +1101,7 @@ class Connection {
       identity: this.identity,
       code: closeInfo?.code,
       reason: closeInfo?.reason ?? fatal?.message,
+      errorCode: fatal?.code,
     });
 
     this.closed();

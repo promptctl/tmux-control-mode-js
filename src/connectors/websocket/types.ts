@@ -161,6 +161,10 @@ export type BridgeObservabilityEvent =
       readonly identity: ConnectionIdentity;
       readonly code?: number;
       readonly reason?: string;
+      // Set when the close was triggered by sendFatalAndClose rather than a
+      // peer-initiated disconnect — the BridgeErrorCode the caller already
+      // had in hand at the fatal-close site. [LAW:single-enforcer]
+      readonly errorCode?: BridgeErrorCode;
     }
   | {
       readonly kind: "call";
@@ -199,6 +203,20 @@ export type BridgeObservabilityEvent =
       readonly kind: "pane-resume-failed";
       readonly identity: ConnectionIdentity;
       readonly paneId: number;
+      readonly code: BridgeErrorCode;
+      readonly message: string;
+    }
+  | {
+      // An onHello failure (auth denial or createClient rejection)
+      // discovered after this connection's one close-enforcer
+      // (sendFatalAndClose/finalize) was already claimed — either a real
+      // peer-initiated close already ran finalize with no failure info to
+      // carry, or an earlier, unrelated fatal is already pending and
+      // sendFatalAndClose's write-once guard would otherwise silently drop
+      // this one. Surfaced on its own rather than lost.
+      // [LAW:no-silent-failure]
+      readonly kind: "handshake-failure-unreported";
+      readonly identity: ConnectionIdentity;
       readonly code: BridgeErrorCode;
       readonly message: string;
     };
