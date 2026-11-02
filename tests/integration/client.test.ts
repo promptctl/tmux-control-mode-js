@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
@@ -1075,26 +1075,22 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
       mkdirSync(weirdDir, { recursive: true });
       try {
-        // TEMP DIAGNOSTIC (tmux-pane-detail-aha.fpf): CI (tmux 3.6, Linux)
-        // produced an empty pane_current_path for this window; capture
-        // ground truth instead of guessing further.
-        console.error("DIAG exists?", existsSync(weirdDir));
-        const cliCmd = tmuxCmd(
-          socketName,
-          `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
-        );
-        console.error("DIAG cmd", JSON.stringify(cliCmd));
-        execSync(cliCmd, { stdio: "inherit" });
-        const rawResp = execSync(
+        // Created via tmux's own CLI (execSync), same as createSession
+        // above, not as a control-mode command string: tmux's control-mode
+        // command-line tokenizer is a separate, less-standard parser from
+        // a POSIX shell's, and its handling of a literal tab inside a
+        // quoted -c argument has been observed to vary by tmux version. A
+        // CLI invocation hands tmux an already-tokenized argv element —
+        // the shell's own (standard, stable) single-quote handling is the
+        // only parser involved — so this avoids that variance entirely.
+        execSync(
           tmuxCmd(
             socketName,
-            "list-panes -a -F '#{window_name}|#{pane_current_path}|#{pane_id}'",
+            `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
           ),
-          { encoding: "utf8" },
+          { stdio: "ignore" },
         );
-        console.error("DIAG raw list-panes", JSON.stringify(rawResp));
         const panes = await listPanes(client);
-        console.error("DIAG listPanes()", JSON.stringify(panes));
         const pane = panes.find((p) => p.windowName === "tabtest");
         expect(pane).toBeDefined();
         // Confirmed not dropped by the split-by-tab desync, and the cwd
