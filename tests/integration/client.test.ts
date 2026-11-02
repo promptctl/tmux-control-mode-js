@@ -64,8 +64,8 @@ const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
 // Isolation: every test spawns its OWN tmux server via `-L <socket>`. This
 // prevents ANY tmux invocation here — including `new-session`, `kill-session`,
 // and the `-C` control-mode attach — from reaching the developer's default
-// tmux server. Teardown runs `tmux -L <socket> kill-server` so the isolated
-// server exits whether or not sessions linger.
+// tmux server. Teardown lists and kills every session on the isolated
+// socket; tmux's exit-empty default then terminates the now-empty server.
 //
 // [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
 // `tmux -L <socket> ...` command line in this file.
@@ -89,9 +89,16 @@ function tmuxCmd(socketName: string, args: string): string {
  */
 function killServer(socketName: string): void {
   try {
-    execSync(tmuxCmd(socketName, "kill-server"), { stdio: "ignore" });
+    const names = execSync(tmuxCmd(socketName, "list-sessions -F '#{session_name}'"), {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      execSync(tmuxCmd(socketName, `kill-session -t ${name}`), { stdio: "ignore" });
+    }
   } catch {
-    // Server may already be gone — not an error.
+    // Server may already be gone, or have no sessions left — not an error.
   }
 }
 
@@ -162,11 +169,11 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   let sessionName: string;
   // Sentinel + per-test reset: socketName is "" between tests so a beforeEach
   // that throws BEFORE assignment never makes afterEach run
-  // `tmux -L <stale-or-undefined> kill-server` against an unrelated tmux
-  // server (worst case: the user's real server, one literally named
-  // `undefined`). The reset in afterEach below restores the invariant per
-  // test — without it, a successful test would leave the previous socket
-  // name visible to the next test's afterEach.
+  // `tmux -L <stale-or-undefined> list-sessions`/`kill-session` against an
+  // unrelated tmux server (worst case: the user's real server, one
+  // literally named `undefined`). The reset in afterEach below restores the
+  // invariant per test — without it, a successful test would leave the
+  // previous socket name visible to the next test's afterEach.
   let socketName = "";
   let client: TmuxClient;
 
@@ -1028,12 +1035,12 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       // list-windows always has at least one entry (the initial window).
       expect(windows.length).toBeGreaterThan(0);
       const [w] = windows;
-      expect(typeof w.sessionId).toBe("number");
+      expect(Number.isInteger(w.sessionId)).toBe(true);
       expect(w.sessionName).toBe(sessionName);
-      expect(typeof w.windowId).toBe("number");
+      expect(Number.isInteger(w.windowId)).toBe(true);
       expect(typeof w.windowName).toBe("string");
-      expect(typeof w.width).toBe("number");
-      expect(typeof w.height).toBe("number");
+      expect(Number.isInteger(w.width)).toBe(true);
+      expect(Number.isInteger(w.height)).toBe(true);
     },
     15000,
   );
@@ -1048,18 +1055,18 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
       expect(panes.length).toBeGreaterThan(0);
       const [p] = panes;
-      expect(typeof p.sessionId).toBe("number");
+      expect(Number.isInteger(p.sessionId)).toBe(true);
       expect(p.sessionName).toBe(sessionName);
-      expect(typeof p.windowId).toBe("number");
+      expect(Number.isInteger(p.windowId)).toBe(true);
       expect(typeof p.windowName).toBe("string");
-      expect(typeof p.paneId).toBe("number");
+      expect(Number.isInteger(p.paneId)).toBe(true);
       expect(typeof p.cwd).toBe("string");
       expect(p.cwd.length).toBeGreaterThan(0);
-      expect(typeof p.pid).toBe("number");
+      expect(Number.isInteger(p.pid)).toBe(true);
       expect(typeof p.startCommand).toBe("string");
       expect(typeof p.currentCommand).toBe("string");
-      expect(typeof p.width).toBe("number");
-      expect(typeof p.height).toBe("number");
+      expect(Number.isInteger(p.width)).toBe(true);
+      expect(Number.isInteger(p.height)).toBe(true);
     },
     15000,
   );

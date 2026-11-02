@@ -766,8 +766,16 @@ export function parsePaneListLine(
 // Unicode text, once, at this boundary — the exact idiom CommandResponse's
 // own doc comment names. Every text field on WindowRecord/PaneRecord passes
 // through here; no downstream consumer re-decodes.
+const fieldDecoder = new TextDecoder();
 function decodeField(latin1Field: string): string {
-  return new TextDecoder().decode(latin1ToBytes(latin1Field));
+  return fieldDecoder.decode(latin1ToBytes(latin1Field));
+}
+
+// tmux's #{session_id}/#{window_id}/#{pane_id} format variables are always
+// sigil-prefixed ($N / @N / %N respectively — see SPEC.md and
+// parsePaneListLine's regex below); Number() on the raw field is NaN.
+function parseSigilId(field: string): number {
+  return Number(field.slice(1));
 }
 
 /**
@@ -784,9 +792,9 @@ export function parseWindowRecordLine(line: string): WindowRecord | null {
   if (fields.length !== 6) return null;
   const [sessionId, sessionName, windowId, windowName, width, height] = fields;
   return {
-    sessionId: Number(sessionId),
+    sessionId: parseSigilId(sessionId),
     sessionName: decodeField(sessionName),
-    windowId: Number(windowId),
+    windowId: parseSigilId(windowId),
     windowName: decodeField(windowName),
     width: Number(width),
     height: Number(height),
@@ -820,11 +828,11 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     height,
   ] = fields;
   return {
-    sessionId: Number(sessionId),
+    sessionId: parseSigilId(sessionId),
     sessionName: decodeField(sessionName),
-    windowId: Number(windowId),
+    windowId: parseSigilId(windowId),
     windowName: decodeField(windowName),
-    paneId: Number(paneId),
+    paneId: parseSigilId(paneId),
     cwd: decodeField(cwd),
     pid: Number(pid),
     startCommand: decodeField(startCommand),
