@@ -288,7 +288,7 @@ export class TmuxClient implements TmuxConnection {
   // Cross-session layout coverage (not on TmuxConnection — opt-in, like
   // attachBytesSink). Ref-counted: each `enableCrossSessionLayoutChange` call
   // pairs with one `disableCrossSessionLayoutChange` call. See
-  // src/connectors/cross-session-layout.ts for the mechanism.
+  // src/cross-session-layout.ts for the mechanism.
   // ---------------------------------------------------------------------------
 
   enableCrossSessionLayoutChange(): Promise<void> {

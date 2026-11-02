@@ -27,15 +27,19 @@ import type { SubscriptionChangedMessage } from "./protocol/types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * A window's layout changed in a session this client is not attached to.
- * `windowLayout`/`windowVisibleLayout`/`windowFlags` are fetched by this
- * client's own control connection (which defaults to the classic
- * checksum-string format `%layout-change` itself uses — tmux 3.8 changed
- * `#{window_layout}` to render JSON by default for any context without
- * `CLIENT_CONTROL`; fetching via our own already-attached control client
- * avoids that), so they are in the same format as `LayoutChangeMessage`'s
- * fields, not duplicates of it — this event only ever fires for a window
- * this client could not otherwise have learned changed.
+ * A window's layout changed somewhere on the server. The global hook this
+ * relay installs fires for every session, including this client's own
+ * attached one — so this event can arrive for a window already covered by
+ * a native `%layout-change`, by design (the ticket this shipped from:
+ * "coverage isn't limited to what any consumer uses today"); a consumer
+ * that only wants the gap this relay exists for (a window outside its own
+ * attached session) filters on `sessionId`. `windowLayout`/
+ * `windowVisibleLayout`/`windowFlags` are fetched by this client's own
+ * control connection (which defaults to the classic checksum-string format
+ * `%layout-change` itself uses — tmux 3.8 changed `#{window_layout}` to
+ * render JSON by default for any context without `CLIENT_CONTROL`; fetching
+ * via our own already-attached control client avoids that), so they are in
+ * the same format as `LayoutChangeMessage`'s fields, not a different shape.
  */
 export interface CrossSessionLayoutChangeMessage {
   readonly type: "cross-session-layout-change";
@@ -233,6 +237,13 @@ export function diffAgainstLastProcessed(
 export class CrossSessionLayoutRelay {
   private refCount = 0;
   private lastProcessedValue = "";
+  // [LAW:dataflow-not-control-flow] enable()/disable() serialize through this
+  // single slot rather than racing the hook-install/subscribe or
+  // off/unsubscribe effects against refCount's synchronous increment —
+  // without it, an enable() still mid-await could have its subscription
+  // installed AFTER a racing disable() already tore it down, leaving the
+  // relay subscribed forever with refCount stuck at 0.
+  private pending: Promise<void> = Promise.resolve();
   private readonly onSubscriptionChanged = (
     msg: SubscriptionChangedMessage,
   ): void => {
@@ -246,21 +257,34 @@ export class CrossSessionLayoutRelay {
   ) {}
 
   /** Idempotent-in-effect: safe to call from any process at any time. */
-  async enable(): Promise<void> {
+  enable(): Promise<void> {
     this.refCount += 1;
-    if (this.refCount > 1) return;
-    await this.client.execute(installHookCommand());
-    this.client.on("subscription-changed", this.onSubscriptionChanged);
-    await subscribeRaw(this.client, SUBSCRIPTION_NAME, "", `#{${OPTION_NAME}}`);
+    const shouldInstall = this.refCount === 1;
+    this.pending = this.pending.then(async () => {
+      if (!shouldInstall) return;
+      await this.client.execute(installHookCommand());
+      this.client.on("subscription-changed", this.onSubscriptionChanged);
+      await subscribeRaw(
+        this.client,
+        SUBSCRIPTION_NAME,
+        "",
+        `#{${OPTION_NAME}}`,
+      );
+    });
+    return this.pending;
   }
 
   /** Drops this relay's local subscription once the last local user is gone. The hook is never removed — see the class doc comment. */
-  async disable(): Promise<void> {
-    if (this.refCount === 0) return;
+  disable(): Promise<void> {
+    if (this.refCount === 0) return this.pending;
     this.refCount -= 1;
-    if (this.refCount > 0) return;
-    this.client.off("subscription-changed", this.onSubscriptionChanged);
-    await unsubscribe(this.client, SUBSCRIPTION_NAME);
+    const shouldTearDown = this.refCount === 0;
+    this.pending = this.pending.then(async () => {
+      if (!shouldTearDown) return;
+      this.client.off("subscription-changed", this.onSubscriptionChanged);
+      await unsubscribe(this.client, SUBSCRIPTION_NAME);
+    });
+    return this.pending;
   }
 
   private async handleDelivery(value: string): Promise<void> {
@@ -271,9 +295,13 @@ export class CrossSessionLayoutRelay {
     for (const skip of skips) {
       this.emit({ type: "cross-session-layout-decode-error", ...skip });
     }
-    for (const entry of entries) {
-      await this.fetchAndEmit(entry.sessionId, entry.windowId);
-    }
+    // Independent fetches — pipeline them rather than paying one full round
+    // trip per entry serially during a same-tick multi-window burst. The
+    // client's own FIFO correlates each execute() to its own response
+    // regardless of issue order.
+    await Promise.all(
+      entries.map((entry) => this.fetchAndEmit(entry.sessionId, entry.windowId)),
+    );
 
     // Freshness optimization only — not load-bearing for boundedness (the
     // hook's own append already self-caps). A skipped trim just means the
@@ -288,10 +316,20 @@ export class CrossSessionLayoutRelay {
     try {
       const response = await this.client.execute(fetchLayoutCommand(windowId));
       const line = response.output[0];
-      if (line === undefined) return;
+      // [LAW:no-silent-failure] An empty/malformed reply from a live window
+      // is unexpected (unlike a vanished window, which rejects loudly below
+      // and is handled in the catch) — report it rather than dropping the
+      // entry with no signal at all.
       const [windowLayout, windowVisibleLayout, windowFlags] =
-        line.split("\x01");
-      if (windowLayout === undefined) return;
+        (line ?? "").split("\x01");
+      if (windowLayout === undefined || windowLayout === "") {
+        this.emit({
+          type: "cross-session-layout-fetch-failed",
+          sessionId,
+          windowId,
+        });
+        return;
+      }
       this.emit({
         type: "cross-session-layout-change",
         sessionId,
