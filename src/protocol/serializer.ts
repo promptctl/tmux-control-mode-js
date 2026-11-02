@@ -13,6 +13,7 @@
 
 import type { TmuxMessage } from "./types.js";
 import { encodeOctalEscapes } from "./decode.js";
+import { assertNever } from "./assert-never.js";
 
 // ---------------------------------------------------------------------------
 // ID formatting — the inverse of parser.ts's parsePaneId/parseWindowId/etc.
@@ -115,15 +116,10 @@ export function serializeMessage(msg: TmuxMessage): string {
       return msg.reason === undefined ? `%exit` : `%exit ${msg.reason}`;
 
     default:
-      return assertNever(msg);
+      // [LAW:types-are-the-program] If a TmuxMessage variant is added
+      // without a case above, `msg` is no longer `never` here and this
+      // fails to compile — the inverse stays total by construction, not by
+      // reviewer vigilance.
+      return assertNever(msg, "serializeMessage");
   }
-}
-
-// [LAW:types-are-the-program] If a TmuxMessage variant is added without a case
-// above, `msg` is no longer `never` here and this fails to compile — the
-// inverse stays total by construction, not by reviewer vigilance.
-function assertNever(msg: never): never {
-  throw new Error(
-    `serializeMessage: unhandled message variant ${JSON.stringify(msg)}`,
-  );
 }
