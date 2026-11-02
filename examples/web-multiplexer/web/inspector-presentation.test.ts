@@ -82,7 +82,7 @@ describe("presentFor — direction → display shape", () => {
     expect(p).toMatchObject({
       arrow: "↓",
       type: "%output",
-      summary: `$0:@1.%5  "hi"`,
+      summary: `$0:@1.%5  ⟨hi⟩`,
     });
   });
 

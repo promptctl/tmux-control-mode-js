@@ -2,6 +2,11 @@
 // Filterable event stream for the control-mode protocol. Rendered in the
 // aside. Category chips toggle visibility (click to hide, click again to
 // show); output bytes arrive as decoded Uint8Array, labeled by session:win.pane.
+//
+// [LAW:one-source-of-truth] Events are the `in-event` slice of
+// InspectorStore.entries — the one ring fed by `onWire` — not a second
+// subscription of their own. SD5 (tmux-complexity-lkg.15) retired the
+// parallel ring DemoStore/LogStore used to keep.
 
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
@@ -9,17 +14,32 @@ import { useMemo, useState } from "react";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import { prettyBytes } from "../format-bytes.ts";
+import type { InspectorStore } from "../inspector-store.ts";
+import { summarizeEvent } from "../event-summary.ts";
 
 interface Props {
   readonly demoStore: DemoStore;
   readonly uiStore: UiStore;
+  readonly inspectorStore: InspectorStore;
 }
 
-export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: Props) {
-  const events = demoStore.events;
+export const DebugPanel = observer(function DebugPanel({
+  demoStore,
+  uiStore,
+  inspectorStore,
+}: Props) {
   const paneLabels = demoStore.paneLabels;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+
+  // Newest first, to match the ring's previous display order.
+  const events = useMemo(() => {
+    const out: TmuxMessage[] = [];
+    for (let i = inspectorStore.entries.length - 1; i >= 0; i--) {
+      const wire = inspectorStore.entries[i].wire;
+      if (wire.dir === "in-event") out.push(wire.event);
+    }
+    return out;
+  }, [inspectorStore.entries]);
 
   const types = useMemo(() => {
     const s = new Set<string>();
@@ -36,7 +56,7 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
     // since we display newest-first on screen.
     const text = [...shown]
       .reverse()
-      .map((ev) => `%${ev.type} ${summarize(ev, paneLabels)}`)
+      .map((ev) => `%${ev.type} ${summarizeEvent(ev, paneLabels)}`)
       .join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -71,7 +91,10 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
             size="compact-xs"
             variant="default"
             color="red"
-            onClick={() => demoStore.clearEvents()}
+            // Clears the one shared wire-log ring (InspectorStore), not just
+            // this view's filtered slice — the Inspector tab's timeline
+            // empties too. [LAW:one-source-of-truth]
+            onClick={() => inspectorStore.clear()}
             disabled={events.length === 0}
           >
             clear
@@ -121,7 +144,7 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
               <Text span fw={600} size="xs">
                 %{ev.type}
               </Text>{" "}
-              {summarize(ev, paneLabels)}
+              {summarizeEvent(ev, paneLabels)}
             </Code>
           ))}
           {shown.length === 0 && (
@@ -134,70 +157,3 @@ export const DebugPanel = observer(function DebugPanel({ demoStore, uiStore }: P
     </Stack>
   );
 });
-
-// ---------------------------------------------------------------------------
-// Summarization
-// ---------------------------------------------------------------------------
-
-function paneLabel(paneId: number, labels: Map<number, string>): string {
-  return labels.get(paneId) ?? `%${paneId}`;
-}
-
-function summarize(
-  ev: TmuxMessage,
-  labels: Map<number, string>,
-): string {
-  if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  "${prettyBytes(ev.data)}"`;
-  }
-  if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} (age ${ev.age}ms)  "${prettyBytes(ev.data)}"`;
-  }
-  if (ev.type === "pause" || ev.type === "continue" || ev.type === "pane-mode-changed") {
-    return paneLabel(ev.paneId, labels);
-  }
-  if (ev.type === "window-pane-changed") {
-    return `window @${ev.windowId} active → ${paneLabel(ev.paneId, labels)}`;
-  }
-  if (ev.type === "window-add" || ev.type === "window-close" || ev.type === "unlinked-window-add" || ev.type === "unlinked-window-close") {
-    return `@${ev.windowId}`;
-  }
-  if (ev.type === "window-renamed" || ev.type === "unlinked-window-renamed") {
-    return `@${ev.windowId} → "${ev.name}"`;
-  }
-  if (ev.type === "layout-change") {
-    return `@${ev.windowId} layout=${ev.windowLayout}`;
-  }
-  if (ev.type === "session-changed" || ev.type === "session-renamed") {
-    return `$${ev.sessionId} "${ev.name}"`;
-  }
-  if (ev.type === "session-window-changed") {
-    return `$${ev.sessionId} → @${ev.windowId}`;
-  }
-  if (ev.type === "client-session-changed") {
-    return `${ev.clientName} → $${ev.sessionId} "${ev.name}"`;
-  }
-  if (ev.type === "client-detached") {
-    return ev.clientName;
-  }
-  if (ev.type === "subscription-changed") {
-    return `"${ev.name}" $${ev.sessionId}:@${ev.windowId}.${paneLabel(ev.paneId, labels)} = ${ev.value}`;
-  }
-  if (ev.type === "begin" || ev.type === "end" || ev.type === "error") {
-    return `cmd #${ev.commandNumber}`;
-  }
-  if (ev.type === "exit") {
-    return ev.reason ?? "(clean)";
-  }
-  if (ev.type === "message") {
-    return ev.message;
-  }
-  if (ev.type === "config-error") {
-    return ev.error;
-  }
-  if (ev.type === "paste-buffer-changed" || ev.type === "paste-buffer-deleted") {
-    return ev.name;
-  }
-  // sessions-changed has no fields
-  return "";
-}

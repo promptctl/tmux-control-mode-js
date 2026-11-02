@@ -15,12 +15,26 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 describe("summarizeEvent — pane label", () => {
   it("uses the label map for a known pane id", () => {
     const ev: TmuxMessage = { type: "output", paneId: 5, data: bytes("hi") };
-    expect(summarizeEvent(ev, labels)).toBe(`$0:@1.%5  "hi"`);
+    expect(summarizeEvent(ev, labels)).toBe(`$0:@1.%5  ⟨hi⟩`);
   });
 
   it("falls back to %<id> for an unknown pane id", () => {
     const ev: TmuxMessage = { type: "output", paneId: 9, data: bytes("hi") };
-    expect(summarizeEvent(ev, labels)).toBe(`%9  "hi"`);
+    expect(summarizeEvent(ev, labels)).toBe(`%9  ⟨hi⟩`);
+  });
+});
+
+describe("summarizeEvent — byte preview delimiter survives a literal quote", () => {
+  it("does not let a quote byte in the payload terminate the wrapper early", () => {
+    // escapeByte passes 0x20-0x7e through unescaped, including `"` — the
+    // wrapper must not be a quote itself, or this payload would render as
+    // two visually-separate values instead of one. [LAW:no-silent-failure]
+    const ev: TmuxMessage = {
+      type: "output",
+      paneId: 9,
+      data: bytes(`he said "hi"`),
+    };
+    expect(summarizeEvent(ev, labels)).toBe(`%9  ⟨he said "hi"⟩`);
   });
 });
 
@@ -41,7 +55,7 @@ describe("summarizeEvent — byte previews stay single-line short", () => {
       age: 42,
       data: bytes("y"),
     };
-    expect(summarizeEvent(ev, labels)).toBe(`%9 age=42ms  "y"`);
+    expect(summarizeEvent(ev, labels)).toBe(`%9 age=42ms  ⟨y⟩`);
   });
 });
 

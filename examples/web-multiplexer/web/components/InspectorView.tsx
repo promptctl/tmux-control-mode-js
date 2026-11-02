@@ -6,8 +6,10 @@
 // detail panel on the right). Pure projection of InspectorStore — the
 // component holds no local state beyond what it reads from MobX.
 //
-// [LAW:one-source-of-truth] All filter state, selection, and entry
-// data come from InspectorStore. The view never caches derived values.
+// [LAW:one-source-of-truth] Entry data, direction filters, search, and
+// selection come from InspectorStore; event-type visibility comes from
+// UiStore (the one place it's owned, shared with DebugPanel's chips).
+// The view never caches derived values.
 //
 // [LAW:dataflow-not-control-flow] The row renderer is the same for
 // every entry. Per-direction variation lives in data (icon, color,
@@ -43,15 +45,18 @@ import {
   formatDelta,
 } from "../inspector-presentation.ts";
 import type { DemoStore } from "../store.ts";
+import type { UiStore } from "../ui-store.ts";
 
 interface Props {
   readonly store: InspectorStore;
   readonly demoStore: DemoStore;
+  readonly uiStore: UiStore;
 }
 
 export const InspectorView = observer(function InspectorView({
   store,
   demoStore,
+  uiStore,
 }: Props) {
   const visible = store.visibleEntries;
   const counts = store.counts;
@@ -122,7 +127,7 @@ export const InspectorView = observer(function InspectorView({
             onClick={() => store.clearFilters()}
             disabled={
               store.search === "" &&
-              Object.keys(store.hiddenEventTypes).length === 0 &&
+              Object.keys(uiStore.hiddenEventTypes).length === 0 &&
               !Object.values(store.hiddenDirections).some(Boolean)
             }
           >
@@ -138,7 +143,7 @@ export const InspectorView = observer(function InspectorView({
                 event types:
               </Text>
               {store.knownEventTypes.map((t) => {
-                const hidden = store.hiddenEventTypes[t] === true;
+                const hidden = uiStore.isHidden(t);
                 return (
                   <Badge
                     key={t}
@@ -146,7 +151,7 @@ export const InspectorView = observer(function InspectorView({
                     variant={hidden ? "outline" : "light"}
                     color={hidden ? "gray" : "teal"}
                     style={{ cursor: "pointer", opacity: hidden ? 0.45 : 1 }}
-                    onClick={() => store.toggleEventType(t)}
+                    onClick={() => uiStore.toggleEventType(t)}
                   >
                     %{t}
                   </Badge>
