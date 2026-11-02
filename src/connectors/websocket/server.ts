@@ -638,7 +638,21 @@ class Connection {
     const releases: (() => void)[] = [];
     const unwind = (): void => {
       let release: (() => void) | undefined;
-      while ((release = releases.pop()) !== undefined) release();
+      while ((release = releases.pop()) !== undefined) {
+        // Each release tears down one resource independently of the others
+        // — a throw here must not skip the releases still below it on the
+        // stack (most importantly disposeClientSafely, pushed first and so
+        // popped last). [LAW:no-silent-failure]
+        try {
+          release();
+        } catch (err) {
+          this.emit({
+            kind: "release-failed",
+            identity: this.identity,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     };
 
     // createClient()

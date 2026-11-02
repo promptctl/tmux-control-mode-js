@@ -779,6 +779,54 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     ws.fireClose(1011, "registerPeer/listener wiring failed");
   });
 
+  it("a release that throws during unwind does not block the releases below it on the stack", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let disposeCalls = 0;
+    // client.off is pushed onto the release stack right after client.on
+    // succeeds, so it is popped FIRST during unwind — above bridge.dispose()
+    // and disposeClientSafely, both further down the stack. Making it throw
+    // (via attachBytesSink failing, which triggers the catch after client.on
+    // already succeeded) proves those two still run despite it.
+    const originalOff = client.off.bind(client);
+    client.off = ((event: "*", handler: never) => {
+      throw new Error("client.off boom");
+    }) as typeof client.off;
+    client.attachBytesSink = (() => {
+      throw new Error("attachBytesSink boom");
+    }) as typeof client.attachBytesSink;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => Promise.resolve(client),
+      disposeClient: (c) => {
+        expect(c).toBe(client);
+        disposeCalls++;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // Without the fix, client.off's throw aborted unwind() mid-stack:
+    // bridge.dispose() and disposeClientSafely (below it on the stack) never
+    // ran, and the escaping exception skipped sendFatalAndClose entirely,
+    // becoming an unhandled rejection instead of a reported BRIDGE_INTERNAL.
+    const fatal = readJsonFrames(ws).find(
+      (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+    );
+    expect(fatal).toBeDefined();
+    expect(fatal?.error.code).toBe("BRIDGE_INTERNAL");
+    expect(disposeCalls).toBe(1);
+    expect(events.find((e) => e.kind === "release-failed")).toBeDefined();
+
+    client.off = originalOff;
+    ws.fireClose(1011, "release failed during unwind");
+  });
+
   it("a disposeClient hook that throws surfaces client-dispose-failed instead of an unhandled rejection or a swallowed failure", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
