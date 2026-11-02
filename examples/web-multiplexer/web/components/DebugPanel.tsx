@@ -11,7 +11,6 @@
 import { observer } from "mobx-react-lite";
 import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
 import { useMemo, useState } from "react";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { InspectorStore } from "../inspector-store.ts";
@@ -31,15 +30,10 @@ export const DebugPanel = observer(function DebugPanel({
   const paneLabels = demoStore.paneLabels;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
 
-  // Newest first, to match the ring's previous display order.
-  const events = useMemo(() => {
-    const out: TmuxMessage[] = [];
-    for (let i = inspectorStore.entries.length - 1; i >= 0; i--) {
-      const wire = inspectorStore.entries[i].wire;
-      if (wire.dir === "in-event") out.push(wire.event);
-    }
-    return out;
-  }, [inspectorStore.entries]);
+  // A MobX computed (see its header comment) — not a React `useMemo`.
+  // `entries` is mutated in place on InspectorStore's hot path, so a
+  // `useMemo` keyed on its reference would never see it change.
+  const events = inspectorStore.eventMessages;
 
   const types = useMemo(() => {
     const s = new Set<string>();

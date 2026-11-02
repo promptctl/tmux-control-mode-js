@@ -18,6 +18,7 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
+import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { UiStore } from "./ui-store.ts";
 import { summarizeEvent } from "./event-summary.ts";
 
@@ -182,6 +183,23 @@ export class InspectorStore {
       if (e.wire.dir === "in-event") s.add(e.wire.event.type);
     }
     return [...s].sort();
+  }
+
+  /**
+   * The `in-event` slice of `entries`, newest first — the showcase Debug
+   * tab's event list. A MobX computed, not a React `useMemo`: `entries` is
+   * mutated in place on the hot path (`.push()`/`.shift()` below), so its
+   * reference rarely changes even though its contents do, and a `useMemo`
+   * keyed on that reference would go stale after the first render.
+   * [LAW:one-source-of-truth]
+   */
+  get eventMessages(): TmuxMessage[] {
+    const out: TmuxMessage[] = [];
+    for (let i = this.entries.length - 1; i >= 0; i--) {
+      const wire = this.entries[i].wire;
+      if (wire.dir === "in-event") out.push(wire.event);
+    }
+    return out;
   }
 
   /**
