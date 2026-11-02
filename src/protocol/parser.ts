@@ -338,12 +338,25 @@ export class TmuxParser {
    *
    * CRLF tolerance: this parser sits on tmux's *output* side, the opposite of
    * the input side tmux itself reads with `EVBUFFER_EOL_LF` (LF-terminated, no
-   * CR stripping). `feed()` strips a trailing `\r` before each `\n`, so a
-   * transport that introduces CRLF between tmux and the parser is tolerated and
-   * parses identically to an LF-only one. This is safe because tmux always
-   * octal-escapes literal control bytes in pane output (see `decodeOctalEscapes`),
-   * so any unescaped `\r` adjacent to LF must be transport line-driver noise, not
-   * data. This is library-side defensive behavior, not a tmux protocol rule.
+   * CR stripping). Outside an open response block, `feed()` strips a trailing
+   * `\r` before each `\n`, so a transport that introduces CRLF between tmux
+   * and the parser is tolerated there and parses identically to an LF-only
+   * one. This is safe because every line outside a block is either a
+   * notification escaped per SPEC.md §10 (`decodeOctalEscapes` handles any
+   * real `\r` in that payload) or a guard line with tmux-generated numeric
+   * fields that never carry a literal `\r` — so an unescaped `\r` adjacent to
+   * LF there must be transport line-driver noise, not data.
+   *
+   * Inside an open response block, `feed()` does NOT strip the trailing `\r`:
+   * SPEC.md §5.4 documents response-block output (e.g. `capture-pane -p`) as
+   * delivered via `control_write()`, a path with no octal-escaping guarantee,
+   * so a captured row may legitimately end in a real `\r` byte right before
+   * the block's terminating `\n`. Stripping it there would silently corrupt
+   * `PaneCapture.bytes`'s documented raw-byte-fidelity guarantee. The block's
+   * own closing `%end`/`%error` line also passes through un-stripped, but
+   * still parses correctly: `parseGuard`'s `parseInt` on its numeric fields
+   * stops at the first non-digit, so a trailing `\r` there is a no-op. This
+   * is library-side defensive behavior, not a tmux protocol rule.
    *
    * Malformed guard terminator tolerance: a `%end`/`%error` line that arrives
    * while a response block is open but fails to parse (fewer than the three
@@ -367,12 +380,16 @@ export class TmuxParser {
     // the processing step runs.
     let newlineIdx = this.buffer.indexOf("\n");
     while (newlineIdx !== -1) {
-      // Drop a trailing \r so CRLF transports parse identically to LF ones.
-      // The reference treats \r as line-driver noise; protocol lines and
-      // command-response text never depend on it (real \r in pane output is
-      // octal-escaped and handled in decodeOctalEscapes).
+      // Drop a trailing \r so CRLF transports parse identically to LF ones —
+      // but only outside an open response block. [LAW:single-enforcer]: reads
+      // the same activeCommandNumber field processLine() uses for its own
+      // block-purity routing, rather than tracking block state a second way.
+      // See feed()'s doc comment for why response-block output is exempt.
+      const inResponseBlock = this.activeCommandNumber !== -1;
       const end =
-        newlineIdx > 0 && this.buffer.charCodeAt(newlineIdx - 1) === 0x0d
+        !inResponseBlock &&
+        newlineIdx > 0 &&
+        this.buffer.charCodeAt(newlineIdx - 1) === 0x0d
           ? newlineIdx - 1
           : newlineIdx;
       const line = this.buffer.slice(0, end);

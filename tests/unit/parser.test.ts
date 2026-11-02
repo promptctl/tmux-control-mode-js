@@ -1054,3 +1054,59 @@ describe("lines outside response blocks without % are ignored", () => {
     expect(messages[0].type).toBe("sessions-changed");
   });
 });
+
+describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
+  // SPEC.md §5.4: response-block output (e.g. capture-pane -p) is delivered
+  // via control_write(), which carries no octal-escaping guarantee — unlike
+  // %output/%extended-output (SPEC.md §10). A captured row may legitimately
+  // end in a raw \r byte; feed() must preserve it rather than treating it as
+  // CRLF-transport noise.
+  it("a response-block output line ending in a real \\r keeps the \\r", () => {
+    const input = "%begin 1699900000 1 0\r\ncaptured row\r\n%end 1699900000 1 0\r\n";
+    const { outputLines } = collect(input);
+    expect(outputLines).toHaveLength(1);
+    expect(outputLines[0]).toEqual({
+      commandNumber: 1,
+      line: "captured row\r",
+    });
+  });
+
+  it("notification lines outside any block still get CRLF-stripped", () => {
+    const input = "%sessions-changed\r\n";
+    const { messages } = collect(input);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ type: "sessions-changed" });
+  });
+
+  it("the opening %begin guard outside any block still gets CRLF-stripped", () => {
+    const input = "%begin 1699900000 2 0\r\n%end 1699900000 2 0\r\n";
+    const { messages } = collect(input);
+    expect(messages[0]).toMatchObject({
+      type: "begin",
+      commandNumber: 2,
+      timestamp: 1699900000,
+      flags: 0,
+    });
+  });
+
+  it("a block terminator arriving over CRLF still closes the block correctly", () => {
+    // The terminator itself is no longer \r-stripped by feed() (the block is
+    // still open when it arrives), so this exercises parseGuard's parseInt
+    // leniency on a trailing \r in the flags field instead.
+    const input = "%begin 1699900000 3 0\r\nrow\r\n%end 1699900000 3 0\r\n%sessions-changed\r\n";
+    const { messages, outputLines } = collect(input);
+    // "row" itself arrived over the CRLF transport mid-block, so its trailing
+    // \r is preserved too — it's indistinguishable from a real data byte,
+    // which is exactly the point of this fix.
+    expect(outputLines).toEqual([{ commandNumber: 3, line: "row\r" }]);
+    expect(messages.find((m) => m.type === "end")).toMatchObject({
+      type: "end",
+      commandNumber: 3,
+      timestamp: 1699900000,
+      flags: 0,
+    });
+    // The block closed correctly, so the following notification is routed
+    // as a real message, not swallowed as still-open-block output.
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
+});
