@@ -111,9 +111,6 @@
     "check:exports": "node scripts/check-exports.mjs",
     "prepublishOnly": "pnpm run check:deps && pnpm run clean && pnpm run build && pnpm run check:exports"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"]
-  },
   "keywords": [
     "tmux",
     "control-mode",

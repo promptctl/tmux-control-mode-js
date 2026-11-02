@@ -333,6 +333,41 @@ export interface CommandResponse {
   readonly success: boolean;
 }
 
+/**
+ * One window from `listWindows()` — a structured record so consumers never
+ * parse `-F` output themselves (the forbidden path a raw `CommandResponse`
+ * would otherwise force). `sessionName`/`windowName` are already decoded to
+ * real Unicode text; the latin1-container boundary stops at the parser that
+ * builds this record.
+ */
+export interface WindowRecord {
+  readonly sessionId: number;
+  readonly sessionName: string;
+  readonly windowId: number;
+  readonly windowName: string;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * One pane from `listPanes()` — a structured record, decoded the same way as
+ * {@link WindowRecord}. `cwd`, `startCommand`, `currentCommand` are already
+ * decoded to real Unicode text.
+ */
+export interface PaneRecord {
+  readonly sessionId: number;
+  readonly sessionName: string;
+  readonly windowId: number;
+  readonly windowName: string;
+  readonly paneId: number;
+  readonly cwd: string;
+  readonly pid: number;
+  readonly startCommand: string;
+  readonly currentCommand: string;
+  readonly width: number;
+  readonly height: number;
+}
+
 // [LAW:one-source-of-truth] The canonical synthetic response for any operation
 // that resolves without issuing a correlated tmux command: an empty `sendKeys`
 // input, or a bridge refcounted no-op (a subscribe/unsubscribe that only bumps

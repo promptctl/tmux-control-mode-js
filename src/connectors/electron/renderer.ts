@@ -31,9 +31,11 @@ import {
   type CommandResponse,
   type PaneAction,
   type PaneOutputMessage,
+  type PaneRecord,
+  type WindowRecord,
 } from "../../protocol/types.js";
 import { TopologyRouter } from "../../topology-router.js";
-import type { RpcProxyApi } from "../rpc.js";
+import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import type { TmuxConnection } from "../../client.js";
 import {
   BridgeError,
@@ -216,11 +218,11 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     return this.invoke({ method: "execute", args: [command] });
   }
 
-  listWindows(): Promise<CommandResponse> {
+  listWindows(): Promise<readonly WindowRecord[]> {
     return this.invoke({ method: "listWindows", args: [] });
   }
 
-  listPanes(): Promise<CommandResponse> {
+  listPanes(): Promise<readonly PaneRecord[]> {
     return this.invoke({ method: "listPanes", args: [] });
   }
 
@@ -316,7 +318,9 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   // Private
   // ---------------------------------------------------------------------------
 
-  private async invoke(req: InvokeRequest): Promise<CommandResponse> {
+  private async invoke<R extends InvokeRequest>(
+    req: R,
+  ): Promise<RpcResponseMap[R["method"]]> {
     // [LAW:dataflow-not-control-flow] Both the timeout and no-timeout cases
     // run the same shape — `await` a single Promise to a settled envelope.
     // The variability lives in which Promise is awaited, not in whether the
@@ -329,7 +333,9 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
         ? await this.withTimeout(ipcPromise, req.method)
         : await ipcPromise;
     const result = settled as InvokeResultEnvelope;
-    if (result.status === "ok") return result.response;
+    if (result.status === "ok") {
+      return result.response as RpcResponseMap[R["method"]];
+    }
     if (result.status === "tmux-error") {
       throw new TmuxCommandError(result.response);
     }

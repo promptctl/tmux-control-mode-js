@@ -5,6 +5,7 @@
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import {
   bindKeymap,
@@ -23,11 +24,7 @@ function uniqueSession(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 function killServer(socketName: string): void {
-  try {
-    execSync(`tmux -L ${socketName} kill-server`, { stdio: "ignore" });
-  } catch {
-    // already gone
-  }
+  killTmuxServer(socketName);
 }
 function createSession(
   socketName: string,

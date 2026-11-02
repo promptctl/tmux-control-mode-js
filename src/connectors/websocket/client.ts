@@ -52,11 +52,13 @@ import {
   isPaneOutput,
   type CommandResponse,
   type PaneAction,
+  type PaneRecord,
   type TmuxMessage,
+  type WindowRecord,
 } from "../../protocol/types.js";
 import type { SplitOptions, TmuxConnection } from "../../client.js";
 
-import type { RpcProxyApi } from "../rpc.js";
+import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import { type AttachOptions, type BytesSink } from "../../pane-output.js";
 import { TopologyRouter } from "../../topology-router.js";
 import {
@@ -271,11 +273,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return this.call("execute", [command]);
   }
 
-  listWindows(): Promise<CommandResponse> {
+  listWindows(): Promise<readonly WindowRecord[]> {
     return this.call("listWindows", []);
   }
 
-  listPanes(): Promise<CommandResponse> {
+  listPanes(): Promise<readonly PaneRecord[]> {
     return this.call("listPanes", []);
   }
 
@@ -336,10 +338,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // -------------------------------------------------------------------------
   // Internal: call dispatch
   // -------------------------------------------------------------------------
-  private call(
-    method: RpcMethod,
+  private call<M extends RpcMethod>(
+    method: M,
     args: readonly unknown[],
-  ): Promise<CommandResponse> {
+  ): Promise<RpcResponseMap[M]> {
     if (
       this.currentConnectionState.status === "closed" ||
       this.userRequestedClose

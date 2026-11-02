@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { e2eSocketName } from "./socket-naming.js";
 import { cleanSessionArgs } from "./tmux-shell.js";
 
@@ -45,11 +46,7 @@ function freshSocket(): string {
 }
 
 function killSocket(name: string): void {
-  try {
-    tmux(name, ["kill-server"]);
-  } catch {
-    // Server already gone.
-  }
+  killTmuxServer(name);
   try {
     rmSync(join(tmuxSocketDir(), name), { force: true });
   } catch {

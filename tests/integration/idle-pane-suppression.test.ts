@@ -12,6 +12,7 @@
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
@@ -43,11 +44,7 @@ function tmuxCmd(socketName: string, args: string): string {
 }
 
 function killServer(socketName: string): void {
-  try {
-    execSync(tmuxCmd(socketName, "kill-server"), { stdio: "ignore" });
-  } catch {
-    // already gone — not an error
-  }
+  killTmuxServer(socketName);
 }
 
 /**

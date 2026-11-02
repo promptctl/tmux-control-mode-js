@@ -7,6 +7,7 @@ import { execSync } from "node:child_process";
 import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -23,11 +24,7 @@ function tmuxCmd(socketName: string, args: string): string {
 }
 
 function killServer(socketName: string): void {
-  try {
-    execSync(tmuxCmd(socketName, "kill-server"), { stdio: "ignore" });
-  } catch {
-    // already gone
-  }
+  killTmuxServer(socketName);
 }
 
 describe.skipIf(!RUN_INTEGRATION)(
@@ -51,7 +48,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it(
-      "transitions connecting → ready once the startup greeting is consumed, then closed{exit} on kill-server",
+      "transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed",
       async () => {
         const sessionName = uniqueSession("connstate");
         execSync(
@@ -88,7 +85,9 @@ describe.skipIf(!RUN_INTEGRATION)(
         });
         expect(client.connectionState).toEqual({ status: "ready" });
 
-        // Kill the server out from under the client; observe `closed{exit}`.
+        // Kill the only session on the isolated socket; tmux's exit-empty
+        // default then kills the server out from under the client;
+        // observe `closed{exit}`.
         const closed = new Promise<ConnectionState>((resolve) => {
           const onState = (ev: { state: ConnectionState }) => {
             if (ev.state.status === "closed") {
@@ -101,8 +100,9 @@ describe.skipIf(!RUN_INTEGRATION)(
         killServer(socketName);
         const finalState = await closed;
         expect(finalState.status).toBe("closed");
-        // tmux exits cleanly on kill-server: reason is 'exit'. (Some tmux
-        // builds may report a SIGTERM-driven 'transport-error' instead — both
+        // tmux exits cleanly once its last session is killed: reason is
+        // 'exit'. (Some tmux builds may report a SIGTERM-driven
+        // 'transport-error' instead — both
         // are valid "tmux is gone" signals; assert the inclusive set.)
         expect(["exit", "transport-error"]).toContain(
           finalState.status === "closed" ? finalState.reason : "",

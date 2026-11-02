@@ -32,6 +32,7 @@ import { execSync } from "node:child_process";
 import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { PaneStream } from "../../src/stream/index.js";
 import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
+import { killTmuxServer } from "../../../../tests/helpers/reap-test-sockets.js";
 
 const P99_BUDGET_MS = 100;
 const ITERATIONS = 50; // Real tmux RTT × 50 keeps the bench under ~3 s wall time.
@@ -47,11 +48,7 @@ function tmuxCmd(socket: string, args: string): string {
   return `tmux -L ${socket} ${args}`;
 }
 function killServer(socket: string): void {
-  try {
-    execSync(tmuxCmd(socket, "kill-server"), { stdio: "ignore" });
-  } catch {
-    /* already gone */
-  }
+  killTmuxServer(socket);
 }
 
 function createSession(socket: string, session: string): Promise<TmuxClient> {
@@ -117,11 +114,11 @@ describe.skipIf(!integrationOn)(
   "Gate 1 — visibility toggle → first paint",
   () => {
     // Initialise to a sentinel so a beforeEach that throws BEFORE the
-    // socket assignment doesn't make afterEach run
-    // `tmux -L undefined kill-server` against an unrelated tmux server
-    // (one literally named `undefined`). Today `uniqueSocket()` can't
-    // fail, but a future edit that slips a throwing line above it would
-    // expose this footgun without the sentinel.
+    // socket assignment doesn't make afterEach run teardown against a
+    // socket literally named "undefined" (an unrelated, real tmux server
+    // if one happens to exist under that name). Today `uniqueSocket()`
+    // can't fail, but a future edit that slips a throwing line above it
+    // would expose this footgun without the sentinel.
     let socket = "";
     let session: string;
     let client: TmuxClient;

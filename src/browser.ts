@@ -38,7 +38,12 @@ export type {
   EmitterTmuxMessage,
 } from "./emitter.js";
 
-export type { CommandResponse, TmuxMessage } from "./protocol/types.js";
+export type {
+  CommandResponse,
+  PaneRecord,
+  TmuxMessage,
+  WindowRecord,
+} from "./protocol/types.js";
 export type { ConnectionState } from "./connection-state.js";
 export type { TmuxConnection } from "./client.js";
 

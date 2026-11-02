@@ -1,3 +1,10 @@
 packages:
   - 'packages/*'
   - 'examples/web-multiplexer'
+# [LAW:one-source-of-truth] Build-script allowlist lives here only. pnpm >=11 no
+# longer reads `pnpm.onlyBuiltDependencies` from package.json; both entries below
+# are demo-only toolchain binaries (esbuild powers Vite, electron the desktop
+# target), never runtime deps of the published package.
+allowBuilds:
+  electron: true
+  esbuild: true

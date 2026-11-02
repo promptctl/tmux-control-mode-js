@@ -2,8 +2,9 @@
 // Server-side dispatcher for RpcRequest.
 //
 // [LAW:single-enforcer] One dispatch table for every bridge connector. Every
-// dispatch goes through dispatchRpcRequest; every method resolves to the same
-// Promise<CommandResponse> shape so callers never special-case any variant.
+// dispatch goes through dispatchRpcRequest; the resolved shape is looked up
+// per-method via RpcResponseMap (rpc.ts) so callers never special-case any
+// variant themselves — they already know the shape from the method name.
 // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
 // RpcRequest is what decides which free-function call runs.
 // [LAW:one-type-per-behavior] One Dispatcher mapped type covers every method;
@@ -12,8 +13,7 @@
 // the dispatch table needs execute + on/off only; the class is over-specified.
 
 import type { TmuxConnection } from "../client.js";
-import type { CommandResponse } from "../protocol/types.js";
-import type { RpcRequest } from "./rpc.js";
+import type { RpcRequest, RpcResponseMap } from "./rpc.js";
 import * as commands from "../commands/index.js";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ type Dispatcher = {
   readonly [R in RpcRequest as R["method"]]: (
     client: TmuxConnection,
     args: R["args"],
-  ) => Promise<CommandResponse> | CommandResponse;
+  ) => Promise<RpcResponseMap[R["method"]]> | RpcResponseMap[R["method"]];
 };
 
 const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
@@ -54,10 +54,12 @@ const DISPATCH: Dispatcher = Object.assign(Object.create(null) as Dispatcher, {
 export function dispatchRpcRequest(
   client: TmuxConnection,
   req: RpcRequest,
-): Promise<CommandResponse> {
+): Promise<RpcResponseMap[RpcRequest["method"]]> {
   const fn = DISPATCH[req.method] as (
     c: TmuxConnection,
     a: RpcRequest["args"],
-  ) => Promise<CommandResponse> | CommandResponse;
+  ) =>
+    | Promise<RpcResponseMap[RpcRequest["method"]]>
+    | RpcResponseMap[RpcRequest["method"]];
   return Promise.resolve(fn(client, req.args));
 }

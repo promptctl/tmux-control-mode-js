@@ -26,7 +26,12 @@
 // flow is a straight pipe per request, the variance rides in the union.
 
 import type { SplitOptions } from "../protocol/encoder.js";
-import { PaneAction, type CommandResponse } from "../protocol/types.js";
+import {
+  PaneAction,
+  type CommandResponse,
+  type PaneRecord,
+  type WindowRecord,
+} from "../protocol/types.js";
 import type { BridgeErrorCode } from "./errors.js";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,28 @@ export type RpcRequest =
 export type RpcMethod = RpcRequest["method"];
 
 // ---------------------------------------------------------------------------
+// RpcResponseMap — the true response shape per method.
+//
+// Every bridged method answers with a CommandResponse EXCEPT listWindows and
+// listPanes, which answer with their structured records (see
+// commands/index.ts) — a raw CommandResponse for those two is exactly the
+// shape the public API no longer returns. This map is the one place that
+// distinction is recorded; RpcProxyApi and Dispatcher (rpc-dispatch.ts) both
+// index into it instead of each hardcoding CommandResponse.
+// [LAW:types-are-the-program] The response type states what is actually
+// true per method rather than the uniform shape that was only true by
+// coincidence.
+// ---------------------------------------------------------------------------
+
+export type RpcResponseMap = {
+  readonly [M in RpcMethod]: M extends "listWindows"
+    ? readonly WindowRecord[]
+    : M extends "listPanes"
+      ? readonly PaneRecord[]
+      : CommandResponse;
+};
+
+// ---------------------------------------------------------------------------
 // RpcProxyApi — the bridged surface a renderer-side proxy must implement.
 //
 // Derived directly from RpcRequest so adding a new variant flows into a new
@@ -98,7 +125,7 @@ export type RpcMethod = RpcRequest["method"];
 export type RpcProxyApi = {
   readonly [R in RpcRequest as R["method"]]: (
     ...args: [...R["args"]]
-  ) => Promise<CommandResponse>;
+  ) => Promise<RpcResponseMap[R["method"]]>;
 };
 
 // ---------------------------------------------------------------------------

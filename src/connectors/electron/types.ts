@@ -18,7 +18,7 @@
 import type { CommandResponse } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { ResumeFailure } from "../bridge-connection.js";
-import type { RpcRequest } from "../rpc.js";
+import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
 
 // ---------------------------------------------------------------------------
 // IPC channel names. Defined once, imported by both sides.
@@ -149,7 +149,9 @@ export type InvokeRequest = RpcRequest;
 // ---------------------------------------------------------------------------
 
 export type InvokeResultEnvelope =
-  | { readonly status: "ok"; readonly response: CommandResponse }
+  // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
+  // structured records for listWindows/listPanes (see rpc.ts).
+  | { readonly status: "ok"; readonly response: RpcResponseMap[RpcMethod] }
   | { readonly status: "tmux-error"; readonly response: CommandResponse }
   | {
       readonly status: "bridge-error";

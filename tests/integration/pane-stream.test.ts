@@ -15,6 +15,7 @@
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import { sendKeys, setSize } from "../../src/commands/index.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
@@ -40,11 +41,7 @@ function tmuxCmd(socket: string, args: string): string {
 }
 
 function killServer(socket: string): void {
-  try {
-    execSync(tmuxCmd(socket, "kill-server"), { stdio: "ignore" });
-  } catch {
-    /* already gone */
-  }
+  killTmuxServer(socket);
 }
 
 function createSession(socket: string, session: string): Promise<TmuxClient> {
@@ -107,7 +104,7 @@ describe.skipIf(!RUN_INTEGRATION)(
   () => {
     // Sentinel + per-test reset: socket is "" between tests so a beforeEach
     // that throws BEFORE assignment never makes afterEach run
-    // `tmux -L <stale-or-undefined> kill-server` against an unrelated tmux
+    // `tmux -L <stale-or-undefined> list-sessions`/`kill-session` against an unrelated tmux
     // server (worst case: the user's real server, one literally named
     // `undefined`). The reset in afterEach below restores the invariant per
     // test — without it, a successful test would leave the previous socket

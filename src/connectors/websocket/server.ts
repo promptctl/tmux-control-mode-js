@@ -38,7 +38,6 @@ import {
   type EmitterTmuxMessage,
 } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
-import type { CommandResponse } from "../../protocol/types.js";
 
 import {
   BridgeError,
@@ -56,7 +55,9 @@ import {
   mapRpcCode,
   parseRpcRequest,
   RpcError,
+  type RpcMethod,
   type RpcRequest,
+  type RpcResponseMap,
 } from "../rpc.js";
 import {
   type BridgeOutcome,
@@ -950,7 +951,7 @@ class Connection {
   // -------------------------------------------------------------------------
   // Reply helpers
   // -------------------------------------------------------------------------
-  private replyOk(id: string, response: CommandResponse): void {
+  private replyOk(id: string, response: RpcResponseMap[RpcMethod]): void {
     this.sendFrame({ k: "result", id, ok: true, response });
   }
 

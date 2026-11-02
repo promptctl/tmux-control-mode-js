@@ -9,6 +9,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
@@ -64,11 +65,14 @@ const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
 // Isolation: every test spawns its OWN tmux server via `-L <socket>`. This
 // prevents ANY tmux invocation here — including `new-session`, `kill-session`,
 // and the `-C` control-mode attach — from reaching the developer's default
-// tmux server. Teardown runs `tmux -L <socket> kill-server` so the isolated
-// server exits whether or not sessions linger.
+// tmux server. Teardown delegates to the shared `killTmuxServer()` helper,
+// which lists and kills every session on the isolated socket; tmux's
+// exit-empty default then terminates the now-empty server.
 //
 // [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
 // `tmux -L <socket> ...` command line in this file.
+// [LAW:one-source-of-truth] Teardown itself lives in
+// `tests/helpers/reap-test-sockets.ts` so it isn't re-implemented per file.
 
 function uniqueSocket(prefix: string): string {
   return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -88,11 +92,7 @@ function tmuxCmd(socketName: string, args: string): string {
  * Used in afterEach so no isolated server (and no session in it) leaks.
  */
 function killServer(socketName: string): void {
-  try {
-    execSync(tmuxCmd(socketName, "kill-server"), { stdio: "ignore" });
-  } catch {
-    // Server may already be gone — not an error.
-  }
+  killTmuxServer(socketName);
 }
 
 /**
@@ -162,11 +162,11 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   let sessionName: string;
   // Sentinel + per-test reset: socketName is "" between tests so a beforeEach
   // that throws BEFORE assignment never makes afterEach run
-  // `tmux -L <stale-or-undefined> kill-server` against an unrelated tmux
-  // server (worst case: the user's real server, one literally named
-  // `undefined`). The reset in afterEach below restores the invariant per
-  // test — without it, a successful test would leave the previous socket
-  // name visible to the next test's afterEach.
+  // `tmux -L <stale-or-undefined> list-sessions`/`kill-session` against an
+  // unrelated tmux server (worst case: the user's real server, one
+  // literally named `undefined`). The reset in afterEach below restores the
+  // invariant per test — without it, a successful test would leave the
+  // previous socket name visible to the next test's afterEach.
   let socketName = "";
   let client: TmuxClient;
 
@@ -1016,35 +1016,50 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   });
 
   it(
-    "CMD-01: listWindows() returns a successful response with at least one output line",
+    "CMD-01: listWindows() returns structured WindowRecords with at least one entry",
     async () => {
       sessionName = uniqueSession("cmd-lw");
       client = await createSession(socketName, sessionName);
 
       // [LAW:types-are-the-program] Type the client as TmuxConnection — the
       // free function takes the minimal interface, not the full TmuxClient.
-      const r = await listWindows(client);
+      const windows = await listWindows(client);
 
-      expect(r.success).toBe(true);
-      expect(typeof r.commandNumber).toBe("number");
-      expect(Array.isArray(r.output)).toBe(true);
-      // list-windows always has at least one line (the initial window).
-      expect(r.output.length).toBeGreaterThan(0);
+      // list-windows always has at least one entry (the initial window).
+      expect(windows.length).toBeGreaterThan(0);
+      const [w] = windows;
+      expect(Number.isInteger(w.sessionId)).toBe(true);
+      expect(w.sessionName).toBe(sessionName);
+      expect(Number.isInteger(w.windowId)).toBe(true);
+      expect(typeof w.windowName).toBe("string");
+      expect(Number.isInteger(w.width)).toBe(true);
+      expect(Number.isInteger(w.height)).toBe(true);
     },
     15000,
   );
 
   it(
-    "CMD-02: listPanes() returns a successful response with at least one output line",
+    "CMD-02: listPanes() returns structured PaneRecords with at least one entry",
     async () => {
       sessionName = uniqueSession("cmd-lp");
       client = await createSession(socketName, sessionName);
 
-      const r = await listPanes(client);
+      const panes = await listPanes(client);
 
-      expect(r.success).toBe(true);
-      expect(Array.isArray(r.output)).toBe(true);
-      expect(r.output.length).toBeGreaterThan(0);
+      expect(panes.length).toBeGreaterThan(0);
+      const [p] = panes;
+      expect(Number.isInteger(p.sessionId)).toBe(true);
+      expect(p.sessionName).toBe(sessionName);
+      expect(Number.isInteger(p.windowId)).toBe(true);
+      expect(typeof p.windowName).toBe("string");
+      expect(Number.isInteger(p.paneId)).toBe(true);
+      expect(typeof p.cwd).toBe("string");
+      expect(p.cwd.length).toBeGreaterThan(0);
+      expect(Number.isInteger(p.pid)).toBe(true);
+      expect(typeof p.startCommand).toBe("string");
+      expect(typeof p.currentCommand).toBe("string");
+      expect(Number.isInteger(p.width)).toBe(true);
+      expect(Number.isInteger(p.height)).toBe(true);
     },
     15000,
   );

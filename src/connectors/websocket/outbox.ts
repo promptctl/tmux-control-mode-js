@@ -9,12 +9,12 @@
 // can drift out of sync with the correlation map — two structures that must
 // agree would be an invariant the type cannot enforce, so there is only one.
 
-import type { CommandResponse } from "../../protocol/types.js";
+import type { RpcResponseMap } from "../rpc.js";
 import { BridgeError, type ResultFrame, type RpcMethod } from "./protocol.js";
 
 interface Pending {
   readonly frame: string;
-  resolve(r: CommandResponse): void;
+  resolve(r: RpcResponseMap[RpcMethod]): void;
   reject(e: BridgeError): void;
   timer: ReturnType<typeof setTimeout>;
   transmitted: boolean;
@@ -33,13 +33,13 @@ export class Outbox {
   // Register a call, arm its timeout, and attempt an immediate transmit.
   // Resolves/rejects when the matching result arrives, the deadline expires,
   // or the connection drains.
-  enqueue(
+  enqueue<M extends RpcMethod>(
     id: string,
-    method: RpcMethod,
+    method: M,
     frame: string,
     timeoutMs: number,
-  ): Promise<CommandResponse> {
-    return new Promise<CommandResponse>((resolve, reject) => {
+  ): Promise<RpcResponseMap[M]> {
+    return new Promise<RpcResponseMap[M]>((resolve, reject) => {
       const timer = setTimeout(() => {
         const p = this.pending.get(id);
         if (p === undefined) return;
@@ -53,9 +53,15 @@ export class Outbox {
       }, timeoutMs);
       (timer as unknown as { unref?: () => void }).unref?.();
 
+      // [LAW:types-are-the-program] `Pending` is keyed by id, not by method,
+      // so it cannot carry M through the Map without an existential-type
+      // workaround. The narrowing here is sound by the protocol's own
+      // invariant (settle() only ever resolves an id with the response its
+      // own request produced) — the same single-cast-site pattern
+      // dispatchRpcRequest/VALIDATORS use for their own method-keyed tables.
       const entry: Pending = {
         frame,
-        resolve,
+        resolve: resolve as Pending["resolve"],
         reject,
         timer,
         transmitted: false,
