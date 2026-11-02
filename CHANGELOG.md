@@ -43,6 +43,10 @@ All notable changes to this project are documented here. Format follows
   host that does not observe them is making an informed choice — the bridge
   never swallows the failure internally. The `ResumeFailure` type is exported
   from the bridge-connection module and re-exported from Electron `main`.
+- `listSessions(client)` — a typed free function over `TmuxConnection`
+  returning structured `SessionRecord[]` (`sessionId`, `sessionName`,
+  `windowCount`, `attached`), mirroring `listWindows`/`listPanes`. Bridged on
+  every RPC connector (Electron, WebSocket).
 
 ### Fixed
 
@@ -97,6 +101,11 @@ All notable changes to this project are documented here. Format follows
   error.
 - An `EPIPE` write in the window between the child dying and its `close` event
   no longer crashes the host process.
+- `listPanes()` no longer silently drops a pane whose cwd contains a literal
+  tab. Previously every record was split on `\t` with a strict field count,
+  so a tab in `pane_current_path` desynced the split and the pane vanished
+  with no error. The encoder now escapes `pane_current_path` (backslash,
+  then tab) via tmux's own format substitution; the parser reverses it.
 
 
 ## [0.1.0]

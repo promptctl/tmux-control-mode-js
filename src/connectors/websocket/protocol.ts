@@ -130,7 +130,7 @@ export interface ResultOkFrame {
   readonly id: string;
   readonly ok: true;
   // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
-  // structured records for listWindows/listPanes (see rpc.ts).
+  // structured records for listWindows/listPanes/listSessions (see rpc.ts).
   readonly response: RpcResponseMap[RpcMethod];
 }
 

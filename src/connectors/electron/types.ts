@@ -150,7 +150,7 @@ export type InvokeRequest = RpcRequest;
 
 export type InvokeResultEnvelope =
   // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
-  // structured records for listWindows/listPanes (see rpc.ts).
+  // structured records for listWindows/listPanes/listSessions (see rpc.ts).
   | { readonly status: "ok"; readonly response: RpcResponseMap[RpcMethod] }
   | { readonly status: "tmux-error"; readonly response: CommandResponse }
   | {

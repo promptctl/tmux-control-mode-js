@@ -55,7 +55,7 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "./rpc.js";
 // to the underlying `execute()`, independent of which method issued it).
 // `ok`'s response is whatever RpcResponseMap says the dispatched method
 // actually returns — a CommandResponse for most methods, but the structured
-// records for listWindows/listPanes. A `bridge-error` carries the typed
+// records for listWindows/listPanes/listSessions. A `bridge-error` carries the typed
 // BridgeError instance itself — WS reads `.code`/`.message`, Electron calls
 // `.toPayload()`, so handing both the instance lets each take exactly what
 // its wire needs.
