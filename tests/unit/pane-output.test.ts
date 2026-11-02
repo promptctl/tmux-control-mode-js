@@ -164,6 +164,19 @@ describe("parsePaneListLine", () => {
       sessionId: 1,
     });
   });
+
+  // Regression: a doubled-up CRLF transport can leave a run of \r's, not
+  // just one (parser.ts's processLine() already tolerates an arbitrary
+  // run). A single-\r-tolerant anchor would fail to match "...$1\r\r" and
+  // return null, which — per this function's own doc comment — silently
+  // wipes the pane topology.
+  it("tolerates a doubled trailing \\r\\r too", () => {
+    expect(parsePaneListLine("%5 @2 $1\r\r")).toEqual({
+      paneId: 5,
+      windowId: 2,
+      sessionId: 1,
+    });
+  });
 });
 
 describe("listPanesCommand", () => {

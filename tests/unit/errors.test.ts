@@ -32,4 +32,13 @@ describe("TmuxCommandError — headline selection", () => {
     const err = new TmuxCommandError(errorResponse(["real diagnostic\r"]));
     expect(err.message).toBe("real diagnostic");
   });
+
+  // Regression: a doubled-up CRLF transport can leave a run of \r's, not
+  // just one (parser.ts's processLine() already tolerates an arbitrary
+  // run). A single-\r strip would turn "\r\r" into "\r" — still non-empty —
+  // and pick it as the headline instead of skipping it as blank.
+  it("treats a doubled \\r\\r line as blank too", () => {
+    const err = new TmuxCommandError(errorResponse(["\r\r", "real diagnostic"]));
+    expect(err.message).toBe("real diagnostic");
+  });
 });

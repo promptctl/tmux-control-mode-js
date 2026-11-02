@@ -754,16 +754,17 @@ export class TopologyEpochTracker {
  *
  * Returns null for unparseable lines (trailing blank, unexpected format).
  *
- * This is response-block output, where `TmuxParser.feed()` no longer strips
- * a trailing `\r` (needed so raw `capture-pane -p` bytes survive) — so on a
- * CRLF transport, the last line of this list can legitimately carry one.
- * `\r?$` tolerates it the same way `parseSessionRecordLine`'s `Number()`
- * comparison does for its own last field.
+ * This is response-block output, where `TmuxParser.processLine()` no longer
+ * strips a trailing `\r` run (needed so raw `capture-pane -p` bytes
+ * survive) — so on a CRLF transport, the last line of this list can
+ * legitimately carry one, and (per a doubled-up CRLF) more than one. `\r*$`
+ * tolerates any run of them, the same way `parseSessionRecordLine`'s
+ * `Number()` comparison does for its own last field.
  */
 export function parsePaneListLine(
   line: string,
 ): { paneId: number; windowId: number; sessionId: number } | null {
-  const m = line.match(/^%(\d+) @(\d+) \$(\d+)\r?$/);
+  const m = line.match(/^%(\d+) @(\d+) \$(\d+)\r*$/);
   if (m === null) return null;
   return {
     paneId: Number(m[1]),
