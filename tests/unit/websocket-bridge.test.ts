@@ -793,6 +793,49 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(u.message).toMatch(/no credentials/);
   });
 
+  it("createClient succeeding after an unrelated fatal is already pending disposes the client instead of opening the connection", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+
+    let resolveCreate!: (c: TmuxClient) => void;
+    const createClientPromise = new Promise<TmuxClient>((res) => {
+      resolveCreate = res;
+    });
+    let disposeCalls = 0;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => createClientPromise,
+      disposeClient: () => {
+        disposeCalls++;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    // Hello #1 commits to "handshaking", authenticates (no hook configured),
+    // and suspends at createClient().
+    ws.feedClient({ k: "hello" });
+    await flush();
+    // Hello #2 is rejected as a duplicate — the connection's one fatal is now
+    // claimed by BRIDGE_PROTOCOL_ERROR, with the real close not yet landed
+    // (state stays "handshaking").
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    // createClient() now resolves successfully. The old `isClosed()` gate
+    // here was false (state never reached "closed"), so the connection
+    // would wire itself into "running" and emit a false connection-opened
+    // for a connection already fatally sealed. isTearingDown() must gate
+    // this instead. [LAW:no-silent-failure]
+    resolveCreate(client);
+    await flush();
+
+    expect(disposeCalls).toBe(1);
+    expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+  });
+
   it("a second fatal-close before the real close event lands does not overwrite the first's BridgeErrorCode", async () => {
     const t = createFakeTransport();
     t.feed(STARTUP_GREETING);

@@ -641,12 +641,16 @@ class Connection {
       this.sendFatalAndClose("BRIDGE_INTERNAL", message);
       return;
     }
-    if (this.isClosed()) {
-      // finalize ran while createClient() was in flight. `client` exists but
-      // was never committed to `state`, so finalize's disposal (which only
-      // fires for running/draining) never saw it — dispose it here, the same
-      // way finalize would have, and stop before wiring any listener or sink
-      // onto the shared client.
+    if (this.isTearingDown()) {
+      // Either finalize ran while createClient() was in flight, or an
+      // earlier fatal is already pending (same race the auth-denied and
+      // createClient-catch branches above now guard against) — this
+      // connection's outcome is already fixed to something other than
+      // "running". `client` exists but was never committed to `state`, so
+      // finalize's disposal (which only fires for running/draining) never
+      // saw it — dispose it here, the same way finalize would have, and
+      // stop before wiring any listener, sink, or "connection-opened" onto
+      // a connection that is not actually opening. [LAW:no-silent-failure]
       if (this.opts.disposeClient !== undefined) {
         void Promise.resolve(this.opts.disposeClient(client, ctx));
       }
