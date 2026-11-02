@@ -46,6 +46,13 @@ export type {
 export { isTmuxMessage } from "./emitter.js";
 
 export type {
+  CrossSessionLayoutChangeMessage,
+  CrossSessionLayoutDecodeErrorMessage,
+  CrossSessionLayoutFetchFailedMessage,
+  CrossSessionLayoutMessage,
+} from "./cross-session-layout.js";
+
+export type {
   BytesSink,
   ChunkPayload,
   AttachOptions,

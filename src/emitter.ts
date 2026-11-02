@@ -27,6 +27,7 @@ import type {
   ReconnectedMessage,
   TopologyErrorMessage,
 } from "./connection-state.js";
+import type { CrossSessionLayoutMessage } from "./cross-session-layout.js";
 
 /**
  * The subset of `TmuxMessage` that flows through the emitter. Pane-byte
@@ -57,7 +58,8 @@ export type SyntheticEmitterMessage =
   | ConnectionStateMessage
   | ReconnectedMessage
   | ProtocolErrorMessage
-  | TopologyErrorMessage;
+  | TopologyErrorMessage
+  | CrossSessionLayoutMessage;
 
 /**
  * Every event the emitter can carry. State-shaped `TmuxMessage` variants
@@ -80,6 +82,9 @@ const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
   reconnected: true,
   "protocol-error": true,
   "topology-error": true,
+  "cross-session-layout-change": true,
+  "cross-session-layout-decode-error": true,
+  "cross-session-layout-fetch-failed": true,
 };
 
 /**
