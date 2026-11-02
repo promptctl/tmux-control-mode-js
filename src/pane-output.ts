@@ -888,8 +888,12 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
  * `parseWindowRecordLine`/`parsePaneRecordLine`.
  *
  * `#{session_attached}` is tmux's count of attached clients (0/1/2/...), not
- * a boolean flag, so `attached` is any non-zero (non-empty) count rather than
- * an `=== "1"` check.
+ * a boolean flag, so `attached` is any non-zero count rather than an
+ * `=== "1"` check. Compared via `Number()`, not string equality, so a
+ * trailing `\r` surviving on this field (response-block output no longer
+ * strips it, since raw pane-capture bytes need it — see `parser.ts`'s
+ * `feed()`) tolerates the same way `windowCount` already does, instead of
+ * flipping an unattached session to attached.
  */
 export function parseSessionRecordLine(line: string): SessionRecord | null {
   const fields = line.split("\t");
@@ -899,6 +903,6 @@ export function parseSessionRecordLine(line: string): SessionRecord | null {
     sessionId: parseSigilId(sessionId),
     sessionName: decodeField(sessionName),
     windowCount: Number(windowCount),
-    attached: attached !== "0" && attached !== "",
+    attached: Number(attached) !== 0,
   };
 }

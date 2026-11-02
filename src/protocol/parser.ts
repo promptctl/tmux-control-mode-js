@@ -352,7 +352,7 @@ export class TmuxParser {
    * delivered via `control_write()`, a path with no octal-escaping guarantee,
    * so a captured row may legitimately end in a real `\r` byte right before
    * the block's terminating `\n`. Stripping it there would silently corrupt
-   * `PaneCapture.bytes`'s documented raw-byte-fidelity guarantee. The block's
+   * `CommandResponse.output`'s documented raw-byte-fidelity guarantee. The block's
    * own closing `%end`/`%error` line also passes through un-stripped, but
    * still parses correctly: `parseGuard`'s `parseInt` on its numeric fields
    * stops at the first non-digit, so a trailing `\r` there is a no-op. This

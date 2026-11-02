@@ -7,7 +7,11 @@
 // back to its original value, not get the record silently dropped.
 
 import { describe, it, expect } from "vitest";
-import { parsePaneRecordLine, parseWindowRecordLine } from "../../src/pane-output.js";
+import {
+  parsePaneRecordLine,
+  parseSessionRecordLine,
+  parseWindowRecordLine,
+} from "../../src/pane-output.js";
 import { listPanesCommand } from "../../src/protocol/encoder.js";
 
 const BACKSLASH = "\\";
@@ -97,6 +101,42 @@ describe("parseWindowRecordLine", () => {
       windowName: "zsh",
       width: 80,
       height: 24,
+    });
+  });
+});
+
+describe("parseSessionRecordLine", () => {
+  it("parses an unattached session (count 0)", () => {
+    const line = ["$1", "main", "3", "0"].join("\t");
+    expect(parseSessionRecordLine(line)).toEqual({
+      sessionId: 1,
+      sessionName: "main",
+      windowCount: 3,
+      attached: false,
+    });
+  });
+
+  it("parses an attached session (count > 1, not just 1)", () => {
+    const line = ["$1", "main", "3", "2"].join("\t");
+    expect(parseSessionRecordLine(line)).toEqual({
+      sessionId: 1,
+      sessionName: "main",
+      windowCount: 3,
+      attached: true,
+    });
+  });
+
+  // Regression: response-block output no longer has a trailing \r stripped
+  // (parser.ts's feed() exempts it so raw pane-capture bytes survive), so
+  // this field can legitimately carry one on a CRLF transport. A strict
+  // string compare (`attached !== "0"`) would misread "0\r" as attached.
+  it("tolerates a trailing \\r on the attached field (CRLF transport noise)", () => {
+    const line = ["$1", "main", "3", "0\r"].join("\t");
+    expect(parseSessionRecordLine(line)).toEqual({
+      sessionId: 1,
+      sessionName: "main",
+      windowCount: 3,
+      attached: false,
     });
   });
 });
