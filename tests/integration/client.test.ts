@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdirSync, rmSync } from "node:fs";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
@@ -27,6 +27,7 @@ import {
   queryClipboard,
   requestReport,
 } from "../../src/commands/index.js";
+import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
 import { TmuxCommandError } from "../../src/errors.js";
@@ -1061,6 +1062,58 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       expect(typeof p.currentCommand).toBe("string");
       expect(Number.isInteger(p.width)).toBe(true);
       expect(Number.isInteger(p.height)).toBe(true);
+    },
+    15000,
+  );
+
+  it(
+    "CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash",
+    async () => {
+      sessionName = uniqueSession("cmd-lp-tab");
+      client = await createSession(socketName, sessionName);
+
+      const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
+      mkdirSync(weirdDir, { recursive: true });
+      try {
+        // Created via tmux's own CLI (execSync), same as createSession
+        // above, not as a control-mode command string: tmux's control-mode
+        // command-line tokenizer is a separate, less-standard parser from
+        // a POSIX shell's, and its handling of a literal tab inside a
+        // quoted -c argument has been observed to vary by tmux version. A
+        // CLI invocation hands tmux an already-tokenized argv element —
+        // the shell's own (standard, stable) single-quote handling is the
+        // only parser involved — so this avoids that variance entirely.
+        execSync(
+          tmuxCmd(
+            socketName,
+            `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
+          ),
+          { stdio: "ignore" },
+        );
+        // pane_current_path is queried live from the OS, not snapshotted at
+        // spawn time: the window-creation command can return before the
+        // forked child has finished its own chdir(), so an immediate query
+        // can transiently read the inherited (parent) cwd under CI load —
+        // observed as a flake in CI, never locally. Poll rather than
+        // single-shot the read.
+        const deadline = Date.now() + 8000;
+        let found: Awaited<ReturnType<typeof listPanes>>[number] | undefined;
+        for (;;) {
+          const panes = await listPanes(client);
+          found = panes.find(
+            (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
+          );
+          if (found !== undefined || Date.now() >= deadline) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        expect(found).toBeDefined();
+        // Confirmed not dropped by the split-by-tab desync, and the cwd
+        // decoded back to the literal backslash/tab it was created with —
+        // not the escaped wire form, and not truncated at the tab.
+        expect(found!.cwd).toContain("a\\b\tc");
+      } finally {
+        rmSync(weirdDir, { recursive: true, force: true });
+      }
     },
     15000,
   );
