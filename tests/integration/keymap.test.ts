@@ -24,9 +24,16 @@ function uniqueSession(prefix: string): string {
 }
 function killServer(socketName: string): void {
   try {
-    execSync(`tmux -L ${socketName} kill-server`, { stdio: "ignore" });
+    const names = execSync(`tmux -L ${socketName} list-sessions -F '#{session_name}'`, {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      execSync(`tmux -L ${socketName} kill-session -t ${name}`, { stdio: "ignore" });
+    }
   } catch {
-    // already gone
+    // already gone, or no sessions left
   }
 }
 function createSession(

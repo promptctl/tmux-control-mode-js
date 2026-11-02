@@ -46,9 +46,16 @@ function freshSocket(): string {
 
 function killSocket(name: string): void {
   try {
-    tmux(name, ["kill-server"]);
+    const names = execFileSync("tmux", ["-L", name, "list-sessions", "-F", "#{session_name}"], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const sessionName of names) {
+      tmux(name, ["kill-session", "-t", sessionName]);
+    }
   } catch {
-    // Server already gone.
+    // Server already gone, or had no sessions left.
   }
   try {
     rmSync(join(tmuxSocketDir(), name), { force: true });

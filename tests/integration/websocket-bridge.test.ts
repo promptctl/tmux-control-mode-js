@@ -36,8 +36,8 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // Isolation: every test fixture spawns its OWN tmux server via `-L <socket>`.
 // This prevents any test command — especially `kill-session` cleanup — from
 // reaching the developer's default tmux server. Each fixture gets a unique
-// socket name; teardown runs `tmux -L <socket> kill-server` to guarantee the
-// isolated server exits whether or not sessions linger.
+// socket name; teardown lists and kills every session on that isolated
+// socket, so tmux's exit-empty default guarantees the isolated server exits.
 //
 // [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
 // `tmux -L <socket> ...` command line. No execSync string interpolation
@@ -65,9 +65,16 @@ function tmuxCmd(socketName: string, args: string): string {
 
 function killServer(socketName: string): void {
   try {
-    execSync(tmuxCmd(socketName, "kill-server"), { stdio: "ignore" });
+    const names = execSync(tmuxCmd(socketName, "list-sessions -F '#{session_name}'"), {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      execSync(tmuxCmd(socketName, `kill-session -t ${name}`), { stdio: "ignore" });
+    }
   } catch {
-    // already gone
+    // already gone, or no sessions left
   }
 }
 

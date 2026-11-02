@@ -48,9 +48,16 @@ function tmuxCmd(socket: string, args: string): string {
 }
 function killServer(socket: string): void {
   try {
-    execSync(tmuxCmd(socket, "kill-server"), { stdio: "ignore" });
+    const names = execSync(tmuxCmd(socket, "list-sessions -F '#{session_name}'"), {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      execSync(tmuxCmd(socket, `kill-session -t ${name}`), { stdio: "ignore" });
+    }
   } catch {
-    /* already gone */
+    /* already gone, or no sessions left */
   }
 }
 
@@ -117,11 +124,11 @@ describe.skipIf(!integrationOn)(
   "Gate 1 — visibility toggle → first paint",
   () => {
     // Initialise to a sentinel so a beforeEach that throws BEFORE the
-    // socket assignment doesn't make afterEach run
-    // `tmux -L undefined kill-server` against an unrelated tmux server
-    // (one literally named `undefined`). Today `uniqueSocket()` can't
-    // fail, but a future edit that slips a throwing line above it would
-    // expose this footgun without the sentinel.
+    // socket assignment doesn't make afterEach run teardown against a
+    // socket literally named "undefined" (an unrelated, real tmux server
+    // if one happens to exist under that name). Today `uniqueSocket()`
+    // can't fail, but a future edit that slips a throwing line above it
+    // would expose this footgun without the sentinel.
     let socket = "";
     let session: string;
     let client: TmuxClient;

@@ -39,9 +39,16 @@ function tmuxCmd(socket: string, args: string): string {
 }
 function killServer(socket: string): void {
   try {
-    execSync(tmuxCmd(socket, "kill-server"), { stdio: "ignore" });
+    const names = execSync(tmuxCmd(socket, "list-sessions -F '#{session_name}'"), {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      execSync(tmuxCmd(socket, `kill-session -t ${name}`), { stdio: "ignore" });
+    }
   } catch {
-    /* already gone */
+    /* already gone, or no sessions left */
   }
 }
 

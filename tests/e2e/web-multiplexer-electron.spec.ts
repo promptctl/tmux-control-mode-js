@@ -93,14 +93,22 @@ const APP_ENV = {
 
 function killServer(): void {
   try {
-    tmux(SOCKET, ["kill-server"]);
+    const names = execFileSync("tmux", ["-L", SOCKET, "list-sessions", "-F", "#{session_name}"], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((line) => line.length > 0);
+    for (const name of names) {
+      tmux(SOCKET, ["kill-session", "-t", name]);
+    }
   } catch {
-    // Server not running — fine.
+    // Server not running, or has no sessions left — fine.
   }
-  // Belt-and-suspenders: tmux unlinks its socket on a clean kill-server,
-  // but if the Electron app already exited (and tmux died with it via
-  // its parent-pipe close), tmux had no chance to clean up. Remove the
-  // file ourselves — it's only ever the path THIS test created.
+  // Belt-and-suspenders: tmux unlinks its socket once its last session is
+  // killed (exit-empty is on by default), but if the Electron app already
+  // exited (and tmux died with it via its parent-pipe close), tmux had no
+  // chance to clean up. Remove the file ourselves — it's only ever the
+  // path THIS test created.
   try {
     rmSync(join(tmuxSocketDir(), SOCKET), { force: true });
   } catch {
@@ -116,9 +124,18 @@ const altSockets = new Set<string>();
 function killAltSockets(): void {
   for (const name of altSockets) {
     try {
-      tmux(name, ["kill-server"]);
+      const sessionNames = execFileSync(
+        "tmux",
+        ["-L", name, "list-sessions", "-F", "#{session_name}"],
+        { encoding: "utf8" },
+      )
+        .split("\n")
+        .filter((line) => line.length > 0);
+      for (const sessionName of sessionNames) {
+        tmux(name, ["kill-session", "-t", sessionName]);
+      }
     } catch {
-      // Server already gone.
+      // Server already gone, or has no sessions left.
     }
     try {
       rmSync(join(tmuxSocketDir(), name), { force: true });
