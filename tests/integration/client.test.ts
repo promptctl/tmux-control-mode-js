@@ -1075,8 +1075,20 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
       mkdirSync(weirdDir, { recursive: true });
       try {
-        await client.execute(
-          `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
+        // Created via tmux's own CLI (execSync), same as createSession
+        // above, not as a control-mode command string: tmux's control-mode
+        // command-line tokenizer is a separate, less-standard parser from
+        // a POSIX shell's, and its handling of a literal tab inside a
+        // quoted -c argument has been observed to vary by tmux version. A
+        // CLI invocation hands tmux an already-tokenized argv element —
+        // the shell's own (standard, stable) single-quote handling is the
+        // only parser involved — so this avoids that variance entirely.
+        execSync(
+          tmuxCmd(
+            socketName,
+            `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
+          ),
+          { stdio: "ignore" },
         );
         const panes = await listPanes(client);
         const pane = panes.find((p) => p.windowName === "tabtest");
