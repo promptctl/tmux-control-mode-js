@@ -12,38 +12,6 @@ import type { TmuxBridge } from "./bridge.ts";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { PaneDimensions, TmuxModel } from "./tmux-model.ts";
 
-type LayoutChange = Extract<TmuxMessage, { type: "layout-change" }>;
-
-/**
- * Pane sizes a %layout-change carries, and whether list-panes is still needed.
- * Sizes match what list-panes reports: every tiled pane at its layout size,
- * with a zoomed pane overlaid at its visible (full-window) size. list-panes
- * is needed when a known pane has no size here — a floating pane (tmux 3.8+)
- * the layout omits, or any pane of a layout the parser rejected (`rejected`
- * carries why).
- */
-export function layoutPaneDimensions(
-  ev: LayoutChange,
-  knownPaneIds: readonly number[],
-): {
-  readonly updates: ReadonlyMap<number, PaneDimensions>;
-  readonly needsListPanes: boolean;
-  readonly rejected: readonly string[];
-} {
-  const updates = new Map<number, PaneDimensions>();
-  const rejected: string[] = [];
-  for (const layout of [ev.layout, ev.visibleLayout]) {
-    if (layout.kind === "malformed") {
-      rejected.push(layout.reason);
-      continue;
-    }
-    for (const p of layout.panes)
-      updates.set(p.paneId, { w: p.width, h: p.height });
-  }
-  const needsListPanes = knownPaneIds.some((id) => !updates.has(id));
-  return { updates, needsListPanes, rejected };
-}
-
 export class RefreshPolicy {
   constructor(
     private readonly client: TmuxBridge,
@@ -69,18 +37,11 @@ export class RefreshPolicy {
     }
     if (ev.type === "layout-change") {
       // [LAW:dataflow-not-control-flow] Pane geometry must feel instant when a
-      // user resizes their terminal; the event carries it, so apply it with
-      // no round-trip. list-panes only for what the layout lacks.
-      const { updates, needsListPanes, rejected } = layoutPaneDimensions(
-        ev,
-        this.knownPaneIds(ev.windowId),
-      );
-      // A rejected layout silently costs a round-trip per event; say why.
-      // [LAW:no-silent-failure]
-      for (const reason of rejected)
-        console.warn(`[refresh] layout-change @${ev.windowId}: ${reason}`);
-      this.model.applyPaneDimensions(updates);
-      if (needsListPanes) void this.refreshWindowDimensions(ev.windowId);
+      // user resizes their terminal, so fast-path on %layout-change with a
+      // targeted list-panes for just that window. O(panes-in-one-window).
+      // Not ev.layout: its sizes are layout cells, and pane-border-status or
+      // pane-scrollbars shrink the pane inside its cell (y69).
+      void this.refreshWindowDimensions(ev.windowId);
       return;
     }
     if (ev.type === "client-session-changed") {
@@ -139,14 +100,6 @@ export class RefreshPolicy {
       // invisible. [LAW:no-silent-failure]
       console.warn(`[refresh] refreshSession($${sessionId}) failed`, err);
     }
-  }
-
-  private knownPaneIds(windowId: number): number[] {
-    for (const s of this.model.sessions) {
-      const win = s.windows.find((w) => w.id === windowId);
-      if (win !== undefined) return win.panes.map((p) => p.id);
-    }
-    return [];
   }
 
   async refreshWindowDimensions(windowId: number): Promise<void> {

@@ -155,9 +155,24 @@ export function mergePaneRowsByWindow(
   return encodeSnapshotLines([...oldRows, ...freshRows]);
 }
 
+// [LAW:one-source-of-truth] Field order of PANES_FORMAT rows, read by both
+// buildSessionTree and patchPaneRowDimensions.
+const PANE_KEYS = [
+  "wid",
+  "pid",
+  "idx",
+  "active",
+  "width",
+  "height",
+  "title",
+] as const;
+const PANE_PID = PANE_KEYS.indexOf("pid");
+const PANE_WIDTH = PANE_KEYS.indexOf("width");
+const PANE_HEIGHT = PANE_KEYS.indexOf("height");
+
 /**
- * Rewrite the width/height fields (PANES_FORMAT fields 4 and 5) of every pane
- * row named in `updates`; other rows and fields pass through byte-for-byte.
+ * Rewrite the width/height fields of every pane row named in `updates`; other
+ * rows and fields pass through byte-for-byte.
  */
 export function patchPaneRowDimensions(
   existing: string,
@@ -169,10 +184,10 @@ export function patchPaneRowDimensions(
       .filter((l) => l.length > 0)
       .map((line) => {
         const parts = line.split("|");
-        const u = updates.get(stripPrefix(parts[1] ?? ""));
+        const u = updates.get(stripPrefix(parts[PANE_PID] ?? ""));
         if (u === undefined) return line;
-        parts[4] = String(u.w);
-        parts[5] = String(u.h);
+        parts[PANE_WIDTH] = String(u.w);
+        parts[PANE_HEIGHT] = String(u.h);
         return parts.join("|");
       }),
   );
@@ -200,15 +215,7 @@ export function buildSessionTree(
     "active",
     "zoomed",
   ]);
-  const paneRows = parseRecords(panesValue, [
-    "wid",
-    "pid",
-    "idx",
-    "active",
-    "width",
-    "height",
-    "title",
-  ]);
+  const paneRows = parseRecords(panesValue, PANE_KEYS);
 
   const panesByWindow = new Map<string, PaneInfo[]>();
   for (const p of paneRows) {
