@@ -56,6 +56,7 @@ import {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  missingCwdFallback,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
 import { runningTmuxVersion } from "../helpers/running-tmux.js";
@@ -1425,10 +1426,16 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   }, 15000);
 
   // Pins tmux's behavior newWindow documents rather than hides: a cwd that
-  // does not exist does not fail new-window; the pane starts in $HOME. If a
-  // tmux release starts rejecting instead, this fails and newWindow's doc
+  // does not exist does not fail new-window; the pane starts in $HOME, or on
+  // tmux 3.3 in the server's cwd (this process's, which started the server).
+  // If a tmux release starts rejecting instead, this fails and newWindow's doc
   // comment needs revisiting.
-  it("CMD-05: newWindow() with a nonexistent cwd starts the pane in $HOME (tmux falls back, does not reject)", async () => {
+  // [LAW:no-ambient-temporal-coupling] Before 3.7 an early listPanes reads the
+  // server's cwd until the child chdirs, which on 3.3 equals the expected
+  // value; a pane already running `sleep` is past the chdir, so its cwd is
+  // settled. pane_current_path is the process's real cwd, not $PWD, which
+  // tmux 3.3 sets to $HOME even though it never chdir'd there.
+  it("CMD-05: newWindow() with a nonexistent cwd starts the pane in tmux's fallback dir (tmux falls back, does not reject)", async () => {
     sessionName = uniqueSession("cmd-nw-nocwd");
     client = await createSession(socketName, sessionName);
 
@@ -1438,11 +1445,17 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    const home = realpathSync(homedir());
-    await waitForPane(
+    const pane = await waitForPane(
       client,
-      (p) => p.paneId === created.paneId && p.cwd === home,
+      (p) => p.paneId === created.paneId && p.currentCommand === "sleep",
     );
+    const fallback = realpathSync(
+      RUNNING_TMUX_VERSION !== null &&
+        missingCwdFallback(RUNNING_TMUX_VERSION) === "server-cwd"
+        ? process.cwd()
+        : homedir(),
+    );
+    expect(pane.cwd).toBe(fallback);
   }, 15000);
 
   // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so

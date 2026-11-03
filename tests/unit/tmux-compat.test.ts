@@ -13,7 +13,20 @@ import {
   REQUEST_REPORT_MIN_VERSION,
   parseTmuxVersion,
   meetsTmuxVersion,
+  missingCwdFallback,
 } from "../../src/tmux-compat.js";
+
+describe("missingCwdFallback", () => {
+  it.each([
+    [{ major: 3, minor: 2 }, "home"],
+    [{ major: 3, minor: 3 }, "server-cwd"], // spawn.c's `||` bug, 3.3 only
+    [{ major: 3, minor: 4 }, "home"],
+    [{ major: 3, minor: 8 }, "home"],
+    [{ major: 4, minor: 3 }, "home"], // exact 3.3, not any minor 3
+  ] as const)("%o falls back to %s", (v, expected) => {
+    expect(missingCwdFallback(v)).toBe(expected);
+  });
+});
 
 describe("MIN_TMUX_VERSION", () => {
   it("is 3.2 (the load-bearing floor documented in README Compatibility)", () => {

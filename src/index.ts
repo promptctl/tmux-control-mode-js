@@ -32,6 +32,7 @@ export {
   MESSAGE_NOTIFY_MIN_VERSION,
   REQUEST_REPORT_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  missingCwdFallback,
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "./tmux-compat.js";
