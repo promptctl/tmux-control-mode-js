@@ -187,9 +187,7 @@ const PickerBadge = observer(function PickerBadge({
         <Menu.Item disabled>{current ?? "(disconnected)"}</Menu.Item>
         <Menu.Divider />
         <Menu.Label>Live sockets</Menu.Label>
-        {sockets === null && !error && (
-          <Menu.Item disabled>Loading…</Menu.Item>
-        )}
+        {sockets === null && !error && <Menu.Item disabled>Loading…</Menu.Item>}
         {sockets !== null && sockets.length === 0 && (
           <Menu.Item disabled>
             <Text size="xs" c="dimmed">

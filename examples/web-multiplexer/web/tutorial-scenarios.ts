@@ -13,7 +13,10 @@
 // [LAW:one-source-of-truth] The MockScenario shape comes from the library; this
 //   file only authors instances of it, never redefines it.
 
-import type { MockScenario, CommandReply } from "@promptctl/tmux-control-mode-js/mock";
+import type {
+  MockScenario,
+  CommandReply,
+} from "@promptctl/tmux-control-mode-js/mock";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
 import { windowLayoutFields } from "@promptctl/tmux-control-mode-js/protocol";
 
@@ -48,7 +51,9 @@ function out(paneId: number, text: string): TmuxMessage {
 // Scenario 1 — a control client attaches and the session evolves
 // ---------------------------------------------------------------------------
 
-const startupRespond: MockScenario["respond"] = (command): CommandReply | undefined => {
+const startupRespond: MockScenario["respond"] = (
+  command,
+): CommandReply | undefined => {
   if (command.startsWith("list-sessions")) {
     return { kind: "ok", output: ["$1: main: 1 windows (attached)"] };
   }

@@ -12,9 +12,9 @@ import { parseMirrorPane } from "../shared/mirror-frame.ts";
 
 describe("parseCollabKeys", () => {
   it("extracts the keystrokes from a well-formed keys frame", () => {
-    expect(parseCollabKeys(JSON.stringify({ kind: "keys", keys: "ls\r" }))).toBe(
-      "ls\r",
-    );
+    expect(
+      parseCollabKeys(JSON.stringify({ kind: "keys", keys: "ls\r" })),
+    ).toBe("ls\r");
   });
 
   it("preserves control sequences byte-for-byte (escape, CR)", () => {
@@ -25,7 +25,9 @@ describe("parseCollabKeys", () => {
   it("accepts an empty-string keystroke (a no-op the encoder collapses later)", () => {
     // [LAW:no-silent-failure] empty STRING is a valid frame (distinct from a
     // malformed one); the send path turns it into a synthetic success.
-    expect(parseCollabKeys(JSON.stringify({ kind: "keys", keys: "" }))).toBe("");
+    expect(parseCollabKeys(JSON.stringify({ kind: "keys", keys: "" }))).toBe(
+      "",
+    );
   });
 
   it("returns null for malformed JSON rather than coercing", () => {
@@ -33,12 +35,16 @@ describe("parseCollabKeys", () => {
   });
 
   it("returns null for the wrong frame kind", () => {
-    expect(parseCollabKeys(JSON.stringify({ kind: "execute", keys: "x" }))).toBeNull();
+    expect(
+      parseCollabKeys(JSON.stringify({ kind: "execute", keys: "x" })),
+    ).toBeNull();
   });
 
   it("returns null when keys is missing or not a string", () => {
     expect(parseCollabKeys(JSON.stringify({ kind: "keys" }))).toBeNull();
-    expect(parseCollabKeys(JSON.stringify({ kind: "keys", keys: 7 }))).toBeNull();
+    expect(
+      parseCollabKeys(JSON.stringify({ kind: "keys", keys: 7 })),
+    ).toBeNull();
   });
 
   it("returns null for a non-object frame", () => {

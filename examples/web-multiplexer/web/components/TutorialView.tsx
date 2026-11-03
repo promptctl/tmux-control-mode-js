@@ -64,7 +64,10 @@ export const TutorialView = observer(function TutorialView({ store }: Props) {
           label="Scenario"
           value={store.scenarioId}
           onChange={(v) => v !== null && store.selectScenario(v)}
-          data={TUTORIAL_SCENARIOS.map((s) => ({ value: s.id, label: s.title }))}
+          data={TUTORIAL_SCENARIOS.map((s) => ({
+            value: s.id,
+            label: s.title,
+          }))}
           allowDeselect={false}
           w={240}
         />
@@ -138,7 +141,11 @@ export const TutorialView = observer(function TutorialView({ store }: Props) {
  * so the wire (left) shows the lossy, mangled bytes the parser actually receives
  * and the events (right) show the library coping. Same seed + dials → same run.
  */
-const ChaosControls = observer(function ChaosControls({ store }: { readonly store: TutorialStore }) {
+const ChaosControls = observer(function ChaosControls({
+  store,
+}: {
+  readonly store: TutorialStore;
+}) {
   const c = store.chaos;
   const stats = store.chaosStats;
   const pct = (v: number) => `${Math.round(v * 100)}%`;
@@ -149,7 +156,11 @@ const ChaosControls = observer(function ChaosControls({ store }: { readonly stor
           <Text size="xs" fw={600} c="dimmed">
             CHAOS
           </Text>
-          <Badge size="xs" variant="light" color={store.chaosActive ? "red" : "gray"}>
+          <Badge
+            size="xs"
+            variant="light"
+            color={store.chaosActive ? "red" : "gray"}
+          >
             {store.chaosActive ? "engaged" : "off"}
           </Badge>
         </Group>
@@ -200,7 +211,9 @@ const ChaosControls = observer(function ChaosControls({ store }: { readonly stor
           value={c.seed}
           min={0}
           allowDecimal={false}
-          onChange={(v) => store.setChaos({ seed: typeof v === "number" ? v : 1 })}
+          onChange={(v) =>
+            store.setChaos({ seed: typeof v === "number" ? v : 1 })
+          }
         />
       </SimpleGrid>
     </Paper>
@@ -249,7 +262,11 @@ function ChaosSlider({
 
 function WirePanel({ wire }: { readonly wire: readonly WireLine[] }) {
   return (
-    <Paper withBorder p="xs" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <Paper
+      withBorder
+      p="xs"
+      style={{ display: "flex", flexDirection: "column", minHeight: 0 }}
+    >
       <Text size="xs" fw={600} c="dimmed" mb={4}>
         WIRE — control-mode bytes
       </Text>
@@ -267,16 +284,24 @@ function WirePanel({ wire }: { readonly wire: readonly WireLine[] }) {
                   <Badge
                     size="xs"
                     variant="filled"
-                    color={line.dir === "out" ? "blue" : corrupted ? "red" : "teal"}
+                    color={
+                      line.dir === "out" ? "blue" : corrupted ? "red" : "teal"
+                    }
                     style={{ flexShrink: 0 }}
                   >
-                    {line.dir === "out" ? "→ tmux" : corrupted ? "corrupt" : "tmux →"}
+                    {line.dir === "out"
+                      ? "→ tmux"
+                      : corrupted
+                        ? "corrupt"
+                        : "tmux →"}
                   </Badge>
                   <Code
                     style={{
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-all",
-                      color: corrupted ? "var(--mantine-color-red-4)" : undefined,
+                      color: corrupted
+                        ? "var(--mantine-color-red-4)"
+                        : undefined,
                     }}
                   >
                     {line.text === "" ? "·" : line.text}
@@ -293,7 +318,11 @@ function WirePanel({ wire }: { readonly wire: readonly WireLine[] }) {
 
 function EventsPanel({ events }: { readonly events: readonly EventEntry[] }) {
   return (
-    <Paper withBorder p="xs" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <Paper
+      withBorder
+      p="xs"
+      style={{ display: "flex", flexDirection: "column", minHeight: 0 }}
+    >
       <Text size="xs" fw={600} c="dimmed" mb={4}>
         PARSED — TmuxMessage events
       </Text>
@@ -306,7 +335,12 @@ function EventsPanel({ events }: { readonly events: readonly EventEntry[] }) {
           ) : (
             events.map((entry) => (
               <Group key={entry.seq} gap={6} wrap="nowrap" align="flex-start">
-                <Badge size="xs" variant="light" color="grape" style={{ flexShrink: 0 }}>
+                <Badge
+                  size="xs"
+                  variant="light"
+                  color="grape"
+                  style={{ flexShrink: 0 }}
+                >
                   {entry.message.type}
                 </Badge>
                 <Text size="xs" style={{ fontFamily: "monospace" }}>

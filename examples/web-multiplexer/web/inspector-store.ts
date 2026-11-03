@@ -263,7 +263,8 @@ const NO_LABELS = new Map<number, string>();
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
-    if (w.msg.kind === "execute") return `out execute ${w.msg.id} ${w.msg.command}`;
+    if (w.msg.kind === "execute")
+      return `out execute ${w.msg.id} ${w.msg.command}`;
     if (w.msg.kind === "sendKeys")
       return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
     return `out detach ${w.msg.id}`;

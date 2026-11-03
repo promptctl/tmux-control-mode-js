@@ -1,0 +1,9 @@
+# The gate formats everything by default; .gitignore is read too, so build
+# output and dependencies are already out. Prose and data files are not code
+# and are left as written.
+*.md
+*.json
+*.yaml
+*.yml
+# Captured tmux control-mode streams; their bytes are the test input.
+tests/fixtures/

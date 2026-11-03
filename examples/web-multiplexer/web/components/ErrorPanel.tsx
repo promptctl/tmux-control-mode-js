@@ -9,7 +9,9 @@ interface Props {
 
 export const ErrorPanel = observer(function ErrorPanel({ demoStore }: Props) {
   const errors = demoStore.errors;
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
 
   async function copyToClipboard(): Promise<void> {
     // Errors are stored newest-first; copy chronologically.
@@ -40,8 +42,8 @@ export const ErrorPanel = observer(function ErrorPanel({ demoStore }: Props) {
             {copyState === "copied"
               ? "copied!"
               : copyState === "error"
-              ? "copy failed"
-              : "copy"}
+                ? "copy failed"
+                : "copy"}
           </Button>
           <Button
             size="compact-xs"

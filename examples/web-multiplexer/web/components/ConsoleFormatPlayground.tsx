@@ -66,7 +66,9 @@ interface TargetOption {
  *  entry, then every pane in that session labelled by its window/pane path. Panes
  *  in other sessions are intentionally absent — their subscriptions never fire. */
 function targetOptions(session: SessionInfo | null): TargetOption[] {
-  const options: TargetOption[] = [{ value: ACTIVE_VALUE, label: "Active pane" }];
+  const options: TargetOption[] = [
+    { value: ACTIVE_VALUE, label: "Active pane" },
+  ];
   if (session === null) return options;
   for (const window of session.windows) {
     for (const pane of window.panes) {
@@ -86,7 +88,9 @@ function targetToValue(target: PlaygroundTarget): string {
 }
 
 function valueToTarget(value: string): PlaygroundTarget {
-  return value === ACTIVE_VALUE ? { kind: "active" } : { kind: "explicit", target: value };
+  return value === ACTIVE_VALUE
+    ? { kind: "active" }
+    : { kind: "explicit", target: value };
 }
 
 /**
@@ -113,7 +117,11 @@ function ResultBody({
   }
   if (result.status === "error") {
     return (
-      <Text size="sm" c="red.7" style={{ fontFamily: MONO, whiteSpace: "pre-wrap" }}>
+      <Text
+        size="sm"
+        c="red.7"
+        style={{ fontFamily: MONO, whiteSpace: "pre-wrap" }}
+      >
         {result.message}
       </Text>
     );
@@ -132,126 +140,129 @@ function ResultBody({
   );
 }
 
-export const ConsoleFormatPlayground = observer(function ConsoleFormatPlayground({
-  store,
-  demoStore,
-}: Props) {
-  // The format text is the only view state: typing stays responsive locally,
-  // then a debounce commits it to the store, which persists and re-evaluates.
-  const [format, setFormat] = useState(store.playgroundFormat);
+export const ConsoleFormatPlayground = observer(
+  function ConsoleFormatPlayground({ store, demoStore }: Props) {
+    // The format text is the only view state: typing stays responsive locally,
+    // then a debounce commits it to the store, which persists and re-evaluates.
+    const [format, setFormat] = useState(store.playgroundFormat);
 
-  // [LAW:no-ambient-temporal-coupling] the debounce timer is this effect, the
-  // single owner of "when has typing settled enough to evaluate". It also fires
-  // on mount (committing the hydrated format), which is what evaluates / installs
-  // the subscription when the user opens the tab. The store's refresh() is
-  // idempotent, so re-mounts (tab switches) don't thrash a live subscription.
-  useEffect(() => {
-    const handle = setTimeout(() => store.setPlaygroundFormat(format), DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [format, store]);
+    // [LAW:no-ambient-temporal-coupling] the debounce timer is this effect, the
+    // single owner of "when has typing settled enough to evaluate". It also fires
+    // on mount (committing the hydrated format), which is what evaluates / installs
+    // the subscription when the user opens the tab. The store's refresh() is
+    // idempotent, so re-mounts (tab switches) don't thrash a live subscription.
+    useEffect(() => {
+      const handle = setTimeout(
+        () => store.setPlaygroundFormat(format),
+        DEBOUNCE_MS,
+      );
+      return () => clearTimeout(handle);
+    }, [format, store]);
 
-  const options = targetOptions(demoStore.currentSession);
-  const selectedValue = targetToValue(store.playgroundTarget);
-  const targetInScope = options.some((o) => o.value === selectedValue);
+    const options = targetOptions(demoStore.currentSession);
+    const selectedValue = targetToValue(store.playgroundTarget);
+    const targetInScope = options.some((o) => o.value === selectedValue);
 
-  // Reconcile a stale persisted target — a pane from another session, or one
-  // that no longer exists — back to the always-valid active pane, so a
-  // subscription is never pointed at an unsubscribable pane. Runs on hydration
-  // and whenever the attached session's pane set changes. [LAW:no-silent-failure]
-  useEffect(() => {
-    if (!targetInScope && store.playgroundTarget.kind === "explicit") {
-      store.setPlaygroundTarget({ kind: "active" });
-    }
-  }, [targetInScope, store]);
+    // Reconcile a stale persisted target — a pane from another session, or one
+    // that no longer exists — back to the always-valid active pane, so a
+    // subscription is never pointed at an unsubscribable pane. Runs on hydration
+    // and whenever the attached session's pane set changes. [LAW:no-silent-failure]
+    useEffect(() => {
+      if (!targetInScope && store.playgroundTarget.kind === "explicit") {
+        store.setPlaygroundTarget({ kind: "active" });
+      }
+    }, [targetInScope, store]);
 
-  const result = store.playgroundResult;
-  const showUpdates = store.playgroundMode === "subscribed" && result.status === "value";
+    const result = store.playgroundResult;
+    const showUpdates =
+      store.playgroundMode === "subscribed" && result.status === "value";
 
-  return (
-    <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>
-      <Group justify="space-between" align="baseline">
-        <Title order={5}>Format Playground</Title>
-        {showUpdates ? (
+    return (
+      <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>
+        <Group justify="space-between" align="baseline">
+          <Title order={5}>Format Playground</Title>
+          {showUpdates ? (
+            <Text size="xs" c="dimmed">
+              {result.updateCount} update{result.updateCount === 1 ? "" : "s"}
+            </Text>
+          ) : null}
+        </Group>
+
+        <Group gap="sm" align="flex-end" wrap="wrap">
+          <Select
+            size="xs"
+            label="Target"
+            data={options}
+            value={targetInScope ? selectedValue : ACTIVE_VALUE}
+            onChange={(v) => {
+              if (v !== null) store.setPlaygroundTarget(valueToTarget(v));
+            }}
+            style={{ flex: "1 1 220px", minWidth: 0 }}
+            searchable
+            allowDeselect={false}
+          />
+          <SegmentedControl
+            size="xs"
+            data={[
+              { value: "one-shot", label: "One-shot" },
+              { value: "subscribed", label: "Subscribed" },
+            ]}
+            value={store.playgroundMode}
+            onChange={(v) => store.setPlaygroundMode(v as PlaygroundMode)}
+          />
+        </Group>
+
+        <Textarea
+          label="Format"
+          value={format}
+          onChange={(e) => setFormat(e.currentTarget.value)}
+          autosize
+          minRows={2}
+          maxRows={5}
+          styles={{ input: { fontFamily: MONO } }}
+          placeholder="#{session_name}: #{window_name}"
+        />
+
+        <Group gap="xs">
           <Text size="xs" c="dimmed">
-            {result.updateCount} update{result.updateCount === 1 ? "" : "s"}
+            presets
           </Text>
-        ) : null}
-      </Group>
+          {PLAYGROUND_PRESETS.map((preset) => (
+            <Button
+              key={preset.format}
+              size="compact-xs"
+              variant="light"
+              color="gray"
+              onClick={() => setFormat(preset.format)}
+              styles={{ label: { fontFamily: MONO } }}
+              title={preset.format}
+            >
+              {preset.label}
+            </Button>
+          ))}
+        </Group>
 
-      <Group gap="sm" align="flex-end" wrap="wrap">
-        <Select
-          size="xs"
-          label="Target"
-          data={options}
-          value={targetInScope ? selectedValue : ACTIVE_VALUE}
-          onChange={(v) => {
-            if (v !== null) store.setPlaygroundTarget(valueToTarget(v));
-          }}
-          style={{ flex: "1 1 220px", minWidth: 0 }}
-          searchable
-          allowDeselect={false}
-        />
-        <SegmentedControl
-          size="xs"
-          data={[
-            { value: "one-shot", label: "One-shot" },
-            { value: "subscribed", label: "Subscribed" },
-          ]}
-          value={store.playgroundMode}
-          onChange={(v) => store.setPlaygroundMode(v as PlaygroundMode)}
-        />
-      </Group>
-
-      <Textarea
-        label="Format"
-        value={format}
-        onChange={(e) => setFormat(e.currentTarget.value)}
-        autosize
-        minRows={2}
-        maxRows={5}
-        styles={{ input: { fontFamily: MONO } }}
-        placeholder="#{session_name}: #{window_name}"
-      />
-
-      <Group gap="xs">
-        <Text size="xs" c="dimmed">
-          presets
-        </Text>
-        {PLAYGROUND_PRESETS.map((preset) => (
-          <Button
-            key={preset.format}
-            size="compact-xs"
-            variant="light"
-            color="gray"
-            onClick={() => setFormat(preset.format)}
-            styles={{ label: { fontFamily: MONO } }}
-            title={preset.format}
+        <Box>
+          <Text size="xs" c="dimmed" mb={2}>
+            result
+          </Text>
+          <Box
+            style={{
+              borderLeft: `3px solid ${
+                result.status === "error"
+                  ? "var(--mantine-color-red-6)"
+                  : "var(--mantine-color-default-border)"
+              }`,
+              paddingLeft: "var(--mantine-spacing-xs)",
+              paddingTop: 2,
+              paddingBottom: 2,
+              minHeight: "2.5rem",
+            }}
           >
-            {preset.label}
-          </Button>
-        ))}
-      </Group>
-
-      <Box>
-        <Text size="xs" c="dimmed" mb={2}>
-          result
-        </Text>
-        <Box
-          style={{
-            borderLeft: `3px solid ${
-              result.status === "error"
-                ? "var(--mantine-color-red-6)"
-                : "var(--mantine-color-default-border)"
-            }`,
-            paddingLeft: "var(--mantine-spacing-xs)",
-            paddingTop: 2,
-            paddingBottom: 2,
-            minHeight: "2.5rem",
-          }}
-        >
-          <ResultBody result={result} mode={store.playgroundMode} />
+            <ResultBody result={result} mode={store.playgroundMode} />
+          </Box>
         </Box>
-      </Box>
-    </Stack>
-  );
-});
+      </Stack>
+    );
+  },
+);

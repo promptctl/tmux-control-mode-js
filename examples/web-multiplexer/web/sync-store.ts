@@ -219,7 +219,9 @@ export class SyncScrollStore {
       this.snapshots = seeds;
       // Default: link every seeded pane — you recorded them all, so the
       // synchronized view shows them all; the user can unlink to declutter.
-      this.linked = new Set(linkablePanes({ recording: rec, snapshots: seeds, linked: new Set() }));
+      this.linked = new Set(
+        linkablePanes({ recording: rec, snapshots: seeds, linked: new Set() }),
+      );
       this.phase = "review";
       this.playing = false;
       // Open at the end (the latest moment) so the first drag rewinds every pane

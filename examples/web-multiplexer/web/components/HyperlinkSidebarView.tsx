@@ -126,13 +126,14 @@ export const HyperlinkSidebarView = observer(function HyperlinkSidebarView({
         <ScrollArea style={{ height: "100%" }} type="auto">
           {links.length === 0 ? (
             <Text c="dimmed" size="sm" p="sm">
-              No hyperlinks yet — this is a live watch, so every clickable link any
-              pane emits (via the <code>OSC 8</code> escape) collects here,
+              No hyperlinks yet — this is a live watch, so every clickable link
+              any pane emits (via the <code>OSC 8</code> escape) collects here,
               deduplicated by destination. The sidebar reads every pane in every
               session via <code>pipe-pane</code> in the bridge process, so it
               surfaces links from panes this browser is <em>not</em> focused on,
-              and it sits <em>between</em> you and the terminal without injecting a
-              byte. Try <code>ls --hyperlink=auto</code> (GNU coreutils) or{" "}
+              and it sits <em>between</em> you and the terminal without
+              injecting a byte. Try <code>ls --hyperlink=auto</code> (GNU
+              coreutils) or{" "}
               <code>
                 printf '\e]8;;https://tmux.github.io\e\\tmux\e]8;;\e\\\n'
               </code>{" "}
@@ -262,7 +263,10 @@ const LinkRow = observer(function LinkRow({
       </Group>
       {expanded && (
         <Stack gap={4} mt={8}>
-          <Code block style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+          <Code
+            block
+            style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}
+          >
             {entry.uri}
           </Code>
           <Group gap="xs">

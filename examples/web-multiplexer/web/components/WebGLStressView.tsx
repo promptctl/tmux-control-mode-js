@@ -81,8 +81,7 @@ export const WebGLStressView = observer(function WebGLStressView({
 
       const grids = store.grids;
       const sizes = grids.map(
-        (g) =>
-          [g.cols * renderer.cellPxW, g.rows * renderer.cellPxH] as const,
+        (g) => [g.cols * renderer.cellPxW, g.rows * renderer.cellPxH] as const,
       );
       const placed = shelfPack(sizes, deviceW, TILE_GAP_PX);
       const tiles: Tile[] = grids.map((grid, i) => ({
@@ -119,10 +118,7 @@ export const WebGLStressView = observer(function WebGLStressView({
           position: "relative",
         }}
       >
-        <Box
-          ref={containerRef}
-          style={{ position: "absolute", inset: 0 }}
-        >
+        <Box ref={containerRef} style={{ position: "absolute", inset: 0 }}>
           <canvas
             ref={canvasRef}
             style={{ display: "block", width: "100%", height: "100%" }}
@@ -167,7 +163,8 @@ const Controls = observer(function Controls({
   store: WebGLStressStore;
 }) {
   const fps = store.stats.fps;
-  const fpsColor = fps === 0 ? "gray" : fps >= 55 ? "green" : fps >= 30 ? "yellow" : "red";
+  const fpsColor =
+    fps === 0 ? "gray" : fps >= 55 ? "green" : fps >= 30 ? "yellow" : "red";
   return (
     <Paper withBorder p="xs">
       <Stack gap="xs">

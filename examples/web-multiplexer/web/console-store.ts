@@ -134,7 +134,11 @@ export class ConsoleStore {
   // deterministic under test without an ambient `Date.now()` reach.
   private readonly now: () => number;
 
-  constructor(bridge: TmuxBridge, uiStore: UiStore, now: () => number = Date.now) {
+  constructor(
+    bridge: TmuxBridge,
+    uiStore: UiStore,
+    now: () => number = Date.now,
+  ) {
     this.bridge = bridge;
     this.uiStore = uiStore;
     this.now = now;
@@ -230,16 +234,28 @@ export class ConsoleStore {
       const resp = await this.bridge.execute(command);
       const latencyMs = this.now() - submittedAt;
       return resp.success
-        ? { ...common, status: "ok", output: resp.output.map(decodeLine), latencyMs }
+        ? {
+            ...common,
+            status: "ok",
+            output: resp.output.map(decodeLine),
+            latencyMs,
+          }
         : {
             ...common,
             status: "error",
-            message: resp.output.map(decodeLine).join("\n") || "command failed (%error)",
+            message:
+              resp.output.map(decodeLine).join("\n") ||
+              "command failed (%error)",
             latencyMs,
           };
     } catch (err) {
       const latencyMs = this.now() - submittedAt;
-      return { ...common, status: "error", message: errorMessage(err), latencyMs };
+      return {
+        ...common,
+        status: "error",
+        message: errorMessage(err),
+        latencyMs,
+      };
     }
   }
 
@@ -386,11 +402,17 @@ export class ConsoleStore {
     try {
       const resp = await this.bridge.execute(command);
       if (resp.success) {
-        return { status: "value", value: resp.output.map(decodeLine).join("\n"), updateCount: 1 };
+        return {
+          status: "value",
+          value: resp.output.map(decodeLine).join("\n"),
+          updateCount: 1,
+        };
       }
       return {
         status: "error",
-        message: resp.output.map(decodeLine).join("\n") || "evaluation failed (%error)",
+        message:
+          resp.output.map(decodeLine).join("\n") ||
+          "evaluation failed (%error)",
       };
     } catch (err) {
       return { status: "error", message: errorMessage(err) };
@@ -413,11 +435,17 @@ export class ConsoleStore {
     sig: string,
   ): void {
     const off = this.bridge.onEvent((ev) => {
-      if (ev.type !== "subscription-changed" || ev.name !== PLAYGROUND_SUB) return;
+      if (ev.type !== "subscription-changed" || ev.name !== PLAYGROUND_SUB)
+        return;
       runInAction(() => {
         const prev = this.playgroundResult;
-        const updateCount = (prev.status === "value" ? prev.updateCount : 0) + 1;
-        this.playgroundResult = { status: "value", value: decodeLine(ev.value), updateCount };
+        const updateCount =
+          (prev.status === "value" ? prev.updateCount : 0) + 1;
+        this.playgroundResult = {
+          status: "value",
+          value: decodeLine(ev.value),
+          updateCount,
+        };
       });
     });
     // [LAW:no-silent-failure] Fire-and-forget by design — the result is never

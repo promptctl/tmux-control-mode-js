@@ -14,7 +14,9 @@ export const WindowTabs = observer(function WindowTabs({ store }: Props) {
   }
   return (
     <Tabs
-      value={store.activeWindowId === null ? undefined : String(store.activeWindowId)}
+      value={
+        store.activeWindowId === null ? undefined : String(store.activeWindowId)
+      }
       onChange={(v) => {
         if (v === null) return;
         store.selectWindow(parseInt(v, 10));

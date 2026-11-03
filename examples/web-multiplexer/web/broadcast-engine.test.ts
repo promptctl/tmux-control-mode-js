@@ -28,7 +28,10 @@ import {
 
 // --- builders --------------------------------------------------------------
 
-function target(paneId: number, bindings: Record<string, string>): PaneBindings {
+function target(
+  paneId: number,
+  bindings: Record<string, string>,
+): PaneBindings {
   return { paneId, bindings };
 }
 
@@ -155,16 +158,25 @@ describe("resolveBroadcast", () => {
       [target(7, { ...builtinBindings(FACTS), tag: "canary" })],
       { appendEnter: false },
     );
-    expect(out).toEqual([{ kind: "resolved", paneId: 7, text: "echo 7:canary" }]);
+    expect(out).toEqual([
+      { kind: "resolved", paneId: 7, text: "echo 7:canary" },
+    ]);
   });
 
   it("marks a pane unresolved and names every missing variable — never ''", () => {
     const out = resolveBroadcast(
       "ssh ${host} as ${user}",
-      [target(1, { host: "web-1" }), target(2, { host: "web-2", user: "root" })],
+      [
+        target(1, { host: "web-1" }),
+        target(2, { host: "web-2", user: "root" }),
+      ],
       { appendEnter: false },
     );
-    expect(out[0]).toEqual({ kind: "unresolved", paneId: 1, missing: ["user"] });
+    expect(out[0]).toEqual({
+      kind: "unresolved",
+      paneId: 1,
+      missing: ["user"],
+    });
     expect(out[1]).toEqual({
       kind: "resolved",
       paneId: 2,
@@ -173,12 +185,14 @@ describe("resolveBroadcast", () => {
   });
 
   it("collects multiple missing vars de-duplicated in first-appearance order", () => {
-    const out = resolveBroadcast(
-      "${a} ${b} ${a} ${c}",
-      [target(1, {})],
-      { appendEnter: false },
-    );
-    expect(out[0]).toEqual({ kind: "unresolved", paneId: 1, missing: ["a", "b", "c"] });
+    const out = resolveBroadcast("${a} ${b} ${a} ${c}", [target(1, {})], {
+      appendEnter: false,
+    });
+    expect(out[0]).toEqual({
+      kind: "unresolved",
+      paneId: 1,
+      missing: ["a", "b", "c"],
+    });
   });
 
   it("treats a present-but-empty binding as a deliberate substitution, not a miss", () => {
@@ -199,7 +213,11 @@ describe("resolveBroadcast", () => {
     const out = resolveBroadcast("ssh ${host}", [target(1, {})], {
       appendEnter: true,
     });
-    expect(out[0]).toEqual({ kind: "unresolved", paneId: 1, missing: ["host"] });
+    expect(out[0]).toEqual({
+      kind: "unresolved",
+      paneId: 1,
+      missing: ["host"],
+    });
   });
 
   it("resolves an empty target list to an empty result", () => {
@@ -223,9 +241,13 @@ describe("sendablePanes", () => {
   });
 
   it("is empty when every pane is unresolved", () => {
-    const resolutions = resolveBroadcast("${x}", [target(1, {}), target(2, {})], {
-      appendEnter: false,
-    });
+    const resolutions = resolveBroadcast(
+      "${x}",
+      [target(1, {}), target(2, {})],
+      {
+        appendEnter: false,
+      },
+    );
     expect(sendablePanes(resolutions)).toEqual([]);
   });
 });

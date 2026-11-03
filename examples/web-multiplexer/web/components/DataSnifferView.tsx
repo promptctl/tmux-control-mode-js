@@ -123,13 +123,16 @@ export const DataSnifferView = observer(function DataSnifferView({
         <ScrollArea style={{ height: "100%" }} type="auto">
           {blocks.length === 0 ? (
             <Text c="dimmed" size="sm" p="sm">
-              Nothing structured yet — this is a live watch, so JSON, CSV/TSV and
-              tables appear here as panes emit them. The sniffer reads every pane
-              in every session via <code>pipe-pane</code> in the bridge process,
-              so it surfaces data from panes this browser is <em>not</em> focused
-              on, and it sits <em>between</em> you and the terminal without
-              injecting a byte. Try <code>echo '[{"{"}a":1,"b":2{"}"}]'</code> or{" "}
-              <code>ls -l</code> in any pane. ({store.sniffedPaneCount} panes
+              Nothing structured yet — this is a live watch, so JSON, CSV/TSV
+              and tables appear here as panes emit them. The sniffer reads every
+              pane in every session via <code>pipe-pane</code> in the bridge
+              process, so it surfaces data from panes this browser is{" "}
+              <em>not</em> focused on, and it sits <em>between</em> you and the
+              terminal without injecting a byte. Try{" "}
+              <code>
+                echo '[{"{"}a":1,"b":2{"}"}]'
+              </code>{" "}
+              or <code>ls -l</code> in any pane. ({store.sniffedPaneCount} panes
               tapped)
             </Text>
           ) : (
@@ -296,7 +299,9 @@ const RenderedTable = observer(function RenderedTable({
           {rows.length > MAX_RENDER_ROWS
             ? `showing first ${MAX_RENDER_ROWS} of ${rows.length} rows`
             : ""}
-          {rows.length > MAX_RENDER_ROWS && width > MAX_RENDER_COLS ? " · " : ""}
+          {rows.length > MAX_RENDER_ROWS && width > MAX_RENDER_COLS
+            ? " · "
+            : ""}
           {width > MAX_RENDER_COLS
             ? `first ${MAX_RENDER_COLS} of ${width} columns`
             : ""}

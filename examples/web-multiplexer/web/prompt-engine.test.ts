@@ -22,7 +22,8 @@ const osc = (body: string): string => `\x1b]${body}\x1b\\`;
 const A = osc("133;A"); // prompt start
 const B = osc("133;B"); // command start
 const C = osc("133;C"); // output start (command executed)
-const D = (code?: number): string => osc(code === undefined ? "133;D" : `133;D;${code}`);
+const D = (code?: number): string =>
+  osc(code === undefined ? "133;D" : `133;D;${code}`);
 
 /** A complete command lifecycle: prompt, the typed line, output, finish. */
 const cmd = (line: string, output = "", code?: number): string =>
@@ -142,7 +143,10 @@ describe("PromptEngine — running vs finished", () => {
     expect(engine.commands[0].status).toEqual({ kind: "running" });
     expect(engine.commands[0].output).toContain("line 1");
     engine.pushBytes(PANE, enc(`line 2\n${D(0)}`));
-    expect(engine.commands[0].status).toEqual({ kind: "finished", exitCode: 0 });
+    expect(engine.commands[0].status).toEqual({
+      kind: "finished",
+      exitCode: 0,
+    });
     expect(engine.commands[0].output).toContain("line 2");
   });
 
@@ -205,7 +209,10 @@ describe("PromptEngine — streaming across chunk boundaries", () => {
     engine.pushBytes(PANE, enc(whole)); // D not yet terminated
     expect(engine.commands[0].status).toEqual({ kind: "running" });
     engine.pushBytes(PANE, enc("3\x1b\\")); // …completes "123"
-    expect(engine.commands[0].status).toEqual({ kind: "finished", exitCode: 123 });
+    expect(engine.commands[0].status).toEqual({
+      kind: "finished",
+      exitCode: 123,
+    });
   });
 });
 

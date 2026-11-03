@@ -44,7 +44,12 @@ export interface ChaosConfig {
   readonly seed: number;
 }
 
-const CLEAN: ChaosConfig = { dropRate: 0, corruptRate: 0, latencyMs: 0, seed: 1 };
+const CLEAN: ChaosConfig = {
+  dropRate: 0,
+  corruptRate: 0,
+  latencyMs: 0,
+  seed: 1,
+};
 
 /** What chaos did to an inbound line: delivered intact, or delivered corrupted. */
 export type WireFate = "clean" | "corrupted";
@@ -178,7 +183,12 @@ export class TutorialStore {
       const fate: WireFate = this.takePending(chunk) ? "clean" : "corrupted";
       this._delivered++;
       if (fate === "corrupted") this._corrupted++;
-      this._wire.push({ seq: this.seq++, dir: "in", text: stripTrailingLf(chunk), fate });
+      this._wire.push({
+        seq: this.seq++,
+        dir: "in",
+        text: stripTrailingLf(chunk),
+        fate,
+      });
       this.parser.feed(chunk);
       this.version++;
     });

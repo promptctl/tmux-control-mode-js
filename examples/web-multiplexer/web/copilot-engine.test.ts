@@ -52,7 +52,12 @@ describe("buildCopilotMessages", () => {
 
   it("renders the outcome and an output preview", () => {
     const msgs = buildCopilotMessages(
-      [cmd("make", { output: "Error: missing target", status: { kind: "finished", exitCode: 2 } })],
+      [
+        cmd("make", {
+          output: "Error: missing target",
+          status: { kind: "finished", exitCode: 2 },
+        }),
+      ],
       { paneLabel: "p" },
     );
     expect(msgs[1].content).toContain("exit 2");
@@ -60,9 +65,12 @@ describe("buildCopilotMessages", () => {
   });
 
   it("renders a running command without an exit code", () => {
-    const msgs = buildCopilotMessages([cmd("sleep 60", { status: { kind: "running" } })], {
-      paneLabel: "p",
-    });
+    const msgs = buildCopilotMessages(
+      [cmd("sleep 60", { status: { kind: "running" } })],
+      {
+        paneLabel: "p",
+      },
+    );
     expect(msgs[1].content).toContain("running");
     expect(msgs[1].content).not.toContain("exit");
   });
@@ -77,7 +85,9 @@ describe("buildCopilotMessages", () => {
 
   it("bounds a huge output preview rather than dumping it whole", () => {
     const huge = "x".repeat(5000);
-    const msgs = buildCopilotMessages([cmd("cat big", { output: huge })], { paneLabel: "p" });
+    const msgs = buildCopilotMessages([cmd("cat big", { output: huge })], {
+      paneLabel: "p",
+    });
     expect(msgs[1].content.length).toBeLessThan(2000);
     expect(msgs[1].content).toContain("more chars");
   });
@@ -89,7 +99,8 @@ describe("buildCopilotMessages", () => {
 });
 
 describe("parseSuggestions", () => {
-  const commandsOf = (s: CommandSuggestion[]): string[] => s.map((x) => x.command);
+  const commandsOf = (s: CommandSuggestion[]): string[] =>
+    s.map((x) => x.command);
 
   it("parses a clean JSON array", () => {
     const out = parseSuggestions(
@@ -150,7 +161,9 @@ describe("parseSuggestions", () => {
 
   it("returns [] for a reply with no array (no fabrication)", () => {
     expect(parseSuggestions("I cannot help with that.")).toEqual([]);
-    expect(parseSuggestions("<think>still thinking, never finished")).toEqual([]);
+    expect(parseSuggestions("<think>still thinking, never finished")).toEqual(
+      [],
+    );
     expect(parseSuggestions("")).toEqual([]);
   });
 
@@ -170,16 +183,21 @@ describe("parseSuggestions", () => {
 // so the DECODED command carries a REAL control char (a raw one in JSON source
 // would be rejected by JSON.parse, testing the wrong thing).
 describe("parseSuggestions — control-char safety (no auto-Enter)", () => {
-  const commandsOf = (s: CommandSuggestion[]): string[] => s.map((x) => x.command);
+  const commandsOf = (s: CommandSuggestion[]): string[] =>
+    s.map((x) => x.command);
 
   it("drops a command whose interior \\r would auto-execute the line", () => {
-    expect(parseSuggestions('[{"command": "ls\\rrm -rf /", "reason": "sneaky"}]')).toEqual([]);
+    expect(
+      parseSuggestions('[{"command": "ls\\rrm -rf /", "reason": "sneaky"}]'),
+    ).toEqual([]);
   });
 
   it("drops a trailing \\r rather than silently trimming it to a clean-looking command", () => {
     // "make\r" must be REJECTED, not trimmed to "make" — trimming would alter
     // the model's command and hide that it tried to smuggle an Enter.
-    expect(parseSuggestions('[{"command": "make\\r", "reason": "x"}]')).toEqual([]);
+    expect(parseSuggestions('[{"command": "make\\r", "reason": "x"}]')).toEqual(
+      [],
+    );
   });
 
   it("drops commands carrying ESC, ETX, newline, tab, or DEL", () => {

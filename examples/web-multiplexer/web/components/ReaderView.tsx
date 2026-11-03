@@ -139,13 +139,13 @@ export const ReaderView = observer(function ReaderView({
           {activeId === null ? (
             <Text c="dimmed" size="sm" p="sm">
               Nothing to read yet — this is a live watch, so a pane's output
-              appears here as it prints (no backfill of pre-existing scrollback).
-              Reader mode reads every pane in every session via{" "}
-              <code>pipe-pane</code> in the bridge process, so it surfaces output
-              from panes this browser is <em>not</em> focused on, and it sits{" "}
-              <em>between</em> you and the terminal without injecting a byte. Run{" "}
-              <code>man bash</code> or <code>cat</code> a long log in any pane,
-              then tap it above.
+              appears here as it prints (no backfill of pre-existing
+              scrollback). Reader mode reads every pane in every session via{" "}
+              <code>pipe-pane</code> in the bridge process, so it surfaces
+              output from panes this browser is <em>not</em> focused on, and it
+              sits <em>between</em> you and the terminal without injecting a
+              byte. Run <code>man bash</code> or <code>cat</code> a long log in
+              any pane, then tap it above.
             </Text>
           ) : (
             <div

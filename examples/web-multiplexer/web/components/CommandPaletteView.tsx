@@ -118,18 +118,19 @@ export const CommandPaletteView = observer(function CommandPaletteView({
               {store.commandCount === 0 ? (
                 <>
                   No commands yet — this is a live watch, so every command any
-                  shell runs collects here, chunked out of the byte stream by its{" "}
-                  <code>OSC 133</code> prompt-integration marks (the same marks
-                  iTerm2, VTE and WezTerm use to fold commands). The palette reads
-                  every pane in every session via <code>pipe-pane</code> in the
-                  bridge process, so it surfaces commands from panes this browser
-                  is <em>not</em> focused on, and it sits <em>between</em> you and
-                  the terminal without injecting a byte. Enable shell integration
-                  (iTerm2, <code>starship</code>, or the VTE/Kitty hooks), or test
-                  it with{" "}
+                  shell runs collects here, chunked out of the byte stream by
+                  its <code>OSC 133</code> prompt-integration marks (the same
+                  marks iTerm2, VTE and WezTerm use to fold commands). The
+                  palette reads every pane in every session via{" "}
+                  <code>pipe-pane</code> in the bridge process, so it surfaces
+                  commands from panes this browser is <em>not</em> focused on,
+                  and it sits <em>between</em> you and the terminal without
+                  injecting a byte. Enable shell integration (iTerm2,{" "}
+                  <code>starship</code>, or the VTE/Kitty hooks), or test it
+                  with{" "}
                   <code>
-                    printf
-                    '\e]133;A\e\\$ \e]133;B\e\\date\n\e]133;C\e\\Mon\n\e]133;D;0\e\\'
+                    printf '\e]133;A\e\\$
+                    \e]133;B\e\\date\n\e]133;C\e\\Mon\n\e]133;D;0\e\\'
                   </code>{" "}
                   in any pane. ({store.tappedPaneCount} panes tapped)
                 </>
@@ -150,7 +151,11 @@ export const CommandPaletteView = observer(function CommandPaletteView({
                   onJump={() => {
                     const loc = locations.get(entry.paneId);
                     if (loc === undefined) return;
-                    demoStore.jumpToPane(loc.sessionId, loc.windowId, entry.paneId);
+                    demoStore.jumpToPane(
+                      loc.sessionId,
+                      loc.windowId,
+                      entry.paneId,
+                    );
                     uiStore.setAppMode("multiplexer");
                   }}
                 />
@@ -250,7 +255,10 @@ const CommandRow = observer(function CommandRow({
       </Group>
       {expanded && (
         <Stack gap={4} mt={8}>
-          <Code block style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+          <Code
+            block
+            style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}
+          >
             {entry.command}
           </Code>
           {entry.output !== "" && (

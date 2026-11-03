@@ -25,7 +25,11 @@ const TICK_INTERVAL_MS = 200;
 /** Max blocks retained in the live feed (FIFO). Bounds memory. */
 const BLOCK_CAP = 500;
 
-export type { SniffedBlock, SniffFormat, TabularData } from "./data-sniff-engine.ts";
+export type {
+  SniffedBlock,
+  SniffFormat,
+  TabularData,
+} from "./data-sniff-engine.ts";
 
 export class DataSnifferStore {
   /** True while the firehose taps are open (sniffer mode is active). */

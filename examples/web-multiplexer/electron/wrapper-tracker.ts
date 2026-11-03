@@ -26,10 +26,10 @@ export interface WrapperTracker<L, W> {
   remove(channel: string, listener: L): W | null;
 }
 
-export function createWrapperTracker<
-  L extends object,
-  W,
->(): WrapperTracker<L, W> {
+export function createWrapperTracker<L extends object, W>(): WrapperTracker<
+  L,
+  W
+> {
   const byChannel = new Map<string, Map<L, W[]>>();
 
   const channelMap = (channel: string): Map<L, W[]> => {
@@ -63,6 +63,5 @@ export function createWrapperTracker<
       }
       return wrapper;
     },
-
   };
 }

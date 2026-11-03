@@ -75,7 +75,11 @@ export type PlaygroundTarget =
  */
 export type PlaygroundResult =
   | { readonly status: "idle" }
-  | { readonly status: "value"; readonly value: string; readonly updateCount: number }
+  | {
+      readonly status: "value";
+      readonly value: string;
+      readonly updateCount: number;
+    }
   | { readonly status: "error"; readonly message: string };
 
 /** Live REPL ring cap. Holds full response bodies; never persisted. */
@@ -154,7 +158,9 @@ export function parseConsole(raw: unknown): ConsolePersist {
           .slice(-CONSOLE_HISTORY_CAP)
       : DEFAULT_CONSOLE.commandHistory,
     lastFormat:
-      typeof bag.lastFormat === "string" ? bag.lastFormat : DEFAULT_CONSOLE.lastFormat,
+      typeof bag.lastFormat === "string"
+        ? bag.lastFormat
+        : DEFAULT_CONSOLE.lastFormat,
     lastTarget: parseTarget(bag.lastTarget),
     lastMode:
       bag.lastMode === "one-shot" || bag.lastMode === "subscribed"

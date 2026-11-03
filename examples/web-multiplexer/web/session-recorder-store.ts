@@ -255,7 +255,9 @@ export class SessionRecorderStore {
     if (this.geometryRequested.has(paneId)) return;
     this.geometryRequested.add(paneId);
     void this.bridge
-      .execute(`display-message -p -t %${paneId} '#{pane_width};#{pane_height}'`)
+      .execute(
+        `display-message -p -t %${paneId} '#{pane_width};#{pane_height}'`,
+      )
       .then((r) => {
         const geo = parseGeometry(r.output[0]);
         if (geo !== null) this.geometry.set(paneId, geo);

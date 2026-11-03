@@ -42,9 +42,7 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   // When tmux has a pane zoomed (C-b z), render only the active pane at
   // full size. The other panes still exist server-side — they're just
   // hidden from view, matching tmux's own zoom UX.
-  const visible = win.zoomed
-    ? win.panes.filter((p) => p.active)
-    : win.panes;
+  const visible = win.zoomed ? win.panes.filter((p) => p.active) : win.panes;
 
   // Derive layout orientation from pane geometry. tmux sends us the actual
   // width/height per pane; from that we can tell whether the split is
@@ -52,11 +50,8 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   // (`-v`, same width / different heights). For >2 panes we fall back to
   // a single stack — tmux's layout algebra (tiled, main-horizontal, …)
   // beyond 2 panes is out of scope for this demo.
-  const cols = visible.length <= 1
-    ? 1
-    : isSideBySide(visible)
-    ? visible.length
-    : 1;
+  const cols =
+    visible.length <= 1 ? 1 : isSideBySide(visible) ? visible.length : 1;
 
   return (
     <SimpleGrid cols={cols} spacing="xs" style={{ flex: 1, minHeight: 0 }}>
@@ -90,7 +85,11 @@ interface CellProps {
   readonly uiStore: UiStore;
 }
 
-const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps) {
+const PaneCell = observer(function PaneCell({
+  pane,
+  store,
+  uiStore,
+}: CellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sinkRef = useRef<XtermSink | null>(null);
 
@@ -100,7 +99,11 @@ const PaneCell = observer(function PaneCell({ pane, store, uiStore }: CellProps)
   // `<PaneTerminal>` never tears down and rebuilds the xterm sink on a prop
   // change that doesn't change the stream (O10).
   const obs = useMemo(
-    () => new ObservablePaneStream({ client: store.paneStreamClient, paneId: pane.id }),
+    () =>
+      new ObservablePaneStream({
+        client: store.paneStreamClient,
+        paneId: pane.id,
+      }),
     [pane.id, store.paneStreamClient],
   );
   // Dispose the stream when the pane unmounts or pane.id changes.

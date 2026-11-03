@@ -89,7 +89,11 @@ export function parseTemplate(template: string): Template {
       const close = template.indexOf("}", i + 2);
       const name = close === -1 ? "" : template.slice(i + 2, close);
       // A well-formed `${name}` needs a non-empty name of name-chars only.
-      if (close !== -1 && name.length > 0 && [...name].every((ch) => VAR_CHAR.test(ch))) {
+      if (
+        close !== -1 &&
+        name.length > 0 &&
+        [...name].every((ch) => VAR_CHAR.test(ch))
+      ) {
         flush();
         tokens.push({ kind: "var", name });
         i = close + 1;
@@ -204,7 +208,11 @@ export interface PaneBindings {
  * unrepresentable. [LAW:types-are-the-program]
  */
 export type PaneResolution =
-  | { readonly kind: "resolved"; readonly paneId: number; readonly text: string }
+  | {
+      readonly kind: "resolved";
+      readonly paneId: number;
+      readonly text: string;
+    }
   | {
       readonly kind: "unresolved";
       readonly paneId: number;
@@ -280,6 +288,9 @@ export function sendablePanes(
   resolutions: readonly PaneResolution[],
 ): readonly { readonly paneId: number; readonly text: string }[] {
   return resolutions
-    .filter((r): r is Extract<PaneResolution, { kind: "resolved" }> => r.kind === "resolved")
+    .filter(
+      (r): r is Extract<PaneResolution, { kind: "resolved" }> =>
+        r.kind === "resolved",
+    )
     .map((r) => ({ paneId: r.paneId, text: r.text }));
 }

@@ -262,7 +262,9 @@ describe("HyperlinkEngine — scope and safety", () => {
   });
 
   it("does NOT auto-detect a bare URL in plain text (OSC 8 only)", () => {
-    expect(collect("visit https://not-a-link.example for info")).toHaveLength(0);
+    expect(collect("visit https://not-a-link.example for info")).toHaveLength(
+      0,
+    );
   });
 });
 
@@ -272,10 +274,7 @@ describe("HyperlinkEngine — capacity, counts, clear", () => {
     engine.pushBytes(PANE, enc(link("https://1", "1")));
     engine.pushBytes(PANE, enc(link("https://2", "2")));
     engine.pushBytes(PANE, enc(link("https://3", "3"))); // evicts #1
-    expect(engine.links.map((l) => l.uri)).toEqual([
-      "https://2",
-      "https://3",
-    ]);
+    expect(engine.links.map((l) => l.uri)).toEqual(["https://2", "https://3"]);
     expect(engine.linkCount).toBe(2);
   });
 
