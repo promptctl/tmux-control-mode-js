@@ -30,5 +30,11 @@ const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
  * with `(await getOwnClient(client)).flags`.
  */
 export function watchServerArgs(targetSession: string): string[] {
-  return ["attach-session", "-t", `=${targetSession}`, "-f", WATCH_CLIENT_FLAGS];
+  return [
+    "attach-session",
+    "-t",
+    `=${targetSession}`,
+    "-f",
+    WATCH_CLIENT_FLAGS,
+  ];
 }
