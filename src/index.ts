@@ -109,4 +109,7 @@ export {
   queryClipboard,
   queryTmuxVersion,
   capturePane,
+  getOwnClient,
 } from "./commands/index.js";
+export type { OwnClient } from "./commands/index.js";
+export { watchServerArgs } from "./watch-server.js";
