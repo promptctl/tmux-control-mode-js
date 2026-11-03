@@ -241,12 +241,7 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
 
     const renderer = hub.createRenderer();
 
-    for (const evil of [
-      "constructor",
-      "__proto__",
-      "toString",
-      "hasOwnProperty",
-    ]) {
+    for (const evil of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
       await expect(
         renderer.ipcRenderer.invoke(IPC.invoke, { method: evil, args: [] }),
       ).resolves.toMatchObject({
@@ -309,12 +304,18 @@ describe("Electron IPC bridge — C4 backpressure", () => {
       t.feed(`%output %3 ${"x".repeat(30)}\n`);
     }
     // 5×30 = 150 outstanding, > high=100 → one pause fired.
-    expect(t.sent.filter((c) => c.includes("%3:pause"))).toHaveLength(1);
-    expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(0);
+    expect(
+      t.sent.filter((c) => c.includes("%3:pause")),
+    ).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%3:continue")),
+    ).toHaveLength(0);
 
     // Ack 130 bytes → outstanding = 20 < low=25 → exactly one continue.
     renderer.ipcRenderer.send(IPC.ack, { paneId: 3, bytes: 130 });
-    expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%3:continue")),
+    ).toHaveLength(1);
   });
 
   it("does not re-pause on every chunk while already paused", () => {
@@ -333,7 +334,9 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     for (let i = 0; i < 20; i++) {
       t.feed(`%output %7 ${"x".repeat(30)}\n`);
     }
-    expect(t.sent.filter((c) => c.includes("%7:pause"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%7:pause")),
+    ).toHaveLength(1);
   });
 
   it("counts outstanding bytes per renderer separately (sum across renderers drives pause)", () => {
@@ -385,11 +388,15 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     for (let i = 0; i < 5; i++) {
       t.feed(`%output %4 ${"x".repeat(30)}\n`);
     }
-    expect(t.sent.filter((c) => c.includes("%4:pause"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%4:pause")),
+    ).toHaveLength(1);
 
     renderer.destroy();
     // Destroy → drop subscriber → outstanding for pane %4 drops to 0 → resume.
-    expect(t.sent.filter((c) => c.includes("%4:continue"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%4:continue")),
+    ).toHaveLength(1);
   });
 
   it("dispose resumes any panes the bridge had paused", () => {
@@ -410,7 +417,9 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     }
     handle.dispose();
 
-    expect(t.sent.filter((c) => c.includes("%5:continue"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => c.includes("%5:continue")),
+    ).toHaveLength(1);
   });
 
   it("rejects invalid watermark configuration", () => {
@@ -480,10 +489,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     // Make the MAIN client topology-dependent so its own router bootstraps
     // (already ready → bootstrap fires immediately) and issues `list-panes -a`.
-    client.attachBytesSink(
-      { write() {}, end() {} },
-      { scope: sessionScope(1) },
-    );
+    client.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
     expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
 
     // Reject that bootstrap → the MAIN client emits topology-error locally.
@@ -1116,7 +1122,9 @@ describe("Electron IPC bridge — dispose", () => {
 
     handle.dispose();
 
-    await expect(proxy.execute("list-windows")).rejects.toThrow(/no handler/);
+    await expect(proxy.execute("list-windows")).rejects.toThrow(
+      /no handler/,
+    );
   });
 });
 
@@ -1147,7 +1155,10 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
       // Smoke-call: every method should accept its declared argument count.
       // We don't assert the result here (the dispatcher needs a live client)
       // — only that referring to the method does not throw.
-      expect(() => fn, `proxy.${name} reference threw on access`).not.toThrow();
+      expect(
+        () => fn,
+        `proxy.${name} reference threw on access`,
+      ).not.toThrow();
     }
   });
 
@@ -1218,21 +1229,11 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
 
     const got: Array<"a" | "c"> = [];
     proxyA.attachBytesSink(
-      {
-        write() {
-          got.push("a");
-        },
-        end() {},
-      },
+      { write() { got.push("a"); }, end() {} },
       { scope: paneScope(42) },
     );
     proxyC.attachBytesSink(
-      {
-        write() {
-          got.push("c");
-        },
-        end() {},
-      },
+      { write() { got.push("c"); }, end() {} },
       { scope: paneScope(42) },
     );
     // proxyB receives nothing — destroyed before broadcast.
@@ -1894,7 +1895,9 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const bUnsub = pb.unsubscribe("focus");
     feedCommandResponse(t, 3, []);
     await bUnsub;
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
   });
 
   it("auto-unsubscribes a sender's subscriptions when its WebContents is destroyed", async () => {
@@ -1916,7 +1919,9 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     a.destroy();
 
     // Refcount went 1 → 0; bridge issues tmux unsubscribe.
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
   });
 
   it("auto-cleanup respects refcount: surviving sender keeps the subscription alive", async () => {
@@ -1940,11 +1945,15 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     a.destroy();
     // B still owns "focus"; refcount = 1; no tmux unsubscribe yet.
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toEqual([]);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toEqual([]);
 
     // When B finally goes too, the unsubscribe fires.
     b.destroy();
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
   });
 
   it("dispose clears every refcounted subscription with one tmux unsubscribe each", async () => {
@@ -1967,10 +1976,12 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     handle.dispose();
 
     // Bridge issues an unsubscribe per refcounted name on dispose.
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
-    expect(t.sent.filter((c) => isUnsubscribeWire(c, "layout"))).toHaveLength(
-      1,
-    );
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "focus")),
+    ).toHaveLength(1);
+    expect(
+      t.sent.filter((c) => isUnsubscribeWire(c, "layout")),
+    ).toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------
@@ -2201,10 +2212,9 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    const err = await proxy.execute("list-windows").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
+    const err = await proxy
+      .execute("list-windows")
+      .then(() => undefined, (e: unknown) => e);
 
     expect(err).toBeInstanceOf(BridgeError);
     expect((err as BridgeError).code).toBe("BRIDGE_INTERNAL");
@@ -2255,6 +2265,7 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     expect(wsModule.BridgeError).toBe(BridgeError);
   });
 });
+
 
 describe("Electron IPC bridge — cross-session layout coverage", () => {
   it("delivers decoded events only to renderers that enabled them, and the relay's raw frames to none", async () => {

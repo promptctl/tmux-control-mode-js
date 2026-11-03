@@ -18,7 +18,11 @@ import {
   isCrossSessionLayoutMessage,
   type CrossSessionLayoutMessage,
 } from "../../cross-session-layout-messages.js";
-import type { PaneOutputMessage, TmuxMessage } from "../../protocol/types.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
+  TmuxMessage,
+} from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
@@ -145,7 +149,17 @@ export interface ResultErrFrame {
   readonly error: BridgeErrorPayload;
 }
 
-export type ResultFrame = ResultOkFrame | ResultErrFrame;
+// A tmux `%error` reply: the call reached tmux and tmux refused it. Distinct
+// from ResultErrFrame (the bridge itself failed) so the client can rethrow it
+// as a TmuxCommandError, as the Electron renderer and a direct TmuxClient do.
+export interface ResultTmuxErrorFrame {
+  readonly k: "result";
+  readonly id: string;
+  readonly ok: false;
+  readonly tmuxError: CommandResponse;
+}
+
+export type ResultFrame = ResultOkFrame | ResultErrFrame | ResultTmuxErrorFrame;
 
 export interface PongFrame {
   readonly k: "pong";
@@ -418,13 +432,14 @@ function parseResult(x: unknown): ResultFrame {
     ok?: unknown;
     response?: unknown;
     error?: unknown;
+    tmuxError?: unknown;
   };
   if (typeof o.id !== "string" || o.id.length === 0) {
     throw new BridgeProtocolError("result.id must be a non-empty string");
   }
   if (o.ok === true) {
-    // `null` is the response of the bridge-stateful methods that answer
-    // without a tmux command (see RpcSpec in ../rpc.ts).
+    // `null` is legal only for the methods whose RpcSpec response is null;
+    // the outbox, which knows each call's method, enforces that pairing.
     if (typeof o.response !== "object") {
       throw new BridgeProtocolError(
         "result.response must be an object or null",
@@ -435,6 +450,17 @@ function parseResult(x: unknown): ResultFrame {
       id: o.id,
       ok: true,
       response: o.response as RpcResponseMap[RpcMethod],
+    };
+  }
+  if (o.ok === false && "tmuxError" in o) {
+    if (typeof o.tmuxError !== "object" || o.tmuxError === null) {
+      throw new BridgeProtocolError("result.tmuxError must be an object");
+    }
+    return {
+      k: "result",
+      id: o.id,
+      ok: false,
+      tmuxError: o.tmuxError as CommandResponse,
     };
   }
   if (o.ok === false) {

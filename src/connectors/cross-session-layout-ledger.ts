@@ -6,7 +6,7 @@
 // behind the client ref-counts those references itself, so tmux sees one
 // subscription however many peers enable.
 //
-// [LAW:one-source-of-truth] `holders` is the single record of who enabled:
+// [LAW:one-source-of-truth] `peers` is the single record of who enabled:
 // the bridge's event routing reads it (`isEnabled`) to decide which peers
 // receive the decoded events, so delivery and the reference count cannot
 // disagree.
@@ -14,6 +14,7 @@
 import type { TmuxClient } from "../client.js";
 
 import type { Peer } from "./bridge-peer.js";
+import { BridgeError } from "./errors.js";
 
 export interface CrossSessionLayoutLedgerDeps {
   readonly client: Pick<
@@ -22,11 +23,22 @@ export interface CrossSessionLayoutLedgerDeps {
   >;
 }
 
+// [LAW:types-are-the-program] One peer's coverage. `held` is present from the
+// moment the peer asks, so an event landing while the enable is in flight
+// already reaches it; `releasing` keeps delivering until the relay has the
+// reference back, so delivery never stops ahead of the reference count.
+type Coverage =
+  | { readonly kind: "none" }
+  | { readonly kind: "held"; readonly enabling: Promise<void> }
+  | { readonly kind: "releasing"; readonly releasing: Promise<void> };
+
+const NONE: Coverage = { kind: "none" };
+
 export class CrossSessionLayoutLedger {
-  // Peer → its enable call. Present from the moment the peer asks, so an
-  // event that lands while the enable is still in flight already reaches it,
-  // and a disable that races the enable waits for it before releasing.
-  private readonly holders = new Map<Peer, Promise<void>>();
+  // Registered peer → its coverage. Presence is this ledger's registration
+  // truth, so a call for a removed peer cannot take a reference nothing
+  // would give back.
+  private readonly peers = new Map<Peer, Coverage>();
 
   // Fire-and-forget on the peer-teardown seam only, matching
   // SubscriptionLedger: the peer is gone, so there is no caller to report to.
@@ -34,43 +46,100 @@ export class CrossSessionLayoutLedger {
 
   constructor(private readonly deps: CrossSessionLayoutLedgerDeps) {}
 
+  register(peer: Peer): void {
+    if (this.peers.has(peer)) {
+      throw new BridgeError(
+        "BRIDGE_INTERNAL",
+        `peer ${peer.id} is already registered with the cross-session layout ledger`,
+      );
+    }
+    this.peers.set(peer, NONE);
+  }
+
   isEnabled(peer: Peer): boolean {
-    return this.holders.has(peer);
+    const coverage = this.peers.get(peer);
+    return coverage !== undefined && coverage.kind !== "none";
   }
 
   /** Idempotent per peer: a second enable from the same peer joins the first. */
   enable(peer: Peer): Promise<void> {
-    const held = this.holders.get(peer);
-    if (held !== undefined) return held;
-    const enabling = this.deps.client.enableCrossSessionLayoutChange();
-    this.holders.set(peer, enabling);
-    // A rejected enable counts for nothing (the relay already undid its
-    // reference), so the peer holds nothing either.
-    enabling.catch(() => {
-      if (this.holders.get(peer) === enabling) this.holders.delete(peer);
-    });
-    return enabling;
+    const coverage = this.peers.get(peer);
+    if (coverage === undefined) return unregistered(peer, "enable");
+    switch (coverage.kind) {
+      case "held":
+        return coverage.enabling;
+      case "releasing":
+        // The release gives the old reference back whatever its outcome, so
+        // the new reference is taken after it.
+        return coverage.releasing.then(
+          () => this.enable(peer),
+          () => this.enable(peer),
+        );
+      case "none": {
+        const enabling = this.deps.client.enableCrossSessionLayoutChange();
+        const held: Coverage = { kind: "held", enabling };
+        this.peers.set(peer, held);
+        // A rejected enable counts for nothing (the relay already undid its
+        // reference), so the peer holds nothing either.
+        enabling.catch(() => this.settle(peer, held));
+        return enabling;
+      }
+    }
   }
 
-  /** Idempotent per peer: disabling a peer that holds nothing is a no-op. */
-  async disable(peer: Peer): Promise<void> {
-    const held = this.holders.get(peer);
-    if (held === undefined) return;
-    this.holders.delete(peer);
-    try {
-      await held;
-    } catch {
-      // The enable failed, so there is no reference to give back.
-      return;
+  /**
+   * Idempotent per peer: disabling a peer that holds nothing is a no-op.
+   * Gives the relay its reference back whatever the outcome; a rejection
+   * reports that tmux refused the relay's own cleanup, not that the peer is
+   * still enabled.
+   */
+  disable(peer: Peer): Promise<void> {
+    const coverage = this.peers.get(peer);
+    if (coverage === undefined) return unregistered(peer, "disable");
+    switch (coverage.kind) {
+      case "none":
+        return Promise.resolve();
+      case "releasing":
+        return coverage.releasing;
+      case "held": {
+        const releasing = coverage.enabling.then(
+          () => this.deps.client.disableCrossSessionLayoutChange(),
+          // The enable failed, so there is no reference to give back.
+          () => undefined,
+        );
+        const slot: Coverage = { kind: "releasing", releasing };
+        this.peers.set(peer, slot);
+        const settleSlot = (): void => this.settle(peer, slot);
+        releasing.then(settleSlot, settleSlot);
+        return releasing;
+      }
     }
-    await this.deps.client.disableCrossSessionLayoutChange();
   }
 
   releasePeer(peer: Peer): void {
+    if (!this.peers.has(peer)) return;
     void this.disable(peer).catch(this.swallow);
+    this.peers.delete(peer);
   }
 
   dispose(): void {
-    for (const peer of [...this.holders.keys()]) this.releasePeer(peer);
+    for (const peer of [...this.peers.keys()]) this.releasePeer(peer);
   }
+
+  // Returns `peer` to "none" only if `from` is still its current coverage, so
+  // a settle never clobbers a newer enable or a removal.
+  private settle(peer: Peer, from: Coverage): void {
+    if (this.peers.get(peer) === from) this.peers.set(peer, NONE);
+  }
+}
+
+// [LAW:no-silent-failure] A call for a peer this ledger never registered, or
+// already released, would take a relay reference nothing gives back.
+function unregistered(peer: Peer, op: string): Promise<never> {
+  return Promise.reject(
+    new BridgeError(
+      "BRIDGE_INTERNAL",
+      `cross-session layout ${op} called for peer ${peer.id}, which is not registered`,
+    ),
+  );
 }

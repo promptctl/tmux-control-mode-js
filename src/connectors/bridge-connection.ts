@@ -213,6 +213,7 @@ export function createBridgeConnection(
       const peer: Peer = { id: nextPeerId++ };
       subscription.register(peer);
       backpressure.register(peer);
+      crossSessionLayout.register(peer);
       return peer;
     },
 

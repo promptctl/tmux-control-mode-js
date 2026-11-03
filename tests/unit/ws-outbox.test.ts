@@ -11,6 +11,7 @@ import {
   type ResultFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import { TmuxCommandError } from "../../src/errors.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -174,5 +175,44 @@ describe("Outbox — drain", () => {
     expect((await c2) as BridgeError).toMatchObject({ code: "BRIDGE_CLOSED" });
     // A late result for a drained call is a no-op — the entry is gone.
     expect(() => outbox.settle(okResult("r1"))).not.toThrow();
+  });
+});
+
+describe("Outbox — settle", () => {
+  const failed: CommandResponse = {
+    commandNumber: 1,
+    timestamp: 0,
+    output: ["no such hook"],
+    success: false,
+  };
+
+  it("rejects a tmux %error result as TmuxCommandError, matching the Electron renderer", async () => {
+    const outbox = new Outbox(() => true);
+    const p = outbox.enqueue("r1", "enableCrossSessionLayoutChange", "f", 1000);
+    outbox.settle({ k: "result", id: "r1", ok: false, tmuxError: failed });
+    await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
+  });
+
+  it("accepts a null response only for a method whose response is null", async () => {
+    const outbox = new Outbox(() => true);
+    const exec = outbox.enqueue("r1", "execute", "f1", 1000);
+    const en = outbox.enqueue(
+      "r2",
+      "enableCrossSessionLayoutChange",
+      "f2",
+      1000,
+    );
+    const dis = outbox.enqueue(
+      "r3",
+      "disableCrossSessionLayoutChange",
+      "f3",
+      1000,
+    );
+    outbox.settle({ k: "result", id: "r1", ok: true, response: null });
+    outbox.settle({ k: "result", id: "r2", ok: true, response: null });
+    outbox.settle(okResult("r3"));
+    await expect(exec).rejects.toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+    await expect(en).resolves.toBeNull();
+    await expect(dis).rejects.toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
   });
 });

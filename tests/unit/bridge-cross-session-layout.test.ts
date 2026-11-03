@@ -154,4 +154,33 @@ describe("BridgeConnection — cross-session layout coverage", () => {
       expect(() => parseRpcRequest(req)).toThrow(/reserved/);
     }
   });
+
+  it("refuses an enable for a removed peer, so no reference leaks past teardown", async () => {
+    const { bridge, enable } = makeBridge();
+    const peer = bridge.registerPeer();
+    bridge.removePeer(peer);
+    await expect(
+      bridge.enableCrossSessionLayoutForPeer(peer),
+    ).rejects.toMatchObject({ code: "BRIDGE_INTERNAL" });
+    expect(enable).not.toHaveBeenCalled();
+  });
+
+  it("keeps delivering until the disable settles, then counts the peer disabled even if tmux refused", async () => {
+    const { bridge, disable } = makeBridge();
+    let refuse!: (e: Error) => void;
+    disable.mockReturnValue(new Promise<void>((_, rej) => (refuse = rej)));
+    const peer = bridge.registerPeer();
+    await bridge.enableCrossSessionLayoutForPeer(peer);
+
+    const disabling = bridge.disableCrossSessionLayoutForPeer(peer);
+    await flush();
+    expect(bridge.deliversEvent(peer, change)).toBe(true);
+
+    refuse(new Error("tmux refused"));
+    await expect(disabling).rejects.toThrow("tmux refused");
+    expect(bridge.deliversEvent(peer, change)).toBe(false);
+    // The relay already has the reference back: a retry gives nothing back twice.
+    await bridge.disableCrossSessionLayoutForPeer(peer);
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
 });

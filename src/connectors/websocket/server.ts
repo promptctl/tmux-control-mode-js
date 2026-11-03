@@ -876,11 +876,11 @@ class Connection {
   }
 
   // [LAW:decomposition] WS wire encoding of a BridgeOutcome — the
-  // transport-specific half. `ok` and `tmux-error` both reply with a
-  // CommandResponse frame (a tmux %error is a successful bridge call whose
-  // response carries success:false, not a transport error); `bridge-error`
-  // replies with a typed error frame carrying the BridgeError's code. The
-  // classification that produced the outcome lives in dispatchBridgeRequest.
+  // transport-specific half. `ok` replies with its response, `tmux-error`
+  // with a `tmuxError` frame the client rethrows as TmuxCommandError (as the
+  // Electron renderer does), and `bridge-error` with a typed error frame
+  // carrying the BridgeError's code. The classification that produced the
+  // outcome lives in dispatchBridgeRequest.
   private encodeOutcome(
     id: string,
     outcome: BridgeOutcome,
@@ -898,7 +898,11 @@ class Connection {
       });
       return;
     }
-    this.replyOk(id, outcome.response);
+    this.sendFrame(
+      outcome.kind === "tmux-error"
+        ? { k: "result", id, ok: false, tmuxError: outcome.response }
+        : { k: "result", id, ok: true, response: outcome.response },
+    );
     this.emit({
       kind: "result",
       identity: this.identity,
@@ -1068,10 +1072,6 @@ class Connection {
   // -------------------------------------------------------------------------
   // Reply helpers
   // -------------------------------------------------------------------------
-  private replyOk(id: string, response: RpcResponseMap[RpcMethod]): void {
-    this.sendFrame({ k: "result", id, ok: true, response });
-  }
-
   private replyError(id: string, code: BridgeErrorCode, message: string): void {
     this.sendFrame({
       k: "result",

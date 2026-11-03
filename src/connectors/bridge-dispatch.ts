@@ -3,18 +3,19 @@
 //
 // A bridge server turns a parsed `RpcRequest` into one of three logical
 // outcomes, and that classification is identical for every transport:
-//   1. intercept the bridge-stateful methods (subscribeRaw / unsubscribe) so
+//   1. intercept the bridge-stateful methods (subscribeRaw / unsubscribe /
+//      enableCrossSessionLayoutChange / disableCrossSessionLayoutChange) so
 //      ownership + refcount stay enforced by the shared BridgeConnection,
 //      dispatching everything else through `dispatchRpcRequest`;
 //   2. a tmux `%error` reply (TmuxCommandError) is a SUCCESSFUL bridge call
-//      carrying a failed CommandResponse — the client sees `success:false`,
-//      not a transport error;
+//      carrying a failed CommandResponse — the client rethrows it as a
+//      TmuxCommandError, not a transport error;
 //   3. a typed BridgeError (subscription conflict, unknown subscription, …)
 //      surfaces its code verbatim, and any other throw collapses to
 //      BRIDGE_INTERNAL.
 //
 // What is NOT shared — and stays in each connector — is the WIRE ENCODING of
-// that outcome: the WS server emits `replyOk`/`replyError` frames, the
+// that outcome: the WS server emits `result` frames, the
 // Electron main returns an `InvokeResultEnvelope`. Those are genuinely
 // transport-specific. This module owns the classification; the connectors own
 // the encoding.
@@ -50,7 +51,7 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "./rpc.js";
 //
 // `ok` and `tmux-error` are BOTH successful at the bridge layer; they are
 // kept distinct because the Electron envelope reports them under different
-// `status` tags, while the WS server collapses both to a `replyOk` frame.
+// `status` tags, and the WS server encodes them as distinct result frames.
 // `tmux-error`'s response is always a CommandResponse (a tmux `%error` reply
 // to the underlying `execute()`, independent of which method issued it).
 // `ok`'s response is whatever RpcResponseMap says the dispatched method
