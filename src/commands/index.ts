@@ -33,6 +33,7 @@ import {
   refreshClientQueryClipboard,
   displayMessageVersion,
   displayMessageOwnClient,
+  displayMessagePaneCwd,
   listWindowsCommand,
   listPanesCommand,
   listSessionsCommand,
@@ -46,16 +47,19 @@ import {
   parsePaneRecordLine,
   parseSessionRecordLine,
   parseNewWindowReply,
+  parsePaneCwdReply,
 } from "../pane-output.js";
 import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
   QUERY_CLIPBOARD_MIN_VERSION,
+  PANE_CWD_MIN_VERSION,
   parseTmuxVersionValue,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
 import {
+  PaneCwdUnavailableError,
   TmuxReplyFormatError,
   UnsupportedTmuxVersionError,
   UnrecognizedTmuxVersionError,
@@ -132,10 +136,11 @@ export async function capturePane(
 // A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
 // instead (verified on tmux 3.8), and the library, typed over any
 // TmuxConnection, cannot stat the tmux host's filesystem. A caller that
-// must not fall back checks the path on the host it controls. The ids come
+// must not fall back checks the path on the host it controls; paneCwd() reads
+// the directory the pane's process is in now (its live cwd, not the requested
+// string), which right after the spawn is where it started. Before tmux 3.7 the ids come
 // back before the pane's child has chdir'd, so a listPanes() straight after
-// can still report the server's cwd: pane_current_path is the live process
-// cwd, not the requested one.
+// can still report the server's cwd (see PANE_CWD_MIN_VERSION).
 // [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
 // throws rather than inventing ids.
 export async function newWindow(
@@ -176,6 +181,36 @@ export async function newWindow(
     throw new TmuxReplyFormatError(command, response.output);
   }
   return result;
+}
+
+// The directory the pane's foreground process is in now, which right after
+// newWindow() is the one it started in: the requested cwd as a realpath
+// (compare against realpath(cwd), not cwd), or tmux's $HOME / "/" fallback.
+// [LAW:no-ambient-temporal-coupling] Gated at 3.7 rather than polled below
+// it: older tmux forks before the child chdirs, and no format tells a
+// pre-chdir read from a settled one, so one read is the answer only where
+// tmux makes it so.
+// tmux 3.7 chdirs before it forks, so any path it reports is the settled
+// one; until the child takes its pty it reports none, which rejects as
+// PaneCwdUnavailableError rather than standing in for a path.
+// [LAW:no-silent-failure] A reply that is not exactly one line throws.
+export async function paneCwd(
+  client: TmuxConnection,
+  paneId: number,
+): Promise<string> {
+  await requireTmuxVersion(
+    client,
+    "paneCwd (#{pane_current_path} after spawn)",
+    PANE_CWD_MIN_VERSION,
+  );
+  const command = displayMessagePaneCwd(paneId);
+  const response = await client.execute(command);
+  const cwd = parsePaneCwdReply(response.output);
+  if (cwd === null) {
+    throw new TmuxReplyFormatError(command, response.output);
+  }
+  if (cwd === "") throw new PaneCwdUnavailableError(paneId);
+  return cwd;
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

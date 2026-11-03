@@ -58,6 +58,14 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 };
 
 /**
+ * `paneCwd()` reads `#{pane_current_path}` once. Before tmux 3.7 the server
+ * forks first and the child chdirs after, so a read right after `newWindow()`
+ * can report the server's own cwd. From 3.7 (tmux commit f58b8d0, GitHub issue
+ * 4719) the server chdirs before fork, so the child starts in its final cwd.
+ */
+export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
+
+/**
  * The version shapes portable tmux's configure.ac produces (`3.2a`,
  * `next-3.6`, `3.4-rc`) — the bare `#{version}` value. Anchored on both ends
  * so a vendor tag like OpenBSD base's `openbsd-7.4` is rejected instead of

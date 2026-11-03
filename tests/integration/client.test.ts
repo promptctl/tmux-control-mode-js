@@ -37,6 +37,7 @@ import {
   requestReport,
   capturePane,
   newWindow,
+  paneCwd,
 } from "../../src/commands/index.js";
 import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
@@ -44,6 +45,7 @@ import type { BytesSink } from "../../src/pane-output.js";
 import {
   TmuxCommandError,
   UnsupportedTmuxVersionError,
+  PaneCwdUnavailableError,
 } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
@@ -53,6 +55,7 @@ import {
   QUERY_CLIPBOARD_MIN_VERSION,
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
+  PANE_CWD_MIN_VERSION,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
 import { runningTmuxVersion } from "../helpers/running-tmux.js";
@@ -1441,4 +1444,60 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       (p) => p.paneId === created.paneId && p.cwd === home,
     );
   }, 15000);
+
+  // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so
+  // the only retry allowed is on PaneCwdUnavailableError (no path yet), never
+  // on a path that differs from the expected one.
+  async function settledPaneCwd(c: TmuxClient, paneId: number) {
+    for (;;) {
+      try {
+        return await paneCwd(c, paneId);
+      } catch (err) {
+        if (!(err instanceof PaneCwdUnavailableError)) throw err;
+      }
+    }
+  }
+  it.skipIf(!tmuxAtLeast(PANE_CWD_MIN_VERSION))(
+    "CMD-06: paneCwd() straight after newWindow() reads the requested cwd, or the $HOME fallback for a missing one",
+    async () => {
+      sessionName = uniqueSession("cmd-pcwd");
+      client = await createSession(socketName, sessionName);
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "pcwd-")));
+
+      try {
+        const made = await newWindow(client, {
+          session: sessionName,
+          cwd,
+          command: "sleep 60",
+        });
+        const missing = await newWindow(client, {
+          session: sessionName,
+          cwd: join(cwd, "does-not-exist"),
+          command: "sleep 60",
+        });
+
+        expect(await settledPaneCwd(client, made.paneId)).toBe(cwd);
+        expect(await settledPaneCwd(client, missing.paneId)).toBe(
+          realpathSync(homedir()),
+        );
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    15000,
+  );
+
+  it.skipIf(RUNNING_TMUX_VERSION === null || tmuxAtLeast(PANE_CWD_MIN_VERSION))(
+    "CMD-06: paneCwd() rejects below tmux 3.7 with UnsupportedTmuxVersionError",
+    async () => {
+      sessionName = uniqueSession("cmd-pcwd-old");
+      client = await createSession(socketName, sessionName);
+      const [pane] = await listPanes(client);
+
+      await expect(paneCwd(client, pane.paneId)).rejects.toBeInstanceOf(
+        UnsupportedTmuxVersionError,
+      );
+    },
+    15000,
+  );
 });

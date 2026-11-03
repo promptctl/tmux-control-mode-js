@@ -792,12 +792,14 @@ function parseSigilId(field: string): number {
 
 // Reverses protocol/encoder.ts's `escapeFreeTextField`: a backslash-prefixed
 // `t` is a literal tab, a backslash-prefixed backslash is a literal
-// backslash. Only `pane_current_path` is encoded this way (see that
-// function's doc comment for why the other free-text pane fields need no
-// such treatment) — this is the sole reverse, and the two must only ever
-// change together. Scanning left to right and consuming exactly one escape
-// pair per backslash keeps a run of escapes unambiguous regardless of what
-// precedes it in the field.
+// backslash. Only `pane_current_path` in the tab-separated pane listing is
+// encoded this way (see that function's doc comment for why the other
+// free-text pane fields need no such treatment) — this is the sole reverse,
+// and the two must only ever change together. `paneCwd()` reads the same
+// variable alone on its line, unescaped, so its parser does not use this.
+// Scanning left to right and consuming exactly one escape pair per backslash
+// keeps a run of escapes unambiguous regardless of what precedes it in the
+// field.
 function unescapeFreeTextField(field: string): string {
   let out = "";
   for (let i = 0; i < field.length; i++) {
@@ -899,6 +901,18 @@ export function parseNewWindowReply(
   const match = lines.length === 1 ? /^(@\d+)\t(%\d+)$/.exec(lines[0]) : null;
   if (match === null) return null;
   return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
+}
+
+/**
+ * Parse the whole reply to `paneCwd()`'s `display-message -p
+ * '#{pane_current_path}'`: exactly one line, decoded to Unicode text, with
+ * trailing `\r` CRLF residue dropped the way `parsePaneListLine` drops it
+ * (see `parser.ts`'s `processLine()`). "" is tmux's answer when it cannot read the pane's cwd (dead pane,
+ * or a child that does not own the pty yet); `paneCwd()` rejects it. Null for
+ * any other shape, including the two lines a path with a newline prints.
+ */
+export function parsePaneCwdReply(lines: readonly string[]): string | null {
+  return lines.length === 1 ? decodeField(lines[0].replace(/\r*$/, "")) : null;
 }
 
 /**
