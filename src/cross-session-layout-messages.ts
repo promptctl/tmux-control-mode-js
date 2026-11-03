@@ -85,11 +85,39 @@ export interface CrossSessionLayoutFetchFailedMessage {
   readonly reason: string;
 }
 
+/**
+ * The relay's global hook had been removed — typically by a `set-hook -g
+ * window-layout-changed` without an index (a re-sourced `tmux.conf`), which
+ * replaces the whole hook array — and the relay has reinstalled it. Layout
+ * changes made while it was gone were never recorded; a consumer that needs
+ * completeness re-reads every window's layout on this event, as on overrun.
+ * [LAW:no-silent-failure]
+ */
+export interface CrossSessionLayoutHookRestoredMessage {
+  readonly type: "cross-session-layout-hook-restored";
+}
+
+/**
+ * The windows, server-wide, whose layout changes the relay cannot see: a
+ * window-local hook (`set-hook -w window-layout-changed`) or a hook set on a
+ * session the window is in replaces the global hook array for that window,
+ * so tmux never runs the relay's entry there. The relay does not override
+ * the user's hook; it reports. Emitted whenever the set changes, `[]` once
+ * coverage is whole again — the latest event is the current truth.
+ * [LAW:no-silent-failure]
+ */
+export interface CrossSessionLayoutUncoveredMessage {
+  readonly type: "cross-session-layout-uncovered";
+  readonly windowIds: readonly number[];
+}
+
 export type CrossSessionLayoutMessage =
   | CrossSessionLayoutChangeMessage
   | CrossSessionLayoutDecodeErrorMessage
   | CrossSessionLayoutOverrunMessage
-  | CrossSessionLayoutFetchFailedMessage;
+  | CrossSessionLayoutFetchFailedMessage
+  | CrossSessionLayoutHookRestoredMessage
+  | CrossSessionLayoutUncoveredMessage;
 
 /**
  * The `subscribe-changes` name the relay subscribes under. Reserved: a bridge
@@ -107,6 +135,8 @@ const CROSS_SESSION_LAYOUT_MESSAGE_TYPES: Record<
   "cross-session-layout-decode-error": true,
   "cross-session-layout-overrun": true,
   "cross-session-layout-fetch-failed": true,
+  "cross-session-layout-hook-restored": true,
+  "cross-session-layout-uncovered": true,
 };
 
 export function isCrossSessionLayoutMessage(ev: {

@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CrossSessionLayoutRelay,
+  decodeDelivery,
   decodeEntries,
   planDelivery,
 } from "../../src/cross-session-layout.js";
@@ -111,6 +112,8 @@ function commandError(prefix: string): TmuxCommandError {
  */
 function fakeConnection(seq = "") {
   const sent: string[] = [];
+  // What a re-read of the uncovered windows returns, as `@<wid>,` text.
+  let uncoveredAfterRepair = "";
   const handlers = new Set<Handler>();
   const failures: { prefix: string; error: Error }[] = [];
   const pendingFetches: (() => void)[] = [];
@@ -135,6 +138,9 @@ function fakeConnection(seq = "") {
         return new Promise((resolve) =>
           pendingFetches.push(() => resolve(reply)),
         );
+      }
+      if (command.startsWith("display-message") && command.includes("#{S:")) {
+        return Promise.resolve(respond([uncoveredAfterRepair]));
       }
       if (command.startsWith("display-message")) {
         return Promise.resolve(respond([seq]));
@@ -162,7 +168,12 @@ function fakeConnection(seq = "") {
       holdFetches = true;
     },
     releaseFetches: () => pendingFetches.splice(0).forEach((r) => r()),
-    deliver: (value: string) => {
+    setUncoveredAfterRepair: (text: string) => {
+      uncoveredAfterRepair = text;
+    },
+    /** A delivery whose buffer is `buffer` and whose uncovered half is `uncovered`. */
+    deliver: (buffer: string, uncovered = "") => {
+      const value = `${uncovered}|${buffer}`;
       for (const h of handlers) {
         h({
           type: "subscription-changed",
@@ -338,5 +349,91 @@ describe("CrossSessionLayoutRelay", () => {
     const { relay } = relayOver(fake);
     await expect(relay.enable()).rejects.toThrow(/not an integer/);
     expect(fake.handlers.size).toBe(0);
+  });
+});
+
+describe("decodeDelivery", () => {
+  it("splits the uncovered windows from the buffer", () => {
+    expect(decodeDelivery("@3,@5,|1:@3,")).toEqual({
+      uncovered: [3, 5],
+      buffer: "1:@3,",
+    });
+  });
+
+  it("reads an empty uncovered half as full coverage", () => {
+    expect(decodeDelivery("|1:@3,").uncovered).toEqual([]);
+  });
+
+  it("rejects an uncovered half that is not the format's output", () => {
+    expect(decodeDelivery("@3|1:@3,").uncovered).toBeNull();
+    expect(decodeDelivery("1:@3,").uncovered).toBeNull();
+  });
+});
+
+describe("CrossSessionLayoutRelay coverage", () => {
+  const coverageCommands = (sent: string[]) =>
+    sent.filter((c) => c.startsWith("set-hook") || c.includes("#{S:"));
+
+  it("repairs a cleared hook once and reports it restored, not shadowed", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    const before = coverageCommands(fake.sent).length;
+    // Cleared global: every window uncovered, twice before the repair lands.
+    fake.deliver("", "@0,@1,@2,");
+    fake.deliver("1:@0,", "@0,@1,@2,");
+    await settle();
+    await settle();
+    expect(coverageCommands(fake.sent).length - before).toBe(2);
+    expect(emitted).toContainEqual({
+      type: "cross-session-layout-hook-restored",
+    });
+    expect(
+      emitted.filter((m) => m.type === "cross-session-layout-hook-restored"),
+    ).toHaveLength(1);
+    expect(
+      emitted.filter((m) => m.type === "cross-session-layout-uncovered"),
+    ).toEqual([]);
+  });
+
+  it("reports windows a local hook shadows, and coverage returning", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.setUncoveredAfterRepair("@4,");
+    fake.deliver("", "@4,");
+    await settle();
+    fake.deliver("", "");
+    await settle();
+    expect(emitted).toEqual([
+      { type: "cross-session-layout-uncovered", windowIds: [4] },
+      { type: "cross-session-layout-uncovered", windowIds: [] },
+    ]);
+  });
+
+  it("issues no coverage commands for buffer-only deliveries", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    fake.setUncoveredAfterRepair("@4,");
+    fake.deliver("", "@4,");
+    await settle();
+    const before = coverageCommands(fake.sent).length;
+    fake.deliver("1:@2,", "@4,");
+    fake.deliver("1:@2,2:@2,", "@4,");
+    await settle();
+    expect(coverageCommands(fake.sent).length).toBe(before);
+  });
+
+  it("reports a value that is not the subscribed shape as a decode error", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "junk");
+    await settle();
+    expect(emitted).toContainEqual({
+      type: "cross-session-layout-decode-error",
+      skippedBytes: 5,
+    });
   });
 });

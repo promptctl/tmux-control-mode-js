@@ -13,7 +13,8 @@
 // [LAW:one-source-of-truth] The hook command, option name, subscription
 // name, and entry grammar are each defined exactly once, here.
 // [LAW:no-silent-failure] Every path that drops data (a malformed/sheared
-// entry, a vanished window) emits a diagnostic rather than swallowing.
+// entry, a vanished window, a hook another command removed or shadowed)
+// emits a diagnostic rather than swallowing.
 
 import type { TmuxConnection } from "./client.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
@@ -51,6 +52,7 @@ export type {
  * there. [LAW:one-source-of-truth] The only place this number is written.
  */
 const RESERVED_HOOK_INDEX = 9001;
+const HOOK = `window-layout-changed[${RESERVED_HOOK_INDEX}]`;
 
 const OPTION_NAME = "@ttcmjs-cross-session-layout";
 const SEQ_OPTION_NAME = "@ttcmjs-cross-session-layout-seq";
@@ -91,8 +93,25 @@ function hookCommand(): string {
 function installHookCommand(): string {
   // set-hook takes hook-name + exactly one command argument, so the whole
   // command list goes in as a single tmux-parsed token.
-  return `set-hook -g window-layout-changed[${RESERVED_HOOK_INDEX}] ${tmuxEscape(hookCommand())}`;
+  return `set-hook -g ${HOOK} ${tmuxEscape(hookCommand())}`;
 }
+
+/**
+ * Every window, server-wide, that the hook does not cover, as `@<wid>,`
+ * entries. A hook name in a format reads the hook effective in that
+ * context, so inside `#{W:}` it is empty for a window whose window-local
+ * hook, or whose session's hook, replaces the global array — and for every
+ * window once the global entry itself is gone. No format reads the global
+ * entry alone (a session hook hides it there too), which is why a cleared
+ * hook is recognized by what reinstalling it changes. `#,` because a bare
+ * comma inside `#{W:}` separates its arguments.
+ */
+const UNCOVERED_FORMAT = `#{S:#{W:#{?#{${HOOK}},,#{window_id}#,}}}`;
+
+const UNCOVERED_RE = /^(?:@\d+,)*$/;
+
+/** The subscription's value: the uncovered windows, `|`, then the buffer. */
+const SUBSCRIPTION_FORMAT = `${UNCOVERED_FORMAT}|#{${OPTION_NAME}}`;
 
 function readSeqCommand(): string {
   return `display-message -p ${tmuxEscape(`#{${SEQ_OPTION_NAME}}`)}`;
@@ -157,6 +176,27 @@ export function decodeEntries(value: string): DecodeResult {
   return { entries, skips };
 }
 
+/**
+ * Split one delivery into its uncovered windows and its buffer. `null` for
+ * an uncovered half that isn't the format's own output — tmux generates it,
+ * so a mismatch means the value is not what this relay subscribed to.
+ */
+export function decodeDelivery(value: string): {
+  readonly uncovered: readonly number[] | null;
+  readonly buffer: string;
+} {
+  const bar = value.indexOf("|");
+  const head = bar === -1 ? value : value.slice(0, bar);
+  const buffer = bar === -1 ? "" : value.slice(bar + 1);
+  if (bar === -1 || !UNCOVERED_RE.test(head))
+    return { uncovered: null, buffer };
+  return { uncovered: decodeUncovered(head), buffer };
+}
+
+function decodeUncovered(text: string): number[] {
+  return [...text.matchAll(/@(\d+),/g)].map((m) => Number(m[1]));
+}
+
 export interface DeliveryPlan {
   /** Distinct windows changed since `lastSeq`, in first-seen order. */
   readonly windowIds: readonly number[];
@@ -186,6 +226,10 @@ export function planDelivery(
   };
 }
 
+function sameIds(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
 // ---------------------------------------------------------------------------
 // CrossSessionLayoutRelay
 // ---------------------------------------------------------------------------
@@ -205,7 +249,18 @@ export class CrossSessionLayoutRelay {
   // Bumped on every teardown; a delivery still fetching when its
   // subscription is torn down sees a different generation and emits nothing.
   private generation = 0;
-  // [LAW:dataflow-not-control-flow] enable()/disable() serialize through
+  // The uncovered set the last coverage step settled on (after any repair),
+  // and the set last reported to the consumer. Reset on every subscribe:
+  // the first delivery carries the current state.
+  private settledUncovered: readonly number[] | null = null;
+  private reportedUncovered: readonly number[] = [];
+  // Deliveries arrive in wire order, and tmux writes a delivery before the
+  // reply to any later command — so every delivery counted when a coverage
+  // read's reply lands describes a state no newer than that read.
+  private deliveriesSeen = 0;
+  private settledThrough = 0;
+  // [LAW:dataflow-not-control-flow] enable()/disable() — and coverage
+  // repair, so two deliveries never repair at once — serialize through
   // this slot, and each step reconciles `subscribed` toward `refCount > 0`
   // rather than acting on a decision taken before it waited — so racing
   // calls, and a step that failed, leave state the next step corrects.
@@ -272,13 +327,16 @@ export class CrossSessionLayoutRelay {
       );
     }
     this.lastSeq = Number(seq);
+    this.settledUncovered = null;
+    this.reportedUncovered = [];
+    this.settledThrough = this.deliveriesSeen;
     this.client.on("subscription-changed", this.onSubscriptionChanged);
     try {
       await subscribeRaw(
         this.client,
         SUBSCRIPTION_NAME,
         "",
-        `#{${OPTION_NAME}}`,
+        SUBSCRIPTION_FORMAT,
       );
     } catch (err) {
       this.client.off("subscription-changed", this.onSubscriptionChanged);
@@ -296,7 +354,22 @@ export class CrossSessionLayoutRelay {
 
   private async handleDelivery(value: string): Promise<void> {
     const generation = this.generation;
-    const { entries, skips } = decodeEntries(value);
+    const delivery = decodeDelivery(value);
+    const deliveryIndex = ++this.deliveriesSeen;
+    if (delivery.uncovered === null) {
+      this.emit({
+        type: "cross-session-layout-decode-error",
+        skippedBytes: value.length - delivery.buffer.length,
+      });
+    } else {
+      const uncovered = delivery.uncovered;
+      // The caller of a coverage step is this delivery, which has nobody to
+      // reject to; the step reports its own failures.
+      void this.serialize(() =>
+        this.settleCoverage(generation, deliveryIndex, uncovered),
+      );
+    }
+    const { entries, skips } = decodeEntries(delivery.buffer);
     const plan = planDelivery(entries, this.lastSeq);
     this.lastSeq = plan.lastSeq;
 
@@ -316,6 +389,60 @@ export class CrossSessionLayoutRelay {
     await Promise.all(
       plan.windowIds.map((windowId) => this.fetchAndEmit(generation, windowId)),
     );
+  }
+
+  /**
+   * Bring the reported uncovered set to the truth after repair. A non-empty
+   * set is first answered by reinstalling the hook (idempotent: same index,
+   * same command) and reading the set again; if that shrank it, the global
+   * entry had been removed. What remains is shadowed by the user's own
+   * hooks, which the relay reports and does not override. A delivery older
+   * than the last read is a stale snapshot and is skipped.
+   */
+  private async settleCoverage(
+    generation: number,
+    deliveryIndex: number,
+    uncovered: readonly number[],
+  ): Promise<void> {
+    if (generation !== this.generation) return;
+    if (deliveryIndex <= this.settledThrough) return;
+    if (
+      this.settledUncovered !== null &&
+      sameIds(uncovered, this.settledUncovered)
+    )
+      return;
+    let settled = uncovered;
+    if (uncovered.length > 0) {
+      try {
+        await this.client.execute(installHookCommand());
+        const response = await this.client.execute(
+          `display-message -p ${tmuxEscape(UNCOVERED_FORMAT)}`,
+        );
+        this.settledThrough = this.deliveriesSeen;
+        settled = decodeUncovered(response.output[0] ?? "");
+      } catch (err) {
+        if (
+          err instanceof TransportClosedError ||
+          err instanceof TransportSendError
+        ) {
+          return;
+        }
+        // Repair failed: the windows stay uncovered, which is what the
+        // report below says.
+      }
+    }
+    if (generation !== this.generation) return;
+    this.settledUncovered = settled;
+    if (
+      settled.length < uncovered.length &&
+      settled.every((id) => uncovered.includes(id))
+    ) {
+      this.emit({ type: "cross-session-layout-hook-restored" });
+    }
+    if (!sameIds(settled, this.reportedUncovered)) {
+      this.reportedUncovered = settled;
+      this.emit({ type: "cross-session-layout-uncovered", windowIds: settled });
+    }
   }
 
   private async fetchAndEmit(

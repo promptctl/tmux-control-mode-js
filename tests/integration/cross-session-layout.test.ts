@@ -16,6 +16,7 @@ import type { ConnectionStateMessage } from "../../src/connection-state.js";
 import type {
   CrossSessionLayoutChangeMessage,
   CrossSessionLayoutDecodeErrorMessage,
+  CrossSessionLayoutMessage,
 } from "../../src/cross-session-layout.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
@@ -233,6 +234,75 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       await new Promise((r) => setTimeout(r, 3000));
 
       expect(decodeErrors).toEqual([]);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
+
+  it("restores a hook cleared by an index-less set-hook and keeps relaying", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const diagnostics: CrossSessionLayoutMessage[] = [];
+      clientA.on("cross-session-layout-hook-restored", (e) =>
+        diagnostics.push(e),
+      );
+      clientA.on("cross-session-layout-uncovered", (e) => diagnostics.push(e));
+
+      // A re-sourced tmux.conf: replaces the whole hook array.
+      exec(socketName, `set-hook -g window-layout-changed "display-message x"`);
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(diagnostics).toEqual([
+        { type: "cross-session-layout-hook-restored" },
+      ]);
+
+      const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
+      exec(socketName, `split-window -t ${sessionB}`);
+      expect((await settle()).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
+
+  it("reports a window a window-local hook shadows, and its return", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+    const windowId = Number(
+      execSync(
+        tmuxCmd(socketName, `display-message -p -t ${sessionB} "#{window_id}"`),
+        { encoding: "utf8" },
+      )
+        .trim()
+        .replace("@", ""),
+    );
+
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const reports: number[][] = [];
+      clientA.on("cross-session-layout-uncovered", (e) =>
+        reports.push([...e.windowIds]),
+      );
+
+      exec(
+        socketName,
+        `set-hook -w -t ${sessionB} window-layout-changed "display-message x"`,
+      );
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(reports).toEqual([[windowId]]);
+
+      exec(socketName, `set-hook -wu -t ${sessionB} window-layout-changed`);
+      await new Promise((r) => setTimeout(r, 3000));
+      expect(reports).toEqual([[windowId], []]);
     } finally {
       await clientA.disableCrossSessionLayoutChange();
       clientA.close();

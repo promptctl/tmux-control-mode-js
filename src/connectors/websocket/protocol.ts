@@ -413,7 +413,9 @@ function parseWelcome(x: unknown): WelcomeFrame {
 type FieldKinds<M> = {
   readonly [F in Exclude<keyof M, "type">]: M[F] extends number
     ? "number"
-    : "string";
+    : M[F] extends readonly number[]
+      ? "number[]"
+      : "string";
 };
 const CROSS_SESSION_LAYOUT_FIELDS: {
   readonly [K in CrossSessionLayoutMessage["type"]]: FieldKinds<
@@ -430,7 +432,17 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
   "cross-session-layout-decode-error": { skippedBytes: "number" },
   "cross-session-layout-overrun": { lostEntries: "number" },
   "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
+  "cross-session-layout-hook-restored": {},
+  "cross-session-layout-uncovered": { windowIds: "number[]" },
 };
+
+function hasKind(
+  value: unknown,
+  kind: "number" | "string" | "number[]",
+): boolean {
+  if (kind !== "number[]") return typeof value === kind;
+  return Array.isArray(value) && value.every((v) => typeof v === "number");
+}
 
 function checkCrossSessionLayoutFields(
   msg: Record<string, unknown>,
@@ -438,8 +450,8 @@ function checkCrossSessionLayoutFields(
 ): void {
   for (const [field, kind] of Object.entries(
     CROSS_SESSION_LAYOUT_FIELDS[type],
-  )) {
-    if (typeof msg[field] !== kind) {
+  ) as [string, "number" | "string" | "number[]"][]) {
+    if (!hasKind(msg[field], kind)) {
       throw new BridgeProtocolError(
         `event.msg.${field} must be a ${kind} for ${type}`,
       );
