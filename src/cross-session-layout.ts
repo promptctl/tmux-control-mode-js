@@ -38,9 +38,11 @@ import type { SubscriptionChangedMessage } from "./protocol/types.js";
  * attached one — so this event can arrive for a window already covered by
  * a native `%layout-change`, by design (the ticket this shipped from:
  * "coverage isn't limited to what any consumer uses today"); a consumer
- * that only wants the gap this relay exists for (a window outside its own
- * attached session) filters on `sessionId` — the session tmux resolves the
- * window in at fetch time, the one `windowFlags` describes. `windowLayout`/
+ * that only wants the gap this relay exists for filters on `windowId`
+ * against the windows of its own attached session — not on `sessionId`,
+ * which is the one session tmux resolves the window in at fetch time (the
+ * one `windowFlags` describes) and, for a window linked into several
+ * sessions, need not be the attached one. `windowLayout`/
  * `windowVisibleLayout`/`windowFlags` are fetched by this client's own
  * control connection (which defaults to the classic checksum-string format
  * `%layout-change` itself uses — tmux 3.8 changed `#{window_layout}` to
@@ -328,7 +330,15 @@ export class CrossSessionLayoutRelay {
     // Anything appended after this read has a higher seq and arrives in
     // the subscription's first delivery.
     const response = await this.client.execute(readSeqCommand());
-    this.lastSeq = Number(response.output[0] ?? "") || 0;
+    // An unset counter reads as "" (no hook has fired yet); anything else
+    // that isn't an integer would baseline at 0 and replay the backlog.
+    const seq = response.output[0] ?? "";
+    if (!/^\d*$/.test(seq)) {
+      throw new Error(
+        `${SEQ_OPTION_NAME} is not an integer: ${JSON.stringify(seq)}`,
+      );
+    }
+    this.lastSeq = Number(seq);
     this.client.on("subscription-changed", this.onSubscriptionChanged);
     try {
       await subscribeRaw(
@@ -396,20 +406,20 @@ export class CrossSessionLayoutRelay {
       const response = await this.client.execute(fetchLayoutCommand(windowId));
       line = response.output[0] ?? "";
     } catch (err) {
-      if (err instanceof TmuxCommandError) {
-        return {
-          type: "cross-session-layout-fetch-failed",
-          windowId,
-          reason: err.response.output.join("\n"),
-        };
-      }
       if (
         err instanceof TransportClosedError ||
         err instanceof TransportSendError
       ) {
         return null;
       }
-      throw err;
+      return {
+        type: "cross-session-layout-fetch-failed",
+        windowId,
+        reason:
+          err instanceof TmuxCommandError
+            ? err.response.output.join("\n")
+            : String(err),
+      };
     }
     // [LAW:no-silent-failure] A reply that doesn't match the requested
     // format is unexpected from a live window — report it rather than

@@ -201,9 +201,12 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       exec(socketName, `split-window -t ${sessionC}`);
 
       const [eventsA, eventsB] = await Promise.all([a.settle(), b.settle()]);
-      expect(eventsA.length).toBe(1);
-      expect(eventsB.length).toBe(1);
-      expect(eventsA[0]?.windowId).toBe(eventsB[0]?.windowId);
+      // One command can fire the hook more than once, on either side of a
+      // subscription tick, so count windows rather than events.
+      const windowsA = new Set(eventsA.map((e) => e.windowId));
+      const windowsB = new Set(eventsB.map((e) => e.windowId));
+      expect(windowsA.size).toBe(1);
+      expect(windowsB).toEqual(windowsA);
     } finally {
       await clientA.disableCrossSessionLayoutChange();
       await clientB.disableCrossSessionLayoutChange();

@@ -316,4 +316,27 @@ describe("CrossSessionLayoutRelay", () => {
     await settle();
     expect(emitted).toEqual([]);
   });
+
+  it("reports any other fetch rejection as fetch-failed rather than rejecting the delivery", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.fail("display-message -p -t @9 ", new Error("malformed guard"));
+    fake.deliver("1:@9,");
+    await settle();
+    expect(emitted).toEqual([
+      {
+        type: "cross-session-layout-fetch-failed",
+        windowId: 9,
+        reason: "Error: malformed guard",
+      },
+    ]);
+  });
+
+  it("rejects enable when the seq counter is not an integer", async () => {
+    const fake = fakeConnection("garbage");
+    const { relay } = relayOver(fake);
+    await expect(relay.enable()).rejects.toThrow(/not an integer/);
+    expect(fake.handlers.size).toBe(0);
+  });
 });
