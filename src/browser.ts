@@ -58,10 +58,7 @@ export type { TmuxConnection } from "./client.js";
 //   (zero Node coupling), so it ships identically on the browser surface. A
 //   browser consumer issuing requestReport over a TmuxConnection must be able
 //   to catch its version-precondition failure and pre-check the floor itself.
-export {
-  UnsupportedTmuxVersionError,
-  UnrecognizedTmuxVersionError,
-} from "./errors.js";
+export { UnsupportedTmuxVersionError } from "./errors.js";
 // [LAW:one-source-of-truth] The whole typed-error taxonomy is pure (each class
 //   extends Error over type-only imports). A browser consumer driving commands
 //   over a TmuxConnection — e.g. pane-terminal's subscribe/seed seam — must be
@@ -75,6 +72,7 @@ export {
   TmuxReplyFormatError,
   TransportClosedError,
   TransportSendError,
+  UnrecognizedTmuxVersionError,
   isConnectionGone,
 } from "./errors.js";
 export type { TmuxVersion } from "./tmux-compat.js";

@@ -16,20 +16,18 @@ import { watchServerArgs } from "../../src/watch-server.js";
 import {
   NO_DETACH_ON_DESTROY_MIN_VERSION,
   meetsTmuxVersion,
-  parseTmuxVersion,
 } from "../../src/tmux-compat.js";
+import { runningTmuxVersion } from "../helpers/running-tmux.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 // Tests that rely on no-detach-on-destroy skip on tmux that ignores it.
 const TMUX_SUPPORTS_NO_DETACH_ON_DESTROY = (() => {
   if (!RUN_INTEGRATION) return false;
-  const reported = execSync("tmux -V", { encoding: "utf8" }).trim();
-  const version = parseTmuxVersion(reported);
-  if (version === null) {
-    throw new Error(`unrecognised tmux -V output: ${JSON.stringify(reported)}`);
-  }
-  return meetsTmuxVersion(version, NO_DETACH_ON_DESTROY_MIN_VERSION);
+  return meetsTmuxVersion(
+    runningTmuxVersion(),
+    NO_DETACH_ON_DESTROY_MIN_VERSION,
+  );
 })();
 
 function uniqueSocket(prefix: string): string {
