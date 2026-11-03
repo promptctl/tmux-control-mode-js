@@ -40,9 +40,11 @@ export type {
   SessionRecord,
   TmuxMessage,
   WindowLayout,
+  WindowLayoutFields,
   WindowRecord,
 } from "./protocol/types.js";
 export { latin1ToBytes } from "./protocol/byte-codec.js";
+export { parseWindowLayout } from "./protocol/layout.js";
 
 export type {
   TmuxEventMap,

@@ -43,22 +43,15 @@ describe("parseWindowLayout", () => {
     });
   });
 
-  it("parses a zoomed window: every pane at pre-zoom size, only the zoomed pane visible", () => {
-    // %layout-change @0 <NESTED> b260,80x24,0,0,3 *Z  — %3 zoomed.
-    expect(parseWindowLayout(NESTED)).toEqual({
+  it("accepts an uppercase checksum, as tmux's layout_parse does", () => {
+    expect(parseWindowLayout("B260,80x24,0,0,3")).toMatchObject({
       kind: "parsed",
-      panes: NESTED_PANES,
-    });
-    expect(parseWindowLayout("b260,80x24,0,0,3")).toEqual({
-      kind: "parsed",
-      panes: [{ paneId: 3, width: 80, height: 24, x: 0, y: 0 }],
     });
   });
 
   it.each([
     ["wrong checksum", "b261,80x24,0,0,3"],
     ["no checksum", "80x24,0,0,3"],
-    ["uppercase checksum", "B260,80x24,0,0,3"],
     ["empty string", ""],
     ["JSON layout", '{"V":2,"L":{"t":"p","w":80,"h":24}}'],
   ])("reports %s as malformed", (_label, raw) => {

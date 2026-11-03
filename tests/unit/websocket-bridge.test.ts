@@ -1145,39 +1145,38 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
     expect(parseServerFrame(ok)).toMatchObject({ k: "event" });
   });
 
-  it("rejects a cross-session layout event whose parsed layout has the wrong shape", () => {
-    const fields = windowLayoutFields(
-      "b25d,80x24,0,0,0",
-      "b25d,80x24,0,0,0",
-      "*",
-    );
-    const frame = (layout: unknown) =>
-      JSON.stringify({
-        k: "event",
-        msg: {
-          type: "cross-session-layout-change",
-          sessionId: 1,
-          windowId: 7,
-          ...fields,
-          layout,
-        },
-      });
-    expect(parseServerFrame(frame(fields.layout))).toMatchObject({
-      k: "event",
-    });
-    expect(
-      parseServerFrame(frame({ kind: "malformed", reason: "bad checksum" })),
-    ).toMatchObject({ k: "event" });
-    for (const bad of [
-      "b25d,80x24,0,0,0",
-      { kind: "parsed" },
-      { kind: "parsed", panes: [{ paneId: 0, width: 80, height: 24, x: 0 }] },
-      { kind: "malformed" },
-      null,
-    ]) {
-      expect(() => parseServerFrame(frame(bad))).toThrow(
-        /layout must be a window-layout/,
+  it.each([
+    ["layout-change", { windowId: 7 }],
+    ["cross-session-layout-change", { sessionId: 1, windowId: 7 }],
+  ])(
+    "derives %s geometry from the raw strings, never from the wire",
+    (type, ids) => {
+      const fields = windowLayoutFields(
+        "b25d,80x24,0,0,0",
+        "b25d,80x24,0,0,0",
+        "*",
       );
-    }
-  });
+      const frame = (extra: object) =>
+        JSON.stringify({ k: "event", msg: { type, ...ids, ...extra } });
+      const raw = {
+        windowLayout: fields.windowLayout,
+        windowVisibleLayout: fields.windowVisibleLayout,
+        windowFlags: fields.windowFlags,
+      };
+      for (const forged of [
+        {},
+        { layout: { kind: "parsed", panes: [] } },
+        { layout: null, visibleLayout: "b25d,80x24,0,0,0" },
+      ]) {
+        expect(parseServerFrame(frame({ ...raw, ...forged }))).toEqual({
+          k: "event",
+          msg: { type, ...ids, ...fields },
+        });
+      }
+      const { windowLayout: _omitted, ...missing } = raw;
+      expect(() => parseServerFrame(frame(missing))).toThrow(
+        /windowLayout must be a string/,
+      );
+    },
+  );
 });
