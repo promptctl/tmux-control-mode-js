@@ -128,10 +128,10 @@ that partition — a structural test reconciles it against the SPEC §23 catalog
 and the parser's own message types, so the doc, the parser, and the tests
 cannot drift apart, and the gate reddens if any §23 event is left unaccounted.
 At present 24 of the 28 events are observed live. The 4 exemptions each carry
-their own reason in the `COVERAGE` table: `%config-error` (runtime provocation
-is version-gated — silent on the tmux 3.4 baseline); and the flow-control trio (`%pause`, `%continue`,
-`%extended-output`), which fire only under read backpressure the harness cannot
-create deterministically.
+their own reason in the `COVERAGE` table: `%config-error`, whose runtime
+provocation is silent on the tmux 3.4 baseline, and the flow-control trio
+(`%pause`, `%continue`, `%extended-output`), which fire only under read
+backpressure the harness cannot create deterministically.
 
 ## Demo
 

@@ -458,6 +458,34 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
 // ---------------------------------------------------------------------------
 
 /**
+ * Create a window in a fresh side session on `socketName`, returning its
+ * target and id. tmux picks a window notification's linked/unlinked variant
+ * by whether the window is in the RECEIVING client's session, so probes that
+ * pin a variant act on a window in a session the client is not attached to.
+ */
+function sideWindow(
+  socketName: string,
+  prefix: string,
+): { target: string; windowId: number } {
+  const session = uniqueSession(prefix);
+  execSync(tmuxCmd(socketName, `new-session -d -s ${session}`));
+  const windowId = Number(
+    execSync(
+      tmuxCmd(
+        socketName,
+        `new-window -d -P -F '#{window_id}' -n side -t ${session}`,
+      ),
+    )
+      .toString()
+      .trim()
+      .slice(1),
+  );
+  // Session-qualified by name: a bare @id may resolve to the client's own
+  // link of the window once it is linked into two sessions.
+  return { target: `${session}:side`, windowId };
+}
+
+/**
  * Resolve when `client` next emits `type`; reject with a legible message if it
  * has not within `ms`, so a missing notification fails as "did not observe %X"
  * rather than an opaque vitest timeout. The handler is registered synchronously,
@@ -468,10 +496,12 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
 function waitForEvent<K extends keyof TmuxEventMap>(
   client: TmuxClient,
   type: K,
+  match: (ev: TmuxEventMap[K]) => boolean = () => true,
   ms = 12000,
 ): Promise<TmuxEventMap[K]> {
   return new Promise((resolve, reject) => {
     const handler = (ev: TmuxEventMap[K]) => {
+      if (!match(ev)) return;
       clearTimeout(timer);
       client.off(type, handler);
       resolve(ev);
@@ -652,14 +682,15 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "unlinked-window-close": {
     kind: "observed",
-    probe: async ({ client, exec }) => {
-      // tmux picks the variant by whether the window is in the receiving
-      // client's session; a window killed in ANOTHER session never was.
-      const other = uniqueSession("cov-unlinkclose");
-      exec(`new-session -d -s ${other}`);
-      exec(`new-window -d -t ${other} -n closeme`);
-      const p = waitForEvent(client, "unlinked-window-close");
-      exec(`kill-window -t ${other}:closeme`);
+    probe: async ({ client, exec, socketName }) => {
+      // A window killed in ANOTHER session was never in this client's session.
+      const { target, windowId } = sideWindow(socketName, "cov-unlinkclose");
+      const p = waitForEvent(
+        client,
+        "unlinked-window-close",
+        (ev) => ev.windowId === windowId,
+      );
+      exec(`kill-window -t ${target}`);
       await p;
     },
   },
@@ -815,25 +846,26 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       await p;
     },
   },
+  "window-close": {
+    kind: "observed",
+    probe: async ({ client, exec, socketName, sessionName }) => {
+      // Unlinking a window from another session while it stays linked in
+      // this client's session is %window-close on every supported version.
+      const { target, windowId } = sideWindow(socketName, "cov-winclose");
+      exec(`link-window -d -s ${target} -t ${sessionName}:`);
+      const p = waitForEvent(
+        client,
+        "window-close",
+        (ev) => ev.windowId === windowId,
+      );
+      exec(`unlink-window -t ${target}`);
+      await p;
+    },
+  },
 
   // ---- Exemptions: not deterministically provokable from this harness ----
   // [LAW:no-silent-failure] Each records precisely WHY, so a green run never
   // overstates what was verified.
-  "window-close": {
-    kind: "observed",
-    probe: async ({ client, exec, sessionName }) => {
-      // Killing an own-session window picks a different variant per tmux
-      // version (linked on 3.8, unlinked on 3.2). Unlinking a window from
-      // another session while it stays linked here is %window-close on both.
-      const other = uniqueSession("cov-winclose");
-      exec(`new-session -d -s ${other}`);
-      exec(`new-window -d -t ${other} -n shared`);
-      exec(`link-window -d -s ${other}:shared -t ${sessionName}:`);
-      const p = waitForEvent(client, "window-close");
-      exec(`unlink-window -t ${other}:shared`);
-      await p;
-    },
-  },
   "config-error": {
     kind: "exempt",
     reason:
