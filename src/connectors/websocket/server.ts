@@ -30,17 +30,10 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
-import {
-  isCrossSessionLayoutMessage,
-  type CrossSessionLayoutMessage,
-} from "../../cross-session-layout-messages.js";
+import { isCrossSessionLayoutMessage } from "../../cross-session-layout-messages.js";
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
-import {
-  isTmuxMessage,
-  type EmitterMessage,
-  type EmitterTmuxMessage,
-} from "../../emitter.js";
+import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
 import {
@@ -59,9 +52,7 @@ import {
   mapRpcCode,
   parseRpcRequest,
   RpcError,
-  type RpcMethod,
   type RpcRequest,
-  type RpcResponseMap,
 } from "../rpc.js";
 import {
   type BridgeOutcome,
@@ -357,14 +348,8 @@ class Connection {
     private readonly opts: WebSocketBridgeOptions,
     private readonly defaults: ResolvedDefaults,
   ) {
-    // The WS server forwards parsed tmux events and the decoded
-    // cross-session layout events over the wire; synthetic lifecycle events
-    // are bridge-internal and the peer has its own connection-state via the
-    // welcome handshake.
     this.onAnyEventRef = (msg: EmitterMessage): void => {
-      if (isTmuxMessage(msg) || isCrossSessionLayoutMessage(msg)) {
-        this.onWireEvent(msg);
-      }
+      this.onWireEvent(msg);
     };
     // [LAW:single-enforcer] Byte channel is multiplexer-shaped; the bridge
     //   attaches one all-panes sink instead of inspecting every wildcard
@@ -722,6 +707,7 @@ class Connection {
     try {
       bridge = createBridgeConnection({
         client,
+        forwardsLifecycle: false,
         outputHighWatermark: this.opts.outputHighWatermark,
         outputLowWatermark: this.opts.outputLowWatermark,
         // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
@@ -898,16 +884,18 @@ class Connection {
       });
       return;
     }
+    const tmuxError = outcome.kind === "tmux-error";
     this.sendFrame(
-      outcome.kind === "tmux-error"
+      tmuxError
         ? { k: "result", id, ok: false, tmuxError: outcome.response }
         : { k: "result", id, ok: true, response: outcome.response },
     );
+    // Observability records what the client sees: a tmux %error rejects there.
     this.emit({
       kind: "result",
       identity: this.identity,
       id,
-      ok: true,
+      ...(tmuxError ? { ok: false, code: "TMUX_ERROR" } : { ok: true }),
       durationMs: Date.now() - startedAt,
     });
   }
@@ -957,14 +945,22 @@ class Connection {
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
   // -------------------------------------------------------------------------
-  private onWireEvent(
-    msg: EmitterTmuxMessage | CrossSessionLayoutMessage,
-  ): void {
+  private onWireEvent(msg: EmitterMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
     if (this.state.kind !== "running" && this.state.kind !== "draining") {
       return;
     }
-    if (!this.state.bridge.deliversEvent(this.state.peer, msg)) return;
+    // [LAW:single-enforcer] The bridge decides who an event reaches.
+    const bridge = this.state.bridge;
+    if (!bridge.deliversTo(this.state.peer, bridge.routeEvent(msg))) return;
+    // Built without `forwardsLifecycle`, the bridge routes only wire-shaped
+    // events here; anything else is a broken invariant, not a policy.
+    if (!isTmuxMessage(msg) && !isCrossSessionLayoutMessage(msg)) {
+      throw new BridgeError(
+        "BRIDGE_INTERNAL",
+        `bridge routed a non-wire event ${msg.type} to a WebSocket peer`,
+      );
+    }
     const encoded = encodeServerFrame({ k: "event", msg });
     this.wsSend(encoded);
     this.emit({

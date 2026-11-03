@@ -406,6 +406,47 @@ function parseWelcome(x: unknown): WelcomeFrame {
   };
 }
 
+// [LAW:types-are-the-program] Each cross-session layout event's fields and
+// their runtime kinds. The mapped type makes a field added to (or removed
+// from) a message interface a compile error here, so the wire check cannot
+// drift from the type the client emits.
+type FieldKinds<M> = {
+  readonly [F in Exclude<keyof M, "type">]: M[F] extends number
+    ? "number"
+    : "string";
+};
+const CROSS_SESSION_LAYOUT_FIELDS: {
+  readonly [K in CrossSessionLayoutMessage["type"]]: FieldKinds<
+    Extract<CrossSessionLayoutMessage, { type: K }>
+  >;
+} = {
+  "cross-session-layout-change": {
+    sessionId: "number",
+    windowId: "number",
+    windowLayout: "string",
+    windowVisibleLayout: "string",
+    windowFlags: "string",
+  },
+  "cross-session-layout-decode-error": { skippedBytes: "number" },
+  "cross-session-layout-overrun": { lostEntries: "number" },
+  "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
+};
+
+function checkCrossSessionLayoutFields(
+  msg: Record<string, unknown>,
+  type: CrossSessionLayoutMessage["type"],
+): void {
+  for (const [field, kind] of Object.entries(
+    CROSS_SESSION_LAYOUT_FIELDS[type],
+  )) {
+    if (typeof msg[field] !== kind) {
+      throw new BridgeProtocolError(
+        `event.msg.${field} must be a ${kind} for ${type}`,
+      );
+    }
+  }
+}
+
 function parseEvent(x: unknown): EventFrame {
   const o = x as { msg?: unknown };
   if (typeof o.msg !== "object" || o.msg === null) {
@@ -422,6 +463,10 @@ function parseEvent(x: unknown): EventFrame {
     throw new BridgeProtocolError(
       `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(msg.type)}`,
     );
+  }
+  const typed = { type: msg.type };
+  if (isCrossSessionLayoutMessage(typed)) {
+    checkCrossSessionLayoutFields(o.msg as Record<string, unknown>, typed.type);
   }
   return { k: "event", msg: o.msg as EventFrame["msg"] };
 }

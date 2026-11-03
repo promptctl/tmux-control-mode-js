@@ -88,7 +88,8 @@ type BridgeSurface = Pick<
   | "removePeer"
   | "accountOutput"
   | "ackOutput"
-  | "deliversEvent"
+  | "routeEvent"
+  | "deliversTo"
 >;
 type ClientSurface = Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 
@@ -107,7 +108,8 @@ function makeBridge(): BridgeSurface & {
     removePeer: vi.fn(),
     accountOutput: vi.fn(),
     ackOutput: vi.fn(),
-    deliversEvent: vi.fn(() => true),
+    routeEvent: vi.fn(() => "all" as const),
+    deliversTo: vi.fn(() => true),
   };
 }
 

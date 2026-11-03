@@ -680,7 +680,7 @@ describe("WebSocketTmuxClient — cross-session layout coverage", () => {
         response: null,
       }),
     });
-    await expect(enabled).resolves.toBeNull();
+    await expect(enabled).resolves.toBeUndefined();
 
     const seen: unknown[] = [];
     client.on("cross-session-layout-change", (ev) => seen.push(ev));

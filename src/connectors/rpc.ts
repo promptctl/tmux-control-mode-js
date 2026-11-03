@@ -176,7 +176,9 @@ export type RpcResponseMap = {
 export type RpcProxyApi = {
   readonly [M in RpcMethod]: (
     ...args: [...RpcSpec[M]["args"]]
-  ) => Promise<RpcResponseMap[M]>;
+    // A null wire answer surfaces as `void`, matching TmuxClient's signature.
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- the proxy's return type, spelled through a conditional
+  ) => Promise<RpcResponseMap[M] extends null ? void : RpcResponseMap[M]>;
 };
 
 // ---------------------------------------------------------------------------

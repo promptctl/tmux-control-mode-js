@@ -6,13 +6,17 @@ import { describe, it, expect, vi } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
-import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
+import {
+  createBridgeConnection,
+  type BridgeConnection,
+} from "../../src/connectors/bridge-connection.js";
+import type { Peer } from "../../src/connectors/bridge-peer.js";
 import { dispatchBridgeRequest } from "../../src/connectors/bridge-dispatch.js";
 import { parseRpcRequest, RpcError } from "../../src/connectors/rpc.js";
 import type { CrossSessionLayoutChangeMessage } from "../../src/cross-session-layout.js";
 import type { EmitterMessage } from "../../src/emitter.js";
 
-function makeBridge() {
+function makeBridge(forwardsLifecycle = false) {
   const transport: TmuxTransport = {
     send: () => ({ ok: true }),
     onData() {},
@@ -28,13 +32,22 @@ function makeBridge() {
     .mockResolvedValue(undefined);
   const bridge = createBridgeConnection({
     client,
+    forwardsLifecycle,
     reportResumeFailure: () => undefined,
   });
   return { client, bridge, enable, disable };
 }
 
+function delivers(
+  bridge: BridgeConnection,
+  peer: Peer,
+  msg: EmitterMessage,
+): boolean {
+  return bridge.deliversTo(peer, bridge.routeEvent(msg));
+}
+
 async function flush(): Promise<void> {
-  for (let i = 0; i < 5; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
 const change: CrossSessionLayoutChangeMessage = {
@@ -57,7 +70,7 @@ const relayFrame: EmitterMessage = {
 } as EmitterMessage;
 
 describe("BridgeConnection — cross-session layout coverage", () => {
-  it("holds one client reference per enabled peer, however often it enables", async () => {
+  it("holds one client reference per peer with enables outstanding, counted per call", async () => {
     const { bridge, enable, disable } = makeBridge();
     const a = bridge.registerPeer();
     const b = bridge.registerPeer();
@@ -66,9 +79,49 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     await bridge.enableCrossSessionLayoutForPeer(b);
     expect(enable).toHaveBeenCalledTimes(2);
 
+    // Like TmuxClient: two enables need two disables.
     await bridge.disableCrossSessionLayoutForPeer(a);
+    expect(disable).not.toHaveBeenCalled();
+    expect(delivers(bridge, a, change)).toBe(true);
     await bridge.disableCrossSessionLayoutForPeer(a);
     expect(disable).toHaveBeenCalledTimes(1);
+    expect(delivers(bridge, a, change)).toBe(false);
+    // A surplus disable is a no-op.
+    await bridge.disableCrossSessionLayoutForPeer(a);
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
+
+  it("the peer's last call wins however enable and disable interleave", async () => {
+    const { bridge, enable, disable } = makeBridge();
+    const gates: Array<() => void> = [];
+    const gated = (): Promise<void> => new Promise<void>((r) => gates.push(r));
+    enable.mockImplementation(gated);
+    disable.mockImplementation(gated);
+    const peer = bridge.registerPeer();
+    const calls = [
+      bridge.enableCrossSessionLayoutForPeer(peer),
+      bridge.disableCrossSessionLayoutForPeer(peer),
+      bridge.enableCrossSessionLayoutForPeer(peer),
+      bridge.disableCrossSessionLayoutForPeer(peer),
+    ];
+    for (let i = 0; i < 20; i++) {
+      await flush();
+      gates.shift()?.();
+    }
+    await Promise.all(calls);
+    expect(delivers(bridge, peer, change)).toBe(false);
+    expect(enable.mock.calls.length).toBe(disable.mock.calls.length);
+  });
+
+  it("routes lifecycle events only on transports that forward them, and topology-error nowhere", () => {
+    const lifecycle = { type: "reconnected" } as EmitterMessage;
+    const topology = { type: "topology-error" } as EmitterMessage;
+    for (const forwards of [false, true]) {
+      const { bridge } = makeBridge(forwards);
+      const peer = bridge.registerPeer();
+      expect(delivers(bridge, peer, lifecycle)).toBe(forwards);
+      expect(delivers(bridge, peer, topology)).toBe(false);
+    }
   });
 
   it("gives a removed peer's reference back, including one still enabling", async () => {
@@ -81,6 +134,8 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     );
     const peer = bridge.registerPeer();
     void bridge.enableCrossSessionLayoutForPeer(peer);
+    await flush();
+    expect(enable).toHaveBeenCalledTimes(1);
     bridge.removePeer(peer);
     await flush();
     expect(disable).not.toHaveBeenCalled();
@@ -96,7 +151,7 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     await expect(bridge.enableCrossSessionLayoutForPeer(peer)).rejects.toThrow(
       "tmux said no",
     );
-    expect(bridge.deliversEvent(peer, change)).toBe(false);
+    expect(delivers(bridge, peer, change)).toBe(false);
     bridge.removePeer(peer);
     await flush();
     expect(disable).not.toHaveBeenCalled();
@@ -108,15 +163,15 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     const off = bridge.registerPeer();
     await bridge.enableCrossSessionLayoutForPeer(on);
 
-    expect(bridge.deliversEvent(on, change)).toBe(true);
-    expect(bridge.deliversEvent(off, change)).toBe(false);
-    expect(bridge.deliversEvent(on, relayFrame)).toBe(false);
-    expect(bridge.deliversEvent(off, relayFrame)).toBe(false);
+    expect(delivers(bridge, on, change)).toBe(true);
+    expect(delivers(bridge, off, change)).toBe(false);
+    expect(delivers(bridge, on, relayFrame)).toBe(false);
+    expect(delivers(bridge, off, relayFrame)).toBe(false);
     const ordinary = { ...relayFrame, name: "mine" } as EmitterMessage;
-    expect(bridge.deliversEvent(off, ordinary)).toBe(true);
+    expect(delivers(bridge, off, ordinary)).toBe(true);
 
     await bridge.disableCrossSessionLayoutForPeer(on);
-    expect(bridge.deliversEvent(on, change)).toBe(false);
+    expect(delivers(bridge, on, change)).toBe(false);
   });
 
   it("enable/disable over RPC route through the peer's ledger and answer null", async () => {
@@ -133,7 +188,7 @@ describe("BridgeConnection — cross-session layout coverage", () => {
       kind: "ok",
       response: null,
     });
-    expect(bridge.deliversEvent(peer, change)).toBe(true);
+    expect(delivers(bridge, peer, change)).toBe(true);
     expect(await call("disableCrossSessionLayoutChange")).toEqual({
       kind: "ok",
       response: null,
@@ -165,7 +220,7 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     expect(enable).not.toHaveBeenCalled();
   });
 
-  it("keeps delivering until the disable settles, then counts the peer disabled even if tmux refused", async () => {
+  it("stops delivering at the disable, and reports a refused cleanup without leaving the peer enabled", async () => {
     const { bridge, disable } = makeBridge();
     let refuse!: (e: Error) => void;
     disable.mockReturnValue(new Promise<void>((_, rej) => (refuse = rej)));
@@ -173,12 +228,10 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     await bridge.enableCrossSessionLayoutForPeer(peer);
 
     const disabling = bridge.disableCrossSessionLayoutForPeer(peer);
-    await flush();
-    expect(bridge.deliversEvent(peer, change)).toBe(true);
+    expect(delivers(bridge, peer, change)).toBe(false);
 
     refuse(new Error("tmux refused"));
     await expect(disabling).rejects.toThrow("tmux refused");
-    expect(bridge.deliversEvent(peer, change)).toBe(false);
     // The relay already has the reference back: a retry gives nothing back twice.
     await bridge.disableCrossSessionLayoutForPeer(peer);
     expect(disable).toHaveBeenCalledTimes(1);

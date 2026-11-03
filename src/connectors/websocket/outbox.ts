@@ -80,22 +80,23 @@ export class Outbox {
   }
 
   // Settle the pending call a result frame answers. No-op if the call already
-  // timed out (its entry is gone).
-  settle(frame: ResultFrame): void {
+  // timed out (its entry is gone). Returns the protocol violation, if the
+  // frame broke the wire contract, so the client reports it on its error
+  // channel like every other malformed frame.
+  settle(frame: ResultFrame): BridgeProtocolError | undefined {
     const p = this.pending.get(frame.id);
-    if (p === undefined) return;
+    if (p === undefined) return undefined;
     this.pending.delete(frame.id);
     clearTimeout(p.timer);
     if (frame.ok) {
       // [LAW:parse-dont-validate] The frame parser cannot see the method; this
       // is the one place that pairs a response with the call it answers.
       if ((frame.response === null) !== answersNull(p.method)) {
-        p.reject(
-          new BridgeProtocolError(
-            `result for '${p.method}' has ${frame.response === null ? "a null" : "a non-null"} response`,
-          ),
+        const violation = new BridgeProtocolError(
+          `result for '${p.method}' has ${frame.response === null ? "a null" : "a non-null"} response`,
         );
-        return;
+        p.reject(violation);
+        return violation;
       }
       p.resolve(frame.response);
     } else if ("tmuxError" in frame) {
@@ -103,6 +104,7 @@ export class Outbox {
     } else {
       p.reject(BridgeError.fromPayload(frame.error));
     }
+    return undefined;
   }
 
   // [LAW:dataflow-not-control-flow] Same loop every ready transition: walk

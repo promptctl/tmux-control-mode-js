@@ -2283,7 +2283,7 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
 
     const on = createRendererBridge(hub.createRenderer().ipcRenderer);
     const off = createRendererBridge(hub.createRenderer().ipcRenderer);
-    await expect(on.enableCrossSessionLayoutChange()).resolves.toBeNull();
+    await expect(on.enableCrossSessionLayoutChange()).resolves.toBeUndefined();
     expect(enable).toHaveBeenCalledTimes(1);
 
     const seenOn: unknown[] = [];
@@ -2315,7 +2315,7 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
     expect(rawOn).toEqual([]);
     expect(rawOff).toEqual([]);
 
-    await expect(on.disableCrossSessionLayoutChange()).resolves.toBeNull();
+    await expect(on.disableCrossSessionLayoutChange()).resolves.toBeUndefined();
     expect(disable).toHaveBeenCalledTimes(1);
   });
 });

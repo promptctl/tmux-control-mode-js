@@ -1,8 +1,9 @@
 // src/connectors/cross-session-layout-ledger.ts
 // [LAW:decomposition] Which bridge peers asked for cross-session layout
 // coverage. This ledger's ONE invariant: the shared TmuxClient holds exactly
-// one `enableCrossSessionLayoutChange` reference per peer that enabled it, and
-// gives that reference back when the peer disables or goes away. The relay
+// one `enableCrossSessionLayoutChange` reference per peer with enables
+// outstanding, and gives it back when the peer's count reaches zero or the
+// peer goes away. The relay
 // behind the client ref-counts those references itself, so tmux sees one
 // subscription however many peers enable.
 //
@@ -23,16 +24,19 @@ export interface CrossSessionLayoutLedgerDeps {
   >;
 }
 
-// [LAW:types-are-the-program] One peer's coverage. `held` is present from the
-// moment the peer asks, so an event landing while the enable is in flight
-// already reaches it; `releasing` keeps delivering until the relay has the
-// reference back, so delivery never stops ahead of the reference count.
-type Coverage =
-  | { readonly kind: "none" }
-  | { readonly kind: "held"; readonly enabling: Promise<void> }
-  | { readonly kind: "releasing"; readonly releasing: Promise<void> };
-
-const NONE: Coverage = { kind: "none" };
+// One peer's coverage. `count` is the peer's outstanding enables, counted per
+// call exactly as `TmuxClient` counts them, so N enables need N disables.
+// `held` is whether the relay holds this peer's one reference.
+// [LAW:dataflow-not-control-flow] Every call queues a step on `queue`, and
+// each step reconciles `held` toward `count > 0` rather than acting on a
+// decision taken before it waited, so the peer's last call always wins: no
+// interleaving of enables and disables can leave a reference the counts do
+// not ask for.
+interface Coverage {
+  count: number;
+  held: boolean;
+  queue: Promise<void>;
+}
 
 export class CrossSessionLayoutLedger {
   // Registered peer → its coverage. Presence is this ledger's registration
@@ -53,83 +57,78 @@ export class CrossSessionLayoutLedger {
         `peer ${peer.id} is already registered with the cross-session layout ledger`,
       );
     }
-    this.peers.set(peer, NONE);
+    this.peers.set(peer, { count: 0, held: false, queue: Promise.resolve() });
   }
 
+  /** Delivery follows the peer's calls, not the relay round trip: a peer that disabled stops receiving at once. */
   isEnabled(peer: Peer): boolean {
-    const coverage = this.peers.get(peer);
-    return coverage !== undefined && coverage.kind !== "none";
+    return (this.peers.get(peer)?.count ?? 0) > 0;
   }
 
-  /** Idempotent per peer: a second enable from the same peer joins the first. */
+  /** Counted per call. Rejects, and counts for nothing, if the relay could not take the reference. */
   enable(peer: Peer): Promise<void> {
     const coverage = this.peers.get(peer);
     if (coverage === undefined) return unregistered(peer, "enable");
-    switch (coverage.kind) {
-      case "held":
-        return coverage.enabling;
-      case "releasing":
-        // The release gives the old reference back whatever its outcome, so
-        // the new reference is taken after it.
-        return coverage.releasing.then(
-          () => this.enable(peer),
-          () => this.enable(peer),
-        );
-      case "none": {
-        const enabling = this.deps.client.enableCrossSessionLayoutChange();
-        const held: Coverage = { kind: "held", enabling };
-        this.peers.set(peer, held);
-        // A rejected enable counts for nothing (the relay already undid its
-        // reference), so the peer holds nothing either.
-        enabling.catch(() => this.settle(peer, held));
-        return enabling;
+    coverage.count += 1;
+    return this.serialize(coverage, async () => {
+      try {
+        await this.reconcile(coverage);
+      } catch (err) {
+        // A released peer was already zeroed; there is nothing to undo.
+        if (coverage.count > 0) coverage.count -= 1;
+        throw err;
       }
-    }
+    });
   }
 
   /**
-   * Idempotent per peer: disabling a peer that holds nothing is a no-op.
-   * Gives the relay its reference back whatever the outcome; a rejection
-   * reports that tmux refused the relay's own cleanup, not that the peer is
-   * still enabled.
+   * Undoes one enable; a no-op for a peer with none outstanding. A rejection
+   * reports that tmux refused the relay's own cleanup; the peer's count has
+   * already dropped either way.
    */
   disable(peer: Peer): Promise<void> {
     const coverage = this.peers.get(peer);
     if (coverage === undefined) return unregistered(peer, "disable");
-    switch (coverage.kind) {
-      case "none":
-        return Promise.resolve();
-      case "releasing":
-        return coverage.releasing;
-      case "held": {
-        const releasing = coverage.enabling.then(
-          () => this.deps.client.disableCrossSessionLayoutChange(),
-          // The enable failed, so there is no reference to give back.
-          () => undefined,
-        );
-        const slot: Coverage = { kind: "releasing", releasing };
-        this.peers.set(peer, slot);
-        const settleSlot = (): void => this.settle(peer, slot);
-        releasing.then(settleSlot, settleSlot);
-        return releasing;
-      }
-    }
+    if (coverage.count === 0) return coverage.queue;
+    coverage.count -= 1;
+    return this.serialize(coverage, () => this.reconcile(coverage));
   }
 
   releasePeer(peer: Peer): void {
-    if (!this.peers.has(peer)) return;
-    void this.disable(peer).catch(this.swallow);
+    const coverage = this.peers.get(peer);
+    if (coverage === undefined) return;
     this.peers.delete(peer);
+    coverage.count = 0;
+    void this.serialize(coverage, () => this.reconcile(coverage)).catch(
+      this.swallow,
+    );
   }
 
   dispose(): void {
     for (const peer of [...this.peers.keys()]) this.releasePeer(peer);
   }
 
-  // Returns `peer` to "none" only if `from` is still its current coverage, so
-  // a settle never clobbers a newer enable or a removal.
-  private settle(peer: Peer, from: Coverage): void {
-    if (this.peers.get(peer) === from) this.peers.set(peer, NONE);
+  private serialize(
+    coverage: Coverage,
+    step: () => Promise<void>,
+  ): Promise<void> {
+    const run = coverage.queue.then(step);
+    // The caller receives `run`'s rejection; the queue only orders steps.
+    coverage.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async reconcile(coverage: Coverage): Promise<void> {
+    const want = coverage.count > 0;
+    if (want && !coverage.held) {
+      await this.deps.client.enableCrossSessionLayoutChange();
+      coverage.held = true;
+    } else if (!want && coverage.held) {
+      // The relay gives its reference back whatever tmux says about the
+      // cleanup, so the peer no longer holds it either way.
+      coverage.held = false;
+      await this.deps.client.disableCrossSessionLayoutChange();
+    }
   }
 }
 

@@ -208,9 +208,17 @@ describe("Outbox — settle", () => {
       "f3",
       1000,
     );
-    outbox.settle({ k: "result", id: "r1", ok: true, response: null });
-    outbox.settle({ k: "result", id: "r2", ok: true, response: null });
-    outbox.settle(okResult("r3"));
+    // A mismatch is returned as a protocol violation for the client's error
+    // channel, as well as rejecting the call it answered.
+    expect(
+      outbox.settle({ k: "result", id: "r1", ok: true, response: null }),
+    ).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+    expect(
+      outbox.settle({ k: "result", id: "r2", ok: true, response: null }),
+    ).toBeUndefined();
+    expect(outbox.settle(okResult("r3"))).toMatchObject({
+      code: "BRIDGE_PROTOCOL_ERROR",
+    });
     await expect(exec).rejects.toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
     await expect(en).resolves.toBeNull();
     await expect(dis).rejects.toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });

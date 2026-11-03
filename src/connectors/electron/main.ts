@@ -124,6 +124,7 @@ export function createMainBridge(
   try {
     bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: true,
       outputHighWatermark: options.outputHighWatermark,
       outputLowWatermark: options.outputLowWatermark,
       // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
@@ -163,7 +164,6 @@ export function createMainBridge(
   // receive bytes — the type system enforces it. Byte chunks route through each
   // renderer's per-peer sink (attached in SenderRegistry.register), not here.
   const forwardEvent = (msg: EmitterMessage): void => {
-    if (msg.type === "topology-error") return;
     registry.broadcast(msg);
   };
   client.on("*", forwardEvent);

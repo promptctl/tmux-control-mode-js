@@ -25,6 +25,15 @@ All notable changes to this project are documented here. Format follows
   `TopologyRouter` directly (an advanced path — building a custom transport
   adapter) must supply it.
 
+- `WebSocketTmuxClient` now rejects with `TmuxCommandError` when tmux answers
+  a call with `%error`, instead of resolving with a `CommandResponse` whose
+  `success` is `false`. This matches the Electron renderer proxy and a direct
+  `TmuxClient`. Code that checked `!r.success` after awaiting a WebSocket
+  `execute()` must catch instead. The wire carries this as a new
+  `{ k: "result", ok: false, tmuxError }` frame, and the hello handshake has no
+  protocol version: a client from an earlier release talking to this server
+  treats that frame as a protocol error. Upgrade server and client together.
+
 ### Added
 
 - `topology-error` event on every `TmuxClient`-shaped connection, emitted when a

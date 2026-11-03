@@ -336,12 +336,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   // Coverage is held by this connection's server-side peer, so like a
   // subscribeRaw it does not survive a reconnect: re-enable on `reconnected`.
-  enableCrossSessionLayoutChange(): Promise<null> {
-    return this.call("enableCrossSessionLayoutChange", []);
+  async enableCrossSessionLayoutChange(): Promise<void> {
+    await this.call("enableCrossSessionLayoutChange", []);
   }
 
-  disableCrossSessionLayoutChange(): Promise<null> {
-    return this.call("disableCrossSessionLayoutChange", []);
+  async disableCrossSessionLayoutChange(): Promise<void> {
+    await this.call("disableCrossSessionLayoutChange", []);
   }
 
   // [LAW:one-source-of-truth] All sink registration, topology bootstrap,
@@ -539,7 +539,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   onResult(frame: ResultFrame): void {
-    this.outbox.settle(frame);
+    const violation = this.outbox.settle(frame);
+    // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+    if (violation !== undefined)
+      this.emitError(toBridgeProtocolError(violation));
   }
 
   onPong(id: string): void {

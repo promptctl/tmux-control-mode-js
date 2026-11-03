@@ -40,7 +40,7 @@ import {
   isCrossSessionLayoutMessage,
   isCrossSessionLayoutRelayFrame,
 } from "../cross-session-layout-messages.js";
-import type { EmitterMessage } from "../emitter.js";
+import { isTmuxMessage, type EmitterMessage } from "../emitter.js";
 
 import type { Peer } from "./bridge-peer.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
@@ -70,6 +70,12 @@ export interface BridgeConnectionOptions {
    * whether a host observes that channel is the host's informed choice.
    */
   readonly reportResumeFailure: (failure: ResumeFailure) => void;
+  /**
+   * Whether synthetic lifecycle events (reconnected, …) cross to peers. A
+   * transport fact: the WS peer learns connection state from its own welcome
+   * handshake, the Electron renderer from these events.
+   */
+  readonly forwardsLifecycle: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,21 +130,25 @@ export interface BridgeConnection {
   /**
    * Turn on cross-session layout coverage for this peer: the shared client
    * holds one `enableCrossSessionLayoutChange` reference on the peer's behalf
-   * until it disables or is removed. Idempotent per peer.
+   * while it has enables outstanding. Counted per call, like `TmuxClient`.
    */
   enableCrossSessionLayoutForPeer(peer: Peer): Promise<void>;
 
-  /** Give back this peer's coverage reference. A no-op for a peer that holds none. */
+  /** Undo one of this peer's enables. A no-op for a peer with none outstanding. */
   disableCrossSessionLayoutForPeer(peer: Peer): Promise<void>;
 
   /**
-   * Whether `msg` crosses the bridge to `peer`. The relay's raw
-   * `%subscription-changed` frames reach no peer; the decoded
-   * `cross-session-layout-*` events reach only peers that enabled coverage;
-   * everything else is the transport's own forwarding policy to decide.
-   * [LAW:single-enforcer] Both transports route events through this.
+   * Who `msg` crosses the bridge to. Classify once per event, then ask
+   * `deliversTo` per peer. The relay's raw `%subscription-changed` frames and
+   * `topology-error` reach no peer; synthetic lifecycle events reach peers
+   * only on transports built with `forwardsLifecycle`; the decoded
+   * `cross-session-layout-*` events reach only peers with coverage enabled.
+   * [LAW:single-enforcer] Both transports route every event through this.
    */
-  deliversEvent(peer: Peer, msg: EmitterMessage): boolean;
+  routeEvent(msg: EmitterMessage): EventRoute;
+
+  /** Whether an event routed `route` reaches `peer`. */
+  deliversTo(peer: Peer, route: EventRoute): boolean;
 
   /**
    * Account `bytes` of pane output sent to `peer` for `paneId`. The transport
@@ -183,6 +193,8 @@ export interface BridgeConnection {
    */
   dispose(): void;
 }
+
+export type EventRoute = "none" | "all" | "cross-session";
 
 export function createBridgeConnection(
   opts: BridgeConnectionOptions,
@@ -244,12 +256,23 @@ export function createBridgeConnection(
       return crossSessionLayout.disable(peer);
     },
 
-    deliversEvent(peer, msg) {
-      if (isCrossSessionLayoutRelayFrame(msg)) return false;
-      if (isCrossSessionLayoutMessage(msg)) {
-        return crossSessionLayout.isEnabled(peer);
+    routeEvent(msg) {
+      if (isCrossSessionLayoutRelayFrame(msg)) return "none";
+      if (isCrossSessionLayoutMessage(msg)) return "cross-session";
+      if (isTmuxMessage(msg)) return "all";
+      if (msg.type === "topology-error") return "none";
+      return opts.forwardsLifecycle ? "all" : "none";
+    },
+
+    deliversTo(peer, route) {
+      switch (route) {
+        case "none":
+          return false;
+        case "all":
+          return true;
+        case "cross-session":
+          return crossSessionLayout.isEnabled(peer);
       }
-      return true;
     },
 
     accountOutput(peer, paneId, bytes) {
