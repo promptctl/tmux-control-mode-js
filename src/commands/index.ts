@@ -181,13 +181,15 @@ export async function newWindow(
   return result;
 }
 
-// The directory the pane is in now, which right after newWindow() is the one
-// it started in: the requested cwd, or tmux's $HOME / "/" fallback.
+// The directory the pane's foreground process is in now, which right after
+// newWindow() is the one it started in: the requested cwd as a realpath
+// (compare against realpath(cwd), not cwd), or tmux's $HOME / "/" fallback.
 // [LAW:no-ambient-temporal-coupling] Gated at 3.7 rather than polled below
 // it: older tmux forks before the child chdirs, and no format tells a
 // pre-chdir read from a settled one, so one read is the answer only where
 // tmux makes it so.
-// [LAW:no-silent-failure] A reply that is not exactly one line throws.
+// [LAW:no-silent-failure] A reply that is not exactly one non-empty line
+// throws: an empty line is tmux failing to read the cwd, not a path.
 export async function paneCwd(
   client: TmuxConnection,
   paneId: number,

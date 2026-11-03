@@ -903,11 +903,15 @@ export function parseNewWindowReply(
 
 /**
  * Parse the whole reply to `paneCwd()`'s `display-message -p
- * '#{pane_current_path}'`: exactly one line, decoded to Unicode text. Null
- * for any other shape, including the two lines a path with a newline prints.
+ * '#{pane_current_path}'`: exactly one line, decoded to Unicode text, with
+ * any trailing `\r` (CRLF residue, see `parser.ts`'s `feed()`) dropped. Null
+ * for any other shape: the two lines a path with a newline prints, or the
+ * empty line tmux prints when it cannot read the pane's cwd (dead pane, or a
+ * child that does not own the pty yet).
  */
 export function parsePaneCwdReply(lines: readonly string[]): string | null {
-  return lines.length === 1 ? decodeField(lines[0]) : null;
+  const path = lines.length === 1 ? lines[0].replace(/\r+$/, "") : "";
+  return path === "" ? null : decodeField(path);
 }
 
 /**

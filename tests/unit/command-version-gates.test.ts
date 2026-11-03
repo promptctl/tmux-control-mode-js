@@ -188,7 +188,12 @@ describe("paneCwd version gate", () => {
     ]);
   });
 
-  it.each([[[]], [["/a", "b"]]])(
+  it("drops CRLF residue from the path", async () => {
+    const { conn } = fakeConnection("3.7", ["/srv\r"]);
+    await expect(paneCwd(conn, 4)).resolves.toBe("/srv");
+  });
+
+  it.each([[[]], [[""]], [["/a", "b"]]])(
     "treats a reply of %j as a reply-shape error, not a path",
     async (reply) => {
       const { conn } = fakeConnection("3.8", reply);
