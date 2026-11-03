@@ -13,8 +13,29 @@ import { TmuxClient } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
 import { getOwnClient, setSize } from "../../src/commands/index.js";
 import { watchServerArgs } from "../../src/watch-server.js";
+import {
+  NO_DETACH_ON_DESTROY_MIN_VERSION,
+  meetsTmuxVersion,
+  parseTmuxVersion,
+} from "../../src/tmux-compat.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
+
+// Tests that rely on no-detach-on-destroy skip on tmux that ignores it.
+const TMUX_SUPPORTS_NO_DETACH_ON_DESTROY = (() => {
+  if (!RUN_INTEGRATION) return false;
+  try {
+    const version = parseTmuxVersion(
+      execSync("tmux -V", { encoding: "utf8" }).trim(),
+    );
+    return (
+      version !== null &&
+      meetsTmuxVersion(version, NO_DETACH_ON_DESTROY_MIN_VERSION)
+    );
+  } catch {
+    return false;
+  }
+})();
 
 function uniqueSocket(prefix: string): string {
   // [LAW:one-source-of-truth] "tmux-js-test-" is registered in
@@ -23,7 +44,11 @@ function uniqueSocket(prefix: string): string {
 }
 
 function tmux(socketName: string, args: string): string {
-  return execSync(`tmux -L ${socketName} ${args}`, { encoding: "utf8" }).trim();
+  // -f /dev/null: the developer's tmux.conf must not shape the test server.
+  return execSync(`tmux -f /dev/null -L ${socketName} ${args}`, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
 }
 
 function waitFor<K extends keyof TmuxEventMap, T>(
@@ -75,17 +100,28 @@ describe.skipIf(!RUN_INTEGRATION)("watchServerArgs (real tmux)", () => {
     killTmuxServer(socketName);
   });
 
-  it("identifies itself, with the preset's flags in effect", async () => {
-    const own = await getOwnClient(watcher);
-    expect(own.flags).toEqual(
-      expect.arrayContaining(["control-mode", "ignore-size", "no-detach-on-destroy"]),
-    );
-    const rows = tmux(socketName, "list-clients -F '#{client_name} #{client_pid}'");
-    expect(rows.split("\n")).toContain(`${own.name} ${own.pid}`);
-  });
+  it.skipIf(!TMUX_SUPPORTS_NO_DETACH_ON_DESTROY)(
+    "identifies itself, with the preset's flags in effect",
+    async () => {
+      const own = await getOwnClient(watcher);
+      expect(own.flags).toEqual(
+        expect.arrayContaining([
+          "control-mode",
+          "ignore-size",
+          "no-detach-on-destroy",
+        ]),
+      );
+      const rows = tmux(
+        socketName,
+        "list-clients -F '#{client_name} #{client_pid}'",
+      );
+      expect(rows.split("\n")).toContain(`${own.name} ${own.pid}`);
+    },
+  );
 
   it("does not resize the user's client's windows, even when it sets a size of its own", async () => {
-    // The user's client: a plain attach that sizes the window. Under
+    // The user's client: a second control client that takes part in sizing by
+    // setting a size (spawnTmux always adds -C, so it is not a terminal). Under
     // window-size smallest, any client that takes part in sizing would shrink
     // it to the watcher's 50x20 — that is what ignore-size must prevent.
     tmux(socketName, "set -g window-size smallest");
@@ -99,24 +135,30 @@ describe.skipIf(!RUN_INTEGRATION)("watchServerArgs (real tmux)", () => {
       await setSize(user, 120, 40);
       await setSize(watcher, 50, 20);
       await getOwnClient(watcher);
-      expect(tmux(socketName, "display -p -t a '#{window_width}x#{window_height}'")).toBe(
-        "120x40",
-      );
+      expect(
+        tmux(socketName, "display -p -t a '#{window_width}x#{window_height}'"),
+      ).toBe("120x40");
     } finally {
       user.close();
     }
   });
 
-  it("outlives its attached session by moving to another one", async () => {
-    const moved = waitFor(watcher, "session-changed", (e) =>
-      e.name === "b" ? e.name : undefined,
-    );
-    tmux(socketName, "kill-session -t a");
-    expect(await moved).toBe("b");
-    const own = await getOwnClient(watcher);
-    const rows = tmux(socketName, "list-clients -F '#{client_name} #{session_name}'");
-    expect(rows.split("\n")).toContain(`${own.name} b`);
-  });
+  it.skipIf(!TMUX_SUPPORTS_NO_DETACH_ON_DESTROY)(
+    "outlives its attached session by moving to another one",
+    async () => {
+      const moved = waitFor(watcher, "session-changed", (e) =>
+        e.name === "b" ? e.name : undefined,
+      );
+      tmux(socketName, "kill-session -t a");
+      expect(await moved).toBe("b");
+      const own = await getOwnClient(watcher);
+      const rows = tmux(
+        socketName,
+        "list-clients -F '#{client_name} #{session_name}'",
+      );
+      expect(rows.split("\n")).toContain(`${own.name} b`);
+    },
+  );
 
   it("ends, and reports it, when the last session closes — the server does not stay up", async () => {
     const exit = waitFor(watcher, "exit", () => true);

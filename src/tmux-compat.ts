@@ -27,6 +27,12 @@ export const MIN_TMUX_VERSION: TmuxVersion = { major: 3, minor: 2 };
 export const REQUEST_REPORT_MIN_VERSION: TmuxVersion = { major: 3, minor: 5 };
 
 /**
+ * `watchServerArgs`' `no-detach-on-destroy` client flag; older tmux silently
+ * ignores it. Available from tmux 3.6+.
+ */
+export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = { major: 3, minor: 6 };
+
+/**
  * Parse the major/minor pair from a `tmux -V` output line.
  * Trailing suffix letters (e.g. `3.5a`) are ignored — match is on the
  * leading `<major>.<minor>` digits only.

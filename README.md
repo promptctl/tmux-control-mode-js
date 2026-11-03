@@ -38,7 +38,7 @@ actually called:
 
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
 - `%config-error` notification — only emitted by tmux **3.4+**
-- `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `getOwnClient(client).flags` shows whether the flag took effect.
+- `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `(await getOwnClient(client)).flags` shows whether the flag took effect.
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
