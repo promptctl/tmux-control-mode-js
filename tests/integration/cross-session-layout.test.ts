@@ -7,7 +7,7 @@
 // [LAW:verifiable-goals] Gated behind TMUX_INTEGRATION=1, same convention as
 // tests/integration/client.test.ts.
 
-import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
@@ -257,19 +257,23 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
 
       // A re-sourced tmux.conf: replaces the whole hook array.
       exec(socketName, `set-hook -g window-layout-changed "display-message x"`);
-      await new Promise((r) => setTimeout(r, 3000));
       // Every window reads uncovered until the repair lands; the latest
       // report is the truth.
-      expect(
-        diagnostics.filter(
-          (e) => e.type === "cross-session-layout-hook-restored",
-        ),
-      ).toHaveLength(1);
-      expect(
-        diagnostics
-          .filter((e) => e.type === "cross-session-layout-uncovered")
-          .at(-1),
-      ).toEqual({ type: "cross-session-layout-uncovered", windowIds: [] });
+      await vi.waitFor(
+        () => {
+          expect(
+            diagnostics.filter(
+              (e) => e.type === "cross-session-layout-hook-restored",
+            ),
+          ).toHaveLength(1);
+          expect(
+            diagnostics
+              .filter((e) => e.type === "cross-session-layout-uncovered")
+              .at(-1),
+          ).toEqual({ type: "cross-session-layout-uncovered", windowIds: [] });
+        },
+        { timeout: 8000, interval: 100 },
+      );
 
       const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
       exec(socketName, `split-window -t ${sessionB}`);
@@ -306,12 +310,17 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
         socketName,
         `set-hook -w -t ${sessionB} window-layout-changed "display-message x"`,
       );
-      await new Promise((r) => setTimeout(r, 3000));
-      expect(reports).toEqual([[windowId]]);
+      // The first tick may land before the hook and report [] first; the
+      // latest report is the truth.
+      const latest = (expected: number[]) =>
+        vi.waitFor(() => expect(reports.at(-1)).toEqual(expected), {
+          timeout: 8000,
+          interval: 100,
+        });
+      await latest([windowId]);
 
       exec(socketName, `set-hook -wu -t ${sessionB} window-layout-changed`);
-      await new Promise((r) => setTimeout(r, 3000));
-      expect(reports).toEqual([[windowId], []]);
+      await latest([]);
     } finally {
       await clientA.disableCrossSessionLayoutChange();
       clientA.close();

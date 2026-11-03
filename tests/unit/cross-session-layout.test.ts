@@ -389,8 +389,14 @@ describe("decodeDelivery", () => {
 
   it("rejects a head that is not the format's output", () => {
     expect(decodeDelivery("|@3|1:@3,").coverage).toBeNull();
-    expect(decodeDelivery("x|@3,|1:@3,").coverage).toBeNull();
-    expect(decodeDelivery("1:@3,").coverage).toBeNull();
+    expect(decodeDelivery("1:@3,")).toEqual({ coverage: null, buffer: "" });
+  });
+
+  it("takes any text in the epoch, so a foreign write cannot disable coverage", () => {
+    expect(decodeDelivery("x|@3,|1:@3,").coverage).toEqual({
+      epoch: "x",
+      uncovered: [3],
+    });
   });
 });
 
@@ -444,24 +450,81 @@ describe("CrossSessionLayoutRelay coverage", () => {
     await settle();
     fake.deliver("", "");
     await settle();
-    expect(fake.sent.filter((c) => c.startsWith("set-hook"))).toHaveLength(1);
+    expect(
+      fake.sent.filter((c) => c.startsWith("set-hook") && c.includes(" -w")),
+    ).toEqual([]);
     expect(emitted).toEqual([
       { type: "cross-session-layout-uncovered", windowIds: [4] },
       { type: "cross-session-layout-uncovered", windowIds: [] },
     ]);
   });
 
-  it("issues no coverage commands for buffer-only deliveries or a reordered set", async () => {
+  it("does not re-report an unchanged or reordered set", async () => {
     const fake = fakeConnection();
-    const { relay } = relayOver(fake);
+    const { relay, emitted } = relayOver(fake);
     await relay.enable();
     fake.deliver("", "@4,@7,");
-    await settle();
-    const before = coverageCommands(fake.sent).length;
     fake.deliver("1:@2,", "@7,@4,");
     fake.deliver("1:@2,2:@2,", "@4,@7,");
     await settle();
+    expect(ofType(emitted, "cross-session-layout-uncovered")).toHaveLength(1);
+  });
+
+  it("issues no coverage commands while coverage is whole", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = coverageCommands(fake.sent).length;
+    fake.deliver("1:@2,", "");
+    fake.deliver("1:@2,2:@2,", "");
+    await settle();
     expect(coverageCommands(fake.sent).length).toBe(before);
+  });
+
+  it("repairs a hook cleared while every window was already shadowed", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    fake.clearHook();
+    // The set is unchanged — only the buffer moved.
+    fake.deliver("1:@4,", "@4,");
+    await settle();
+    fake.deliver("1:@4,", "");
+    await settle();
+    expect(ofType(emitted, "cross-session-layout-hook-restored")).toHaveLength(
+      1,
+    );
+  });
+
+  it("retries a refused repair on the next delivery", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    fake.clearHook();
+    fake.fail("show-hooks");
+    fake.deliver("", "@4,");
+    await settle();
+    fake.deliver("1:@4,", "@4,");
+    await settle();
+    expect(
+      fake.sent.filter((c) =>
+        c.includes('@ttcmjs-cross-session-layout-epoch "'),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("replaces whatever command sits at the reserved index", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    await relay.disable();
+    const before = fake.sent.filter((c) => c.startsWith("set-hook")).length;
+    await relay.enable();
+    expect(fake.sent.filter((c) => c.startsWith("set-hook")).length).toBe(
+      before + 1,
+    );
   });
 
   it("tells a listener joining a live subscription the current set", async () => {

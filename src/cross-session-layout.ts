@@ -110,6 +110,12 @@ const SHOW_HOOK_COMMAND = `show-hooks -g ${HOOK}`;
 
 const BUMP_EPOCH_COMMAND = `set-option -gF ${EPOCH_OPTION_NAME} "#{e|+:#{${EPOCH_OPTION_NAME}},1}"`;
 
+function installAndBumpCommand(): string {
+  // One command list: tmux applies both or reports the one that failed, so
+  // no relay can see the hook back without the epoch that announces it.
+  return `${installHookCommand()} ; ${BUMP_EPOCH_COMMAND}`;
+}
+
 /**
  * Every window, server-wide, that the hook does not cover, as `@<wid>,`
  * entries. A hook name in a format reads the hook effective in that
@@ -209,10 +215,14 @@ export function decodeDelivery(value: string): {
   readonly coverage: Coverage | null;
   readonly buffer: string;
 } {
-  const m = /^(\d*)\|([^|]*)\|/.exec(value);
+  // The epoch is compared, never computed with, so any text in it is an
+  // epoch — a foreign write to the option changes it once, not forever.
+  const m = /^([^|]*)\|([^|]*)\|/.exec(value);
   if (m === null || !UNCOVERED_RE.test(m[2])) {
-    const lastBar = value.lastIndexOf("|");
-    return { coverage: null, buffer: value.slice(lastBar + 1) };
+    return {
+      coverage: null,
+      buffer: value.slice(value.lastIndexOf("|") + 1 || value.length),
+    };
   }
   const ids = [...m[2].matchAll(/@(\d+),/g)].map((w) => Number(w[1]));
   return {
@@ -418,9 +428,11 @@ export class CrossSessionLayoutRelay {
 
   /**
    * Every relay reads the same epoch, so each one reports a repair any relay
-   * made. A changed non-empty uncovered set is answered by checking the
-   * global entry itself: windows the user's own hooks shadow are reported,
-   * never overridden, and the next delivery shows what a repair fixed.
+   * made. Every delivery with uncovered windows is answered by checking the
+   * global entry itself — not only a changed set, since clearing the global
+   * entry leaves the set unchanged when every window was already shadowed,
+   * and a failed check is retried on the next delivery. Windows the user's
+   * own hooks shadow are reported, never overridden.
    */
   private reportCoverage(generation: number, coverage: Coverage): void {
     if (coverage.epoch !== this.epoch) {
@@ -429,12 +441,15 @@ export class CrossSessionLayoutRelay {
     }
     const { uncovered } = coverage;
     if (
-      this.reportedUncovered !== null &&
-      sameIds(uncovered, this.reportedUncovered)
-    )
-      return;
-    this.reportedUncovered = uncovered;
-    this.emit({ type: "cross-session-layout-uncovered", windowIds: uncovered });
+      this.reportedUncovered === null ||
+      !sameIds(uncovered, this.reportedUncovered)
+    ) {
+      this.reportedUncovered = uncovered;
+      this.emit({
+        type: "cross-session-layout-uncovered",
+        windowIds: uncovered,
+      });
+    }
     if (uncovered.length === 0) return;
     // The caller of a repair is this delivery, which has nobody to reject
     // to; the step reports its own failures.
@@ -463,16 +478,19 @@ export class CrossSessionLayoutRelay {
   }
 
   /**
-   * Reinstall the global entry if it is gone, and bump the epoch so every
-   * relay hears it. Two relays racing here both bump: a repeated
+   * Install the global entry — always, so a stale or foreign command at the
+   * reserved index is replaced — and bump the epoch when it had been gone,
+   * so every relay hears it. Two relays racing here both bump: a repeated
    * hook-restored over-reports, which costs a re-read, never a lost change.
    */
   private async ensureHook(): Promise<void> {
     const shown = await this.client.execute(SHOW_HOOK_COMMAND);
     const line = shown.output[0] ?? "";
-    if (line.startsWith(HOOK) && line.slice(HOOK.length).trim() !== "") return;
-    await this.client.execute(installHookCommand());
-    await this.client.execute(BUMP_EPOCH_COMMAND);
+    const present =
+      line.startsWith(HOOK) && line.slice(HOOK.length).trim() !== "";
+    await this.client.execute(
+      present ? installHookCommand() : installAndBumpCommand(),
+    );
   }
 
   private async fetchAndEmit(
