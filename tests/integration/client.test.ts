@@ -458,36 +458,43 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Create a window in a fresh side session on `socketName`, returning its
- * target and id. tmux picks a window notification's linked/unlinked variant
- * by whether the window is in the RECEIVING client's session, so probes that
- * pin a variant act on a window in a session the client is not attached to.
+ * Create a window in a fresh side session, returning its target and id. tmux
+ * picks a window notification's linked/unlinked variant by whether the window
+ * is in the RECEIVING client's session, so probes that pin a variant act on a
+ * window in a session the client is not attached to.
  */
 function sideWindow(
-  socketName: string,
+  exec: ProbeCtx["exec"],
   prefix: string,
 ): { target: string; windowId: number } {
   const session = uniqueSession(prefix);
-  execSync(tmuxCmd(socketName, `new-session -d -s ${session}`));
-  const windowId = Number(
-    execSync(
-      tmuxCmd(
-        socketName,
-        `new-window -d -P -F '#{window_id}' -n side -t ${session}`,
-      ),
-    )
-      .toString()
-      .trim()
-      .slice(1),
-  );
   // Session-qualified by name: a bare @id may resolve to the client's own
   // link of the window once it is linked into two sessions.
-  return { target: `${session}:side`, windowId };
+  const target = `${session}:side`;
+  return {
+    target,
+    windowId: parseWindowId(
+      exec(
+        `new-session -d -s ${session} \\; ` +
+          `new-window -d -P -F '#{window_id}' -n side -t ${session}`,
+      ),
+    ),
+  };
+}
+
+/** Parse `@<n>` window-id output, failing loudly on anything else. */
+function parseWindowId(out: string): number {
+  const m = /^@(\d+)$/.exec(out.trim());
+  if (m === null) {
+    throw new Error(`expected a tmux window id, got ${JSON.stringify(out)}`);
+  }
+  return Number(m[1]);
 }
 
 /**
- * Resolve when `client` next emits `type`; reject with a legible message if it
- * has not within `ms`, so a missing notification fails as "did not observe %X"
+ * Resolve when `client` next emits a `type` event satisfying `match`; reject
+ * with a legible message if none has within `ms`, so a missing notification
+ * fails as "did not observe a matching %X"
  * rather than an opaque vitest timeout. The handler is registered synchronously,
  * so a caller that binds `const p = waitForEvent(...)` BEFORE provoking cannot
  * miss an event that fires between the two calls.
@@ -508,7 +515,7 @@ function waitForEvent<K extends keyof TmuxEventMap>(
     };
     const timer = setTimeout(() => {
       client.off(type, handler);
-      reject(new Error(`did not observe %${type} within ${ms}ms`));
+      reject(new Error(`did not observe a matching %${type} within ${ms}ms`));
     }, ms);
     client.on(type, handler);
   });
@@ -549,7 +556,8 @@ interface ProbeCtx {
   readonly client: TmuxClient;
   readonly socketName: string;
   readonly sessionName: string;
-  exec(args: string): void;
+  /** Run a tmux command on the probe's server; returns its stdout. */
+  exec(args: string): string;
 }
 
 /**
@@ -682,9 +690,9 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "unlinked-window-close": {
     kind: "observed",
-    probe: async ({ client, exec, socketName }) => {
+    probe: async ({ client, exec }) => {
       // A window killed in ANOTHER session was never in this client's session.
-      const { target, windowId } = sideWindow(socketName, "cov-unlinkclose");
+      const { target, windowId } = sideWindow(exec, "cov-unlinkclose");
       const p = waitForEvent(
         client,
         "unlinked-window-close",
@@ -848,10 +856,10 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "window-close": {
     kind: "observed",
-    probe: async ({ client, exec, socketName, sessionName }) => {
+    probe: async ({ client, exec, sessionName }) => {
       // Unlinking a window from another session while it stays linked in
       // this client's session is %window-close on every supported version.
-      const { target, windowId } = sideWindow(socketName, "cov-winclose");
+      const { target, windowId } = sideWindow(exec, "cov-winclose");
       exec(`link-window -d -s ${target} -t ${sessionName}:`);
       const p = waitForEvent(
         client,
@@ -1019,7 +1027,10 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
           socketName,
           sessionName,
           exec: (args) =>
-            execSync(tmuxCmd(socketName, args), { stdio: "ignore" }),
+            execSync(tmuxCmd(socketName, args), {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+            }),
         });
       } finally {
         // Uniform cleanup for every probe, regardless of what it did to the
@@ -1034,6 +1045,49 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
     },
     20000,
   );
+
+  // The COVERAGE probes pin each variant with cross-session setups; this pins
+  // the common teardown path, whose variant tmux picks differently by version.
+  it("an own-session kill-window emits a close event for that window", async () => {
+    const socketName = uniqueSocket("cov");
+    const sessionName = uniqueSession("cov-ownkill");
+    let client: TmuxClient | null = null;
+    try {
+      const c = await createSession(socketName, sessionName);
+      client = c;
+      const windowId = parseWindowId(
+        execSync(
+          tmuxCmd(
+            socketName,
+            `new-window -d -P -F '#{window_id}' -t ${sessionName}`,
+          ),
+          { encoding: "utf8" },
+        ),
+      );
+      const types = ["window-close", "unlinked-window-close"] as const;
+      const closed = new Promise<void>((resolve, reject) => {
+        const stop = () => {
+          clearTimeout(timer);
+          for (const t of types) c.off(t, handler);
+        };
+        const handler = (ev: { readonly windowId: number }) => {
+          if (ev.windowId !== windowId) return;
+          stop();
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          stop();
+          reject(new Error(`no close event for @${windowId} within 12000ms`));
+        }, 12000);
+        for (const t of types) c.on(t, handler);
+      });
+      await c.execute(`kill-window -t @${windowId}`);
+      await closed;
+    } finally {
+      client?.close();
+      killServer(socketName);
+    }
+  }, 20000);
 });
 
 // ---------------------------------------------------------------------------
