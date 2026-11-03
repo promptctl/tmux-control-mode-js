@@ -652,13 +652,14 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "unlinked-window-close": {
     kind: "observed",
-    probe: async ({ client }) => {
-      // kill-window unlinks the window from the session before the close
-      // notification fires, so a control client sees the unlinked variant
-      // (SPEC §6.2).
-      await client.execute("new-window -d -n closeme");
+    probe: async ({ client, exec }) => {
+      // A window killed in ANOTHER session was never in this client's session,
+      // so it closes as %unlinked-window-close on every supported tmux.
+      const other = uniqueSession("cov-unlinkclose");
+      exec(`new-session -d -s ${other}`);
+      exec(`new-window -d -t ${other} -n closeme`);
       const p = waitForEvent(client, "unlinked-window-close");
-      await client.execute("kill-window -t closeme");
+      exec(`kill-window -t ${other}:closeme`);
       await p;
     },
   },
@@ -821,7 +822,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   "window-close": {
     kind: "exempt",
     reason:
-      "tmux delivers window teardown to a control client as %unlinked-window-close (the window is unlinked from the session before the close notification — SPEC §6.2, see the %unlinked-window-close observation). The linked %window-close variant is not reachable by a single-session control client in this harness.",
+      "Killing a window in the control client's own session emits %window-close on newer tmux (observed on 3.8) but %unlinked-window-close on the 3.2 floor, which unlinks the window before notifying (SPEC §6.2). No single probe is deterministic across the supported range.",
   },
   "config-error": {
     kind: "exempt",
