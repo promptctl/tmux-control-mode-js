@@ -39,6 +39,8 @@ export class RefreshPolicy {
       // [LAW:dataflow-not-control-flow] Pane geometry must feel instant when a
       // user resizes their terminal, so fast-path on %layout-change with a
       // targeted list-panes for just that window. O(panes-in-one-window).
+      // Not ev.layout: its sizes are layout cells, and pane-border-status or
+      // pane-scrollbars shrink the pane inside its cell (y69).
       void this.refreshWindowDimensions(ev.windowId);
       return;
     }

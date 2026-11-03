@@ -170,6 +170,10 @@ export class TmuxModel {
    * Apply a targeted pane-geometry update in place. Reassigns `sessions` to a
    * new tree with new pane objects for any updated pane so MobX observers
    * that depend on `sessions` re-run. [LAW:dataflow-not-control-flow]
+   * Deliberately not written into `latestPanes`: tmux sends a subscription
+   * only when its value changes, so a late, stale reply written there would
+   * never be corrected. A rebuild may briefly revert this patch; the panes
+   * tick then carries the true sizes.
    */
   applyPaneDimensions(updates: ReadonlyMap<number, PaneDimensions>): void {
     if (updates.size === 0) return;
