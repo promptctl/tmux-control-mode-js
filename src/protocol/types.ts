@@ -147,8 +147,10 @@ export interface PaneGeometry {
 }
 
 /**
- * A layout string parsed into pane geometry: every pane, in layout order —
- * or, when the string breaks tmux's layout grammar or checksum, the reason.
+ * A layout string parsed into pane geometry: every tiled pane, in layout
+ * order — or, when the string breaks tmux's layout grammar or checksum, the
+ * reason. Floating panes (tmux 3.8+) are not in the layout string, so a
+ * window of only floating panes parses to an empty list.
  */
 export type WindowLayout =
   | { readonly kind: "parsed"; readonly panes: readonly PaneGeometry[] }
@@ -159,7 +161,7 @@ export type WindowLayout =
  * one. Build it with `windowLayoutFields` (protocol/layout.ts).
  */
 export interface WindowLayoutFields {
-  /** Raw `#{window_layout}`: every pane, at its pre-zoom size when zoomed. */
+  /** Raw `#{window_layout}`: every tiled pane, at its pre-zoom size when zoomed. */
   readonly windowLayout: string;
   /** Raw `#{window_visible_layout}`: only the zoomed pane when zoomed. */
   readonly windowVisibleLayout: string;

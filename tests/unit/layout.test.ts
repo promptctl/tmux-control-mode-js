@@ -43,31 +43,21 @@ describe("parseWindowLayout", () => {
     });
   });
 
-  // tmux layout_checksum, for fixtures whose body is generated.
-  const checksum = (body: string): number => {
-    let csum = 0;
-    for (let i = 0; i < body.length; i++) {
-      csum = ((csum >> 1) + ((csum & 1) << 15) + body.charCodeAt(i)) & 0xffff;
-    }
-    return csum;
-  };
-
-  it("accepts an uppercase or unpadded checksum, as tmux's layout_parse does", () => {
+  it("accepts an uppercase checksum, as tmux's layout_parse does", () => {
     expect(parseWindowLayout("B260,80x24,0,0,3")).toMatchObject({
       kind: "parsed",
     });
-    // checksum("13x100,0,0,0") is 0x003d; tmux would print "003d".
-    expect(parseWindowLayout("3d,13x100,0,0,0")).toMatchObject({
-      kind: "parsed",
-    });
+  });
+
+  it("parses a window with no tiled pane as an empty pane list", () => {
+    // tmux 3.8, floating panes only: %layout-change @0 0000, 0000, *
+    expect(parseWindowLayout("0000,")).toEqual({ kind: "parsed", panes: [] });
   });
 
   it("reports hostile nesting as malformed instead of overflowing the stack", () => {
     const depth = 5000;
     const body = "1x1,0,0[".repeat(depth) + "1x1,0,0,0" + "]".repeat(depth);
-    expect(
-      parseWindowLayout(`${checksum(body).toString(16)},${body}`),
-    ).toMatchObject({
+    expect(parseWindowLayout(`a360,${body}`)).toMatchObject({
       kind: "malformed",
       reason: expect.stringMatching(/nested deeper/),
     });
@@ -76,6 +66,7 @@ describe("parseWindowLayout", () => {
   it.each([
     ["wrong checksum", "b261,80x24,0,0,3"],
     ["no checksum", "80x24,0,0,3"],
+    ["unpadded checksum", "3d,13x100,0,0,0"],
     ["empty string", ""],
     ["JSON layout", '{"V":2,"L":{"t":"p","w":80,"h":24}}'],
   ])("reports %s as malformed", (_label, raw) => {

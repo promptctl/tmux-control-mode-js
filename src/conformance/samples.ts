@@ -10,7 +10,7 @@
 // fails to typecheck until it gets a sample. "Exercises every documented
 // notification" is therefore enforced by the type system, not by reviewer count.
 // [LAW:effects-at-boundaries] Pure data + a pure classifier. No client, no mock,
-// no clock — so it imports nothing but the protocol type and is browser-safe.
+// no clock — so it imports only the pure protocol layer and is browser-safe.
 
 import type { TmuxMessage } from "../protocol/types.js";
 import { windowLayoutFields } from "../protocol/layout.js";

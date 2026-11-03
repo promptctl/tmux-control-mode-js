@@ -699,15 +699,19 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
           .map((l) => Number(l.trim().slice(1)))
           .sort();
       const before = (await paneIds()).length;
+      // A malformed layout resolves at once so its reason is reported, not
+      // hidden behind the wait timeout.
       const p = waitForEvent(
         client,
         "layout-change",
         (ev) =>
-          ev.layout.kind === "parsed" && ev.layout.panes.length === before + 1,
+          ev.layout.kind === "malformed" ||
+          ev.layout.panes.length === before + 1,
       );
       await client.execute("split-window -h");
       const ev = await p;
       const after = await paneIds();
+      expect(ev.layout).toMatchObject({ kind: "parsed" });
       expect(
         ev.layout.kind === "parsed" &&
           ev.layout.panes.map((g) => g.paneId).sort(),

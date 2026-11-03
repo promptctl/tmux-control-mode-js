@@ -3,13 +3,14 @@
 // %layout-change carries. Pure — no Node.js dependencies.
 //
 // Grammar:
-//   layout := checksum "," cell
+//   layout := checksum "," [ cell ]
 //   cell   := W "x" H "," X "," Y ( "," paneId | "{" cells "}" | "[" cells "]" )
 //   cells  := cell ( "," cell )*
 // `{}` is a left-right split, `[]` a top-bottom split; only leaf cells name a
-// pane. The checksum is tmux's 16-bit rotate-and-add over the bytes after
-// the first comma, in hex (tmux emits four lowercase digits and accepts one
-// to four of either case).
+// pane. The cell is absent ("0000,") when a window has no tiled pane, only
+// floating ones (tmux 3.8+). The checksum is tmux's 16-bit rotate-and-add
+// over the bytes after the first comma, as exactly four hex digits (tmux
+// emits lowercase; layout_parse accepts either case).
 
 import type {
   PaneGeometry,
@@ -120,7 +121,7 @@ export function parseWindowLayout(raw: string): WindowLayout {
   const comma = raw.indexOf(",");
   const checksum = raw.slice(0, comma);
   const body = raw.slice(comma + 1);
-  if (comma === -1 || !/^[0-9a-f]{1,4}$/i.test(checksum)) {
+  if (comma === -1 || !/^[0-9a-f]{4}$/i.test(checksum)) {
     return { kind: "malformed", reason: `no layout checksum in "${raw}"` };
   }
   const expected = layoutChecksum(body);
@@ -133,7 +134,7 @@ export function parseWindowLayout(raw: string): WindowLayout {
   const panes: PaneGeometry[] = [];
   const reader = new LayoutReader(body);
   try {
-    readCell(reader, panes);
+    if (!reader.atEnd()) readCell(reader, panes);
     if (!reader.atEnd()) {
       throw new LayoutSyntaxError(`trailing input after the root cell`);
     }
