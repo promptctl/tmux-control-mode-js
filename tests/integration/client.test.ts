@@ -41,10 +41,18 @@ import {
 import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
-import { TmuxCommandError } from "../../src/errors.js";
+import {
+  TmuxCommandError,
+  UnsupportedTmuxVersionError,
+} from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
+  type TmuxVersion,
+  MIN_TMUX_VERSION,
   REQUEST_REPORT_MIN_VERSION,
+  QUERY_CLIPBOARD_MIN_VERSION,
+  PASTE_BUFFER_NOTIFY_MIN_VERSION,
+  MESSAGE_NOTIFY_MIN_VERSION,
   meetsTmuxVersion,
   parseTmuxVersion,
 } from "../../src/tmux-compat.js";
@@ -55,21 +63,27 @@ import type { ConnectionStateMessage } from "../../src/connection-state.js";
 // regardless of whether tmux is installed in the environment.
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// [LAW:verifiable-goals] Some refresh-client flags are newer than the
-// library's 3.2 minimum: `-r` (requestReport) is rejected by tmux <3.5 as
-// an unknown flag. Skip the feature test rather than asserting a contract
-// the running tmux cannot honor.
+// [LAW:verifiable-goals] Some features are newer than the library's 3.2
+// minimum (e.g. `-r` for requestReport is rejected by tmux <3.5 as an unknown
+// flag). Skip a feature test rather than asserting a contract the running
+// tmux cannot honor.
 // [LAW:one-source-of-truth] Version constants live in src/tmux-compat.ts;
-// this gate imports them rather than restating the numbers.
-const TMUX_SUPPORTS_REQUEST_REPORT = (() => {
-  if (!RUN_INTEGRATION) return false;
+// every gate here imports them rather than restating the numbers.
+const RUNNING_TMUX_VERSION: TmuxVersion | null = (() => {
+  if (!RUN_INTEGRATION) return null;
   try {
-    const version = parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim());
-    return version !== null && meetsTmuxVersion(version, REQUEST_REPORT_MIN_VERSION);
+    return parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim());
   } catch {
-    return false;
+    return null;
   }
 })();
+
+function tmuxAtLeast(need: TmuxVersion): boolean {
+  return (
+    RUNNING_TMUX_VERSION !== null &&
+    meetsTmuxVersion(RUNNING_TMUX_VERSION, need)
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -368,7 +382,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     15000,
   );
 
-  it(
+  it.skipIf(!tmuxAtLeast(QUERY_CLIPBOARD_MIN_VERSION))(
     "queryClipboard returns a successful response",
     async () => {
       sessionName = uniqueSession("test-clip");
@@ -381,7 +395,25 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     15000,
   );
 
-  it.skipIf(!TMUX_SUPPORTS_REQUEST_REPORT)(
+  // Below 3.3 an ungated `refresh-client -l` makes the control client exit;
+  // the gate must reject before sending, leaving the connection usable.
+  it.skipIf(
+    RUNNING_TMUX_VERSION === null || tmuxAtLeast(QUERY_CLIPBOARD_MIN_VERSION),
+  )(
+    "queryClipboard rejects below its floor and the connection survives",
+    async () => {
+      sessionName = uniqueSession("test-clip-old");
+      client = await createSession(socketName, sessionName);
+      await expect(queryClipboard(client)).rejects.toBeInstanceOf(
+        UnsupportedTmuxVersionError,
+      );
+      const r = await client.execute("display-message -p ok");
+      expect(r.output).toEqual(["ok"]);
+    },
+    15000,
+  );
+
+  it.skipIf(!tmuxAtLeast(REQUEST_REPORT_MIN_VERSION))(
     "requestReport succeeds against an existing pane",
     async () => {
       sessionName = uniqueSession("test-rep");
@@ -605,6 +637,8 @@ type Coverage =
   | {
       readonly kind: "observed";
       readonly probe: (ctx: ProbeCtx) => Promise<void>;
+      /** Oldest tmux that emits the event; absent means the library floor. */
+      readonly minVersion?: TmuxVersion;
     }
   | { readonly kind: "exempt"; readonly reason: string };
 
@@ -843,6 +877,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "paste-buffer-changed": {
     kind: "observed",
+    minVersion: PASTE_BUFFER_NOTIFY_MIN_VERSION,
     probe: async ({ client }) => {
       const p = waitForEvent(client, "paste-buffer-changed");
       await client.execute("set-buffer cov-buffer-content");
@@ -851,6 +886,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   "paste-buffer-deleted": {
     kind: "observed",
+    minVersion: PASTE_BUFFER_NOTIFY_MIN_VERSION,
     probe: async ({ client }) => {
       await client.execute("set-buffer -b cov-delbuf cov-x");
       const p = waitForEvent(client, "paste-buffer-deleted");
@@ -878,6 +914,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   },
   message: {
     kind: "observed",
+    minVersion: MESSAGE_NOTIFY_MIN_VERSION,
     probe: async ({ client, socketName, sessionName }) => {
       // A control client's OWN display-message returns as command output, not
       // %message. %message is delivered when ANOTHER actor displays a message
@@ -1063,13 +1100,19 @@ describe("SPEC §23 conformance gate (structural)", () => {
 // ---------------------------------------------------------------------------
 
 const OBSERVED_ENTRIES = Object.entries(COVERAGE).flatMap(([name, cov]) =>
-  cov.kind === "observed" ? [[name, cov.probe] as const] : [],
+  cov.kind === "observed"
+    ? [[name, cov.probe, cov.minVersion ?? MIN_TMUX_VERSION] as const]
+    : [],
 );
 
 describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
-  it.each(OBSERVED_ENTRIES)(
-    "observes %%%s live from a real tmux",
-    async (name, probe) => {
+  // An event newer than the running tmux is skipped, not failed: that tmux
+  // cannot emit it, and the skip shows in the run rather than vanishing.
+  for (const [name, probe, minVersion] of OBSERVED_ENTRIES) it.skipIf(
+    !tmuxAtLeast(minVersion),
+  )(
+    `observes %${name} live from a real tmux`,
+    async () => {
       const socketName = uniqueSocket("cov");
       const sessionName = uniqueSession(`cov-${name}`);
       let client: TmuxClient | null = null;

@@ -21,6 +21,28 @@ export interface TmuxVersion {
 export const MIN_TMUX_VERSION: TmuxVersion = { major: 3, minor: 2 };
 
 /**
+ * `queryClipboard()` sends `refresh-client -l`. On tmux 3.2 that writes an
+ * OSC 52 query to the control client's tty and the control client exits,
+ * taking the connection down. Works from tmux 3.3+ (measured on 3.2a / 3.3a).
+ */
+export const QUERY_CLIPBOARD_MIN_VERSION: TmuxVersion = { major: 3, minor: 3 };
+
+/**
+ * `%paste-buffer-changed` / `%paste-buffer-deleted` notifications; tmux 3.2
+ * and 3.3 never emit them. Emitted from tmux 3.4+.
+ */
+export const PASTE_BUFFER_NOTIFY_MIN_VERSION: TmuxVersion = {
+  major: 3,
+  minor: 4,
+};
+
+/**
+ * `%message` notification (display-message targeting a control client);
+ * tmux 3.2 and 3.3 never emit it. Emitted from tmux 3.4+.
+ */
+export const MESSAGE_NOTIFY_MIN_VERSION: TmuxVersion = { major: 3, minor: 4 };
+
+/**
  * `client.requestReport()` sends `refresh-client -r`, which tmux 3.4
  * rejects as an unknown flag. Available from tmux 3.5+.
  */

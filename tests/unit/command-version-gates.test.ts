@@ -1,15 +1,19 @@
-// tests/unit/request-report-version-gate.test.ts
+// tests/unit/command-version-gates.test.ts
 //
-// [LAW:verifiable-goals] The library supports tmux 3.2+, but `requestReport`
-// emits `refresh-client -r`, a flag added in tmux 3.5. The single enforcer of
-// that floor is the `requestReport` free function: it probes the live tmux
-// version over the control-mode connection and rejects with a clear, typed
-// precondition error on 3.2-3.4 instead of leaking tmux's raw "unknown flag"
-// %error. These tests pin that behavior with a fake connection, so the <3.5
-// rejection is verified without owning an old tmux binary.
+// [LAW:verifiable-goals] The library supports tmux 3.2+, but some commands are
+// newer: `requestReport` emits `refresh-client -r` (tmux 3.5), and
+// `queryClipboard` emits `refresh-client -l`, which kills the control client on
+// tmux 3.2. Each command probes the live tmux version over the control-mode
+// connection and rejects with a typed precondition error below its floor,
+// never sending the command. These tests pin that behavior with a fake
+// connection, so the rejection is verified without owning an old tmux binary.
 
 import { describe, it, expect } from "vitest";
-import { requestReport, queryTmuxVersion } from "../../src/commands/index.js";
+import {
+  requestReport,
+  queryClipboard,
+  queryTmuxVersion,
+} from "../../src/commands/index.js";
 import {
   TmuxReplyFormatError,
   UnsupportedTmuxVersionError,
@@ -96,5 +100,26 @@ describe("requestReport version gate", () => {
   it("queryTmuxVersion rejects loudly when the reply carries no version", async () => {
     const { conn } = fakeConnection("no version here");
     await expect(queryTmuxVersion(conn)).rejects.toThrow(TmuxReplyFormatError);
+  });
+});
+
+describe("queryClipboard version gate", () => {
+  it("rejects on tmux 3.2 with the 3.3 requirement and never sends refresh-client -l", async () => {
+    const { conn, sent } = fakeConnection("3.2a");
+
+    const err: unknown = await queryClipboard(conn).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnsupportedTmuxVersionError);
+    expect((err as UnsupportedTmuxVersionError).required).toEqual({
+      major: 3,
+      minor: 3,
+    });
+    expect(sent.some((c) => c.startsWith("refresh-client -l"))).toBe(false);
+  });
+
+  it("proceeds to send refresh-client -l on tmux 3.3", async () => {
+    const { conn, sent } = fakeConnection("3.3a");
+    await queryClipboard(conn);
+    expect(sent.some((c) => c.startsWith("refresh-client -l"))).toBe(true);
   });
 });

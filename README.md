@@ -33,9 +33,12 @@ tmux:
   control mode client gets too far behind."*)
 - `%client-detached` notification (tmux 3.2)
 
-Three features are also exposed by the API but require a newer tmux when
+Some features are also exposed by the API but require a newer tmux when
 actually called:
 
+- `queryClipboard(client)` — needs tmux **3.3+** (`refresh-client -l`; on tmux 3.2 the control client exits, dropping the connection). On older tmux it rejects with `UnsupportedTmuxVersionError` before sending anything.
+- `%paste-buffer-changed` / `%paste-buffer-deleted` notifications — only emitted by tmux **3.4+**
+- `%message` notification — only emitted by tmux **3.4+**
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
 - `%config-error` notification — only emitted by tmux **3.4+**
 - `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `(await getOwnClient(client)).flags` shows whether the flag took effect.
