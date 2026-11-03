@@ -5,7 +5,7 @@
 // not fail when tmux is unavailable, but can be run explicitly to verify
 // real-world behaviour against an actual tmux binary.
 
-import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
+import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import {
   readFileSync,
@@ -492,25 +492,29 @@ function sideWindow(
   };
 }
 
-/** Parse `@<n>` window-id output, failing loudly on anything else. */
 // [LAW:no-ambient-temporal-coupling] pane_current_path is the pane process's
 // live cwd: until the forked child chdirs it is the server's (seen on Linux
-// CI), so the read waits for the expected path instead of racing the child.
-async function waitForPaneCwd(
+// CI), so the read waits for the expected pane instead of racing the child.
+// Only a non-matching listing retries; a listPanes rejection propagates.
+async function waitForPane(
   client: TmuxClient,
-  paneId: number,
-  cwd: string,
+  match: (pane: PaneRecord) => boolean,
 ): Promise<PaneRecord> {
-  return vi.waitFor(
-    async () => {
-      const pane = (await listPanes(client)).find((p) => p.paneId === paneId);
-      expect(pane?.cwd).toBe(cwd);
-      return pane!;
-    },
-    { timeout: 8000, interval: 50 },
-  );
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    const panes = await listPanes(client);
+    const found = panes.find(match);
+    if (found !== undefined) return found;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `no pane matched within 8000ms; last listing: ${JSON.stringify(panes)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
+/** Parse `@<n>` window-id output, failing loudly on anything else. */
 function parseWindowId(out: string): number {
   const m = /^@(\d+)$/.exec(out.trim());
   if (m === null) {
@@ -1237,27 +1241,13 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           ),
           { stdio: "ignore" },
         );
-        // pane_current_path is queried live from the OS, not snapshotted at
-        // spawn time: the window-creation command can return before the
-        // forked child has finished its own chdir(), so an immediate query
-        // can transiently read the inherited (parent) cwd under CI load —
-        // observed as a flake in CI, never locally. Poll rather than
-        // single-shot the read.
-        const deadline = Date.now() + 8000;
-        let found: Awaited<ReturnType<typeof listPanes>>[number] | undefined;
-        for (;;) {
-          const panes = await listPanes(client);
-          found = panes.find(
-            (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
-          );
-          if (found !== undefined || Date.now() >= deadline) break;
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        expect(found).toBeDefined();
-        // Confirmed not dropped by the split-by-tab desync, and the cwd
-        // decoded back to the literal backslash/tab it was created with —
+        // Found at all means not dropped by the split-by-tab desync, and the
+        // cwd decoded back to the literal backslash/tab it was created with —
         // not the escaped wire form, and not truncated at the tab.
-        expect(found!.cwd).toContain("a\\b\tc");
+        await waitForPane(
+          client,
+          (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
+        );
       } finally {
         rmSync(weirdDir, { recursive: true, force: true });
       }
@@ -1426,7 +1416,10 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           command: "sleep 60",
         });
 
-        const pane = await waitForPaneCwd(client, created.paneId, cwd);
+        const pane = await waitForPane(
+          client,
+          (p) => p.paneId === created.paneId && p.cwd === cwd,
+        );
         expect(pane).toMatchObject({
           sessionName: target,
           windowId: created.windowId,
@@ -1470,6 +1463,10 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    await waitForPaneCwd(client, created.paneId, realpathSync(homedir()));
+    const home = realpathSync(homedir());
+    await waitForPane(
+      client,
+      (p) => p.paneId === created.paneId && p.cwd === home,
+    );
   }, 15000);
 });
