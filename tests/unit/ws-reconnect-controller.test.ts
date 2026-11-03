@@ -60,7 +60,13 @@ describe("ReconnectController — schedule + budget", () => {
     vi.useFakeTimers();
     const onRetry = vi.fn();
     const ctl = new ReconnectController(
-      { maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 300, factor: 2, jitterMs: 0 },
+      {
+        maxAttempts: 5,
+        initialDelayMs: 100,
+        maxDelayMs: 300,
+        factor: 2,
+        jitterMs: 0,
+      },
       { onRetry },
     );
     ctl.schedule(); // attempt 1 → 100ms
@@ -85,7 +91,13 @@ describe("ReconnectController — schedule + budget", () => {
     const onRetry = vi.fn();
     const ctl = new ReconnectController(
       // base = initial * factor^(attempt-1) = 100 * 1^0 = 100; jitter = 400
-      { maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 10_000, factor: 1, jitterMs: 400 },
+      {
+        maxAttempts: 5,
+        initialDelayMs: 100,
+        maxDelayMs: 10_000,
+        factor: 1,
+        jitterMs: 400,
+      },
       { onRetry },
     );
     ctl.schedule(); // delay = 100 + 0.5 * 400 = 300ms
@@ -98,7 +110,13 @@ describe("ReconnectController — schedule + budget", () => {
   it("never exhausts when maxAttempts is Infinity", () => {
     vi.useFakeTimers();
     const ctl = new ReconnectController(
-      { maxAttempts: Infinity, initialDelayMs: 1, maxDelayMs: 1, factor: 1, jitterMs: 0 },
+      {
+        maxAttempts: Infinity,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        factor: 1,
+        jitterMs: 0,
+      },
       { onRetry: vi.fn() },
     );
     for (let i = 1; i <= 1000; i += 1) {

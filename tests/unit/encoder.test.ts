@@ -72,25 +72,25 @@ describe("refreshClientPaneAction", () => {
   // pane:action token must be quoted as a single argument.
   it("pane 1, PaneAction.On — quoted pane:action token", () => {
     expect(refreshClientPaneAction(1, PaneAction.On)).toBe(
-      "refresh-client -A '%1:on'"
+      "refresh-client -A '%1:on'",
     );
   });
 
   it("pane 5, PaneAction.Pause", () => {
     expect(refreshClientPaneAction(5, PaneAction.Pause)).toBe(
-      "refresh-client -A '%5:pause'"
+      "refresh-client -A '%5:pause'",
     );
   });
 
   it("pane 3, PaneAction.Off", () => {
     expect(refreshClientPaneAction(3, PaneAction.Off)).toBe(
-      "refresh-client -A '%3:off'"
+      "refresh-client -A '%3:off'",
     );
   });
 
   it("pane 2, PaneAction.Continue", () => {
     expect(refreshClientPaneAction(2, PaneAction.Continue)).toBe(
-      "refresh-client -A '%2:continue'"
+      "refresh-client -A '%2:continue'",
     );
   });
 });
@@ -98,9 +98,7 @@ describe("refreshClientPaneAction", () => {
 describe("refreshClientSubscribe", () => {
   it("simple name, what, format are individually single-quoted", () => {
     const result = refreshClientSubscribe("my-sub", "pane", "#{pane_title}");
-    expect(result).toBe(
-      "refresh-client -B 'my-sub':'pane':'#{pane_title}'"
-    );
+    expect(result).toBe("refresh-client -B 'my-sub':'pane':'#{pane_title}'");
   });
 
   it("name with single quote is properly escaped", () => {
@@ -122,7 +120,7 @@ describe("refreshClientSubscribe", () => {
 describe("refreshClientUnsubscribe", () => {
   it("simple name is single-quoted", () => {
     expect(refreshClientUnsubscribe("my-sub")).toBe(
-      "refresh-client -B 'my-sub'"
+      "refresh-client -B 'my-sub'",
     );
   });
 
@@ -142,9 +140,7 @@ describe("sendKeys", () => {
   // canonical client). No key byte ever appears literally in the command
   // line, so control bytes and shell metacharacters are inert by construction.
   it("simple target and keys → hex-byte wire string", () => {
-    expect(sendKeys("%1", "hello")).toBe(
-      "send-keys -H -t '%1' 68 65 6c 6c 6f",
-    );
+    expect(sendKeys("%1", "hello")).toBe("send-keys -H -t '%1' 68 65 6c 6c 6f");
   });
 
   it("target with single quote is properly escaped", () => {
@@ -181,7 +177,8 @@ describe("sendKeys", () => {
 
   it("does not include a trailing newline", () => {
     const result = sendKeys("%1", "x");
-    if (result === null) throw new Error("non-empty keys must produce a command");
+    if (result === null)
+      throw new Error("non-empty keys must produce a command");
     expect(result.endsWith("\n")).toBe(false);
   });
 });
@@ -209,13 +206,13 @@ describe("splitWindow", () => {
 
   it("vertical and target", () => {
     expect(splitWindow({ vertical: true, target: "main" })).toBe(
-      "split-window -v -t 'main'"
+      "split-window -v -t 'main'",
     );
   });
 
   it("target with single quote is properly escaped", () => {
     expect(splitWindow({ target: "it's" })).toBe(
-      "split-window -h -t 'it'\\''s'"
+      "split-window -h -t 'it'\\''s'",
     );
   });
 
@@ -228,25 +225,25 @@ describe("splitWindow", () => {
 describe("refreshClientSetFlags", () => {
   it("single flag", () => {
     expect(refreshClientSetFlags(["pause-after"])).toBe(
-      "refresh-client -f pause-after"
+      "refresh-client -f pause-after",
     );
   });
 
   it("flag with value", () => {
     expect(refreshClientSetFlags(["pause-after=2"])).toBe(
-      "refresh-client -f pause-after=2"
+      "refresh-client -f pause-after=2",
     );
   });
 
   it("multiple flags comma-separated", () => {
     expect(refreshClientSetFlags(["pause-after=2", "no-output"])).toBe(
-      "refresh-client -f pause-after=2,no-output"
+      "refresh-client -f pause-after=2,no-output",
     );
   });
 
   it("disable form (! prefix passes through)", () => {
     expect(refreshClientSetFlags(["!pause-after"])).toBe(
-      "refresh-client -f !pause-after"
+      "refresh-client -f !pause-after",
     );
   });
 
@@ -259,14 +256,14 @@ describe("refreshClientSetFlags", () => {
 describe("refreshClientClearFlags", () => {
   it("single flag → !flag", () => {
     expect(refreshClientClearFlags(["pause-after"])).toBe(
-      "refresh-client -f !pause-after"
+      "refresh-client -f !pause-after",
     );
   });
 
   it("multiple flags → !a,!b,!c", () => {
-    expect(refreshClientClearFlags(["pause-after", "no-output", "read-only"])).toBe(
-      "refresh-client -f !pause-after,!no-output,!read-only"
-    );
+    expect(
+      refreshClientClearFlags(["pause-after", "no-output", "read-only"]),
+    ).toBe("refresh-client -f !pause-after,!no-output,!read-only");
   });
 });
 
@@ -275,9 +272,7 @@ describe("refreshClientReport", () => {
   // doesn't split on the colon (same fix as -A).
   it("simple OSC 10 color report", () => {
     const osc = "]10;rgb:1818/1818/1818\\";
-    expect(refreshClientReport(0, osc)).toBe(
-      `refresh-client -r '%0:${osc}'`
-    );
+    expect(refreshClientReport(0, osc)).toBe(`refresh-client -r '%0:${osc}'`);
   });
 
   it("pane id is rendered with % prefix", () => {
@@ -286,7 +281,7 @@ describe("refreshClientReport", () => {
 
   it("report containing single quote is properly escaped", () => {
     expect(refreshClientReport(1, "it's")).toBe(
-      "refresh-client -r '%1:it'\\''s'"
+      "refresh-client -r '%1:it'\\''s'",
     );
   });
 

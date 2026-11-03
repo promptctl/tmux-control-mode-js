@@ -140,7 +140,9 @@ describe("WebSocketSink", () => {
     const decoded = decodePaneOutput(fake.sends[0]);
     expect(decoded.type).toBe("output");
     expect(decoded.paneId).toBe(42);
-    expect(Array.from(decoded.data)).toEqual([0x00, 0x7f, 0x80, 0xc3, 0xa9, 0xff]);
+    expect(Array.from(decoded.data)).toEqual([
+      0x00, 0x7f, 0x80, 0xc3, 0xa9, 0xff,
+    ]);
   });
 
   it("write is a no-op when readyState is CLOSING", () => {
@@ -163,7 +165,9 @@ describe("WebSocketSink", () => {
     const fake = createFakeWebSocket();
     const sink = new WebSocketSink(fake.ws);
     fake.throwOnNextSend();
-    expect(() => sink.write({ paneId: 1, data: new Uint8Array([0xcc]) })).not.toThrow();
+    expect(() =>
+      sink.write({ paneId: 1, data: new Uint8Array([0xcc]) }),
+    ).not.toThrow();
     expect(fake.sends).toHaveLength(0);
   });
 

@@ -177,8 +177,7 @@ describe("TopologyRouter — handleNotification topology updates", () => {
   it("window-close removes panes in that window from subsequent dispatch", async () => {
     const router = newRouter();
     // Seed topology: pane 1 in window 10, session 100
-    const run = () =>
-      Promise.resolve(makeOkResponse(["%1 @10 $100"]));
+    const run = () => Promise.resolve(makeOkResponse(["%1 @10 $100"]));
 
     const windowSink = makeSink();
     router.attachBytesSink(windowSink, { scope: windowScope(10) });
@@ -214,7 +213,9 @@ describe("TopologyRouter — handleNotification topology updates", () => {
 
     router.handleNotification({ type: "window-add", windowId: 20 });
     await Promise.resolve();
-    expect(calls.some((c) => c.includes("list-panes") && c.includes("@20"))).toBe(true);
+    expect(
+      calls.some((c) => c.includes("list-panes") && c.includes("@20")),
+    ).toBe(true);
   });
 
   it("sessions-changed triggers a full bootstrap when topology-dependent sinks exist", async () => {

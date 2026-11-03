@@ -192,7 +192,11 @@ type Unsubscribe = () => void;
  */
 type SeedCycle =
   | { readonly phase: "idle" }
-  | { readonly phase: "capturing"; readonly run: Promise<void>; stale: boolean };
+  | {
+      readonly phase: "capturing";
+      readonly run: Promise<void>;
+      stale: boolean;
+    };
 
 // ---------------------------------------------------------------------------
 // PaneStream

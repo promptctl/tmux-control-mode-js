@@ -12,7 +12,10 @@
 
 import { PassThrough } from "node:stream";
 import { websocketTransport } from "../../src/connectors/websocket/transport.js";
-import { assertByteFaithful, FakeWebSocket } from "./_helpers/websocket-fake.js";
+import {
+  assertByteFaithful,
+  FakeWebSocket,
+} from "./_helpers/websocket-fake.js";
 import { PROBE_BYTES } from "./_helpers/probe-bytes.js";
 
 // ---------------------------------------------------------------------------

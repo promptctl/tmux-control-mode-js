@@ -61,7 +61,7 @@ describe("handleKey — prefix mode", () => {
     expect(r.actions).toEqual([{ type: "select-window", index: 3 }]);
   });
 
-  it("% maps to horizontal split, \" maps to vertical split", () => {
+  it('% maps to horizontal split, " maps to vertical split', () => {
     expect(handleKey(ev("%"), PREFIX, keymap).actions).toEqual([
       { type: "split", orientation: "horizontal" },
     ]);
@@ -90,7 +90,13 @@ describe("bare modifier keydowns are ignored", () => {
   const PREFIX: ReturnType<typeof handleKey>["state"] = { mode: "prefix" };
 
   it("pressing Shift in prefix mode keeps state=prefix, no actions, not handled", () => {
-    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const shift = {
+      key: "Shift",
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     const r = handleKey(shift, PREFIX, keymap);
     expect(r.state).toEqual({ mode: "prefix" });
     expect(r.actions).toEqual([]);
@@ -107,7 +113,13 @@ describe("bare modifier keydowns are ignored", () => {
   });
 
   it("bare modifier in root mode is also a no-op pass-through", () => {
-    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const shift = {
+      key: "Shift",
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     const r = handleKey(shift, INITIAL_STATE, keymap);
     expect(r.state).toEqual({ mode: "root" });
     expect(r.actions).toEqual([]);
@@ -118,7 +130,13 @@ describe("bare modifier keydowns are ignored", () => {
     // Simulate a real browser key sequence on US keyboard for `C-b %`:
     //   keydown C-b, keydown Shift (shift:true bare), keydown % (shift:true key="%")
     const cb = { key: "b", ctrl: true, alt: false, shift: false, meta: false };
-    const shift = { key: "Shift", ctrl: false, alt: false, shift: true, meta: false };
+    const shift = {
+      key: "Shift",
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     const pct = { key: "%", ctrl: false, alt: false, shift: true, meta: false };
 
     let state: ReturnType<typeof handleKey>["state"] = INITIAL_STATE;

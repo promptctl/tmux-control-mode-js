@@ -99,7 +99,13 @@ describe("reapTestSockets", () => {
       "tmux-line-test-format-1782133005851-kkh3i",
       "tmux-js-demo-bench-1782133005851-kkh3i",
     ];
-    const foreignSockets = ["default", "cmtest-44650", "imgtest-probe", "mreg", "collab"];
+    const foreignSockets = [
+      "default",
+      "cmtest-44650",
+      "imgtest-probe",
+      "mreg",
+      "collab",
+    ];
 
     for (const name of [...testSockets, ...foreignSockets]) seedSocket(name);
 

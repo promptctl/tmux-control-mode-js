@@ -272,10 +272,42 @@ describe("SinkRegistry.dispatch", () => {
     const reg = new SinkRegistry();
     const order: string[] = [];
 
-    reg.attach({ write() { order.push("pane"); }, end() {} }, paneScope(5));
-    reg.attach({ write() { order.push("window"); }, end() {} }, windowScope(2));
-    reg.attach({ write() { order.push("session"); }, end() {} }, sessionScope(1));
-    reg.attach({ write() { order.push("server"); }, end() {} }, serverScope);
+    reg.attach(
+      {
+        write() {
+          order.push("pane");
+        },
+        end() {},
+      },
+      paneScope(5),
+    );
+    reg.attach(
+      {
+        write() {
+          order.push("window");
+        },
+        end() {},
+      },
+      windowScope(2),
+    );
+    reg.attach(
+      {
+        write() {
+          order.push("session");
+        },
+        end() {},
+      },
+      sessionScope(1),
+    );
+    reg.attach(
+      {
+        write() {
+          order.push("server");
+        },
+        end() {},
+      },
+      serverScope,
+    );
 
     reg.dispatch(paneOutput(5, 0x01), { sessionId: 1, windowId: 2 });
 

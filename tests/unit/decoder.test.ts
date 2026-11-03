@@ -10,7 +10,7 @@ describe("decodeOctalEscapes", () => {
 
   it("no escapes → bytes equal to char codes", () => {
     expect(decodeOctalEscapes("hello")).toEqual(
-      new Uint8Array([104, 101, 108, 108, 111])
+      new Uint8Array([104, 101, 108, 108, 111]),
     );
   });
 
@@ -44,25 +44,25 @@ describe("decodeOctalEscapes", () => {
 
   it("mixed: 'hello\\012world' → hello bytes + 10 + world bytes", () => {
     expect(decodeOctalEscapes("hello\\012world")).toEqual(
-      new Uint8Array([104, 101, 108, 108, 111, 10, 119, 111, 114, 108, 100])
+      new Uint8Array([104, 101, 108, 108, 111, 10, 119, 111, 114, 108, 100]),
     );
   });
 
   it("escape at very start: \\012abc → [10, ...abc bytes]", () => {
     expect(decodeOctalEscapes("\\012abc")).toEqual(
-      new Uint8Array([10, 97, 98, 99])
+      new Uint8Array([10, 97, 98, 99]),
     );
   });
 
   it("escape at very end: abc\\012 → [...abc bytes, 10]", () => {
     expect(decodeOctalEscapes("abc\\012")).toEqual(
-      new Uint8Array([97, 98, 99, 10])
+      new Uint8Array([97, 98, 99, 10]),
     );
   });
 
   it("all-escape string: \\001\\002\\003 → [1, 2, 3]", () => {
     expect(decodeOctalEscapes("\\001\\002\\003")).toEqual(
-      new Uint8Array([1, 2, 3])
+      new Uint8Array([1, 2, 3]),
     );
   });
 
@@ -113,7 +113,7 @@ describe("decodeOctalEscapes", () => {
 
   it("tmux line terminator pattern: hello\\012 → hello + newline", () => {
     expect(decodeOctalEscapes("hello\\012")).toEqual(
-      new Uint8Array([104, 101, 108, 108, 111, 10])
+      new Uint8Array([104, 101, 108, 108, 111, 10]),
     );
   });
 
@@ -123,7 +123,7 @@ describe("decodeOctalEscapes", () => {
 
   it("all control bytes 0-9: \\001\\002\\003\\004\\005\\006\\007\\010\\011\\012", () => {
     const result = decodeOctalEscapes(
-      "\\001\\002\\003\\004\\005\\006\\007\\010\\011\\012"
+      "\\001\\002\\003\\004\\005\\006\\007\\010\\011\\012",
     );
     expect(result).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
   });

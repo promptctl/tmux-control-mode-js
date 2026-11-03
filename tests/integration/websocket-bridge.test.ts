@@ -29,7 +29,11 @@ import type {
   BridgeObservabilityEvent,
   ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
-import { serverScope, sessionScope, parsePaneListLine } from "../../src/pane-output.js";
+import {
+  serverScope,
+  sessionScope,
+  parsePaneListLine,
+} from "../../src/pane-output.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -139,7 +143,8 @@ async function startFixture(
   const wss = new WebSocketServer({ server: httpServer, path: "/tmux" });
   wss.on("connection", (ws: WsWebSocket, req) => {
     const headers: Record<string, string | string[] | undefined> = {};
-    for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = v;
+    for (const [k, v] of Object.entries(req.headers))
+      headers[k.toLowerCase()] = v;
     void bridge.handleConnection(ws as unknown as ServerWebSocketLike, {
       url: req.url,
       headers,
@@ -249,262 +254,226 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     await fx.shutdown();
   });
 
-  it(
-    "handshake: client reaches 'ready' after welcome",
-    async () => {
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
-      expect(client.connectionState.status).toBe("ready");
-      await client.close();
-    },
-    10_000,
-  );
+  it("handshake: client reaches 'ready' after welcome", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
+    expect(client.connectionState.status).toBe("ready");
+    await client.close();
+  }, 10_000);
 
-  it(
-    "execute(list-windows) round-trips through the bridge",
-    async () => {
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
+  it("execute(list-windows) round-trips through the bridge", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
 
-      const response = await client.execute("list-windows");
-      expect(response.success).toBe(true);
-      expect(response.output.length).toBeGreaterThan(0);
+    const response = await client.execute("list-windows");
+    expect(response.success).toBe(true);
+    expect(response.output.length).toBeGreaterThan(0);
 
-      await client.close();
-    },
-    10_000,
-  );
+    await client.close();
+  }, 10_000);
 
-  it(
-    "%output rides a binary frame and arrives decoded as Uint8Array",
-    async () => {
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
+  it("%output rides a binary frame and arrives decoded as Uint8Array", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
 
-      // Bytes flow through `attachBytesSink` (server scope = all panes) —
-      // the WS client's emitter no longer carries `OutputMessage`.
-      const seen: Uint8Array[] = [];
-      const detach = client.attachBytesSink({
-        write(msg) {
-          // BytesSink contract: msg.data is read-only, copy before retention.
-          seen.push(msg.data.slice());
-        },
-        end() {},
-      });
+    // Bytes flow through `attachBytesSink` (server scope = all panes) —
+    // the WS client's emitter no longer carries `OutputMessage`.
+    const seen: Uint8Array[] = [];
+    const detach = client.attachBytesSink({
+      write(msg) {
+        // BytesSink contract: msg.data is read-only, copy before retention.
+        seen.push(msg.data.slice());
+      },
+      end() {},
+    });
 
-      // Use a raw send-keys so the "Enter" key name is honored. No target:
-      // sendKeys defaults to the active pane of the attached session, which
-      // matches the existing client integration test's pattern.
-      await client.execute(`send-keys 'echo websocket-bridge-ok' Enter`);
+    // Use a raw send-keys so the "Enter" key name is honored. No target:
+    // sendKeys defaults to the active pane of the attached session, which
+    // matches the existing client integration test's pattern.
+    await client.execute(`send-keys 'echo websocket-bridge-ok' Enter`);
 
-      // Poll for the printf to appear in the byte stream.
-      const isMatch = (): boolean =>
-        seen.some((data) =>
-          new TextDecoder().decode(data).includes("websocket-bridge-ok"),
-        );
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline && !isMatch()) {
-        await new Promise<void>((r) => setTimeout(r, 50));
-      }
-      expect(isMatch()).toBe(true);
+    // Poll for the printf to appear in the byte stream.
+    const isMatch = (): boolean =>
+      seen.some((data) =>
+        new TextDecoder().decode(data).includes("websocket-bridge-ok"),
+      );
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !isMatch()) {
+      await new Promise<void>((r) => setTimeout(r, 50));
+    }
+    expect(isMatch()).toBe(true);
 
-      detach();
-      await client.close();
-    },
-    15_000,
-  );
+    detach();
+    await client.close();
+  }, 15_000);
 
-  it(
-    "events (non-pane-output) round-trip through JSON frames",
-    async () => {
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
+  it("events (non-pane-output) round-trip through JSON frames", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
 
-      const windowAdds: TmuxMessage[] = [];
-      client.on("window-add", (m) => windowAdds.push(m));
+    const windowAdds: TmuxMessage[] = [];
+    client.on("window-add", (m) => windowAdds.push(m));
 
-      await client.execute("new-window");
+    await client.execute("new-window");
 
-      const deadline = Date.now() + 3_000;
-      while (windowAdds.length === 0 && Date.now() < deadline) {
-        await new Promise<void>((r) => setTimeout(r, 20));
-      }
-      expect(windowAdds.length).toBeGreaterThanOrEqual(1);
-      expect(windowAdds[0].type).toBe("window-add");
+    const deadline = Date.now() + 3_000;
+    while (windowAdds.length === 0 && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    expect(windowAdds.length).toBeGreaterThanOrEqual(1);
+    expect(windowAdds[0].type).toBe("window-add");
 
-      await client.close();
-    },
-    10_000,
-  );
+    await client.close();
+  }, 10_000);
 });
 
 describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
-  it(
-    "authenticate() rejection: connection closes with BRIDGE_AUTH_DENIED",
-    async () => {
-      const fx = await startFixture("auth", { authenticateToken: "secret" });
-      try {
-        const { client, errors } = createWsBackedClient(fx.url, {
-          "x-auth-token": "wrong",
-        });
-        await new Promise<void>((resolve) => {
-          const iv = setInterval(() => {
-            if (client.connectionState.status === "closed") {
-              clearInterval(iv);
-              resolve();
-            }
-          }, 20);
-          setTimeout(resolve, 3_000);
-        });
-        expect(client.connectionState.status).toBe("closed");
-        // The errors list should carry at least one BRIDGE_AUTH_DENIED
-        // OR the connection should have been closed without producing
-        // any successful call; both are valid observable outcomes.
-        const authDenied = errors.find(
-          (e) => e.code === "BRIDGE_AUTH_DENIED",
-        );
-        expect(authDenied).toBeDefined();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
-
-  it(
-    "authenticate() acceptance: ready after matching token",
-    async () => {
-      const fx = await startFixture("auth-ok", { authenticateToken: "secret" });
-      try {
-        const { client } = createWsBackedClient(fx.url, {
-          "x-auth-token": "secret",
-        });
-        await waitForState(client, "ready");
-        expect(client.connectionState.status).toBe("ready");
-        await client.close();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
-
-  it(
-    "authorize() denial: execute rejects with BRIDGE_COMMAND_DENIED",
-    async () => {
-      const fx = await startFixture("authz", {
-        deniedMethods: new Set(["execute"]),
+  it("authenticate() rejection: connection closes with BRIDGE_AUTH_DENIED", async () => {
+    const fx = await startFixture("auth", { authenticateToken: "secret" });
+    try {
+      const { client, errors } = createWsBackedClient(fx.url, {
+        "x-auth-token": "wrong",
       });
-      try {
-        const { client } = createWsBackedClient(fx.url);
-        await waitForState(client, "ready");
-        await expect(client.execute("list-windows")).rejects.toMatchObject({
-          code: "BRIDGE_COMMAND_DENIED",
-        });
-        await client.close();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
+      await new Promise<void>((resolve) => {
+        const iv = setInterval(() => {
+          if (client.connectionState.status === "closed") {
+            clearInterval(iv);
+            resolve();
+          }
+        }, 20);
+        setTimeout(resolve, 3_000);
+      });
+      expect(client.connectionState.status).toBe("closed");
+      // The errors list should carry at least one BRIDGE_AUTH_DENIED
+      // OR the connection should have been closed without producing
+      // any successful call; both are valid observable outcomes.
+      const authDenied = errors.find((e) => e.code === "BRIDGE_AUTH_DENIED");
+      expect(authDenied).toBeDefined();
+    } finally {
+      await fx.shutdown();
+    }
+  }, 10_000);
 
-  it(
-    "observability hook fires call + result events",
-    async () => {
-      const fx = await startFixture("obs");
-      try {
-        const { client } = createWsBackedClient(fx.url);
-        await waitForState(client, "ready");
-        await client.execute("list-windows");
+  it("authenticate() acceptance: ready after matching token", async () => {
+    const fx = await startFixture("auth-ok", { authenticateToken: "secret" });
+    try {
+      const { client } = createWsBackedClient(fx.url, {
+        "x-auth-token": "secret",
+      });
+      await waitForState(client, "ready");
+      expect(client.connectionState.status).toBe("ready");
+      await client.close();
+    } finally {
+      await fx.shutdown();
+    }
+  }, 10_000);
 
-        const call = fx.observabilityEvents.find((e) => e.kind === "call");
-        const result = fx.observabilityEvents.find((e) => e.kind === "result");
-        expect(call).toBeDefined();
-        expect(result).toBeDefined();
-        expect(
-          call && call.kind === "call" ? call.method : undefined,
-        ).toBe("execute");
-        expect(
-          result && result.kind === "result" ? result.ok : undefined,
-        ).toBe(true);
+  it("authorize() denial: execute rejects with BRIDGE_COMMAND_DENIED", async () => {
+    const fx = await startFixture("authz", {
+      deniedMethods: new Set(["execute"]),
+    });
+    try {
+      const { client } = createWsBackedClient(fx.url);
+      await waitForState(client, "ready");
+      await expect(client.execute("list-windows")).rejects.toMatchObject({
+        code: "BRIDGE_COMMAND_DENIED",
+      });
+      await client.close();
+    } finally {
+      await fx.shutdown();
+    }
+  }, 10_000);
 
-        await client.close();
-      } finally {
-        await fx.shutdown();
-      }
-    },
-    10_000,
-  );
+  it("observability hook fires call + result events", async () => {
+    const fx = await startFixture("obs");
+    try {
+      const { client } = createWsBackedClient(fx.url);
+      await waitForState(client, "ready");
+      await client.execute("list-windows");
+
+      const call = fx.observabilityEvents.find((e) => e.kind === "call");
+      const result = fx.observabilityEvents.find((e) => e.kind === "result");
+      expect(call).toBeDefined();
+      expect(result).toBeDefined();
+      expect(call && call.kind === "call" ? call.method : undefined).toBe(
+        "execute",
+      );
+      expect(result && result.kind === "result" ? result.ok : undefined).toBe(
+        true,
+      );
+
+      await client.close();
+    } finally {
+      await fx.shutdown();
+    }
+  }, 10_000);
 });
 
 describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () => {
-  it(
-    "server drain sends 'draining' frame and rejects new calls",
-    async () => {
-      const fx = await startFixture("drain");
-      try {
-        // [LAW:no-ambient-temporal-coupling] The drain-window facts are
-        // captured synchronously inside the onDraining callback: the client
-        // sets its drain gate immediately before invoking it, so sampling
-        // here observes the window at exactly notice delivery — the
-        // assertions below never race the server's drain deadline on the
-        // wall clock.
-        let drainingDeadline: number | null = null;
-        let statusAtNotice: ConnectionState["status"] | null = null;
-        let rejectionAtNotice: Promise<unknown> | null = null;
-        const client = new WebSocketTmuxClient({
-          url: fx.url,
-          createWebSocket: (u) =>
-            new WsClient(u) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
-          onDraining: (dl) => {
-            drainingDeadline = dl;
-            statusAtNotice = client.connectionState.status;
-            rejectionAtNotice = client
-              .execute("list-windows")
-              .catch((e: unknown) => e);
-          },
-        });
-        await waitForState(client, "ready");
+  it("server drain sends 'draining' frame and rejects new calls", async () => {
+    const fx = await startFixture("drain");
+    try {
+      // [LAW:no-ambient-temporal-coupling] The drain-window facts are
+      // captured synchronously inside the onDraining callback: the client
+      // sets its drain gate immediately before invoking it, so sampling
+      // here observes the window at exactly notice delivery — the
+      // assertions below never race the server's drain deadline on the
+      // wall clock.
+      let drainingDeadline: number | null = null;
+      let statusAtNotice: ConnectionState["status"] | null = null;
+      let rejectionAtNotice: Promise<unknown> | null = null;
+      const client = new WebSocketTmuxClient({
+        url: fx.url,
+        createWebSocket: (u) =>
+          new WsClient(
+            u,
+          ) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
+        onDraining: (dl) => {
+          drainingDeadline = dl;
+          statusAtNotice = client.connectionState.status;
+          rejectionAtNotice = client
+            .execute("list-windows")
+            .catch((e: unknown) => e);
+        },
+      });
+      await waitForState(client, "ready");
 
-        // Begin the drain but don't await it yet — the drain window (the
-        // server announced its deadline, the socket is still open) is the
-        // state under test.
-        const shutdownDone = fx.shutdown();
-        const noticeDeadline = Date.now() + 2_000;
-        while (drainingDeadline === null && Date.now() < noticeDeadline) {
-          await new Promise<void>((r) => setTimeout(r, 20));
-        }
-        expect(drainingDeadline).not.toBeNull();
-
-        // At notice delivery the connection was still "ready" (the socket
-        // was open, in-flight calls being served) and a new call was
-        // refused with a truthful reason.
-        expect(statusAtNotice).toBe("ready");
-        expect(await rejectionAtNotice).toMatchObject({
-          code: "BRIDGE_CLOSED",
-          message: expect.stringContaining("draining") as string,
-        });
-
-        await shutdownDone;
-
-        // Once the server actually closes the socket, the client reaches
-        // "closed" and calls reject with the closed reason.
-        const deadline = Date.now() + 2_000;
-        while (
-          client.connectionState.status !== "closed" &&
-          Date.now() < deadline
-        ) {
-          await new Promise<void>((r) => setTimeout(r, 20));
-        }
-        expect(client.connectionState.status).toBe("closed");
-        expect(drainingDeadline).not.toBeNull();
-      } finally {
-        // fx.shutdown already called
+      // Begin the drain but don't await it yet — the drain window (the
+      // server announced its deadline, the socket is still open) is the
+      // state under test.
+      const shutdownDone = fx.shutdown();
+      const noticeDeadline = Date.now() + 2_000;
+      while (drainingDeadline === null && Date.now() < noticeDeadline) {
+        await new Promise<void>((r) => setTimeout(r, 20));
       }
-    },
-    10_000,
-  );
+      expect(drainingDeadline).not.toBeNull();
+
+      // At notice delivery the connection was still "ready" (the socket
+      // was open, in-flight calls being served) and a new call was
+      // refused with a truthful reason.
+      expect(statusAtNotice).toBe("ready");
+      expect(await rejectionAtNotice).toMatchObject({
+        code: "BRIDGE_CLOSED",
+        message: expect.stringContaining("draining") as string,
+      });
+
+      await shutdownDone;
+
+      // Once the server actually closes the socket, the client reaches
+      // "closed" and calls reject with the closed reason.
+      const deadline = Date.now() + 2_000;
+      while (
+        client.connectionState.status !== "closed" &&
+        Date.now() < deadline
+      ) {
+        await new Promise<void>((r) => setTimeout(r, 20));
+      }
+      expect(client.connectionState.status).toBe("closed");
+      expect(drainingDeadline).not.toBeNull();
+    } finally {
+      // fx.shutdown already called
+    }
+  }, 10_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -546,99 +515,94 @@ describe.skipIf(!RUN_INTEGRATION)(
       await fx.shutdown();
     });
 
-    it(
-      "call queued during reconnecting completes through the new connection",
-      async () => {
-        // Capture the underlying ws so the test can terminate it on demand
-        // to simulate a transport failure.
-        let lastWs: WsClient | null = null;
-        const client = new WebSocketTmuxClient({
-          url: fx.url,
-          createWebSocket: (u) => {
-            const ws = new WsClient(u);
-            lastWs = ws;
-            return ws as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike;
-          },
-          reconnect: {
-            maxAttempts: 5,
-            initialDelayMs: 25,
-            maxDelayMs: 50,
-            factor: 1,
-            jitterMs: 0,
-          },
-          heartbeatIntervalMs: 0,
+    it("call queued during reconnecting completes through the new connection", async () => {
+      // Capture the underlying ws so the test can terminate it on demand
+      // to simulate a transport failure.
+      let lastWs: WsClient | null = null;
+      const client = new WebSocketTmuxClient({
+        url: fx.url,
+        createWebSocket: (u) => {
+          const ws = new WsClient(u);
+          lastWs = ws;
+          return ws as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike;
+        },
+        reconnect: {
+          maxAttempts: 5,
+          initialDelayMs: 25,
+          maxDelayMs: 50,
+          factor: 1,
+          jitterMs: 0,
+        },
+        heartbeatIntervalMs: 0,
+      });
+
+      try {
+        await waitForState(client, "ready");
+        // Baseline: confirm normal call/result round-trips before we
+        // break the socket.
+        const before = await client.execute("list-windows");
+        expect(before.success).toBe(true);
+
+        // Forcibly close the live socket. ws.terminate() sends no close
+        // frame; the bridge sees an abnormal close, finalize runs, the
+        // reconnect timer fires.
+        expect(lastWs).not.toBeNull();
+        (lastWs as unknown as WsClient).terminate();
+
+        // Wait until the terminate's close has been OBSERVED by the
+        // client — i.e. state has left "ready". Otherwise we'd race the
+        // async close event and fire the call while the client still
+        // thinks the socket is live, which would just reject through
+        // the old connection's finalize with "close 1006".
+        const leftReady = Date.now() + 2_000;
+        while (
+          client.connectionState.status === "ready" &&
+          Date.now() < leftReady
+        ) {
+          await new Promise<void>((r) => setTimeout(r, 5));
+        }
+        expect(client.connectionState.status).not.toBe("ready");
+
+        // Fire a call while the client is mid-flux. With the fix the
+        // call is added to pending; flushOutbox transmits it on the
+        // NEW connection after welcome, and the result routes back to
+        // this same promise. The pre-fix bug would have surfaced as
+        // the queued frame riding the new connection with a stale id
+        // whose pending entry was already rejected — silent drop.
+        const after = await client.execute("list-windows");
+        expect(after.success).toBe(true);
+      } finally {
+        await client.close();
+      }
+    }, 15_000);
+
+    it("close() settles in-flight call before resolving (M3 over real ws)", async () => {
+      const { client } = createWsBackedClient(fx.url);
+      try {
+        await waitForState(client, "ready");
+
+        // Fire a call but immediately close — the only observable answer
+        // for the caller must be BRIDGE_CLOSED, not "pending forever".
+        const callPromise = client.execute("list-windows");
+        let settled = false;
+        callPromise.catch(() => {
+          settled = true;
         });
 
-        try {
-          await waitForState(client, "ready");
-          // Baseline: confirm normal call/result round-trips before we
-          // break the socket.
-          const before = await client.execute("list-windows");
-          expect(before.success).toBe(true);
+        await client.close();
+        // Microtask flush so the .catch handler runs after rejection.
+        await Promise.resolve();
+        await Promise.resolve();
 
-          // Forcibly close the live socket. ws.terminate() sends no close
-          // frame; the bridge sees an abnormal close, finalize runs, the
-          // reconnect timer fires.
-          expect(lastWs).not.toBeNull();
-          (lastWs as unknown as WsClient).terminate();
-
-          // Wait until the terminate's close has been OBSERVED by the
-          // client — i.e. state has left "ready". Otherwise we'd race the
-          // async close event and fire the call while the client still
-          // thinks the socket is live, which would just reject through
-          // the old connection's finalize with "close 1006".
-          const leftReady = Date.now() + 2_000;
-          while (client.connectionState.status === "ready" && Date.now() < leftReady) {
-            await new Promise<void>((r) => setTimeout(r, 5));
-          }
-          expect(client.connectionState.status).not.toBe("ready");
-
-          // Fire a call while the client is mid-flux. With the fix the
-          // call is added to pending; flushOutbox transmits it on the
-          // NEW connection after welcome, and the result routes back to
-          // this same promise. The pre-fix bug would have surfaced as
-          // the queued frame riding the new connection with a stale id
-          // whose pending entry was already rejected — silent drop.
-          const after = await client.execute("list-windows");
-          expect(after.success).toBe(true);
-        } finally {
-          await client.close();
-        }
-      },
-      15_000,
-    );
-
-    it(
-      "close() settles in-flight call before resolving (M3 over real ws)",
-      async () => {
-        const { client } = createWsBackedClient(fx.url);
-        try {
-          await waitForState(client, "ready");
-
-          // Fire a call but immediately close — the only observable answer
-          // for the caller must be BRIDGE_CLOSED, not "pending forever".
-          const callPromise = client.execute("list-windows");
-          let settled = false;
-          callPromise.catch(() => {
-            settled = true;
-          });
-
-          await client.close();
-          // Microtask flush so the .catch handler runs after rejection.
-          await Promise.resolve();
-          await Promise.resolve();
-
-          expect(settled).toBe(true);
-          await expect(callPromise).rejects.toMatchObject({
-            code: "BRIDGE_CLOSED",
-          });
-        } finally {
-          // Idempotent.
-          await client.close();
-        }
-      },
-      10_000,
-    );
+        expect(settled).toBe(true);
+        await expect(callPromise).rejects.toMatchObject({
+          code: "BRIDGE_CLOSED",
+        });
+      } finally {
+        // Idempotent.
+        await client.close();
+      }
+    }, 10_000);
   },
 );
 
@@ -653,44 +617,37 @@ describe.skipIf(!RUN_INTEGRATION)(
       await fx.shutdown();
     });
 
-    it(
-      "peer B's unsubscribe of a name only peer A owns is rejected with BRIDGE_UNKNOWN_SUBSCRIPTION",
-      async () => {
-        const a = createWsBackedClient(fx.url);
-        const b = createWsBackedClient(fx.url);
-        await Promise.all([
-          waitForState(a.client, "ready"),
-          waitForState(b.client, "ready"),
-        ]);
+    it("peer B's unsubscribe of a name only peer A owns is rejected with BRIDGE_UNKNOWN_SUBSCRIPTION", async () => {
+      const a = createWsBackedClient(fx.url);
+      const b = createWsBackedClient(fx.url);
+      await Promise.all([
+        waitForState(a.client, "ready"),
+        waitForState(b.client, "ready"),
+      ]);
 
-        // A subscribes "qz5-focus".
-        const aSub = await a.client.subscribeRaw(
-          "qz5-focus",
-          "",
-          "#{pane_id}",
-        );
-        expect(aSub.success).toBe(true);
+      // A subscribes "qz5-focus".
+      const aSub = await a.client.subscribeRaw("qz5-focus", "", "#{pane_id}");
+      expect(aSub.success).toBe(true);
 
-        // B's unsubscribe must be rejected — B never claimed "qz5-focus"
-        // through its own helper, so the bridge raises
-        // BRIDGE_UNKNOWN_SUBSCRIPTION at the trust boundary. tmux is
-        // never asked to unsubscribe.
-        const err = await b.client
-          .unsubscribe("qz5-focus")
-          .then(() => undefined, (e: unknown) => e);
-        expect(err).toBeInstanceOf(BridgeError);
-        expect((err as BridgeError).code).toBe("BRIDGE_UNKNOWN_SUBSCRIPTION");
+      // B's unsubscribe must be rejected — B never claimed "qz5-focus"
+      // through its own helper, so the bridge raises
+      // BRIDGE_UNKNOWN_SUBSCRIPTION at the trust boundary. tmux is
+      // never asked to unsubscribe.
+      const err = await b.client.unsubscribe("qz5-focus").then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(BridgeError);
+      expect((err as BridgeError).code).toBe("BRIDGE_UNKNOWN_SUBSCRIPTION");
 
-        // A's subscription is preserved: A can still unsubscribe its
-        // OWN name without surprises.
-        const aUnsub = await a.client.unsubscribe("qz5-focus");
-        expect(aUnsub.success).toBe(true);
+      // A's subscription is preserved: A can still unsubscribe its
+      // OWN name without surprises.
+      const aUnsub = await a.client.unsubscribe("qz5-focus");
+      expect(aUnsub.success).toBe(true);
 
-        a.client.close();
-        b.client.close();
-      },
-      15_000,
-    );
+      a.client.close();
+      b.client.close();
+    }, 15_000);
   },
 );
 
@@ -711,157 +668,148 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await fx.shutdown();
   });
 
-  it(
-    "INT-20: serverScope delivers bytes from two panes over WS bridge",
-    async () => {
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
+  it("INT-20: serverScope delivers bytes from two panes over WS bridge", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
 
-      // Open a second window so we have two panes on the server.
-      await client.execute("new-window");
+    // Open a second window so we have two panes on the server.
+    await client.execute("new-window");
 
-      // Get the two pane IDs.
-      const listResp = await client.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      const paneIds = listResp.output
-        .flatMap((line) => {
-          const p = parsePaneListLine(line);
-          return p !== null ? [p.paneId] : [];
-        })
-        .slice(0, 2);
-      expect(paneIds.length).toBeGreaterThanOrEqual(2);
-      const [pane0, pane1] = paneIds;
-
-      // Attach with serverScope — both panes should produce chunks.
-      const received = new Map<number, Uint8Array[]>();
-      const dispose = client.attachBytesSink(
-        {
-          write(msg) {
-            const arr = received.get(msg.paneId) ?? [];
-            arr.push(msg.data.slice());
-            received.set(msg.paneId, arr);
-          },
-          end() {},
-        },
-        { scope: serverScope },
-      );
-
-      // Drive output in both panes via the main tmux client.
-      await fx.tmux.execute(`send-keys -t %${pane0} 'echo ws-int20-p0' Enter`);
-      await fx.tmux.execute(`send-keys -t %${pane1} 'echo ws-int20-p1' Enter`);
-
-      const deadline = Date.now() + 8_000;
-      const hasP0 = () =>
-        (received.get(pane0) ?? []).some((d) =>
-          Buffer.from(d).toString().includes("ws-int20-p0"),
-        );
-      const hasP1 = () =>
-        (received.get(pane1) ?? []).some((d) =>
-          Buffer.from(d).toString().includes("ws-int20-p1"),
-        );
-      while ((!hasP0() || !hasP1()) && Date.now() < deadline) {
-        await new Promise<void>((r) => setTimeout(r, 30));
-      }
-
-      expect(hasP0()).toBe(true);
-      expect(hasP1()).toBe(true);
-
-      dispose();
-      await client.close();
-    },
-    20_000,
-  );
-
-  it(
-    "INT-21: sessionScope($A) receives bytes from $A but not from $B",
-    async () => {
-      // Create a second session on the same tmux server.
-      const sessionBName = `s-bytes-scope-B-${Date.now()}`;
-      await fx.tmux.execute(`new-session -d -s ${sessionBName}`);
-
-      // Get all panes — find one in $A (original session) and one in $B.
-      const listResp = await fx.tmux.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      let paneA: number | null = null;
-      let paneB: number | null = null;
-      for (const line of listResp.output) {
+    // Get the two pane IDs.
+    const listResp = await client.execute(
+      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    );
+    const paneIds = listResp.output
+      .flatMap((line) => {
         const p = parsePaneListLine(line);
-        if (p === null) continue;
-        if (paneA === null && p.sessionId !== -1) {
-          // First pane from the session we attached (session with the tmux client).
-          // The tmux client's session is the one named fx.sessionName; find it
-          // by querying session ID.
-          paneA = p.paneId;
-        } else if (paneB === null) {
-          paneB = p.paneId;
-        }
-        if (paneA !== null && paneB !== null) break;
-      }
-      expect(paneA).not.toBeNull();
-      expect(paneB).not.toBeNull();
+        return p !== null ? [p.paneId] : [];
+      })
+      .slice(0, 2);
+    expect(paneIds.length).toBeGreaterThanOrEqual(2);
+    const [pane0, pane1] = paneIds;
 
-      // Determine the session ID for session A (the original session).
-      const sessionIdResp = await fx.tmux.execute(
-        `list-sessions -F '#{session_id} #{session_name}'`,
-      );
-      let sessionAId: string | null = null;
-      for (const line of sessionIdResp.output) {
-        const m = line.match(/^(\$\d+)\s+(.+)$/);
-        if (m && m[2] === fx.sessionName) {
-          sessionAId = m[1];
-          break;
-        }
-      }
-      expect(sessionAId).not.toBeNull();
-
-      const { client } = createWsBackedClient(fx.url);
-      await waitForState(client, "ready");
-
-      const received = new Map<number, Uint8Array[]>();
-      const dispose = client.attachBytesSink(
-        {
-          write(msg) {
-            const arr = received.get(msg.paneId) ?? [];
-            arr.push(msg.data.slice());
-            received.set(msg.paneId, arr);
-          },
-          end() {},
+    // Attach with serverScope — both panes should produce chunks.
+    const received = new Map<number, Uint8Array[]>();
+    const dispose = client.attachBytesSink(
+      {
+        write(msg) {
+          const arr = received.get(msg.paneId) ?? [];
+          arr.push(msg.data.slice());
+          received.set(msg.paneId, arr);
         },
-        // sessionAId is "$N" — sessionScope takes the numeric N.
-        { scope: sessionScope(parseInt(sessionAId!.slice(1), 10)) },
+        end() {},
+      },
+      { scope: serverScope },
+    );
+
+    // Drive output in both panes via the main tmux client.
+    await fx.tmux.execute(`send-keys -t %${pane0} 'echo ws-int20-p0' Enter`);
+    await fx.tmux.execute(`send-keys -t %${pane1} 'echo ws-int20-p1' Enter`);
+
+    const deadline = Date.now() + 8_000;
+    const hasP0 = () =>
+      (received.get(pane0) ?? []).some((d) =>
+        Buffer.from(d).toString().includes("ws-int20-p0"),
       );
+    const hasP1 = () =>
+      (received.get(pane1) ?? []).some((d) =>
+        Buffer.from(d).toString().includes("ws-int20-p1"),
+      );
+    while ((!hasP0() || !hasP1()) && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 30));
+    }
 
-      // Drive output in session A's pane and session B's pane.
-      await fx.tmux.execute(`send-keys -t %${paneA} 'echo ws-int21-a' Enter`);
-      await fx.tmux.execute(`send-keys -t %${paneB!} 'echo ws-int21-b' Enter`);
+    expect(hasP0()).toBe(true);
+    expect(hasP1()).toBe(true);
 
-      // Wait for session A's bytes to arrive.
-      const hasA = () =>
-        (received.get(paneA!) ?? []).some((d) =>
-          Buffer.from(d).toString().includes("ws-int21-a"),
-        );
-      const deadline = Date.now() + 8_000;
-      while (!hasA() && Date.now() < deadline) {
-        await new Promise<void>((r) => setTimeout(r, 30));
+    dispose();
+    await client.close();
+  }, 20_000);
+
+  it("INT-21: sessionScope($A) receives bytes from $A but not from $B", async () => {
+    // Create a second session on the same tmux server.
+    const sessionBName = `s-bytes-scope-B-${Date.now()}`;
+    await fx.tmux.execute(`new-session -d -s ${sessionBName}`);
+
+    // Get all panes — find one in $A (original session) and one in $B.
+    const listResp = await fx.tmux.execute(
+      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    );
+    let paneA: number | null = null;
+    let paneB: number | null = null;
+    for (const line of listResp.output) {
+      const p = parsePaneListLine(line);
+      if (p === null) continue;
+      if (paneA === null && p.sessionId !== -1) {
+        // First pane from the session we attached (session with the tmux client).
+        // The tmux client's session is the one named fx.sessionName; find it
+        // by querying session ID.
+        paneA = p.paneId;
+      } else if (paneB === null) {
+        paneB = p.paneId;
       }
+      if (paneA !== null && paneB !== null) break;
+    }
+    expect(paneA).not.toBeNull();
+    expect(paneB).not.toBeNull();
 
-      // Brief extra wait to catch any session B leakage.
-      await new Promise<void>((r) => setTimeout(r, 500));
+    // Determine the session ID for session A (the original session).
+    const sessionIdResp = await fx.tmux.execute(
+      `list-sessions -F '#{session_id} #{session_name}'`,
+    );
+    let sessionAId: string | null = null;
+    for (const line of sessionIdResp.output) {
+      const m = line.match(/^(\$\d+)\s+(.+)$/);
+      if (m && m[2] === fx.sessionName) {
+        sessionAId = m[1];
+        break;
+      }
+    }
+    expect(sessionAId).not.toBeNull();
 
-      expect(hasA()).toBe(true);
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
 
-      // Session B's pane should not have delivered bytes to this scope.
-      const hasB = (received.get(paneB!) ?? []).some((d) =>
-        Buffer.from(d).toString().includes("ws-int21-b"),
+    const received = new Map<number, Uint8Array[]>();
+    const dispose = client.attachBytesSink(
+      {
+        write(msg) {
+          const arr = received.get(msg.paneId) ?? [];
+          arr.push(msg.data.slice());
+          received.set(msg.paneId, arr);
+        },
+        end() {},
+      },
+      // sessionAId is "$N" — sessionScope takes the numeric N.
+      { scope: sessionScope(parseInt(sessionAId!.slice(1), 10)) },
+    );
+
+    // Drive output in session A's pane and session B's pane.
+    await fx.tmux.execute(`send-keys -t %${paneA} 'echo ws-int21-a' Enter`);
+    await fx.tmux.execute(`send-keys -t %${paneB!} 'echo ws-int21-b' Enter`);
+
+    // Wait for session A's bytes to arrive.
+    const hasA = () =>
+      (received.get(paneA!) ?? []).some((d) =>
+        Buffer.from(d).toString().includes("ws-int21-a"),
       );
-      expect(hasB).toBe(false);
+    const deadline = Date.now() + 8_000;
+    while (!hasA() && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 30));
+    }
 
-      dispose();
-      await client.close();
-    },
-    25_000,
-  );
+    // Brief extra wait to catch any session B leakage.
+    await new Promise<void>((r) => setTimeout(r, 500));
+
+    expect(hasA()).toBe(true);
+
+    // Session B's pane should not have delivered bytes to this scope.
+    const hasB = (received.get(paneB!) ?? []).some((d) =>
+      Buffer.from(d).toString().includes("ws-int21-b"),
+    );
+    expect(hasB).toBe(false);
+
+    dispose();
+    await client.close();
+  }, 25_000);
 });
-

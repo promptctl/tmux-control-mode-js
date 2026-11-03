@@ -53,7 +53,7 @@ describe("bindKeymap dispatch", () => {
     expect(f.commands).toEqual(["split-window -h"]);
   });
 
-  it("C-b \" dispatches split-window -v", () => {
+  it('C-b " dispatches split-window -v', () => {
     const f = fakeClient();
     const b = bindKeymap(f.client, defaultTmuxKeymap());
     b.handleKey(parseChord("C-b"));
@@ -153,7 +153,11 @@ describe("dispatchAction exported", () => {
     dispatchAction(f.client, { type: "new-window" });
     dispatchAction(f.client, { type: "select-window", index: 3 });
     dispatchAction(f.client, { type: "split", orientation: "vertical" });
-    dispatchAction(f.client, { type: "resize-pane", direction: "left", amount: 5 });
+    dispatchAction(f.client, {
+      type: "resize-pane",
+      direction: "left",
+      amount: 5,
+    });
     expect(f.commands).toEqual([
       "new-window",
       "select-window -t :3",
@@ -167,7 +171,9 @@ describe("dispatchAction exported", () => {
     const killed: unknown[] = [];
 
     // Composed dispatcher: intercept kill-pane, delegate everything else.
-    function composedDispatch(action: Parameters<typeof dispatchAction>[1]): void {
+    function composedDispatch(
+      action: Parameters<typeof dispatchAction>[1],
+    ): void {
       if (action.type === "kill-pane") {
         killed.push(action);
         return;

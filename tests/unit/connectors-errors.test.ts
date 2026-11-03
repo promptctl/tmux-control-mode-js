@@ -102,12 +102,10 @@ describe("connectors/errors — single source of truth", () => {
     // diverges. The WeakSet of `instanceof` checks downstream depends on
     // class identity — drift would silently break consumer
     // `e instanceof BridgeError && e.code === "X"` tests in production.
-    const electronTypes = await import(
-      "../../src/connectors/electron/types.js"
-    );
-    const websocketProtocol = await import(
-      "../../src/connectors/websocket/protocol.js"
-    );
+    const electronTypes =
+      await import("../../src/connectors/electron/types.js");
+    const websocketProtocol =
+      await import("../../src/connectors/websocket/protocol.js");
 
     expect(electronTypes.BridgeError).toBe(BridgeError);
     expect(websocketProtocol.BridgeError).toBe(BridgeError);

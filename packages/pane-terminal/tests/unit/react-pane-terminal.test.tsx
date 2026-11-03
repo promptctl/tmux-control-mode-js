@@ -132,7 +132,9 @@ describe("<PaneTerminal> (React adapter)", () => {
 
   it("constructs the sink once and attaches the stream", () => {
     const stream = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(stream)} fontSize={14} />);
+    const h = render(
+      <PaneTerminal stream={asPaneStream(stream)} fontSize={14} />,
+    );
 
     expect(allTerms).toHaveLength(1);
     expect(stream.attach).toHaveBeenCalledOnce();
@@ -145,7 +147,9 @@ describe("<PaneTerminal> (React adapter)", () => {
 
   it("changing fontSize calls setFontSize and does NOT call xterm.dispose() (O10)", () => {
     const stream = new StubStream();
-    const h = render(<PaneTerminal stream={asPaneStream(stream)} fontSize={14} />);
+    const h = render(
+      <PaneTerminal stream={asPaneStream(stream)} fontSize={14} />,
+    );
 
     expect(allTerms).toHaveLength(1);
     const term = allTerms[0]!;
@@ -239,44 +243,41 @@ describe("<PaneTerminal> (React adapter)", () => {
   // we exercise the cached-seed fast path PaneStream provides.
   // -------------------------------------------------------------------------
 
-  it(
-    "StrictMode mount/unmount/remount issues exactly 1 capture-pane (gate #4)",
-    async () => {
-      const client = new FakeTmuxClient();
-      client.setCapturePaneResponse((cmd) =>
-        cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
-      );
-      const stream = new RealPaneStream({
-        client,
-        paneId: 1,
-      });
+  it("StrictMode mount/unmount/remount issues exactly 1 capture-pane (gate #4)", async () => {
+    const client = new FakeTmuxClient();
+    client.setCapturePaneResponse((cmd) =>
+      cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
+    );
+    const stream = new RealPaneStream({
+      client,
+      paneId: 1,
+    });
 
-      expect(client.capturePaneCount()).toBe(0);
+    expect(client.capturePaneCount()).toBe(0);
 
-      const h = render(
-        <StrictMode>
-          <PaneTerminal stream={stream} />
-        </StrictMode>,
-      );
+    const h = render(
+      <StrictMode>
+        <PaneTerminal stream={stream} />
+      </StrictMode>,
+    );
 
-      // capture-pane + cursor display-message both resolve via FakeTmuxClient
-      // on the next macrotasks (see g4-remount-capture.test.ts for the
-      // canonical pattern).
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 0));
-        await new Promise((r) => setTimeout(r, 0));
-      });
+    // capture-pane + cursor display-message both resolve via FakeTmuxClient
+    // on the next macrotasks (see g4-remount-capture.test.ts for the
+    // canonical pattern).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+    });
 
-      // StrictMode mounts twice synchronously: first mount → cleanup → second
-      // mount. The first attach issues capture-pane; the second attach hits
-      // PaneStream's cached-seed fast path. So count stays at 1.
-      expect(client.capturePaneCount()).toBe(1);
-      // ...and we should have constructed exactly two xterm Terminals (one
-      // per StrictMode mount cycle).
-      expect(allTerms).toHaveLength(2);
+    // StrictMode mounts twice synchronously: first mount → cleanup → second
+    // mount. The first attach issues capture-pane; the second attach hits
+    // PaneStream's cached-seed fast path. So count stays at 1.
+    expect(client.capturePaneCount()).toBe(1);
+    // ...and we should have constructed exactly two xterm Terminals (one
+    // per StrictMode mount cycle).
+    expect(allTerms).toHaveLength(2);
 
-      h.unmount();
-      stream.dispose();
-    },
-  );
+    h.unmount();
+    stream.dispose();
+  });
 });

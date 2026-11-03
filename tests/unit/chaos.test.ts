@@ -134,7 +134,9 @@ describe("corruptChunk — every applied corruption truly changes a non-empty ch
   it("truncate shortens; drop-newline strips exactly the trailing LF", () => {
     const r = mulberry32(5);
     const line = "%window-add @7\n";
-    expect(corruptChunk(line, r, ["truncate"]).length).toBeLessThan(line.length);
+    expect(corruptChunk(line, r, ["truncate"]).length).toBeLessThan(
+      line.length,
+    );
     expect(corruptChunk(line, r, ["drop-newline"])).toBe("%window-add @7");
   });
 
@@ -230,7 +232,11 @@ describe("planChunk — pure, ordered, reproducible decisions", () => {
   };
 
   it("drops when the first draw falls under dropRate", () => {
-    const plan = planChunk("line\n", { ...base, dropRate: 1, random: scripted([0]) });
+    const plan = planChunk("line\n", {
+      ...base,
+      dropRate: 1,
+      random: scripted([0]),
+    });
     expect(plan.kind).toBe("drop");
   });
 
@@ -247,7 +253,8 @@ describe("planChunk — pure, ordered, reproducible decisions", () => {
       random: mulberry32(8),
     });
     expect(plan.kind).toBe("deliver");
-    if (plan.kind === "deliver") expect(plan.payload).not.toBe("%window-add @1\n");
+    if (plan.kind === "deliver")
+      expect(plan.payload).not.toBe("%window-add @1\n");
   });
 
   it("samples a delay within the latency window", () => {
@@ -366,7 +373,11 @@ describe("parser recovery under corruption", () => {
     const parser = new TmuxParser((m) => seen.push(m));
     const r = mulberry32(77);
 
-    const clean1 = serializeMessage({ type: "session-changed", sessionId: 1, name: "main" });
+    const clean1 = serializeMessage({
+      type: "session-changed",
+      sessionId: 1,
+      name: "main",
+    });
     const mid = serializeMessage({ type: "window-add", windowId: 9 });
     const clean3 = serializeMessage({ type: "window-add", windowId: 10 });
 
@@ -376,7 +387,11 @@ describe("parser recovery under corruption", () => {
     parser.feed(corruptChunk(mid, r, ["flip-byte"]) + "\n");
     parser.feed(clean3 + "\n");
 
-    expect(seen).toContainEqual({ type: "session-changed", sessionId: 1, name: "main" });
+    expect(seen).toContainEqual({
+      type: "session-changed",
+      sessionId: 1,
+      name: "main",
+    });
     expect(seen).toContainEqual({ type: "window-add", windowId: 10 });
   });
 
@@ -391,8 +406,18 @@ describe("parser recovery under corruption", () => {
     parser.onProtocolError = (commandNumber, line) =>
       protocolErrors.push({ commandNumber, line });
 
-    const begin = serializeMessage({ type: "begin", timestamp: 1000, commandNumber: 5, flags: 1 });
-    const end = serializeMessage({ type: "end", timestamp: 1000, commandNumber: 5, flags: 1 });
+    const begin = serializeMessage({
+      type: "begin",
+      timestamp: 1000,
+      commandNumber: 5,
+      flags: 1,
+    });
+    const end = serializeMessage({
+      type: "end",
+      timestamp: 1000,
+      commandNumber: 5,
+      flags: 1,
+    });
     const after = serializeMessage({ type: "window-add", windowId: 9 });
 
     // Seed 30's "truncate" corruption on this exact %end line drops its
@@ -431,7 +456,9 @@ describe("withChaos drives a real TmuxClient", () => {
     const scenario: MockScenario = {
       ...greetingScenario,
       respond: (cmd) =>
-        cmd.startsWith("list-windows") ? { kind: "ok", output: ["@2 editor"] } : undefined,
+        cmd.startsWith("list-windows")
+          ? { kind: "ok", output: ["@2 editor"] }
+          : undefined,
     };
     const server = new MockTmuxServer(scenario);
     const chaos = withChaos(server, { latencyMs: { min: 2, max: 2 }, clock });
@@ -476,8 +503,16 @@ describe("withChaos drives a real TmuxClient", () => {
       { type: "window-add", windowId: 3 },
       { type: "window-renamed", windowId: 3, name: "editor" },
       { type: "session-changed", sessionId: 1, name: "main" },
-      { type: "output", paneId: 1, data: new Uint8Array([104, 105, 0x1b, 7, 0]) },
-      { type: "layout-change", windowId: 3, ...windowLayoutFields("b25e,80x24,0,0,1", "b25e,80x24,0,0,1", "*") },
+      {
+        type: "output",
+        paneId: 1,
+        data: new Uint8Array([104, 105, 0x1b, 7, 0]),
+      },
+      {
+        type: "layout-change",
+        windowId: 3,
+        ...windowLayoutFields("b25e,80x24,0,0,1", "b25e,80x24,0,0,1", "*"),
+      },
       { type: "window-close", windowId: 3 },
       { type: "sessions-changed" },
       { type: "pane-mode-changed", paneId: 1 },

@@ -50,7 +50,9 @@ for (const [subpath, value] of Object.entries(pkg.exports ?? {})) {
   collectTargets(value, subpath, targets);
 }
 
-const missing = targets.filter(({ target }) => !existsSync(resolve(root, target)));
+const missing = targets.filter(
+  ({ target }) => !existsSync(resolve(root, target)),
+);
 
 if (missing.length > 0) {
   console.error(

@@ -174,7 +174,9 @@ async function createSession(
     stdio: "ignore",
   });
   const client = new TmuxClient(
-    spawnTmux(["attach-session", "-t", sessionName], { socketPath: socketName }),
+    spawnTmux(["attach-session", "-t", sessionName], {
+      socketPath: socketName,
+    }),
   );
   // [LAW:one-source-of-truth] Readiness-waiting lives only in waitReady; this
   // delegates rather than re-implementing the connection-state handler, and so
@@ -210,97 +212,79 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
     socketName = "";
   });
 
-  it(
-    "execute(list-windows) resolves success with output",
-    async () => {
-      sessionName = uniqueSession("test-corr");
-      client = await createSession(socketName, sessionName);
+  it("execute(list-windows) resolves success with output", async () => {
+    sessionName = uniqueSession("test-corr");
+    client = await createSession(socketName, sessionName);
 
-      const response: CommandResponse = await client.execute("list-windows");
+    const response: CommandResponse = await client.execute("list-windows");
 
-      expect(response.success).toBe(true);
-      expect(typeof response.commandNumber).toBe("number");
-      expect(typeof response.timestamp).toBe("number");
-      expect(Array.isArray(response.output)).toBe(true);
-      // list-windows always produces at least one line for the initial window
-      expect(response.output.length).toBeGreaterThan(0);
-    },
-    15000,
-  );
+    expect(response.success).toBe(true);
+    expect(typeof response.commandNumber).toBe("number");
+    expect(typeof response.timestamp).toBe("number");
+    expect(Array.isArray(response.output)).toBe(true);
+    // list-windows always produces at least one line for the initial window
+    expect(response.output.length).toBeGreaterThan(0);
+  }, 15000);
 
-  it(
-    "execute() issued synchronously after construction correlates to its own response, not tmux's startup greeting",
-    async () => {
-      // Deliberately bypasses createSession()'s wait-for-ready: this proves
-      // the client doesn't need it. If the startup greeting could still
-      // steal a pending entry, `execute()` here would resolve with the
-      // greeting's empty output (or hang, if the greeting is corrupted).
-      sessionName = uniqueSession("test-corr");
-      execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-        stdio: "ignore",
-      });
-      const transport = spawnTmux(["attach-session", "-t", sessionName], {
-        socketPath: socketName,
-      });
-      client = new TmuxClient(transport);
+  it("execute() issued synchronously after construction correlates to its own response, not tmux's startup greeting", async () => {
+    // Deliberately bypasses createSession()'s wait-for-ready: this proves
+    // the client doesn't need it. If the startup greeting could still
+    // steal a pending entry, `execute()` here would resolve with the
+    // greeting's empty output (or hang, if the greeting is corrupted).
+    sessionName = uniqueSession("test-corr");
+    execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
+      stdio: "ignore",
+    });
+    const transport = spawnTmux(["attach-session", "-t", sessionName], {
+      socketPath: socketName,
+    });
+    client = new TmuxClient(transport);
 
-      const response: CommandResponse = await client.execute("list-windows");
+    const response: CommandResponse = await client.execute("list-windows");
 
-      expect(response.success).toBe(true);
-      expect(response.output.length).toBeGreaterThan(0);
-    },
-    15000,
-  );
+    expect(response.success).toBe(true);
+    expect(response.output.length).toBeGreaterThan(0);
+  }, 15000);
 
-  it(
-    "execute(invalid-command-xyz) resolves with success: false",
-    async () => {
-      sessionName = uniqueSession("test-corr");
-      client = await createSession(socketName, sessionName);
+  it("execute(invalid-command-xyz) resolves with success: false", async () => {
+    sessionName = uniqueSession("test-corr");
+    client = await createSession(socketName, sessionName);
 
-      // TmuxClient rejects with TmuxCommandError on %error. The original
-      // CommandResponse is on err.response.
-      const err = await client
-        .execute("invalid-command-xyz")
-        .then(
-          () => null,
-          (e: unknown) => e,
-        );
+    // TmuxClient rejects with TmuxCommandError on %error. The original
+    // CommandResponse is on err.response.
+    const err = await client.execute("invalid-command-xyz").then(
+      () => null,
+      (e: unknown) => e,
+    );
 
-      expect(err).toBeInstanceOf(TmuxCommandError);
-      expect((err as TmuxCommandError).response.success).toBe(false);
-    },
-    15000,
-  );
+    expect(err).toBeInstanceOf(TmuxCommandError);
+    expect((err as TmuxCommandError).response.success).toBe(false);
+  }, 15000);
 
-  it(
-    "concurrent execute() calls all resolve (FIFO ordering)",
-    async () => {
-      sessionName = uniqueSession("test-corr");
-      client = await createSession(socketName, sessionName);
+  it("concurrent execute() calls all resolve (FIFO ordering)", async () => {
+    sessionName = uniqueSession("test-corr");
+    client = await createSession(socketName, sessionName);
 
-      // [LAW:dataflow-not-control-flow] All three commands are enqueued
-      // unconditionally; the FIFO queue decides when each resolves.
-      const [r1, r2, r3] = await Promise.all([
-        client.execute("list-windows"),
-        client.execute("list-panes"),
-        client.execute("list-windows"),
-      ]);
+    // [LAW:dataflow-not-control-flow] All three commands are enqueued
+    // unconditionally; the FIFO queue decides when each resolves.
+    const [r1, r2, r3] = await Promise.all([
+      client.execute("list-windows"),
+      client.execute("list-panes"),
+      client.execute("list-windows"),
+    ]);
 
-      // All must resolve (not hang or reject)
-      expect(r1.success).toBe(true);
-      expect(r2.success).toBe(true);
-      expect(r3.success).toBe(true);
+    // All must resolve (not hang or reject)
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+    expect(r3.success).toBe(true);
 
-      // Each response carries the correlation fields
-      for (const r of [r1, r2, r3]) {
-        expect(typeof r.commandNumber).toBe("number");
-        expect(typeof r.timestamp).toBe("number");
-        expect(Array.isArray(r.output)).toBe(true);
-      }
-    },
-    15000,
-  );
+    // Each response carries the correlation fields
+    for (const r of [r1, r2, r3]) {
+      expect(typeof r.commandNumber).toBe("number");
+      expect(typeof r.timestamp).toBe("number");
+      expect(Array.isArray(r.output)).toBe(true);
+    }
+  }, 15000);
 });
 
 // ---------------------------------------------------------------------------
@@ -323,67 +307,51 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     socketName = "";
   });
 
-  it(
-    "setSize accepts a non-default size",
-    async () => {
-      sessionName = uniqueSession("test-size");
-      client = await createSession(socketName, sessionName);
-      const r = await setSize(client, 120, 40);
-      expect(r.success).toBe(true);
-    },
-    15000,
-  );
+  it("setSize accepts a non-default size", async () => {
+    sessionName = uniqueSession("test-size");
+    client = await createSession(socketName, sessionName);
+    const r = await setSize(client, 120, 40);
+    expect(r.success).toBe(true);
+  }, 15000);
 
-  it(
-    "setPaneAction(paneId, 'on') succeeds",
-    async () => {
-      sessionName = uniqueSession("test-pane");
-      client = await createSession(socketName, sessionName);
-      // Default `list-panes` output starts with the pane index; use the
-      // session-relative target form instead. Translate to a numeric pane id
-      // by parsing the first %N occurrence in default list-panes output.
-      const list = await client.execute("list-panes");
-      expect(list.success).toBe(true);
-      const match = list.output.join("\n").match(/%(\d+)/);
-      expect(match).not.toBeNull();
-      const paneId = parseInt(match![1], 10);
-      const { PaneAction } = await import("../../src/protocol/types.js");
-      const r = await setPaneAction(client, paneId, PaneAction.On);
-      expect(r.success).toBe(true);
-    },
-    15000,
-  );
+  it("setPaneAction(paneId, 'on') succeeds", async () => {
+    sessionName = uniqueSession("test-pane");
+    client = await createSession(socketName, sessionName);
+    // Default `list-panes` output starts with the pane index; use the
+    // session-relative target form instead. Translate to a numeric pane id
+    // by parsing the first %N occurrence in default list-panes output.
+    const list = await client.execute("list-panes");
+    expect(list.success).toBe(true);
+    const match = list.output.join("\n").match(/%(\d+)/);
+    expect(match).not.toBeNull();
+    const paneId = parseInt(match![1], 10);
+    const { PaneAction } = await import("../../src/protocol/types.js");
+    const r = await setPaneAction(client, paneId, PaneAction.On);
+    expect(r.success).toBe(true);
+  }, 15000);
 
-  it(
-    "subscribeRaw and unsubscribe each resolve with success",
-    async () => {
-      sessionName = uniqueSession("test-sub");
-      client = await createSession(socketName, sessionName);
-      const sub = await subscribeRaw(
-        client,
-        "test-sub-1",
-        "",
-        "#{pane_current_command}",
-      );
-      expect(sub.success).toBe(true);
-      const unsub = await unsubscribe(client, "test-sub-1");
-      expect(unsub.success).toBe(true);
-    },
-    15000,
-  );
+  it("subscribeRaw and unsubscribe each resolve with success", async () => {
+    sessionName = uniqueSession("test-sub");
+    client = await createSession(socketName, sessionName);
+    const sub = await subscribeRaw(
+      client,
+      "test-sub-1",
+      "",
+      "#{pane_current_command}",
+    );
+    expect(sub.success).toBe(true);
+    const unsub = await unsubscribe(client, "test-sub-1");
+    expect(unsub.success).toBe(true);
+  }, 15000);
 
-  it(
-    "setFlags(['pause-after=2']) and clearFlags(['pause-after']) both succeed",
-    async () => {
-      sessionName = uniqueSession("test-flag");
-      client = await createSession(socketName, sessionName);
-      const setR = await setFlags(client, ["pause-after=2"]);
-      expect(setR.success).toBe(true);
-      const clearR = await clearFlags(client, ["pause-after"]);
-      expect(clearR.success).toBe(true);
-    },
-    15000,
-  );
+  it("setFlags(['pause-after=2']) and clearFlags(['pause-after']) both succeed", async () => {
+    sessionName = uniqueSession("test-flag");
+    client = await createSession(socketName, sessionName);
+    const setR = await setFlags(client, ["pause-after=2"]);
+    expect(setR.success).toBe(true);
+    const clearR = await clearFlags(client, ["pause-after"]);
+    expect(clearR.success).toBe(true);
+  }, 15000);
 
   it.skipIf(!tmuxAtLeast(QUERY_CLIPBOARD_MIN_VERSION))(
     "queryClipboard returns a successful response",
@@ -425,7 +393,8 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
       const match = list.output.join("\n").match(/%(\d+)/);
       expect(match).not.toBeNull();
       const paneId = parseInt(match![1], 10);
-      const r = await requestReport(client, 
+      const r = await requestReport(
+        client,
         paneId,
         "\u001b]11;rgb:1818/1818/1818\u001b\\",
       );
@@ -434,21 +403,17 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     15000,
   );
 
-  it(
-    "detach() causes tmux to send %exit and the transport to close",
-    async () => {
-      sessionName = uniqueSession("test-det");
-      const c = await createSession(socketName, sessionName);
-      client = c;
-      const exitPromise = new Promise<void>((resolve) => {
-        c.on("exit", () => resolve());
-      });
-      c.detach();
-      await exitPromise;
-      client = null;
-    },
-    15000,
-  );
+  it("detach() causes tmux to send %exit and the transport to close", async () => {
+    sessionName = uniqueSession("test-det");
+    const c = await createSession(socketName, sessionName);
+    client = c;
+    const exitPromise = new Promise<void>((resolve) => {
+      c.on("exit", () => resolve());
+    });
+    c.detach();
+    await exitPromise;
+    client = null;
+  }, 15000);
 });
 
 // ---------------------------------------------------------------------------
@@ -468,26 +433,22 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
     socketName = "";
   });
 
-  it(
-    "exit event fires when transport is closed",
-    async () => {
-      sessionName = uniqueSession("test-lifecycle");
-      const client = await createSession(socketName, sessionName);
+  it("exit event fires when transport is closed", async () => {
+    sessionName = uniqueSession("test-lifecycle");
+    const client = await createSession(socketName, sessionName);
 
-      // Wrap the exit event in a promise so we can await it deterministically.
-      const exitPromise = new Promise<void>((resolve) => {
-        client.on("exit", () => resolve());
-      });
+    // Wrap the exit event in a promise so we can await it deterministically.
+    const exitPromise = new Promise<void>((resolve) => {
+      client.on("exit", () => resolve());
+    });
 
-      // Execute a command first to verify the client is live, then close.
-      await client.execute("list-windows");
-      client.close();
+    // Execute a command first to verify the client is live, then close.
+    await client.execute("list-windows");
+    client.close();
 
-      // The exit event must fire within the timeout window.
-      await exitPromise;
-    },
-    15000,
-  );
+    // The exit event must fire within the timeout window.
+    await exitPromise;
+  }, 15000);
 });
 
 // ---------------------------------------------------------------------------
@@ -601,7 +562,9 @@ async function withSecondClient(
   body: (c2: TmuxClient) => Promise<void>,
 ): Promise<void> {
   const c2 = new TmuxClient(
-    spawnTmux(["attach-session", "-t", sessionName], { socketPath: socketName }),
+    spawnTmux(["attach-session", "-t", sessionName], {
+      socketPath: socketName,
+    }),
   );
   try {
     await waitReady(c2);
@@ -714,13 +677,13 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
         // If provocation fails, reject with the real error (clearing the timer
         // and sink) instead of hanging until the opaque %output timeout.
         // [LAW:no-silent-failure]
-        client.execute("send-keys 'echo hello-output' Enter").catch(
-          (e: unknown) => {
+        client
+          .execute("send-keys 'echo hello-output' Enter")
+          .catch((e: unknown) => {
             clearTimeout(timer);
             detach();
             reject(e);
-          },
-        );
+          });
       }),
   },
 
@@ -1111,39 +1074,38 @@ const OBSERVED_ENTRIES = Object.entries(COVERAGE).flatMap(([name, cov]) =>
 describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   // An event newer than the running tmux is skipped, not failed: that tmux
   // cannot emit it, and the skip shows in the run rather than vanishing.
-  for (const [name, probe, minVersion] of OBSERVED_ENTRIES) it.skipIf(
-    !tmuxAtLeast(minVersion),
-  )(
-    `observes %${name} live from a real tmux`,
-    async () => {
-      const socketName = uniqueSocket("cov");
-      const sessionName = uniqueSession(`cov-${name}`);
-      let client: TmuxClient | null = null;
-      try {
-        client = await createSession(socketName, sessionName);
-        await probe({
-          client,
-          socketName,
-          sessionName,
-          exec: (args) =>
-            execSync(tmuxCmd(socketName, args), {
-              encoding: "utf8",
-              stdio: ["ignore", "pipe", "ignore"],
-            }),
-        });
-      } finally {
-        // Uniform cleanup for every probe, regardless of what it did to the
-        // client — the runner stays unaware of any one probe's behavior.
-        // [LAW:dataflow-not-control-flow] [LAW:locality-or-seam] This is safe
-        // even for the `exit` probe, which detaches the client itself: close()
-        // is idempotent (transport.close() → child.kill(), a no-op on an
-        // already-exited process). [LAW:no-ambient-temporal-coupling]
-        client?.close();
-        killServer(socketName);
-      }
-    },
-    20000,
-  );
+  for (const [name, probe, minVersion] of OBSERVED_ENTRIES)
+    it.skipIf(!tmuxAtLeast(minVersion))(
+      `observes %${name} live from a real tmux`,
+      async () => {
+        const socketName = uniqueSocket("cov");
+        const sessionName = uniqueSession(`cov-${name}`);
+        let client: TmuxClient | null = null;
+        try {
+          client = await createSession(socketName, sessionName);
+          await probe({
+            client,
+            socketName,
+            sessionName,
+            exec: (args) =>
+              execSync(tmuxCmd(socketName, args), {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "ignore"],
+              }),
+          });
+        } finally {
+          // Uniform cleanup for every probe, regardless of what it did to the
+          // client — the runner stays unaware of any one probe's behavior.
+          // [LAW:dataflow-not-control-flow] [LAW:locality-or-seam] This is safe
+          // even for the `exit` probe, which detaches the client itself: close()
+          // is idempotent (transport.close() → child.kill(), a no-op on an
+          // already-exited process). [LAW:no-ambient-temporal-coupling]
+          client?.close();
+          killServer(socketName);
+        }
+      },
+      20000,
+    );
 
   // The COVERAGE probes pin each variant with cross-session setups; this pins
   // the common teardown path, whose variant tmux picks differently by version.
@@ -1214,270 +1176,242 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     socketName = "";
   });
 
-  it(
-    "CMD-01: listWindows() returns structured WindowRecords with at least one entry",
-    async () => {
-      sessionName = uniqueSession("cmd-lw");
-      client = await createSession(socketName, sessionName);
+  it("CMD-01: listWindows() returns structured WindowRecords with at least one entry", async () => {
+    sessionName = uniqueSession("cmd-lw");
+    client = await createSession(socketName, sessionName);
 
-      // [LAW:types-are-the-program] Type the client as TmuxConnection — the
-      // free function takes the minimal interface, not the full TmuxClient.
-      const windows = await listWindows(client);
+    // [LAW:types-are-the-program] Type the client as TmuxConnection — the
+    // free function takes the minimal interface, not the full TmuxClient.
+    const windows = await listWindows(client);
 
-      // list-windows always has at least one entry (the initial window).
-      expect(windows.length).toBeGreaterThan(0);
-      const [w] = windows;
-      expect(Number.isInteger(w.sessionId)).toBe(true);
-      expect(w.sessionName).toBe(sessionName);
-      expect(Number.isInteger(w.windowId)).toBe(true);
-      expect(typeof w.windowName).toBe("string");
-      expect(Number.isInteger(w.width)).toBe(true);
-      expect(Number.isInteger(w.height)).toBe(true);
-    },
-    15000,
-  );
+    // list-windows always has at least one entry (the initial window).
+    expect(windows.length).toBeGreaterThan(0);
+    const [w] = windows;
+    expect(Number.isInteger(w.sessionId)).toBe(true);
+    expect(w.sessionName).toBe(sessionName);
+    expect(Number.isInteger(w.windowId)).toBe(true);
+    expect(typeof w.windowName).toBe("string");
+    expect(Number.isInteger(w.width)).toBe(true);
+    expect(Number.isInteger(w.height)).toBe(true);
+  }, 15000);
 
-  it(
-    "CMD-02: listPanes() returns structured PaneRecords with at least one entry",
-    async () => {
-      sessionName = uniqueSession("cmd-lp");
-      client = await createSession(socketName, sessionName);
+  it("CMD-02: listPanes() returns structured PaneRecords with at least one entry", async () => {
+    sessionName = uniqueSession("cmd-lp");
+    client = await createSession(socketName, sessionName);
 
-      const panes = await listPanes(client);
+    const panes = await listPanes(client);
 
-      expect(panes.length).toBeGreaterThan(0);
-      const [p] = panes;
-      expect(Number.isInteger(p.sessionId)).toBe(true);
-      expect(p.sessionName).toBe(sessionName);
-      expect(Number.isInteger(p.windowId)).toBe(true);
-      expect(typeof p.windowName).toBe("string");
-      expect(Number.isInteger(p.paneId)).toBe(true);
-      expect(typeof p.cwd).toBe("string");
-      expect(p.cwd.length).toBeGreaterThan(0);
-      expect(Number.isInteger(p.pid)).toBe(true);
-      expect(typeof p.startCommand).toBe("string");
-      expect(typeof p.currentCommand).toBe("string");
-      expect(Number.isInteger(p.width)).toBe(true);
-      expect(Number.isInteger(p.height)).toBe(true);
-    },
-    15000,
-  );
+    expect(panes.length).toBeGreaterThan(0);
+    const [p] = panes;
+    expect(Number.isInteger(p.sessionId)).toBe(true);
+    expect(p.sessionName).toBe(sessionName);
+    expect(Number.isInteger(p.windowId)).toBe(true);
+    expect(typeof p.windowName).toBe("string");
+    expect(Number.isInteger(p.paneId)).toBe(true);
+    expect(typeof p.cwd).toBe("string");
+    expect(p.cwd.length).toBeGreaterThan(0);
+    expect(Number.isInteger(p.pid)).toBe(true);
+    expect(typeof p.startCommand).toBe("string");
+    expect(typeof p.currentCommand).toBe("string");
+    expect(Number.isInteger(p.width)).toBe(true);
+    expect(Number.isInteger(p.height)).toBe(true);
+  }, 15000);
 
-  it(
-    "CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash",
-    async () => {
-      sessionName = uniqueSession("cmd-lp-tab");
-      client = await createSession(socketName, sessionName);
+  it("CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash", async () => {
+    sessionName = uniqueSession("cmd-lp-tab");
+    client = await createSession(socketName, sessionName);
 
-      const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
-      mkdirSync(weirdDir, { recursive: true });
-      try {
-        // Created via tmux's own CLI (execSync), same as createSession
-        // above, not as a control-mode command string: tmux's control-mode
-        // command-line tokenizer is a separate, less-standard parser from
-        // a POSIX shell's, and its handling of a literal tab inside a
-        // quoted -c argument has been observed to vary by tmux version. A
-        // CLI invocation hands tmux an already-tokenized argv element —
-        // the shell's own (standard, stable) single-quote handling is the
-        // only parser involved — so this avoids that variance entirely.
-        execSync(
-          tmuxCmd(
-            socketName,
-            `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
-          ),
-          { stdio: "ignore" },
-        );
-        // Found at all means not dropped by the split-by-tab desync, and the
-        // cwd decoded back to the literal backslash/tab it was created with —
-        // not the escaped wire form, and not truncated at the tab.
-        await waitForPane(
-          client,
-          (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
-        );
-      } finally {
-        rmSync(weirdDir, { recursive: true, force: true });
-      }
-    },
-    15000,
-  );
-
-  it(
-    "CMD-03: listSessions() returns structured SessionRecords with at least one entry",
-    async () => {
-      sessionName = uniqueSession("cmd-ls");
-      client = await createSession(socketName, sessionName);
-
-      const sessions = await listSessions(client);
-
-      expect(sessions.length).toBeGreaterThan(0);
-      const session = sessions.find((s) => s.sessionName === sessionName);
-      expect(session).toBeDefined();
-      const s = session!;
-      expect(Number.isInteger(s.sessionId)).toBe(true);
-      expect(Number.isInteger(s.windowCount)).toBe(true);
-      expect(s.windowCount).toBeGreaterThan(0);
-      expect(typeof s.attached).toBe("boolean");
-    },
-    15000,
-  );
-
-  it(
-    "CMD-03: sendKeys() delivers keystrokes that produce pane output",
-    async () => {
-      sessionName = uniqueSession("cmd-sk");
-      client = await createSession(socketName, sessionName);
-
-      // Identify the initial pane.
-      const panesResp = await client.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
+    mkdirSync(weirdDir, { recursive: true });
+    try {
+      // Created via tmux's own CLI (execSync), same as createSession
+      // above, not as a control-mode command string: tmux's control-mode
+      // command-line tokenizer is a separate, less-standard parser from
+      // a POSIX shell's, and its handling of a literal tab inside a
+      // quoted -c argument has been observed to vary by tmux version. A
+      // CLI invocation hands tmux an already-tokenized argv element —
+      // the shell's own (standard, stable) single-quote handling is the
+      // only parser involved — so this avoids that variance entirely.
+      execSync(
+        tmuxCmd(
+          socketName,
+          `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
+        ),
+        { stdio: "ignore" },
       );
-      const panes = panesResp.output.flatMap((line) => {
-        const p = parsePaneListLine(line);
-        return p !== null ? [p] : [];
-      });
-      expect(panes.length).toBeGreaterThan(0);
-      const paneId = panes[0].paneId;
-
-      // Attach a pane-scoped sink to capture bytes.
-      const chunks: Uint8Array[] = [];
-      const sink: BytesSink = {
-        write(msg) {
-          chunks.push(msg.data.slice());
-        },
-        end() {
-          /* stateless */
-        },
-      };
-      const dispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
-
-      // sendKeys uses hex-byte encoding (-H) so special characters can't
-      // be misinterpreted by tmux's string interpolation.
-      await sendKeys(client, `%${paneId}`, "echo cmd-test-marker\r");
-
-      // Wait until the marker string appears in the captured bytes.
-      const decoder = new TextDecoder();
-      const received = (): string =>
-        chunks.map((c) => decoder.decode(c)).join("");
-      await new Promise<void>((resolve, reject) => {
-        const deadline = Date.now() + 8000;
-        const check = () => {
-          if (received().includes("cmd-test-marker")) {
-            resolve();
-            return;
-          }
-          if (Date.now() >= deadline) {
-            reject(new Error("timeout: cmd-test-marker not received"));
-            return;
-          }
-          setTimeout(check, 5);
-        };
-        check();
-      });
-
-      dispose();
-      expect(received()).toContain("cmd-test-marker");
-    },
-    15000,
-  );
-
-  it(
-    "CMD-04: capturePane() returns the pane's full history as byte-faithful bytes with a matching line count",
-    async () => {
-      sessionName = uniqueSession("cmd-cap");
-      client = await createSession(socketName, sessionName);
-
-      const panesResp = await client.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      const panes = panesResp.output.flatMap((line) => {
-        const p = parsePaneListLine(line);
-        return p !== null ? [p] : [];
-      });
-      expect(panes.length).toBeGreaterThan(0);
-      const paneId = panes[0].paneId;
-
-      // A marker with an embedded SGR colour escape, so -e's claim (escape
-      // sequences, not just plain text) has something real to round-trip:
-      // tmux re-emits the pane's current attributes as escape sequences
-      // around the captured text.
-      await sendKeys(
+      // Found at all means not dropped by the split-by-tab desync, and the
+      // cwd decoded back to the literal backslash/tab it was created with —
+      // not the escaped wire form, and not truncated at the tab.
+      await waitForPane(
         client,
-        `%${paneId}`,
-        `printf '\\033[31mcapture-test-marker\\033[0m\\n'\r`,
+        (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
       );
+    } finally {
+      rmSync(weirdDir, { recursive: true, force: true });
+    }
+  }, 15000);
 
-      // Wait for the actual rendered ESC byte, not just the marker text: the
-      // still-unexecuted command line (typed but not yet run) also contains
-      // the literal 4-character "\033" substring, which would otherwise
-      // satisfy a plain text match before printf ever runs. Match the SGR
-      // sequence loosely (`\x1b[` + any digits/semicolons + `31m`) rather
-      // than the minimal `\x1b[31m` form: tmux's `-e` re-synthesis is not
-      // guaranteed to emit the minimal form and commonly emits a compound
-      // parameter list (e.g. `\x1b[0;31m`) depending on tmux
-      // version/terminfo/active cell attributes.
-      const redMarker = /\x1b\[[0-9;]*31mcapture-test-marker/;
-      const decoder = new TextDecoder();
+  it("CMD-03: listSessions() returns structured SessionRecords with at least one entry", async () => {
+    sessionName = uniqueSession("cmd-ls");
+    client = await createSession(socketName, sessionName);
+
+    const sessions = await listSessions(client);
+
+    expect(sessions.length).toBeGreaterThan(0);
+    const session = sessions.find((s) => s.sessionName === sessionName);
+    expect(session).toBeDefined();
+    const s = session!;
+    expect(Number.isInteger(s.sessionId)).toBe(true);
+    expect(Number.isInteger(s.windowCount)).toBe(true);
+    expect(s.windowCount).toBeGreaterThan(0);
+    expect(typeof s.attached).toBe("boolean");
+  }, 15000);
+
+  it("CMD-03: sendKeys() delivers keystrokes that produce pane output", async () => {
+    sessionName = uniqueSession("cmd-sk");
+    client = await createSession(socketName, sessionName);
+
+    // Identify the initial pane.
+    const panesResp = await client.execute(
+      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    );
+    const panes = panesResp.output.flatMap((line) => {
+      const p = parsePaneListLine(line);
+      return p !== null ? [p] : [];
+    });
+    expect(panes.length).toBeGreaterThan(0);
+    const paneId = panes[0].paneId;
+
+    // Attach a pane-scoped sink to capture bytes.
+    const chunks: Uint8Array[] = [];
+    const sink: BytesSink = {
+      write(msg) {
+        chunks.push(msg.data.slice());
+      },
+      end() {
+        /* stateless */
+      },
+    };
+    const dispose = client.attachBytesSink(sink, { scope: paneScope(paneId) });
+
+    // sendKeys uses hex-byte encoding (-H) so special characters can't
+    // be misinterpreted by tmux's string interpolation.
+    await sendKeys(client, `%${paneId}`, "echo cmd-test-marker\r");
+
+    // Wait until the marker string appears in the captured bytes.
+    const decoder = new TextDecoder();
+    const received = (): string =>
+      chunks.map((c) => decoder.decode(c)).join("");
+    await new Promise<void>((resolve, reject) => {
       const deadline = Date.now() + 8000;
-      let capture: Awaited<ReturnType<typeof capturePane>> | undefined;
-      for (;;) {
-        capture = await capturePane(client, paneId);
-        if (redMarker.test(decoder.decode(capture.bytes))) {
-          break;
+      const check = () => {
+        if (received().includes("cmd-test-marker")) {
+          resolve();
+          return;
         }
         if (Date.now() >= deadline) {
-          throw new Error("timeout: capture-test-marker not captured");
+          reject(new Error("timeout: cmd-test-marker not received"));
+          return;
         }
-        await new Promise((r) => setTimeout(r, 100));
+        setTimeout(check, 5);
+      };
+      check();
+    });
+
+    dispose();
+    expect(received()).toContain("cmd-test-marker");
+  }, 15000);
+
+  it("CMD-04: capturePane() returns the pane's full history as byte-faithful bytes with a matching line count", async () => {
+    sessionName = uniqueSession("cmd-cap");
+    client = await createSession(socketName, sessionName);
+
+    const panesResp = await client.execute(
+      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    );
+    const panes = panesResp.output.flatMap((line) => {
+      const p = parsePaneListLine(line);
+      return p !== null ? [p] : [];
+    });
+    expect(panes.length).toBeGreaterThan(0);
+    const paneId = panes[0].paneId;
+
+    // A marker with an embedded SGR colour escape, so -e's claim (escape
+    // sequences, not just plain text) has something real to round-trip:
+    // tmux re-emits the pane's current attributes as escape sequences
+    // around the captured text.
+    await sendKeys(
+      client,
+      `%${paneId}`,
+      `printf '\\033[31mcapture-test-marker\\033[0m\\n'\r`,
+    );
+
+    // Wait for the actual rendered ESC byte, not just the marker text: the
+    // still-unexecuted command line (typed but not yet run) also contains
+    // the literal 4-character "\033" substring, which would otherwise
+    // satisfy a plain text match before printf ever runs. Match the SGR
+    // sequence loosely (`\x1b[` + any digits/semicolons + `31m`) rather
+    // than the minimal `\x1b[31m` form: tmux's `-e` re-synthesis is not
+    // guaranteed to emit the minimal form and commonly emits a compound
+    // parameter list (e.g. `\x1b[0;31m`) depending on tmux
+    // version/terminfo/active cell attributes.
+    const redMarker = /\x1b\[[0-9;]*31mcapture-test-marker/;
+    const decoder = new TextDecoder();
+    const deadline = Date.now() + 8000;
+    let capture: Awaited<ReturnType<typeof capturePane>> | undefined;
+    for (;;) {
+      capture = await capturePane(client, paneId);
+      if (redMarker.test(decoder.decode(capture.bytes))) {
+        break;
       }
-
-      const text = decoder.decode(capture!.bytes);
-      expect(text).toContain("capture-test-marker");
-      // -e: the coloured marker survived capture with its SGR escape
-      // sequence intact, not just the plain text.
-      expect(text).toMatch(redMarker);
-      // The one invariant join("\n") + lineCount must hold regardless of
-      // pane geometry or shell prompt content: lineCount is exactly the
-      // number of "\n"-separated lines actually present in bytes.
-      expect(capture!.lineCount).toBe(text.split("\n").length);
-    },
-    15000,
-  );
-
-  it(
-    "CMD-05: newWindow() creates a window in a non-attached session with the given cwd and command, returning its pane id",
-    async () => {
-      sessionName = uniqueSession("cmd-nw");
-      client = await createSession(socketName, sessionName);
-      const target = uniqueSession("cmd-nw-target");
-      await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
-      // realpath: macOS /var/folders is a symlink to /private/var/folders,
-      // and tmux reports the resolved path. '#S' in the name: tmux format-
-      // expands -c, so an unescaped cwd would land elsewhere.
-      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "nw-#S-")));
-
-      try {
-        const created = await newWindow(client, {
-          session: target,
-          cwd,
-          command: "sleep 60",
-        });
-
-        const pane = await waitForPane(
-          client,
-          (p) => p.paneId === created.paneId && p.cwd === cwd,
-        );
-        expect(pane).toMatchObject({
-          sessionName: target,
-          windowId: created.windowId,
-        });
-        // tmux reports the start command re-quoted from its argv ("sleep 60").
-        expect(pane.startCommand).toContain("sleep 60");
-      } finally {
-        rmSync(cwd, { recursive: true, force: true });
+      if (Date.now() >= deadline) {
+        throw new Error("timeout: capture-test-marker not captured");
       }
-    },
-    15000,
-  );
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    const text = decoder.decode(capture!.bytes);
+    expect(text).toContain("capture-test-marker");
+    // -e: the coloured marker survived capture with its SGR escape
+    // sequence intact, not just the plain text.
+    expect(text).toMatch(redMarker);
+    // The one invariant join("\n") + lineCount must hold regardless of
+    // pane geometry or shell prompt content: lineCount is exactly the
+    // number of "\n"-separated lines actually present in bytes.
+    expect(capture!.lineCount).toBe(text.split("\n").length);
+  }, 15000);
+
+  it("CMD-05: newWindow() creates a window in a non-attached session with the given cwd and command, returning its pane id", async () => {
+    sessionName = uniqueSession("cmd-nw");
+    client = await createSession(socketName, sessionName);
+    const target = uniqueSession("cmd-nw-target");
+    await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
+    // realpath: macOS /var/folders is a symlink to /private/var/folders,
+    // and tmux reports the resolved path. '#S' in the name: tmux format-
+    // expands -c, so an unescaped cwd would land elsewhere.
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "nw-#S-")));
+
+    try {
+      const created = await newWindow(client, {
+        session: target,
+        cwd,
+        command: "sleep 60",
+      });
+
+      const pane = await waitForPane(
+        client,
+        (p) => p.paneId === created.paneId && p.cwd === cwd,
+      );
+      expect(pane).toMatchObject({
+        sessionName: target,
+        windowId: created.windowId,
+      });
+      // tmux reports the start command re-quoted from its argv ("sleep 60").
+      expect(pane.startCommand).toContain("sleep 60");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15000);
 
   // The missing name is a prefix of a live session: tmux's inexact matching
   // would put the window there, so this pins newWindow's exact targeting.

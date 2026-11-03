@@ -106,36 +106,28 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
   ];
 
   for (const { type, cause } of CAUSABLE) {
-    it(
-      `live %${type} surfaces with the catalogue's field shape`,
-      async () => {
-        const c = await createSession(socketName, uniqueSession(`conf-${type}`));
-        client = c;
-        const evt = nextMessage(c, type);
-        await c.execute(cause);
-        const ev = await evt;
-        expect(ev.type).toBe(type);
-        expect(Object.keys(ev).sort()).toEqual(sampleKeys(type));
-      },
-      15000,
-    );
+    it(`live %${type} surfaces with the catalogue's field shape`, async () => {
+      const c = await createSession(socketName, uniqueSession(`conf-${type}`));
+      client = c;
+      const evt = nextMessage(c, type);
+      await c.execute(cause);
+      const ev = await evt;
+      expect(ev.type).toBe(type);
+      expect(Object.keys(ev).sort()).toEqual(sampleKeys(type));
+    }, 15000);
   }
 
-  it(
-    "live command-correlation contract: resolve on success, reject on error",
-    async () => {
-      const c = await createSession(socketName, uniqueSession("conf-cmd"));
-      client = c;
+  it("live command-correlation contract: resolve on success, reject on error", async () => {
+    const c = await createSession(socketName, uniqueSession("conf-cmd"));
+    client = c;
 
-      // %begin/%end → resolve with success.
-      const ok = await c.execute("list-sessions");
-      expect(ok.success).toBe(true);
+    // %begin/%end → resolve with success.
+    const ok = await c.execute("list-sessions");
+    expect(ok.success).toBe(true);
 
-      // %begin/%error → reject with a TmuxCommandError carrying success=false.
-      await expect(c.execute("definitely-not-a-command")).rejects.toBeInstanceOf(
-        TmuxCommandError,
-      );
-    },
-    15000,
-  );
+    // %begin/%error → reject with a TmuxCommandError carrying success=false.
+    await expect(c.execute("definitely-not-a-command")).rejects.toBeInstanceOf(
+      TmuxCommandError,
+    );
+  }, 15000);
 });

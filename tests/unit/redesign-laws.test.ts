@@ -73,7 +73,10 @@ class FakeClient {
 }
 
 function admitsPane(scope: PaneScope, paneId: number): boolean {
-  return scope.kind === "server" || (scope.kind === "pane" && scope.paneId === paneId);
+  return (
+    scope.kind === "server" ||
+    (scope.kind === "pane" && scope.paneId === paneId)
+  );
 }
 
 function out(paneId: number, data: Uint8Array | number[]): ChunkPayload {
@@ -211,8 +214,12 @@ describe("shared-decoder", () => {
   it("N line consumers on the same pane share one TextDecoder; decode runs once per chunk", () => {
     const client = new FakeClient();
     const lines: string[][] = [[], []];
-    attachLineSink(client, (e) => lines[0].push(e.line), { scope: paneScope(1) });
-    attachLineSink(client, (e) => lines[1].push(e.line), { scope: paneScope(1) });
+    attachLineSink(client, (e) => lines[0].push(e.line), {
+      scope: paneScope(1),
+    });
+    attachLineSink(client, (e) => lines[1].push(e.line), {
+      scope: paneScope(1),
+    });
 
     const spy = vi.spyOn(TextDecoder.prototype, "decode");
     // U+1F4A9 (4 bytes) split across two chunks exercises streaming decode too.
@@ -317,9 +324,7 @@ describe("fifo-correlation", () => {
       return undefined as unknown as ReturnType<typeof realSend>;
     };
 
-    await expect(client.execute("cmd-alpha")).rejects.toBeInstanceOf(
-      TypeError,
-    );
+    await expect(client.execute("cmd-alpha")).rejects.toBeInstanceOf(TypeError);
 
     const p = client.execute("cmd-beta");
     transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
@@ -465,13 +470,25 @@ describe("emitter-excludes-bytes", () => {
 
 describe("version-floor", () => {
   it("meetsTmuxVersion enforces the 3.2 library floor and the 3.5 requestReport floor", () => {
-    expect(meetsTmuxVersion({ major: 3, minor: 1 }, MIN_TMUX_VERSION)).toBe(false);
-    expect(meetsTmuxVersion({ major: 3, minor: 2 }, MIN_TMUX_VERSION)).toBe(true);
-    expect(meetsTmuxVersion({ major: 3, minor: 4 }, REQUEST_REPORT_MIN_VERSION)).toBe(false);
-    expect(meetsTmuxVersion({ major: 3, minor: 5 }, REQUEST_REPORT_MIN_VERSION)).toBe(true);
+    expect(meetsTmuxVersion({ major: 3, minor: 1 }, MIN_TMUX_VERSION)).toBe(
+      false,
+    );
+    expect(meetsTmuxVersion({ major: 3, minor: 2 }, MIN_TMUX_VERSION)).toBe(
+      true,
+    );
+    expect(
+      meetsTmuxVersion({ major: 3, minor: 4 }, REQUEST_REPORT_MIN_VERSION),
+    ).toBe(false);
+    expect(
+      meetsTmuxVersion({ major: 3, minor: 5 }, REQUEST_REPORT_MIN_VERSION),
+    ).toBe(true);
     // Major version takes precedence over minor.
-    expect(meetsTmuxVersion({ major: 4, minor: 0 }, MIN_TMUX_VERSION)).toBe(true);
-    expect(meetsTmuxVersion({ major: 2, minor: 9 }, MIN_TMUX_VERSION)).toBe(false);
+    expect(meetsTmuxVersion({ major: 4, minor: 0 }, MIN_TMUX_VERSION)).toBe(
+      true,
+    );
+    expect(meetsTmuxVersion({ major: 2, minor: 9 }, MIN_TMUX_VERSION)).toBe(
+      false,
+    );
   });
 });
 
@@ -486,8 +503,24 @@ describe("no-broadcast-loop", () => {
     // no bridge maintains its own peer list or loop.
     const registry = new SinkRegistry();
     const writes: string[] = [];
-    registry.attach({ write() { writes.push("a"); }, end() {} }, serverScope);
-    registry.attach({ write() { writes.push("b"); }, end() {} }, serverScope);
+    registry.attach(
+      {
+        write() {
+          writes.push("a");
+        },
+        end() {},
+      },
+      serverScope,
+    );
+    registry.attach(
+      {
+        write() {
+          writes.push("b");
+        },
+        end() {},
+      },
+      serverScope,
+    );
 
     registry.dispatch({ paneId: 3, data: new Uint8Array([0x41]) }, undefined);
 
@@ -505,8 +538,18 @@ describe("non-exclusive-registry", () => {
     const received: number[] = [];
 
     expect(() => {
-      client.attachBytesSink({ write(m) { received.push(m.paneId); }, end() {} });
-      client.attachBytesSink({ write(m) { received.push(m.paneId); }, end() {} });
+      client.attachBytesSink({
+        write(m) {
+          received.push(m.paneId);
+        },
+        end() {},
+      });
+      client.attachBytesSink({
+        write(m) {
+          received.push(m.paneId);
+        },
+        end() {},
+      });
     }).not.toThrow();
 
     client.deliver(out(7, [0x61]));
@@ -522,7 +565,15 @@ describe("end-is-total", () => {
   it("disposer calls sink.end() exactly once; subsequent disposer calls are no-ops", () => {
     const registry = new SinkRegistry();
     let endCount = 0;
-    const dispose = registry.attach({ write() {}, end() { endCount++; } }, serverScope);
+    const dispose = registry.attach(
+      {
+        write() {},
+        end() {
+          endCount++;
+        },
+      },
+      serverScope,
+    );
     dispose();
     dispose(); // second call is idempotent
     expect(endCount).toBe(1);
@@ -533,7 +584,15 @@ describe("end-is-total", () => {
     const ends: number[] = [];
     for (let i = 0; i < 3; i++) {
       const id = i;
-      registry.attach({ write() {}, end() { ends.push(id); } }, serverScope);
+      registry.attach(
+        {
+          write() {},
+          end() {
+            ends.push(id);
+          },
+        },
+        serverScope,
+      );
     }
     registry.endAll();
     expect(ends.sort((a, b) => a - b)).toEqual([0, 1, 2]);
@@ -542,7 +601,15 @@ describe("end-is-total", () => {
   it("endAll() does not double-end a sink whose disposer was already called", () => {
     const registry = new SinkRegistry();
     let endCount = 0;
-    const dispose = registry.attach({ write() {}, end() { endCount++; } }, serverScope);
+    const dispose = registry.attach(
+      {
+        write() {},
+        end() {
+          endCount++;
+        },
+      },
+      serverScope,
+    );
     dispose(); // end() fires here — removes sink from bucket
     registry.endAll(); // sink is no longer in any bucket; end() is NOT called again
     expect(endCount).toBe(1);

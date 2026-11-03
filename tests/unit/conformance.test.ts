@@ -48,7 +48,9 @@ describe("coverage is driven by the channel partition (single source)", () => {
   // The variants the deterministic loop turns into per-sample checks: everything
   // except the command-guard frames (begin/end/error), which are certified by the
   // command-correlation checks instead.
-  const perSampleVariants = (Object.keys(MESSAGE_SAMPLES) as TmuxMessage["type"][])
+  const perSampleVariants = (
+    Object.keys(MESSAGE_SAMPLES) as TmuxMessage["type"][]
+  )
     .filter((t) => CHANNEL_OF[t] !== "command")
     .sort();
 
@@ -93,7 +95,9 @@ describe("green/red is contingent — the oracle is not vacuous", () => {
 
     expect(captured).toBeDefined();
     const observed = serializeMessage(captured as TmuxMessage);
-    expect(observed).toBe(serializeMessage({ type: "window-add", windowId: 2 }));
+    expect(observed).toBe(
+      serializeMessage({ type: "window-add", windowId: 2 }),
+    );
     expect(observed).not.toBe(
       serializeMessage({ type: "window-add", windowId: 99 }),
     );

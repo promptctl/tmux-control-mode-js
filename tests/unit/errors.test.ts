@@ -9,7 +9,9 @@ function errorResponse(output: string[]): CommandResponse {
 
 describe("TmuxCommandError — headline selection", () => {
   it("uses the first non-empty output line", () => {
-    const err = new TmuxCommandError(errorResponse(["", "unknown command: foo"]));
+    const err = new TmuxCommandError(
+      errorResponse(["", "unknown command: foo"]),
+    );
     expect(err.message).toBe("unknown command: foo");
   });
 
@@ -38,7 +40,9 @@ describe("TmuxCommandError — headline selection", () => {
   // run). A single-\r strip would turn "\r\r" into "\r" — still non-empty —
   // and pick it as the headline instead of skipping it as blank.
   it("treats a doubled \\r\\r line as blank too", () => {
-    const err = new TmuxCommandError(errorResponse(["\r\r", "real diagnostic"]));
+    const err = new TmuxCommandError(
+      errorResponse(["\r\r", "real diagnostic"]),
+    );
     expect(err.message).toBe("real diagnostic");
   });
 });

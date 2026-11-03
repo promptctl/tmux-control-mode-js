@@ -42,10 +42,16 @@ describe("Handshake — authenticate()", () => {
 
   it("passes the result from the auth hook through", async () => {
     const hook = vi.fn().mockResolvedValue({ ok: true, identity: "user-42" });
-    const hs = new Handshake(100, { headers: { authorization: "Bearer t" } }, hook);
+    const hs = new Handshake(
+      100,
+      { headers: { authorization: "Bearer t" } },
+      hook,
+    );
     const result = await hs.authenticate();
     expect(result).toEqual({ ok: true, identity: "user-42" });
-    expect(hook).toHaveBeenCalledWith({ headers: { authorization: "Bearer t" } });
+    expect(hook).toHaveBeenCalledWith({
+      headers: { authorization: "Bearer t" },
+    });
   });
 
   it("supplies empty request to hook when no request is provided", async () => {
@@ -56,7 +62,9 @@ describe("Handshake — authenticate()", () => {
   });
 
   it("maps an auth hook that returns ok:false straight through", async () => {
-    const hook = vi.fn().mockResolvedValue({ ok: false, reason: "token expired" });
+    const hook = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: "token expired" });
     const hs = new Handshake(100, undefined, hook);
     const result = await hs.authenticate();
     expect(result).toEqual({ ok: false, reason: "token expired" });
@@ -66,13 +74,19 @@ describe("Handshake — authenticate()", () => {
     const hook = vi.fn().mockRejectedValue(new Error("db down"));
     const hs = new Handshake(100, undefined, hook);
     const result = await hs.authenticate();
-    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("db down") });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("db down"),
+    });
   });
 
   it("wraps a non-Error throw into ok:false", async () => {
     const hook = vi.fn().mockRejectedValue("string throw");
     const hs = new Handshake(100, undefined, hook);
     const result = await hs.authenticate();
-    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining("string throw") });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("string throw"),
+    });
   });
 });

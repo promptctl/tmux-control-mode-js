@@ -47,68 +47,63 @@ describe.skipIf(!RUN_INTEGRATION)(
       killServer(socketName);
     });
 
-    it(
-      "transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed",
-      async () => {
-        const sessionName = uniqueSession("connstate");
-        execSync(
-          tmuxCmd(socketName, `new-session -d -s ${sessionName}`),
-          { stdio: "ignore" },
-        );
-        const transport = spawnTmux(["attach-session", "-t", sessionName], {
-          socketPath: socketName,
-        });
-        client = new TmuxClient(transport);
+    it("transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed", async () => {
+      const sessionName = uniqueSession("connstate");
+      execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
+        stdio: "ignore",
+      });
+      const transport = spawnTmux(["attach-session", "-t", sessionName], {
+        socketPath: socketName,
+      });
+      client = new TmuxClient(transport);
 
-        // The constructor runs synchronously; before tmux speaks we're connecting.
-        expect(client.connectionState).toEqual({ status: "connecting" });
+      // The constructor runs synchronously; before tmux speaks we're connecting.
+      expect(client.connectionState).toEqual({ status: "connecting" });
 
-        const seen: ConnectionState[] = [];
-        client.on("connection-state", (ev) => seen.push(ev.state));
+      const seen: ConnectionState[] = [];
+      client.on("connection-state", (ev) => seen.push(ev.state));
 
-        // [LAW:no-defensive-null-guards] client is non-null once constructed
-        // above; bind it so the Promise-executor closure keeps that fact
-        // instead of widening back to `TmuxClient | null` and forcing a
-        // defensive `?.` on a value that cannot be null here.
-        const activeClient = client;
-        // Wait for the client to consume tmux's unsolicited startup
-        // %begin/%end greeting (see TmuxClient.awaitingGreeting) — that is
-        // what "ready" now means, not merely "first byte received".
-        await new Promise<void>((resolve) => {
-          const onState = (ev: { state: ConnectionState }) => {
-            if (ev.state.status === "ready") {
-              activeClient.off("connection-state", onState);
-              resolve();
-            }
-          };
-          activeClient.on("connection-state", onState);
-        });
-        expect(client.connectionState).toEqual({ status: "ready" });
+      // [LAW:no-defensive-null-guards] client is non-null once constructed
+      // above; bind it so the Promise-executor closure keeps that fact
+      // instead of widening back to `TmuxClient | null` and forcing a
+      // defensive `?.` on a value that cannot be null here.
+      const activeClient = client;
+      // Wait for the client to consume tmux's unsolicited startup
+      // %begin/%end greeting (see TmuxClient.awaitingGreeting) — that is
+      // what "ready" now means, not merely "first byte received".
+      await new Promise<void>((resolve) => {
+        const onState = (ev: { state: ConnectionState }) => {
+          if (ev.state.status === "ready") {
+            activeClient.off("connection-state", onState);
+            resolve();
+          }
+        };
+        activeClient.on("connection-state", onState);
+      });
+      expect(client.connectionState).toEqual({ status: "ready" });
 
-        // Kill the only session on the isolated socket; tmux's exit-empty
-        // default then kills the server out from under the client;
-        // observe `closed{exit}`.
-        const closed = new Promise<ConnectionState>((resolve) => {
-          const onState = (ev: { state: ConnectionState }) => {
-            if (ev.state.status === "closed") {
-              client?.off("connection-state", onState);
-              resolve(ev.state);
-            }
-          };
-          client?.on("connection-state", onState);
-        });
-        killServer(socketName);
-        const finalState = await closed;
-        expect(finalState.status).toBe("closed");
-        // tmux exits cleanly once its last session is killed: reason is
-        // 'exit'. (Some tmux builds may report a SIGTERM-driven
-        // 'transport-error' instead — both
-        // are valid "tmux is gone" signals; assert the inclusive set.)
-        expect(["exit", "transport-error"]).toContain(
-          finalState.status === "closed" ? finalState.reason : "",
-        );
-      },
-      15000,
-    );
+      // Kill the only session on the isolated socket; tmux's exit-empty
+      // default then kills the server out from under the client;
+      // observe `closed{exit}`.
+      const closed = new Promise<ConnectionState>((resolve) => {
+        const onState = (ev: { state: ConnectionState }) => {
+          if (ev.state.status === "closed") {
+            client?.off("connection-state", onState);
+            resolve(ev.state);
+          }
+        };
+        client?.on("connection-state", onState);
+      });
+      killServer(socketName);
+      const finalState = await closed;
+      expect(finalState.status).toBe("closed");
+      // tmux exits cleanly once its last session is killed: reason is
+      // 'exit'. (Some tmux builds may report a SIGTERM-driven
+      // 'transport-error' instead — both
+      // are valid "tmux is gone" signals; assert the inclusive set.)
+      expect(["exit", "transport-error"]).toContain(
+        finalState.status === "closed" ? finalState.reason : "",
+      );
+    }, 15000);
   },
 );

@@ -45,7 +45,10 @@ export interface PaneTerminalProps {
   /** Construction-time only (xterm has no live `setScrollback`). */
   readonly scrollback?: number;
   /** Live: changes merge via `sink.setTheme()` without remount. */
-  readonly theme?: { readonly background?: string; readonly foreground?: string };
+  readonly theme?: {
+    readonly background?: string;
+    readonly foreground?: string;
+  };
   /** Mount-time only — `sink.focus()` runs once after attach if true. */
   readonly autoFocus?: boolean;
   /** Forwarded to the container `<div>` for layout/styling. */

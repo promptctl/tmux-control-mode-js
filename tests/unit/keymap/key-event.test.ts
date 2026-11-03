@@ -18,14 +18,27 @@ describe("keysEqual implicit-shift matching", () => {
     expect(keysEqual(chord, ev)).toBe(true);
   });
 
-  it.each([['"', "quote"], ["{", "left-brace"], ["}", "right-brace"], ["!", "bang"], ["(", "lparen"], [")", "rparen"], [":", "colon"], ["&", "amp"], ["|", "pipe"]])(
-    "matches %s (shifted symbol) regardless of shift flag",
-    (sym) => {
-      const chord = parseChord(sym);
-      const shifted = { key: sym, ctrl: false, alt: false, shift: true, meta: false };
-      expect(keysEqual(chord, shifted)).toBe(true);
-    },
-  );
+  it.each([
+    ['"', "quote"],
+    ["{", "left-brace"],
+    ["}", "right-brace"],
+    ["!", "bang"],
+    ["(", "lparen"],
+    [")", "rparen"],
+    [":", "colon"],
+    ["&", "amp"],
+    ["|", "pipe"],
+  ])("matches %s (shifted symbol) regardless of shift flag", (sym) => {
+    const chord = parseChord(sym);
+    const shifted = {
+      key: sym,
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
+    expect(keysEqual(chord, shifted)).toBe(true);
+  });
 
   it("uppercase letter A matches event with shift:true (Shift+a → 'A')", () => {
     const chord = parseChord("A");
@@ -38,7 +51,13 @@ describe("keysEqual implicit-shift matching", () => {
     // produces {key:'A', shift:true}. But verify our matcher is strict here:
     // a chord on lowercase 'a' requires shift:false.
     const chord = parseChord("a");
-    const pressedA = { key: "a", ctrl: false, alt: false, shift: true, meta: false };
+    const pressedA = {
+      key: "a",
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     expect(keysEqual(chord, pressedA)).toBe(false);
   });
 
@@ -50,13 +69,25 @@ describe("keysEqual implicit-shift matching", () => {
 
   it("modifiers other than shift still matter for implicit-shift characters", () => {
     const chord = parseChord("%");
-    const withCtrl = { key: "%", ctrl: true, alt: false, shift: true, meta: false };
+    const withCtrl = {
+      key: "%",
+      ctrl: true,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     expect(keysEqual(chord, withCtrl)).toBe(false);
   });
 
   it("multi-character keys (Enter, ArrowUp) are not affected by the implicit-shift rule", () => {
     const chord = parseChord("Enter");
-    const withShift = { key: "Enter", ctrl: false, alt: false, shift: true, meta: false };
+    const withShift = {
+      key: "Enter",
+      ctrl: false,
+      alt: false,
+      shift: true,
+      meta: false,
+    };
     // Enter is not a single non-alphanumeric character; shift must match explicitly.
     expect(keysEqual(chord, withShift)).toBe(false);
   });
