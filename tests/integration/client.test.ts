@@ -5,7 +5,7 @@
 // not fail when tmux is unavailable, but can be run explicitly to verify
 // real-world behaviour against an actual tmux binary.
 
-import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
 import {
   readFileSync,
@@ -21,6 +21,7 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
+import type { PaneRecord } from "../../src/protocol/types.js";
 import {
   listWindows,
   listPanes,
@@ -492,6 +493,24 @@ function sideWindow(
 }
 
 /** Parse `@<n>` window-id output, failing loudly on anything else. */
+// [LAW:no-ambient-temporal-coupling] pane_current_path is the pane process's
+// live cwd: until the forked child chdirs it is the server's (seen on Linux
+// CI), so the read waits for the expected path instead of racing the child.
+async function waitForPaneCwd(
+  client: TmuxClient,
+  paneId: number,
+  cwd: string,
+): Promise<PaneRecord> {
+  return vi.waitFor(
+    async () => {
+      const pane = (await listPanes(client)).find((p) => p.paneId === paneId);
+      expect(pane?.cwd).toBe(cwd);
+      return pane!;
+    },
+    { timeout: 8000, interval: 50 },
+  );
+}
+
 function parseWindowId(out: string): number {
   const m = /^@(\d+)$/.exec(out.trim());
   if (m === null) {
@@ -1407,20 +1426,13 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           command: "sleep 60",
         });
 
-        // Polled: pane_current_path reads the pane process's live cwd, and
-        // until the forked child chdirs it is still the server's (Linux CI).
-        const conn = client;
-        const findPane = async () =>
-          (await listPanes(conn)).find((p) => p.paneId === created.paneId);
-        await expect.poll(async () => (await findPane())?.cwd).toBe(cwd);
-        const pane = await findPane();
+        const pane = await waitForPaneCwd(client, created.paneId, cwd);
         expect(pane).toMatchObject({
           sessionName: target,
           windowId: created.windowId,
-          cwd,
         });
         // tmux reports the start command re-quoted from its argv ("sleep 60").
-        expect(pane?.startCommand).toContain("sleep 60");
+        expect(pane.startCommand).toContain("sleep 60");
       } finally {
         rmSync(cwd, { recursive: true, force: true });
       }
@@ -1458,13 +1470,6 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    // Polled for the same reason as the cwd test above.
-    const conn = client;
-    await expect
-      .poll(
-        async () =>
-          (await listPanes(conn)).find((p) => p.paneId === created.paneId)?.cwd,
-      )
-      .toBe(realpathSync(homedir()));
+    await waitForPaneCwd(client, created.paneId, realpathSync(homedir()));
   }, 15000);
 });
