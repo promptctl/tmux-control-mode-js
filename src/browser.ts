@@ -42,11 +42,15 @@ export type {
   CommandResponse,
   PaneCapture,
   NewWindowResult,
+  PaneGeometry,
   PaneRecord,
   SessionRecord,
   TmuxMessage,
+  WindowLayout,
+  WindowLayoutFields,
   WindowRecord,
 } from "./protocol/types.js";
+export { parseWindowLayout } from "./protocol/layout.js";
 export type { ConnectionState } from "./connection-state.js";
 export type { TmuxConnection } from "./client.js";
 

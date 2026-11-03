@@ -137,12 +137,44 @@ export interface UnlinkedWindowRenamedMessage {
 // Layout Events
 // ---------------------------------------------------------------------------
 
-export interface LayoutChangeMessage {
-  readonly type: "layout-change";
-  readonly windowId: number;
+/** One pane's cell in a window layout, in character cells. */
+export interface PaneGeometry {
+  readonly paneId: number;
+  readonly width: number;
+  readonly height: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
+ * A layout string parsed into pane geometry: every tiled pane, in layout
+ * order — or, when the string breaks tmux's layout grammar or checksum, the
+ * reason. Floating panes (tmux 3.8+) are not in the layout string, so a
+ * window of only floating panes parses to an empty list.
+ */
+export type WindowLayout =
+  | { readonly kind: "parsed"; readonly panes: readonly PaneGeometry[] }
+  | { readonly kind: "malformed"; readonly reason: string };
+
+/**
+ * A window's layout as tmux reports it, shared by every message that carries
+ * one. Build it with `windowLayoutFields` (protocol/layout.ts).
+ */
+export interface WindowLayoutFields {
+  /** Raw `#{window_layout}`: every tiled pane, at its pre-zoom size when zoomed. */
   readonly windowLayout: string;
+  /** Raw `#{window_visible_layout}`: only the zoomed pane when zoomed. */
   readonly windowVisibleLayout: string;
   readonly windowFlags: string;
+  // [LAW:one-source-of-truth] Derived from the raw strings above by
+  // `windowLayoutFields` only; serializers emit the raw strings.
+  readonly layout: WindowLayout;
+  readonly visibleLayout: WindowLayout;
+}
+
+export interface LayoutChangeMessage extends WindowLayoutFields {
+  readonly type: "layout-change";
+  readonly windowId: number;
 }
 
 // ---------------------------------------------------------------------------

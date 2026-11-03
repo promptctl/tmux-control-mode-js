@@ -332,7 +332,7 @@ describe("parseServerFrame — event type validation", () => {
 
   it("accepts a valid event frame with known type", () => {
     const frame = parseServerFrame(
-      JSON.stringify({ k: "event", msg: { type: "layout-change" } }),
+      JSON.stringify({ k: "event", msg: { type: "sessions-changed" } }),
     );
     expect(frame.k).toBe("event");
   });

@@ -33,6 +33,7 @@ import {
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -1080,9 +1081,7 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       type: "cross-session-layout-change",
       sessionId: 1,
       windowId: 7,
-      windowLayout: "b25d,80x24,0,0,0",
-      windowVisibleLayout: "b25d,80x24,0,0,0",
-      windowFlags: "*",
+      ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
     } as const;
     (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
       change,
@@ -1145,4 +1144,39 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
     });
     expect(parseServerFrame(ok)).toMatchObject({ k: "event" });
   });
+
+  it.each([
+    ["layout-change", { windowId: 7 }],
+    ["cross-session-layout-change", { sessionId: 1, windowId: 7 }],
+  ])(
+    "derives %s geometry from the raw strings, never from the wire",
+    (type, ids) => {
+      const fields = windowLayoutFields(
+        "b25d,80x24,0,0,0",
+        "b25d,80x24,0,0,0",
+        "*",
+      );
+      const frame = (extra: object) =>
+        JSON.stringify({ k: "event", msg: { type, ...ids, ...extra } });
+      const raw = {
+        windowLayout: fields.windowLayout,
+        windowVisibleLayout: fields.windowVisibleLayout,
+        windowFlags: fields.windowFlags,
+      };
+      for (const forged of [
+        {},
+        { layout: { kind: "parsed", panes: [] } },
+        { layout: null, visibleLayout: "b25d,80x24,0,0,0" },
+      ]) {
+        expect(parseServerFrame(frame({ ...raw, ...forged }))).toEqual({
+          k: "event",
+          msg: { type, ...ids, ...fields },
+        });
+      }
+      const { windowLayout: _omitted, ...missing } = raw;
+      expect(() => parseServerFrame(frame(missing))).toThrow(
+        /windowLayout must be a string/,
+      );
+    },
+  );
 });

@@ -15,6 +15,7 @@
 
 import type { MockScenario, CommandReply } from "@promptctl/tmux-control-mode-js/mock";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
+import { windowLayoutFields } from "@promptctl/tmux-control-mode-js/protocol";
 
 /** One step on a scenario's notification timeline: a human note + what it emits. */
 export interface TutorialStep {
@@ -75,9 +76,7 @@ const SESSION_STARTUP: TutorialScenario = {
       {
         type: "layout-change",
         windowId: 1,
-        windowLayout: "b1f2,80x24,0,0,1",
-        windowVisibleLayout: "b1f2,80x24,0,0,1",
-        windowFlags: "*",
+        ...windowLayoutFields("b25e,80x24,0,0,1", "b25e,80x24,0,0,1", "*"),
       },
     ],
     respond: startupRespond,

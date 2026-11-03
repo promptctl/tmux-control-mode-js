@@ -48,6 +48,7 @@ import {
   type IpcHub,
 } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Test-only types
@@ -981,9 +982,7 @@ describe("Electron IPC bridge — L1 structuredClone parity", () => {
     "layout-change": {
       type: "layout-change",
       windowId: 11,
-      windowLayout: "a",
-      windowVisibleLayout: "b",
-      windowFlags: "c",
+      ...windowLayoutFields("a", "b", "c"),
     },
     "session-changed": { type: "session-changed", sessionId: 1, name: "s" },
     "session-renamed": { type: "session-renamed", sessionId: 1, name: "s2" },

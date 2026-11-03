@@ -692,9 +692,30 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   "layout-change": {
     kind: "observed",
     probe: async ({ client }) => {
-      const p = waitForEvent(client, "layout-change");
+      // Real tmux output must parse: a checksum or grammar drift would turn
+      // every layout into the malformed arm without failing the key-set check.
+      const paneIds = async () =>
+        (await client.execute("list-panes -F '#{pane_id}'")).output
+          .map((l) => Number(l.trim().slice(1)))
+          .sort();
+      const before = (await paneIds()).length;
+      // A malformed layout resolves at once so its reason is reported, not
+      // hidden behind the wait timeout.
+      const p = waitForEvent(
+        client,
+        "layout-change",
+        (ev) =>
+          ev.layout.kind === "malformed" ||
+          ev.layout.panes.length === before + 1,
+      );
       await client.execute("split-window -h");
-      await p;
+      const ev = await p;
+      const after = await paneIds();
+      expect(ev.layout).toMatchObject({ kind: "parsed" });
+      expect(
+        ev.layout.kind === "parsed" &&
+          ev.layout.panes.map((g) => g.paneId).sort(),
+      ).toEqual(after);
     },
   },
   "unlinked-window-close": {

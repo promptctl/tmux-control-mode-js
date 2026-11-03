@@ -22,8 +22,10 @@ import type {
   CommandResponse,
   PaneOutputMessage,
   TmuxMessage,
+  WindowLayoutFields,
 } from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
+import { windowLayoutFields } from "../../protocol/layout.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
 // [LAW:one-source-of-truth] Re-export the canonical PaneOutputMessage from
@@ -409,12 +411,16 @@ function parseWelcome(x: unknown): WelcomeFrame {
 // [LAW:types-are-the-program] Each cross-session layout event's fields and
 // their runtime kinds. The mapped type makes a field added to (or removed
 // from) a message interface a compile error here, so the wire check cannot
-// drift from the type the client emits.
+// drift from the type the client emits. Layout fields are excluded: every
+// event that carries them goes through `withDerivedLayout` instead.
 type FieldKind = "number" | "number[]" | "string";
 // A field shape with no kind here is `never`, so it fails to compile rather
 // than being checked as the wrong kind.
 type FieldKinds<M> = {
-  readonly [F in Exclude<keyof M, "type">]: M[F] extends number
+  readonly [F in Exclude<
+    keyof M,
+    "type" | keyof WindowLayoutFields
+  >]: M[F] extends number
     ? "number"
     : M[F] extends readonly number[]
       ? "number[]"
@@ -428,13 +434,7 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
     Extract<CrossSessionLayoutMessage, { type: K }>
   >;
 } = {
-  "cross-session-layout-change": {
-    sessionId: "number",
-    windowId: "number",
-    windowLayout: "string",
-    windowVisibleLayout: "string",
-    windowFlags: "string",
-  },
+  "cross-session-layout-change": { sessionId: "number", windowId: "number" },
   "cross-session-layout-decode-error": { skippedBytes: "number" },
   "cross-session-layout-overrun": { lostEntries: "number" },
   "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
@@ -443,10 +443,11 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
   "cross-session-layout-uncovered": { windowIds: "number[]" },
 };
 
-function hasKind(value: unknown, kind: FieldKind): boolean {
-  if (kind !== "number[]") return typeof value === kind;
-  return Array.isArray(value) && value.every((v) => typeof v === "number");
-}
+const KIND_CHECKS: Readonly<Record<FieldKind, (v: unknown) => boolean>> = {
+  number: (v) => typeof v === "number",
+  string: (v) => typeof v === "string",
+  "number[]": (v) => Array.isArray(v) && v.every((n) => typeof n === "number"),
+};
 
 function checkCrossSessionLayoutFields(
   msg: Record<string, unknown>,
@@ -455,7 +456,7 @@ function checkCrossSessionLayoutFields(
   for (const [field, kind] of Object.entries(
     CROSS_SESSION_LAYOUT_FIELDS[type],
   ) as [string, FieldKind][]) {
-    if (!hasKind(msg[field], kind)) {
+    if (!KIND_CHECKS[kind](msg[field])) {
       throw new BridgeProtocolError(
         `event.msg.${field} must be a ${kind} for ${type}`,
       );
@@ -463,12 +464,58 @@ function checkCrossSessionLayoutFields(
   }
 }
 
+// [LAW:types-are-the-program] Keyed by every message type that carries
+// WindowLayoutFields, so a new one is a compile error until it is listed.
+const LAYOUT_EVENT_TYPES: ReadonlySet<string> = new Set(
+  Object.keys({
+    "layout-change": true,
+    "cross-session-layout-change": true,
+  } satisfies Record<
+    Extract<
+      TmuxMessage | CrossSessionLayoutMessage,
+      WindowLayoutFields
+    >["type"],
+    true
+  >),
+);
+
+const RAW_LAYOUT_FIELDS = [
+  "windowLayout",
+  "windowVisibleLayout",
+  "windowFlags",
+] as const satisfies readonly (keyof WindowLayoutFields)[];
+
+// [LAW:one-source-of-truth] Geometry is never taken off the wire: the raw
+// layout strings are checked and `windowLayoutFields` re-derives `layout` and
+// `visibleLayout`, so a bridge on another version cannot hand the browser
+// geometry that disagrees with its own strings.
+function withDerivedLayout(msg: Record<string, unknown>, type: string): object {
+  if (!LAYOUT_EVENT_TYPES.has(type)) return msg;
+  for (const field of RAW_LAYOUT_FIELDS) {
+    if (typeof msg[field] !== "string") {
+      throw new BridgeProtocolError(
+        `event.msg.${field} must be a string for ${type}`,
+      );
+    }
+  }
+  const raw = msg as Record<(typeof RAW_LAYOUT_FIELDS)[number], string>;
+  return {
+    ...msg,
+    ...windowLayoutFields(
+      raw.windowLayout,
+      raw.windowVisibleLayout,
+      raw.windowFlags,
+    ),
+  };
+}
+
 function parseEvent(x: unknown): EventFrame {
   const o = x as { msg?: unknown };
   if (typeof o.msg !== "object" || o.msg === null) {
     throw new BridgeProtocolError("event.msg must be an object");
   }
-  const { type } = o.msg as { type?: unknown };
+  const msg = o.msg as Record<string, unknown>;
+  const { type } = msg;
   const unknownType = () =>
     new BridgeProtocolError(
       `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(type)}`,
@@ -477,11 +524,14 @@ function parseEvent(x: unknown): EventFrame {
   // Classify once: admission and the field check read the same verdict.
   const typed = { type };
   if (isCrossSessionLayoutMessage(typed)) {
-    checkCrossSessionLayoutFields(o.msg as Record<string, unknown>, typed.type);
+    checkCrossSessionLayoutFields(msg, typed.type);
   } else if (!SERIALIZED_EVENT_TYPES.has(type)) {
     throw unknownType();
   }
-  return { k: "event", msg: o.msg as EventFrame["msg"] };
+  return {
+    k: "event",
+    msg: withDerivedLayout(msg, type) as EventFrame["msg"],
+  };
 }
 
 function parseResult(x: unknown): ResultFrame {

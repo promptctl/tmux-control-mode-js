@@ -33,6 +33,7 @@ import {
 import type { TmuxMessage } from "../../src/protocol/index.js";
 import type { TmuxTransport, SendResult } from "../../src/transport/types.js";
 import type { EmitterMessage } from "../../src/emitter.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -476,7 +477,7 @@ describe("withChaos drives a real TmuxClient", () => {
       { type: "window-renamed", windowId: 3, name: "editor" },
       { type: "session-changed", sessionId: 1, name: "main" },
       { type: "output", paneId: 1, data: new Uint8Array([104, 105, 0x1b, 7, 0]) },
-      { type: "layout-change", windowId: 3, windowLayout: "b1f2,80x24,0,0,1", windowVisibleLayout: "b1f2,80x24,0,0,1", windowFlags: "*" },
+      { type: "layout-change", windowId: 3, ...windowLayoutFields("b25e,80x24,0,0,1", "b25e,80x24,0,0,1", "*") },
       { type: "window-close", windowId: 3 },
       { type: "sessions-changed" },
       { type: "pane-mode-changed", paneId: 1 },

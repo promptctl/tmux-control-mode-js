@@ -9,7 +9,10 @@
 // defined here once; the relay, the bridge's event routing, and the RPC
 // validator all read them from this module.
 
-import type { SubscriptionChangedMessage } from "./protocol/types.js";
+import type {
+  SubscriptionChangedMessage,
+  WindowLayoutFields,
+} from "./protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Public synthetic event types — join SyntheticEmitterMessage in emitter.ts.
@@ -34,15 +37,13 @@ import type { SubscriptionChangedMessage } from "./protocol/types.js";
  * `%layout-change` itself uses — tmux 3.8 changed `#{window_layout}` to
  * render JSON by default for any context without `CLIENT_CONTROL`; fetching
  * via our own already-attached control client avoids that), so they are in
- * the same format as `LayoutChangeMessage`'s fields, not a different shape.
+ * the same format as `LayoutChangeMessage`'s fields, not a different shape —
+ * which is why both carry the one `WindowLayoutFields` group.
  */
-export interface CrossSessionLayoutChangeMessage {
+export interface CrossSessionLayoutChangeMessage extends WindowLayoutFields {
   readonly type: "cross-session-layout-change";
   readonly sessionId: number;
   readonly windowId: number;
-  readonly windowLayout: string;
-  readonly windowVisibleLayout: string;
-  readonly windowFlags: string;
 }
 
 /**

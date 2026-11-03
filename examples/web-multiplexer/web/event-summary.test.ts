@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import { windowLayoutFields } from "@promptctl/tmux-control-mode-js/protocol";
 import { summarizeEvent } from "./event-summary.ts";
 
 const labels = new Map<number, string>([[5, "$0:@1.%5"]]);
@@ -129,9 +130,7 @@ describe("summarizeEvent — full branch coverage", () => {
       {
         type: "layout-change",
         windowId: 3,
-        windowLayout: "abcd,80x24",
-        windowVisibleLayout: "abcd,80x24",
-        windowFlags: "*",
+        ...windowLayoutFields("abcd,80x24", "abcd,80x24", "*"),
       },
       "@3 layout=abcd,80x24",
     ],

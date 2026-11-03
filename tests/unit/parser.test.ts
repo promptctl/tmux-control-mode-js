@@ -1140,3 +1140,46 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
   });
 });
+
+describe("%layout-change pane geometry", () => {
+  it("carries the parsed geometry of both layouts", () => {
+    const { messages } = collect(
+      "%layout-change @0 8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1} b25d,80x24,0,0,0 *Z\n",
+    );
+    expect(messages).toEqual([
+      {
+        type: "layout-change",
+        windowId: 0,
+        windowLayout: "8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1}",
+        windowVisibleLayout: "b25d,80x24,0,0,0",
+        windowFlags: "*Z",
+        layout: {
+          kind: "parsed",
+          panes: [
+            { paneId: 0, width: 40, height: 24, x: 0, y: 0 },
+            { paneId: 1, width: 39, height: 24, x: 41, y: 0 },
+          ],
+        },
+        visibleLayout: {
+          kind: "parsed",
+          panes: [{ paneId: 0, width: 80, height: 24, x: 0, y: 0 }],
+        },
+      },
+    ]);
+  });
+
+  it("still delivers the message when a layout is malformed, with its failure arm", () => {
+    const { messages } = collect(
+      "%layout-change @3 ffff,80x24,0,0,0 b25d,80x24,0,0,0 *\n",
+    );
+    expect(messages).toMatchObject([
+      {
+        type: "layout-change",
+        windowId: 3,
+        windowLayout: "ffff,80x24,0,0,0",
+        layout: { kind: "malformed" },
+        visibleLayout: { kind: "parsed" },
+      },
+    ]);
+  });
+});

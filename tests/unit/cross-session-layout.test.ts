@@ -114,7 +114,12 @@ const HOOK = "window-layout-changed[9001]";
  * entry and the epoch bump counts. `fail` makes matching commands reject
  * once.
  */
-function fakeConnection(seq = "") {
+const PANE_1 = { paneId: 1, width: 80, height: 24, x: 0, y: 0 };
+
+function fakeConnection(
+  seq = "",
+  layoutReply = "$2\tb25e,80x24,0,0,1\tb25e,80x24,0,0,1\t*",
+) {
   const sent: string[] = [];
   let hookInstalled = false;
   let epoch = 0;
@@ -137,7 +142,7 @@ function fakeConnection(seq = "") {
         return Promise.reject(error);
       }
       if (command.includes("#{window_layout}")) {
-        const reply = respond(["$2\tabcd,80x24,0,0,1\tabcd,80x24,0,0,1\t*"]);
+        const reply = respond([layoutReply]);
         if (!holdFetches) return Promise.resolve(reply);
         return new Promise((resolve) =>
           pendingFetches.push(() => resolve(reply)),
@@ -257,9 +262,50 @@ describe("CrossSessionLayoutRelay", () => {
         type: "cross-session-layout-change",
         sessionId: 2,
         windowId: 4,
-        windowLayout: "abcd,80x24,0,0,1",
-        windowVisibleLayout: "abcd,80x24,0,0,1",
+        windowLayout: "b25e,80x24,0,0,1",
+        windowVisibleLayout: "b25e,80x24,0,0,1",
         windowFlags: "*",
+        layout: { kind: "parsed", panes: [PANE_1] },
+        visibleLayout: { kind: "parsed", panes: [PANE_1] },
+      },
+    ]);
+  });
+
+  it("carries each pane's geometry for a zoomed window in another session", async () => {
+    const full = "8205,80x24,0,0{40x24,0,0,0,39x24,41,0,1}";
+    const fake = fakeConnection("", `$2\t${full}\tb25e,80x24,0,0,1\t*Z`);
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("1:@4,");
+    await settle();
+    expect(layoutEvents(emitted)).toMatchObject([
+      {
+        layout: {
+          kind: "parsed",
+          panes: [
+            { paneId: 0, width: 40, height: 24, x: 0, y: 0 },
+            { paneId: 1, width: 39, height: 24, x: 41, y: 0 },
+          ],
+        },
+        visibleLayout: { kind: "parsed", panes: [PANE_1] },
+      },
+    ]);
+  });
+
+  it("delivers a malformed layout with its failure arm, never guessed geometry", async () => {
+    const fake = fakeConnection(
+      "",
+      "$2\tabcd,80x24,0,0,1\tb25e,80x24,0,0,1\t*",
+    );
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("1:@4,");
+    await settle();
+    expect(layoutEvents(emitted)).toMatchObject([
+      {
+        windowLayout: "abcd,80x24,0,0,1",
+        layout: { kind: "malformed" },
+        visibleLayout: { kind: "parsed", panes: [PANE_1] },
       },
     ]);
   });

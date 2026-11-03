@@ -4,6 +4,7 @@
 
 import type { TmuxMessage } from "./types.js";
 import { decodeOctalEscapes } from "./decode.js";
+import { windowLayoutFields } from "./layout.js";
 
 // ---------------------------------------------------------------------------
 // ID helpers — one parser per prefix convention
@@ -140,9 +141,7 @@ function parseLayoutChange(args: string): TmuxMessage | null {
   return {
     type: "layout-change",
     windowId: parseWindowId(parts[0]),
-    windowLayout: parts[1],
-    windowVisibleLayout: parts[2],
-    windowFlags: parts[3],
+    ...windowLayoutFields(parts[1], parts[2], parts[3]),
   };
 }
 
