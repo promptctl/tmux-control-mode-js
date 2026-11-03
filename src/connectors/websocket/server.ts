@@ -30,10 +30,9 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
-import { isCrossSessionLayoutMessage } from "../../cross-session-layout-messages.js";
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
-import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
+import type { EmitterMessage } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
 import {
@@ -262,7 +261,7 @@ type ConnectionState =
        *  bytes. The connection acts as a single peer inside this helper —
        *  every subscribe/unsubscribe and every pane-output send routes
        *  through the same instance the Electron bridge uses. */
-      readonly bridge: BridgeConnection;
+      readonly bridge: BridgeConnection<false>;
       readonly peer: Peer;
     }
   /** Drain initiated; existing in-flight calls finish, new calls rejected. */
@@ -270,7 +269,7 @@ type ConnectionState =
       readonly kind: "draining";
       readonly client: TmuxClient;
       readonly ctx: ConnectionContext;
-      readonly bridge: BridgeConnection;
+      readonly bridge: BridgeConnection<false>;
       readonly peer: Peer;
       readonly deadlineMs: number;
     }
@@ -285,7 +284,7 @@ type ConnectionState =
       readonly final: {
         readonly client: TmuxClient;
         readonly ctx: ConnectionContext;
-        readonly bridge: BridgeConnection;
+        readonly bridge: BridgeConnection<false>;
         readonly peer: Peer;
       } | null;
     };
@@ -703,7 +702,7 @@ class Connection {
     // listener. If createBridgeConnection throws, the event listener was
     // never wired and finalize's `final === null` branch correctly skips
     // cleanup.
-    let bridge: BridgeConnection;
+    let bridge: BridgeConnection<false>;
     try {
       bridge = createBridgeConnection({
         client,
@@ -719,6 +718,13 @@ class Connection {
             paneId: f.paneId,
             code: f.error.code,
             message: f.error.message,
+          }),
+        reportCoverageReleaseFailure: (e) =>
+          this.emit({
+            kind: "cross-session-layout-release-failed",
+            identity: this.identity,
+            code: e.code,
+            message: e.message,
           }),
       });
     } catch (err) {
@@ -936,10 +942,11 @@ class Connection {
   // -------------------------------------------------------------------------
   //
   // Two channels, disjoint by message type:
-  //   - `onWireEvent` handles non-byte tmux messages via the JSON event
-  //     frame. `EmitterTmuxMessage` excludes `PaneOutputMessage` by
-  //     construction, so a byte message cannot reach this method — the
-  //     type system enforces it.
+  //   - `onWireEvent` receives every emitter event and asks the bridge who it
+  //     reaches. Built with `forwardsLifecycle: false`, the bridge's delivered
+  //     route can only be a tmux or cross-session-layout message, so the JSON
+  //     event frame never sees a lifecycle or byte message — the route type
+  //     enforces it.
   //   - `onByteOutput` handles `PaneOutputMessage` via the binary
   //     side-channel. Bytes are routed here via
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
@@ -952,16 +959,9 @@ class Connection {
     }
     // [LAW:single-enforcer] The bridge decides who an event reaches.
     const bridge = this.state.bridge;
-    if (!bridge.deliversTo(this.state.peer, bridge.routeEvent(msg))) return;
-    // Built without `forwardsLifecycle`, the bridge routes only wire-shaped
-    // events here; anything else is a broken invariant, not a policy.
-    if (!isTmuxMessage(msg) && !isCrossSessionLayoutMessage(msg)) {
-      throw new BridgeError(
-        "BRIDGE_INTERNAL",
-        `bridge routed a non-wire event ${msg.type} to a WebSocket peer`,
-      );
-    }
-    const encoded = encodeServerFrame({ k: "event", msg });
+    const route = bridge.routeEvent(msg);
+    if (!bridge.deliversTo(this.state.peer, route)) return;
+    const encoded = encodeServerFrame({ k: "event", msg: route.msg });
     this.wsSend(encoded);
     this.emit({
       kind: "event-out",

@@ -58,6 +58,7 @@ function makeRig(): Rig {
     reportResumeFailure: () => {
       // No stranded-resume surfacing asserted by these tests.
     },
+    reportCoverageReleaseFailure: () => {},
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });

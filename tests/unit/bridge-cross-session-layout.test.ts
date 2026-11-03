@@ -5,6 +5,8 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
+import { TmuxCommandError, TransportClosedError } from "../../src/errors.js";
+import type { BridgeError } from "../../src/connectors/errors.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import {
   createBridgeConnection,
@@ -17,6 +19,7 @@ import type { CrossSessionLayoutChangeMessage } from "../../src/cross-session-la
 import type { EmitterMessage } from "../../src/emitter.js";
 
 function makeBridge(forwardsLifecycle = false) {
+  const releaseFailures: BridgeError[] = [];
   const transport: TmuxTransport = {
     send: () => ({ ok: true }),
     onData() {},
@@ -34,8 +37,9 @@ function makeBridge(forwardsLifecycle = false) {
     client,
     forwardsLifecycle,
     reportResumeFailure: () => undefined,
+    reportCoverageReleaseFailure: (e) => releaseFailures.push(e),
   });
-  return { client, bridge, enable, disable };
+  return { client, bridge, enable, disable, releaseFailures };
 }
 
 function delivers(
@@ -235,5 +239,27 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     // The relay already has the reference back: a retry gives nothing back twice.
     await bridge.disableCrossSessionLayoutForPeer(peer);
     expect(disable).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a departed peer's release that a live tmux refused, and stays quiet when the connection is gone", async () => {
+    const { bridge, disable, releaseFailures } = makeBridge();
+    const refused = bridge.registerPeer();
+    const gone = bridge.registerPeer();
+    await bridge.enableCrossSessionLayoutForPeer(refused);
+    await bridge.enableCrossSessionLayoutForPeer(gone);
+
+    disable.mockRejectedValueOnce(
+      new TmuxCommandError({
+        success: false,
+        output: ["no such hook"],
+      } as never),
+    );
+    bridge.removePeer(refused);
+    await flush();
+    disable.mockRejectedValueOnce(new TransportClosedError("closed"));
+    bridge.removePeer(gone);
+    await flush();
+
+    expect(releaseFailures.map((e) => e.code)).toEqual(["TMUX_ERROR"]);
   });
 });

@@ -143,6 +143,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly outbox: Outbox;
   // [LAW:decomposition] Reconnect budget + backoff + retry timer.
   private readonly reconnect: ReconnectController;
+  // Enables this client holds; the server-side peer forgets them on reconnect.
+  private crossSessionLayoutEnables = 0;
   // [LAW:decomposition] Ping/pong liveness. Connection-scoped: a fresh probe is
   // built each welcome (its cadence is only known then, from the server limits)
   // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
@@ -334,14 +336,40 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return this.call("queryClipboard", []);
   }
 
-  // Coverage is held by this connection's server-side peer, so like a
-  // subscribeRaw it does not survive a reconnect: re-enable on `reconnected`.
+  // Coverage is held by this connection's server-side peer, which a
+  // reconnect replaces with a fresh one holding none. The client owns the
+  // count of outstanding enables and replays it on every welcome, so
+  // coverage survives a reconnect the way it does on a direct TmuxClient.
   async enableCrossSessionLayoutChange(): Promise<void> {
     await this.call("enableCrossSessionLayoutChange", []);
+    this.crossSessionLayoutEnables += 1;
   }
 
   async disableCrossSessionLayoutChange(): Promise<void> {
+    // The server drops the peer's enable whatever tmux says about cleanup,
+    // so the local count follows the call, not its outcome.
+    this.crossSessionLayoutEnables = Math.max(
+      0,
+      this.crossSessionLayoutEnables - 1,
+    );
     await this.call("disableCrossSessionLayoutChange", []);
+  }
+
+  // [LAW:no-silent-failure] A replay the new server refuses leaves coverage
+  // off; the client's error channel says so.
+  private replayCrossSessionLayoutEnables(): void {
+    for (let i = 0; i < this.crossSessionLayoutEnables; i++) {
+      this.call("enableCrossSessionLayoutChange", []).catch((err: unknown) =>
+        this.emitError(
+          err instanceof BridgeError
+            ? err
+            : new BridgeError(
+                "BRIDGE_INTERNAL",
+                `re-enabling cross-session layout coverage after reconnect failed: ${err instanceof Error ? err.message : typeof err}`,
+              ),
+        ),
+      );
+    }
   }
 
   // [LAW:one-source-of-truth] All sink registration, topology bootstrap,
@@ -532,6 +560,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.lastError = undefined;
     this.setConnectionState({ status: "ready" });
     this.startHeartbeat();
+    // Restore this client's coverage on the new peer before anything queued
+    // during the outage, so a queued disable lands after the enables it undoes.
+    this.replayCrossSessionLayoutEnables();
     this.outbox.flush();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
     //   Called after setConnectionState("ready") so execute() accepts calls from within bootstrap.

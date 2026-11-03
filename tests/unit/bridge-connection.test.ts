@@ -95,6 +95,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
       client,
       forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
 
@@ -143,6 +144,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
       client,
       forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
     const b = bridge.registerPeer();
@@ -200,6 +202,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
       client,
       forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
 
@@ -237,6 +240,7 @@ describe("BridgeConnection — dispose() binding safety", () => {
       client,
       forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
 
     // Register two peers; their state must be cleared after dispose runs.
@@ -288,6 +292,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -339,6 +344,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -379,6 +385,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -409,6 +416,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 

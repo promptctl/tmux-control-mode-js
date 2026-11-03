@@ -13,6 +13,7 @@
 // disagree.
 
 import type { TmuxClient } from "../client.js";
+import { isConnectionGone, TmuxCommandError } from "../errors.js";
 
 import type { Peer } from "./bridge-peer.js";
 import { BridgeError } from "./errors.js";
@@ -22,6 +23,11 @@ export interface CrossSessionLayoutLedgerDeps {
     TmuxClient,
     "enableCrossSessionLayoutChange" | "disableCrossSessionLayoutChange"
   >;
+  /**
+   * Surface a release that a live tmux refused when a peer went away. The
+   * peer has no caller left to answer, so this is the only place it can land.
+   */
+  readonly reportReleaseFailure: (error: BridgeError) => void;
 }
 
 // One peer's coverage. `count` is the peer's outstanding enables, counted per
@@ -43,10 +49,6 @@ export class CrossSessionLayoutLedger {
   // truth, so a call for a removed peer cannot take a reference nothing
   // would give back.
   private readonly peers = new Map<Peer, Coverage>();
-
-  // Fire-and-forget on the peer-teardown seam only, matching
-  // SubscriptionLedger: the peer is gone, so there is no caller to report to.
-  private readonly swallow = (): void => undefined;
 
   constructor(private readonly deps: CrossSessionLayoutLedgerDeps) {}
 
@@ -99,8 +101,14 @@ export class CrossSessionLayoutLedger {
     if (coverage === undefined) return;
     this.peers.delete(peer);
     coverage.count = 0;
+    // [LAW:no-silent-failure] The peer is gone, so the failure goes to the
+    // bridge's report seam. A connection already gone is quiet: the relay's
+    // subscription died with it.
     void this.serialize(coverage, () => this.reconcile(coverage)).catch(
-      this.swallow,
+      (err: unknown) => {
+        if (!isConnectionGone(err))
+          this.deps.reportReleaseFailure(releaseFailureToBridgeError(err));
+      },
     );
   }
 
@@ -142,3 +150,12 @@ function unregistered(peer: Peer, op: string): Promise<never> {
     ),
   );
 }
+
+const releaseFailureToBridgeError = (err: unknown): BridgeError => {
+  const detail =
+    err instanceof Error ? err.message : `non-Error rejection (${typeof err})`;
+  return new BridgeError(
+    err instanceof TmuxCommandError ? "TMUX_ERROR" : "BRIDGE_INTERNAL",
+    `cross-session layout release for a departed peer failed: ${detail}`,
+  );
+};

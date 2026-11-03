@@ -207,6 +207,15 @@ export type BridgeObservabilityEvent =
       readonly message: string;
     }
   | {
+      // A departed peer's cross-session layout release was refused by a live
+      // tmux; the relay's subscription may outlive every peer that wanted it.
+      // [LAW:no-silent-failure]
+      readonly kind: "cross-session-layout-release-failed";
+      readonly identity: ConnectionIdentity;
+      readonly code: BridgeErrorCode;
+      readonly message: string;
+    }
+  | {
       // An onHello failure (auth denial or createClient rejection)
       // discovered after this connection's one close-enforcer
       // (sendFatalAndClose/finalize) was already claimed — either a real

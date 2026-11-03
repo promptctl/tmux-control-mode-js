@@ -131,6 +131,8 @@ export function createMainBridge(
       // main PERFORMS the surfacing through the host's opt-in hook. Undefined
       // means the host chose not to observe — the bridge never swallows it.
       reportResumeFailure: (f) => options.onResumeFailure?.(f),
+      reportCoverageReleaseFailure: (e) =>
+        options.onCoverageReleaseFailure?.(e),
     });
   } catch (err) {
     REGISTERED_IPC_MAINS.delete(ipcMain);

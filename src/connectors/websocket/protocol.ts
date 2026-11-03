@@ -452,21 +452,18 @@ function parseEvent(x: unknown): EventFrame {
   if (typeof o.msg !== "object" || o.msg === null) {
     throw new BridgeProtocolError("event.msg must be an object");
   }
-  const msg = o.msg as { type?: unknown };
-  if (
-    typeof msg.type !== "string" ||
-    !(
-      SERIALIZED_EVENT_TYPES.has(msg.type) ||
-      isCrossSessionLayoutMessage({ type: msg.type })
-    )
-  ) {
-    throw new BridgeProtocolError(
-      `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(msg.type)}`,
+  const { type } = o.msg as { type?: unknown };
+  const unknownType = () =>
+    new BridgeProtocolError(
+      `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(type)}`,
     );
-  }
-  const typed = { type: msg.type };
+  if (typeof type !== "string") throw unknownType();
+  // Classify once: admission and the field check read the same verdict.
+  const typed = { type };
   if (isCrossSessionLayoutMessage(typed)) {
     checkCrossSessionLayoutFields(o.msg as Record<string, unknown>, typed.type);
+  } else if (!SERIALIZED_EVENT_TYPES.has(type)) {
+    throw unknownType();
   }
   return { k: "event", msg: o.msg as EventFrame["msg"] };
 }

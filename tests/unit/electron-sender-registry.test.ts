@@ -9,8 +9,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
   BridgeConnection,
+  DeliveredRoute,
+  EventRoute,
+  LifecycleMessage,
   Peer,
 } from "../../src/connectors/bridge-connection.js";
+import { isTmuxMessage, type EmitterMessage } from "../../src/emitter.js";
 import type { TmuxClient } from "../../src/client.js";
 import type {
   AttachOptions,
@@ -108,8 +112,16 @@ function makeBridge(): BridgeSurface & {
     removePeer: vi.fn(),
     accountOutput: vi.fn(),
     ackOutput: vi.fn(),
-    routeEvent: vi.fn(() => "all" as const),
-    deliversTo: vi.fn(() => true),
+    routeEvent: vi.fn(
+      (msg: EmitterMessage): EventRoute =>
+        isTmuxMessage(msg)
+          ? { kind: "tmux", msg }
+          : { kind: "lifecycle", msg: msg as LifecycleMessage },
+    ),
+    deliversTo: (
+      _peer: Peer,
+      route: EventRoute,
+    ): route is DeliveredRoute<boolean> => route.kind !== "none",
   };
 }
 
