@@ -1407,9 +1407,13 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           command: "sleep 60",
         });
 
-        const pane = (await listPanes(client)).find(
-          (p) => p.paneId === created.paneId,
-        );
+        // Polled: pane_current_path reads the pane process's live cwd, and
+        // until the forked child chdirs it is still the server's (Linux CI).
+        const conn = client;
+        const findPane = async () =>
+          (await listPanes(conn)).find((p) => p.paneId === created.paneId);
+        await expect.poll(async () => (await findPane())?.cwd).toBe(cwd);
+        const pane = await findPane();
         expect(pane).toMatchObject({
           sessionName: target,
           windowId: created.windowId,
@@ -1454,9 +1458,13 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    const pane = (await listPanes(client)).find(
-      (p) => p.paneId === created.paneId,
-    );
-    expect(pane?.cwd).toBe(realpathSync(homedir()));
+    // Polled for the same reason as the cwd test above.
+    const conn = client;
+    await expect
+      .poll(
+        async () =>
+          (await listPanes(conn)).find((p) => p.paneId === created.paneId)?.cwd,
+      )
+      .toBe(realpathSync(homedir()));
   }, 15000);
 });
