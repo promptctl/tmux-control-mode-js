@@ -464,10 +464,20 @@ function checkCrossSessionLayoutFields(
   }
 }
 
-const LAYOUT_EVENT_TYPES: ReadonlySet<string> = new Set([
-  "layout-change",
-  "cross-session-layout-change",
-] satisfies (TmuxMessage | CrossSessionLayoutMessage)["type"][]);
+// [LAW:types-are-the-program] Keyed by every message type that carries
+// WindowLayoutFields, so a new one is a compile error until it is listed.
+const LAYOUT_EVENT_TYPES: ReadonlySet<string> = new Set(
+  Object.keys({
+    "layout-change": true,
+    "cross-session-layout-change": true,
+  } satisfies Record<
+    Extract<
+      TmuxMessage | CrossSessionLayoutMessage,
+      WindowLayoutFields
+    >["type"],
+    true
+  >),
+);
 
 const RAW_LAYOUT_FIELDS = [
   "windowLayout",

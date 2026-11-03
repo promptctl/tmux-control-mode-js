@@ -8,8 +8,8 @@
 //   cells  := cell ( "," cell )*
 // `{}` is a left-right split, `[]` a top-bottom split; only leaf cells name a
 // pane. The checksum is tmux's 16-bit rotate-and-add over the bytes after
-// the first comma, written as four hex digits (tmux emits lowercase and
-// accepts either case).
+// the first comma, in hex (tmux emits four lowercase digits and accepts one
+// to four of either case).
 
 import type {
   PaneGeometry,
@@ -75,8 +75,15 @@ function isDigit(ch: string): boolean {
 
 const SPLIT_CLOSE: Readonly<Record<string, string>> = { "{": "}", "[": "]" };
 
+// Every split shrinks its children, so a real window nests far shallower than
+// this; the cap turns hostile nesting into a syntax error, not a RangeError.
+const MAX_SPLIT_DEPTH = 1000;
+
 /** Parse one cell, appending every leaf pane it contains to `out` in layout order. */
-function readCell(r: LayoutReader, out: PaneGeometry[]): void {
+function readCell(r: LayoutReader, out: PaneGeometry[], depth = 0): void {
+  if (depth > MAX_SPLIT_DEPTH) {
+    throw new LayoutSyntaxError(`splits nested deeper than ${MAX_SPLIT_DEPTH}`);
+  }
   const width = r.uint();
   r.expect("x");
   const height = r.uint();
@@ -93,10 +100,10 @@ function readCell(r: LayoutReader, out: PaneGeometry[]): void {
     return;
   }
   r.expect(next);
-  readCell(r, out);
+  readCell(r, out, depth + 1);
   while (r.peek() === ",") {
     r.expect(",");
-    readCell(r, out);
+    readCell(r, out, depth + 1);
   }
   r.expect(close);
 }
@@ -113,7 +120,7 @@ export function parseWindowLayout(raw: string): WindowLayout {
   const comma = raw.indexOf(",");
   const checksum = raw.slice(0, comma);
   const body = raw.slice(comma + 1);
-  if (comma === -1 || !/^[0-9a-f]{4}$/i.test(checksum)) {
+  if (comma === -1 || !/^[0-9a-f]{1,4}$/i.test(checksum)) {
     return { kind: "malformed", reason: `no layout checksum in "${raw}"` };
   }
   const expected = layoutChecksum(body);
