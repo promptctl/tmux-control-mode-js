@@ -58,14 +58,22 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 };
 
 /**
- * Parse the major/minor pair from a `tmux -V` output line.
- * Trailing suffix letters (e.g. `3.5a`) are ignored — match is on the
- * leading `<major>.<minor>` digits only.
+ * The version shapes portable tmux's configure.ac produces (`3.2a`,
+ * `next-3.6`, `3.4-rc`), either bare (`#{version}`) or after the program
+ * name (`tmux -V` prints `<progname> <version>`). Anchored on both ends so a
+ * vendor tag like OpenBSD base's `openbsd-7.4` is rejected instead of read as
+ * tmux 7.4, which would pass every version gate.
+ */
+const TMUX_VERSION_SHAPE = /^(?:\S+ )?(?:next-)?(\d+)\.(\d+)[a-z]?(?:-rc\d*)?$/;
+
+/**
+ * Parse the major/minor pair from a `tmux -V` line or a `#{version}` value.
  *
- * Returns `null` if the string contains no recognisable version.
+ * Returns `null` for anything that is not a tmux version shape — callers
+ * must treat that as an unknown version, never guess one.
  */
 export function parseTmuxVersion(versionString: string): TmuxVersion | null {
-  const m = versionString.match(/(\d+)\.(\d+)/);
+  const m = versionString.trim().match(TMUX_VERSION_SHAPE);
   if (!m) return null;
   return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) };
 }

@@ -36,16 +36,24 @@ describe("parseTmuxVersion", () => {
     ["3.5", { major: 3, minor: 5 }], // bare version, no prefix
     ["tmux 10.0", { major: 10, minor: 0 }], // multi-digit major
     ["tmux 3.10", { major: 3, minor: 10 }], // multi-digit minor
+    ["tmux 3.4-rc", { major: 3, minor: 4 }], // release candidate
+    ["next-3.6", { major: 3, minor: 6 }], // bare #{version} prerelease
+    ["tmux 3.2a\n", { major: 3, minor: 2 }], // trailing newline from -V
   ])("parses %j → %j", (input, expected) => {
     expect(parseTmuxVersion(input)).toEqual(expected);
   });
 
-  it.each([[""], ["tmux"], ["no version in this string"]])(
-    "returns null for %j",
-    (input) => {
-      expect(parseTmuxVersion(input)).toBeNull();
-    },
-  );
+  it.each([
+    [""],
+    ["tmux"],
+    ["no version in this string"],
+    ["tmux openbsd-7.4"], // vendor tag, not a tmux version
+    ["openbsd-7.4"],
+    ["tmux 3.5 built 1.2"], // version must be the whole token
+    ["Python 3.12.1"],
+  ])("returns null for %j", (input) => {
+    expect(parseTmuxVersion(input)).toBeNull();
+  });
 });
 
 describe("meetsTmuxVersion", () => {
