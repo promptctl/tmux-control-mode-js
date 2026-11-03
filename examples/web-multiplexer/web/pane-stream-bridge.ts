@@ -107,6 +107,8 @@ export class BridgePaneStreamClient implements TmuxConnection {
       }
       // Topology events update the table in lock-step with TmuxClient.
       if (ev.type === "layout-change") {
+        // list-panes, not ev.layout: membership needs every pane, and tmux
+        // 3.8 omits floating panes from the layout string.
         if (this.sinks.hasTopologyDependentSinks()) {
           void this.refreshWindowTopology(ev.windowId);
         }

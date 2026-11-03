@@ -287,6 +287,9 @@ export class TopologyRouter {
       case "window-add":
       case "unlinked-window-add":
       case "layout-change":
+        // list-panes, not msg.layout: membership needs every pane, and tmux
+        // 3.8 omits floating panes from the layout — adding one emits a
+        // layout-change whose layout string is unchanged.
         if (this.needsTopology()) {
           void this.refreshWindow(msg.windowId);
         }

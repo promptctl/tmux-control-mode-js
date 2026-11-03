@@ -12,6 +12,35 @@ import type { TmuxBridge } from "./bridge.ts";
 import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { PaneDimensions, TmuxModel } from "./tmux-model.ts";
 
+type LayoutChange = Extract<TmuxMessage, { type: "layout-change" }>;
+
+/**
+ * Pane sizes a %layout-change carries, and whether list-panes is still needed.
+ * Sizes match what list-panes reports: every tiled pane at its layout size,
+ * with a zoomed pane overlaid at its visible (full-window) size. list-panes
+ * is needed when the layout is malformed, or when the window holds a pane the
+ * layout omits — a floating pane (tmux 3.8+), whose size only list-panes has.
+ */
+export function layoutPaneDimensions(
+  ev: LayoutChange,
+  knownPaneIds: readonly number[],
+): {
+  readonly updates: ReadonlyMap<number, PaneDimensions>;
+  readonly needsListPanes: boolean;
+} {
+  const updates = new Map<number, PaneDimensions>();
+  for (const layout of [ev.layout, ev.visibleLayout]) {
+    if (layout.kind !== "parsed") continue;
+    for (const p of layout.panes)
+      updates.set(p.paneId, { w: p.width, h: p.height });
+  }
+  const needsListPanes =
+    ev.layout.kind === "malformed" ||
+    ev.visibleLayout.kind === "malformed" ||
+    knownPaneIds.some((id) => !updates.has(id));
+  return { updates, needsListPanes };
+}
+
 export class RefreshPolicy {
   constructor(
     private readonly client: TmuxBridge,
@@ -37,9 +66,14 @@ export class RefreshPolicy {
     }
     if (ev.type === "layout-change") {
       // [LAW:dataflow-not-control-flow] Pane geometry must feel instant when a
-      // user resizes their terminal, so fast-path on %layout-change with a
-      // targeted list-panes for just that window. O(panes-in-one-window).
-      void this.refreshWindowDimensions(ev.windowId);
+      // user resizes their terminal; the event carries it, so apply it with
+      // no round-trip. list-panes only for what the layout lacks.
+      const { updates, needsListPanes } = layoutPaneDimensions(
+        ev,
+        this.knownPaneIds(ev.windowId),
+      );
+      this.model.applyPaneDimensions(updates);
+      if (needsListPanes) void this.refreshWindowDimensions(ev.windowId);
       return;
     }
     if (ev.type === "client-session-changed") {
@@ -98,6 +132,14 @@ export class RefreshPolicy {
       // invisible. [LAW:no-silent-failure]
       console.warn(`[refresh] refreshSession($${sessionId}) failed`, err);
     }
+  }
+
+  private knownPaneIds(windowId: number): number[] {
+    return this.model.sessions
+      .flatMap((s) =>
+        s.windows.filter((w) => w.id === windowId).flatMap((w) => w.panes),
+      )
+      .map((p) => p.id);
   }
 
   async refreshWindowDimensions(windowId: number): Promise<void> {
