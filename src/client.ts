@@ -233,6 +233,18 @@ export class TmuxClient implements TmuxConnection {
         reject(new TransportSendError("transport closed"));
         return;
       }
+      // [LAW:single-enforcer] tmux reads control input a line at a time, so a
+      // newline inside a command (a free-text cwd, a name) would run as
+      // several commands, each with its own %begin/%end, and every later
+      // pending entry would claim the wrong reply. One command is one line.
+      if (command.includes("\n")) {
+        reject(
+          new RangeError(
+            `command must be a single line: ${JSON.stringify(command)}`,
+          ),
+        );
+        return;
+      }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
       // may deliver %begin within send() and must find this entry in the FIFO.
       const entry: PendingEntry = { resolve, reject };

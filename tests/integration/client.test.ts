@@ -1375,8 +1375,9 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       const target = uniqueSession("cmd-nw-target");
       await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
       // realpath: macOS /var/folders is a symlink to /private/var/folders,
-      // and tmux reports the resolved path.
-      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "nw-")));
+      // and tmux reports the resolved path. '#S' in the name: tmux format-
+      // expands -c, so an unescaped cwd would land elsewhere.
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "nw-#S-")));
 
       try {
         const created = await newWindow(client, {
@@ -1402,12 +1403,14 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     15000,
   );
 
-  it("CMD-05: newWindow() rejects with tmux's error text for a nonexistent session", async () => {
+  // The missing name is a prefix of a live session: tmux's inexact matching
+  // would put the window there, so this pins newWindow's exact targeting.
+  it("CMD-05: newWindow() rejects with tmux's error text for a nonexistent session, even one prefixing a live session", async () => {
     sessionName = uniqueSession("cmd-nw-nosess");
     client = await createSession(socketName, sessionName);
 
     const attempt = newWindow(client, {
-      session: uniqueSession("no-such"),
+      session: sessionName.slice(0, -1),
       cwd: tmpdir(),
     });
     await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);

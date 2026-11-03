@@ -100,6 +100,24 @@ describe("TmuxClient — settles every pending promise on transport close", () =
   });
 });
 
+describe("TmuxClient — one command is one line", () => {
+  it("rejects a command containing a newline without sending it, so correlation stays intact", async () => {
+    const t = createFakeTransport();
+    const send = vi.spyOn(t, "send");
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+
+    await expect(
+      client.execute("new-window -c '/tmp/x\nkill-server\n'"),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(send).not.toHaveBeenCalled();
+
+    const next = client.execute("list-windows");
+    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    await expect(next).resolves.toMatchObject({ success: true });
+  });
+});
+
 describe("TmuxClient — exactly one 'exit' event", () => {
   it("prefers tmux's %exit reason over the transport's raw close reason", () => {
     const t = createFakeTransport();

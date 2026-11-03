@@ -112,20 +112,23 @@ export function capturePane(paneId: number): string {
 }
 
 // [LAW:one-source-of-truth] new-window wire format and its `-P -F` reply
-// format live here only; pane-output.ts's parseNewWindowLine is the sole
+// format live here only; pane-output.ts's parseNewWindowReply is the sole
 // reader. -d: create without selecting it, so a restore never moves an
-// attached client's focus. The trailing ':' makes `-t` name the session
-// (tmux picks the next free index), so a session name that looks like a
-// window index is never misread. The command, when present, is one argument
-// tmux hands to the default shell, as `new-window`'s shell-command does.
+// attached client's focus. `=name:` targets the session by exact name:
+// without '=' tmux falls back to prefix and glob matching ('work:' lands in
+// 'workspace'), and the ':' leaves the window index to tmux. An empty name
+// has no exact form ('=:' still means the current session) — newWindow
+// rejects it before this is called. tmux format-expands -c, so '#' doubles
+// to stay literal; the command is not expanded (verified on 3.2a and 3.8).
 export function newWindow(
   session: string,
   cwd: string,
   command?: string,
 ): string {
   const commandPart = command !== undefined ? ` ${tmuxEscape(command)}` : "";
+  const literalCwd = cwd.replaceAll("#", "##");
   return (
-    `new-window -d -t ${tmuxEscape(`${session}:`)} -c ${tmuxEscape(cwd)} ` +
+    `new-window -d -t ${tmuxEscape(`=${session}:`)} -c ${tmuxEscape(literalCwd)} ` +
     `-P -F '#{window_id}\t#{pane_id}'${commandPart}`
   );
 }

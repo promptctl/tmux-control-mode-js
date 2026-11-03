@@ -39,9 +39,31 @@ describe("newWindow", () => {
     });
 
     expect(lastCommand()).toBe(
-      "new-window -d -t 'work:' -c '/home/me/it'\\''s here' " +
+      "new-window -d -t '=work:' -c '/home/me/it'\\''s here' " +
         "-P -F '#{window_id}\t#{pane_id}' 'vim notes.md'",
     );
+  });
+
+  it("doubles '#' in cwd so tmux's format expansion leaves it literal, but not in command", async () => {
+    const { client, lastCommand } = fakeConnection(["@3\t%7"]);
+    await newWindow(client, {
+      session: "work",
+      cwd: "/tmp/a#Sb",
+      command: "echo #S",
+    });
+
+    expect(lastCommand()).toBe(
+      "new-window -d -t '=work:' -c '/tmp/a##Sb' " +
+        "-P -F '#{window_id}\t#{pane_id}' 'echo #S'",
+    );
+  });
+
+  it("rejects an empty session name without sending, since tmux reads it as the current session", async () => {
+    const { client, lastCommand } = fakeConnection(["@3\t%7"]);
+    await expect(
+      newWindow(client, { session: "", cwd: "/tmp" }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(lastCommand()).toBe("");
   });
 
   it("omits the command argument when none is given, so tmux runs the default shell", async () => {
@@ -49,7 +71,7 @@ describe("newWindow", () => {
     await newWindow(client, { session: "work", cwd: "/tmp" });
 
     expect(lastCommand()).toBe(
-      "new-window -d -t 'work:' -c '/tmp' -P -F '#{window_id}\t#{pane_id}'",
+      "new-window -d -t '=work:' -c '/tmp' -P -F '#{window_id}\t#{pane_id}'",
     );
   });
 

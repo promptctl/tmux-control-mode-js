@@ -45,7 +45,7 @@ import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
-  parseNewWindowLine,
+  parseNewWindowReply,
 } from "../pane-output.js";
 import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
@@ -141,16 +141,19 @@ export async function newWindow(
     readonly command?: string;
   },
 ): Promise<NewWindowResult> {
+  // [LAW:no-silent-failure] tmux has no exact target for an empty name:
+  // '=:' resolves to the control client's own session, so the window would
+  // silently land there.
+  if (options.session === "") {
+    throw new RangeError("newWindow: session name must not be empty");
+  }
   const command = encodeNewWindow(
     options.session,
     options.cwd,
     options.command,
   );
   const response = await client.execute(command);
-  const result =
-    response.output.length === 1
-      ? parseNewWindowLine(response.output[0])
-      : null;
+  const result = parseNewWindowReply(response.output);
   if (result === null) {
     throw new TmuxReplyFormatError(command, response.output);
   }
@@ -253,9 +256,7 @@ export async function queryTmuxVersion(
     .map((line) => parseTmuxVersion(line))
     .find((v): v is TmuxVersion => v !== null);
   if (version === undefined) {
-    throw new Error(
-      `could not determine tmux version from reply: ${JSON.stringify(response.output)}`,
-    );
+    throw new TmuxReplyFormatError(displayMessageVersion(), response.output);
   }
   return version;
 }
@@ -282,9 +283,7 @@ const OWN_CLIENT_LINE = /^(\d+) (\S+) (.+)$/;
 export function parseOwnClientLine(lines: readonly string[]): OwnClient {
   const match = lines.length === 1 ? OWN_CLIENT_LINE.exec(lines[0]) : null;
   if (match === null) {
-    throw new Error(
-      `could not parse own-client reply: ${JSON.stringify(lines)}`,
-    );
+    throw new TmuxReplyFormatError(displayMessageOwnClient(), lines);
   }
   return {
     pid: Number(match[1]),
@@ -294,9 +293,7 @@ export function parseOwnClientLine(lines: readonly string[]): OwnClient {
 }
 
 /** Identify this connection's own tmux client (see {@link OwnClient}). */
-export async function getOwnClient(
-  client: TmuxConnection,
-): Promise<OwnClient> {
+export async function getOwnClient(client: TmuxConnection): Promise<OwnClient> {
   const response = await client.execute(displayMessageOwnClient());
   return parseOwnClientLine(response.output);
 }

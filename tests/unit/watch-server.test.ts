@@ -4,6 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { watchServerArgs } from "../../src/watch-server.js";
 import { parseOwnClientLine } from "../../src/commands/index.js";
+import { TmuxReplyFormatError } from "../../src/errors.js";
 
 describe("watchServerArgs", () => {
   it("attaches to the named session with the non-disturbing client flags", () => {
@@ -39,7 +40,7 @@ describe("parseOwnClientLine", () => {
   it.each([[[]], [["not a reply"]], [["1 flags"]], [["1 a x", "2 b y"]]])(
     "throws on a malformed reply %j",
     (lines) => {
-      expect(() => parseOwnClientLine(lines)).toThrow(/own-client reply/);
+      expect(() => parseOwnClientLine(lines)).toThrow(TmuxReplyFormatError);
     },
   );
 });

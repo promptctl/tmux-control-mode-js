@@ -10,7 +10,10 @@
 
 import { describe, it, expect } from "vitest";
 import { requestReport, queryTmuxVersion } from "../../src/commands/index.js";
-import { UnsupportedTmuxVersionError } from "../../src/errors.js";
+import {
+  TmuxReplyFormatError,
+  UnsupportedTmuxVersionError,
+} from "../../src/errors.js";
 import type { TmuxConnection } from "../../src/client.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 
@@ -92,6 +95,6 @@ describe("requestReport version gate", () => {
 
   it("queryTmuxVersion rejects loudly when the reply carries no version", async () => {
     const { conn } = fakeConnection("no version here");
-    await expect(queryTmuxVersion(conn)).rejects.toThrow(/could not determine/);
+    await expect(queryTmuxVersion(conn)).rejects.toThrow(TmuxReplyFormatError);
   });
 });
