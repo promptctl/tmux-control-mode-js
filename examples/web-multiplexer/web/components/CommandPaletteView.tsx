@@ -129,8 +129,9 @@ export const CommandPaletteView = observer(function CommandPaletteView({
                   <code>starship</code>, or the VTE/Kitty hooks), or test it
                   with{" "}
                   <code>
-                    printf '\e]133;A\e\\$
-                    \e]133;B\e\\date\n\e]133;C\e\\Mon\n\e]133;D;0\e\\'
+                    {
+                      "printf '\\e]133;A\\e\\\\$ \\e]133;B\\e\\\\date\\n\\e]133;C\\e\\\\Mon\\n\\e]133;D;0\\e\\\\'"
+                    }
                   </code>{" "}
                   in any pane. ({store.tappedPaneCount} panes tapped)
                 </>

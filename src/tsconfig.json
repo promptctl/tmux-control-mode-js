@@ -8,8 +8,5 @@
     "types": ["node"]
   },
   "include": ["./*.ts", "./sinks/**/*.ts", "./commands/**/*.ts"],
-  "references": [
-    { "path": "protocol" },
-    { "path": "transport" }
-  ]
+  "references": [{ "path": "protocol" }, { "path": "transport" }]
 }

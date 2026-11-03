@@ -10,8 +10,5 @@
     "types": []
   },
   "include": ["./**/*.ts"],
-  "references": [
-    { "path": "../protocol" },
-    { "path": "../transport" }
-  ]
+  "references": [{ "path": "../protocol" }, { "path": "../transport" }]
 }

@@ -180,8 +180,9 @@ function ContextPanel({
               context. Only panes whose shell has integration enabled contribute
               history (no prompt guessing). Test with{" "}
               <code>
-                printf &apos;\e]133;A\e\\$
-                \e]133;B\e\\date\n\e]133;C\e\\Mon\n\e]133;D;0\e\\&apos;
+                {
+                  "printf '\\e]133;A\\e\\\\$ \\e]133;B\\e\\\\date\\n\\e]133;C\\e\\\\Mon\\n\\e]133;D;0\\e\\\\'"
+                }
               </code>{" "}
               in a pane.
             </Text>

@@ -1,9 +1,7 @@
-# The gate formats everything by default; .gitignore is read too, so build
-# output and dependencies are already out. Prose and data files are not code
-# and are left as written.
+# The gate formats everything by default. Prettier reads .gitignore but not
+# .git/info/exclude or the global excludesFile, so tool-owned state ignored
+# there must be listed here. Prose is left as written.
 *.md
-*.json
 *.yaml
 *.yml
-# Captured tmux control-mode streams; their bytes are the test input.
-tests/fixtures/
+.lit/

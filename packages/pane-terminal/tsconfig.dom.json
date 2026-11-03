@@ -10,10 +10,7 @@
     "jsx": "react-jsx",
     "types": []
   },
-  "references": [
-    { "path": "../../src" },
-    { "path": "./tsconfig.core.json" }
-  ],
+  "references": [{ "path": "../../src" }, { "path": "./tsconfig.core.json" }],
   "include": [
     "src/xterm-sink/**/*.ts",
     "src/xterm-sink/**/*.tsx",
