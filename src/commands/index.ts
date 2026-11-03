@@ -130,7 +130,10 @@ export async function capturePane(
 // A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
 // instead (verified on tmux 3.8), and the library, typed over any
 // TmuxConnection, cannot stat the tmux host's filesystem. A caller that
-// must not fall back checks the path on the host it controls.
+// must not fall back checks the path on the host it controls. The ids come
+// back before the pane's child has chdir'd, so a listPanes() straight after
+// can still report the server's cwd: pane_current_path is the live process
+// cwd, not the requested one.
 // [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
 // throws rather than inventing ids.
 export async function newWindow(
