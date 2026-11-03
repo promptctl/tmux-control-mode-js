@@ -8,7 +8,6 @@
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import {
-  existsSync,
   readFileSync,
   mkdirSync,
   mkdtempSync,
@@ -1433,36 +1432,30 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   // comment needs revisiting.
   // [LAW:no-ambient-temporal-coupling] Before 3.7 an early listPanes reads the
   // server's cwd until the child chdirs, which on 3.3 equals the expected
-  // value, so the pane reports its own settled cwd instead. `pwd -P`, not
-  // $PWD: tmux 3.3 sets PWD=$HOME even though it never chdir'd there.
+  // value; a pane already running `sleep` is past the chdir, so its cwd is
+  // settled. pane_current_path is the process's real cwd, not $PWD, which
+  // tmux 3.3 sets to $HOME even though it never chdir'd there.
   it("CMD-05: newWindow() with a nonexistent cwd starts the pane in tmux's fallback dir (tmux falls back, does not reject)", async () => {
     sessionName = uniqueSession("cmd-nw-nocwd");
     client = await createSession(socketName, sessionName);
-    const outDir = mkdtempSync(join(tmpdir(), "nw-nocwd-"));
-    const marker = join(outDir, "cwd");
 
-    try {
-      await newWindow(client, {
-        session: sessionName,
-        cwd: join(tmpdir(), "nw-does-not-exist", uniqueSession("x")),
-        command: `pwd -P > ${marker}.tmp && mv ${marker}.tmp ${marker}; sleep 60`,
-      });
+    const created = await newWindow(client, {
+      session: sessionName,
+      cwd: join(tmpdir(), "nw-does-not-exist", uniqueSession("x")),
+      command: "sleep 60",
+    });
 
-      const fallback = realpathSync(
-        RUNNING_TMUX_VERSION !== null &&
-          missingCwdFallback(RUNNING_TMUX_VERSION) === "server-cwd"
-          ? process.cwd()
-          : homedir(),
-      );
-      const deadline = Date.now() + 8000;
-      while (!existsSync(marker)) {
-        if (Date.now() >= deadline) throw new Error("pane never wrote its cwd");
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(readFileSync(marker, "utf8").trim()).toBe(fallback);
-    } finally {
-      rmSync(outDir, { recursive: true, force: true });
-    }
+    const pane = await waitForPane(
+      client,
+      (p) => p.paneId === created.paneId && p.currentCommand === "sleep",
+    );
+    const fallback = realpathSync(
+      RUNNING_TMUX_VERSION !== null &&
+        missingCwdFallback(RUNNING_TMUX_VERSION) === "server-cwd"
+        ? process.cwd()
+        : homedir(),
+    );
+    expect(pane.cwd).toBe(fallback);
   }, 15000);
 
   // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so

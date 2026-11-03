@@ -66,7 +66,8 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
 
 /**
- * Where a pane starts when its `new-window -c` directory does not exist. $HOME
+ * Where a pane starts when its `new-window -c` directory does not exist and
+ * $HOME does (with $HOME missing too, every version falls through to `/`). $HOME
  * on 3.2 and 3.4+; tmux 3.3's spawn.c tests
  * `(tmp = find_home()) != NULL || chdir(tmp) == 0`, so the chdir never runs
  * and the pane keeps the server's own cwd while its $PWD still says $HOME

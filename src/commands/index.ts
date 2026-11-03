@@ -155,8 +155,8 @@ export async function newWindow(
   // [LAW:no-silent-failure] Each of these would succeed somewhere the caller
   // did not ask for, so it is refused by field name: session '' ('=:') is the
   // control client's own session; a cwd that is empty or not absolute ('',
-  // 'proj', '~/proj' — quoted, so tmux never expands '~') starts the pane in
-  // tmux's missing-cwd fallback, not the directory asked for; command '' is
+  // 'proj', '~/proj' — quoted, so tmux never expands '~') is resolved by tmux
+  // against its own cwds, not the caller's; command '' is
   // not "the default shell" (that is an omitted
   // command); a newline anywhere splits the command line.
   for (const field of ["session", "cwd", "command"] as const) {
