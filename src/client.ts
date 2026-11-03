@@ -23,6 +23,7 @@ import {
 } from "./pane-output.js";
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
+import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import {
@@ -143,9 +144,17 @@ export class TmuxClient implements TmuxConnection {
   //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
   private readonly router: TopologyRouter;
 
+  // [LAW:effects-at-boundaries] The relay describes cross-session layout
+  // events via this callback; TmuxClient performs the actual emission,
+  // mirroring how TopologyRouter's bootstrap-failure callback works above.
+  private readonly crossSessionLayoutRelay: CrossSessionLayoutRelay;
+
   constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
     this.emitter = new TypedEmitter();
+    this.crossSessionLayoutRelay = new CrossSessionLayoutRelay(this, (msg) =>
+      this.emitter.emit(msg),
+    );
     // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
     //   adapter owns the emitter and performs the emission.
     this.router = new TopologyRouter(
@@ -273,6 +282,21 @@ export class TmuxClient implements TmuxConnection {
 
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
     return this.router.attachBytesSink(sink, options);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cross-session layout coverage (not on TmuxConnection — opt-in, like
+  // attachBytesSink). Ref-counted: each `enableCrossSessionLayoutChange` call
+  // pairs with one `disableCrossSessionLayoutChange` call. See
+  // src/cross-session-layout.ts for the mechanism.
+  // ---------------------------------------------------------------------------
+
+  enableCrossSessionLayoutChange(): Promise<void> {
+    return this.crossSessionLayoutRelay.enable();
+  }
+
+  disableCrossSessionLayoutChange(): Promise<void> {
+    return this.crossSessionLayoutRelay.disable();
   }
 
   // ---------------------------------------------------------------------------
