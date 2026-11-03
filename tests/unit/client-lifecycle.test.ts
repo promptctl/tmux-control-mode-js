@@ -102,7 +102,12 @@ describe("TmuxClient — settles every pending promise on transport close", () =
 });
 
 describe("TmuxClient — one command is one non-empty line", () => {
-  it.each([["new-window -c '/tmp/x\nkill-server\n'"], [""]])(
+  it.each([
+    ["new-window -c '/tmp/x\nkill-server\n'"],
+    [""],
+    ["   "],
+    ["# comment only"],
+  ])(
     "rejects %j without sending it, so correlation stays intact",
     async (bad) => {
       const t = createFakeTransport();

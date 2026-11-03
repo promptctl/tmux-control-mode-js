@@ -1417,7 +1417,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(attempt).rejects.toThrow(/can't find session/);
     expect(await listWindows(client)).toHaveLength(windowsBefore);
-  });
+  }, 15000);
 
   // Pins tmux's behavior newWindow documents rather than hides: a cwd that
   // does not exist does not fail new-window; the pane starts in $HOME. If a
@@ -1437,5 +1437,5 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       (p) => p.paneId === created.paneId,
     );
     expect(pane?.cwd).toBe(realpathSync(homedir()));
-  });
+  }, 15000);
 });

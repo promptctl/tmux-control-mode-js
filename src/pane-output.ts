@@ -896,9 +896,9 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
 export function parseNewWindowReply(
   lines: readonly string[],
 ): NewWindowResult | null {
-  const match = lines.length === 1 ? /^@(\d+)\t%(\d+)$/.exec(lines[0]) : null;
+  const match = lines.length === 1 ? /^(@\d+)\t(%\d+)$/.exec(lines[0]) : null;
   if (match === null) return null;
-  return { windowId: Number(match[1]), paneId: Number(match[2]) };
+  return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
 }
 
 /**

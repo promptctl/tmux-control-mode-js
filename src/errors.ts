@@ -200,11 +200,11 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
- * `execute()` refused a command that has no single-line wire form: one
- * containing a newline (tmux would run it as several commands, each with its
- * own reply, and every later pending command would claim the wrong one) or
- * an empty one (a bare newline, which detaches the control client — SPEC
- * §4.1). Nothing was sent.
+ * `execute()` refused a command whose line would not get exactly one reply,
+ * so correlating it would shift every later pending command onto the wrong
+ * reply. A newline splits it into several commands; an empty line detaches
+ * the control client (SPEC §4.1); a blank or comment-only line gets no reply
+ * at all. Nothing was sent.
  */
 export class TmuxInvalidCommandError extends Error {
   readonly command: string;
@@ -216,12 +216,24 @@ export class TmuxInvalidCommandError extends Error {
   }
 }
 
+// [LAW:single-enforcer] The one predicate every TmuxConnection.execute
+// (TmuxClient, the WebSocket client, the Electron renderer) applies before
+// sending, so a caller sees the same typed error locally and over a bridge.
+export function invalidCommand(
+  command: string,
+): TmuxInvalidCommandError | null {
+  const trimmed = command.trim();
+  return trimmed === "" || trimmed.startsWith("#") || command.includes("\n")
+    ? new TmuxInvalidCommandError(command)
+    : null;
+}
+
 /**
  * A command succeeded but its reply does not have the shape of the `-F`
  * format the library sent with it (e.g. `newWindow`'s `@N\t%N`). The block
  * closed normally, so this is not a {@link TmuxProtocolError}; it means the
- * library's reply format and the running tmux disagree, and the command's
- * effect (a window created) did happen. `output` is the raw reply.
+ * library's reply format and the running tmux disagree. Whatever the command
+ * does (`newWindow` creates a window) did happen. `output` is the raw reply.
  */
 export class TmuxReplyFormatError extends Error {
   readonly command: string;

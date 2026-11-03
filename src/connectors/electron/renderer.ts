@@ -23,7 +23,7 @@ import {
   type EmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
-import { TmuxCommandError } from "../../errors.js";
+import { TmuxCommandError, invalidCommand } from "../../errors.js";
 import { type AttachOptions, type BytesSink } from "../../pane-output.js";
 import type { SplitOptions } from "../../protocol/encoder.js";
 import {
@@ -216,6 +216,8 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   // ---------------------------------------------------------------------------
 
   execute(command: string): Promise<CommandResponse> {
+    const invalid = invalidCommand(command);
+    if (invalid !== null) return Promise.reject(invalid);
     return this.invoke({ method: "execute", args: [command] });
   }
 

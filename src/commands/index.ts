@@ -141,14 +141,24 @@ export async function newWindow(
     readonly command?: string;
   },
 ): Promise<NewWindowResult> {
-  // [LAW:no-silent-failure] Each empty field would succeed somewhere the
-  // caller did not ask for: session '' ('=:') is the control client's own
-  // session, cwd '' starts the pane in $HOME, and command '' is not "the
-  // default shell" (that is an omitted command).
+  // [LAW:no-silent-failure] Each of these would succeed somewhere the caller
+  // did not ask for, so it is refused by field name: session '' ('=:') is the
+  // control client's own session; a cwd that is empty or not absolute ('',
+  // 'proj', '~/proj' — quoted, so tmux never expands '~') starts the pane in
+  // $HOME; command '' is not "the default shell" (that is an omitted
+  // command); a newline anywhere splits the command line.
   for (const field of ["session", "cwd", "command"] as const) {
-    if (options[field] === "") {
-      throw new RangeError(`newWindow: ${field} must not be empty`);
+    const value = options[field];
+    if (value === "" || value?.includes("\n")) {
+      throw new RangeError(
+        `newWindow: ${field} must be non-empty and one line: ${JSON.stringify(value)}`,
+      );
     }
+  }
+  if (!options.cwd.startsWith("/")) {
+    throw new RangeError(
+      `newWindow: cwd must be an absolute path: ${JSON.stringify(options.cwd)}`,
+    );
   }
   const command = encodeNewWindow(
     options.session,

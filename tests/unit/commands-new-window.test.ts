@@ -62,8 +62,13 @@ describe("newWindow", () => {
     { session: "", cwd: "/tmp" },
     { session: "work", cwd: "" },
     { session: "work", cwd: "/tmp", command: "" },
+    { session: "work", cwd: "proj" },
+    { session: "work", cwd: "~/proj" },
+    { session: "work", cwd: "/tmp/a\nb" },
+    { session: "wo\nrk", cwd: "/tmp" },
+    { session: "work", cwd: "/tmp", command: "a\nb" },
   ])(
-    "rejects an empty field without sending, since tmux would succeed elsewhere: %j",
+    "rejects a field tmux would honor somewhere else, without sending: %j",
     async (options) => {
       const { client, lastCommand } = fakeConnection(["@3\t%7"]);
       await expect(newWindow(client, options)).rejects.toBeInstanceOf(

@@ -156,8 +156,10 @@ function classifyDispatchError(method: RpcMethod, err: unknown): BridgeOutcome {
       error: new BridgeError("BRIDGE_CLOSED", err.message),
     };
   }
-  // A command execute() refused as unsendable is the caller's bad argument,
-  // not a bridge bug.
+  // [LAW:one-type-per-behavior] A command execute() refused as unsendable is
+  // the caller's bad argument, the same as any other invalid RPC argument, so
+  // it carries BRIDGE_INVALID_ARG, never BRIDGE_INTERNAL (which means "bug").
+  // Reached by a raw RPC peer; library clients refuse it before sending.
   if (err instanceof TmuxInvalidCommandError) {
     return {
       kind: "bridge-error",
