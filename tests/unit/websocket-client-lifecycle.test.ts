@@ -23,6 +23,7 @@ import {
   type ServerFrame,
   type WelcomeFrame,
 } from "../../src/connectors/websocket/protocol.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket hub. One hub per test; produces one MockWS per `openSocket`
@@ -688,9 +689,7 @@ describe("WebSocketTmuxClient — cross-session layout coverage", () => {
       type: "cross-session-layout-change",
       sessionId: 1,
       windowId: 7,
-      windowLayout: "b25d,80x24,0,0,0",
-      windowVisibleLayout: "b25d,80x24,0,0,0",
-      windowFlags: "*",
+      ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
     } as const;
     ws.fire("message", {
       data: encodeServerFrame({ k: "event", msg: change }),

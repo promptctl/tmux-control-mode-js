@@ -20,6 +20,7 @@ import type { TmuxConnection } from "./client.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
 import { isConnectionGone, TmuxCommandError } from "./errors.js";
 import { tmuxEscape } from "./protocol/encoder.js";
+import { windowLayoutFields } from "./protocol/layout.js";
 import type { SubscriptionChangedMessage } from "./protocol/types.js";
 import {
   CROSS_SESSION_LAYOUT_SUBSCRIPTION_NAME as SUBSCRIPTION_NAME,
@@ -551,9 +552,7 @@ export class CrossSessionLayoutRelay {
       type: "cross-session-layout-change",
       sessionId: Number(sessionMatch[1]),
       windowId,
-      windowLayout,
-      windowVisibleLayout,
-      windowFlags,
+      ...windowLayoutFields(windowLayout, windowVisibleLayout, windowFlags),
     };
   }
 }

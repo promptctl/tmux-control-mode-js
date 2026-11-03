@@ -22,6 +22,9 @@ export type {
   UnlinkedWindowCloseMessage,
   UnlinkedWindowRenamedMessage,
   LayoutChangeMessage,
+  PaneGeometry,
+  WindowLayout,
+  WindowLayoutFields,
   SessionChangedMessage,
   SessionRenamedMessage,
   SessionsChangedMessage,
@@ -46,6 +49,8 @@ export { PaneAction, emptyKeysResponse } from "./types.js";
 export { TmuxParser } from "./parser.js";
 
 export { serializeMessage } from "./serializer.js";
+
+export { parseWindowLayout, windowLayoutFields } from "./layout.js";
 
 export { decodeOctalEscapes, encodeOctalEscapes } from "./decode.js";
 

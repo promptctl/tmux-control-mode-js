@@ -13,6 +13,7 @@
 // no clock — so it imports nothing but the protocol type and is browser-safe.
 
 import type { TmuxMessage } from "../protocol/types.js";
+import { windowLayoutFields } from "../protocol/layout.js";
 
 /**
  * One canonical example per server-to-client message variant. Every value lies
@@ -52,9 +53,7 @@ export const MESSAGE_SAMPLES: Record<TmuxMessage["type"], TmuxMessage> = {
   "layout-change": {
     type: "layout-change",
     windowId: 2,
-    windowLayout: "b1f2,80x24,0,0,3",
-    windowVisibleLayout: "b1f2,80x24,0,0,3",
-    windowFlags: "*",
+    ...windowLayoutFields("b260,80x24,0,0,3", "b260,80x24,0,0,3", "*"),
   },
   "session-changed": { type: "session-changed", sessionId: 1, name: "main" },
   "session-renamed": { type: "session-renamed", sessionId: 1, name: "work" },

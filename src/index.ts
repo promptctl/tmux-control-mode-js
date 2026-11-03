@@ -35,9 +35,11 @@ export type {
   CommandResponse,
   PaneCapture,
   NewWindowResult,
+  PaneGeometry,
   PaneRecord,
   SessionRecord,
   TmuxMessage,
+  WindowLayout,
   WindowRecord,
 } from "./protocol/types.js";
 export { latin1ToBytes } from "./protocol/byte-codec.js";

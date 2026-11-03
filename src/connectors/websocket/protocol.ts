@@ -22,6 +22,7 @@ import type {
   CommandResponse,
   PaneOutputMessage,
   TmuxMessage,
+  WindowLayout,
 } from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import type { ChunkPayload } from "../../pane-output.js";
@@ -410,7 +411,7 @@ function parseWelcome(x: unknown): WelcomeFrame {
 // their runtime kinds. The mapped type makes a field added to (or removed
 // from) a message interface a compile error here, so the wire check cannot
 // drift from the type the client emits.
-type FieldKind = "number" | "number[]" | "string";
+type FieldKind = "number" | "number[]" | "string" | "window-layout";
 // A field shape with no kind here is `never`, so it fails to compile rather
 // than being checked as the wrong kind.
 type FieldKinds<M> = {
@@ -420,7 +421,9 @@ type FieldKinds<M> = {
       ? "number[]"
       : M[F] extends string
         ? "string"
-        : never;
+        : M[F] extends WindowLayout
+          ? "window-layout"
+          : never;
 };
 
 const CROSS_SESSION_LAYOUT_FIELDS: {
@@ -434,6 +437,8 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
     windowLayout: "string",
     windowVisibleLayout: "string",
     windowFlags: "string",
+    layout: "window-layout",
+    visibleLayout: "window-layout",
   },
   "cross-session-layout-decode-error": { skippedBytes: "number" },
   "cross-session-layout-overrun": { lostEntries: "number" },
@@ -443,10 +448,32 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
   "cross-session-layout-uncovered": { windowIds: "number[]" },
 };
 
-function hasKind(value: unknown, kind: FieldKind): boolean {
-  if (kind !== "number[]") return typeof value === kind;
-  return Array.isArray(value) && value.every((v) => typeof v === "number");
+const PANE_GEOMETRY_FIELDS = ["paneId", "width", "height", "x", "y"] as const;
+
+function isWindowLayout(value: unknown): boolean {
+  const v = value as { kind?: unknown; panes?: unknown; reason?: unknown };
+  if (typeof value !== "object" || value === null) return false;
+  if (v.kind === "malformed") return typeof v.reason === "string";
+  return (
+    v.kind === "parsed" &&
+    Array.isArray(v.panes) &&
+    v.panes.every(
+      (p: unknown) =>
+        typeof p === "object" &&
+        p !== null &&
+        PANE_GEOMETRY_FIELDS.every(
+          (f) => typeof (p as Record<string, unknown>)[f] === "number",
+        ),
+    )
+  );
 }
+
+const KIND_CHECKS: Readonly<Record<FieldKind, (v: unknown) => boolean>> = {
+  number: (v) => typeof v === "number",
+  string: (v) => typeof v === "string",
+  "number[]": (v) => Array.isArray(v) && v.every((n) => typeof n === "number"),
+  "window-layout": isWindowLayout,
+};
 
 function checkCrossSessionLayoutFields(
   msg: Record<string, unknown>,
@@ -455,7 +482,7 @@ function checkCrossSessionLayoutFields(
   for (const [field, kind] of Object.entries(
     CROSS_SESSION_LAYOUT_FIELDS[type],
   ) as [string, FieldKind][]) {
-    if (!hasKind(msg[field], kind)) {
+    if (!KIND_CHECKS[kind](msg[field])) {
       throw new BridgeProtocolError(
         `event.msg.${field} must be a ${kind} for ${type}`,
       );

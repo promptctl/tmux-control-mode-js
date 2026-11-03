@@ -33,6 +33,7 @@ import {
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -1080,9 +1081,7 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       type: "cross-session-layout-change",
       sessionId: 1,
       windowId: 7,
-      windowLayout: "b25d,80x24,0,0,0",
-      windowVisibleLayout: "b25d,80x24,0,0,0",
-      windowFlags: "*",
+      ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
     } as const;
     (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
       change,
@@ -1144,5 +1143,41 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       },
     });
     expect(parseServerFrame(ok)).toMatchObject({ k: "event" });
+  });
+
+  it("rejects a cross-session layout event whose parsed layout has the wrong shape", () => {
+    const fields = windowLayoutFields(
+      "b25d,80x24,0,0,0",
+      "b25d,80x24,0,0,0",
+      "*",
+    );
+    const frame = (layout: unknown) =>
+      JSON.stringify({
+        k: "event",
+        msg: {
+          type: "cross-session-layout-change",
+          sessionId: 1,
+          windowId: 7,
+          ...fields,
+          layout,
+        },
+      });
+    expect(parseServerFrame(frame(fields.layout))).toMatchObject({
+      k: "event",
+    });
+    expect(
+      parseServerFrame(frame({ kind: "malformed", reason: "bad checksum" })),
+    ).toMatchObject({ k: "event" });
+    for (const bad of [
+      "b25d,80x24,0,0,0",
+      { kind: "parsed" },
+      { kind: "parsed", panes: [{ paneId: 0, width: 80, height: 24, x: 0 }] },
+      { kind: "malformed" },
+      null,
+    ]) {
+      expect(() => parseServerFrame(frame(bad))).toThrow(
+        /layout must be a window-layout/,
+      );
+    }
   });
 });

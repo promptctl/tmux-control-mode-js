@@ -17,6 +17,7 @@ import { dispatchBridgeRequest } from "../../src/connectors/bridge-dispatch.js";
 import { parseRpcRequest, RpcError } from "../../src/connectors/rpc.js";
 import type { CrossSessionLayoutChangeMessage } from "../../src/cross-session-layout.js";
 import type { EmitterMessage } from "../../src/emitter.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 function makeBridge(forwardsLifecycle = false) {
   const releaseFailures: BridgeError[] = [];
@@ -58,9 +59,7 @@ const change: CrossSessionLayoutChangeMessage = {
   type: "cross-session-layout-change",
   sessionId: 1,
   windowId: 7,
-  windowLayout: "b25d,80x24,0,0,0",
-  windowVisibleLayout: "b25d,80x24,0,0,0",
-  windowFlags: "*",
+  ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
 };
 
 const relayFrame: EmitterMessage = {
