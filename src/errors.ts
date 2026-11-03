@@ -200,6 +200,27 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
+ * A command succeeded but its reply does not have the shape of the `-F`
+ * format the library sent with it (e.g. `newWindow`'s `@N\t%N`). The block
+ * closed normally, so this is not a {@link TmuxProtocolError}; it means the
+ * library's reply format and the running tmux disagree, and the command's
+ * effect (a window created) did happen. `output` is the raw reply.
+ */
+export class TmuxReplyFormatError extends Error {
+  readonly command: string;
+  readonly output: readonly string[];
+
+  constructor(command: string, output: readonly string[]) {
+    super(
+      `unexpected reply to ${JSON.stringify(command)}: ${JSON.stringify(output)}`,
+    );
+    this.name = "TmuxReplyFormatError";
+    this.command = command;
+    this.output = output;
+  }
+}
+
+/**
  * Classify a command rejection as "the connection is already gone" — the
  * transport refused the send ({@link TransportSendError}) or closed before
  * tmux replied ({@link TransportClosedError}). Both mean the command never got

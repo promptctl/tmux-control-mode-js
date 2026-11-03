@@ -3,6 +3,7 @@
 //
 
 import type {
+  NewWindowResult,
   PaneRecord,
   SessionRecord,
   WindowRecord,
@@ -855,6 +856,12 @@ export function parseWindowRecordLine(line: string): WindowRecord | null {
  * Returns null for an unparseable line, same discipline as
  * `parseWindowRecordLine`.
  */
+export function parseNewWindowLine(line: string): NewWindowResult | null {
+  const match = /^@(\d+)\t%(\d+)$/.exec(line);
+  if (match === null) return null;
+  return { windowId: Number(match[1]), paneId: Number(match[2]) };
+}
+
 export function parsePaneRecordLine(line: string): PaneRecord | null {
   const fields = line.split("\t");
   if (fields.length !== 11) return null;

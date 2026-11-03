@@ -14,6 +14,7 @@
 import type { TmuxConnection } from "../client.js";
 import type {
   CommandResponse,
+  NewWindowResult,
   PaneCapture,
   PaneRecord,
   SessionRecord,
@@ -38,11 +39,13 @@ import {
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
   capturePane as encodeCapturePane,
+  newWindow as encodeNewWindow,
 } from "../protocol/encoder.js";
 import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
+  parseNewWindowLine,
 } from "../pane-output.js";
 import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
@@ -51,7 +54,10 @@ import {
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
-import { UnsupportedTmuxVersionError } from "../errors.js";
+import {
+  TmuxReplyFormatError,
+  UnsupportedTmuxVersionError,
+} from "../errors.js";
 
 export { PaneAction };
 export type { SplitOptions };
@@ -116,6 +122,39 @@ export async function capturePane(
     offset += lines[i].length;
   }
   return { bytes, lineCount: response.output.length };
+}
+
+// [LAW:one-source-of-truth] Command and reply format live in encoder.ts,
+// the reply grammar in pane-output.ts. A missing session rejects through
+// execute() as TmuxCommandError with tmux's text ("can't find session: X").
+// A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
+// instead (verified on tmux 3.8), and the library, typed over any
+// TmuxConnection, cannot stat the tmux host's filesystem. A caller that
+// must not fall back checks the path on the host it controls.
+// [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
+// throws rather than inventing ids.
+export async function newWindow(
+  client: TmuxConnection,
+  options: {
+    readonly session: string;
+    readonly cwd: string;
+    readonly command?: string;
+  },
+): Promise<NewWindowResult> {
+  const command = encodeNewWindow(
+    options.session,
+    options.cwd,
+    options.command,
+  );
+  const response = await client.execute(command);
+  const result =
+    response.output.length === 1
+      ? parseNewWindowLine(response.output[0])
+      : null;
+  if (result === null) {
+    throw new TmuxReplyFormatError(command, response.output);
+  }
+  return result;
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys

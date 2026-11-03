@@ -111,6 +111,25 @@ export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
 }
 
+// [LAW:one-source-of-truth] new-window wire format and its `-P -F` reply
+// format live here only; pane-output.ts's parseNewWindowLine is the sole
+// reader. -d: create without selecting it, so a restore never moves an
+// attached client's focus. The trailing ':' makes `-t` name the session
+// (tmux picks the next free index), so a session name that looks like a
+// window index is never misread. The command, when present, is one argument
+// tmux hands to the default shell, as `new-window`'s shell-command does.
+export function newWindow(
+  session: string,
+  cwd: string,
+  command?: string,
+): string {
+  const commandPart = command !== undefined ? ` ${tmuxEscape(command)}` : "";
+  return (
+    `new-window -d -t ${tmuxEscape(`${session}:`)} -c ${tmuxEscape(cwd)} ` +
+    `-P -F '#{window_id}\t#{pane_id}'${commandPart}`
+  );
+}
+
 export function refreshClientSubscribe(
   name: string,
   what: string,
