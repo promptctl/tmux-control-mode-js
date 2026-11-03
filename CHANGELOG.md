@@ -58,7 +58,8 @@ All notable changes to this project are documented here. Format follows
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call and no polling. Below 3.7 it
   rejects with `UnsupportedTmuxVersionError`, because older tmux forks the pane
-  before the child changes directory.
+  before the child changes directory. When tmux cannot read the cwd at all
+  it rejects with the new `PaneCwdUnavailableError`.
 - `topology-error` event on every `TmuxClient`-shaped connection, emitted when a
   topology bootstrap (`list-panes -a`) fails. Distinguishes "topology empty
   because bootstrap failed" from "topology empty because tmux has no panes" — a

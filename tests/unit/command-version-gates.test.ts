@@ -16,6 +16,7 @@ import {
   paneCwd,
 } from "../../src/commands/index.js";
 import {
+  PaneCwdUnavailableError,
   TmuxReplyFormatError,
   UnrecognizedTmuxVersionError,
   UnsupportedTmuxVersionError,
@@ -193,7 +194,12 @@ describe("paneCwd version gate", () => {
     await expect(paneCwd(conn, 4)).resolves.toBe("/srv");
   });
 
-  it.each([[[]], [[""]], [["/a", "b"]]])(
+  it("rejects tmux's empty can't-read-cwd reply as PaneCwdUnavailableError", async () => {
+    const { conn } = fakeConnection("3.7", [""]);
+    await expect(paneCwd(conn, 4)).rejects.toThrow(PaneCwdUnavailableError);
+  });
+
+  it.each([[[]], [["/a", "b"]]])(
     "treats a reply of %j as a reply-shape error, not a path",
     async (reply) => {
       const { conn } = fakeConnection("3.8", reply);

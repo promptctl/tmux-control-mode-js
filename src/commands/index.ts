@@ -59,6 +59,7 @@ import {
   meetsTmuxVersion,
 } from "../tmux-compat.js";
 import {
+  PaneCwdUnavailableError,
   TmuxReplyFormatError,
   UnsupportedTmuxVersionError,
   UnrecognizedTmuxVersionError,
@@ -188,8 +189,10 @@ export async function newWindow(
 // it: older tmux forks before the child chdirs, and no format tells a
 // pre-chdir read from a settled one, so one read is the answer only where
 // tmux makes it so.
-// [LAW:no-silent-failure] A reply that is not exactly one non-empty line
-// throws: an empty line is tmux failing to read the cwd, not a path.
+// tmux 3.7 chdirs before it forks, so any path it reports is the settled
+// one; until the child takes its pty it reports none, which rejects as
+// PaneCwdUnavailableError rather than standing in for a path.
+// [LAW:no-silent-failure] A reply that is not exactly one line throws.
 export async function paneCwd(
   client: TmuxConnection,
   paneId: number,
@@ -205,6 +208,7 @@ export async function paneCwd(
   if (cwd === null) {
     throw new TmuxReplyFormatError(command, response.output);
   }
+  if (cwd === "") throw new PaneCwdUnavailableError(paneId);
   return cwd;
 }
 

@@ -13,6 +13,7 @@ export {
   TmuxProtocolError,
   TmuxInvalidCommandError,
   TmuxReplyFormatError,
+  PaneCwdUnavailableError,
   TransportClosedError,
   TransportSendError,
   UnsupportedTmuxVersionError,
