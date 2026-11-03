@@ -58,6 +58,7 @@ import {
 import {
   TmuxReplyFormatError,
   UnsupportedTmuxVersionError,
+  UnrecognizedTmuxVersionError,
 } from "../errors.js";
 
 export { PaneAction };
@@ -273,7 +274,7 @@ export async function queryTmuxVersion(
     .map((line) => parseTmuxVersion(line))
     .find((v): v is TmuxVersion => v !== null);
   if (version === undefined) {
-    throw new TmuxReplyFormatError(displayMessageVersion(), response.output);
+    throw new UnrecognizedTmuxVersionError(response.output);
   }
   return version;
 }

@@ -72,6 +72,8 @@ const TMUX_VERSION_SHAPE = /^(?:\S+ )?(?:next-)?(\d+)\.(\d+)[a-z]?(?:-rc\d*)?$/;
  * Returns `null` for anything that is not a tmux version shape — callers
  * must treat that as an unknown version, never guess one.
  */
+// [LAW:no-silent-failure] An unplaceable version is null, never a loose read
+// or a floor: loosening the shape lets vendor tags pass every version gate.
 export function parseTmuxVersion(versionString: string): TmuxVersion | null {
   const m = versionString.trim().match(TMUX_VERSION_SHAPE);
   if (!m) return null;

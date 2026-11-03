@@ -156,6 +156,26 @@ export class UnsupportedTmuxVersionError extends Error {
 }
 
 /**
+ * Thrown via Promise rejection when the running tmux answers `#{version}`
+ * with a value that is not a tmux version shape — a vendor tag such as
+ * OpenBSD base's `openbsd-7.4`. The reply is well-formed (so this is not a
+ * {@link TmuxReplyFormatError}); the library just cannot place it against a
+ * version floor, so a gated feature is refused rather than guessed into.
+ * `reported` is the raw reply.
+ */
+export class UnrecognizedTmuxVersionError extends Error {
+  readonly reported: readonly string[];
+
+  constructor(reported: readonly string[]) {
+    super(
+      `the running tmux reports an unrecognised version: ${JSON.stringify(reported)}`,
+    );
+    this.name = "UnrecognizedTmuxVersionError";
+    this.reported = reported;
+  }
+}
+
+/**
  * Thrown via Promise rejection when a dispatched tmux command's `%end`/
  * `%error` guard terminator was malformed on the wire (fewer than the three
  * required fields — SPEC.md §5) while its response block was open. Distinct

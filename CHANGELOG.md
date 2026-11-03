@@ -8,6 +8,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `parseTmuxVersion` accepts only tmux's own version shapes (`3.2a`,
+  `next-3.6`, `3.4-rc`, bare or after the program name) and returns `null`
+  for anything else. Vendor tags such as OpenBSD base's `openbsd-7.4` used to
+  read as tmux 7.4 and pass every version gate; strings with trailing text
+  (`tmux 3.5 built 1.2`) no longer parse either.
+- `queryTmuxVersion` — and so `requestReport` and `queryClipboard` — rejects
+  with the new `UnrecognizedTmuxVersionError` (carrying the raw `reported`
+  reply) when the running tmux's version is unrecognisable, instead of
+  `TmuxReplyFormatError`.
+
 - `TmuxTransport.send()` returns `SendResult` (`{ ok: true } | { ok: false; reason: string }`)
   instead of `void`. A send failure is now a representable outcome rather than
   a silent no-op — every implementation (spawn, websocket, mock, chaos) must

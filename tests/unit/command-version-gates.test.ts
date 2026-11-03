@@ -15,7 +15,7 @@ import {
   queryTmuxVersion,
 } from "../../src/commands/index.js";
 import {
-  TmuxReplyFormatError,
+  UnrecognizedTmuxVersionError,
   UnsupportedTmuxVersionError,
 } from "../../src/errors.js";
 import type { TmuxConnection } from "../../src/client.js";
@@ -99,7 +99,21 @@ describe("requestReport version gate", () => {
 
   it("queryTmuxVersion rejects loudly when the reply carries no version", async () => {
     const { conn } = fakeConnection("no version here");
-    await expect(queryTmuxVersion(conn)).rejects.toThrow(TmuxReplyFormatError);
+    await expect(queryTmuxVersion(conn)).rejects.toThrow(
+      UnrecognizedTmuxVersionError,
+    );
+  });
+
+  it("refuses a vendor version tag (openbsd-7.4) with the raw reply and never sends the gated command", async () => {
+    const { conn, sent } = fakeConnection("openbsd-7.4");
+    const err: unknown = await requestReport(conn, 1, "r").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UnrecognizedTmuxVersionError);
+    expect((err as UnrecognizedTmuxVersionError).reported).toEqual([
+      "openbsd-7.4",
+    ]);
+    expect(sent.some((c) => c.startsWith("refresh-client -r"))).toBe(false);
   });
 });
 
