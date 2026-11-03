@@ -300,7 +300,9 @@ export class CrossSessionLayoutRelay {
     // client's own FIFO correlates each execute() to its own response
     // regardless of issue order.
     await Promise.all(
-      entries.map((entry) => this.fetchAndEmit(entry.sessionId, entry.windowId)),
+      entries.map((entry) =>
+        this.fetchAndEmit(entry.sessionId, entry.windowId),
+      ),
     );
 
     // Freshness optimization only — not load-bearing for boundedness (the
@@ -320,8 +322,9 @@ export class CrossSessionLayoutRelay {
       // is unexpected (unlike a vanished window, which rejects loudly below
       // and is handled in the catch) — report it rather than dropping the
       // entry with no signal at all.
-      const [windowLayout, windowVisibleLayout, windowFlags] =
-        (line ?? "").split("\x01");
+      const [windowLayout, windowVisibleLayout, windowFlags] = (
+        line ?? ""
+      ).split("\x01");
       if (windowLayout === undefined || windowLayout === "") {
         this.emit({
           type: "cross-session-layout-fetch-failed",
