@@ -67,6 +67,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `queryClipboard` no longer kills the connection on tmux 3.2: it probes the
+  running version and rejects with `UnsupportedTmuxVersionError` instead of
+  sending `refresh-client -l`, which made the control client exit. Adds one
+  `display-message` round-trip per call. `QUERY_CLIPBOARD_MIN_VERSION`,
+  `PASTE_BUFFER_NOTIFY_MIN_VERSION`, and `MESSAGE_NOTIFY_MIN_VERSION` are
+  exported for consumers that pre-check.
 - A failed topology bootstrap no longer silently starves session/window-scoped
   byte sinks. Previously the bootstrap's `list-panes -a` rejection was swallowed
   by a `catch {}`, leaving an empty topology that routed every session/window
@@ -195,9 +201,6 @@ Zero runtime dependencies (enforced at publish time). Ships `dist/` only.
   `UnsupportedTmuxVersionError` on tmux 3.2–3.4 (`refresh-client -r` needs 3.5),
   instead of leaking tmux's raw unknown-flag `%error`. Adds one
   `display-message` round-trip per call.
-- `queryClipboard` is gated the same way: on tmux 3.2 it rejects with
-  `UnsupportedTmuxVersionError` instead of sending `refresh-client -l`, which
-  made the control client exit. Adds one round-trip per call.
 
 ### Tests & demo
 

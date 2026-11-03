@@ -25,6 +25,9 @@ export {
 export type { TmuxVersion } from "./tmux-compat.js";
 export {
   MIN_TMUX_VERSION,
+  QUERY_CLIPBOARD_MIN_VERSION,
+  PASTE_BUFFER_NOTIFY_MIN_VERSION,
+  MESSAGE_NOTIFY_MIN_VERSION,
   REQUEST_REPORT_MIN_VERSION,
   parseTmuxVersion,
   meetsTmuxVersion,

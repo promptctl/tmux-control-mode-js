@@ -71,9 +71,15 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // every gate here imports them rather than restating the numbers.
 // [LAW:no-silent-failure] An unreadable `tmux -V` under TMUX_INTEGRATION=1 is
 // a setup bug: throw, so it cannot turn every version-gated test into a skip.
-const RUNNING_TMUX_VERSION: TmuxVersion | null = RUN_INTEGRATION
-  ? parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim())
-  : null;
+const RUNNING_TMUX_VERSION: TmuxVersion | null = (() => {
+  if (!RUN_INTEGRATION) return null;
+  const banner = execSync("tmux -V", { encoding: "utf8" }).trim();
+  const version = parseTmuxVersion(banner);
+  if (version === null) {
+    throw new Error(`cannot read a version from \`tmux -V\`: ${banner}`);
+  }
+  return version;
+})();
 
 function tmuxAtLeast(need: TmuxVersion): boolean {
   return (

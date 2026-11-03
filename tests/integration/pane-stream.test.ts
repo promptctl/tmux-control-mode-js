@@ -204,7 +204,8 @@ describe.skipIf(!RUN_INTEGRATION)(
         let i = 0;
         i < 30 &&
         (sink.resizeCalls.length === 1 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120);
+          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120 ||
+          sink.resizeCalls[sink.resizeCalls.length - 1].rows < 30 - 1);
         i++
       ) {
         await new Promise((r) => setTimeout(r, 50));
