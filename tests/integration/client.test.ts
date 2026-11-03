@@ -54,8 +54,8 @@ import {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   meetsTmuxVersion,
-  parseTmuxVersion,
 } from "../../src/tmux-compat.js";
+import { runningTmuxVersion } from "../helpers/running-tmux.js";
 import type { ConnectionStateMessage } from "../../src/connection-state.js";
 
 // [LAW:verifiable-goals] Gate every test behind the env var so the suite is
@@ -69,17 +69,9 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // tmux cannot honor.
 // [LAW:one-source-of-truth] Version constants live in src/tmux-compat.ts;
 // every gate here imports them rather than restating the numbers.
-// [LAW:no-silent-failure] An unreadable `tmux -V` under TMUX_INTEGRATION=1 is
-// a setup bug: throw, so it cannot turn every version-gated test into a skip.
-const RUNNING_TMUX_VERSION: TmuxVersion | null = (() => {
-  if (!RUN_INTEGRATION) return null;
-  const banner = execSync("tmux -V", { encoding: "utf8" }).trim();
-  const version = parseTmuxVersion(banner);
-  if (version === null) {
-    throw new Error(`cannot read a version from \`tmux -V\`: ${banner}`);
-  }
-  return version;
-})();
+const RUNNING_TMUX_VERSION: TmuxVersion | null = RUN_INTEGRATION
+  ? runningTmuxVersion()
+  : null;
 
 function tmuxAtLeast(need: TmuxVersion): boolean {
   return (

@@ -72,6 +72,7 @@ export {
   TmuxReplyFormatError,
   TransportClosedError,
   TransportSendError,
+  UnrecognizedTmuxVersionError,
   isConnectionGone,
 } from "./errors.js";
 export type { TmuxVersion } from "./tmux-compat.js";

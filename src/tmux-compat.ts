@@ -58,16 +58,40 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 };
 
 /**
- * Parse the major/minor pair from a `tmux -V` output line.
- * Trailing suffix letters (e.g. `3.5a`) are ignored — match is on the
- * leading `<major>.<minor>` digits only.
- *
- * Returns `null` if the string contains no recognisable version.
+ * The version shapes portable tmux's configure.ac produces (`3.2a`,
+ * `next-3.6`, `3.4-rc`) — the bare `#{version}` value. Anchored on both ends
+ * so a vendor tag like OpenBSD base's `openbsd-7.4` is rejected instead of
+ * read as tmux 7.4, which would pass every version gate.
  */
-export function parseTmuxVersion(versionString: string): TmuxVersion | null {
-  const m = versionString.match(/(\d+)\.(\d+)/);
+const TMUX_VERSION_VALUE = /^(?:next-)?(\d+)\.(\d+)[a-z]?(?:-rc\d*)?$/;
+
+/**
+ * `tmux -V` prints `<progname> <version>`; progname is argv[0]'s basename,
+ * so any word is legitimate there.
+ */
+const TMUX_V_BANNER = /^\S+ (\S+)$/;
+
+/**
+ * Parse a bare `#{version}` value. Returns `null` for anything that is not a
+ * tmux version shape — callers must treat that as an unknown version, never
+ * guess one.
+ */
+// [LAW:no-silent-failure] An unplaceable version is null, never a loose read
+// or a floor: loosening the shape lets vendor tags pass every version gate.
+export function parseTmuxVersionValue(value: string): TmuxVersion | null {
+  const m = TMUX_VERSION_VALUE.exec(value.trim());
   if (!m) return null;
   return { major: parseInt(m[1], 10), minor: parseInt(m[2], 10) };
+}
+
+/**
+ * Parse the major/minor pair from a `tmux -V` line or a bare `#{version}`
+ * value; `null` when neither shape matches (see {@link parseTmuxVersionValue}).
+ */
+export function parseTmuxVersion(versionString: string): TmuxVersion | null {
+  const trimmed = versionString.trim();
+  const banner = TMUX_V_BANNER.exec(trimmed);
+  return parseTmuxVersionValue(banner ? banner[1] : trimmed);
 }
 
 /**

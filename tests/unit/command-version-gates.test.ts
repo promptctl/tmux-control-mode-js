@@ -16,6 +16,7 @@ import {
 } from "../../src/commands/index.js";
 import {
   TmuxReplyFormatError,
+  UnrecognizedTmuxVersionError,
   UnsupportedTmuxVersionError,
 } from "../../src/errors.js";
 import type { TmuxConnection } from "../../src/client.js";
@@ -25,7 +26,7 @@ import type { CommandResponse } from "../../src/protocol/types.js";
 // version probe with a configurable version line. Every other command resolves
 // to an empty success. on/off/attachBytesSink are unused by the command
 // free-functions and are inert here.
-function fakeConnection(versionLine: string): {
+function fakeConnection(versionReply: string | string[]): {
   conn: TmuxConnection;
   sent: string[];
 } {
@@ -40,7 +41,11 @@ function fakeConnection(versionLine: string): {
     execute(command: string): Promise<CommandResponse> {
       sent.push(command);
       if (command.includes("#{version}")) {
-        return Promise.resolve(respond([versionLine]));
+        return Promise.resolve(
+          respond(
+            typeof versionReply === "string" ? [versionReply] : versionReply,
+          ),
+        );
       }
       return Promise.resolve(respond([]));
     },
@@ -99,7 +104,38 @@ describe("requestReport version gate", () => {
 
   it("queryTmuxVersion rejects loudly when the reply carries no version", async () => {
     const { conn } = fakeConnection("no version here");
-    await expect(queryTmuxVersion(conn)).rejects.toThrow(TmuxReplyFormatError);
+    await expect(queryTmuxVersion(conn)).rejects.toThrow(
+      UnrecognizedTmuxVersionError,
+    );
+  });
+
+  it("queryTmuxVersion refuses a progname prefix — #{version} is always bare", async () => {
+    const { conn } = fakeConnection("tmux 3.5");
+    await expect(queryTmuxVersion(conn)).rejects.toThrow(
+      UnrecognizedTmuxVersionError,
+    );
+  });
+
+  it.each([[[]], [["3.5", "3.4"]]])(
+    "queryTmuxVersion treats a reply of %j as a reply-shape error, not a version",
+    async (reply) => {
+      const { conn } = fakeConnection(reply);
+      await expect(queryTmuxVersion(conn)).rejects.toThrow(
+        TmuxReplyFormatError,
+      );
+    },
+  );
+
+  it("refuses a vendor version tag (openbsd-7.4) with the raw reply and never sends the gated command", async () => {
+    const { conn, sent } = fakeConnection("openbsd-7.4");
+    const err: unknown = await requestReport(conn, 1, "r").catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(UnrecognizedTmuxVersionError);
+    expect((err as UnrecognizedTmuxVersionError).reported).toEqual([
+      "openbsd-7.4",
+    ]);
+    expect(sent.some((c) => c.startsWith("refresh-client -r"))).toBe(false);
   });
 });
 

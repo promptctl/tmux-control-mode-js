@@ -52,12 +52,13 @@ import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
   QUERY_CLIPBOARD_MIN_VERSION,
-  parseTmuxVersion,
+  parseTmuxVersionValue,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
 import {
   TmuxReplyFormatError,
   UnsupportedTmuxVersionError,
+  UnrecognizedTmuxVersionError,
 } from "../errors.js";
 
 export { PaneAction };
@@ -262,18 +263,20 @@ export function clearFlags(
  * websocket, electron) because the probe travels the control-mode channel to
  * the real tmux server, not a local `tmux -V` spawn.
  *
- * [LAW:no-silent-failure] Rejects loudly if the reply carries no recognisable
- * version rather than guessing a floor.
+ * [LAW:no-silent-failure] Rejects loudly rather than guessing a floor: a reply
+ * that is not exactly one line is a TmuxReplyFormatError; one line that is
+ * not a bare tmux version is an UnrecognizedTmuxVersionError.
  */
 export async function queryTmuxVersion(
   client: TmuxConnection,
 ): Promise<TmuxVersion> {
   const response = await client.execute(displayMessageVersion());
-  const version = response.output
-    .map((line) => parseTmuxVersion(line))
-    .find((v): v is TmuxVersion => v !== null);
-  if (version === undefined) {
+  if (response.output.length !== 1) {
     throw new TmuxReplyFormatError(displayMessageVersion(), response.output);
+  }
+  const version = parseTmuxVersionValue(response.output[0]);
+  if (version === null) {
+    throw new UnrecognizedTmuxVersionError(response.output);
   }
   return version;
 }

@@ -38,6 +38,7 @@ actually called:
 
 - `queryClipboard(client)` — needs tmux **3.3+** (`refresh-client -l`; on tmux 3.2 the control client exits, dropping the connection). On older tmux it rejects with `UnsupportedTmuxVersionError` before sending anything.
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
+- Both reject with `UnrecognizedTmuxVersionError` (carrying the raw reply) when the running tmux reports a version that is not a tmux version shape — e.g. OpenBSD base's `openbsd-7.4` — rather than guessing whether the feature is there.
 - `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `(await getOwnClient(client)).flags` shows whether the flag took effect.
 
 Some notifications are parsed on every tmux but only emitted by a newer one;

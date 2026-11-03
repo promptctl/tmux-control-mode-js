@@ -106,7 +106,9 @@ an unknown-flag error). The minimum is encoded in `src/tmux-compat.ts` as
 tmux 3.2+, `requestReport()` probes the running version in-protocol
 (`display-message -p "#{version}"`, a format available since tmux 2.4) via
 `queryTmuxVersion()`, and on tmux 3.2–3.4 rejects with a typed
-`UnsupportedTmuxVersionError` naming the requirement. The README compatibility table
+`UnsupportedTmuxVersionError` naming the requirement. A version it cannot place
+(a vendor tag like `openbsd-7.4`) rejects with `UnrecognizedTmuxVersionError`
+instead of being guessed. The README compatibility table
 reflects this constraint.
 
 `queryClipboard()` takes the same path with `QUERY_CLIPBOARD_MIN_VERSION` (3.3):
