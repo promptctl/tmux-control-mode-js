@@ -179,6 +179,14 @@ export function displayMessageVersion(): string {
   return `display-message -p "#{version}"`;
 }
 
+// [LAW:one-source-of-truth] The own-client probe wire format lives here only;
+// its line grammar lives in commands/index.ts (parseOwnClientLine). Name goes
+// last because it is the only field that is not a single space-free token: a
+// control client is `client-<pid>`, a terminal client is its tty path.
+export function displayMessageOwnClient(): string {
+  return `display-message -p "#{client_pid} #{client_flags} #{client_name}"`;
+}
+
 // [LAW:one-source-of-truth] Detach byte sequence lives here only.
 // Returns just "\n" — a bare newline causes tmux to exit (SPEC §4.1).
 // This is NOT a command and does NOT go through execute().

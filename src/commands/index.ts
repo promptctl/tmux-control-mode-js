@@ -31,6 +31,7 @@ import {
   refreshClientReport,
   refreshClientQueryClipboard,
   displayMessageVersion,
+  displayMessageOwnClient,
   listWindowsCommand,
   listPanesCommand,
   listSessionsCommand,
@@ -218,6 +219,47 @@ export async function queryTmuxVersion(
     );
   }
   return version;
+}
+
+/**
+ * The tmux client this connection is. tmux counts a control client like any
+ * other — in `#{session_attached}`, in `list-clients`, and as the subject of
+ * `%client-session-changed` / `%client-detached` — so a consumer watching a
+ * server filters itself out of what it observes by this `name`. `flags` is
+ * tmux's own `#{client_flags}` list: tmux silently ignores a client flag it
+ * does not know, so this is the one place to confirm `watchServerArgs`' flags
+ * took effect on the running server.
+ */
+export interface OwnClient {
+  readonly name: string;
+  readonly pid: number;
+  readonly flags: readonly string[];
+}
+
+const OWN_CLIENT_LINE = /^(\d+) (\S+) (.+)$/;
+
+// [LAW:parse-dont-validate] The reply either becomes an OwnClient or throws;
+// no partially-filled identity reaches a caller.
+export function parseOwnClientLine(lines: readonly string[]): OwnClient {
+  const match = lines.length === 1 ? OWN_CLIENT_LINE.exec(lines[0]) : null;
+  if (match === null) {
+    throw new Error(
+      `could not parse own-client reply: ${JSON.stringify(lines)}`,
+    );
+  }
+  return {
+    pid: Number(match[1]),
+    flags: match[2].split(","),
+    name: match[3],
+  };
+}
+
+/** Identify this connection's own tmux client (see {@link OwnClient}). */
+export async function getOwnClient(
+  client: TmuxConnection,
+): Promise<OwnClient> {
+  const response = await client.execute(displayMessageOwnClient());
+  return parseOwnClientLine(response.output);
 }
 
 // [LAW:single-enforcer] requestReport is the sole gate for the `refresh-client

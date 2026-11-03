@@ -1,6 +1,6 @@
 # tmux-control-mode-js
 
-Node.js client for the tmux control mode protocol. Provides streaming access to tmux pane output and state change notifications via a single connection per session.
+Node.js client for the tmux control mode protocol. Provides streaming access to tmux pane output and state change notifications One connection can watch a whole server without disturbing it — see [Watching a whole server](#watching-a-whole-server).
 
 ## Install
 
@@ -41,6 +41,41 @@ actually called:
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
+
+## Watching a whole server
+
+One connection can follow every session on a server without changing what the
+user sees:
+
+```ts
+import {
+  TmuxClient, spawnTmux, watchServerArgs, getOwnClient,
+} from "@promptctl/tmux-control-mode-js";
+
+const client = new TmuxClient(spawnTmux(watchServerArgs("main")), {
+  idlePaneSuppression: true, // no pane output unless a sink asks for it
+});
+const self = await getOwnClient(client);
+```
+
+- **Attaches, never creates.** `watchServerArgs` attaches to an existing session,
+  so the watcher adds no session the user can see. It cannot watch a server that
+  has no sessions.
+- **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
+  it sets a size of its own.
+- **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher
+  to another session when its own one ends (`session-changed`). When the last
+  session ends, tmux exits as usual and the watcher gets `exit`.
+- **Knows itself.** tmux counts the watcher like any client (`session_attached`,
+  `list-clients`, `%client-detached`). Filter it out by `self.name`. tmux silently
+  ignores client flags it doesn't know, so `self.flags` shows which ones took
+  effect.
+- **Every end is reported.** `exit` fires when the session ends, when the server
+  dies, or when another client detaches the watcher. tmux sends the same bare
+  `%exit` for all of these, so the cause isn't reported.
+
+Events in other sessions that tmux does not send to a control client are relayed
+separately (`cross-session-layout-change`).
 
 ## Idle pane suppression (opt-in)
 
