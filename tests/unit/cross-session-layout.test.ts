@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CrossSessionLayoutRelay,
+  decodeDelivery,
   decodeEntries,
   planDelivery,
 } from "../../src/cross-session-layout.js";
@@ -104,13 +105,19 @@ function commandError(prefix: string): TmuxCommandError {
   });
 }
 
+const HOOK = "window-layout-changed[9001]";
+
 /**
- * Answers the relay's commands the way tmux would: the seq read returns
- * `seq`, a layout fetch returns a layout line, everything else succeeds
- * empty. `fail` makes matching commands reject once.
+ * Answers the relay's commands the way tmux would: the baseline read returns
+ * `seq` and the epoch, `show-hooks` the global entry, a layout fetch a
+ * layout line, everything else succeeds empty. `set-hook` installs the
+ * entry and the epoch bump counts. `fail` makes matching commands reject
+ * once.
  */
 function fakeConnection(seq = "") {
   const sent: string[] = [];
+  let hookInstalled = false;
+  let epoch = 0;
   const handlers = new Set<Handler>();
   const failures: { prefix: string; error: Error }[] = [];
   const pendingFetches: (() => void)[] = [];
@@ -136,8 +143,15 @@ function fakeConnection(seq = "") {
           pendingFetches.push(() => resolve(reply)),
         );
       }
+      if (command.startsWith("show-hooks")) {
+        return Promise.resolve(
+          respond([hookInstalled ? `${HOOK} set-option x` : `${HOOK} `]),
+        );
+      }
+      if (command.startsWith("set-hook")) hookInstalled = true;
+      if (command.includes("@ttcmjs-cross-session-layout-epoch ")) epoch += 1;
       if (command.startsWith("display-message")) {
-        return Promise.resolve(respond([seq]));
+        return Promise.resolve(respond([`${seq}|${epoch}`]));
       }
       return Promise.resolve(respond([]));
     },
@@ -162,7 +176,16 @@ function fakeConnection(seq = "") {
       holdFetches = true;
     },
     releaseFetches: () => pendingFetches.splice(0).forEach((r) => r()),
-    deliver: (value: string) => {
+    clearHook: () => {
+      hookInstalled = false;
+    },
+    /** Another relay, elsewhere, repaired the hook. */
+    bumpEpoch: () => {
+      epoch += 1;
+    },
+    /** A delivery of the current epoch, `uncovered` as `@<wid>,` text, then `buffer`. */
+    deliver: (buffer: string, uncovered = "") => {
+      const value = `${epoch}|${uncovered}|${buffer}`;
       for (const h of handlers) {
         h({
           type: "subscription-changed",
@@ -188,6 +211,10 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 const subscribes = (sent: string[]) =>
   sent.filter((c) => c.startsWith("refresh-client -B")).length;
 
+// Every first delivery reports coverage; these tests are about the layout path.
+const layoutEvents = (emitted: CrossSessionLayoutMessage[]) =>
+  emitted.filter((m) => m.type !== "cross-session-layout-uncovered");
+
 describe("CrossSessionLayoutRelay", () => {
   it("never writes the shared buffer, so it cannot consume another relay's entries", async () => {
     const fake = fakeConnection();
@@ -207,7 +234,7 @@ describe("CrossSessionLayoutRelay", () => {
     await relay.enable();
     fake.deliver("4:@1,5:@2,6:@3,");
     await settle();
-    expect(emitted).toEqual([
+    expect(layoutEvents(emitted)).toEqual([
       expect.objectContaining({
         type: "cross-session-layout-change",
         sessionId: 2,
@@ -225,7 +252,7 @@ describe("CrossSessionLayoutRelay", () => {
     expect(fake.sent).toContainEqual(
       expect.stringContaining("display-message -p -t @4 "),
     );
-    expect(emitted).toEqual([
+    expect(layoutEvents(emitted)).toEqual([
       {
         type: "cross-session-layout-change",
         sessionId: 2,
@@ -288,7 +315,7 @@ describe("CrossSessionLayoutRelay", () => {
     await relay.disable();
     fake.releaseFetches();
     await settle();
-    expect(emitted).toEqual([]);
+    expect(layoutEvents(emitted)).toEqual([]);
   });
 
   it("emits fetch-failed for a window that vanished", async () => {
@@ -298,7 +325,7 @@ describe("CrossSessionLayoutRelay", () => {
     fake.fail("display-message -p -t @9 ");
     fake.deliver("1:@9,");
     await settle();
-    expect(emitted).toEqual([
+    expect(layoutEvents(emitted)).toEqual([
       {
         type: "cross-session-layout-fetch-failed",
         windowId: 9,
@@ -314,7 +341,7 @@ describe("CrossSessionLayoutRelay", () => {
     fake.fail("display-message -p -t @9 ", new TransportClosedError("gone"));
     fake.deliver("1:@9,");
     await settle();
-    expect(emitted).toEqual([]);
+    expect(layoutEvents(emitted)).toEqual([]);
   });
 
   it("reports any other fetch rejection as fetch-failed rather than rejecting the delivery", async () => {
@@ -324,7 +351,7 @@ describe("CrossSessionLayoutRelay", () => {
     fake.fail("display-message -p -t @9 ", new Error("malformed guard"));
     fake.deliver("1:@9,");
     await settle();
-    expect(emitted).toEqual([
+    expect(layoutEvents(emitted)).toEqual([
       {
         type: "cross-session-layout-fetch-failed",
         windowId: 9,
@@ -338,5 +365,242 @@ describe("CrossSessionLayoutRelay", () => {
     const { relay } = relayOver(fake);
     await expect(relay.enable()).rejects.toThrow(/not an integer/);
     expect(fake.handlers.size).toBe(0);
+  });
+});
+
+describe("decodeDelivery", () => {
+  it("splits the epoch and uncovered windows from the buffer", () => {
+    expect(decodeDelivery("2|@3,@5,|1:@3,")).toEqual({
+      coverage: { epoch: "2", uncovered: [3, 5] },
+      buffer: "1:@3,",
+    });
+  });
+
+  it("reads an empty uncovered half as full coverage", () => {
+    expect(decodeDelivery("||1:@3,").coverage).toEqual({
+      epoch: "",
+      uncovered: [],
+    });
+  });
+
+  it("reduces a window linked into several sessions, in any order, to one id", () => {
+    expect(decodeDelivery("|@5,@3,@5,|").coverage?.uncovered).toEqual([3, 5]);
+  });
+
+  it("rejects a head that is not the format's output", () => {
+    expect(decodeDelivery("|@3|1:@3,").coverage).toBeNull();
+    expect(decodeDelivery("1:@3,")).toEqual({ coverage: null, buffer: "" });
+  });
+
+  it("rejects an epoch that is not tmux's numeric reading", () => {
+    expect(decodeDelivery("x|@3,|1:@3,").coverage).toBeNull();
+  });
+});
+
+describe("CrossSessionLayoutRelay coverage", () => {
+  const coverageCommands = (sent: string[]) =>
+    sent.filter((c) => c.startsWith("set-hook") || c.startsWith("show-hooks"));
+  const ofType = (emitted: CrossSessionLayoutMessage[], type: string) =>
+    emitted.filter((m) => m.type === type);
+
+  it("reinstalls a cleared hook and reports it restored", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "");
+    await settle();
+    fake.clearHook();
+    fake.deliver("", "@0,@1,@2,");
+    await settle();
+    expect(fake.sent.filter((c) => c.startsWith("set-hook"))).toHaveLength(2);
+    fake.deliver("", "");
+    await settle();
+    expect(emitted).toEqual([
+      { type: "cross-session-layout-uncovered", windowIds: [] },
+      { type: "cross-session-layout-uncovered", windowIds: [0, 1, 2] },
+      { type: "cross-session-layout-hook-restored" },
+      { type: "cross-session-layout-uncovered", windowIds: [] },
+    ]);
+  });
+
+  it("reports a repair another relay made, without repairing itself", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "");
+    await settle();
+    const before = coverageCommands(fake.sent).length;
+    fake.bumpEpoch();
+    fake.deliver("", "");
+    await settle();
+    expect(ofType(emitted, "cross-session-layout-hook-restored")).toHaveLength(
+      1,
+    );
+    expect(coverageCommands(fake.sent).length).toBe(before);
+  });
+
+  it("reports windows a local hook shadows without overriding it, and coverage returning", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    fake.deliver("", "");
+    await settle();
+    expect(
+      fake.sent.filter((c) => c.startsWith("set-hook") && c.includes(" -w")),
+    ).toEqual([]);
+    expect(emitted).toEqual([
+      { type: "cross-session-layout-uncovered", windowIds: [4] },
+      { type: "cross-session-layout-uncovered", windowIds: [] },
+    ]);
+  });
+
+  it("does not re-report an unchanged or reordered set", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,@7,");
+    fake.deliver("1:@2,", "@7,@4,");
+    fake.deliver("1:@2,2:@2,", "@4,@7,");
+    await settle();
+    expect(ofType(emitted, "cross-session-layout-uncovered")).toHaveLength(1);
+  });
+
+  it("issues no coverage commands while coverage is whole", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = coverageCommands(fake.sent).length;
+    fake.deliver("1:@2,", "");
+    fake.deliver("1:@2,2:@2,", "");
+    await settle();
+    expect(coverageCommands(fake.sent).length).toBe(before);
+  });
+
+  it("repairs a hook cleared while every window was already shadowed", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    fake.clearHook();
+    // The set is unchanged — only the buffer moved.
+    fake.deliver("1:@4,", "@4,");
+    await settle();
+    fake.deliver("1:@4,", "");
+    await settle();
+    expect(ofType(emitted, "cross-session-layout-hook-restored")).toHaveLength(
+      1,
+    );
+  });
+
+  it("retries a refused repair on the next delivery", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    fake.clearHook();
+    fake.fail("show-hooks");
+    fake.deliver("", "@4,");
+    await settle();
+    fake.deliver("1:@4,", "@4,");
+    await settle();
+    expect(
+      fake.sent.filter((c) =>
+        c.includes('@ttcmjs-cross-session-layout-epoch "'),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("queues one repair for a burst of deliveries", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = fake.sent.filter((c) => c.startsWith("show-hooks")).length;
+    fake.deliver("", "@4,");
+    fake.deliver("1:@4,", "@4,");
+    fake.deliver("2:@4,", "@4,");
+    await settle();
+    expect(
+      fake.sent.filter((c) => c.startsWith("show-hooks")).length - before,
+    ).toBe(1);
+  });
+
+  it("leaves a present hook alone during a repair", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = fake.sent.filter((c) => c.startsWith("set-hook")).length;
+    fake.deliver("", "@4,");
+    await settle();
+    expect(fake.sent.filter((c) => c.startsWith("set-hook")).length).toBe(
+      before,
+    );
+  });
+
+  it("replaces whatever command sits at the reserved index", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    await relay.disable();
+    const before = fake.sent.filter((c) => c.startsWith("set-hook")).length;
+    await relay.enable();
+    expect(fake.sent.filter((c) => c.startsWith("set-hook")).length).toBe(
+      before + 1,
+    );
+  });
+
+  it("tells a listener joining a live subscription the current set", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    await relay.enable();
+    expect(ofType(emitted, "cross-session-layout-uncovered")).toEqual([
+      { type: "cross-session-layout-uncovered", windowIds: [4] },
+      { type: "cross-session-layout-uncovered", windowIds: [4] },
+    ]);
+  });
+
+  it("reports full coverage after re-enabling, even when it was last reported uncovered", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    await relay.disable();
+    await relay.enable();
+    fake.deliver("", "");
+    await settle();
+    expect(ofType(emitted, "cross-session-layout-uncovered").at(-1)).toEqual({
+      type: "cross-session-layout-uncovered",
+      windowIds: [],
+    });
+  });
+
+  it("reports a refused repair rather than staying quiet", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.fail("show-hooks");
+    fake.deliver("", "@4,");
+    await settle();
+    expect(emitted).toContainEqual({
+      type: "cross-session-layout-repair-failed",
+      reason: "failed: show-hooks",
+    });
+  });
+
+  it("reports a value that is not the subscribed shape as a decode error", async () => {
+    const fake = fakeConnection();
+    const { relay, emitted } = relayOver(fake);
+    await relay.enable();
+    fake.deliver("", "junk");
+    await settle();
+    expect(emitted).toContainEqual({
+      type: "cross-session-layout-decode-error",
+      skippedBytes: "1|junk|".length,
+    });
   });
 });

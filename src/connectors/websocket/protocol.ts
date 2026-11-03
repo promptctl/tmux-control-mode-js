@@ -410,11 +410,19 @@ function parseWelcome(x: unknown): WelcomeFrame {
 // their runtime kinds. The mapped type makes a field added to (or removed
 // from) a message interface a compile error here, so the wire check cannot
 // drift from the type the client emits.
+type FieldKind = "number" | "number[]" | "string";
+// A field shape with no kind here is `never`, so it fails to compile rather
+// than being checked as the wrong kind.
 type FieldKinds<M> = {
   readonly [F in Exclude<keyof M, "type">]: M[F] extends number
     ? "number"
-    : "string";
+    : M[F] extends readonly number[]
+      ? "number[]"
+      : M[F] extends string
+        ? "string"
+        : never;
 };
+
 const CROSS_SESSION_LAYOUT_FIELDS: {
   readonly [K in CrossSessionLayoutMessage["type"]]: FieldKinds<
     Extract<CrossSessionLayoutMessage, { type: K }>
@@ -430,7 +438,15 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
   "cross-session-layout-decode-error": { skippedBytes: "number" },
   "cross-session-layout-overrun": { lostEntries: "number" },
   "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
+  "cross-session-layout-hook-restored": {},
+  "cross-session-layout-repair-failed": { reason: "string" },
+  "cross-session-layout-uncovered": { windowIds: "number[]" },
 };
+
+function hasKind(value: unknown, kind: FieldKind): boolean {
+  if (kind !== "number[]") return typeof value === kind;
+  return Array.isArray(value) && value.every((v) => typeof v === "number");
+}
 
 function checkCrossSessionLayoutFields(
   msg: Record<string, unknown>,
@@ -438,8 +454,8 @@ function checkCrossSessionLayoutFields(
 ): void {
   for (const [field, kind] of Object.entries(
     CROSS_SESSION_LAYOUT_FIELDS[type],
-  )) {
-    if (typeof msg[field] !== kind) {
+  ) as [string, FieldKind][]) {
+    if (!hasKind(msg[field], kind)) {
       throw new BridgeProtocolError(
         `event.msg.${field} must be a ${kind} for ${type}`,
       );

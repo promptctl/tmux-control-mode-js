@@ -7,7 +7,7 @@
 // [LAW:verifiable-goals] Gated behind TMUX_INTEGRATION=1, same convention as
 // tests/integration/client.test.ts.
 
-import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
@@ -16,6 +16,7 @@ import type { ConnectionStateMessage } from "../../src/connection-state.js";
 import type {
   CrossSessionLayoutChangeMessage,
   CrossSessionLayoutDecodeErrorMessage,
+  CrossSessionLayoutMessage,
 } from "../../src/cross-session-layout.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
@@ -233,6 +234,93 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       await new Promise((r) => setTimeout(r, 3000));
 
       expect(decodeErrors).toEqual([]);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
+
+  it("restores a hook cleared by an index-less set-hook and keeps relaying", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const diagnostics: CrossSessionLayoutMessage[] = [];
+      clientA.on("cross-session-layout-hook-restored", (e) =>
+        diagnostics.push(e),
+      );
+      clientA.on("cross-session-layout-uncovered", (e) => diagnostics.push(e));
+
+      // A re-sourced tmux.conf: replaces the whole hook array.
+      exec(socketName, `set-hook -g window-layout-changed "display-message x"`);
+      // Every window reads uncovered until the repair lands; the latest
+      // report is the truth.
+      await vi.waitFor(
+        () => {
+          expect(
+            diagnostics.filter(
+              (e) => e.type === "cross-session-layout-hook-restored",
+            ),
+          ).toHaveLength(1);
+          expect(
+            diagnostics
+              .filter((e) => e.type === "cross-session-layout-uncovered")
+              .at(-1),
+          ).toEqual({ type: "cross-session-layout-uncovered", windowIds: [] });
+        },
+        { timeout: 8000, interval: 100 },
+      );
+
+      const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
+      exec(socketName, `split-window -t ${sessionB}`);
+      expect((await settle()).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
+
+  it("reports a window a window-local hook shadows, and its return", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+    const windowId = Number(
+      execSync(
+        tmuxCmd(socketName, `display-message -p -t ${sessionB} "#{window_id}"`),
+        { encoding: "utf8" },
+      )
+        .trim()
+        .replace("@", ""),
+    );
+
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const reports: number[][] = [];
+      clientA.on("cross-session-layout-uncovered", (e) =>
+        reports.push([...e.windowIds]),
+      );
+
+      exec(
+        socketName,
+        `set-hook -w -t ${sessionB} window-layout-changed "display-message x"`,
+      );
+      // The first tick may land before the hook and report [] first; the
+      // latest report is the truth.
+      const latest = (expected: number[]) =>
+        vi.waitFor(() => expect(reports.at(-1)).toEqual(expected), {
+          timeout: 8000,
+          interval: 100,
+        });
+      await latest([windowId]);
+
+      exec(socketName, `set-hook -wu -t ${sessionB} window-layout-changed`);
+      await latest([]);
     } finally {
       await clientA.disableCrossSessionLayoutChange();
       clientA.close();
