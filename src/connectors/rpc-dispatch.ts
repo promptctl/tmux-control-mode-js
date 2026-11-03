@@ -36,9 +36,21 @@ import type { RpcRequest, RpcResponseMap } from "./rpc.js";
 import { assertNever } from "../protocol/assert-never.js";
 import * as commands from "../commands/index.js";
 
+// Cross-session layout coverage is a reference held per peer, so only the
+// bridge's ledger may take one (bridge-dispatch.ts intercepts both methods);
+// a plain TmuxConnection has no relay to enable.
+export type ConnectionRpcRequest = Exclude<
+  RpcRequest,
+  {
+    readonly method:
+      | "enableCrossSessionLayoutChange"
+      | "disableCrossSessionLayoutChange";
+  }
+>;
+
 export function dispatchRpcRequest(
   client: TmuxConnection,
-  req: RpcRequest,
+  req: ConnectionRpcRequest,
 ): Promise<RpcResponseMap[RpcRequest["method"]]> {
   switch (req.method) {
     case "execute":

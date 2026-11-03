@@ -13,7 +13,7 @@
 // server-side API: enough surface to satisfy ServerWebSocketLike, plus a
 // test hook to set bufferedAmount for the watermark probes.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -1023,5 +1023,126 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     const c = closed[0];
     if (c.kind !== "connection-closed") throw new Error("unreachable");
     expect(c.errorCode).toBe("BRIDGE_PROTOCOL_ERROR");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-session layout coverage over the bridge (tmux-server-events-6sp.494)
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — cross-session layout coverage", () => {
+  it("delivers decoded events only to the connection that enabled them, and the relay's raw frames to none", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const enable = vi
+      .spyOn(client, "enableCrossSessionLayoutChange")
+      .mockResolvedValue(undefined);
+    const disable = vi
+      .spyOn(client, "disableCrossSessionLayoutChange")
+      .mockResolvedValue(undefined);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+
+    const wsOn = createFakeWs();
+    void bridge.handleConnection(wsOn);
+    wsOn.feedClient({ k: "hello" });
+    const wsOff = createFakeWs();
+    void bridge.handleConnection(wsOff);
+    wsOff.feedClient({ k: "hello" });
+    await flush();
+
+    wsOn.feedClient({
+      k: "call",
+      id: "en",
+      method: "enableCrossSessionLayoutChange",
+      args: [],
+    });
+    // The peer's coverage queue adds hops after dispatch.
+    await flush();
+    await flush();
+    const enabled = readJsonFrames(wsOn).find(
+      (f): f is ResultOkFrame => f.k === "result" && f.id === "en",
+    );
+    expect(enabled).toEqual({
+      k: "result",
+      id: "en",
+      ok: true,
+      response: null,
+    });
+    expect(enable).toHaveBeenCalledTimes(1);
+
+    // The relay's own subscription delivery, straight off the wire.
+    t.feed(
+      "%subscription-changed ttcmjs-cross-session-layout $1 @0 0 %0 : 1:@7,\n",
+    );
+    // The decoded event the relay emits after fetching the window.
+    const change = {
+      type: "cross-session-layout-change",
+      sessionId: 1,
+      windowId: 7,
+      windowLayout: "b25d,80x24,0,0,0",
+      windowVisibleLayout: "b25d,80x24,0,0,0",
+      windowFlags: "*",
+    } as const;
+    (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
+      change,
+    );
+
+    const events = (ws: FakeWs) =>
+      readJsonFrames(ws).flatMap((f) => (f.k === "event" ? [f.msg] : []));
+    expect(events(wsOn)).toEqual([change]);
+    expect(events(wsOff)).toEqual([]);
+
+    // Disconnecting gives the connection's reference back.
+    wsOn.fireClose();
+    await flush();
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a tmux %error result as a failure in observability, as the client sees it", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    ws.feedClient({ k: "call", id: "x", method: "execute", args: ["bogus"] });
+    await flush();
+    t.feed(`%begin 1 1 0\n`);
+    t.feed(`unknown command: bogus\n`);
+    t.feed(`%error 1 1 0\n`);
+    await flush();
+
+    const frame = readJsonFrames(ws).find(
+      (f) => f.k === "result" && f.id === "x",
+    );
+    expect(frame).toMatchObject({ ok: false, tmuxError: { success: false } });
+    expect(
+      events.find((e) => e.kind === "result" && e.id === "x"),
+    ).toMatchObject({ ok: false, code: "TMUX_ERROR" });
+  });
+
+  it("rejects a cross-session layout event frame missing a payload field", () => {
+    const frame = JSON.stringify({
+      k: "event",
+      msg: { type: "cross-session-layout-change", sessionId: 1 },
+    });
+    expect(() => parseServerFrame(frame)).toThrow(/windowId must be a number/);
+    const ok = JSON.stringify({
+      k: "event",
+      msg: {
+        type: "cross-session-layout-fetch-failed",
+        windowId: 7,
+        reason: "gone",
+      },
+    });
+    expect(parseServerFrame(ok)).toMatchObject({ k: "event" });
   });
 });

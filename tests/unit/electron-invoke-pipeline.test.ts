@@ -54,9 +54,11 @@ function makeRig(): Rig {
   feed(STARTUP_GREETING);
   const bridge = createBridgeConnection({
     client,
+    forwardsLifecycle: false,
     reportResumeFailure: () => {
       // No stranded-resume surfacing asserted by these tests.
     },
+    reportCoverageReleaseFailure: () => {},
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });

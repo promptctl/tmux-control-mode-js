@@ -33,6 +33,7 @@ import {
   type SessionRecord,
   type WindowRecord,
 } from "../protocol/types.js";
+import { CROSS_SESSION_LAYOUT_SUBSCRIPTION_NAME } from "../cross-session-layout-messages.js";
 import type { BridgeErrorCode } from "./errors.js";
 
 // ---------------------------------------------------------------------------
@@ -116,9 +117,35 @@ interface RpcSpec {
     readonly args: readonly [];
     readonly response: CommandResponse;
   };
+  // Bridge-stateful: answered by the bridge's per-peer ledger, not by one tmux
+  // command, so there is no CommandResponse to return — `null` says so.
+  readonly enableCrossSessionLayoutChange: {
+    readonly args: readonly [];
+    readonly response: null;
+  };
+  readonly disableCrossSessionLayoutChange: {
+    readonly args: readonly [];
+    readonly response: null;
+  };
 }
 
 export type RpcMethod = keyof RpcSpec;
+
+type NullResponseMethod = {
+  [M in RpcMethod]: RpcSpec[M]["response"] extends null ? M : never;
+}[RpcMethod];
+
+// [LAW:types-are-the-program] Derived from RpcSpec: the compiler rejects this
+// record if a method answering null is missing or one that does not is listed.
+const NULL_RESPONSE: Record<NullResponseMethod, true> = {
+  enableCrossSessionLayoutChange: true,
+  disableCrossSessionLayoutChange: true,
+};
+
+/** Whether `method`'s RpcSpec response is `null` (no tmux command answers it). */
+export function answersNull(method: RpcMethod): boolean {
+  return Object.hasOwn(NULL_RESPONSE, method);
+}
 
 // RpcRequest stays a discriminated union — every downstream consumer narrows
 // on `method` the same way it always did. Deriving it from RpcSpec is what
@@ -149,7 +176,9 @@ export type RpcResponseMap = {
 export type RpcProxyApi = {
   readonly [M in RpcMethod]: (
     ...args: [...RpcSpec[M]["args"]]
-  ) => Promise<RpcResponseMap[M]>;
+    // A null wire answer surfaces as `void`, matching TmuxClient's signature.
+    // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- the proxy's return type, spelled through a conditional
+  ) => Promise<RpcResponseMap[M] extends null ? void : RpcResponseMap[M]>;
 };
 
 // ---------------------------------------------------------------------------
@@ -300,11 +329,11 @@ const VALIDATORS: Validators = Object.assign(
       ] as const,
     subscribeRaw: (args) =>
       [
-        requireNonEmptyString(args, 0, "name"),
+        requireSubscriptionName(args, 0),
         requireString(args, 1, "what"),
         requireString(args, 2, "format"),
       ] as const,
-    unsubscribe: (args) => [requireNonEmptyString(args, 0, "name")] as const,
+    unsubscribe: (args) => [requireSubscriptionName(args, 0)] as const,
     setFlags: (args) => [requireStringArray(args, 0, "flags")] as const,
     clearFlags: (args) => [requireStringArray(args, 0, "flags")] as const,
     requestReport: (args) =>
@@ -313,6 +342,8 @@ const VALIDATORS: Validators = Object.assign(
         requireString(args, 1, "report"),
       ] as const,
     queryClipboard: (args) => requireNoArgs(args),
+    enableCrossSessionLayoutChange: (args) => requireNoArgs(args),
+    disableCrossSessionLayoutChange: (args) => requireNoArgs(args),
   } satisfies Validators,
 );
 
@@ -450,6 +481,23 @@ function requireNonEmptyString(
     throw new RpcError(
       "INVALID_ARG",
       `arg ${index} (${name}) must be a non-empty string`,
+    );
+  }
+  return v;
+}
+
+// The cross-session layout relay's subscription shares the bridge's one tmux
+// client; a peer binding the same name would replace the relay's binding and
+// silence coverage for every peer, so the name is not a peer's to take.
+function requireSubscriptionName(
+  args: readonly unknown[],
+  index: number,
+): string {
+  const v = requireNonEmptyString(args, index, "name");
+  if (v === CROSS_SESSION_LAYOUT_SUBSCRIPTION_NAME) {
+    throw new RpcError(
+      "INVALID_ARG",
+      `arg ${index} (name) "${v}" is reserved for cross-session layout coverage`,
     );
   }
   return v;

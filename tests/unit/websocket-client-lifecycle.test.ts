@@ -657,3 +657,101 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
     });
   });
 });
+
+describe("WebSocketTmuxClient — cross-session layout coverage", () => {
+  it("enables over RPC and emits the decoded events the server forwards", async () => {
+    const { client, hub } = makeClient();
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    const ws = hub.latest();
+
+    const enabled = client.enableCrossSessionLayoutChange();
+    const call = sentFrames(ws).find((f) => f.k === "call");
+    expect(call).toMatchObject({
+      method: "enableCrossSessionLayoutChange",
+      args: [],
+    });
+    ws.fire("message", {
+      data: encodeServerFrame({
+        k: "result",
+        id: call!.id!,
+        ok: true,
+        response: null,
+      }),
+    });
+    await expect(enabled).resolves.toBeUndefined();
+
+    const seen: unknown[] = [];
+    client.on("cross-session-layout-change", (ev) => seen.push(ev));
+    const change = {
+      type: "cross-session-layout-change",
+      sessionId: 1,
+      windowId: 7,
+      windowLayout: "b25d,80x24,0,0,0",
+      windowVisibleLayout: "b25d,80x24,0,0,0",
+      windowFlags: "*",
+    } as const;
+    ws.fire("message", {
+      data: encodeServerFrame({ k: "event", msg: change }),
+    });
+    expect(seen).toEqual([change]);
+  });
+});
+
+describe("WebSocketTmuxClient — cross-session layout coverage across reconnect", () => {
+  // Answer every call frame on `ws` that has not been answered yet.
+  function answerCalls(ws: MockWS, answered: Set<string>): void {
+    for (const f of sentFrames(ws)) {
+      if (f.k !== "call" || f.id === undefined || answered.has(f.id)) continue;
+      answered.add(f.id);
+      ws.fire("message", {
+        data: encodeServerFrame({
+          k: "result",
+          id: f.id,
+          ok: true,
+          response: null,
+        }),
+      });
+    }
+  }
+
+  function enableCalls(ws: MockWS): number {
+    return sentFrames(ws).filter(
+      (f) =>
+        f.k === "call" &&
+        (f as { method?: string }).method === "enableCrossSessionLayoutChange",
+    ).length;
+  }
+
+  it("replays the outstanding enables on the new connection", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    void client.connect();
+    hub.open(0);
+    hub.welcome(0);
+    const answered = new Set<string>();
+
+    for (const call of [
+      () => client.enableCrossSessionLayoutChange(),
+      () => client.enableCrossSessionLayoutChange(),
+      () => client.disableCrossSessionLayoutChange(),
+    ]) {
+      const p = call();
+      answerCalls(hub.sockets[0], answered);
+      await p;
+    }
+
+    hub.fireClose(0, 1006, "abnormal");
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(1);
+    hub.welcome(1);
+
+    // Two enables, one disable: the new server-side peer gets one enable.
+    expect(enableCalls(hub.sockets[1])).toBe(1);
+    answerCalls(hub.sockets[1], answered);
+    await client.close();
+  });
+});

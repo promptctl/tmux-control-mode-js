@@ -9,13 +9,20 @@
 // can drift out of sync with the correlation map — two structures that must
 // agree would be an invariant the type cannot enforce, so there is only one.
 
-import type { RpcResponseMap } from "../rpc.js";
-import { BridgeError, type ResultFrame, type RpcMethod } from "./protocol.js";
+import { TmuxCommandError } from "../../errors.js";
+import { answersNull, type RpcResponseMap } from "../rpc.js";
+import {
+  BridgeError,
+  BridgeProtocolError,
+  type ResultFrame,
+  type RpcMethod,
+} from "./protocol.js";
 
 interface Pending {
+  readonly method: RpcMethod;
   readonly frame: string;
   resolve(r: RpcResponseMap[RpcMethod]): void;
-  reject(e: BridgeError): void;
+  reject(e: BridgeError | TmuxCommandError): void;
   timer: ReturnType<typeof setTimeout>;
   transmitted: boolean;
 }
@@ -60,6 +67,7 @@ export class Outbox {
       // own request produced) — the same single-cast-site pattern
       // dispatchRpcRequest/VALIDATORS use for their own method-keyed tables.
       const entry: Pending = {
+        method,
         frame,
         resolve: resolve as Pending["resolve"],
         reject,
@@ -72,17 +80,31 @@ export class Outbox {
   }
 
   // Settle the pending call a result frame answers. No-op if the call already
-  // timed out (its entry is gone).
-  settle(frame: ResultFrame): void {
+  // timed out (its entry is gone). Returns the protocol violation, if the
+  // frame broke the wire contract, so the client reports it on its error
+  // channel like every other malformed frame.
+  settle(frame: ResultFrame): BridgeProtocolError | undefined {
     const p = this.pending.get(frame.id);
-    if (p === undefined) return;
+    if (p === undefined) return undefined;
     this.pending.delete(frame.id);
     clearTimeout(p.timer);
     if (frame.ok) {
+      // [LAW:parse-dont-validate] The frame parser cannot see the method; this
+      // is the one place that pairs a response with the call it answers.
+      if ((frame.response === null) !== answersNull(p.method)) {
+        const violation = new BridgeProtocolError(
+          `result for '${p.method}' has ${frame.response === null ? "a null" : "a non-null"} response`,
+        );
+        p.reject(violation);
+        return violation;
+      }
       p.resolve(frame.response);
+    } else if ("tmuxError" in frame) {
+      p.reject(new TmuxCommandError(frame.tmuxError));
     } else {
       p.reject(BridgeError.fromPayload(frame.error));
     }
+    return undefined;
   }
 
   // [LAW:dataflow-not-control-flow] Same loop every ready transition: walk

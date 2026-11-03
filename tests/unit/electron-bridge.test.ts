@@ -2266,3 +2266,56 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
   });
 });
 
+
+describe("Electron IPC bridge — cross-session layout coverage", () => {
+  it("delivers decoded events only to renderers that enabled them, and the relay's raw frames to none", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const enable = vi
+      .spyOn(client, "enableCrossSessionLayoutChange")
+      .mockResolvedValue(undefined);
+    const disable = vi
+      .spyOn(client, "disableCrossSessionLayoutChange")
+      .mockResolvedValue(undefined);
+    createMainBridge(client, hub.ipcMain);
+
+    const on = createRendererBridge(hub.createRenderer().ipcRenderer);
+    const off = createRendererBridge(hub.createRenderer().ipcRenderer);
+    await expect(on.enableCrossSessionLayoutChange()).resolves.toBeUndefined();
+    expect(enable).toHaveBeenCalledTimes(1);
+
+    const seenOn: unknown[] = [];
+    const seenOff: unknown[] = [];
+    const rawOn: unknown[] = [];
+    const rawOff: unknown[] = [];
+    on.on("cross-session-layout-change", (ev) => seenOn.push(ev));
+    off.on("cross-session-layout-change", (ev) => seenOff.push(ev));
+    on.on("subscription-changed", (ev) => rawOn.push(ev));
+    off.on("subscription-changed", (ev) => rawOff.push(ev));
+
+    t.feed(
+      "%subscription-changed ttcmjs-cross-session-layout $1 @0 0 %0 : 1:@7,\n",
+    );
+    const change = {
+      type: "cross-session-layout-change",
+      sessionId: 1,
+      windowId: 7,
+      windowLayout: "b25d,80x24,0,0,0",
+      windowVisibleLayout: "b25d,80x24,0,0,0",
+      windowFlags: "*",
+    } as const;
+    (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
+      change,
+    );
+
+    expect(seenOn).toEqual([change]);
+    expect(seenOff).toEqual([]);
+    expect(rawOn).toEqual([]);
+    expect(rawOff).toEqual([]);
+
+    await expect(on.disableCrossSessionLayoutChange()).resolves.toBeUndefined();
+    expect(disable).toHaveBeenCalledTimes(1);
+  });
+});

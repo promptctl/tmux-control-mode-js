@@ -30,6 +30,10 @@
 // heartbeat together so callers cannot observe a half-closed client.
 
 import {
+  isCrossSessionLayoutMessage,
+  type CrossSessionLayoutMessage,
+} from "../../cross-session-layout-messages.js";
+import {
   sameConnectionState,
   type ConnectionState,
 } from "../../connection-state.js";
@@ -139,6 +143,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly outbox: Outbox;
   // [LAW:decomposition] Reconnect budget + backoff + retry timer.
   private readonly reconnect: ReconnectController;
+  // Enables this client holds; the server-side peer forgets them on reconnect.
+  private crossSessionLayoutEnables = 0;
   // [LAW:decomposition] Ping/pong liveness. Connection-scoped: a fresh probe is
   // built each welcome (its cadence is only known then, from the server limits)
   // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
@@ -330,6 +336,42 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return this.call("queryClipboard", []);
   }
 
+  // Coverage is held by this connection's server-side peer, which a
+  // reconnect replaces with a fresh one holding none. The client owns the
+  // count of outstanding enables and replays it on every welcome, so
+  // coverage survives a reconnect the way it does on a direct TmuxClient.
+  async enableCrossSessionLayoutChange(): Promise<void> {
+    await this.call("enableCrossSessionLayoutChange", []);
+    this.crossSessionLayoutEnables += 1;
+  }
+
+  async disableCrossSessionLayoutChange(): Promise<void> {
+    // The server drops the peer's enable whatever tmux says about cleanup,
+    // so the local count follows the call, not its outcome.
+    this.crossSessionLayoutEnables = Math.max(
+      0,
+      this.crossSessionLayoutEnables - 1,
+    );
+    await this.call("disableCrossSessionLayoutChange", []);
+  }
+
+  // [LAW:no-silent-failure] A replay the new server refuses leaves coverage
+  // off; the client's error channel says so.
+  private replayCrossSessionLayoutEnables(): void {
+    for (let i = 0; i < this.crossSessionLayoutEnables; i++) {
+      this.call("enableCrossSessionLayoutChange", []).catch((err: unknown) =>
+        this.emitError(
+          err instanceof BridgeError
+            ? err
+            : new BridgeError(
+                "BRIDGE_INTERNAL",
+                `re-enabling cross-session layout coverage after reconnect failed: ${err instanceof Error ? err.message : typeof err}`,
+              ),
+        ),
+      );
+    }
+  }
+
   // [LAW:one-source-of-truth] All sink registration, topology bootstrap,
   //   and scope dispatch is owned by TopologyRouter — no duplication here.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
@@ -518,6 +560,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.lastError = undefined;
     this.setConnectionState({ status: "ready" });
     this.startHeartbeat();
+    // Restore this client's coverage on the new peer before anything queued
+    // during the outage, so a queued disable lands after the enables it undoes.
+    this.replayCrossSessionLayoutEnables();
     this.outbox.flush();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
     //   Called after setConnectionState("ready") so execute() accepts calls from within bootstrap.
@@ -525,7 +570,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   onResult(frame: ResultFrame): void {
-    this.outbox.settle(frame);
+    const violation = this.outbox.settle(frame);
+    // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+    if (violation !== undefined)
+      this.emitError(toBridgeProtocolError(violation));
   }
 
   onPong(id: string): void {
@@ -553,6 +601,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
+  }
+
+  // Synthetic events carry no topology or bytes, so they bypass the router.
+  emitCrossSessionLayout(msg: CrossSessionLayoutMessage): void {
+    this.emitter.emit(msg);
   }
 
   private onClose(event: { code?: number; reason?: string }): void {
@@ -817,7 +870,10 @@ const SERVER_FRAME_HANDLERS: ServerFrameHandlers = Object.assign(
   Object.create(null) as ServerFrameHandlers,
   {
     welcome: (self, f: WelcomeFrame) => self.onWelcome(f),
-    event: (self, f) => self.dispatchEvent(f.msg as TmuxMessage),
+    event: (self, f) =>
+      isCrossSessionLayoutMessage(f.msg)
+        ? self.emitCrossSessionLayout(f.msg)
+        : self.dispatchEvent(f.msg as TmuxMessage),
     result: (self, f: ResultFrame) => self.onResult(f),
     pong: (self, f) => self.onPong(f.id),
     draining: (self, f) => self.onDraining(f.deadlineMs),

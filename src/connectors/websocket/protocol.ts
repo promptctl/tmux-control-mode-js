@@ -14,7 +14,15 @@
 // [LAW:one-type-per-behavior] ClientFrame and ServerFrame are discriminated
 // unions — a single `k` field dispatches every receiver.
 
-import type { PaneOutputMessage, TmuxMessage } from "../../protocol/types.js";
+import {
+  isCrossSessionLayoutMessage,
+  type CrossSessionLayoutMessage,
+} from "../../cross-session-layout-messages.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
+  TmuxMessage,
+} from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
@@ -122,7 +130,7 @@ export interface WelcomeFrame {
 
 export interface EventFrame {
   readonly k: "event";
-  readonly msg: SerializedEventMessage;
+  readonly msg: SerializedEventMessage | CrossSessionLayoutMessage;
 }
 
 export interface ResultOkFrame {
@@ -141,7 +149,17 @@ export interface ResultErrFrame {
   readonly error: BridgeErrorPayload;
 }
 
-export type ResultFrame = ResultOkFrame | ResultErrFrame;
+// A tmux `%error` reply: the call reached tmux and tmux refused it. Distinct
+// from ResultErrFrame (the bridge itself failed) so the client can rethrow it
+// as a TmuxCommandError, as the Electron renderer and a direct TmuxClient do.
+export interface ResultTmuxErrorFrame {
+  readonly k: "result";
+  readonly id: string;
+  readonly ok: false;
+  readonly tmuxError: CommandResponse;
+}
+
+export type ResultFrame = ResultOkFrame | ResultErrFrame | ResultTmuxErrorFrame;
 
 export interface PongFrame {
   readonly k: "pong";
@@ -388,18 +406,66 @@ function parseWelcome(x: unknown): WelcomeFrame {
   };
 }
 
+// [LAW:types-are-the-program] Each cross-session layout event's fields and
+// their runtime kinds. The mapped type makes a field added to (or removed
+// from) a message interface a compile error here, so the wire check cannot
+// drift from the type the client emits.
+type FieldKinds<M> = {
+  readonly [F in Exclude<keyof M, "type">]: M[F] extends number
+    ? "number"
+    : "string";
+};
+const CROSS_SESSION_LAYOUT_FIELDS: {
+  readonly [K in CrossSessionLayoutMessage["type"]]: FieldKinds<
+    Extract<CrossSessionLayoutMessage, { type: K }>
+  >;
+} = {
+  "cross-session-layout-change": {
+    sessionId: "number",
+    windowId: "number",
+    windowLayout: "string",
+    windowVisibleLayout: "string",
+    windowFlags: "string",
+  },
+  "cross-session-layout-decode-error": { skippedBytes: "number" },
+  "cross-session-layout-overrun": { lostEntries: "number" },
+  "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
+};
+
+function checkCrossSessionLayoutFields(
+  msg: Record<string, unknown>,
+  type: CrossSessionLayoutMessage["type"],
+): void {
+  for (const [field, kind] of Object.entries(
+    CROSS_SESSION_LAYOUT_FIELDS[type],
+  )) {
+    if (typeof msg[field] !== kind) {
+      throw new BridgeProtocolError(
+        `event.msg.${field} must be a ${kind} for ${type}`,
+      );
+    }
+  }
+}
+
 function parseEvent(x: unknown): EventFrame {
   const o = x as { msg?: unknown };
   if (typeof o.msg !== "object" || o.msg === null) {
     throw new BridgeProtocolError("event.msg must be an object");
   }
-  const msg = o.msg as { type?: unknown };
-  if (typeof msg.type !== "string" || !SERIALIZED_EVENT_TYPES.has(msg.type)) {
-    throw new BridgeProtocolError(
-      `event.msg.type must be a known TmuxMessage discriminator, got ${JSON.stringify(msg.type)}`,
+  const { type } = o.msg as { type?: unknown };
+  const unknownType = () =>
+    new BridgeProtocolError(
+      `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(type)}`,
     );
+  if (typeof type !== "string") throw unknownType();
+  // Classify once: admission and the field check read the same verdict.
+  const typed = { type };
+  if (isCrossSessionLayoutMessage(typed)) {
+    checkCrossSessionLayoutFields(o.msg as Record<string, unknown>, typed.type);
+  } else if (!SERIALIZED_EVENT_TYPES.has(type)) {
+    throw unknownType();
   }
-  return { k: "event", msg: o.msg as SerializedEventMessage };
+  return { k: "event", msg: o.msg as EventFrame["msg"] };
 }
 
 function parseResult(x: unknown): ResultFrame {
@@ -408,19 +474,35 @@ function parseResult(x: unknown): ResultFrame {
     ok?: unknown;
     response?: unknown;
     error?: unknown;
+    tmuxError?: unknown;
   };
   if (typeof o.id !== "string" || o.id.length === 0) {
     throw new BridgeProtocolError("result.id must be a non-empty string");
   }
   if (o.ok === true) {
-    if (typeof o.response !== "object" || o.response === null) {
-      throw new BridgeProtocolError("result.response must be an object");
+    // `null` is legal only for the methods whose RpcSpec response is null;
+    // the outbox, which knows each call's method, enforces that pairing.
+    if (typeof o.response !== "object") {
+      throw new BridgeProtocolError(
+        "result.response must be an object or null",
+      );
     }
     return {
       k: "result",
       id: o.id,
       ok: true,
       response: o.response as RpcResponseMap[RpcMethod],
+    };
+  }
+  if (o.ok === false && "tmuxError" in o) {
+    if (typeof o.tmuxError !== "object" || o.tmuxError === null) {
+      throw new BridgeProtocolError("result.tmuxError must be an object");
+    }
+    return {
+      k: "result",
+      id: o.id,
+      ok: false,
+      tmuxError: o.tmuxError as CommandResponse,
     };
   }
   if (o.ok === false) {

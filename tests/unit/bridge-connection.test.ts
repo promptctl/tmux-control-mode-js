@@ -93,7 +93,9 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
 
@@ -140,7 +142,9 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
     const b = bridge.registerPeer();
@@ -196,7 +200,9 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const a = bridge.registerPeer();
 
@@ -232,7 +238,9 @@ describe("BridgeConnection — dispose() binding safety", () => {
     t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
 
     // Register two peers; their state must be cleared after dispose runs.
@@ -280,9 +288,11 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     const failures: ResumeFailure[] = [];
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -330,9 +340,11 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     const failures: ResumeFailure[] = [];
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -369,9 +381,11 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     t.feed(STARTUP_GREETING);
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: () => {},
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 
@@ -398,9 +412,11 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     const failures: ResumeFailure[] = [];
     const bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: false,
       outputHighWatermark: 100,
       outputLowWatermark: 25,
       reportResumeFailure: (f) => failures.push(f),
+      reportCoverageReleaseFailure: () => {},
     });
     const peer = bridge.registerPeer();
 

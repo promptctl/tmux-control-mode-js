@@ -75,7 +75,12 @@ export interface SenderState {
 export interface SenderRegistryDeps {
   readonly bridge: Pick<
     BridgeConnection,
-    "registerPeer" | "removePeer" | "accountOutput" | "ackOutput"
+    | "registerPeer"
+    | "removePeer"
+    | "accountOutput"
+    | "ackOutput"
+    | "routeEvent"
+    | "deliversTo"
   >;
   readonly client: Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 }
@@ -248,8 +253,8 @@ export class SenderRegistry {
   // Event fan-out.
   //
   // The mechanism: send a message to every subscribed renderer on IPC.event.
-  // The forwarding *policy* (which messages cross the bridge) lives at the
-  // shell's `client.on('*')` seam — this method fans out whatever it is given.
+  // The forwarding *policy* (which messages reach which renderer) is the
+  // bridge's routeEvent/deliversTo; this method only fans out on its verdict.
   // [LAW:dataflow-not-control-flow]
   // -------------------------------------------------------------------------
 
@@ -258,6 +263,10 @@ export class SenderRegistry {
     // senders.delete(wc), and a destroyed wc detected mid-loop must not perturb
     // the iteration order of the rest of the senders.
     const snapshot = [...this.senders];
+    // [LAW:single-enforcer] The bridge decides which events reach which peer;
+    // the message is classified once, then checked per peer.
+    const route = this.deps.bridge.routeEvent(msg);
+    if (route.kind === "none") return;
     for (const [wc, state] of snapshot) {
       // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
       // Electron may fire "destroyed" asynchronously, so a send could race a
@@ -267,6 +276,7 @@ export class SenderRegistry {
         continue;
       }
       if (!state.isSubscribed) continue;
+      if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
       wc.send(IPC.event, msg);
     }
   }

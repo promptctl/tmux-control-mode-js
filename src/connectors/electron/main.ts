@@ -124,12 +124,15 @@ export function createMainBridge(
   try {
     bridge = createBridgeConnection({
       client,
+      forwardsLifecycle: true,
       outputHighWatermark: options.outputHighWatermark,
       outputLowWatermark: options.outputLowWatermark,
       // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
       // main PERFORMS the surfacing through the host's opt-in hook. Undefined
       // means the host chose not to observe — the bridge never swallows it.
       reportResumeFailure: (f) => options.onResumeFailure?.(f),
+      reportCoverageReleaseFailure: (e) =>
+        options.onCoverageReleaseFailure?.(e),
     });
   } catch (err) {
     REGISTERED_IPC_MAINS.delete(ipcMain);
@@ -163,7 +166,6 @@ export function createMainBridge(
   // receive bytes — the type system enforces it. Byte chunks route through each
   // renderer's per-peer sink (attached in SenderRegistry.register), not here.
   const forwardEvent = (msg: EmitterMessage): void => {
-    if (msg.type === "topology-error") return;
     registry.broadcast(msg);
   };
   client.on("*", forwardEvent);

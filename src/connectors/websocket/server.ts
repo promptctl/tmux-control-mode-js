@@ -32,11 +32,7 @@
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
-import {
-  isTmuxMessage,
-  type EmitterMessage,
-  type EmitterTmuxMessage,
-} from "../../emitter.js";
+import type { EmitterMessage } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
 import {
@@ -55,9 +51,7 @@ import {
   mapRpcCode,
   parseRpcRequest,
   RpcError,
-  type RpcMethod,
   type RpcRequest,
-  type RpcResponseMap,
 } from "../rpc.js";
 import {
   type BridgeOutcome,
@@ -267,7 +261,7 @@ type ConnectionState =
        *  bytes. The connection acts as a single peer inside this helper —
        *  every subscribe/unsubscribe and every pane-output send routes
        *  through the same instance the Electron bridge uses. */
-      readonly bridge: BridgeConnection;
+      readonly bridge: BridgeConnection<false>;
       readonly peer: Peer;
     }
   /** Drain initiated; existing in-flight calls finish, new calls rejected. */
@@ -275,7 +269,7 @@ type ConnectionState =
       readonly kind: "draining";
       readonly client: TmuxClient;
       readonly ctx: ConnectionContext;
-      readonly bridge: BridgeConnection;
+      readonly bridge: BridgeConnection<false>;
       readonly peer: Peer;
       readonly deadlineMs: number;
     }
@@ -290,7 +284,7 @@ type ConnectionState =
       readonly final: {
         readonly client: TmuxClient;
         readonly ctx: ConnectionContext;
-        readonly bridge: BridgeConnection;
+        readonly bridge: BridgeConnection<false>;
         readonly peer: Peer;
       } | null;
     };
@@ -353,11 +347,8 @@ class Connection {
     private readonly opts: WebSocketBridgeOptions,
     private readonly defaults: ResolvedDefaults,
   ) {
-    // The WS server forwards parsed tmux events over the wire; synthetic
-    // lifecycle events are bridge-internal and the peer has its own
-    // connection-state via the welcome handshake.
     this.onAnyEventRef = (msg: EmitterMessage): void => {
-      if (isTmuxMessage(msg)) this.onTmuxEvent(msg);
+      this.onWireEvent(msg);
     };
     // [LAW:single-enforcer] Byte channel is multiplexer-shaped; the bridge
     //   attaches one all-panes sink instead of inspecting every wildcard
@@ -711,10 +702,11 @@ class Connection {
     // listener. If createBridgeConnection throws, the event listener was
     // never wired and finalize's `final === null` branch correctly skips
     // cleanup.
-    let bridge: BridgeConnection;
+    let bridge: BridgeConnection<false>;
     try {
       bridge = createBridgeConnection({
         client,
+        forwardsLifecycle: false,
         outputHighWatermark: this.opts.outputHighWatermark,
         outputLowWatermark: this.opts.outputLowWatermark,
         // [LAW:effects-at-boundaries] The bridge DESCRIBES a stranded resume;
@@ -726,6 +718,13 @@ class Connection {
             paneId: f.paneId,
             code: f.error.code,
             message: f.error.message,
+          }),
+        reportCoverageReleaseFailure: (e) =>
+          this.emit({
+            kind: "cross-session-layout-release-failed",
+            identity: this.identity,
+            code: e.code,
+            message: e.message,
           }),
       });
     } catch (err) {
@@ -869,11 +868,11 @@ class Connection {
   }
 
   // [LAW:decomposition] WS wire encoding of a BridgeOutcome — the
-  // transport-specific half. `ok` and `tmux-error` both reply with a
-  // CommandResponse frame (a tmux %error is a successful bridge call whose
-  // response carries success:false, not a transport error); `bridge-error`
-  // replies with a typed error frame carrying the BridgeError's code. The
-  // classification that produced the outcome lives in dispatchBridgeRequest.
+  // transport-specific half. `ok` replies with its response, `tmux-error`
+  // with a `tmuxError` frame the client rethrows as TmuxCommandError (as the
+  // Electron renderer does), and `bridge-error` with a typed error frame
+  // carrying the BridgeError's code. The classification that produced the
+  // outcome lives in dispatchBridgeRequest.
   private encodeOutcome(
     id: string,
     outcome: BridgeOutcome,
@@ -891,12 +890,18 @@ class Connection {
       });
       return;
     }
-    this.replyOk(id, outcome.response);
+    const tmuxError = outcome.kind === "tmux-error";
+    this.sendFrame(
+      tmuxError
+        ? { k: "result", id, ok: false, tmuxError: outcome.response }
+        : { k: "result", id, ok: true, response: outcome.response },
+    );
+    // Observability records what the client sees: a tmux %error rejects there.
     this.emit({
       kind: "result",
       identity: this.identity,
       id,
-      ok: true,
+      ...(tmuxError ? { ok: false, code: "TMUX_ERROR" } : { ok: true }),
       durationMs: Date.now() - startedAt,
     });
   }
@@ -937,21 +942,26 @@ class Connection {
   // -------------------------------------------------------------------------
   //
   // Two channels, disjoint by message type:
-  //   - `onTmuxEvent` handles non-byte tmux messages via the JSON event
-  //     frame. `EmitterTmuxMessage` excludes `PaneOutputMessage` by
-  //     construction, so a byte message cannot reach this method — the
-  //     type system enforces it.
+  //   - `onWireEvent` receives every emitter event and asks the bridge who it
+  //     reaches. Built with `forwardsLifecycle: false`, the bridge's delivered
+  //     route can only be a tmux or cross-session-layout message, so the JSON
+  //     event frame never sees a lifecycle or byte message — the route type
+  //     enforces it.
   //   - `onByteOutput` handles `PaneOutputMessage` via the binary
   //     side-channel. Bytes are routed here via
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
   // -------------------------------------------------------------------------
-  private onTmuxEvent(msg: EmitterTmuxMessage): void {
+  private onWireEvent(msg: EmitterMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
     if (this.state.kind !== "running" && this.state.kind !== "draining") {
       return;
     }
-    const encoded = encodeServerFrame({ k: "event", msg });
+    // [LAW:single-enforcer] The bridge decides who an event reaches.
+    const bridge = this.state.bridge;
+    const route = bridge.routeEvent(msg);
+    if (!bridge.deliversTo(this.state.peer, route)) return;
+    const encoded = encodeServerFrame({ k: "event", msg: route.msg });
     this.wsSend(encoded);
     this.emit({
       kind: "event-out",
@@ -1058,10 +1068,6 @@ class Connection {
   // -------------------------------------------------------------------------
   // Reply helpers
   // -------------------------------------------------------------------------
-  private replyOk(id: string, response: RpcResponseMap[RpcMethod]): void {
-    this.sendFrame({ k: "result", id, ok: true, response });
-  }
-
   private replyError(id: string, code: BridgeErrorCode, message: string): void {
     this.sendFrame({
       k: "result",

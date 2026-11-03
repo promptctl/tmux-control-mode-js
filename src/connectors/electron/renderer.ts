@@ -275,6 +275,14 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     return this.invoke({ method: "queryClipboard", args: [] });
   }
 
+  async enableCrossSessionLayoutChange(): Promise<void> {
+    await this.invoke({ method: "enableCrossSessionLayoutChange", args: [] });
+  }
+
+  async disableCrossSessionLayoutChange(): Promise<void> {
+    await this.invoke({ method: "disableCrossSessionLayoutChange", args: [] });
+  }
+
   // [LAW:single-enforcer] Byte sink registration delegates to the router,
   //   which owns the SinkRegistry, bootstrap trigger, and topology table.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {

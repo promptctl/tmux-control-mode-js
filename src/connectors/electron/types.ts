@@ -235,6 +235,11 @@ export interface MainBridgeOptions {
    * inside the bridge — the choice to look lives with the host.
    */
   readonly onResumeFailure?: (failure: ResumeFailure) => void;
+  /**
+   * Observe a departed renderer's cross-session layout release that a live
+   * tmux refused. Opt-in, like `onResumeFailure`. [LAW:no-silent-failure]
+   */
+  readonly onCoverageReleaseFailure?: (error: BridgeError) => void;
 }
 
 // [LAW:one-source-of-truth] Watermark defaults live in
