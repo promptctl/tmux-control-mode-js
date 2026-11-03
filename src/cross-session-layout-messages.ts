@@ -99,8 +99,9 @@ export interface CrossSessionLayoutHookRestoredMessage {
 
 /**
  * tmux refused the relay's check or reinstall of its global hook. The last
- * `cross-session-layout-uncovered` still stands; nothing retries until the
- * uncovered set changes again. [LAW:no-silent-failure]
+ * `cross-session-layout-uncovered` still stands; the relay tries again on
+ * the next delivery that has uncovered windows, so this can repeat.
+ * [LAW:no-silent-failure]
  */
 export interface CrossSessionLayoutRepairFailedMessage {
   readonly type: "cross-session-layout-repair-failed";

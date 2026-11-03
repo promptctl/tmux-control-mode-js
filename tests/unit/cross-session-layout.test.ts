@@ -151,7 +151,7 @@ function fakeConnection(seq = "") {
       if (command.startsWith("set-hook")) hookInstalled = true;
       if (command.includes("@ttcmjs-cross-session-layout-epoch ")) epoch += 1;
       if (command.startsWith("display-message")) {
-        return Promise.resolve(respond([`${seq}|${epoch || ""}`]));
+        return Promise.resolve(respond([`${seq}|${epoch}`]));
       }
       return Promise.resolve(respond([]));
     },
@@ -185,7 +185,7 @@ function fakeConnection(seq = "") {
     },
     /** A delivery of the current epoch, `uncovered` as `@<wid>,` text, then `buffer`. */
     deliver: (buffer: string, uncovered = "") => {
-      const value = `${epoch || ""}|${uncovered}|${buffer}`;
+      const value = `${epoch}|${uncovered}|${buffer}`;
       for (const h of handlers) {
         h({
           type: "subscription-changed",
@@ -392,11 +392,8 @@ describe("decodeDelivery", () => {
     expect(decodeDelivery("1:@3,")).toEqual({ coverage: null, buffer: "" });
   });
 
-  it("takes any text in the epoch, so a foreign write cannot disable coverage", () => {
-    expect(decodeDelivery("x|@3,|1:@3,").coverage).toEqual({
-      epoch: "x",
-      uncovered: [3],
-    });
+  it("rejects an epoch that is not tmux's numeric reading", () => {
+    expect(decodeDelivery("x|@3,|1:@3,").coverage).toBeNull();
   });
 });
 
@@ -513,6 +510,32 @@ describe("CrossSessionLayoutRelay coverage", () => {
         c.includes('@ttcmjs-cross-session-layout-epoch "'),
       ),
     ).toHaveLength(2);
+  });
+
+  it("queues one repair for a burst of deliveries", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = fake.sent.filter((c) => c.startsWith("show-hooks")).length;
+    fake.deliver("", "@4,");
+    fake.deliver("1:@4,", "@4,");
+    fake.deliver("2:@4,", "@4,");
+    await settle();
+    expect(
+      fake.sent.filter((c) => c.startsWith("show-hooks")).length - before,
+    ).toBe(1);
+  });
+
+  it("leaves a present hook alone during a repair", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    const before = fake.sent.filter((c) => c.startsWith("set-hook")).length;
+    fake.deliver("", "@4,");
+    await settle();
+    expect(fake.sent.filter((c) => c.startsWith("set-hook")).length).toBe(
+      before,
+    );
   });
 
   it("replaces whatever command sits at the reserved index", async () => {

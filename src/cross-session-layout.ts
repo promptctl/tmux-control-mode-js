@@ -18,11 +18,7 @@
 
 import type { TmuxConnection } from "./client.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
-import {
-  TmuxCommandError,
-  TransportClosedError,
-  TransportSendError,
-} from "./errors.js";
+import { isConnectionGone, TmuxCommandError } from "./errors.js";
 import { tmuxEscape } from "./protocol/encoder.js";
 import type { SubscriptionChangedMessage } from "./protocol/types.js";
 import {
@@ -108,7 +104,14 @@ function installHookCommand(): string {
 /** Reads the global entry alone: `<hook> <command>`, or `<hook> ` once removed. */
 const SHOW_HOOK_COMMAND = `show-hooks -g ${HOOK}`;
 
-const BUMP_EPOCH_COMMAND = `set-option -gF ${EPOCH_OPTION_NAME} "#{e|+:#{${EPOCH_OPTION_NAME}},1}"`;
+/**
+ * The epoch read as a number: digits, or `""` for text that isn't one — so a
+ * foreign write to the option can never put a `|` into the subscription
+ * value. [LAW:parse-dont-validate] tmux does the coercion.
+ */
+const EPOCH_FORMAT = `#{e|+:#{${EPOCH_OPTION_NAME}},0}`;
+
+const BUMP_EPOCH_COMMAND = `set-option -gF ${EPOCH_OPTION_NAME} "#{e|+:${EPOCH_FORMAT},1}"`;
 
 function installAndBumpCommand(): string {
   // One command list: tmux applies both or reports the one that failed, so
@@ -129,8 +132,6 @@ function installAndBumpCommand(): string {
 const UNCOVERED_FORMAT = `#{S:#{W:#{?#{${HOOK}},,#{window_id}#,}}}`;
 
 const UNCOVERED_RE = /^(?:@\d+,)*$/;
-
-const EPOCH_FORMAT = `#{${EPOCH_OPTION_NAME}}`;
 
 /** The subscription's value: the epoch, `|`, the uncovered windows, `|`, then the buffer. */
 const SUBSCRIPTION_FORMAT = `${EPOCH_FORMAT}|${UNCOVERED_FORMAT}|#{${OPTION_NAME}}`;
@@ -215,13 +216,12 @@ export function decodeDelivery(value: string): {
   readonly coverage: Coverage | null;
   readonly buffer: string;
 } {
-  // The epoch is compared, never computed with, so any text in it is an
-  // epoch — a foreign write to the option changes it once, not forever.
-  const m = /^([^|]*)\|([^|]*)\|/.exec(value);
+  const m = /^(\d*)\|([^|]*)\|/.exec(value);
   if (m === null || !UNCOVERED_RE.test(m[2])) {
+    const lastBar = value.lastIndexOf("|");
     return {
       coverage: null,
-      buffer: value.slice(value.lastIndexOf("|") + 1 || value.length),
+      buffer: lastBar === -1 ? "" : value.slice(lastBar + 1),
     };
   }
   const ids = [...m[2].matchAll(/@(\d+),/g)].map((w) => Number(w[1]));
@@ -263,6 +263,13 @@ export function planDelivery(
   };
 }
 
+/** tmux's `%error` output for a refused command; any other error as text. */
+function failureReason(err: unknown): string {
+  return err instanceof TmuxCommandError
+    ? err.response.output.join("\n")
+    : String(err);
+}
+
 /** Both sides come from {@link decodeDelivery}: sorted and distinct. */
 function sameIds(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
@@ -291,6 +298,8 @@ export class CrossSessionLayoutRelay {
   // this subscription's first delivery, which is always reported.
   private epoch = "";
   private reportedUncovered: readonly number[] | null = null;
+  // A repair already waiting in the queue answers every delivery behind it.
+  private repairQueued = false;
   // [LAW:dataflow-not-control-flow] enable()/disable() — and coverage
   // repair, so two deliveries never repair at once — serialize through
   // this slot, and each step reconciles `subscribed` toward `refCount > 0`
@@ -353,7 +362,7 @@ export class CrossSessionLayoutRelay {
   }
 
   private async subscribe(): Promise<void> {
-    await this.ensureHook();
+    await this.ensureHook("replace");
     // Baseline before subscribing: the buffer may hold hours of entries
     // from relays long gone, and none of them are news to this one.
     // Anything appended after this read has a higher seq and arrives in
@@ -450,47 +459,45 @@ export class CrossSessionLayoutRelay {
         windowIds: uncovered,
       });
     }
-    if (uncovered.length === 0) return;
+    if (uncovered.length === 0 || this.repairQueued) return;
+    this.repairQueued = true;
     // The caller of a repair is this delivery, which has nobody to reject
     // to; the step reports its own failures.
     void this.serialize(() => this.repair(generation));
   }
 
   private async repair(generation: number): Promise<void> {
+    this.repairQueued = false;
     if (generation !== this.generation) return;
     try {
-      await this.ensureHook();
+      await this.ensureHook("if-missing");
     } catch (err) {
-      if (
-        err instanceof TransportClosedError ||
-        err instanceof TransportSendError
-      ) {
-        return;
-      }
+      if (isConnectionGone(err)) return;
       this.emit({
         type: "cross-session-layout-repair-failed",
-        reason:
-          err instanceof TmuxCommandError
-            ? err.response.output.join("\n")
-            : String(err),
+        reason: failureReason(err),
       });
     }
   }
 
   /**
-   * Install the global entry — always, so a stale or foreign command at the
-   * reserved index is replaced — and bump the epoch when it had been gone,
-   * so every relay hears it. Two relays racing here both bump: a repeated
-   * hook-restored over-reports, which costs a re-read, never a lost change.
+   * Bring the global entry back when it is gone, bumping the epoch so every
+   * relay hears it. `"replace"` (on subscribe) also overwrites a present
+   * entry, so a stale or foreign command at the reserved index is replaced;
+   * a repair leaves a present entry alone, so a hook cleared between the
+   * check and the install is found missing by the next delivery's check
+   * rather than silently reinstalled. Two relays racing both bump: a
+   * repeated hook-restored over-reports, which costs a re-read, never a
+   * lost change.
    */
-  private async ensureHook(): Promise<void> {
+  private async ensureHook(mode: "replace" | "if-missing"): Promise<void> {
     const shown = await this.client.execute(SHOW_HOOK_COMMAND);
     const line = shown.output[0] ?? "";
     const present =
       line.startsWith(HOOK) && line.slice(HOOK.length).trim() !== "";
-    await this.client.execute(
-      present ? installHookCommand() : installAndBumpCommand(),
-    );
+    if (!present) await this.client.execute(installAndBumpCommand());
+    else if (mode === "replace")
+      await this.client.execute(installHookCommand());
   }
 
   private async fetchAndEmit(
@@ -514,19 +521,11 @@ export class CrossSessionLayoutRelay {
       const response = await this.client.execute(fetchLayoutCommand(windowId));
       line = response.output[0] ?? "";
     } catch (err) {
-      if (
-        err instanceof TransportClosedError ||
-        err instanceof TransportSendError
-      ) {
-        return null;
-      }
+      if (isConnectionGone(err)) return null;
       return {
         type: "cross-session-layout-fetch-failed",
         windowId,
-        reason:
-          err instanceof TmuxCommandError
-            ? err.response.output.join("\n")
-            : String(err),
+        reason: failureReason(err),
       };
     }
     // [LAW:no-silent-failure] A reply that doesn't match the requested
