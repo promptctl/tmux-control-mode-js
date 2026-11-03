@@ -60,7 +60,9 @@ async function attachClient(
   sessionName: string,
 ): Promise<TmuxClient> {
   const client = new TmuxClient(
-    spawnTmux(["attach-session", "-t", sessionName], { socketPath: socketName }),
+    spawnTmux(["attach-session", "-t", sessionName], {
+      socketPath: socketName,
+    }),
   );
   await waitReady(client);
   return client;
@@ -76,7 +78,10 @@ async function attachClient(
 function collectCrossSessionLayoutChanges(
   client: TmuxClient,
   ms: number,
-): { events: CrossSessionLayoutChangeMessage[]; settle: () => Promise<CrossSessionLayoutChangeMessage[]> } {
+): {
+  events: CrossSessionLayoutChangeMessage[];
+  settle: () => Promise<CrossSessionLayoutChangeMessage[]>;
+} {
   const events: CrossSessionLayoutChangeMessage[] = [];
   const handler = (ev: CrossSessionLayoutChangeMessage): void => {
     events.push(ev);
@@ -103,113 +108,131 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
     killTmuxServer(socketName);
   });
 
-  it(
-    "delivers a layout change from a session the client is not attached to",
-    async () => {
-      const sessionA = uniqueName("a");
-      const sessionB = uniqueName("b");
-      exec(socketName, `new-session -d -s ${sessionA}`);
-      exec(socketName, `new-session -d -s ${sessionB}`);
+  it("delivers a layout change from a session the client is not attached to", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
 
-      const clientA = await attachClient(socketName, sessionA);
-      try {
-        await clientA.enableCrossSessionLayoutChange();
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
 
-        const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
+      const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
 
-        // The ticket's exact repro: a layout change in a session this
-        // client is NOT attached to. split-window triggers %layout-change,
-        // which tmux never delivers to clientA at all (SPEC.md §6.2) since
-        // the window isn't in clientA's session.
-        exec(socketName, `split-window -t ${sessionB}`);
+      // The ticket's exact repro: a layout change in a session this
+      // client is NOT attached to. split-window triggers %layout-change,
+      // which tmux never delivers to clientA at all (SPEC.md §6.2) since
+      // the window isn't in clientA's session.
+      exec(socketName, `split-window -t ${sessionB}`);
 
-        const events = await settle();
-        expect(events.length).toBeGreaterThanOrEqual(1);
-        const sessionIds = await (async () => {
-          const out = execSync(
-            tmuxCmd(
-              socketName,
-              `display-message -p -t ${sessionB} "#{session_id}"`,
-            ),
-            { encoding: "utf8" },
-          ).trim();
-          return out;
-        })();
-        const expectedSessionId = Number(sessionIds.replace("$", ""));
-        expect(events.some((e) => e.sessionId === expectedSessionId)).toBe(
-          true,
-        );
-        // Classic checksum-string format, matching native %layout-change —
-        // never the tmux-3.8+ JSON `#{window_layout}` rendering.
-        for (const e of events) {
-          expect(e.windowLayout).toMatch(/^[0-9a-f]+,\d+x\d+,\d+,\d+/i);
-        }
-      } finally {
-        await clientA.disableCrossSessionLayoutChange();
-        clientA.close();
+      const events = await settle();
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      const sessionIds = await (async () => {
+        const out = execSync(
+          tmuxCmd(
+            socketName,
+            `display-message -p -t ${sessionB} "#{session_id}"`,
+          ),
+          { encoding: "utf8" },
+        ).trim();
+        return out;
+      })();
+      const expectedSessionId = Number(sessionIds.replace("$", ""));
+      expect(events.some((e) => e.sessionId === expectedSessionId)).toBe(true);
+      // Classic checksum-string format, matching native %layout-change —
+      // never the tmux-3.8+ JSON `#{window_layout}` rendering.
+      for (const e of events) {
+        expect(e.windowLayout).toMatch(/^[0-9a-f]+,\d+x\d+,\d+,\d+/i);
       }
-    },
-    20000,
-  );
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
 
-  it(
-    "delivers every window's event from a same-tick burst, not just the last",
-    async () => {
-      const sessionA = uniqueName("a");
-      const sessionB = uniqueName("b");
-      const sessionC = uniqueName("c");
-      exec(socketName, `new-session -d -s ${sessionA}`);
-      exec(socketName, `new-session -d -s ${sessionB}`);
-      exec(socketName, `new-session -d -s ${sessionC}`);
+  it("delivers every window's event from a same-tick burst, not just the last", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    const sessionC = uniqueName("c");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+    exec(socketName, `new-session -d -s ${sessionC}`);
 
-      const clientA = await attachClient(socketName, sessionA);
-      try {
-        await clientA.enableCrossSessionLayoutChange();
-        const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
 
-        // Two different sessions' windows change layout back-to-back —
-        // this is the scenario that overwrote-and-lost an entry before the
-        // append-queue fix (a single last-write-wins slot would only ever
-        // report the second one).
-        exec(socketName, `split-window -t ${sessionB}`);
-        exec(socketName, `split-window -t ${sessionC}`);
+      // Two different sessions' windows change layout back-to-back —
+      // this is the scenario that overwrote-and-lost an entry before the
+      // append-queue fix (a single last-write-wins slot would only ever
+      // report the second one).
+      exec(socketName, `split-window -t ${sessionB}`);
+      exec(socketName, `split-window -t ${sessionC}`);
 
-        const events = await settle();
-        const bySession = new Set(events.map((e) => e.sessionId));
-        expect(bySession.size).toBeGreaterThanOrEqual(2);
-      } finally {
-        await clientA.disableCrossSessionLayoutChange();
-        clientA.close();
-      }
-    },
-    20000,
-  );
+      const events = await settle();
+      const bySession = new Set(events.map((e) => e.sessionId));
+      expect(bySession.size).toBeGreaterThanOrEqual(2);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
 
-  it(
-    "never emits a decode-error diagnostic under normal (non-overflow) operation",
-    async () => {
-      const sessionA = uniqueName("a");
-      const sessionB = uniqueName("b");
-      exec(socketName, `new-session -d -s ${sessionA}`);
-      exec(socketName, `new-session -d -s ${sessionB}`);
+  it("delivers the same change to two clients on one server", async () => {
+    // Every relay reads one shared buffer; neither may consume an entry
+    // the other has not seen yet.
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    const sessionC = uniqueName("c");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+    exec(socketName, `new-session -d -s ${sessionC}`);
 
-      const clientA = await attachClient(socketName, sessionA);
-      try {
-        await clientA.enableCrossSessionLayoutChange();
-        const decodeErrors: CrossSessionLayoutDecodeErrorMessage[] = [];
-        clientA.on("cross-session-layout-decode-error", (e) =>
-          decodeErrors.push(e),
-        );
+    const clientA = await attachClient(socketName, sessionA);
+    const clientB = await attachClient(socketName, sessionB);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      await clientB.enableCrossSessionLayoutChange();
+      const a = collectCrossSessionLayoutChanges(clientA, 3000);
+      const b = collectCrossSessionLayoutChanges(clientB, 3000);
 
-        exec(socketName, `split-window -t ${sessionB}`);
-        await new Promise((r) => setTimeout(r, 3000));
+      exec(socketName, `split-window -t ${sessionC}`);
 
-        expect(decodeErrors).toEqual([]);
-      } finally {
-        await clientA.disableCrossSessionLayoutChange();
-        clientA.close();
-      }
-    },
-    20000,
-  );
+      const [eventsA, eventsB] = await Promise.all([a.settle(), b.settle()]);
+      expect(eventsA.length).toBe(1);
+      expect(eventsB.length).toBe(1);
+      expect(eventsA[0]?.windowId).toBe(eventsB[0]?.windowId);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      await clientB.disableCrossSessionLayoutChange();
+      clientA.close();
+      clientB.close();
+    }
+  }, 20000);
+
+  it("never emits a decode-error diagnostic under normal (non-overflow) operation", async () => {
+    const sessionA = uniqueName("a");
+    const sessionB = uniqueName("b");
+    exec(socketName, `new-session -d -s ${sessionA}`);
+    exec(socketName, `new-session -d -s ${sessionB}`);
+
+    const clientA = await attachClient(socketName, sessionA);
+    try {
+      await clientA.enableCrossSessionLayoutChange();
+      const decodeErrors: CrossSessionLayoutDecodeErrorMessage[] = [];
+      clientA.on("cross-session-layout-decode-error", (e) =>
+        decodeErrors.push(e),
+      );
+
+      exec(socketName, `split-window -t ${sessionB}`);
+      await new Promise((r) => setTimeout(r, 3000));
+
+      expect(decodeErrors).toEqual([]);
+    } finally {
+      await clientA.disableCrossSessionLayoutChange();
+      clientA.close();
+    }
+  }, 20000);
 });

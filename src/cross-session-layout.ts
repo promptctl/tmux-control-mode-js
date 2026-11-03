@@ -52,15 +52,26 @@ export interface CrossSessionLayoutChangeMessage {
 
 /**
  * The relay's queue decoder found bytes that don't match the entry grammar
- * at a point it expected an entry to start — either `CAP` truncation sheared
- * an entry at the front of the buffer, or a resync after a trim/truncation
- * landed mid-entry. The malformed span was skipped (up to and including the
- * next comma), not misinterpreted as a real identity pair.
+ * where it expected an entry to start — something other than this
+ * library's hook wrote the option. The malformed span was skipped (up to
+ * and including the next comma), not misinterpreted as a real identity.
  * [LAW:no-silent-failure]
  */
 export interface CrossSessionLayoutDecodeErrorMessage {
   readonly type: "cross-session-layout-decode-error";
   readonly skippedBytes: number;
+}
+
+/**
+ * Layout changes happened faster than this relay drained them: the hook's
+ * `CAP` truncation discarded `lostEntries` entries this relay had not yet
+ * seen, so their windows' changes were never fetched. A consumer that needs
+ * completeness re-reads every window's layout on this event.
+ * [LAW:no-silent-failure]
+ */
+export interface CrossSessionLayoutOverrunMessage {
+  readonly type: "cross-session-layout-overrun";
+  readonly lostEntries: number;
 }
 
 /**
@@ -80,6 +91,7 @@ export interface CrossSessionLayoutFetchFailedMessage {
 export type CrossSessionLayoutMessage =
   | CrossSessionLayoutChangeMessage
   | CrossSessionLayoutDecodeErrorMessage
+  | CrossSessionLayoutOverrunMessage
   | CrossSessionLayoutFetchFailedMessage;
 
 // ---------------------------------------------------------------------------
@@ -96,70 +108,61 @@ export type CrossSessionLayoutMessage =
 const RESERVED_HOOK_INDEX = 9001;
 
 const OPTION_NAME = "@ttcmjs-cross-session-layout";
+const SEQ_OPTION_NAME = "@ttcmjs-cross-session-layout-seq";
 const SUBSCRIPTION_NAME = "ttcmjs-cross-session-layout";
 
 /**
- * Bytes retained in the relayed option, self-enforced by the hook's own
- * append command (independent of whether any consumer is subscribed to
- * drain it — see the module doc comment). tmux ids are monotonic per-server
- * counters, never reused: even an extreme, continuously busy server creating
- * a window or session every second for a full year reaches ~8 decimal
- * digits, and one maximally-wide entry (`$99999999:@99999999,`) is 20
- * bytes — 4096 holds ~204 such entries, far more than any plausible
- * same-tick burst (bounded in practice by how many windows actually exist
- * on the server).
+ * Bytes retained in the relayed option, enforced by the hook's own append
+ * (so growth never depends on any relay being alive). One entry is
+ * `<seq>:$<sid>:@<wid>,` — about 30 bytes with every number at 8–10
+ * digits — so 4096 holds well over 100 entries: a relay only loses entries
+ * if more than that many layout changes land within one ~1s subscription
+ * interval, and then it says so (`cross-session-layout-overrun`).
  */
 const CAP = 4096;
 
-const ENTRY_RE = /^\$(\d+):@(\d+),/;
+const ENTRY_RE = /^(\d+):\$(\d+):@(\d+),/;
 
 /**
- * The hook's canonical, idempotent command: append this window's identity
- * (never the layout string itself — see the module doc comment) to the
- * reserved option, atomically truncated to the last `CAP` bytes in the same
- * command so growth never depends on a subscriber being present to trim it.
- * `-F` is required: `set-option -g` without it stores the literal,
- * unexpanded `#{...}` text.
+ * The hook: bump the server-wide sequence counter, then append
+ * `<seq>:<session>:<window>,` (never the layout string itself — it is
+ * fetched afterwards), truncated to the last `CAP` bytes. tmux runs the two
+ * commands of one hook back to back, so the second expands the counter the
+ * first just set; an unset counter expands `#{e|+:,1}` to 1.
+ *
+ * [LAW:one-source-of-truth] The buffer is append-only and no relay ever
+ * writes it: each relay tracks the highest `seq` it has handled, so any
+ * number of relays — in this process or another — read the same buffer
+ * without consuming each other's entries. `-F` is required: `set-option -g`
+ * without it stores the literal, unexpanded `#{...}` text.
  */
 function hookCommand(): string {
   return (
+    `set-option -gF ${SEQ_OPTION_NAME} "#{e|+:#{${SEQ_OPTION_NAME}},1}" ; ` +
     `set-option -gF ${OPTION_NAME} ` +
-    `"#{=-${CAP}:#{${OPTION_NAME}}#{session_id}:#{window_id},}"`
+    `"#{=-${CAP}:#{${OPTION_NAME}}#{${SEQ_OPTION_NAME}}:#{session_id}:#{window_id},}"`
   );
 }
 
 function installHookCommand(): string {
   // set-hook takes hook-name + exactly one command argument — the inner
-  // command (itself containing a double-quoted format string) must be
-  // wrapped as a single tmux-parsed token. tmux's own command-line
-  // tokenizer supports nested single/double quoting the same way a shell
-  // does, so single-quoting the outer argument here works even though the
-  // inner command already uses double quotes.
+  // command list (itself containing double-quoted format strings) must be
+  // wrapped as a single tmux-parsed token. tmux's command-line tokenizer
+  // supports nested single/double quoting the way a shell does.
   return `set-hook -g window-layout-changed[${RESERVED_HOOK_INDEX}] '${hookCommand()}'`;
 }
 
-/**
- * One atomic check-and-clear: the comparison and the write both read the
- * same live server-side state at this single command's execution instant
- * (tmux's command queue is strictly serial), so there is no gap for a
- * concurrent hook append to land in between a check and a destructive
- * write. If the live value no longer equals `drainedSnapshot` (something
- * was appended since), the `else` branch is the option read back to itself
- * — a no-op, never destructive.
- *
- * `drainedSnapshot` is safe to interpolate literally: every byte in it
- * comes from the entry grammar (`$`, digits, `@`, `:`, `,`), which never
- * contains `#` — the one character that would need escaping here.
- */
-function trimCommand(drainedSnapshot: string): string {
-  return (
-    `set-option -gF ${OPTION_NAME} ` +
-    `"#{?#{==:#{${OPTION_NAME}},${drainedSnapshot}},,#{${OPTION_NAME}}}"`
-  );
+function readSeqCommand(): string {
+  return `display-message -p "#{${SEQ_OPTION_NAME}}"`;
 }
 
-function fetchLayoutCommand(windowId: number): string {
-  return `display-message -p -t @${windowId} "#{window_layout}\x01#{window_visible_layout}\x01#{window_flags}"`;
+/**
+ * Targets `$session:@window`, not bare `@window`: a window linked into more
+ * than one session has a per-session `#{window_flags}` (current/last), and
+ * the flags must be the ones for the session the hook recorded.
+ */
+function fetchLayoutCommand(sessionId: number, windowId: number): string {
+  return `display-message -p -t '$${sessionId}:@${windowId}' "#{window_layout}\x01#{window_visible_layout}\x01#{window_flags}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +170,7 @@ function fetchLayoutCommand(windowId: number): string {
 // ---------------------------------------------------------------------------
 
 export interface DecodedEntry {
+  readonly seq: number;
   readonly sessionId: number;
   readonly windowId: number;
 }
@@ -177,21 +181,30 @@ export interface DecodeResult {
 }
 
 /**
- * Decode every `$sessionId:@windowId,` entry in `remainder` (already the
- * not-yet-processed suffix/whole-value per the caller's prefix-diff — see
- * {@link diffAgainstLastProcessed}). A non-match with non-empty remaining
- * text is a shear artifact (CAP truncation, or a resync landing mid-entry):
- * skip to the next `,` and resume, recording the skip rather than
- * misinterpreting the fragment as a real id. [LAW:parse-don't-validate]
+ * Decode every `<seq>:$<sid>:@<wid>,` entry in `value`. When `value` is at
+ * `CAP` length the hook's truncation may have sheared its first entry —
+ * and a sheared entry can still look well-formed (`12:$3:@4,` → `2:$3:@4,`),
+ * so it is dropped unread rather than trusted; a real entry lost that way
+ * shows up as a `seq` gap, which {@link planDelivery} reports. Any other
+ * non-match is foreign text: skip to the next `,` and record the skip.
+ * [LAW:parse-don't-validate]
  */
-export function decodeEntries(remainder: string): DecodeResult {
+export function decodeEntries(value: string): DecodeResult {
   const entries: DecodedEntry[] = [];
   const skips: { skippedBytes: number }[] = [];
-  let cursor = remainder;
+  let cursor = value;
+  if (value.length >= CAP) {
+    const commaIdx = cursor.indexOf(",");
+    cursor = commaIdx === -1 ? "" : cursor.slice(commaIdx + 1);
+  }
   while (cursor.length > 0) {
     const m = ENTRY_RE.exec(cursor);
     if (m) {
-      entries.push({ sessionId: Number(m[1]), windowId: Number(m[2]) });
+      entries.push({
+        seq: Number(m[1]),
+        sessionId: Number(m[2]),
+        windowId: Number(m[3]),
+      });
       cursor = cursor.slice(m[0].length);
       continue;
     }
@@ -203,22 +216,44 @@ export function decodeEntries(remainder: string): DecodeResult {
   return { entries, skips };
 }
 
+export interface DeliveryPlan {
+  /** Distinct windows changed since `lastSeq`, in first-seen order. */
+  readonly windows: readonly {
+    readonly sessionId: number;
+    readonly windowId: number;
+  }[];
+  /** Entries newer than `lastSeq` that truncation discarded unseen. */
+  readonly lostEntries: number;
+  readonly lastSeq: number;
+}
+
 /**
- * If `value` starts with `lastProcessedValue` (the common case: nothing but
- * new appends happened since the last delivery), only the new suffix is
- * unprocessed. Otherwise (an atomic trim ran, or CAP truncation sheared the
- * front since last time) the whole value is treated as unprocessed —
- * {@link decodeEntries}'s resync handles a sheared leading fragment, and
- * re-decoding a couple of already-seen entries near a trim/truncation
- * boundary is a harmless duplicate, not data loss.
+ * What one delivery means to a relay that has handled everything up to
+ * `lastSeq`: the entries newer than that (deduplicated — two changes to one
+ * window need one fetch, since the fetch reads its current layout), how many
+ * newer entries were lost before this relay saw them, and the new high-water
+ * mark.
  */
-export function diffAgainstLastProcessed(
-  value: string,
-  lastProcessedValue: string,
-): string {
-  return value.startsWith(lastProcessedValue)
-    ? value.slice(lastProcessedValue.length)
-    : value;
+export function planDelivery(
+  entries: readonly DecodedEntry[],
+  lastSeq: number,
+): DeliveryPlan {
+  const fresh = entries.filter((e) => e.seq > lastSeq);
+  if (fresh.length === 0) return { windows: [], lostEntries: 0, lastSeq };
+  const seen = new Set<string>();
+  const windows: { sessionId: number; windowId: number }[] = [];
+  for (const e of fresh) {
+    const key = `${e.sessionId}:${e.windowId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    windows.push({ sessionId: e.sessionId, windowId: e.windowId });
+  }
+  const seqs = fresh.map((e) => e.seq);
+  return {
+    windows,
+    lostEntries: Math.min(...seqs) - lastSeq - 1,
+    lastSeq: Math.max(...seqs),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,22 +263,23 @@ export function diffAgainstLastProcessed(
 /**
  * Per-`TmuxClient` relay. Ref-counted `enable`/`disable` so more than one
  * local listener can ask for this coverage without duplicate subscriptions;
- * the global hook, once installed, is intentionally never torn down (see
- * module doc comment and the plan this ticket shipped from) — cross-process
- * ref-counting has no safe shared counter, and the hook's own command is
- * self-capping, so leaving it in place is simpler and strictly safer than a
- * teardown that could race another process's still-active coverage away.
+ * the global hook, once installed, is intentionally never torn down —
+ * cross-process ref-counting has no safe shared counter, and the hook's own
+ * command is self-capping, so leaving it in place is simpler and strictly
+ * safer than a teardown that could race another process's coverage away.
  */
 export class CrossSessionLayoutRelay {
   private refCount = 0;
-  private lastProcessedValue = "";
-  // [LAW:dataflow-not-control-flow] enable()/disable() serialize through this
-  // single slot rather than racing the hook-install/subscribe or
-  // off/unsubscribe effects against refCount's synchronous increment —
-  // without it, an enable() still mid-await could have its subscription
-  // installed AFTER a racing disable() already tore it down, leaving the
-  // relay subscribed forever with refCount stuck at 0.
-  private pending: Promise<void> = Promise.resolve();
+  private subscribed = false;
+  private lastSeq = 0;
+  // Bumped on every teardown; a delivery still fetching when its
+  // subscription is torn down sees a different generation and emits nothing.
+  private generation = 0;
+  // [LAW:dataflow-not-control-flow] enable()/disable() serialize through
+  // this slot, and each step reconciles `subscribed` toward `refCount > 0`
+  // rather than acting on a decision taken before it waited — so racing
+  // calls, and a step that failed, leave state the next step corrects.
+  private queue: Promise<void> = Promise.resolve();
   private readonly onSubscriptionChanged = (
     msg: SubscriptionChangedMessage,
   ): void => {
@@ -256,97 +292,137 @@ export class CrossSessionLayoutRelay {
     private readonly emit: (msg: CrossSessionLayoutMessage) => void,
   ) {}
 
-  /** Idempotent-in-effect: safe to call from any process at any time. */
+  /** Idempotent-in-effect: safe to call from any process at any time. Rejects, and counts for nothing, if the subscription could not be set up. */
   enable(): Promise<void> {
     this.refCount += 1;
-    const shouldInstall = this.refCount === 1;
-    this.pending = this.pending.then(async () => {
-      if (!shouldInstall) return;
-      await this.client.execute(installHookCommand());
-      this.client.on("subscription-changed", this.onSubscriptionChanged);
+    return this.serialize(async () => {
+      try {
+        await this.reconcile();
+      } catch (err) {
+        this.refCount -= 1;
+        throw err;
+      }
+    });
+  }
+
+  /** Drops this relay's local subscription once the last local user is gone. The hook is never removed — see the class doc comment. */
+  disable(): Promise<void> {
+    if (this.refCount === 0) return this.queue;
+    this.refCount -= 1;
+    return this.serialize(() => this.reconcile());
+  }
+
+  private serialize(step: () => Promise<void>): Promise<void> {
+    const run = this.queue.then(step);
+    // The caller receives `run`'s rejection; the queue only orders steps,
+    // so a failed step must not poison every step behind it.
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async reconcile(): Promise<void> {
+    const wanted = this.refCount > 0;
+    if (wanted && !this.subscribed) await this.subscribe();
+    else if (!wanted && this.subscribed) await this.unsubscribe();
+  }
+
+  private async subscribe(): Promise<void> {
+    await this.client.execute(installHookCommand());
+    // Baseline before subscribing: the buffer may hold hours of entries
+    // from relays long gone, and none of them are news to this one.
+    // Anything appended after this read has a higher seq and arrives in
+    // the subscription's first delivery.
+    const response = await this.client.execute(readSeqCommand());
+    this.lastSeq = Number(response.output[0] ?? "") || 0;
+    this.client.on("subscription-changed", this.onSubscriptionChanged);
+    try {
       await subscribeRaw(
         this.client,
         SUBSCRIPTION_NAME,
         "",
         `#{${OPTION_NAME}}`,
       );
-    });
-    return this.pending;
+    } catch (err) {
+      this.client.off("subscription-changed", this.onSubscriptionChanged);
+      throw err;
+    }
+    this.subscribed = true;
   }
 
-  /** Drops this relay's local subscription once the last local user is gone. The hook is never removed — see the class doc comment. */
-  disable(): Promise<void> {
-    if (this.refCount === 0) return this.pending;
-    this.refCount -= 1;
-    const shouldTearDown = this.refCount === 0;
-    this.pending = this.pending.then(async () => {
-      if (!shouldTearDown) return;
-      this.client.off("subscription-changed", this.onSubscriptionChanged);
-      await unsubscribe(this.client, SUBSCRIPTION_NAME);
-    });
-    return this.pending;
+  private async unsubscribe(): Promise<void> {
+    this.subscribed = false;
+    this.generation += 1;
+    this.client.off("subscription-changed", this.onSubscriptionChanged);
+    await unsubscribe(this.client, SUBSCRIPTION_NAME);
   }
 
   private async handleDelivery(value: string): Promise<void> {
-    const remainder = diffAgainstLastProcessed(value, this.lastProcessedValue);
-    const { entries, skips } = decodeEntries(remainder);
-    this.lastProcessedValue = value;
+    const generation = this.generation;
+    const { entries, skips } = decodeEntries(value);
+    const plan = planDelivery(entries, this.lastSeq);
+    this.lastSeq = plan.lastSeq;
 
     for (const skip of skips) {
       this.emit({ type: "cross-session-layout-decode-error", ...skip });
     }
+    if (plan.lostEntries > 0) {
+      this.emit({
+        type: "cross-session-layout-overrun",
+        lostEntries: plan.lostEntries,
+      });
+    }
     // Independent fetches — pipeline them rather than paying one full round
-    // trip per entry serially during a same-tick multi-window burst. The
+    // trip per window serially during a same-tick multi-window burst. The
     // client's own FIFO correlates each execute() to its own response
     // regardless of issue order.
     await Promise.all(
-      entries.map((entry) =>
-        this.fetchAndEmit(entry.sessionId, entry.windowId),
+      plan.windows.map((w) =>
+        this.fetchAndEmit(generation, w.sessionId, w.windowId),
       ),
     );
-
-    // Freshness optimization only — not load-bearing for boundedness (the
-    // hook's own append already self-caps). A skipped trim just means the
-    // option grows a little longer before the next successful one.
-    await this.client.execute(trimCommand(value)).catch(() => undefined);
   }
 
   private async fetchAndEmit(
+    generation: number,
     sessionId: number,
     windowId: number,
   ): Promise<void> {
+    const message = await this.fetch(sessionId, windowId);
+    if (generation === this.generation) this.emit(message);
+  }
+
+  private async fetch(
+    sessionId: number,
+    windowId: number,
+  ): Promise<
+    CrossSessionLayoutChangeMessage | CrossSessionLayoutFetchFailedMessage
+  > {
+    const failed = {
+      type: "cross-session-layout-fetch-failed",
+      sessionId,
+      windowId,
+    } as const;
     try {
-      const response = await this.client.execute(fetchLayoutCommand(windowId));
-      const line = response.output[0];
+      const response = await this.client.execute(
+        fetchLayoutCommand(sessionId, windowId),
+      );
       // [LAW:no-silent-failure] An empty/malformed reply from a live window
-      // is unexpected (unlike a vanished window, which rejects loudly below
-      // and is handled in the catch) — report it rather than dropping the
-      // entry with no signal at all.
+      // is unexpected (unlike a vanished window, which rejects below) —
+      // report it rather than dropping the entry with no signal at all.
       const [windowLayout, windowVisibleLayout, windowFlags] = (
-        line ?? ""
+        response.output[0] ?? ""
       ).split("\x01");
-      if (windowLayout === undefined || windowLayout === "") {
-        this.emit({
-          type: "cross-session-layout-fetch-failed",
-          sessionId,
-          windowId,
-        });
-        return;
-      }
-      this.emit({
+      if (windowLayout === undefined || windowLayout === "") return failed;
+      return {
         type: "cross-session-layout-change",
         sessionId,
         windowId,
         windowLayout,
         windowVisibleLayout: windowVisibleLayout ?? "",
         windowFlags: windowFlags ?? "",
-      });
+      };
     } catch {
-      this.emit({
-        type: "cross-session-layout-fetch-failed",
-        sessionId,
-        windowId,
-      });
+      return failed;
     }
   }
 }

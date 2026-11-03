@@ -50,6 +50,7 @@ export type {
   CrossSessionLayoutDecodeErrorMessage,
   CrossSessionLayoutFetchFailedMessage,
   CrossSessionLayoutMessage,
+  CrossSessionLayoutOverrunMessage,
 } from "./cross-session-layout.js";
 
 export type {

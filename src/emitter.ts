@@ -84,6 +84,7 @@ const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
   "topology-error": true,
   "cross-session-layout-change": true,
   "cross-session-layout-decode-error": true,
+  "cross-session-layout-overrun": true,
   "cross-session-layout-fetch-failed": true,
 };
 
