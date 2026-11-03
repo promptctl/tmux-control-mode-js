@@ -107,7 +107,8 @@ export function linkablePanes(group: SyncGroup): readonly number[] {
 export function linkedTimelines(group: SyncGroup): readonly Timeline[] {
   const out: Timeline[] = [];
   for (const [paneId, snapshot] of group.snapshots) {
-    if (group.linked.has(paneId)) out.push(buildTimeline(group, paneId, snapshot));
+    if (group.linked.has(paneId))
+      out.push(buildTimeline(group, paneId, snapshot));
   }
   return out;
 }

@@ -93,7 +93,9 @@ export const CopilotView = observer(function CopilotView({
             placeholder="pick a pane with history…"
             data={paneOptions}
             value={
-              store.selectedPaneId === null ? null : String(store.selectedPaneId)
+              store.selectedPaneId === null
+                ? null
+                : String(store.selectedPaneId)
             }
             onChange={(v) => store.selectPane(v === null ? null : Number(v))}
             style={{ flex: 1, minWidth: 220 }}
@@ -112,8 +114,16 @@ export const CopilotView = observer(function CopilotView({
         </Group>
       </Paper>
 
-      <Group align="stretch" gap="sm" style={{ flex: 1, minHeight: 0 }} wrap="nowrap">
-        <ContextPanel recent={recent} selected={store.selectedPaneId !== null} />
+      <Group
+        align="stretch"
+        gap="sm"
+        style={{ flex: 1, minHeight: 0 }}
+        wrap="nowrap"
+      >
+        <ContextPanel
+          recent={recent}
+          selected={store.selectedPaneId !== null}
+        />
         <SuggestionsPanel
           store={store}
           paneLabel={selectedLabel}
@@ -121,7 +131,11 @@ export const CopilotView = observer(function CopilotView({
             if (store.selectedPaneId === null) return;
             const loc = locations.get(store.selectedPaneId);
             if (loc === undefined) return;
-            demoStore.jumpToPane(loc.sessionId, loc.windowId, store.selectedPaneId);
+            demoStore.jumpToPane(
+              loc.sessionId,
+              loc.windowId,
+              store.selectedPaneId,
+            );
             uiStore.setAppMode("multiplexer");
           }}
         />
@@ -159,15 +173,16 @@ function ContextPanel({
         <ScrollArea style={{ flex: 1 }} type="auto">
           {!selected ? (
             <Text c="dimmed" size="sm" p="sm">
-              Pick a pane above. Its recent commands — each command line, a bound
-              preview of its output, and its exit code — are chunked from the{" "}
-              <code>pipe-pane</code> firehose by the shell&apos;s{" "}
-              <code>OSC 133</code> prompt marks, then piped to an LLM as context.
-              Only panes whose shell has integration enabled contribute history
-              (no prompt guessing). Test with{" "}
+              Pick a pane above. Its recent commands — each command line, a
+              bound preview of its output, and its exit code — are chunked from
+              the <code>pipe-pane</code> firehose by the shell&apos;s{" "}
+              <code>OSC 133</code> prompt marks, then piped to an LLM as
+              context. Only panes whose shell has integration enabled contribute
+              history (no prompt guessing). Test with{" "}
               <code>
-                printf
-                &apos;\e]133;A\e\\$ \e]133;B\e\\date\n\e]133;C\e\\Mon\n\e]133;D;0\e\\&apos;
+                {
+                  "printf '\\e]133;A\\e\\\\$ \\e]133;B\\e\\\\date\\n\\e]133;C\\e\\\\Mon\\n\\e]133;D;0\\e\\\\'"
+                }
               </code>{" "}
               in a pane.
             </Text>
@@ -264,24 +279,33 @@ const SuggestionsPanel = observer(function SuggestionsPanel({
               <Text size="xs" c="dimmed" mt={6}>
                 The bridge calls an OpenAI-compatible endpoint (default local
                 Ollama at <code>http://localhost:11434/v1</code>). Set{" "}
-                <code>COPILOT_LLM_BASE_URL</code>, <code>COPILOT_LLM_MODEL</code>{" "}
-                and <code>COPILOT_LLM_API_KEY</code> to point it elsewhere.
+                <code>COPILOT_LLM_BASE_URL</code>,{" "}
+                <code>COPILOT_LLM_MODEL</code> and{" "}
+                <code>COPILOT_LLM_API_KEY</code> to point it elsewhere.
               </Text>
             </Alert>
           ) : s.suggestions.length === 0 ? (
             <Stack gap="xs" p="xs">
               <Text c="dimmed" size="sm">
-                The model replied but no runnable command could be extracted. Its
-                raw answer:
+                The model replied but no runnable command could be extracted.
+                Its raw answer:
               </Text>
-              <Code block style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <Code
+                block
+                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+              >
                 {s.raw}
               </Code>
             </Stack>
           ) : (
             <Stack gap="xs" p="xs">
               {s.suggestions.map((sug, i) => (
-                <Paper key={`${sug.command}-${i}`} withBorder p="xs" bg="dark.8">
+                <Paper
+                  key={`${sug.command}-${i}`}
+                  withBorder
+                  p="xs"
+                  bg="dark.8"
+                >
                   <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
                     <Code
                       style={{
@@ -374,7 +398,10 @@ function buildPaneLocations(demoStore: DemoStore): Map<number, PaneLocation> {
   return map;
 }
 
-function paneLabel(paneId: number, locations: Map<number, PaneLocation>): string {
+function paneLabel(
+  paneId: number,
+  locations: Map<number, PaneLocation>,
+): string {
   const loc = locations.get(paneId);
   return loc === undefined
     ? `%${paneId}`

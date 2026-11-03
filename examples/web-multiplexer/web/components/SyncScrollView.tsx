@@ -81,7 +81,10 @@ interface PaneLocation {
   readonly where: string;
 }
 
-function paneLocation(demoStore: DemoStore, paneId: number): PaneLocation | null {
+function paneLocation(
+  demoStore: DemoStore,
+  paneId: number,
+): PaneLocation | null {
   for (const s of demoStore.sessions) {
     for (const w of s.windows) {
       for (const p of w.panes) {
@@ -278,7 +281,11 @@ const LinkSelector = observer(function LinkSelector({
             </Button>
           );
         })}
-        <Button size="compact-xs" variant="subtle" onClick={() => store.linkAll()}>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          onClick={() => store.linkAll()}
+        >
           all
         </Button>
         <Button
@@ -314,9 +321,9 @@ const ReviewBody = observer(function ReviewBody({
   if (store.phase === "idle")
     return (
       <Centered>
-        Hit <b>&nbsp;Record&nbsp;</b> — every pane is seeded with its scrollback,
-        then the live stream is recorded. In review, one cursor scrubs every
-        linked pane to the same instant.
+        Hit <b>&nbsp;Record&nbsp;</b> — every pane is seeded with its
+        scrollback, then the live stream is recorded. In review, one cursor
+        scrubs every linked pane to the same instant.
       </Centered>
     );
   if (store.phase === "recording")
@@ -329,7 +336,9 @@ const ReviewBody = observer(function ReviewBody({
 
   const timelines = linkedTimelines(store.group);
   if (timelines.length === 0)
-    return <Centered>No panes linked — pick some above to synchronize.</Centered>;
+    return (
+      <Centered>No panes linked — pick some above to synchronize.</Centered>
+    );
 
   return (
     <div
@@ -393,7 +402,11 @@ const LinkedPaneCell = observer(function LinkedPaneCell({
   const loc = paneLocation(demoStore, timeline.paneId);
   const cursorMs = store.cursorMs;
   return (
-    <Paper withBorder p={6} style={{ display: "flex", flexDirection: "column" }}>
+    <Paper
+      withBorder
+      p={6}
+      style={{ display: "flex", flexDirection: "column" }}
+    >
       <Group gap={6} wrap="nowrap" mb={4} style={{ minWidth: 0 }}>
         <Badge size="xs" variant="light" color="blue">
           %{timeline.paneId}

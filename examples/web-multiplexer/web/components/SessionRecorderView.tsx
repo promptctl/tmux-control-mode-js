@@ -75,7 +75,8 @@ export const SessionRecorderView = observer(function SessionRecorderView({
   const selectedPane =
     store.selectedPaneId === null
       ? null
-      : (recording.panes.find((p) => p.paneId === store.selectedPaneId) ?? null);
+      : (recording.panes.find((p) => p.paneId === store.selectedPaneId) ??
+        null);
 
   return (
     <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>
@@ -158,7 +159,10 @@ const PhaseBadge = observer(function PhaseBadge({
   };
   const s = map[store.phase];
   return (
-    <Badge variant={store.phase === "recording" ? "filled" : "light"} color={s.color}>
+    <Badge
+      variant={store.phase === "recording" ? "filled" : "light"}
+      color={s.color}
+    >
       {s.label}
     </Badge>
   );
@@ -262,8 +266,7 @@ const ReplayArea = observer(function ReplayArea({
   ready: boolean;
   fontSize: number;
 }) {
-  if (!ready)
-    return <Centered>Connecting to bridge…</Centered>;
+  if (!ready) return <Centered>Connecting to bridge…</Centered>;
   if (store.phase === "idle")
     return (
       <Centered>

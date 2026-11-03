@@ -101,7 +101,8 @@ const SessionBlock = observer(function SessionBlock({
   heatmapStore: HeatmapStore;
   onPick: (pane: PaneInfo) => void;
 }) {
-  const allPanes: Array<{ pane: PaneInfo; winIdx: number; winName: string }> = [];
+  const allPanes: Array<{ pane: PaneInfo; winIdx: number; winName: string }> =
+    [];
   for (const w of session.windows) {
     for (const p of w.panes) {
       allPanes.push({ pane: p, winIdx: w.index, winName: w.name });
@@ -205,7 +206,10 @@ const PaneCell = observer(function PaneCell({
           fontFamily: "var(--mantine-font-family-monospace)",
           fontSize: 10,
           lineHeight: 1.1,
-          boxShadow: intensity > 0.3 ? `0 0 ${Math.round(intensity * 14)}px ${bg}` : "none",
+          boxShadow:
+            intensity > 0.3
+              ? `0 0 ${Math.round(intensity * 14)}px ${bg}`
+              : "none",
           transition: "background 180ms linear, box-shadow 180ms linear",
           outline: "none",
         }}
@@ -232,7 +236,9 @@ function focusPane(
   pane: PaneInfo,
 ): void {
   // Find which window this pane belongs to so we can navigate there.
-  const window = session.windows.find((w) => w.panes.some((p) => p.id === pane.id));
+  const window = session.windows.find((w) =>
+    w.panes.some((p) => p.id === pane.id),
+  );
   if (window === undefined) return;
   demoStore.selectSession(session.id);
   demoStore.selectWindow(window.id);

@@ -48,7 +48,10 @@ function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
 
-function createClient(socketName: string, sessionName: string): Promise<TmuxClient> {
+function createClient(
+  socketName: string,
+  sessionName: string,
+): Promise<TmuxClient> {
   execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
     stdio: "ignore",
   });
@@ -80,7 +83,10 @@ function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const deadline = Date.now() + timeoutMs;
     const check = () => {
-      if (pred()) { resolve(); return; }
+      if (pred()) {
+        resolve();
+        return;
+      }
       if (Date.now() >= deadline) {
         reject(new Error(`waitFor: condition not met within ${timeoutMs}ms`));
         return;
@@ -95,24 +101,24 @@ function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
 // INT-19: XtermBytesSink round-trip
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!RUN_INTEGRATION)("INT-19: attachXtermSink — xterm round-trip", () => {
-  let socketName = "";
-  let client: TmuxClient | null = null;
+describe.skipIf(!RUN_INTEGRATION)(
+  "INT-19: attachXtermSink — xterm round-trip",
+  () => {
+    let socketName = "";
+    let client: TmuxClient | null = null;
 
-  beforeEach(async () => {
-    socketName = uniqueSocket("xterm");
-    client = await createClient(socketName, "xterm-test");
-  });
+    beforeEach(async () => {
+      socketName = uniqueSocket("xterm");
+      client = await createClient(socketName, "xterm-test");
+    });
 
-  afterEach(async () => {
-    client?.close();
-    client = null;
-    killServer(socketName);
-  });
+    afterEach(async () => {
+      client?.close();
+      client = null;
+      killServer(socketName);
+    });
 
-  it(
-    "INT-19: bytes from echo arrive in the fake xterm terminal",
-    async () => {
+    it("INT-19: bytes from echo arrive in the fake xterm terminal", async () => {
       const received: Uint8Array[] = [];
       const fakeTerm = {
         write(data: Uint8Array): void {
@@ -135,23 +141,23 @@ describe.skipIf(!RUN_INTEGRATION)("INT-19: attachXtermSink — xterm round-trip"
       const text = Buffer.concat(received).toString();
       expect(text).toContain("int19-hello");
       dispose();
-    },
-    15_000,
-  );
+    }, 15_000);
 
-  it(
-    "INT-19b: XtermBytesSink.write passes data directly to term.write",
-    () => {
+    it("INT-19b: XtermBytesSink.write passes data directly to term.write", () => {
       const received: Uint8Array[] = [];
-      const fakeTerm = { write: (d: Uint8Array) => { received.push(d.slice()); } };
+      const fakeTerm = {
+        write: (d: Uint8Array) => {
+          received.push(d.slice());
+        },
+      };
       const sink: BytesSink = new XtermBytesSink(fakeTerm);
       const data = new Uint8Array([0x68, 0x65, 0x6c, 0x6c, 0x6f]);
       sink.write({ paneId: 1, data });
       expect(received).toHaveLength(1);
       expect(Array.from(received[0])).toEqual([0x68, 0x65, 0x6c, 0x6c, 0x6f]);
-    },
-  );
-});
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // INT-22: WebContentsSink — Electron IPC forwarder against real tmux
@@ -174,90 +180,89 @@ describe.skipIf(!RUN_INTEGRATION)(
       killServer(socketName);
     });
 
-    it(
-      "INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output",
-      async () => {
-        // Fake WebContents that records messages sent on any channel.
-        const ipcMessages: { channel: string; payload: unknown }[] = [];
-        let destroyed = false;
-        const fakeWc: WebContentsLike = {
-          send(channel: string, ...args: unknown[]) {
-            if (!destroyed) ipcMessages.push({ channel, payload: args[0] });
-          },
-          isDestroyed() { return destroyed; },
-          once(_event: string, _listener: () => void) {},
-          removeListener(_event: string, _listener: () => void) {},
-        };
+    it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
+      // Fake WebContents that records messages sent on any channel.
+      const ipcMessages: { channel: string; payload: unknown }[] = [];
+      let destroyed = false;
+      const fakeWc: WebContentsLike = {
+        send(channel: string, ...args: unknown[]) {
+          if (!destroyed) ipcMessages.push({ channel, payload: args[0] });
+        },
+        isDestroyed() {
+          return destroyed;
+        },
+        once(_event: string, _listener: () => void) {},
+        removeListener(_event: string, _listener: () => void) {},
+      };
 
-        const paneId = await getFirstPaneId(client!);
-        const dispose = attachWebContentsSink(client!, fakeWc, {
-          scope: paneScope(paneId),
-        });
+      const paneId = await getFirstPaneId(client!);
+      const dispose = attachWebContentsSink(client!, fakeWc, {
+        scope: paneScope(paneId),
+      });
 
-        await client!.execute(`send-keys -t %${paneId} 'echo int22-hello' Enter`);
+      await client!.execute(`send-keys -t %${paneId} 'echo int22-hello' Enter`);
 
-        await waitFor(() =>
-          ipcMessages.some(
-            (m) =>
-              m.channel === IPC.event &&
-              typeof m.payload === "object" &&
-              m.payload !== null &&
-              (m.payload as { type: string }).type === "output",
-          ),
-        );
-
-        const outputMsg = ipcMessages.find(
+      await waitFor(() =>
+        ipcMessages.some(
           (m) =>
             m.channel === IPC.event &&
             typeof m.payload === "object" &&
             m.payload !== null &&
             (m.payload as { type: string }).type === "output",
-        );
-        expect(outputMsg).toBeDefined();
-        const msg = outputMsg!.payload as {
-          type: string;
-          paneId: number;
-          data: Uint8Array;
-        };
-        expect(msg.type).toBe("output");
-        expect(msg.paneId).toBe(paneId);
+        ),
+      );
 
-        // Concatenate all output chunks for this pane and check for marker.
-        const allChunks = ipcMessages
-          .filter(
-            (m) =>
-              m.channel === IPC.event &&
-              typeof m.payload === "object" &&
-              m.payload !== null &&
-              (m.payload as { paneId: number }).paneId === paneId,
-          )
-          .map((m) => (m.payload as { data: Uint8Array }).data);
-        const text = Buffer.concat(allChunks).toString();
-        expect(text).toContain("int22-hello");
+      const outputMsg = ipcMessages.find(
+        (m) =>
+          m.channel === IPC.event &&
+          typeof m.payload === "object" &&
+          m.payload !== null &&
+          (m.payload as { type: string }).type === "output",
+      );
+      expect(outputMsg).toBeDefined();
+      const msg = outputMsg!.payload as {
+        type: string;
+        paneId: number;
+        data: Uint8Array;
+      };
+      expect(msg.type).toBe("output");
+      expect(msg.paneId).toBe(paneId);
 
-        dispose();
-      },
-      15_000,
-    );
+      // Concatenate all output chunks for this pane and check for marker.
+      const allChunks = ipcMessages
+        .filter(
+          (m) =>
+            m.channel === IPC.event &&
+            typeof m.payload === "object" &&
+            m.payload !== null &&
+            (m.payload as { paneId: number }).paneId === paneId,
+        )
+        .map((m) => (m.payload as { data: Uint8Array }).data);
+      const text = Buffer.concat(allChunks).toString();
+      expect(text).toContain("int22-hello");
 
-    it(
-      "INT-22b: WebContentsSink is a no-op when isDestroyed() returns true",
-      () => {
-        const sent: string[] = [];
-        let destroyed = false;
-        const fakeWc: WebContentsLike = {
-          send(channel: string) { sent.push(channel); },
-          isDestroyed() { return destroyed; },
-          once() {},
-          removeListener() {},
-        };
+      dispose();
+    }, 15_000);
 
-        const sink = new WebContentsSink(fakeWc);
-        destroyed = true;
-        sink.write({ paneId: 1, data: new Uint8Array([0xab]) });
-        expect(sent).toHaveLength(0);
-      },
-    );
+    it("INT-22b: WebContentsSink is a no-op when isDestroyed() returns true", () => {
+      const sent: string[] = [];
+      let destroyed = false;
+      const fakeWc: WebContentsLike = {
+        send(channel: string) {
+          sent.push(channel);
+        },
+        isDestroyed() {
+          return destroyed;
+        },
+        once() {},
+        removeListener() {},
+      };
+
+      const sink = new WebContentsSink(fakeWc);
+      destroyed = true;
+      sink.write({ paneId: 1, data: new Uint8Array([0xab]) });
+      expect(sent).toHaveLength(0);
+    });
   },
 );
 
@@ -280,49 +285,51 @@ describe.skipIf(!RUN_INTEGRATION)("INT-23: disposer idempotency", () => {
     killServer(socketName);
   });
 
-  it(
-    "INT-23: disposing an attachXtermSink twice does not throw and stops delivery",
-    async () => {
-      const received: Uint8Array[] = [];
-      const endCalls: number[] = [];
-      const fakeTerm = { write: (d: Uint8Array) => { received.push(d.slice()); } };
+  it("INT-23: disposing an attachXtermSink twice does not throw and stops delivery", async () => {
+    const received: Uint8Array[] = [];
+    const endCalls: number[] = [];
+    const fakeTerm = {
+      write: (d: Uint8Array) => {
+        received.push(d.slice());
+      },
+    };
 
-      const paneId = await getFirstPaneId(client!);
+    const paneId = await getFirstPaneId(client!);
 
-      // Wrap in a sink that tracks end() calls so we can assert idempotency.
-      const inner = new XtermBytesSink(fakeTerm);
-      let endCount = 0;
-      const wrappedSink: BytesSink = {
-        write(msg) { inner.write(msg); },
-        end() {
-          endCount++;
-          endCalls.push(endCount);
-        },
-      };
+    // Wrap in a sink that tracks end() calls so we can assert idempotency.
+    const inner = new XtermBytesSink(fakeTerm);
+    let endCount = 0;
+    const wrappedSink: BytesSink = {
+      write(msg) {
+        inner.write(msg);
+      },
+      end() {
+        endCount++;
+        endCalls.push(endCount);
+      },
+    };
 
-      const dispose = client!.attachBytesSink(wrappedSink, {
-        scope: paneScope(paneId),
-      });
+    const dispose = client!.attachBytesSink(wrappedSink, {
+      scope: paneScope(paneId),
+    });
 
-      // Confirm the sink is live — drive output and wait.
-      await client!.execute(`send-keys -t %${paneId} 'echo int23-before' Enter`);
-      await waitFor(() => {
-        const all = Buffer.concat(received).toString();
-        return all.includes("int23-before");
-      });
+    // Confirm the sink is live — drive output and wait.
+    await client!.execute(`send-keys -t %${paneId} 'echo int23-before' Enter`);
+    await waitFor(() => {
+      const all = Buffer.concat(received).toString();
+      return all.includes("int23-before");
+    });
 
-      // Dispose twice — must not throw.
-      dispose();
-      expect(() => dispose()).not.toThrow();
+    // Dispose twice — must not throw.
+    dispose();
+    expect(() => dispose()).not.toThrow();
 
-      const countAfterDispose = received.length;
+    const countAfterDispose = received.length;
 
-      // Any output after dispose must not arrive.
-      await client!.execute(`send-keys -t %${paneId} 'echo int23-after' Enter`);
-      // Brief wait — if the sink is truly detached, nothing new arrives.
-      await new Promise<void>((r) => setTimeout(r, 400));
-      expect(received.length).toBe(countAfterDispose);
-    },
-    15_000,
-  );
+    // Any output after dispose must not arrive.
+    await client!.execute(`send-keys -t %${paneId} 'echo int23-after' Enter`);
+    // Brief wait — if the sink is truly detached, nothing new arrives.
+    await new Promise<void>((r) => setTimeout(r, 400));
+    expect(received.length).toBe(countAfterDispose);
+  }, 15_000);
 });

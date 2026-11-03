@@ -24,7 +24,11 @@ function cell(char: string, fg: string | null, bg: string | null): RenderCell {
   return { char, fg, bg, bold: false };
 }
 
-function grid(cols: number, rows: number, cells: (RenderCell | null)[]): RenderGrid {
+function grid(
+  cols: number,
+  rows: number,
+  cells: (RenderCell | null)[],
+): RenderGrid {
   return { cols, rows, cells };
 }
 
@@ -137,7 +141,12 @@ describe("packFrame", () => {
   const atlas = buildAtlasLayout(ATLAS_CHARS, 9, 18);
 
   it("emits one instance per cell, including blanks", () => {
-    const g = grid(2, 2, [cell("a", null, null), null, null, cell("b", null, null)]);
+    const g = grid(2, 2, [
+      cell("a", null, null),
+      null,
+      null,
+      cell("b", null, null),
+    ]);
     const packed = packFrame(
       [{ grid: g, originPxX: 0, originPxY: 0 }],
       atlas,

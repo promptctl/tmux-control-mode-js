@@ -129,7 +129,9 @@ function loadFromStorage(): PersistedShape {
           ? parsed.asideCollapsed
           : DEFAULTS.asideCollapsed,
       hiddenEventTypes: Array.isArray(parsed.hiddenEventTypes)
-        ? parsed.hiddenEventTypes.filter((x): x is string => typeof x === "string")
+        ? parsed.hiddenEventTypes.filter(
+            (x): x is string => typeof x === "string",
+          )
         : DEFAULTS.hiddenEventTypes,
       activeAsideTab:
         typeof parsed.activeAsideTab === "string"
@@ -199,11 +201,17 @@ export class UiStore {
   }
 
   increaseTerminalFontSize(): void {
-    this.terminalFontSize = Math.min(TERMINAL_FONT_MAX, this.terminalFontSize + 1);
+    this.terminalFontSize = Math.min(
+      TERMINAL_FONT_MAX,
+      this.terminalFontSize + 1,
+    );
   }
 
   decreaseTerminalFontSize(): void {
-    this.terminalFontSize = Math.max(TERMINAL_FONT_MIN, this.terminalFontSize - 1);
+    this.terminalFontSize = Math.max(
+      TERMINAL_FONT_MIN,
+      this.terminalFontSize - 1,
+    );
   }
 
   resetTerminalFontSize(): void {

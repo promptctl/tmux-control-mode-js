@@ -37,7 +37,8 @@ function recorder(): Recorder {
   const events: Recorder["events"] = [];
   return {
     events,
-    onPaneBecameInteresting: (paneId) => events.push({ kind: "interesting", paneId }),
+    onPaneBecameInteresting: (paneId) =>
+      events.push({ kind: "interesting", paneId }),
     onPaneBecameIdle: (paneId) => events.push({ kind: "idle", paneId }),
   };
 }

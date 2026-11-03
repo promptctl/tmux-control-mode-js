@@ -91,15 +91,13 @@ describe("fixture: basic-command-response.txt", () => {
   it("emits begin/end guards for each block", () => {
     const { messages } = collect(fixtureContent("basic-command-response.txt"));
     const types = messages.map((m) => m.type);
-    expect(types).toEqual([
-      "begin", "end",
-      "begin", "end",
-      "begin", "end",
-    ]);
+    expect(types).toEqual(["begin", "end", "begin", "end", "begin", "end"]);
   });
 
   it("routes output lines to onOutputLine with correct commandNumber", () => {
-    const { outputLines } = collect(fixtureContent("basic-command-response.txt"));
+    const { outputLines } = collect(
+      fixtureContent("basic-command-response.txt"),
+    );
     // block 1 (commandNumber=1): one output line
     expect(outputLines[0]).toEqual({
       commandNumber: 1,
@@ -124,9 +122,12 @@ describe("fixture: error-response.txt", () => {
     const { messages } = collect(fixtureContent("error-response.txt"));
     const types = messages.map((m) => m.type);
     expect(types).toEqual([
-      "begin", "error",
-      "begin", "error",
-      "begin", "error",
+      "begin",
+      "error",
+      "begin",
+      "error",
+      "begin",
+      "error",
     ]);
   });
 
@@ -172,7 +173,7 @@ describe("fixture: output-octal-escapes.txt", () => {
   it("decodes \\012 as newline in first output", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
     const first = messages.find(
-      (m) => m.type === "output" && (m as any).paneId === 1
+      (m) => m.type === "output" && (m as any).paneId === 1,
     ) as any;
     // "hello\012" → hello + newline
     expect(first.data[5]).toBe(10);
@@ -212,7 +213,7 @@ describe("fixture: output-octal-escapes.txt", () => {
   it("\\377 high byte on pane 2 decodes to 0xff", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
     const pane2Msgs = messages.filter(
-      (m) => m.type === "output" && (m as any).paneId === 2
+      (m) => m.type === "output" && (m as any).paneId === 2,
     ) as any[];
     expect(pane2Msgs).toHaveLength(1);
     expect(pane2Msgs[0].data[0]).toBe(0xff);
@@ -221,7 +222,7 @@ describe("fixture: output-octal-escapes.txt", () => {
   it("pane 3 VT sequence starts with ESC", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
     const pane3Msg = messages.find(
-      (m) => m.type === "output" && (m as any).paneId === 3
+      (m) => m.type === "output" && (m as any).paneId === 3,
     ) as any;
     expect(pane3Msg).toBeDefined();
     expect(pane3Msg.data[0]).toBe(27); // ESC from \033
@@ -278,7 +279,7 @@ describe("fixture: extended-output.txt", () => {
     const fifth = messages[4] as any;
     expect(fifth.paneId).toBe(1);
     expect(fifth.age).toBe(500);
-    expect(fifth.data[0]).toBe(0);    // \000
+    expect(fifth.data[0]).toBe(0); // \000
     expect(fifth.data[1]).toBe(0xff); // \377
   });
 });
@@ -292,17 +293,17 @@ describe("fixture: pause-continue.txt", () => {
     const { messages } = collect(fixtureContent("pause-continue.txt"));
     const types = messages.map((m) => m.type);
     expect(types).toEqual([
-      "output",  // first chunk
-      "output",  // second chunk
-      "output",  // third chunk
-      "pause",   // %pause %1
-      "output",  // output after pause
-      "continue",// %continue %1
-      "output",  // resumed output
-      "output",  // pane two
-      "pause",   // %pause %2
-      "continue",// %continue %2
-      "output",  // pane two resumed
+      "output", // first chunk
+      "output", // second chunk
+      "output", // third chunk
+      "pause", // %pause %1
+      "output", // output after pause
+      "continue", // %continue %1
+      "output", // resumed output
+      "output", // pane two
+      "pause", // %pause %2
+      "continue", // %continue %2
+      "output", // pane two resumed
     ]);
   });
 
@@ -365,25 +366,25 @@ describe("fixture: window-lifecycle.txt", () => {
     const { messages } = collect(fixtureContent("window-lifecycle.txt"));
     const types = messages.map((m) => m.type);
     expect(types).toEqual([
-      "window-add",          // @1
+      "window-add", // @1
       "window-pane-changed", // @1 %1
-      "layout-change",       // @1 *
-      "window-renamed",      // @1 bash
-      "window-add",          // @2
+      "layout-change", // @1 *
+      "window-renamed", // @1 bash
+      "window-add", // @2
       "window-pane-changed", // @2 %2
-      "layout-change",       // @2 -
-      "layout-change",       // @1 *
-      "window-renamed",      // @2 vim
+      "layout-change", // @2 -
+      "layout-change", // @1 *
+      "window-renamed", // @2 vim
       "window-pane-changed", // @1 %1
-      "layout-change",       // @2 -
-      "layout-change",       // @1 *
-      "window-close",        // @2
-      "layout-change",       // @1 *
-      "window-add",          // @3
+      "layout-change", // @2 -
+      "layout-change", // @1 *
+      "window-close", // @2
+      "layout-change", // @1 *
+      "window-add", // @3
       "window-pane-changed", // @3 %3
-      "layout-change",       // @3 -
-      "window-renamed",      // @3 zsh
-      "window-close",        // @3
+      "layout-change", // @3 -
+      "window-renamed", // @3 zsh
+      "window-close", // @3
     ]);
   });
 
@@ -402,7 +403,7 @@ describe("fixture: window-lifecycle.txt", () => {
   it("window-renamed carries name", () => {
     const { messages } = collect(fixtureContent("window-lifecycle.txt"));
     const renames = messages.filter(
-      (m) => m.type === "window-renamed"
+      (m) => m.type === "window-renamed",
     ) as any[];
     expect(renames[0]).toMatchObject({ windowId: 1, name: "bash" });
     expect(renames[1]).toMatchObject({ windowId: 2, name: "vim" });
@@ -514,7 +515,7 @@ describe("fixture: client-events.txt", () => {
   it("client-detached: clientName", () => {
     const { messages } = collect(fixtureContent("client-events.txt"));
     const detached = messages.filter(
-      (m) => m.type === "client-detached"
+      (m) => m.type === "client-detached",
     ) as any[];
     expect(detached[0].clientName).toBe("/dev/pts/1");
     expect(detached[1].clientName).toBe("/dev/pts/0");
@@ -554,7 +555,7 @@ describe("fixture: layout-change.txt", () => {
   it("layout-change @2 has windowId=2", () => {
     const { messages } = collect(fixtureContent("layout-change.txt"));
     const win2 = messages.find(
-      (m) => m.type === "layout-change" && (m as any).windowId === 2
+      (m) => m.type === "layout-change" && (m as any).windowId === 2,
     ) as any;
     expect(win2).toBeDefined();
     expect(win2.windowId).toBe(2);
@@ -604,7 +605,7 @@ describe("fixture: message-config-error.txt", () => {
   it("pane-mode-changed carries paneId", () => {
     const { messages } = collect(fixtureContent("message-config-error.txt"));
     const modes = messages.filter(
-      (m) => m.type === "pane-mode-changed"
+      (m) => m.type === "pane-mode-changed",
     ) as any[];
     expect(modes[0].paneId).toBe(1);
     expect(modes[1].paneId).toBe(2);
@@ -702,7 +703,7 @@ describe("fixture: paste-buffer.txt", () => {
   it("deleted messages have correct names", () => {
     const { messages } = collect(fixtureContent("paste-buffer.txt"));
     const deleted = messages.filter(
-      (m) => m.type === "paste-buffer-deleted"
+      (m) => m.type === "paste-buffer-deleted",
     ) as any[];
     expect(deleted[0].name).toBe("buffer0");
     expect(deleted[1].name).toBe("buffer1");
@@ -743,7 +744,7 @@ describe("fixture: session-events.txt", () => {
   it("session-window-changed: multiple sessions and windows", () => {
     const { messages } = collect(fixtureContent("session-events.txt"));
     const swc = messages.filter(
-      (m) => m.type === "session-window-changed"
+      (m) => m.type === "session-window-changed",
     ) as any[];
     expect(swc[0]).toMatchObject({ sessionId: 1, windowId: 1 });
     expect(swc[1]).toMatchObject({ sessionId: 1, windowId: 2 });
@@ -775,7 +776,7 @@ describe("fixture: unlinked-windows.txt", () => {
   it("unlinked-window-renamed carries name", () => {
     const { messages } = collect(fixtureContent("unlinked-windows.txt"));
     const renames = messages.filter(
-      (m) => m.type === "unlinked-window-renamed"
+      (m) => m.type === "unlinked-window-renamed",
     ) as any[];
     expect(renames[0]).toMatchObject({ windowId: 5, name: "scratch" });
     expect(renames[1]).toMatchObject({ windowId: 6, name: "logs" });
@@ -785,7 +786,7 @@ describe("fixture: unlinked-windows.txt", () => {
   it("unlinked-window-close has correct windowIds", () => {
     const { messages } = collect(fixtureContent("unlinked-windows.txt"));
     const closes = messages.filter(
-      (m) => m.type === "unlinked-window-close"
+      (m) => m.type === "unlinked-window-close",
     ) as any[];
     expect(closes[0].windowId).toBe(5);
     expect(closes[1].windowId).toBe(6);
@@ -806,7 +807,10 @@ describe("chunked feeding (one byte at a time)", () => {
     }
     expect(messages[0]).toMatchObject({ type: "begin", commandNumber: 0 });
     expect(messages[1]).toMatchObject({ type: "end", commandNumber: 0 });
-    expect(messages[2]).toMatchObject({ type: "session-changed", sessionId: 1 });
+    expect(messages[2]).toMatchObject({
+      type: "session-changed",
+      sessionId: 1,
+    });
     expect(messages).toHaveLength(8);
   });
 });
@@ -918,7 +922,9 @@ describe("unknown notification type", () => {
 
 describe("binary garbage lines outside response block", () => {
   it("non-% lines outside blocks are silently ignored", () => {
-    const { messages } = collect("this is not a notification\nneither is this\n");
+    const { messages } = collect(
+      "this is not a notification\nneither is this\n",
+    );
     expect(messages).toHaveLength(0);
   });
 });
@@ -965,8 +971,7 @@ describe("inside-block routing (SPEC §4 invariant)", () => {
     // tried to dispatch them as unknown notifications and silently dropped
     // them, forcing the example to prefix the format with "id=". Now the
     // bare ID survives the round-trip as an output line.
-    const input =
-      "%begin 1699900000 9 0\n%5\n%7\n%11\n%end 1699900000 9 0\n";
+    const input = "%begin 1699900000 9 0\n%5\n%7\n%11\n%end 1699900000 9 0\n";
     const { outputLines } = collect(input);
     expect(outputLines.map((o) => o.line)).toEqual(["%5", "%7", "%11"]);
   });
@@ -1027,15 +1032,16 @@ describe("reset() clears state", () => {
 
 describe("onOutputLine receives correct commandNumber and line", () => {
   it("multiple blocks with different commandNumbers", () => {
-    const input = [
-      "%begin 1699900000 10 0",
-      "line one",
-      "line two",
-      "%end 1699900000 10 0",
-      "%begin 1699900000 11 0",
-      "line three",
-      "%end 1699900000 11 0",
-    ].join("\n") + "\n";
+    const input =
+      [
+        "%begin 1699900000 10 0",
+        "line one",
+        "line two",
+        "%end 1699900000 10 0",
+        "%begin 1699900000 11 0",
+        "line three",
+        "%end 1699900000 11 0",
+      ].join("\n") + "\n";
 
     const { outputLines } = collect(input);
     expect(outputLines).toHaveLength(3);
@@ -1062,7 +1068,8 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
   // end in a raw \r byte; feed() must preserve it rather than treating it as
   // CRLF-transport noise.
   it("a response-block output line ending in a real \\r keeps the \\r", () => {
-    const input = "%begin 1699900000 1 0\r\ncaptured row\r\n%end 1699900000 1 0\r\n";
+    const input =
+      "%begin 1699900000 1 0\r\ncaptured row\r\n%end 1699900000 1 0\r\n";
     const { outputLines } = collect(input);
     expect(outputLines).toHaveLength(1);
     expect(outputLines[0]).toEqual({
@@ -1093,7 +1100,8 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     // The terminator itself is no longer \r-stripped by feed() (the block is
     // still open when it arrives), so this exercises parseGuard's parseInt
     // leniency on a trailing \r in the flags field instead.
-    const input = "%begin 1699900000 3 0\r\nrow\r\n%end 1699900000 3 0\r\n%sessions-changed\r\n";
+    const input =
+      "%begin 1699900000 3 0\r\nrow\r\n%end 1699900000 3 0\r\n%sessions-changed\r\n";
     const { messages, outputLines } = collect(input);
     // "row" itself arrived over the CRLF transport mid-block, so its trailing
     // \r is preserved too — it's indistinguishable from a real data byte,

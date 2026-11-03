@@ -165,7 +165,11 @@ describe("XtermSink: seed", () => {
     // Two writes: captured bytes, then the cursor escape + scrollToBottom cb.
     expect(term.write).toHaveBeenCalledTimes(2);
     expect(term.write).toHaveBeenNthCalledWith(1, enc("hello\r\nworld"));
-    expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[2;5H", expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(
+      2,
+      "\x1b[2;5H",
+      expect.any(Function),
+    );
     sink.dispose();
   });
 
@@ -181,7 +185,11 @@ describe("XtermSink: seed", () => {
     sink.seed(enc("grid"), { col: 4, row: 1 }, [t1, t2]);
     expect(term.write).toHaveBeenCalledTimes(4);
     expect(term.write).toHaveBeenNthCalledWith(1, enc("grid"));
-    expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[2;5H", expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(
+      2,
+      "\x1b[2;5H",
+      expect.any(Function),
+    );
     expect(term.write).toHaveBeenNthCalledWith(3, t1);
     expect(term.write).toHaveBeenNthCalledWith(4, t2);
     sink.dispose();
@@ -193,7 +201,10 @@ describe("XtermSink: seed", () => {
     flushRaf();
     sink.seed(enc("only text"), null, []);
     expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith(enc("only text"), expect.any(Function));
+    expect(term.write).toHaveBeenCalledWith(
+      enc("only text"),
+      expect.any(Function),
+    );
     sink.dispose();
   });
 
@@ -216,7 +227,11 @@ describe("XtermSink: seed", () => {
     expect(term.resize).toHaveBeenCalledWith(80, 24);
     expect(term.write).toHaveBeenCalledTimes(2);
     expect(term.write).toHaveBeenNthCalledWith(1, enc("buffered"));
-    expect(term.write).toHaveBeenNthCalledWith(2, "\x1b[1;3H", expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(
+      2,
+      "\x1b[1;3H",
+      expect.any(Function),
+    );
     sink.dispose();
   });
 
@@ -228,7 +243,10 @@ describe("XtermSink: seed", () => {
     flushRaf();
     // Only the second seed must reach xterm.
     expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith(enc("second"), expect.any(Function));
+    expect(term.write).toHaveBeenCalledWith(
+      enc("second"),
+      expect.any(Function),
+    );
     sink.dispose();
   });
 });
@@ -261,7 +279,11 @@ describe("XtermSink: write (live byte path)", () => {
     flushRaf();
     // Order: seed (with scrollToBottom cb), then live bytes.
     expect(term.write).toHaveBeenCalledTimes(3);
-    expect(term.write).toHaveBeenNthCalledWith(1, enc("snap"), expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(
+      1,
+      enc("snap"),
+      expect.any(Function),
+    );
     expect(term.write).toHaveBeenNthCalledWith(2, bytes1);
     expect(term.write).toHaveBeenNthCalledWith(3, bytes2);
     sink.dispose();
@@ -285,7 +307,11 @@ describe("XtermSink: write (live byte path)", () => {
     flushRaf();
     expect(term.resize).toHaveBeenCalledWith(80, 24);
     expect(term.write).toHaveBeenCalledTimes(4);
-    expect(term.write).toHaveBeenNthCalledWith(1, enc("SNAP"), expect.any(Function));
+    expect(term.write).toHaveBeenNthCalledWith(
+      1,
+      enc("SNAP"),
+      expect.any(Function),
+    );
     expect(term.write).toHaveBeenNthCalledWith(2, t1);
     expect(term.write).toHaveBeenNthCalledWith(3, t2);
     expect(term.write).toHaveBeenNthCalledWith(4, live);

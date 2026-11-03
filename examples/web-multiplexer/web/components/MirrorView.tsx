@@ -82,11 +82,21 @@ export const MirrorView = observer(function MirrorView({
         </Group>
       </Paper>
 
-      <Group align="stretch" gap="sm" style={{ flex: 1, minHeight: 0 }} wrap="nowrap">
+      <Group
+        align="stretch"
+        gap="sm"
+        style={{ flex: 1, minHeight: 0 }}
+        wrap="nowrap"
+      >
         <Paper
           withBorder
           p="xs"
-          style={{ width: 280, display: "flex", flexDirection: "column", minHeight: 0 }}
+          style={{
+            width: 280,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
         >
           <Text size="xs" fw={600} c="dimmed" mb={6}>
             PANES ({panes.length})
@@ -135,7 +145,12 @@ export const MirrorView = observer(function MirrorView({
         <Paper
           withBorder
           p="xs"
-          style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
         >
           {store.selectedPaneId === null ? (
             <Text c="dimmed" m="auto">
@@ -177,11 +192,13 @@ const MirrorPanel = observer(function MirrorPanel({
   );
   // One bridge per chosen pane; rebuilt (and the old one torn down by
   // MirrorScreen's unmount) when `paneId` changes.
-  const bridge = useMemo(() => new MirrorViewerBridge(wsBase, paneId), [wsBase, paneId]);
+  const bridge = useMemo(
+    () => new MirrorViewerBridge(wsBase, paneId),
+    [wsBase, paneId],
+  );
 
   const statusBadge = (() => {
-    if (bridge.status === "gone")
-      return <Badge color="red">pane closed</Badge>;
+    if (bridge.status === "gone") return <Badge color="red">pane closed</Badge>;
     if (bridge.status === "error")
       return <Badge color="red">{bridge.errorMessage ?? "error"}</Badge>;
     if (bridge.status === "closed")
@@ -207,12 +224,25 @@ const MirrorPanel = observer(function MirrorPanel({
 
       {viewerUrl !== null && (
         <Group gap="xs" wrap="nowrap">
-          <Code style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <Code
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             {viewerUrl}
           </Code>
           <CopyButton value={viewerUrl}>
             {({ copied, copy }) => (
-              <Button size="xs" variant="light" color={copied ? "teal" : "gray"} onClick={copy}>
+              <Button
+                size="xs"
+                variant="light"
+                color={copied ? "teal" : "gray"}
+                onClick={copy}
+              >
                 {copied ? "Copied" : "Copy link"}
               </Button>
             )}
@@ -232,7 +262,13 @@ const MirrorPanel = observer(function MirrorPanel({
 
       <Paper
         withBorder
-        style={{ flex: 1, minHeight: 200, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{
+          flex: 1,
+          minHeight: 200,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
       >
         <MirrorScreen key={paneId} bridge={bridge} fontSize={fontSize} />
       </Paper>

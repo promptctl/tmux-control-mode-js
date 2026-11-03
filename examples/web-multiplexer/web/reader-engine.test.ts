@@ -8,7 +8,12 @@
 // per-pane isolation + cap eviction. [LAW:behavior-not-structure]
 
 import { describe, it, expect } from "vitest";
-import { ReaderEngine, reflow, wrapLine, type ReaderSegment } from "./reader-engine.ts";
+import {
+  ReaderEngine,
+  reflow,
+  wrapLine,
+  type ReaderSegment,
+} from "./reader-engine.ts";
 
 describe("wrapLine", () => {
   it("returns the line unchanged when it fits", () => {
@@ -16,7 +21,10 @@ describe("wrapLine", () => {
   });
 
   it("wraps at word boundaries, never mid-word for words that fit", () => {
-    expect(wrapLine("the quick brown fox", 9)).toEqual(["the quick", "brown fox"]);
+    expect(wrapLine("the quick brown fox", 9)).toEqual([
+      "the quick",
+      "brown fox",
+    ]);
   });
 
   it("packs greedily up to but not over the width", () => {
@@ -51,7 +59,11 @@ describe("wrapLine", () => {
 
 describe("reflow", () => {
   function texts(segs: ReaderSegment[]): string[] {
-    return segs.filter((s): s is Extract<ReaderSegment, { kind: "text" }> => s.kind === "text").map((s) => s.text);
+    return segs
+      .filter(
+        (s): s is Extract<ReaderSegment, { kind: "text" }> => s.kind === "text",
+      )
+      .map((s) => s.text);
   }
 
   it("is empty for no lines", () => {
@@ -61,17 +73,17 @@ describe("reflow", () => {
   it("tags wrapped tails as continuation, first segment as not", () => {
     const segs = reflow(["the quick brown fox jumps"], 9);
     const textSegs = segs.filter((s) => s.kind === "text");
-    expect(textSegs.map((s) => (s.kind === "text" ? s.continuation : null))).toEqual([
-      false,
-      true,
-      true,
-    ]);
+    expect(
+      textSegs.map((s) => (s.kind === "text" ? s.continuation : null)),
+    ).toEqual([false, true, true]);
   });
 
   it("numbers segments back to their 1-based source line", () => {
     const segs = reflow(["alpha", "beta gamma delta", "x"], 11);
     const lines = segs
-      .filter((s): s is Extract<ReaderSegment, { kind: "text" }> => s.kind === "text")
+      .filter(
+        (s): s is Extract<ReaderSegment, { kind: "text" }> => s.kind === "text",
+      )
       .map((s) => s.sourceLine);
     // line 1 → 1 seg, line 2 ("beta gamma delta" @11) → 2 segs, line 3 → 1 seg
     expect(lines).toEqual([1, 2, 2, 3]);
@@ -166,11 +178,6 @@ describe("ReaderEngine", () => {
     eng.pushBytes(1, "the quick brown fox\n\nnext para\n");
     const segs = reflow(eng.linesFor(1), 9);
     // "the quick"/"brown fox" (2 segs), a break, then "next para" (1 seg).
-    expect(segs.map((s) => s.kind)).toEqual([
-      "text",
-      "text",
-      "break",
-      "text",
-    ]);
+    expect(segs.map((s) => s.kind)).toEqual(["text", "text", "break", "text"]);
   });
 });

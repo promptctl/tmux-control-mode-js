@@ -83,11 +83,21 @@ export const CollabView = observer(function CollabView({
         </Group>
       </Paper>
 
-      <Group align="stretch" gap="sm" style={{ flex: 1, minHeight: 0 }} wrap="nowrap">
+      <Group
+        align="stretch"
+        gap="sm"
+        style={{ flex: 1, minHeight: 0 }}
+        wrap="nowrap"
+      >
         <Paper
           withBorder
           p="xs"
-          style={{ width: 280, display: "flex", flexDirection: "column", minHeight: 0 }}
+          style={{
+            width: 280,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
         >
           <Text size="xs" fw={600} c="dimmed" mb={6}>
             PANES ({panes.length})
@@ -136,7 +146,12 @@ export const CollabView = observer(function CollabView({
         <Paper
           withBorder
           p="xs"
-          style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
         >
           {store.selectedPaneId === null ? (
             <Text c="dimmed" m="auto">
@@ -178,7 +193,10 @@ const CollabPanel = observer(function CollabPanel({
   );
   // One bridge per chosen pane; rebuilt (and the old one torn down by
   // CollabScreen's unmount) when `paneId` changes.
-  const bridge = useMemo(() => new CollabBridge(wsBase, paneId), [wsBase, paneId]);
+  const bridge = useMemo(
+    () => new CollabBridge(wsBase, paneId),
+    [wsBase, paneId],
+  );
 
   const statusBadge = (() => {
     if (bridge.status === "gone") return <Badge color="red">pane closed</Badge>;
@@ -207,12 +225,25 @@ const CollabPanel = observer(function CollabPanel({
 
       {viewerUrl !== null && (
         <Group gap="xs" wrap="nowrap">
-          <Code style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <Code
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
             {viewerUrl}
           </Code>
           <CopyButton value={viewerUrl}>
             {({ copied, copy }) => (
-              <Button size="xs" variant="light" color={copied ? "teal" : "gray"} onClick={copy}>
+              <Button
+                size="xs"
+                variant="light"
+                color={copied ? "teal" : "gray"}
+                onClick={copy}
+              >
                 {copied ? "Copied" : "Copy link"}
               </Button>
             )}
@@ -233,7 +264,13 @@ const CollabPanel = observer(function CollabPanel({
 
       <Paper
         withBorder
-        style={{ flex: 1, minHeight: 200, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{
+          flex: 1,
+          minHeight: 200,
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+        }}
       >
         <CollabScreen key={paneId} bridge={bridge} fontSize={fontSize} />
       </Paper>

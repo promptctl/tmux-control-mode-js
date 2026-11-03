@@ -135,7 +135,8 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
 
     const received: ChunkPayload[] = [];
     const sink: BytesSink = {
-      write: (msg) => received.push({ paneId: msg.paneId, data: msg.data.slice() }),
+      write: (msg) =>
+        received.push({ paneId: msg.paneId, data: msg.data.slice() }),
       end: () => {},
     };
     client.attachBytesSink(sink, { scope: serverScope });

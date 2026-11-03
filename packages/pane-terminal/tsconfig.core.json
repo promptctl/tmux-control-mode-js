@@ -11,12 +11,6 @@
     "lib": ["ES2022"],
     "types": []
   },
-  "references": [
-    { "path": "../../src" }
-  ],
-  "include": [
-    "src/stream/**/*.ts",
-    "src/sink/**/*.ts",
-    "src/bench/**/*.ts"
-  ]
+  "references": [{ "path": "../../src" }],
+  "include": ["src/stream/**/*.ts", "src/sink/**/*.ts", "src/bench/**/*.ts"]
 }

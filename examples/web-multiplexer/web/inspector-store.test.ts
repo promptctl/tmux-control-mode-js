@@ -22,9 +22,19 @@ function fakeBridge(): { bridge: TmuxBridge; emit: WireHandler } {
   return {
     bridge: {
       execute: () =>
-        Promise.resolve({ commandNumber: 0, timestamp: 0, output: [], success: true }),
+        Promise.resolve({
+          commandNumber: 0,
+          timestamp: 0,
+          output: [],
+          success: true,
+        }),
       sendKeys: () =>
-        Promise.resolve({ commandNumber: 0, timestamp: 0, output: [], success: true }),
+        Promise.resolve({
+          commandNumber: 0,
+          timestamp: 0,
+          output: [],
+          success: true,
+        }),
       detach: noop,
       connect: noop,
       disconnect: noop,

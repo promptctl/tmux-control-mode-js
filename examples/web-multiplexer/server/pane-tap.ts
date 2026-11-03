@@ -107,12 +107,14 @@ export function tapPaneToFifo(
     selfDispose();
   });
 
-  void execute(`pipe-pane -t %${paneId} "cat >> '${fifoPath}'"`).then((resp) => {
-    if (!resp.success && !disposed) {
-      console.warn(`[pane-tap] pipe-pane failed for %${paneId}`);
-      selfDispose();
-    }
-  });
+  void execute(`pipe-pane -t %${paneId} "cat >> '${fifoPath}'"`).then(
+    (resp) => {
+      if (!resp.success && !disposed) {
+        console.warn(`[pane-tap] pipe-pane failed for %${paneId}`);
+        selfDispose();
+      }
+    },
+  );
 
   return dispose;
 }

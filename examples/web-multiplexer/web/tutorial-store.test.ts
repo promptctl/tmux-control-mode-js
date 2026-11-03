@@ -47,7 +47,9 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
     store.sendCommand("list-windows -a");
 
     // The outbound command line is recorded, then the framed reply comes back.
-    expect(store.wire.some((l) => l.dir === "out" && l.text === "list-windows -a")).toBe(true);
+    expect(
+      store.wire.some((l) => l.dir === "out" && l.text === "list-windows -a"),
+    ).toBe(true);
     const types = store.events.slice(before).map((e) => e.message.type);
     expect(types).toContain("begin");
     expect(types).toContain("end");
@@ -83,7 +85,9 @@ describe("TutorialStore drives the in-browser mock + parser", () => {
     expect(store.chaosStats.dropped).toBe(0);
     expect(store.chaosStats.corrupted).toBe(0);
     // Every delivered line is a line the mock genuinely sent.
-    expect(store.wire.filter((l) => l.dir === "in").every((l) => l.fate === "clean")).toBe(true);
+    expect(
+      store.wire.filter((l) => l.dir === "in").every((l) => l.fate === "clean"),
+    ).toBe(true);
   });
 
   it("dropRate 1 drops the whole inbound stream — nothing parses", () => {

@@ -93,12 +93,22 @@ describe("TmuxClient.attachBytesSink (pane scope)", () => {
     const order: string[] = [];
 
     const aTagged: BytesSink = {
-      write(msg): void { order.push("a"); a.write(msg); },
-      end(): void { a.end(); },
+      write(msg): void {
+        order.push("a");
+        a.write(msg);
+      },
+      end(): void {
+        a.end();
+      },
     };
     const bTagged: BytesSink = {
-      write(msg): void { order.push("b"); b.write(msg); },
-      end(): void { b.end(); },
+      write(msg): void {
+        order.push("b");
+        b.write(msg);
+      },
+      end(): void {
+        b.end();
+      },
     };
     client.attachBytesSink(aTagged, { scope: paneScope(1) });
     client.attachBytesSink(bTagged, { scope: paneScope(1) });
@@ -378,12 +388,22 @@ describe("TmuxClient.attachBytesSink (server scope)", () => {
     const b = createRecordingSink();
     const order: string[] = [];
     const aTagged: BytesSink = {
-      write(msg): void { order.push("a"); a.write(msg); },
-      end(): void { a.end(); },
+      write(msg): void {
+        order.push("a");
+        a.write(msg);
+      },
+      end(): void {
+        a.end();
+      },
     };
     const bTagged: BytesSink = {
-      write(msg): void { order.push("b"); b.write(msg); },
-      end(): void { b.end(); },
+      write(msg): void {
+        order.push("b");
+        b.write(msg);
+      },
+      end(): void {
+        b.end();
+      },
     };
     client.attachBytesSink(aTagged);
     client.attachBytesSink(bTagged);

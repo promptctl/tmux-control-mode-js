@@ -47,11 +47,15 @@ export interface ChannelGroup {
 
 // [LAW:one-source-of-truth] Display order + labels for the three channels live
 // here once; the view reads `groups`, never re-deciding order per render.
-const CHANNEL_ORDER: readonly { channel: ObservationChannel; label: string }[] = [
-  { channel: "notification", label: "Notifications (%event → client event)" },
-  { channel: "pane-output", label: "Pane output (%output → decoded sink bytes)" },
-  { channel: "command", label: "Commands (%begin/%end/%error correlation)" },
-];
+const CHANNEL_ORDER: readonly { channel: ObservationChannel; label: string }[] =
+  [
+    { channel: "notification", label: "Notifications (%event → client event)" },
+    {
+      channel: "pane-output",
+      label: "Pane output (%output → decoded sink bytes)",
+    },
+    { channel: "command", label: "Commands (%begin/%end/%error correlation)" },
+  ];
 
 export class ConformanceStore {
   rows: ConformanceRow[];

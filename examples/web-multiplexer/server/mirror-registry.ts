@@ -26,7 +26,10 @@ import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "./command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 import { spawnReadyControlClient } from "./control-client.js";
-import { buildMirrorSeed, type MirrorControlFrame } from "../shared/mirror-frame.js";
+import {
+  buildMirrorSeed,
+  type MirrorControlFrame,
+} from "../shared/mirror-frame.js";
 
 /**
  * The viewer-facing surface the `/mirror` endpoint hands the registry. The
@@ -233,7 +236,10 @@ export class MirrorRegistry {
   // closed under its viewers. [LAW:one-source-of-truth]
   private startLiveness(): void {
     if (this.liveness !== null) return;
-    this.liveness = setInterval(() => void this.checkLiveness(), LIVENESS_INTERVAL_MS);
+    this.liveness = setInterval(
+      () => void this.checkLiveness(),
+      LIVENESS_INTERVAL_MS,
+    );
   }
 
   private stopLiveness(): void {

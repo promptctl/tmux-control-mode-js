@@ -27,7 +27,7 @@ describe("scanJsonValue", () => {
   });
 
   it("anchors at the first non-space bracket and ignores trailing text", () => {
-    expect(scanJsonValue('  [1, 2]  trailing')).toEqual({
+    expect(scanJsonValue("  [1, 2]  trailing")).toEqual({
       status: "complete",
       text: "[1, 2]",
     });
@@ -187,7 +187,13 @@ describe("runToTable", () => {
         lines: ["1,2", "3,4"],
         sawSeparator: false,
       }),
-    ).toEqual({ columns: null, rows: [["1", "2"], ["3", "4"]] });
+    ).toEqual({
+      columns: null,
+      rows: [
+        ["1", "2"],
+        ["3", "4"],
+      ],
+    });
   });
 });
 

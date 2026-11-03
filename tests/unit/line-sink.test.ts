@@ -185,11 +185,9 @@ describe("attachLineSink (unit)", () => {
   it("LINE-16: flushes a partial trailing line through the detaching consumer", () => {
     const client = new FakeClient();
     const events: string[] = [];
-    const dispose = attachLineSink(
-      client,
-      (e) => events.push(e.line),
-      { scope: paneScope(1) },
-    );
+    const dispose = attachLineSink(client, (e) => events.push(e.line), {
+      scope: paneScope(1),
+    });
 
     client.deliver(out(1, Buffer.from("partial")));
     expect(events).toEqual([]);
@@ -202,11 +200,9 @@ describe("attachLineSink (unit)", () => {
   it("LINE-17: no extra event when the buffer is empty on detach", () => {
     const client = new FakeClient();
     const events: string[] = [];
-    const dispose = attachLineSink(
-      client,
-      (e) => events.push(e.line),
-      { scope: paneScope(1) },
-    );
+    const dispose = attachLineSink(client, (e) => events.push(e.line), {
+      scope: paneScope(1),
+    });
 
     client.deliver(out(1, Buffer.from("complete\n")));
     expect(events).toEqual(["complete"]);

@@ -108,7 +108,10 @@ describe("parseRpcRequest — envelope", () => {
 
 describe("parseRpcRequest — allowlist", () => {
   it("accepts every known RpcMethod", () => {
-    const expected: ReadonlyArray<{ method: RpcMethod; args: readonly unknown[] }> = [
+    const expected: ReadonlyArray<{
+      method: RpcMethod;
+      args: readonly unknown[];
+    }> = [
       { method: "execute", args: ["list-windows"] },
       { method: "listWindows", args: [] },
       { method: "listPanes", args: [] },
@@ -426,4 +429,3 @@ describe("RpcRequest exhaustiveness", () => {
     expect(r.method).toBe("listWindows");
   });
 });
-

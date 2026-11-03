@@ -206,11 +206,7 @@ export class DataSniffEngine {
     }
   }
 
-  private emitJson(
-    paneId: number,
-    text: string,
-    added: SniffedBlock[],
-  ): void {
+  private emitJson(paneId: number, text: string, added: SniffedBlock[]): void {
     const table = jsonToTable(text);
     if (table === null) return; // parsed, but not tabular-worthy — not a block
     this.push(
@@ -351,7 +347,8 @@ export function scanJsonValue(text: string): JsonScan {
     else if (ch === "{" || ch === "[") depth++;
     else if (ch === "}" || ch === "]") {
       depth--;
-      if (depth === 0) return { status: "complete", text: text.slice(start, i + 1) };
+      if (depth === 0)
+        return { status: "complete", text: text.slice(start, i + 1) };
     }
   }
   return { status: "open" };
@@ -398,7 +395,9 @@ function arrayToTable(arr: readonly unknown[]): TabularData | null {
     };
   }
   if (arr.every(Array.isArray)) {
-    const width = Math.max(...(arr as readonly unknown[][]).map((r) => r.length));
+    const width = Math.max(
+      ...(arr as readonly unknown[][]).map((r) => r.length),
+    );
     return {
       columns: null,
       rows: (arr as readonly unknown[][]).map((r) =>
@@ -545,7 +544,10 @@ function isSeparatorRule(trimmed: string): boolean {
 }
 
 function looksLikePipeTable(trimmed: string): boolean {
-  return trimmed.includes("|") && (trimmed.startsWith("|") || trimmed.includes(" | "));
+  return (
+    trimmed.includes("|") &&
+    (trimmed.startsWith("|") || trimmed.includes(" | "))
+  );
 }
 
 /** Split a `| a | b |` row into cells, dropping the empty edge cells. */

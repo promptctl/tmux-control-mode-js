@@ -32,7 +32,10 @@ const CollabApp = observer(function CollabApp({ paneId }: { paneId: number }) {
       `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`,
     [],
   );
-  const bridge = useMemo(() => new CollabBridge(wsBase, paneId), [wsBase, paneId]);
+  const bridge = useMemo(
+    () => new CollabBridge(wsBase, paneId),
+    [wsBase, paneId],
+  );
 
   const statusBadge = (() => {
     if (bridge.status === "gone") return <Badge color="red">pane closed</Badge>;

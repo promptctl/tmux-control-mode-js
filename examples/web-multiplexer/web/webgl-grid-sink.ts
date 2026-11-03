@@ -44,7 +44,10 @@ export class WebGLGridSink implements TerminalSink {
   private disposed = false;
 
   constructor(initial: GridSize) {
-    this.size = { cols: Math.max(1, initial.cols), rows: Math.max(1, initial.rows) };
+    this.size = {
+      cols: Math.max(1, initial.cols),
+      rows: Math.max(1, initial.rows),
+    };
     this.engine = new AttributionEngine(this.size);
   }
 

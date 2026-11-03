@@ -21,7 +21,11 @@ export const SessionList = observer(function SessionList({ store }: Props) {
       <Text fw={600} size="xs" c="dimmed" tt="uppercase" pb="xs">
         Sessions ({sessions.length})
       </Text>
-      <ScrollArea style={{ flex: 1, minHeight: 0 }} type="auto" offsetScrollbars>
+      <ScrollArea
+        style={{ flex: 1, minHeight: 0 }}
+        type="auto"
+        offsetScrollbars
+      >
         <Stack gap={2}>
           {sessions.map((s) => (
             <NavLink
@@ -31,7 +35,11 @@ export const SessionList = observer(function SessionList({ store }: Props) {
               py={4}
               label={
                 <Group gap={6} wrap="nowrap" justify="space-between">
-                  <Text size="xs" truncate="end" style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    size="xs"
+                    truncate="end"
+                    style={{ flex: 1, minWidth: 0 }}
+                  >
                     {s.name}
                   </Text>
                   <Badge

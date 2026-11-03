@@ -106,7 +106,11 @@ export class WebGLGridRenderer {
     gl.uniform1i(uniform(gl, this.program, "uAtlas"), 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-    gl.uniform2f(uniform(gl, this.program, "uCellPx"), this.cellPxW, this.cellPxH);
+    gl.uniform2f(
+      uniform(gl, this.program, "uCellPx"),
+      this.cellPxW,
+      this.cellPxH,
+    );
     gl.uniform2f(
       uniform(gl, this.program, "uGlyphUV"),
       this.atlas.glyphUvW,
@@ -258,7 +262,8 @@ function rasterizeAtlas(
   canvas.width = atlas.widthPx;
   canvas.height = atlas.heightPx;
   const ctx = canvas.getContext("2d");
-  if (ctx === null) throw new Error("Failed to get a 2D context for the atlas.");
+  if (ctx === null)
+    throw new Error("Failed to get a 2D context for the atlas.");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#ffffff";
   ctx.textBaseline = "top";
@@ -275,14 +280,7 @@ function rasterizeAtlas(
   const tex = gl.createTexture();
   if (tex === null) throw new Error("Failed to allocate the atlas texture.");
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.RGBA,
-    gl.RGBA,
-    gl.UNSIGNED_BYTE,
-    canvas,
-  );
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);

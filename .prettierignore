@@ -1,0 +1,7 @@
+# The gate formats everything by default. Prettier reads .gitignore but not
+# .git/info/exclude or the global excludesFile, so tool-owned state ignored
+# there must be listed here. Prose is left as written.
+*.md
+*.yaml
+*.yml
+.lit/

@@ -20,9 +20,19 @@ const TAB = "\t";
 
 describe("parsePaneRecordLine", () => {
   it("parses a plain line with no escapes", () => {
-    const line = ["$1", "main", "@0", "zsh", "%0", "/tmp", "123", "zsh", "zsh", "80", "24"].join(
-      "\t",
-    );
+    const line = [
+      "$1",
+      "main",
+      "@0",
+      "zsh",
+      "%0",
+      "/tmp",
+      "123",
+      "zsh",
+      "zsh",
+      "80",
+      "24",
+    ].join("\t");
     expect(parsePaneRecordLine(line)).toEqual({
       sessionId: 1,
       sessionName: "main",

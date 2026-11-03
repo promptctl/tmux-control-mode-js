@@ -53,13 +53,18 @@ export class HeatmapStore {
     });
 
     // setInterval returns a number in the browser; guard for Node types.
-    this.timerHandle = setInterval(() => this.tick(), TICK_INTERVAL_MS) as unknown as number;
+    this.timerHandle = setInterval(
+      () => this.tick(),
+      TICK_INTERVAL_MS,
+    ) as unknown as number;
   }
 
   dispose(): void {
     this.disposeOnEvent();
     if (this.timerHandle !== null) {
-      clearInterval(this.timerHandle as unknown as ReturnType<typeof setInterval>);
+      clearInterval(
+        this.timerHandle as unknown as ReturnType<typeof setInterval>,
+      );
       this.timerHandle = null;
     }
   }

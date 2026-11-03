@@ -42,7 +42,10 @@ const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
 // fresh tmux server. Storing the name in a closure shared with cleanup
 // avoids the bookkeeping mistakes a per-test global would invite.
 function freshSocket(): string {
-  return e2eSocketName(process.pid, Date.now() + Math.floor(Math.random() * 1000));
+  return e2eSocketName(
+    process.pid,
+    Date.now() + Math.floor(Math.random() * 1000),
+  );
 }
 
 function killSocket(name: string): void {
@@ -175,10 +178,9 @@ test("ANSI \\033[31m foreground produces a styled span around the text", async (
     // proving is that color escapes survive the wire and reach the DOM
     // as styled output, not that xterm.js's color-table mapping matches
     // a specific snapshot.
-    const styled = page.locator(
-      '.xterm-rows span[class*="xterm-fg-"]',
-      { hasText: SENTINEL },
-    );
+    const styled = page.locator('.xterm-rows span[class*="xterm-fg-"]', {
+      hasText: SENTINEL,
+    });
     await expect(styled.first()).toBeVisible({ timeout: 5_000 });
   } finally {
     await disposeApp(handle);
@@ -202,10 +204,9 @@ test("carriage-return overwrite renders the post-CR characters in place", async 
     // printf 'before<tail>\rXX\n' — write PRE, send \r so the cursor
     // jumps to col 0, write 'XX' overwriting the first two chars, then
     // \n to terminate the line. Final visible content of that row: POST.
-    await textarea.pressSequentially(
-      `printf '${PRE}\\rXX\\n'\n`,
-      { delay: 10 },
-    );
+    await textarea.pressSequentially(`printf '${PRE}\\rXX\\n'\n`, {
+      delay: 10,
+    });
 
     // The overwritten form must be present.
     await expect(page.locator(".xterm-rows").first()).toContainText(POST, {

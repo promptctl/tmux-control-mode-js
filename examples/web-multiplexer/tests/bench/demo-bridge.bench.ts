@@ -42,7 +42,10 @@ function killServer(socket: string): void {
   killTmuxServer(socket);
 }
 
-async function createSession(socket: string, session: string): Promise<TmuxClient> {
+async function createSession(
+  socket: string,
+  session: string,
+): Promise<TmuxClient> {
   execSync(tmuxCmd(socket, `new-session -d -s ${session} -x 80 -y 24`), {
     stdio: "ignore",
   });
@@ -118,7 +121,11 @@ describe.skipIf(!integrationOn)("demo bridge — G1 attach-paint", () => {
     }
 
     latencies.sort((a, b) => a - b);
-    const p99 = latencies[Math.floor(latencies.length * 0.99)] ?? latencies.at(-1) ?? 0;
-    expect(p99, `G1 p99 ${p99.toFixed(1)}ms > ${P99_BUDGET_G1_MS}ms`).toBeLessThan(P99_BUDGET_G1_MS);
+    const p99 =
+      latencies[Math.floor(latencies.length * 0.99)] ?? latencies.at(-1) ?? 0;
+    expect(
+      p99,
+      `G1 p99 ${p99.toFixed(1)}ms > ${P99_BUDGET_G1_MS}ms`,
+    ).toBeLessThan(P99_BUDGET_G1_MS);
   });
 });

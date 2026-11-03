@@ -93,9 +93,13 @@ const APP_ENV = {
 
 function killServer(): void {
   try {
-    const names = execFileSync("tmux", ["-L", SOCKET, "list-sessions", "-F", "#{session_name}"], {
-      encoding: "utf8",
-    })
+    const names = execFileSync(
+      "tmux",
+      ["-L", SOCKET, "list-sessions", "-F", "#{session_name}"],
+      {
+        encoding: "utf8",
+      },
+    )
       .split("\n")
       .filter((line) => line.length > 0);
     for (const name of names) {

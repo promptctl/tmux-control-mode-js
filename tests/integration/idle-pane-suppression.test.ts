@@ -118,8 +118,13 @@ async function listAllPanes(
   });
 }
 
-function sendOutputToPane(client: TmuxClient, paneId: number): Promise<unknown> {
-  return client.execute(`send-keys -t %${paneId} 'echo idle-test-${paneId}' Enter`);
+function sendOutputToPane(
+  client: TmuxClient,
+  paneId: number,
+): Promise<unknown> {
+  return client.execute(
+    `send-keys -t %${paneId} 'echo idle-test-${paneId}' Enter`,
+  );
 }
 
 function makeRecordingSink(arrived: number[]): BytesSink {
@@ -135,7 +140,9 @@ function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
     const check = () => {
       if (pred()) return resolve();
       if (Date.now() >= deadline)
-        return reject(new Error(`waitFor: condition not met within ${timeoutMs} ms`));
+        return reject(
+          new Error(`waitFor: condition not met within ${timeoutMs} ms`),
+        );
       setTimeout(check, 5);
     };
     check();
@@ -194,118 +201,102 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
   });
 
   // ── #27: Suppression activates on idle ──────────────────────────────────
-  it(
-    "IDLE-27: pauses an idle pane that has no consumers",
-    async () => {
-      const { client, sent } = await createClient(
-        socketName,
-        uniqueSession("idle27"),
-        { idlePaneSuppression: true },
-      );
-      clients.push(client);
+  it("IDLE-27: pauses an idle pane that has no consumers", async () => {
+    const { client, sent } = await createClient(
+      socketName,
+      uniqueSession("idle27"),
+      { idlePaneSuppression: true },
+    );
+    clients.push(client);
 
-      const panes = await listAllPanes(client);
-      const paneX = panes[0].paneId;
-      // Bootstrap learns %X, finds no admitting attachment, pauses it.
-      await waitFor(() => paused(sent, paneX));
-      expect(paused(sent, paneX)).toBe(true);
-    },
-    15000,
-  );
+    const panes = await listAllPanes(client);
+    const paneX = panes[0].paneId;
+    // Bootstrap learns %X, finds no admitting attachment, pauses it.
+    await waitFor(() => paused(sent, paneX));
+    expect(paused(sent, paneX)).toBe(true);
+  }, 15000);
 
   // ── #28: Suppression releases on attach ─────────────────────────────────
-  it(
-    "IDLE-28: continues a paused pane when a sink attaches, then delivers bytes",
-    async () => {
-      const { client, sent } = await createClient(
-        socketName,
-        uniqueSession("idle28"),
-        { idlePaneSuppression: true },
-      );
-      clients.push(client);
+  it("IDLE-28: continues a paused pane when a sink attaches, then delivers bytes", async () => {
+    const { client, sent } = await createClient(
+      socketName,
+      uniqueSession("idle28"),
+      { idlePaneSuppression: true },
+    );
+    clients.push(client);
 
-      const paneX = (await listAllPanes(client))[0].paneId;
-      await waitFor(() => paused(sent, paneX));
+    const paneX = (await listAllPanes(client))[0].paneId;
+    await waitFor(() => paused(sent, paneX));
 
-      sent.length = 0;
-      const arrived: number[] = [];
-      const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
-        scope: paneScope(paneX),
-      });
-      await waitFor(() => continued(sent, paneX));
-      expect(continued(sent, paneX)).toBe(true);
+    sent.length = 0;
+    const arrived: number[] = [];
+    const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: paneScope(paneX),
+    });
+    await waitFor(() => continued(sent, paneX));
+    expect(continued(sent, paneX)).toBe(true);
 
-      await sendOutputToPane(client, paneX);
-      await waitFor(() => arrived.includes(paneX));
-      expect(arrived).toContain(paneX);
-      dispose();
-    },
-    15000,
-  );
+    await sendOutputToPane(client, paneX);
+    await waitFor(() => arrived.includes(paneX));
+    expect(arrived).toContain(paneX);
+    dispose();
+  }, 15000);
 
   // ── #29: Suppression re-activates on detach ─────────────────────────────
-  it(
-    "IDLE-29: re-pauses a pane when its last sink detaches",
-    async () => {
-      const { client, sent } = await createClient(
-        socketName,
-        uniqueSession("idle29"),
-        { idlePaneSuppression: true },
-      );
-      clients.push(client);
+  it("IDLE-29: re-pauses a pane when its last sink detaches", async () => {
+    const { client, sent } = await createClient(
+      socketName,
+      uniqueSession("idle29"),
+      { idlePaneSuppression: true },
+    );
+    clients.push(client);
 
-      const paneX = (await listAllPanes(client))[0].paneId;
-      const dispose = client.attachBytesSink(makeRecordingSink([]), {
-        scope: paneScope(paneX),
-      });
-      await waitFor(() => continued(sent, paneX));
+    const paneX = (await listAllPanes(client))[0].paneId;
+    const dispose = client.attachBytesSink(makeRecordingSink([]), {
+      scope: paneScope(paneX),
+    });
+    await waitFor(() => continued(sent, paneX));
 
-      sent.length = 0;
-      dispose();
-      await waitFor(() => paused(sent, paneX));
-      expect(paused(sent, paneX)).toBe(true);
-    },
-    15000,
-  );
+    sent.length = 0;
+    dispose();
+    await waitFor(() => paused(sent, paneX));
+    expect(paused(sent, paneX)).toBe(true);
+  }, 15000);
 
   // ── #30: Cross-scope interaction (serverScope admits everything) ─────────
-  it(
-    "IDLE-30: serverScope keeps new panes unpaused; detach re-pauses them",
-    async () => {
-      const { client, sent } = await createClient(
-        socketName,
-        uniqueSession("idle30"),
-        { idlePaneSuppression: true },
-      );
-      clients.push(client);
+  it("IDLE-30: serverScope keeps new panes unpaused; detach re-pauses them", async () => {
+    const { client, sent } = await createClient(
+      socketName,
+      uniqueSession("idle30"),
+      { idlePaneSuppression: true },
+    );
+    clients.push(client);
 
-      const initial = await listAllPanes(client);
-      const serverDispose = client.attachBytesSink(makeRecordingSink([]), {
-        scope: serverScope,
-      });
+    const initial = await listAllPanes(client);
+    const serverDispose = client.attachBytesSink(makeRecordingSink([]), {
+      scope: serverScope,
+    });
 
-      // Spawn a new pane %Y while serverScope is attached.
-      sent.length = 0;
-      await client.execute("new-window");
-      const paneY = (
-        await waitForNewPane(
-          client,
-          initial.map((p) => p.paneId),
-        )
-      ).paneId;
+    // Spawn a new pane %Y while serverScope is attached.
+    sent.length = 0;
+    await client.execute("new-window");
+    const paneY = (
+      await waitForNewPane(
+        client,
+        initial.map((p) => p.paneId),
+      )
+    ).paneId;
 
-      // serverScope admits %Y: it must be continued, never paused.
-      await waitFor(() => continued(sent, paneY));
-      expect(paused(sent, paneY)).toBe(false);
+    // serverScope admits %Y: it must be continued, never paused.
+    await waitFor(() => continued(sent, paneY));
+    expect(paused(sent, paneY)).toBe(false);
 
-      // Detaching the serverScope sink leaves %Y with no admitting attachment.
-      sent.length = 0;
-      serverDispose();
-      await waitFor(() => paused(sent, paneY));
-      expect(paused(sent, paneY)).toBe(true);
-    },
-    20000,
-  );
+    // Detaching the serverScope sink leaves %Y with no admitting attachment.
+    sent.length = 0;
+    serverDispose();
+    await waitFor(() => paused(sent, paneY));
+    expect(paused(sent, paneY)).toBe(true);
+  }, 20000);
 
   // ── #31: Topology-driven transitions ────────────────────────────────────
   //
@@ -319,83 +310,75 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
   // topology move flipping a pane out of an admitting scope → pause — in a form
   // tmux actually notifies the attached client about: a windowScope sink and an
   // intra-session move between two observable windows.
-  it(
-    "IDLE-31: a new pane in an admitting window is continued; moving it to another window pauses it",
-    async () => {
-      const { client, sent } = await createClient(
-        socketName,
-        uniqueSession("idle31"),
-        { idlePaneSuppression: true },
-      );
-      clients.push(client);
+  it("IDLE-31: a new pane in an admitting window is continued; moving it to another window pauses it", async () => {
+    const { client, sent } = await createClient(
+      socketName,
+      uniqueSession("idle31"),
+      { idlePaneSuppression: true },
+    );
+    clients.push(client);
 
-      const initial = await listAllPanes(client);
-      const windowA = initial[0].windowId;
+    const initial = await listAllPanes(client);
+    const windowA = initial[0].windowId;
 
-      // Subscribe to all of window A.
-      client.attachBytesSink(makeRecordingSink([]), {
-        scope: windowScope(windowA),
-      });
+    // Subscribe to all of window A.
+    client.attachBytesSink(makeRecordingSink([]), {
+      scope: windowScope(windowA),
+    });
 
-      // Split the initial pane → a new pane in window A.
-      sent.length = 0;
-      await client.execute(`split-window -t %${initial[0].paneId}`);
-      const paneNew = (
-        await waitForNewPane(
-          client,
-          initial.map((p) => p.paneId),
-        )
-      ).paneId;
+    // Split the initial pane → a new pane in window A.
+    sent.length = 0;
+    await client.execute(`split-window -t %${initial[0].paneId}`);
+    const paneNew = (
+      await waitForNewPane(
+        client,
+        initial.map((p) => p.paneId),
+      )
+    ).paneId;
 
-      // The new pane is admitted by windowScope(A): continued immediately,
-      // never paused-then-unpaused.
-      await waitFor(() => continued(sent, paneNew));
-      expect(paused(sent, paneNew)).toBe(false);
+    // The new pane is admitted by windowScope(A): continued immediately,
+    // never paused-then-unpaused.
+    await waitFor(() => continued(sent, paneNew));
+    expect(paused(sent, paneNew)).toBe(false);
 
-      // Create a second window in the same session and move the pane into it.
-      await client.execute("new-window");
-      const knownIds = [...initial.map((p) => p.paneId), paneNew];
-      const windowB = (await waitForNewPane(client, knownIds)).windowId;
-      expect(windowB).not.toBe(windowA);
+    // Create a second window in the same session and move the pane into it.
+    await client.execute("new-window");
+    const knownIds = [...initial.map((p) => p.paneId), paneNew];
+    const windowB = (await waitForNewPane(client, knownIds)).windowId;
+    expect(windowB).not.toBe(windowA);
 
-      sent.length = 0;
-      await client.execute(`move-pane -s %${paneNew} -t @${windowB}`);
-      // Now in window B, no longer admitted by windowScope(A): paused.
-      await waitFor(() => paused(sent, paneNew));
-      expect(paused(sent, paneNew)).toBe(true);
-    },
-    25000,
-  );
+    sent.length = 0;
+    await client.execute(`move-pane -s %${paneNew} -t @${windowB}`);
+    // Now in window B, no longer admitted by windowScope(A): paused.
+    await waitFor(() => paused(sent, paneNew));
+    expect(paused(sent, paneNew)).toBe(true);
+  }, 25000);
 
   // ── #32: No effect on the user's other tmux clients ─────────────────────
-  it(
-    "IDLE-32: pausing on one control-mode client does not pause output for another",
-    async () => {
-      const session = uniqueSession("idle32");
-      // Client 1: suppression on, no sinks → it pauses every idle pane (for itself).
-      const c1 = await createClient(socketName, session, {
-        idlePaneSuppression: true,
-      });
-      clients.push(c1.client);
+  it("IDLE-32: pausing on one control-mode client does not pause output for another", async () => {
+    const session = uniqueSession("idle32");
+    // Client 1: suppression on, no sinks → it pauses every idle pane (for itself).
+    const c1 = await createClient(socketName, session, {
+      idlePaneSuppression: true,
+    });
+    clients.push(c1.client);
 
-      // Client 2: a SECOND control-mode client on the same session, no
-      // suppression, with a serverScope sink that records arrivals.
-      const c2 = await attachClient(socketName, session);
-      clients.push(c2.client);
-      const arrived: number[] = [];
-      c2.client.attachBytesSink(makeRecordingSink(arrived), {
-        scope: serverScope,
-      });
+    // Client 2: a SECOND control-mode client on the same session, no
+    // suppression, with a serverScope sink that records arrivals.
+    const c2 = await attachClient(socketName, session);
+    clients.push(c2.client);
+    const arrived: number[] = [];
+    c2.client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: serverScope,
+    });
 
-      const paneX = (await listAllPanes(c1.client))[0].paneId;
-      // Client 1 pauses %X for itself.
-      await waitFor(() => paused(c1.sent, paneX));
+    const paneX = (await listAllPanes(c1.client))[0].paneId;
+    // Client 1 pauses %X for itself.
+    await waitFor(() => paused(c1.sent, paneX));
 
-      // Drive output; client 2 (which never paused) must still receive it.
-      await sendOutputToPane(c2.client, paneX);
-      await waitFor(() => arrived.includes(paneX));
-      expect(arrived).toContain(paneX);
-    },
-    20000,
-  );
+    // Drive output; client 2 (which never paused) must still receive it.
+    await sendOutputToPane(c2.client, paneX);
+    await waitFor(() => arrived.includes(paneX));
+    expect(arrived).toContain(paneX);
+  }, 20000);
 });

@@ -24,7 +24,10 @@ interface Props {
   readonly demoStore: DemoStore;
 }
 
-export const ConsoleView = observer(function ConsoleView({ store, demoStore }: Props) {
+export const ConsoleView = observer(function ConsoleView({
+  store,
+  demoStore,
+}: Props) {
   return (
     <div
       style={{
@@ -39,7 +42,12 @@ export const ConsoleView = observer(function ConsoleView({ store, demoStore }: P
       <Paper
         withBorder
         p="md"
-        style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column" }}
+        style={{
+          flex: "1 1 420px",
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
       >
         <ConsoleRepl store={store} />
       </Paper>
@@ -47,7 +55,12 @@ export const ConsoleView = observer(function ConsoleView({ store, demoStore }: P
       <Paper
         withBorder
         p="md"
-        style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column" }}
+        style={{
+          flex: "1 1 420px",
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+        }}
       >
         <ConsoleFormatPlayground store={store} demoStore={demoStore} />
       </Paper>

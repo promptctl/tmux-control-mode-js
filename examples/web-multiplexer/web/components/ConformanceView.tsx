@@ -108,10 +108,11 @@ export const ConformanceView = observer(function ConformanceView({
             </Badge>
           </Group>
           <Text size="sm" c="dimmed">
-            Every documented SPEC §23 message + the command-correlation contract,
-            run against a real <Code>TmuxClient</Code> over an in-process{" "}
-            <Code>MockTmuxServer</Code>. Only the tmux process is mocked — the
-            parser, correlation FIFO, and sink path are the shipped library.
+            Every documented SPEC §23 message + the command-correlation
+            contract, run against a real <Code>TmuxClient</Code> over an
+            in-process <Code>MockTmuxServer</Code>. Only the tmux process is
+            mocked — the parser, correlation FIFO, and sink path are the shipped
+            library.
           </Text>
         </Stack>
         <Group gap="xs">

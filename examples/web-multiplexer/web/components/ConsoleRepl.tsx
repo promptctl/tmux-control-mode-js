@@ -61,7 +61,9 @@ function ReplRow({ entry }: { readonly entry: ReplEntry }): React.JSX.Element {
           style={{
             cursor: "pointer",
             borderLeft: `3px solid ${
-              isError ? "var(--mantine-color-red-6)" : "var(--mantine-color-default-border)"
+              isError
+                ? "var(--mantine-color-red-6)"
+                : "var(--mantine-color-default-border)"
             }`,
             paddingLeft: "var(--mantine-spacing-xs)",
             paddingTop: 2,
@@ -105,7 +107,11 @@ function RowMeta({
   }
   return (
     <Group gap={4} wrap="nowrap">
-      <Text size="xs" c={latencyColor(entry.latencyMs)} style={{ whiteSpace: "nowrap" }}>
+      <Text
+        size="xs"
+        c={latencyColor(entry.latencyMs)}
+        style={{ whiteSpace: "nowrap" }}
+      >
         {formatMs(entry.latencyMs)}
       </Text>
       <Text size="xs" c={entry.status === "error" ? "red.7" : "green.7"}>
@@ -115,11 +121,19 @@ function RowMeta({
   );
 }
 
-function RowBody({ entry }: { readonly entry: ReplEntry }): React.JSX.Element | null {
+function RowBody({
+  entry,
+}: {
+  readonly entry: ReplEntry;
+}): React.JSX.Element | null {
   if (entry.status === "pending") return null;
   if (entry.status === "error") {
     return (
-      <Text size="sm" c="red.7" style={{ fontFamily: MONO, whiteSpace: "pre-wrap" }}>
+      <Text
+        size="sm"
+        c="red.7"
+        style={{ fontFamily: MONO, whiteSpace: "pre-wrap" }}
+      >
         {entry.message}
       </Text>
     );
@@ -185,8 +199,8 @@ export const ConsoleRepl = observer(function ConsoleRepl({ store }: Props) {
       <ScrollArea viewportRef={viewport} style={{ flex: 1, minHeight: 0 }}>
         {rowCount === 0 ? (
           <Text size="sm" c="dimmed">
-            Type a tmux command below — e.g. <code>list-sessions</code> — and see the
-            response with timing. Up/Down recalls history.
+            Type a tmux command below — e.g. <code>list-sessions</code> — and
+            see the response with timing. Up/Down recalls history.
           </Text>
         ) : (
           <Stack gap={2}>

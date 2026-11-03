@@ -57,7 +57,9 @@ export type CopilotSuggestResponse =
  * it is malformed. [LAW:single-enforcer] the bridge's ONE trust boundary for
  * copilot input — a non-conforming body is rejected here, never read past.
  */
-export function parseCopilotRequest(body: unknown): CopilotSuggestRequest | null {
+export function parseCopilotRequest(
+  body: unknown,
+): CopilotSuggestRequest | null {
   if (typeof body !== "object" || body === null) return null;
   const messages = (body as { messages?: unknown }).messages;
   if (!Array.isArray(messages) || messages.length === 0) return null;
@@ -66,7 +68,8 @@ export function parseCopilotRequest(body: unknown): CopilotSuggestRequest | null
     if (typeof m !== "object" || m === null) return null;
     const role = (m as { role?: unknown }).role;
     const content = (m as { content?: unknown }).content;
-    if (role !== "system" && role !== "user" && role !== "assistant") return null;
+    if (role !== "system" && role !== "user" && role !== "assistant")
+      return null;
     if (typeof content !== "string") return null;
     validated.push({ role, content });
   }

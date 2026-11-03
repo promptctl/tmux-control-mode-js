@@ -7,7 +7,11 @@
 // The browser never imports the tmux-control-mode-js runtime — only types.
 // All wire-protocol parsing and encoding happens here on the Node side.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { spawnTmux } from "@promptctl/tmux-control-mode-js";
@@ -195,7 +199,9 @@ function handleConnection(ws: WebSocket): void {
 
     try {
       if (msg.kind === "execute") {
-        const response = await client.execute(msg.command).catch(asCommandResponse);
+        const response = await client
+          .execute(msg.command)
+          .catch(asCommandResponse);
         send({ kind: "response", id: msg.id, response });
         return;
       }
@@ -287,10 +293,7 @@ function handleMirrorConnection(
       if (ws.readyState === ws.OPEN) ws.send(data);
     },
     close: () => {
-      if (
-        ws.readyState === ws.OPEN ||
-        ws.readyState === ws.CONNECTING
-      ) {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
         ws.close();
       }
     },
@@ -423,13 +426,18 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 function handleCopilotRequest(req: IncomingMessage, res: ServerResponse): void {
   const chunks: Buffer[] = [];
   req.on("data", (c: Buffer) => chunks.push(c));
-  req.on("error", () => writeJson(res, 400, { ok: false, error: "request stream error" }));
+  req.on("error", () =>
+    writeJson(res, 400, { ok: false, error: "request stream error" }),
+  );
   req.on("end", () => {
     void respondToCopilot(Buffer.concat(chunks).toString("utf8"), res);
   });
 }
 
-async function respondToCopilot(rawBody: string, res: ServerResponse): Promise<void> {
+async function respondToCopilot(
+  rawBody: string,
+  res: ServerResponse,
+): Promise<void> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawBody);
@@ -466,7 +474,10 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
   const httpServer = createServer((req, res) => {
     // The AI co-pilot's LLM call is the one non-WebSocket route: a request /
     // response RPC, so it is plain HTTP, not a stream. [LAW:decomposition]
-    if (req.method === "POST" && (req.url ?? "").split("?")[0] === COPILOT_PATH) {
+    if (
+      req.method === "POST" &&
+      (req.url ?? "").split("?")[0] === COPILOT_PATH
+    ) {
       handleCopilotRequest(req, res);
       return;
     }
@@ -519,7 +530,12 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
   collabWss.on("connection", (ws, request) => {
     console.log("[bridge] collaborator connected");
     try {
-      handleCollabConnection(ws, mirrorRegistry, collabInput, request.url ?? "");
+      handleCollabConnection(
+        ws,
+        mirrorRegistry,
+        collabInput,
+        request.url ?? "",
+      );
     } catch (err) {
       console.error("[bridge] collab connection failed:", err);
       ws.close();

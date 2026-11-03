@@ -87,12 +87,15 @@ function renderCommand(c: CommandRecord): string {
       ? "running"
       : `exit ${c.status.exitCode ?? "unknown"}`;
   const output = c.output.trim();
-  const preview = output === "" ? "" : `\n${truncate(output, OUTPUT_PREVIEW_CHARS)}`;
+  const preview =
+    output === "" ? "" : `\n${truncate(output, OUTPUT_PREVIEW_CHARS)}`;
   return `$ ${c.command}   [${status}]${preview}`;
 }
 
 function truncate(s: string, max: number): string {
-  return s.length <= max ? s : `${s.slice(0, max)}… (${s.length - max} more chars)`;
+  return s.length <= max
+    ? s
+    : `${s.slice(0, max)}… (${s.length - max} more chars)`;
 }
 
 /**

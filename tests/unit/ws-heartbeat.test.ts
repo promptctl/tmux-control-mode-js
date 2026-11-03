@@ -57,8 +57,8 @@ describe("Heartbeat — normal operation", () => {
     const hb = new Heartbeat(100, 50, { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // ping sent, pong deadline armed
-    hb.onPong();                  // peer replied in time
-    vi.advanceTimersByTime(50);  // pong deadline would have fired here
+    hb.onPong(); // peer replied in time
+    vi.advanceTimersByTime(50); // pong deadline would have fired here
     expect(onTimeout).not.toHaveBeenCalled();
   });
 

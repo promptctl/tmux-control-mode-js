@@ -109,7 +109,9 @@ export class DemoStore {
       runInAction(() => this.connection.onStateChange(s)),
     );
     this.client.onError((m) => runInAction(() => this.log.pushError(m)));
-    this.client.onEvent((ev) => runInAction(() => this.refresh.handleEvent(ev)));
+    this.client.onEvent((ev) =>
+      runInAction(() => this.refresh.handleEvent(ev)),
+    );
   }
 
   // -------------------------------------------------------------------------

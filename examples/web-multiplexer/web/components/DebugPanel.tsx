@@ -9,7 +9,15 @@
 // parallel ring DemoStore/LogStore used to keep.
 
 import { observer } from "mobx-react-lite";
-import { ScrollArea, Stack, Text, Badge, Group, Code, Button } from "@mantine/core";
+import {
+  ScrollArea,
+  Stack,
+  Text,
+  Badge,
+  Group,
+  Code,
+  Button,
+} from "@mantine/core";
 import { useMemo, useState } from "react";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
@@ -28,7 +36,9 @@ export const DebugPanel = observer(function DebugPanel({
   inspectorStore,
 }: Props) {
   const paneLabels = demoStore.paneLabels;
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
 
   // A MobX computed (see its header comment) — not a React `useMemo`.
   // `entries` is mutated in place on InspectorStore's hot path, so a
@@ -78,8 +88,8 @@ export const DebugPanel = observer(function DebugPanel({
             {copyState === "copied"
               ? "copied!"
               : copyState === "error"
-              ? "copy failed"
-              : "copy"}
+                ? "copy failed"
+                : "copy"}
           </Button>
           <Button
             size="compact-xs"

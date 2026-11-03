@@ -8,8 +8,5 @@
     "types": ["node"]
   },
   "include": ["./**/*.ts"],
-  "references": [
-    { "path": "../protocol" },
-    { "path": ".." }
-  ]
+  "references": [{ "path": "../protocol" }, { "path": ".." }]
 }

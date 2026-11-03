@@ -162,9 +162,9 @@ describe("mountPaneTerminal (vanilla adapter)", () => {
 
     expect(lastTerm!.focus).toHaveBeenCalledOnce();
     expect(lastTerm!.options.fontSize).toBe(18);
-    expect((lastTerm!.options.theme as { background?: string }).background).toBe(
-      "#000000",
-    );
+    expect(
+      (lastTerm!.options.theme as { background?: string }).background,
+    ).toBe("#000000");
     // No reconstruction; only the original Terminal instance exists.
     expect(lastTerm!.dispose).not.toHaveBeenCalled();
   });
