@@ -36,8 +36,11 @@ export type {
   CrossSessionLayoutChangeMessage,
   CrossSessionLayoutDecodeErrorMessage,
   CrossSessionLayoutFetchFailedMessage,
+  CrossSessionLayoutHookRestoredMessage,
   CrossSessionLayoutMessage,
   CrossSessionLayoutOverrunMessage,
+  CrossSessionLayoutRepairFailedMessage,
+  CrossSessionLayoutUncoveredMessage,
 } from "./cross-session-layout-messages.js";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,12 @@ const HOOK = `window-layout-changed[${RESERVED_HOOK_INDEX}]`;
 
 const OPTION_NAME = "@ttcmjs-cross-session-layout";
 const SEQ_OPTION_NAME = "@ttcmjs-cross-session-layout-seq";
+/**
+ * Bumped by whichever relay reinstalls a removed hook. Every relay
+ * subscribes to it, so every relay — not only the one that repaired — learns
+ * that changes went unrecorded.
+ */
+const EPOCH_OPTION_NAME = "@ttcmjs-cross-session-layout-epoch";
 
 /**
  * Bytes retained in the relayed option, enforced by the hook's own append
@@ -96,25 +105,32 @@ function installHookCommand(): string {
   return `set-hook -g ${HOOK} ${tmuxEscape(hookCommand())}`;
 }
 
+/** Reads the global entry alone: `<hook> <command>`, or `<hook> ` once removed. */
+const SHOW_HOOK_COMMAND = `show-hooks -g ${HOOK}`;
+
+const BUMP_EPOCH_COMMAND = `set-option -gF ${EPOCH_OPTION_NAME} "#{e|+:#{${EPOCH_OPTION_NAME}},1}"`;
+
 /**
  * Every window, server-wide, that the hook does not cover, as `@<wid>,`
  * entries. A hook name in a format reads the hook effective in that
  * context, so inside `#{W:}` it is empty for a window whose window-local
  * hook, or whose session's hook, replaces the global array — and for every
- * window once the global entry itself is gone. No format reads the global
- * entry alone (a session hook hides it there too), which is why a cleared
- * hook is recognized by what reinstalling it changes. `#,` because a bare
- * comma inside `#{W:}` separates its arguments.
+ * window once the global entry itself is gone — which only `show-hooks -g`
+ * can tell apart from shadowing. `#,` because a bare comma inside `#{W:}`
+ * separates its arguments. A window linked into several sessions appears
+ * once per session; {@link decodeDelivery} reduces the list to a set.
  */
 const UNCOVERED_FORMAT = `#{S:#{W:#{?#{${HOOK}},,#{window_id}#,}}}`;
 
 const UNCOVERED_RE = /^(?:@\d+,)*$/;
 
-/** The subscription's value: the uncovered windows, `|`, then the buffer. */
-const SUBSCRIPTION_FORMAT = `${UNCOVERED_FORMAT}|#{${OPTION_NAME}}`;
+const EPOCH_FORMAT = `#{${EPOCH_OPTION_NAME}}`;
 
-function readSeqCommand(): string {
-  return `display-message -p ${tmuxEscape(`#{${SEQ_OPTION_NAME}}`)}`;
+/** The subscription's value: the epoch, `|`, the uncovered windows, `|`, then the buffer. */
+const SUBSCRIPTION_FORMAT = `${EPOCH_FORMAT}|${UNCOVERED_FORMAT}|#{${OPTION_NAME}}`;
+
+function readBaselineCommand(): string {
+  return `display-message -p ${tmuxEscape(`#{${SEQ_OPTION_NAME}}|${EPOCH_FORMAT}`)}`;
 }
 
 /**
@@ -176,25 +192,36 @@ export function decodeEntries(value: string): DecodeResult {
   return { entries, skips };
 }
 
-/**
- * Split one delivery into its uncovered windows and its buffer. `null` for
- * an uncovered half that isn't the format's own output — tmux generates it,
- * so a mismatch means the value is not what this relay subscribed to.
- */
-export function decodeDelivery(value: string): {
-  readonly uncovered: readonly number[] | null;
-  readonly buffer: string;
-} {
-  const bar = value.indexOf("|");
-  const head = bar === -1 ? value : value.slice(0, bar);
-  const buffer = bar === -1 ? "" : value.slice(bar + 1);
-  if (bar === -1 || !UNCOVERED_RE.test(head))
-    return { uncovered: null, buffer };
-  return { uncovered: decodeUncovered(head), buffer };
+export interface Coverage {
+  /** The epoch option's text — `""` until a relay first repairs the hook. */
+  readonly epoch: string;
+  /** Uncovered window ids, ascending and distinct. */
+  readonly uncovered: readonly number[];
 }
 
-function decodeUncovered(text: string): number[] {
-  return [...text.matchAll(/@(\d+),/g)].map((m) => Number(m[1]));
+/**
+ * Split one delivery into its coverage and its buffer. `coverage` is `null`
+ * when the head isn't the format's own output — tmux generates it, so a
+ * mismatch means the value is not what this relay subscribed to.
+ * [LAW:parse-dont-validate]
+ */
+export function decodeDelivery(value: string): {
+  readonly coverage: Coverage | null;
+  readonly buffer: string;
+} {
+  const m = /^(\d*)\|([^|]*)\|/.exec(value);
+  if (m === null || !UNCOVERED_RE.test(m[2])) {
+    const lastBar = value.lastIndexOf("|");
+    return { coverage: null, buffer: value.slice(lastBar + 1) };
+  }
+  const ids = [...m[2].matchAll(/@(\d+),/g)].map((w) => Number(w[1]));
+  return {
+    coverage: {
+      epoch: m[1],
+      uncovered: [...new Set(ids)].sort((a, b) => a - b),
+    },
+    buffer: value.slice(m[0].length),
+  };
 }
 
 export interface DeliveryPlan {
@@ -226,6 +253,7 @@ export function planDelivery(
   };
 }
 
+/** Both sides come from {@link decodeDelivery}: sorted and distinct. */
 function sameIds(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
@@ -249,16 +277,10 @@ export class CrossSessionLayoutRelay {
   // Bumped on every teardown; a delivery still fetching when its
   // subscription is torn down sees a different generation and emits nothing.
   private generation = 0;
-  // The uncovered set the last coverage step settled on (after any repair),
-  // and the set last reported to the consumer. Reset on every subscribe:
-  // the first delivery carries the current state.
-  private settledUncovered: readonly number[] | null = null;
-  private reportedUncovered: readonly number[] = [];
-  // Deliveries arrive in wire order, and tmux writes a delivery before the
-  // reply to any later command — so every delivery counted when a coverage
-  // read's reply lands describes a state no newer than that read.
-  private deliveriesSeen = 0;
-  private settledThrough = 0;
+  // The epoch last seen, and the uncovered set last reported — `null` until
+  // this subscription's first delivery, which is always reported.
+  private epoch = "";
+  private reportedUncovered: readonly number[] | null = null;
   // [LAW:dataflow-not-control-flow] enable()/disable() — and coverage
   // repair, so two deliveries never repair at once — serialize through
   // this slot, and each step reconciles `subscribed` toward `refCount > 0`
@@ -281,11 +303,20 @@ export class CrossSessionLayoutRelay {
   enable(): Promise<void> {
     this.refCount += 1;
     return this.serialize(async () => {
+      const joined = this.subscribed;
       try {
         await this.reconcile();
       } catch (err) {
         this.refCount -= 1;
         throw err;
+      }
+      // A listener joining a live subscription would otherwise never hear
+      // the current set: deliveries report only changes.
+      if (joined && this.reportedUncovered !== null) {
+        this.emit({
+          type: "cross-session-layout-uncovered",
+          windowIds: this.reportedUncovered,
+        });
       }
     });
   }
@@ -312,24 +343,24 @@ export class CrossSessionLayoutRelay {
   }
 
   private async subscribe(): Promise<void> {
-    await this.client.execute(installHookCommand());
+    await this.ensureHook();
     // Baseline before subscribing: the buffer may hold hours of entries
     // from relays long gone, and none of them are news to this one.
     // Anything appended after this read has a higher seq and arrives in
-    // the subscription's first delivery.
-    const response = await this.client.execute(readSeqCommand());
+    // the subscription's first delivery; likewise any later repair's epoch.
+    const response = await this.client.execute(readBaselineCommand());
     // An unset counter reads as "" (no hook has fired yet); anything else
     // that isn't an integer would baseline at 0 and replay the backlog.
-    const seq = response.output[0] ?? "";
-    if (!/^\d*$/.test(seq)) {
+    const baseline = response.output[0] ?? "";
+    const m = /^(\d*)\|(\d*)$/.exec(baseline);
+    if (m === null) {
       throw new Error(
-        `${SEQ_OPTION_NAME} is not an integer: ${JSON.stringify(seq)}`,
+        `${SEQ_OPTION_NAME}|${EPOCH_OPTION_NAME} is not an integer pair: ${JSON.stringify(baseline)}`,
       );
     }
-    this.lastSeq = Number(seq);
-    this.settledUncovered = null;
-    this.reportedUncovered = [];
-    this.settledThrough = this.deliveriesSeen;
+    this.lastSeq = Number(m[1]);
+    this.epoch = m[2];
+    this.reportedUncovered = null;
     this.client.on("subscription-changed", this.onSubscriptionChanged);
     try {
       await subscribeRaw(
@@ -355,19 +386,13 @@ export class CrossSessionLayoutRelay {
   private async handleDelivery(value: string): Promise<void> {
     const generation = this.generation;
     const delivery = decodeDelivery(value);
-    const deliveryIndex = ++this.deliveriesSeen;
-    if (delivery.uncovered === null) {
+    if (delivery.coverage === null) {
       this.emit({
         type: "cross-session-layout-decode-error",
         skippedBytes: value.length - delivery.buffer.length,
       });
     } else {
-      const uncovered = delivery.uncovered;
-      // The caller of a coverage step is this delivery, which has nobody to
-      // reject to; the step reports its own failures.
-      void this.serialize(() =>
-        this.settleCoverage(generation, deliveryIndex, uncovered),
-      );
+      this.reportCoverage(generation, delivery.coverage);
     }
     const { entries, skips } = decodeEntries(delivery.buffer);
     const plan = planDelivery(entries, this.lastSeq);
@@ -392,57 +417,62 @@ export class CrossSessionLayoutRelay {
   }
 
   /**
-   * Bring the reported uncovered set to the truth after repair. A non-empty
-   * set is first answered by reinstalling the hook (idempotent: same index,
-   * same command) and reading the set again; if that shrank it, the global
-   * entry had been removed. What remains is shadowed by the user's own
-   * hooks, which the relay reports and does not override. A delivery older
-   * than the last read is a stale snapshot and is skipped.
+   * Every relay reads the same epoch, so each one reports a repair any relay
+   * made. A changed non-empty uncovered set is answered by checking the
+   * global entry itself: windows the user's own hooks shadow are reported,
+   * never overridden, and the next delivery shows what a repair fixed.
    */
-  private async settleCoverage(
-    generation: number,
-    deliveryIndex: number,
-    uncovered: readonly number[],
-  ): Promise<void> {
-    if (generation !== this.generation) return;
-    if (deliveryIndex <= this.settledThrough) return;
-    if (
-      this.settledUncovered !== null &&
-      sameIds(uncovered, this.settledUncovered)
-    )
-      return;
-    let settled = uncovered;
-    if (uncovered.length > 0) {
-      try {
-        await this.client.execute(installHookCommand());
-        const response = await this.client.execute(
-          `display-message -p ${tmuxEscape(UNCOVERED_FORMAT)}`,
-        );
-        this.settledThrough = this.deliveriesSeen;
-        settled = decodeUncovered(response.output[0] ?? "");
-      } catch (err) {
-        if (
-          err instanceof TransportClosedError ||
-          err instanceof TransportSendError
-        ) {
-          return;
-        }
-        // Repair failed: the windows stay uncovered, which is what the
-        // report below says.
-      }
-    }
-    if (generation !== this.generation) return;
-    this.settledUncovered = settled;
-    if (
-      settled.length < uncovered.length &&
-      settled.every((id) => uncovered.includes(id))
-    ) {
+  private reportCoverage(generation: number, coverage: Coverage): void {
+    if (coverage.epoch !== this.epoch) {
+      this.epoch = coverage.epoch;
       this.emit({ type: "cross-session-layout-hook-restored" });
     }
-    if (!sameIds(settled, this.reportedUncovered)) {
-      this.reportedUncovered = settled;
-      this.emit({ type: "cross-session-layout-uncovered", windowIds: settled });
+    const { uncovered } = coverage;
+    if (
+      this.reportedUncovered !== null &&
+      sameIds(uncovered, this.reportedUncovered)
+    )
+      return;
+    this.reportedUncovered = uncovered;
+    this.emit({ type: "cross-session-layout-uncovered", windowIds: uncovered });
+    if (uncovered.length === 0) return;
+    // The caller of a repair is this delivery, which has nobody to reject
+    // to; the step reports its own failures.
+    void this.serialize(() => this.repair(generation));
+  }
+
+  private async repair(generation: number): Promise<void> {
+    if (generation !== this.generation) return;
+    try {
+      await this.ensureHook();
+    } catch (err) {
+      if (
+        err instanceof TransportClosedError ||
+        err instanceof TransportSendError
+      ) {
+        return;
+      }
+      this.emit({
+        type: "cross-session-layout-repair-failed",
+        reason:
+          err instanceof TmuxCommandError
+            ? err.response.output.join("\n")
+            : String(err),
+      });
     }
+  }
+
+  /**
+   * Reinstall the global entry if it is gone, and bump the epoch so every
+   * relay hears it. Two relays racing here both bump: a repeated
+   * hook-restored over-reports, which costs a re-read, never a lost change.
+   */
+  private async ensureHook(): Promise<void> {
+    const shown = await this.client.execute(SHOW_HOOK_COMMAND);
+    const line = shown.output[0] ?? "";
+    if (line.startsWith(HOOK) && line.slice(HOOK.length).trim() !== "") return;
+    await this.client.execute(installHookCommand());
+    await this.client.execute(BUMP_EPOCH_COMMAND);
   }
 
   private async fetchAndEmit(

@@ -87,6 +87,7 @@ const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
   "cross-session-layout-overrun": true,
   "cross-session-layout-fetch-failed": true,
   "cross-session-layout-hook-restored": true,
+  "cross-session-layout-repair-failed": true,
   "cross-session-layout-uncovered": true,
 };
 

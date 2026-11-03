@@ -258,9 +258,18 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       // A re-sourced tmux.conf: replaces the whole hook array.
       exec(socketName, `set-hook -g window-layout-changed "display-message x"`);
       await new Promise((r) => setTimeout(r, 3000));
-      expect(diagnostics).toEqual([
-        { type: "cross-session-layout-hook-restored" },
-      ]);
+      // Every window reads uncovered until the repair lands; the latest
+      // report is the truth.
+      expect(
+        diagnostics.filter(
+          (e) => e.type === "cross-session-layout-hook-restored",
+        ),
+      ).toHaveLength(1);
+      expect(
+        diagnostics
+          .filter((e) => e.type === "cross-session-layout-uncovered")
+          .at(-1),
+      ).toEqual({ type: "cross-session-layout-uncovered", windowIds: [] });
 
       const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
       exec(socketName, `split-window -t ${sessionB}`);

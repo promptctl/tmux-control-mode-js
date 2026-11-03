@@ -98,12 +98,25 @@ export interface CrossSessionLayoutHookRestoredMessage {
 }
 
 /**
+ * tmux refused the relay's check or reinstall of its global hook. The last
+ * `cross-session-layout-uncovered` still stands; nothing retries until the
+ * uncovered set changes again. [LAW:no-silent-failure]
+ */
+export interface CrossSessionLayoutRepairFailedMessage {
+  readonly type: "cross-session-layout-repair-failed";
+  /** tmux's `%error` output for the failed command. */
+  readonly reason: string;
+}
+
+/**
  * The windows, server-wide, whose layout changes the relay cannot see: a
  * window-local hook (`set-hook -w window-layout-changed`) or a hook set on a
  * session the window is in replaces the global hook array for that window,
- * so tmux never runs the relay's entry there. The relay does not override
- * the user's hook; it reports. Emitted whenever the set changes, `[]` once
- * coverage is whole again — the latest event is the current truth.
+ * so tmux never runs the relay's entry there — and, until the relay
+ * reinstalls it, every window once the global hook is removed. The relay
+ * does not override the user's hook; it reports. Emitted on enabling and
+ * whenever the set changes, `[]` once coverage is whole again — the latest
+ * event is the current truth.
  * [LAW:no-silent-failure]
  */
 export interface CrossSessionLayoutUncoveredMessage {
@@ -117,6 +130,7 @@ export type CrossSessionLayoutMessage =
   | CrossSessionLayoutOverrunMessage
   | CrossSessionLayoutFetchFailedMessage
   | CrossSessionLayoutHookRestoredMessage
+  | CrossSessionLayoutRepairFailedMessage
   | CrossSessionLayoutUncoveredMessage;
 
 /**
@@ -136,6 +150,7 @@ const CROSS_SESSION_LAYOUT_MESSAGE_TYPES: Record<
   "cross-session-layout-overrun": true,
   "cross-session-layout-fetch-failed": true,
   "cross-session-layout-hook-restored": true,
+  "cross-session-layout-repair-failed": true,
   "cross-session-layout-uncovered": true,
 };
 
