@@ -860,6 +860,21 @@ describe("Electron IPC bridge — method dispatch", () => {
     });
   });
 
+  it("classifies a command execute() refuses as unsendable as BRIDGE_INVALID_ARG, not BRIDGE_INTERNAL", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    await expect(proxy.execute("new-window -c '/tmp/a\nb'")).rejects.toMatchObject(
+      { code: "BRIDGE_INVALID_ARG" },
+    );
+  });
+
   it("rejects the renderer promise when main-side execute fails", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();

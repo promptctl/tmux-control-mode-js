@@ -141,11 +141,14 @@ export async function newWindow(
     readonly command?: string;
   },
 ): Promise<NewWindowResult> {
-  // [LAW:no-silent-failure] tmux has no exact target for an empty name:
-  // '=:' resolves to the control client's own session, so the window would
-  // silently land there.
-  if (options.session === "") {
-    throw new RangeError("newWindow: session name must not be empty");
+  // [LAW:no-silent-failure] Each empty field would succeed somewhere the
+  // caller did not ask for: session '' ('=:') is the control client's own
+  // session, cwd '' starts the pane in $HOME, and command '' is not "the
+  // default shell" (that is an omitted command).
+  for (const field of ["session", "cwd", "command"] as const) {
+    if (options[field] === "") {
+      throw new RangeError(`newWindow: ${field} must not be empty`);
+    }
   }
   const command = encodeNewWindow(
     options.session,

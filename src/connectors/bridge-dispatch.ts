@@ -37,6 +37,7 @@
 import type { TmuxConnection } from "../client.js";
 import {
   TmuxCommandError,
+  TmuxInvalidCommandError,
   TransportClosedError,
   TransportSendError,
 } from "../errors.js";
@@ -153,6 +154,14 @@ function classifyDispatchError(method: RpcMethod, err: unknown): BridgeOutcome {
     return {
       kind: "bridge-error",
       error: new BridgeError("BRIDGE_CLOSED", err.message),
+    };
+  }
+  // A command execute() refused as unsendable is the caller's bad argument,
+  // not a bridge bug.
+  if (err instanceof TmuxInvalidCommandError) {
+    return {
+      kind: "bridge-error",
+      error: new BridgeError("BRIDGE_INVALID_ARG", err.message),
     };
   }
   return { kind: "bridge-error", error: internalError(method, err) };

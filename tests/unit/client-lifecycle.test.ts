@@ -14,6 +14,7 @@ import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import {
+  TmuxInvalidCommandError,
   TmuxProtocolError,
   TransportClosedError,
   TransportSendError,
@@ -100,22 +101,25 @@ describe("TmuxClient — settles every pending promise on transport close", () =
   });
 });
 
-describe("TmuxClient — one command is one line", () => {
-  it("rejects a command containing a newline without sending it, so correlation stays intact", async () => {
-    const t = createFakeTransport();
-    const send = vi.spyOn(t, "send");
-    const client = new TmuxClient(t);
-    t.feed(STARTUP_GREETING);
+describe("TmuxClient — one command is one non-empty line", () => {
+  it.each([["new-window -c '/tmp/x\nkill-server\n'"], [""]])(
+    "rejects %j without sending it, so correlation stays intact",
+    async (bad) => {
+      const t = createFakeTransport();
+      const send = vi.spyOn(t, "send");
+      const client = new TmuxClient(t);
+      t.feed(STARTUP_GREETING);
 
-    await expect(
-      client.execute("new-window -c '/tmp/x\nkill-server\n'"),
-    ).rejects.toBeInstanceOf(RangeError);
-    expect(send).not.toHaveBeenCalled();
+      await expect(client.execute(bad)).rejects.toBeInstanceOf(
+        TmuxInvalidCommandError,
+      );
+      expect(send).not.toHaveBeenCalled();
 
-    const next = client.execute("list-windows");
-    t.feed("%begin 1 1 0\n%end 1 1 0\n");
-    await expect(next).resolves.toMatchObject({ success: true });
-  });
+      const next = client.execute("list-windows");
+      t.feed("%begin 1 1 0\n%end 1 1 0\n");
+      await expect(next).resolves.toMatchObject({ success: true });
+    },
+  );
 });
 
 describe("TmuxClient — exactly one 'exit' event", () => {

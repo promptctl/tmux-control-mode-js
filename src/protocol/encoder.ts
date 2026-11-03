@@ -19,6 +19,12 @@ export function tmuxEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
+// [LAW:single-enforcer] For an argument tmux format-expands (new-window -c):
+// '##' is tmux's literal '#', so '#S' or '#{...}' in a path stays as written.
+export function tmuxFormatLiteral(arg: string): string {
+  return tmuxEscape(arg.replaceAll("#", "##"));
+}
+
 export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
@@ -118,17 +124,16 @@ export function capturePane(paneId: number): string {
 // without '=' tmux falls back to prefix and glob matching ('work:' lands in
 // 'workspace'), and the ':' leaves the window index to tmux. An empty name
 // has no exact form ('=:' still means the current session) — newWindow
-// rejects it before this is called. tmux format-expands -c, so '#' doubles
-// to stay literal; the command is not expanded (verified on 3.2a and 3.8).
+// rejects it before this is called. tmux format-expands -c but not the
+// command (verified on 3.2a and 3.8).
 export function newWindow(
   session: string,
   cwd: string,
   command?: string,
 ): string {
   const commandPart = command !== undefined ? ` ${tmuxEscape(command)}` : "";
-  const literalCwd = cwd.replaceAll("#", "##");
   return (
-    `new-window -d -t ${tmuxEscape(`=${session}:`)} -c ${tmuxEscape(literalCwd)} ` +
+    `new-window -d -t ${tmuxEscape(`=${session}:`)} -c ${tmuxFormatLiteral(cwd)} ` +
     `-P -F '#{window_id}\t#{pane_id}'${commandPart}`
   );
 }

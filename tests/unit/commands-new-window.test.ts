@@ -58,13 +58,20 @@ describe("newWindow", () => {
     );
   });
 
-  it("rejects an empty session name without sending, since tmux reads it as the current session", async () => {
-    const { client, lastCommand } = fakeConnection(["@3\t%7"]);
-    await expect(
-      newWindow(client, { session: "", cwd: "/tmp" }),
-    ).rejects.toBeInstanceOf(RangeError);
-    expect(lastCommand()).toBe("");
-  });
+  it.each([
+    { session: "", cwd: "/tmp" },
+    { session: "work", cwd: "" },
+    { session: "work", cwd: "/tmp", command: "" },
+  ])(
+    "rejects an empty field without sending, since tmux would succeed elsewhere: %j",
+    async (options) => {
+      const { client, lastCommand } = fakeConnection(["@3\t%7"]);
+      await expect(newWindow(client, options)).rejects.toBeInstanceOf(
+        RangeError,
+      );
+      expect(lastCommand()).toBe("");
+    },
+  );
 
   it("omits the command argument when none is given, so tmux runs the default shell", async () => {
     const { client, lastCommand } = fakeConnection(["@3\t%7"]);

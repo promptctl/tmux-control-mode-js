@@ -64,6 +64,7 @@ export { UnsupportedTmuxVersionError } from "./errors.js";
 export {
   TmuxCommandError,
   TmuxProtocolError,
+  TmuxInvalidCommandError,
   TmuxReplyFormatError,
   TransportClosedError,
   TransportSendError,

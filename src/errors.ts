@@ -200,6 +200,23 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
+ * `execute()` refused a command that has no single-line wire form: one
+ * containing a newline (tmux would run it as several commands, each with its
+ * own reply, and every later pending command would claim the wrong one) or
+ * an empty one (a bare newline, which detaches the control client — SPEC
+ * §4.1). Nothing was sent.
+ */
+export class TmuxInvalidCommandError extends Error {
+  readonly command: string;
+
+  constructor(command: string) {
+    super(`command must be one non-empty line: ${JSON.stringify(command)}`);
+    this.name = "TmuxInvalidCommandError";
+    this.command = command;
+  }
+}
+
+/**
  * A command succeeded but its reply does not have the shape of the `-F`
  * format the library sent with it (e.g. `newWindow`'s `@N\t%N`). The block
  * closed normally, so this is not a {@link TmuxProtocolError}; it means the

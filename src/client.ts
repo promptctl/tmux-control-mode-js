@@ -28,6 +28,7 @@ import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import {
   TmuxCommandError,
+  TmuxInvalidCommandError,
   TmuxProtocolError,
   TransportClosedError,
   TransportSendError,
@@ -236,13 +237,10 @@ export class TmuxClient implements TmuxConnection {
       // [LAW:single-enforcer] tmux reads control input a line at a time, so a
       // newline inside a command (a free-text cwd, a name) would run as
       // several commands, each with its own %begin/%end, and every later
-      // pending entry would claim the wrong reply. One command is one line.
-      if (command.includes("\n")) {
-        reject(
-          new RangeError(
-            `command must be a single line: ${JSON.stringify(command)}`,
-          ),
-        );
+      // pending entry would claim the wrong reply; an empty command is a
+      // bare newline, which detaches. One command is one non-empty line.
+      if (command === "" || command.includes("\n")) {
+        reject(new TmuxInvalidCommandError(command));
         return;
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)

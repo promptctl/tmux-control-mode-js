@@ -1409,12 +1409,14 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     sessionName = uniqueSession("cmd-nw-nosess");
     client = await createSession(socketName, sessionName);
 
+    const windowsBefore = (await listWindows(client)).length;
     const attempt = newWindow(client, {
       session: sessionName.slice(0, -1),
       cwd: tmpdir(),
     });
     await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(attempt).rejects.toThrow(/can't find session/);
+    expect(await listWindows(client)).toHaveLength(windowsBefore);
   });
 
   // Pins tmux's behavior newWindow documents rather than hides: a cwd that
