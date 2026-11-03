@@ -653,8 +653,8 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   "unlinked-window-close": {
     kind: "observed",
     probe: async ({ client, exec }) => {
-      // A window killed in ANOTHER session was never in this client's session,
-      // so it closes as %unlinked-window-close on every supported tmux.
+      // tmux picks the variant by whether the window is in the receiving
+      // client's session; a window killed in ANOTHER session never was.
       const other = uniqueSession("cov-unlinkclose");
       exec(`new-session -d -s ${other}`);
       exec(`new-window -d -t ${other} -n closeme`);
@@ -820,9 +820,19 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
   // [LAW:no-silent-failure] Each records precisely WHY, so a green run never
   // overstates what was verified.
   "window-close": {
-    kind: "exempt",
-    reason:
-      "Killing a window in the control client's own session emits %window-close on newer tmux (observed on 3.8) but %unlinked-window-close on the 3.2 floor, which unlinks the window before notifying (SPEC §6.2). No single probe is deterministic across the supported range.",
+    kind: "observed",
+    probe: async ({ client, exec, sessionName }) => {
+      // Killing an own-session window picks a different variant per tmux
+      // version (linked on 3.8, unlinked on 3.2). Unlinking a window from
+      // another session while it stays linked here is %window-close on both.
+      const other = uniqueSession("cov-winclose");
+      exec(`new-session -d -s ${other}`);
+      exec(`new-window -d -t ${other} -n shared`);
+      exec(`link-window -d -s ${other}:shared -t ${sessionName}:`);
+      const p = waitForEvent(client, "window-close");
+      exec(`unlink-window -t ${other}:shared`);
+      await p;
+    },
   },
   "config-error": {
     kind: "exempt",

@@ -71,7 +71,7 @@ The library is "done" when every requirement below is verified by either a unit 
 ### Integration Coverage (SPEC §6, §7, §23)
 
 - [x] **INT-01**: `%output` round-trip via `send-keys 'echo hello-output' Enter` against real tmux. Asserts a non-empty `Uint8Array` in the next `output` event.
-- [x] **INT-02**: `%window-add`, `%window-renamed`, `%unlinked-window-close`, `%window-pane-changed` triggered via `new-window`, `rename-window`, `kill-window`, `select-pane`. *Note on `window-close`: SPEC §6.2 says tmux unlinks the window from the session before the close notification fires, so the receiving client sees the `%unlinked-window-close` variant — both are spec-compliant flavors of "the window is gone."*
+- [x] **INT-02**: `%window-add`, `%window-renamed`, `%unlinked-window-close`, `%window-pane-changed` triggered via `new-window`, `rename-window`, `kill-window`, `select-pane`. *Note on `window-close`: the variant depends on whether the window is in the receiving client's session (SPEC §6.2), and an own-session `kill-window` differs by version (linked on 3.8, unlinked on 3.2). The coverage probes use cross-session setups that are deterministic on both.*
 - [x] **INT-03**: `%sessions-changed` triggered by a side `tmux new-session -d`. (`%session-changed` is already covered by every `createSession()` helper call which awaits it as part of the handshake.)
 - [x] **INT-04**: `%layout-change` triggered by `split-window -h`. Asserts a non-empty layout string.
 - [x] **INT-05**: `%exit` triggered by `client.detach()` AND by `client.close()` (covered in two separate tests).
