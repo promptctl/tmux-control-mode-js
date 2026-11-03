@@ -135,7 +135,7 @@ export async function capturePane(
 // execute() as TmuxCommandError with tmux's text ("can't find session: X").
 // A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
 // instead (verified on tmux 3.8; tmux 3.3 keeps the server's cwd, see
-// CWD_FALLBACK_SERVER_CWD_VERSION), and the library, typed over any
+// missingCwdFallback in tmux-compat.ts), and the library, typed over any
 // TmuxConnection, cannot stat the tmux host's filesystem. A caller that
 // must not fall back checks the path on the host it controls; paneCwd() reads
 // the directory the pane's process is in now (its live cwd, not the requested
@@ -156,7 +156,8 @@ export async function newWindow(
   // did not ask for, so it is refused by field name: session '' ('=:') is the
   // control client's own session; a cwd that is empty or not absolute ('',
   // 'proj', '~/proj' — quoted, so tmux never expands '~') starts the pane in
-  // $HOME; command '' is not "the default shell" (that is an omitted
+  // tmux's missing-cwd fallback, not the directory asked for; command '' is
+  // not "the default shell" (that is an omitted
   // command); a newline anywhere splits the command line.
   for (const field of ["session", "cwd", "command"] as const) {
     const value = options[field];

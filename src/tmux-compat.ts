@@ -66,16 +66,16 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
 
 /**
- * The one tmux line whose missing-cwd fallback is not $HOME. A `new-window -c`
- * directory that does not exist starts the pane in $HOME on 3.2 and 3.4+, but
- * tmux 3.3's spawn.c tests `find_home() != NULL || chdir(home) == 0`, so the
- * chdir never runs and the pane keeps the server's own cwd (measured on 3.3a).
- * An exact version, not a floor: compare major and minor for equality.
+ * Where a pane starts when its `new-window -c` directory does not exist. $HOME
+ * on 3.2 and 3.4+; tmux 3.3's spawn.c tests
+ * `(tmp = find_home()) != NULL || chdir(tmp) == 0`, so the chdir never runs
+ * and the pane keeps the server's own cwd while its $PWD still says $HOME
+ * (measured on 3.3a; 3.4 restores `&&`). An exact version, not a floor, which
+ * is why this is a predicate and not a *_MIN_VERSION constant.
  */
-export const CWD_FALLBACK_SERVER_CWD_VERSION: TmuxVersion = {
-  major: 3,
-  minor: 3,
-};
+export function missingCwdFallback(v: TmuxVersion): "home" | "server-cwd" {
+  return v.major === 3 && v.minor === 3 ? "server-cwd" : "home";
+}
 
 /**
  * The version shapes portable tmux's configure.ac produces (`3.2a`,
