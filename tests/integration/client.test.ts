@@ -69,14 +69,11 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // tmux cannot honor.
 // [LAW:one-source-of-truth] Version constants live in src/tmux-compat.ts;
 // every gate here imports them rather than restating the numbers.
-const RUNNING_TMUX_VERSION: TmuxVersion | null = (() => {
-  if (!RUN_INTEGRATION) return null;
-  try {
-    return parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim());
-  } catch {
-    return null;
-  }
-})();
+// [LAW:no-silent-failure] An unreadable `tmux -V` under TMUX_INTEGRATION=1 is
+// a setup bug: throw, so it cannot turn every version-gated test into a skip.
+const RUNNING_TMUX_VERSION: TmuxVersion | null = RUN_INTEGRATION
+  ? parseTmuxVersion(execSync("tmux -V", { encoding: "utf8" }).trim())
+  : null;
 
 function tmuxAtLeast(need: TmuxVersion): boolean {
   return (

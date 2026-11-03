@@ -109,6 +109,10 @@ tmux 3.2+, `requestReport()` probes the running version in-protocol
 `UnsupportedTmuxVersionError` naming the requirement. The README compatibility table
 reflects this constraint.
 
+`queryClipboard()` takes the same path with `QUERY_CLIPBOARD_MIN_VERSION` (3.3):
+on tmux 3.2, `refresh-client -l` makes the control client exit, dropping the
+connection, so the gate is what keeps the call from being fatal.
+
 ### 2.3 Synthetic events & connection lifecycle
 <!-- R5 (done): relocated from SPEC.md §23.1 "Synthetic Events (library)". -->
 

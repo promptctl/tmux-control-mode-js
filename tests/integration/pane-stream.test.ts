@@ -211,6 +211,10 @@ describe.skipIf(!RUN_INTEGRATION)(
       }
       const after = sink.resizeCalls[sink.resizeCalls.length - 1];
       expect(after.cols).toBe(120);
+      // The requested height lands, less at most the status line's row
+      // (tmux 3.2 takes it from the initial session but not after setSize).
+      expect(after.rows).toBeGreaterThanOrEqual(30 - 1);
+      expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
   },

@@ -195,6 +195,9 @@ Zero runtime dependencies (enforced at publish time). Ships `dist/` only.
   `UnsupportedTmuxVersionError` on tmux 3.2–3.4 (`refresh-client -r` needs 3.5),
   instead of leaking tmux's raw unknown-flag `%error`. Adds one
   `display-message` round-trip per call.
+- `queryClipboard` is gated the same way: on tmux 3.2 it rejects with
+  `UnsupportedTmuxVersionError` instead of sending `refresh-client -l`, which
+  made the control client exit. Adds one round-trip per call.
 
 ### Tests & demo
 
