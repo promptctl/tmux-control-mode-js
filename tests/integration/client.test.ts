@@ -56,6 +56,7 @@ import {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  CWD_FALLBACK_SERVER_CWD_VERSION,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
 import { runningTmuxVersion } from "../helpers/running-tmux.js";
@@ -1425,10 +1426,11 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   }, 15000);
 
   // Pins tmux's behavior newWindow documents rather than hides: a cwd that
-  // does not exist does not fail new-window; the pane starts in $HOME. If a
-  // tmux release starts rejecting instead, this fails and newWindow's doc
+  // does not exist does not fail new-window; the pane starts in $HOME, or on
+  // tmux 3.3 in the server's cwd (this process's, which started the server).
+  // If a tmux release starts rejecting instead, this fails and newWindow's doc
   // comment needs revisiting.
-  it("CMD-05: newWindow() with a nonexistent cwd starts the pane in $HOME (tmux falls back, does not reject)", async () => {
+  it("CMD-05: newWindow() with a nonexistent cwd starts the pane in tmux's fallback dir (tmux falls back, does not reject)", async () => {
     sessionName = uniqueSession("cmd-nw-nocwd");
     client = await createSession(socketName, sessionName);
 
@@ -1438,10 +1440,15 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    const home = realpathSync(homedir());
+    const fallsBackToServerCwd =
+      RUNNING_TMUX_VERSION?.major === CWD_FALLBACK_SERVER_CWD_VERSION.major &&
+      RUNNING_TMUX_VERSION.minor === CWD_FALLBACK_SERVER_CWD_VERSION.minor;
+    const fallback = realpathSync(
+      fallsBackToServerCwd ? process.cwd() : homedir(),
+    );
     await waitForPane(
       client,
-      (p) => p.paneId === created.paneId && p.cwd === home,
+      (p) => p.paneId === created.paneId && p.cwd === fallback,
     );
   }, 15000);
 

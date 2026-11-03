@@ -134,7 +134,8 @@ export async function capturePane(
 // the reply grammar in pane-output.ts. A missing session rejects through
 // execute() as TmuxCommandError with tmux's text ("can't find session: X").
 // A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
-// instead (verified on tmux 3.8), and the library, typed over any
+// instead (verified on tmux 3.8; tmux 3.3 keeps the server's cwd, see
+// CWD_FALLBACK_SERVER_CWD_VERSION), and the library, typed over any
 // TmuxConnection, cannot stat the tmux host's filesystem. A caller that
 // must not fall back checks the path on the host it controls; paneCwd() reads
 // the directory the pane's process is in now (its live cwd, not the requested

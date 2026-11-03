@@ -66,6 +66,18 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
 
 /**
+ * The one tmux line whose missing-cwd fallback is not $HOME. A `new-window -c`
+ * directory that does not exist starts the pane in $HOME on 3.2 and 3.4+, but
+ * tmux 3.3's spawn.c tests `find_home() != NULL || chdir(home) == 0`, so the
+ * chdir never runs and the pane keeps the server's own cwd (measured on 3.3a).
+ * An exact version, not a floor: compare major and minor for equality.
+ */
+export const CWD_FALLBACK_SERVER_CWD_VERSION: TmuxVersion = {
+  major: 3,
+  minor: 3,
+};
+
+/**
  * The version shapes portable tmux's configure.ac produces (`3.2a`,
  * `next-3.6`, `3.4-rc`) — the bare `#{version}` value. Anchored on both ends
  * so a vendor tag like OpenBSD base's `openbsd-7.4` is rejected instead of
