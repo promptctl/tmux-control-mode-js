@@ -155,44 +155,6 @@ export function mergePaneRowsByWindow(
   return encodeSnapshotLines([...oldRows, ...freshRows]);
 }
 
-// [LAW:one-source-of-truth] Field order of PANES_FORMAT rows, read by both
-// buildSessionTree and patchPaneRowDimensions.
-const PANE_KEYS = [
-  "wid",
-  "pid",
-  "idx",
-  "active",
-  "width",
-  "height",
-  "title",
-] as const;
-const PANE_PID = PANE_KEYS.indexOf("pid");
-const PANE_WIDTH = PANE_KEYS.indexOf("width");
-const PANE_HEIGHT = PANE_KEYS.indexOf("height");
-
-/**
- * Rewrite the width/height fields of every pane row named in `updates`; other
- * rows and fields pass through byte-for-byte.
- */
-export function patchPaneRowDimensions(
-  existing: string,
-  updates: ReadonlyMap<number, { readonly w: number; readonly h: number }>,
-): string {
-  return encodeSnapshotLines(
-    existing
-      .split("\\n")
-      .filter((l) => l.length > 0)
-      .map((line) => {
-        const parts = line.split("|");
-        const u = updates.get(stripPrefix(parts[PANE_PID] ?? ""));
-        if (u === undefined) return line;
-        parts[PANE_WIDTH] = String(u.w);
-        parts[PANE_HEIGHT] = String(u.h);
-        return parts.join("|");
-      }),
-  );
-}
-
 /**
  * Assemble the session/window/pane tree from the three latest subscription
  * values. Pure function of the three strings — the same inputs always
@@ -215,7 +177,15 @@ export function buildSessionTree(
     "active",
     "zoomed",
   ]);
-  const paneRows = parseRecords(panesValue, PANE_KEYS);
+  const paneRows = parseRecords(panesValue, [
+    "wid",
+    "pid",
+    "idx",
+    "active",
+    "width",
+    "height",
+    "title",
+  ]);
 
   const panesByWindow = new Map<string, PaneInfo[]>();
   for (const p of paneRows) {

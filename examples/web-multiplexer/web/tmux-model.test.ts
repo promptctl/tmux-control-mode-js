@@ -139,19 +139,6 @@ describe("TmuxModel.applyPaneDimensions", () => {
     expect(panes[1]).toMatchObject({ id: 101, width: 80, height: 24 });
   });
 
-  it("survives a rebuild from a sessions/windows tick that beats the panes tick", () => {
-    const m = loadedModel();
-    m.applyPaneDimensions(new Map([[100, { w: 200, h: 50 }]]));
-    m.applySnapshot("windows", "$1|@10|0|renamed|1|0");
-    const panes = m.sessions[0].windows[0].panes;
-    expect(panes[0]).toMatchObject({
-      id: 100,
-      width: 200,
-      height: 50,
-      title: "a",
-    });
-  });
-
   it("is a no-op for an empty update map (same tree reference)", () => {
     const m = loadedModel();
     const before = m.sessions;
