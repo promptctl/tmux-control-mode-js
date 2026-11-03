@@ -9,7 +9,8 @@
 // - no-detach-on-destroy: when the attached session ends, the client moves to
 //   another session instead of exiting, so one connection outlives any one
 //   session. When the last session ends the server exits and the connection
-//   ends with it — a control client never keeps a server alive.
+//   ends with it — a control client never keeps a server alive. Needs tmux
+//   3.6+; older tmux ignores it (README "Compatibility").
 // Two flags are deliberately absent. `no-output` also blocks `refresh-client
 // -A %N:on`, so no sink could ever receive output; a watcher keeps out pane
 // output nobody asked for by constructing its TmuxClient with
@@ -23,10 +24,11 @@
 const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
 
 /**
- * Arguments for `spawnTmux` that attach a watcher to `targetSession`. tmux
+ * Arguments for `spawnTmux` that attach a watcher to `targetSession`, matched
+ * exactly (`=`), never by tmux's prefix or pattern fallback. tmux
  * ignores client flags it does not know; confirm them on the running server
  * with `getOwnClient(client).flags`.
  */
 export function watchServerArgs(targetSession: string): string[] {
-  return ["attach-session", "-t", targetSession, "-f", WATCH_CLIENT_FLAGS];
+  return ["attach-session", "-t", `=${targetSession}`, "-f", WATCH_CLIENT_FLAGS];
 }

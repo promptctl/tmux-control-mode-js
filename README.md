@@ -1,6 +1,6 @@
 # tmux-control-mode-js
 
-Node.js client for the tmux control mode protocol. Provides streaming access to tmux pane output and state change notifications One connection can watch a whole server without disturbing it — see [Watching a whole server](#watching-a-whole-server).
+Node.js client for the tmux control mode protocol. Provides streaming access to tmux pane output and state change notifications. One connection can watch a whole server without disturbing it — see [Watching a whole server](#watching-a-whole-server).
 
 ## Install
 
@@ -33,11 +33,12 @@ tmux:
   control mode client gets too far behind."*)
 - `%client-detached` notification (tmux 3.2)
 
-Two features are also exposed by the API but require a newer tmux when
+Three features are also exposed by the API but require a newer tmux when
 actually called:
 
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
 - `%config-error` notification — only emitted by tmux **3.4+**
+- `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `getOwnClient(client).flags` shows whether the flag took effect.
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
@@ -70,8 +71,9 @@ const self = await getOwnClient(client);
   `list-clients`, `%client-detached`). Filter it out by `self.name`. tmux silently
   ignores client flags it doesn't know, so `self.flags` shows which ones took
   effect.
-- **Every end is reported.** `exit` fires when the session ends, when the server
-  dies, or when another client detaches the watcher. tmux sends the same bare
+- **Every end is reported.** `exit` fires when the last session ends (or, on
+  tmux older than 3.6, when the attached one does), when the server dies, or
+  when another client detaches the watcher. tmux sends the same bare
   `%exit` for all of these, so the cause isn't reported.
 
 Events in other sessions that tmux does not send to a control client are relayed

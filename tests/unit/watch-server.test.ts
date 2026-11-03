@@ -10,7 +10,7 @@ describe("watchServerArgs", () => {
     expect(watchServerArgs("main")).toEqual([
       "attach-session",
       "-t",
-      "main",
+      "=main",
       "-f",
       "ignore-size,no-detach-on-destroy",
     ]);

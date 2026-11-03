@@ -113,7 +113,9 @@ describe.skipIf(!RUN_INTEGRATION)("watchServerArgs (real tmux)", () => {
     );
     tmux(socketName, "kill-session -t a");
     expect(await moved).toBe("b");
-    expect((await getOwnClient(watcher)).name).toMatch(/^client-/);
+    const own = await getOwnClient(watcher);
+    const rows = tmux(socketName, "list-clients -F '#{client_name} #{session_name}'");
+    expect(rows.split("\n")).toContain(`${own.name} b`);
   });
 
   it("ends, and reports it, when the last session closes — the server does not stay up", async () => {
@@ -129,8 +131,9 @@ describe.skipIf(!RUN_INTEGRATION)("watchServerArgs (real tmux)", () => {
   it("ends, and reports it, when another client detaches it", async () => {
     const own = await getOwnClient(watcher);
     const exit = waitFor(watcher, "exit", () => true);
+    const state = closed(watcher);
     tmux(socketName, `detach-client -t ${own.name}`);
     await exit;
-    expect((await closed(watcher)).status).toBe("closed");
+    expect((await state).status).toBe("closed");
   });
 });
