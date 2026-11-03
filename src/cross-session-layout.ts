@@ -17,6 +17,12 @@
 
 import type { TmuxConnection } from "./client.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
+import {
+  TmuxCommandError,
+  TransportClosedError,
+  TransportSendError,
+} from "./errors.js";
+import { tmuxEscape } from "./protocol/encoder.js";
 import type { SubscriptionChangedMessage } from "./protocol/types.js";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +39,8 @@ import type { SubscriptionChangedMessage } from "./protocol/types.js";
  * a native `%layout-change`, by design (the ticket this shipped from:
  * "coverage isn't limited to what any consumer uses today"); a consumer
  * that only wants the gap this relay exists for (a window outside its own
- * attached session) filters on `sessionId`. `windowLayout`/
+ * attached session) filters on `sessionId` — the session tmux resolves the
+ * window in at fetch time, the one `windowFlags` describes. `windowLayout`/
  * `windowVisibleLayout`/`windowFlags` are fetched by this client's own
  * control connection (which defaults to the classic checksum-string format
  * `%layout-change` itself uses — tmux 3.8 changed `#{window_layout}` to
@@ -75,17 +82,19 @@ export interface CrossSessionLayoutOverrunMessage {
 }
 
 /**
- * The follow-up `display-message` fetch for a decoded (sessionId, windowId)
- * pair failed — most likely the window closed between the hook firing and
- * this ~1s-delayed subscription delivery. Nothing to report (no layout
- * exists for a window that's gone); surfaced rather than left as a silently
- * dropped entry or an unhandled rejection.
+ * tmux refused the follow-up fetch for a window whose layout changed —
+ * most likely the window closed between the hook firing and this
+ * ~1s-delayed subscription delivery. Nothing to report (no layout exists
+ * for a window that's gone); surfaced rather than left as a silently
+ * dropped entry. A fetch cut off by the connection closing emits nothing:
+ * the client's own `connection-state` event already reports that.
  * [LAW:no-silent-failure]
  */
 export interface CrossSessionLayoutFetchFailedMessage {
   readonly type: "cross-session-layout-fetch-failed";
-  readonly sessionId: number;
   readonly windowId: number;
+  /** tmux's `%error` output for the fetch. */
+  readonly reason: string;
 }
 
 export type CrossSessionLayoutMessage =
@@ -114,19 +123,19 @@ const SUBSCRIPTION_NAME = "ttcmjs-cross-session-layout";
 /**
  * Bytes retained in the relayed option, enforced by the hook's own append
  * (so growth never depends on any relay being alive). One entry is
- * `<seq>:$<sid>:@<wid>,` — about 30 bytes with every number at 8–10
- * digits — so 4096 holds well over 100 entries: a relay only loses entries
+ * `<seq>:@<wid>,` — about 20 bytes with both numbers at 8–10 digits — so
+ * 4096 holds about 200 entries: a relay only loses entries
  * if more than that many layout changes land within one ~1s subscription
  * interval, and then it says so (`cross-session-layout-overrun`).
  */
 const CAP = 4096;
 
-const ENTRY_RE = /^(\d+):\$(\d+):@(\d+),/;
+const ENTRY_RE = /^(\d+):@(\d+),/;
 
 /**
  * The hook: bump the server-wide sequence counter, then append
- * `<seq>:<session>:<window>,` (never the layout string itself — it is
- * fetched afterwards), truncated to the last `CAP` bytes. tmux runs the two
+ * `<seq>:<window>,` (never the layout or session — both are fetched
+ * afterwards, see {@link fetchLayoutCommand}), truncated to the last `CAP` bytes. tmux runs the two
  * commands of one hook back to back, so the second expands the counter the
  * first just set; an unset counter expands `#{e|+:,1}` to 1.
  *
@@ -140,29 +149,31 @@ function hookCommand(): string {
   return (
     `set-option -gF ${SEQ_OPTION_NAME} "#{e|+:#{${SEQ_OPTION_NAME}},1}" ; ` +
     `set-option -gF ${OPTION_NAME} ` +
-    `"#{=-${CAP}:#{${OPTION_NAME}}#{${SEQ_OPTION_NAME}}:#{session_id}:#{window_id},}"`
+    `"#{=-${CAP}:#{${OPTION_NAME}}#{${SEQ_OPTION_NAME}}:#{window_id},}"`
   );
 }
 
 function installHookCommand(): string {
-  // set-hook takes hook-name + exactly one command argument — the inner
-  // command list (itself containing double-quoted format strings) must be
-  // wrapped as a single tmux-parsed token. tmux's command-line tokenizer
-  // supports nested single/double quoting the way a shell does.
-  return `set-hook -g window-layout-changed[${RESERVED_HOOK_INDEX}] '${hookCommand()}'`;
+  // set-hook takes hook-name + exactly one command argument, so the whole
+  // command list goes in as a single tmux-parsed token.
+  return `set-hook -g window-layout-changed[${RESERVED_HOOK_INDEX}] ${tmuxEscape(hookCommand())}`;
 }
 
 function readSeqCommand(): string {
-  return `display-message -p "#{${SEQ_OPTION_NAME}}"`;
+  return `display-message -p ${tmuxEscape(`#{${SEQ_OPTION_NAME}}`)}`;
 }
 
 /**
- * Targets `$session:@window`, not bare `@window`: a window linked into more
- * than one session has a per-session `#{window_flags}` (current/last), and
- * the flags must be the ones for the session the hook recorded.
+ * Targets the window alone and reads back the session tmux resolves it in,
+ * so `sessionId` and the per-session `#{window_flags}` always describe the
+ * same session — and a window linked into a session that has since been
+ * killed is still found through the sessions it remains in. Tab-separated
+ * like the list formats in protocol/encoder.ts; no field can contain a tab.
  */
-function fetchLayoutCommand(sessionId: number, windowId: number): string {
-  return `display-message -p -t '$${sessionId}:@${windowId}' "#{window_layout}\x01#{window_visible_layout}\x01#{window_flags}"`;
+function fetchLayoutCommand(windowId: number): string {
+  return `display-message -p -t @${windowId} ${tmuxEscape(
+    "#{session_id}\t#{window_layout}\t#{window_visible_layout}\t#{window_flags}",
+  )}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +182,6 @@ function fetchLayoutCommand(sessionId: number, windowId: number): string {
 
 export interface DecodedEntry {
   readonly seq: number;
-  readonly sessionId: number;
   readonly windowId: number;
 }
 
@@ -181,9 +191,9 @@ export interface DecodeResult {
 }
 
 /**
- * Decode every `<seq>:$<sid>:@<wid>,` entry in `value`. When `value` is at
- * `CAP` length the hook's truncation may have sheared its first entry —
- * and a sheared entry can still look well-formed (`12:$3:@4,` → `2:$3:@4,`),
+ * Decode every `<seq>:@<wid>,` entry in `value`. When `value` is at `CAP`
+ * length the hook's truncation may have sheared its first entry — and a
+ * sheared entry can still look well-formed (`12:@4,` → `2:@4,`),
  * so it is dropped unread rather than trusted; a real entry lost that way
  * shows up as a `seq` gap, which {@link planDelivery} reports. Any other
  * non-match is foreign text: skip to the next `,` and record the skip.
@@ -200,11 +210,7 @@ export function decodeEntries(value: string): DecodeResult {
   while (cursor.length > 0) {
     const m = ENTRY_RE.exec(cursor);
     if (m) {
-      entries.push({
-        seq: Number(m[1]),
-        sessionId: Number(m[2]),
-        windowId: Number(m[3]),
-      });
+      entries.push({ seq: Number(m[1]), windowId: Number(m[2]) });
       cursor = cursor.slice(m[0].length);
       continue;
     }
@@ -218,10 +224,7 @@ export function decodeEntries(value: string): DecodeResult {
 
 export interface DeliveryPlan {
   /** Distinct windows changed since `lastSeq`, in first-seen order. */
-  readonly windows: readonly {
-    readonly sessionId: number;
-    readonly windowId: number;
-  }[];
+  readonly windowIds: readonly number[];
   /** Entries newer than `lastSeq` that truncation discarded unseen. */
   readonly lostEntries: number;
   readonly lastSeq: number;
@@ -239,18 +242,10 @@ export function planDelivery(
   lastSeq: number,
 ): DeliveryPlan {
   const fresh = entries.filter((e) => e.seq > lastSeq);
-  if (fresh.length === 0) return { windows: [], lostEntries: 0, lastSeq };
-  const seen = new Set<string>();
-  const windows: { sessionId: number; windowId: number }[] = [];
-  for (const e of fresh) {
-    const key = `${e.sessionId}:${e.windowId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    windows.push({ sessionId: e.sessionId, windowId: e.windowId });
-  }
+  if (fresh.length === 0) return { windowIds: [], lostEntries: 0, lastSeq };
   const seqs = fresh.map((e) => e.seq);
   return {
-    windows,
+    windowIds: [...new Set(fresh.map((e) => e.windowId))],
     lostEntries: Math.min(...seqs) - lastSeq - 1,
     lastSeq: Math.max(...seqs),
   };
@@ -376,53 +371,72 @@ export class CrossSessionLayoutRelay {
     // client's own FIFO correlates each execute() to its own response
     // regardless of issue order.
     await Promise.all(
-      plan.windows.map((w) =>
-        this.fetchAndEmit(generation, w.sessionId, w.windowId),
-      ),
+      plan.windowIds.map((windowId) => this.fetchAndEmit(generation, windowId)),
     );
   }
 
   private async fetchAndEmit(
     generation: number,
-    sessionId: number,
     windowId: number,
   ): Promise<void> {
-    const message = await this.fetch(sessionId, windowId);
-    if (generation === this.generation) this.emit(message);
+    const message = await this.fetch(windowId);
+    if (message !== null && generation === this.generation) this.emit(message);
   }
 
+  /** `null` when the connection closed mid-fetch — see {@link CrossSessionLayoutFetchFailedMessage}. */
   private async fetch(
-    sessionId: number,
     windowId: number,
   ): Promise<
-    CrossSessionLayoutChangeMessage | CrossSessionLayoutFetchFailedMessage
+    | CrossSessionLayoutChangeMessage
+    | CrossSessionLayoutFetchFailedMessage
+    | null
   > {
-    const failed = {
-      type: "cross-session-layout-fetch-failed",
-      sessionId,
-      windowId,
-    } as const;
+    let line: string;
     try {
-      const response = await this.client.execute(
-        fetchLayoutCommand(sessionId, windowId),
-      );
-      // [LAW:no-silent-failure] An empty/malformed reply from a live window
-      // is unexpected (unlike a vanished window, which rejects below) —
-      // report it rather than dropping the entry with no signal at all.
-      const [windowLayout, windowVisibleLayout, windowFlags] = (
-        response.output[0] ?? ""
-      ).split("\x01");
-      if (windowLayout === undefined || windowLayout === "") return failed;
-      return {
-        type: "cross-session-layout-change",
-        sessionId,
-        windowId,
-        windowLayout,
-        windowVisibleLayout: windowVisibleLayout ?? "",
-        windowFlags: windowFlags ?? "",
-      };
-    } catch {
-      return failed;
+      const response = await this.client.execute(fetchLayoutCommand(windowId));
+      line = response.output[0] ?? "";
+    } catch (err) {
+      if (err instanceof TmuxCommandError) {
+        return {
+          type: "cross-session-layout-fetch-failed",
+          windowId,
+          reason: err.response.output.join("\n"),
+        };
+      }
+      if (
+        err instanceof TransportClosedError ||
+        err instanceof TransportSendError
+      ) {
+        return null;
+      }
+      throw err;
     }
+    // [LAW:no-silent-failure] A reply that doesn't match the requested
+    // format is unexpected from a live window — report it rather than
+    // emitting a half-parsed layout.
+    const [session, windowLayout, windowVisibleLayout, windowFlags, extra] =
+      line.split("\t");
+    const sessionMatch = /^\$(\d+)$/.exec(session ?? "");
+    if (
+      sessionMatch === null ||
+      !windowLayout ||
+      windowVisibleLayout === undefined ||
+      windowFlags === undefined ||
+      extra !== undefined
+    ) {
+      return {
+        type: "cross-session-layout-fetch-failed",
+        windowId,
+        reason: `unexpected reply: ${JSON.stringify(line)}`,
+      };
+    }
+    return {
+      type: "cross-session-layout-change",
+      sessionId: Number(sessionMatch[1]),
+      windowId,
+      windowLayout,
+      windowVisibleLayout,
+      windowFlags,
+    };
   }
 }
