@@ -33,12 +33,19 @@ tmux:
   control mode client gets too far behind."*)
 - `%client-detached` notification (tmux 3.2)
 
-Three features are also exposed by the API but require a newer tmux when
+Some features are also exposed by the API but require a newer tmux when
 actually called:
 
+- `queryClipboard(client)` — needs tmux **3.3+** (`refresh-client -l`; on tmux 3.2 the control client exits, dropping the connection). On older tmux it rejects with `UnsupportedTmuxVersionError` before sending anything.
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
-- `%config-error` notification — only emitted by tmux **3.4+**
 - `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `(await getOwnClient(client)).flags` shows whether the flag took effect.
+
+Some notifications are parsed on every tmux but only emitted by a newer one;
+on older tmux the listener simply never fires:
+
+- `%paste-buffer-changed` / `%paste-buffer-deleted` — tmux **3.4+**
+- `%message` — tmux **3.4+**
+- `%config-error` — tmux **3.4+**
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
@@ -127,7 +134,8 @@ stating why it cannot be provoked deterministically from the test harness. The
 that partition — a structural test reconciles it against the SPEC §23 catalogue
 and the parser's own message types, so the doc, the parser, and the tests
 cannot drift apart, and the gate reddens if any §23 event is left unaccounted.
-At present 24 of the 28 events are observed live. The exemptions each carry
+At present 24 of the 28 events are observed live on tmux 3.4+; on older tmux,
+an event whose `COVERAGE` row carries a `minVersion` above it is skipped. The exemptions each carry
 their own reason in the `COVERAGE` table: `%config-error`, whose runtime
 provocation is silent on the tmux 3.4 baseline, and the flow-control trio
 (`%pause`, `%continue`, `%extended-output`), which fire only under read

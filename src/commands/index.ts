@@ -51,6 +51,7 @@ import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
   type TmuxVersion,
   REQUEST_REPORT_MIN_VERSION,
+  QUERY_CLIPBOARD_MIN_VERSION,
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
@@ -314,29 +315,45 @@ export async function getOwnClient(client: TmuxConnection): Promise<OwnClient> {
   return parseOwnClientLine(response.output);
 }
 
-// [LAW:single-enforcer] requestReport is the sole gate for the `refresh-client
-// -r` version floor. `-r` was added in tmux 3.5; the library supports tmux
-// 3.2+, so a caller on 3.2-3.4 would otherwise receive tmux's raw "unknown
-// flag" %error. We probe the live version first and surface a clear,
-// version-named precondition failure instead.
+// [LAW:single-enforcer] The one probe-then-reject for commands newer than the
+// library's 3.2 floor: the live version is checked before the command is sent,
+// so a caller on old tmux gets a typed, version-named precondition failure
+// instead of whatever that tmux does with the command.
+async function requireTmuxVersion(
+  client: TmuxConnection,
+  feature: string,
+  required: TmuxVersion,
+): Promise<void> {
+  const version = await queryTmuxVersion(client);
+  if (!meetsTmuxVersion(version, required)) {
+    throw new UnsupportedTmuxVersionError(feature, required, version);
+  }
+}
+
+// `-r` was added in tmux 3.5; on 3.2-3.4 tmux would answer with a raw
+// "unknown flag" %error.
 export async function requestReport(
   client: TmuxConnection,
   paneId: number,
   report: string,
 ): Promise<CommandResponse> {
-  const version = await queryTmuxVersion(client);
-  if (!meetsTmuxVersion(version, REQUEST_REPORT_MIN_VERSION)) {
-    throw new UnsupportedTmuxVersionError(
-      "requestReport (refresh-client -r)",
-      REQUEST_REPORT_MIN_VERSION,
-      version,
-    );
-  }
+  await requireTmuxVersion(
+    client,
+    "requestReport (refresh-client -r)",
+    REQUEST_REPORT_MIN_VERSION,
+  );
   return client.execute(refreshClientReport(paneId, report));
 }
 
-export function queryClipboard(
+// On tmux 3.2, `refresh-client -l` makes the control client exit, so ungated
+// it would kill the whole connection rather than fail one command.
+export async function queryClipboard(
   client: TmuxConnection,
 ): Promise<CommandResponse> {
+  await requireTmuxVersion(
+    client,
+    "queryClipboard (refresh-client -l)",
+    QUERY_CLIPBOARD_MIN_VERSION,
+  );
   return client.execute(refreshClientQueryClipboard());
 }

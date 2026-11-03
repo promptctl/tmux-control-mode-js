@@ -71,6 +71,18 @@ async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
   return Number(m[1]);
 }
 
+async function paneSize(
+  client: TmuxClient,
+  paneId: number,
+): Promise<{ cols: number; rows: number }> {
+  const r = await client.execute(
+    `display-message -p -t %${paneId} '#{pane_width} #{pane_height}'`,
+  );
+  const m = (r.output[0] ?? "").match(/^(\d+) (\d+)$/);
+  if (m === null) throw new Error(`unexpected pane size reply: ${r.output}`);
+  return { cols: Number(m[1]), rows: Number(m[2]) };
+}
+
 class CollectorSink implements TerminalSink {
   seedCalls: { byteLength: number; cursor: SeedCursor | null }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
@@ -179,9 +191,11 @@ describe.skipIf(!RUN_INTEGRATION)(
         await new Promise((r) => setTimeout(r, 50));
       }
       expect(sink.resizeCalls.length).toBeGreaterThanOrEqual(1);
-      const initial = sink.resizeCalls[sink.resizeCalls.length - 1];
-      expect(initial.cols).toBe(80);
-      expect(initial.rows).toBe(24);
+      // The expected geometry is what tmux reports for the pane, not the
+      // requested size: tmux 3.2 gives an 80x24 session a 23-row pane.
+      expect(sink.resizeCalls[sink.resizeCalls.length - 1]).toEqual(
+        await paneSize(client, paneId),
+      );
 
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
@@ -190,14 +204,19 @@ describe.skipIf(!RUN_INTEGRATION)(
         let i = 0;
         i < 30 &&
         (sink.resizeCalls.length === 1 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120);
+          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120 ||
+          sink.resizeCalls[sink.resizeCalls.length - 1].rows < 30 - 1);
         i++
       ) {
         await new Promise((r) => setTimeout(r, 50));
       }
       const after = sink.resizeCalls[sink.resizeCalls.length - 1];
       expect(after.cols).toBe(120);
-      expect(after.rows).toBe(30);
+      // The requested height lands, less at most the status line's row
+      // (tmux 3.2 takes it from the initial session but not after setSize).
+      expect(after.rows).toBeGreaterThanOrEqual(30 - 1);
+      expect(after.rows).toBeLessThanOrEqual(30);
+      expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
   },
 );
