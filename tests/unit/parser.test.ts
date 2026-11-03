@@ -1054,3 +1054,89 @@ describe("lines outside response blocks without % are ignored", () => {
     expect(messages[0].type).toBe("sessions-changed");
   });
 });
+
+describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
+  // SPEC.md §5.4: response-block output (e.g. capture-pane -p) is delivered
+  // via control_write(), which carries no octal-escaping guarantee — unlike
+  // %output/%extended-output (SPEC.md §10). A captured row may legitimately
+  // end in a raw \r byte; feed() must preserve it rather than treating it as
+  // CRLF-transport noise.
+  it("a response-block output line ending in a real \\r keeps the \\r", () => {
+    const input = "%begin 1699900000 1 0\r\ncaptured row\r\n%end 1699900000 1 0\r\n";
+    const { outputLines } = collect(input);
+    expect(outputLines).toHaveLength(1);
+    expect(outputLines[0]).toEqual({
+      commandNumber: 1,
+      line: "captured row\r",
+    });
+  });
+
+  it("notification lines outside any block still get CRLF-stripped", () => {
+    const input = "%sessions-changed\r\n";
+    const { messages } = collect(input);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ type: "sessions-changed" });
+  });
+
+  it("the opening %begin guard outside any block still gets CRLF-stripped", () => {
+    const input = "%begin 1699900000 2 0\r\n%end 1699900000 2 0\r\n";
+    const { messages } = collect(input);
+    expect(messages[0]).toMatchObject({
+      type: "begin",
+      commandNumber: 2,
+      timestamp: 1699900000,
+      flags: 0,
+    });
+  });
+
+  it("a block terminator arriving over CRLF still closes the block correctly", () => {
+    // The terminator itself is no longer \r-stripped by feed() (the block is
+    // still open when it arrives), so this exercises parseGuard's parseInt
+    // leniency on a trailing \r in the flags field instead.
+    const input = "%begin 1699900000 3 0\r\nrow\r\n%end 1699900000 3 0\r\n%sessions-changed\r\n";
+    const { messages, outputLines } = collect(input);
+    // "row" itself arrived over the CRLF transport mid-block, so its trailing
+    // \r is preserved too — it's indistinguishable from a real data byte,
+    // which is exactly the point of this fix.
+    expect(outputLines).toEqual([{ commandNumber: 3, line: "row\r" }]);
+    expect(messages.find((m) => m.type === "end")).toMatchObject({
+      type: "end",
+      commandNumber: 3,
+      timestamp: 1699900000,
+      flags: 0,
+    });
+    // The block closed correctly, so the following notification is routed
+    // as a real message, not swallowed as still-open-block output.
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
+
+  it("a truncated, space-less %end\\r over CRLF still force-closes the block", () => {
+    // Regression: a malformed terminator with no space at all (every field
+    // lost, not just the flags field — e.g. "%end\r") has no argsStr, so
+    // typeStr used to be line.slice(1) verbatim: "end\r". Since this line
+    // arrives inside an open block, feed() no longer strips that \r, and
+    // "end\r" !== "end" made isBlockTerminator false — the malformed-guard-
+    // terminator recovery (onProtocolError) never fired, wedging the block
+    // open forever and swallowing every line after it, including real
+    // notifications, as output for a command that will never settle.
+    const input = "%begin 1699900000 5 0\r\n%end\r\n%sessions-changed\r\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+    // `line` itself still carries the raw \r — only the internal `typeStr`
+    // comparison is \r-tolerant; the surfaced error line is byte-faithful.
+    expect(protocolErrors).toEqual([{ commandNumber: 5, line: "%end\r" }]);
+    expect(outputLines).toHaveLength(0);
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
+
+  it("tolerates a doubled trailing \\r\\r on a truncated terminator too", () => {
+    // A single stray strip (`endsWith("\r") ? slice(0, -1) : ...`) only
+    // removes one \r, so "%end\r\r" would still fail `typeStr === "end"` and
+    // wedge exactly like the single-\r case above. The fix strips the whole
+    // trailing \r run, not just one.
+    const input = "%begin 1699900000 6 0\r\n%end\r\r\n%sessions-changed\r\n";
+    const { messages, outputLines, protocolErrors } = collect(input);
+    expect(protocolErrors).toEqual([{ commandNumber: 6, line: "%end\r\r" }]);
+    expect(outputLines).toHaveLength(0);
+    expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
+  });
+});

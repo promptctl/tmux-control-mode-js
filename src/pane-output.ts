@@ -753,11 +753,18 @@ export class TopologyEpochTracker {
  * output (or the window-scoped variant `list-panes -t @W`).
  *
  * Returns null for unparseable lines (trailing blank, unexpected format).
+ *
+ * This is response-block output, where `TmuxParser.processLine()` no longer
+ * strips a trailing `\r` run (needed so raw `capture-pane -p` bytes
+ * survive) — so on a CRLF transport, the last line of this list can
+ * legitimately carry one, and (per a doubled-up CRLF) more than one. `\r*$`
+ * tolerates any run of them, the same way `parseSessionRecordLine`'s
+ * `Number()` comparison does for its own last field.
  */
 export function parsePaneListLine(
   line: string,
 ): { paneId: number; windowId: number; sessionId: number } | null {
-  const m = line.match(/^%(\d+) @(\d+) \$(\d+)$/);
+  const m = line.match(/^%(\d+) @(\d+) \$(\d+)\r*$/);
   if (m === null) return null;
   return {
     paneId: Number(m[1]),
@@ -888,8 +895,12 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
  * `parseWindowRecordLine`/`parsePaneRecordLine`.
  *
  * `#{session_attached}` is tmux's count of attached clients (0/1/2/...), not
- * a boolean flag, so `attached` is any non-zero (non-empty) count rather than
- * an `=== "1"` check.
+ * a boolean flag, so `attached` is any non-zero count rather than an
+ * `=== "1"` check. Compared via `Number()`, not string equality, so a
+ * trailing `\r` surviving on this field (response-block output no longer
+ * strips it, since raw pane-capture bytes need it — see `parser.ts`'s
+ * `feed()`) tolerates the same way `windowCount` already does, instead of
+ * flipping an unattached session to attached.
  */
 export function parseSessionRecordLine(line: string): SessionRecord | null {
   const fields = line.split("\t");
@@ -899,6 +910,6 @@ export function parseSessionRecordLine(line: string): SessionRecord | null {
     sessionId: parseSigilId(sessionId),
     sessionName: decodeField(sessionName),
     windowCount: Number(windowCount),
-    attached: attached !== "0" && attached !== "",
+    attached: Number(attached) !== 0,
   };
 }

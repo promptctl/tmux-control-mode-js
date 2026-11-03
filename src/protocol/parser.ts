@@ -338,26 +338,11 @@ export class TmuxParser {
    *
    * CRLF tolerance: this parser sits on tmux's *output* side, the opposite of
    * the input side tmux itself reads with `EVBUFFER_EOL_LF` (LF-terminated, no
-   * CR stripping). `feed()` strips a trailing `\r` before each `\n`, so a
-   * transport that introduces CRLF between tmux and the parser is tolerated and
-   * parses identically to an LF-only one. This is safe because tmux always
-   * octal-escapes literal control bytes in pane output (see `decodeOctalEscapes`),
-   * so any unescaped `\r` adjacent to LF must be transport line-driver noise, not
-   * data. This is library-side defensive behavior, not a tmux protocol rule.
-   *
-   * Malformed guard terminator tolerance: a `%end`/`%error` line that arrives
-   * while a response block is open but fails to parse (fewer than the three
-   * required fields — a truncated or byte-flipped terminator, exactly what the
-   * repo's chaos fuzzer can produce) force-closes the block instead of leaving
-   * it open. Without this, `activeCommandNumber` would never reset and every
-   * line for the rest of the connection — real notifications included — would
-   * misroute as output for a command that will never settle (see
-   * `ProtocolErrorMessage`). The line is positionally unambiguous as the
-   * terminator (block-purity routing already excluded it from output before
-   * the parse attempt), so treating it as "the block's close, but a failed
-   * one" rather than "unparseable, skip" is the only reading that keeps the
-   * parser always returning to line-routing mode. This is also library-side
-   * defensive behavior, not a tmux protocol rule.
+   * CR stripping). `feed()` itself only splits on `\n` and hands the raw line
+   * (any trailing `\r` run still attached) to `processLine()` — see that
+   * method's doc comment for why the `\r`-handling decision lives there
+   * instead of here, as a single point rather than two independently-derived
+   * ones. [LAW:single-enforcer]
    */
   feed(chunk: string): void {
     this.buffer += chunk;
@@ -367,15 +352,7 @@ export class TmuxParser {
     // the processing step runs.
     let newlineIdx = this.buffer.indexOf("\n");
     while (newlineIdx !== -1) {
-      // Drop a trailing \r so CRLF transports parse identically to LF ones.
-      // The reference treats \r as line-driver noise; protocol lines and
-      // command-response text never depend on it (real \r in pane output is
-      // octal-escaped and handled in decodeOctalEscapes).
-      const end =
-        newlineIdx > 0 && this.buffer.charCodeAt(newlineIdx - 1) === 0x0d
-          ? newlineIdx - 1
-          : newlineIdx;
-      const line = this.buffer.slice(0, end);
+      const line = this.buffer.slice(0, newlineIdx);
       this.buffer = this.buffer.slice(newlineIdx + 1);
       this.processLine(line);
       newlineIdx = this.buffer.indexOf("\n");
@@ -392,28 +369,60 @@ export class TmuxParser {
   // Internal
   // -------------------------------------------------------------------------
 
+  /**
+   * `line` is exactly what arrived between two `\n`s — any trailing `\r` run
+   * a CRLF transport left on it is still attached. [LAW:single-enforcer]:
+   * this is the one place that decides what a trailing `\r` means, rather
+   * than feed() pre-judging it before classification exists.
+   *
+   * SPEC_MANIFEST §4 Invariant 4.1 (Block Purity): tmux never interleaves an
+   * asynchronous notification into a response block. Between %begin and
+   * %end/%error, every line is either the block terminator itself or command
+   * output produced by the running command — even if that output happens to
+   * begin with `%`, e.g. `%5` from `list-panes -F '#{pane_id}'`. The parser
+   * routes by position (in-block + not-terminator → output), not by content.
+   *
+   * Classification (is this a notification? which type? is it the block
+   * terminator?) always uses `cleanLine`, with any trailing `\r` run
+   * stripped — those fields are fixed protocol tokens or tmux-generated
+   * numeric values, never user data, so a trailing `\r` there is always
+   * transport noise. This also fixes a real wedge: a malformed, space-less
+   * terminator (`%end\r`, or `%end\r\r` from a doubled-up CRLF) must still
+   * compare equal to `"end"`, or the malformed-guard-terminator recovery
+   * below never fires, `activeCommandNumber` never resets, and every line
+   * for the rest of the connection — notifications included — misroutes as
+   * output for a command that will never settle.
+   *
+   * The output *payload* forwarded via `onOutputLine` and the line surfaced
+   * via `onProtocolError` both use the raw, un-stripped `line` instead:
+   * SPEC.md §5.4 documents response-block output (e.g. `capture-pane -p`) as
+   * delivered via `control_write()`, a path with no octal-escaping guarantee
+   * (SPEC.md §10 is scoped to %output/%extended-output only), so a captured
+   * row may legitimately end in a real `\r` byte right before the block's
+   * terminating `\n`. Stripping it there would silently corrupt
+   * `CommandResponse.output`'s documented raw-byte-fidelity guarantee — one
+   * byte pipe, no lossy decode, even for the line that happened to also be
+   * the (malformed) terminator.
+   */
   private processLine(line: string): void {
     const inResponseBlock = this.activeCommandNumber !== -1;
-    const isNotification = line.charCodeAt(0) === 0x25; // '%'
+    let cleanEnd = line.length;
+    while (cleanEnd > 0 && line.charCodeAt(cleanEnd - 1) === 0x0d) cleanEnd--;
+    const cleanLine = cleanEnd === line.length ? line : line.slice(0, cleanEnd);
+
+    const isNotification = cleanLine.charCodeAt(0) === 0x25; // '%'
 
     // Extract the notification type up front so the response-block routing
     // decision below can be data-driven rather than a nested branch tree.
-    const spaceIdx = isNotification ? line.indexOf(" ", 1) : -1;
+    const spaceIdx = isNotification ? cleanLine.indexOf(" ", 1) : -1;
     const typeStr = !isNotification
       ? ""
       : spaceIdx === -1
-        ? line.slice(1)
-        : line.slice(1, spaceIdx);
+        ? cleanLine.slice(1)
+        : cleanLine.slice(1, spaceIdx);
     const argsStr =
-      !isNotification || spaceIdx === -1 ? "" : line.slice(spaceIdx + 1);
+      !isNotification || spaceIdx === -1 ? "" : cleanLine.slice(spaceIdx + 1);
 
-    // [LAW:one-source-of-truth] SPEC_MANIFEST §4 Invariant 4.1 (Block
-    // Purity): tmux never interleaves an asynchronous notification into a
-    // response block. Between %begin and %end/%error, every line is
-    // either the block terminator itself or command output produced by
-    // the running command — even if that output happens to begin with
-    // `%`, e.g. `%5` from `list-panes -F '#{pane_id}'`. The parser routes
-    // by position (in-block + not-terminator → output), not by content.
     // Treating in-block `%5`-style lines as unknown notifications was the
     // bug the example used to paper over with an `id=` prefix; the parser
     // now follows the spec invariant directly.
@@ -448,9 +457,9 @@ export class TmuxParser {
     if (msg === null) {
       // [LAW:no-silent-failure] A malformed line that was positionally the
       // open block's terminator must not leave the block open — that is the
-      // wedge (see TmuxParser.feed's malformed-guard-terminator tolerance).
-      // Force-close and surface it; every other malformed known-type line is
-      // still a silent skip, unchanged.
+      // wedge (see this method's doc comment on malformed-guard-terminator
+      // tolerance). Force-close and surface it; every other malformed
+      // known-type line is still a silent skip, unchanged.
       if (inResponseBlock && isBlockTerminator) {
         const commandNumber = this.activeCommandNumber;
         this.activeCommandNumber = -1;

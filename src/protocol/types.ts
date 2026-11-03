@@ -328,6 +328,13 @@ export interface CommandResponse {
    * import { latin1ToBytes } from "@promptctl/tmux-control-mode-js";
    * const text = new TextDecoder().decode(latin1ToBytes(response.output[0]));
    * ```
+   *
+   * **CRLF transports:** `TmuxParser.feed()` does not strip a trailing `\r`
+   * from response-block lines (needed so a `capture-pane -p` row's real
+   * trailing `\r` survives) — so on a transport that introduces CRLF, *any*
+   * command's last output line, not just `capture-pane`'s, may carry one.
+   * Exact-match comparisons against a single-line, non-tab-delimited reply
+   * should account for this (e.g. `response.output[0].replace(/\r$/, "")`).
    */
   readonly output: readonly string[];
   readonly success: boolean;
