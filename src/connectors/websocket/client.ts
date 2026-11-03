@@ -30,6 +30,10 @@
 // heartbeat together so callers cannot observe a half-closed client.
 
 import {
+  isCrossSessionLayoutMessage,
+  type CrossSessionLayoutMessage,
+} from "../../cross-session-layout-messages.js";
+import {
   sameConnectionState,
   type ConnectionState,
 } from "../../connection-state.js";
@@ -330,6 +334,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return this.call("queryClipboard", []);
   }
 
+  // Coverage is held by this connection's server-side peer, so like a
+  // subscribeRaw it does not survive a reconnect: re-enable on `reconnected`.
+  enableCrossSessionLayoutChange(): Promise<null> {
+    return this.call("enableCrossSessionLayoutChange", []);
+  }
+
+  disableCrossSessionLayoutChange(): Promise<null> {
+    return this.call("disableCrossSessionLayoutChange", []);
+  }
+
   // [LAW:one-source-of-truth] All sink registration, topology bootstrap,
   //   and scope dispatch is owned by TopologyRouter — no duplication here.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
@@ -553,6 +567,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // TypedEmitter.emit uses `msg.type` to route; it fires the typed channel
     // and the "*" wildcard in one call.
     (this.emitter as unknown as EmitterImpl).emit(msg);
+  }
+
+  // Synthetic events carry no topology or bytes, so they bypass the router.
+  emitCrossSessionLayout(msg: CrossSessionLayoutMessage): void {
+    this.emitter.emit(msg);
   }
 
   private onClose(event: { code?: number; reason?: string }): void {
@@ -817,7 +836,10 @@ const SERVER_FRAME_HANDLERS: ServerFrameHandlers = Object.assign(
   Object.create(null) as ServerFrameHandlers,
   {
     welcome: (self, f: WelcomeFrame) => self.onWelcome(f),
-    event: (self, f) => self.dispatchEvent(f.msg as TmuxMessage),
+    event: (self, f) =>
+      isCrossSessionLayoutMessage(f.msg)
+        ? self.emitCrossSessionLayout(f.msg)
+        : self.dispatchEvent(f.msg as TmuxMessage),
     result: (self, f: ResultFrame) => self.onResult(f),
     pong: (self, f) => self.onPong(f.id),
     draining: (self, f) => self.onDraining(f.deadlineMs),

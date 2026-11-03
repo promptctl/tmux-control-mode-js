@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
 
 import type { TmuxClient } from "../../client.js";
+import { isCrossSessionLayoutMessage } from "../../cross-session-layout-messages.js";
 import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
 import type { TmuxMessage } from "../../protocol/types.js";
 
@@ -73,8 +74,10 @@ export function toNodeStream(client: TmuxClient): Readable {
 export function toEventEmitter(client: TmuxClient): EventEmitter {
   const ee = new EventEmitter();
   client.on("*", (event: EmitterMessage): void => {
-    // Mirror toNodeStream: only parsed tmux events project onto the EE.
-    if (!isTmuxMessage(event)) return;
+    // Parsed tmux events and the cross-session layout events (which a
+    // consumer opts into with enableCrossSessionLayoutChange) project onto
+    // the EE; lifecycle events stay on the client's typed channels.
+    if (!isTmuxMessage(event) && !isCrossSessionLayoutMessage(event)) return;
     ee.emit(event.type, event);
     ee.emit("*", event);
   });

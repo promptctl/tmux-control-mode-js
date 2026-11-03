@@ -14,6 +14,10 @@
 // [LAW:one-type-per-behavior] ClientFrame and ServerFrame are discriminated
 // unions — a single `k` field dispatches every receiver.
 
+import {
+  isCrossSessionLayoutMessage,
+  type CrossSessionLayoutMessage,
+} from "../../cross-session-layout-messages.js";
 import type { PaneOutputMessage, TmuxMessage } from "../../protocol/types.js";
 import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import type { ChunkPayload } from "../../pane-output.js";
@@ -122,7 +126,7 @@ export interface WelcomeFrame {
 
 export interface EventFrame {
   readonly k: "event";
-  readonly msg: SerializedEventMessage;
+  readonly msg: SerializedEventMessage | CrossSessionLayoutMessage;
 }
 
 export interface ResultOkFrame {
@@ -394,12 +398,18 @@ function parseEvent(x: unknown): EventFrame {
     throw new BridgeProtocolError("event.msg must be an object");
   }
   const msg = o.msg as { type?: unknown };
-  if (typeof msg.type !== "string" || !SERIALIZED_EVENT_TYPES.has(msg.type)) {
+  if (
+    typeof msg.type !== "string" ||
+    !(
+      SERIALIZED_EVENT_TYPES.has(msg.type) ||
+      isCrossSessionLayoutMessage({ type: msg.type })
+    )
+  ) {
     throw new BridgeProtocolError(
-      `event.msg.type must be a known TmuxMessage discriminator, got ${JSON.stringify(msg.type)}`,
+      `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(msg.type)}`,
     );
   }
-  return { k: "event", msg: o.msg as SerializedEventMessage };
+  return { k: "event", msg: o.msg as EventFrame["msg"] };
 }
 
 function parseResult(x: unknown): ResultFrame {
@@ -413,8 +423,12 @@ function parseResult(x: unknown): ResultFrame {
     throw new BridgeProtocolError("result.id must be a non-empty string");
   }
   if (o.ok === true) {
-    if (typeof o.response !== "object" || o.response === null) {
-      throw new BridgeProtocolError("result.response must be an object");
+    // `null` is the response of the bridge-stateful methods that answer
+    // without a tmux command (see RpcSpec in ../rpc.ts).
+    if (typeof o.response !== "object") {
+      throw new BridgeProtocolError(
+        "result.response must be an object or null",
+      );
     }
     return {
       k: "result",

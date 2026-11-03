@@ -36,9 +36,15 @@
 import type { CommandResponse } from "../protocol/types.js";
 
 import type { TmuxClient } from "../client.js";
+import {
+  isCrossSessionLayoutMessage,
+  isCrossSessionLayoutRelayFrame,
+} from "../cross-session-layout-messages.js";
+import type { EmitterMessage } from "../emitter.js";
 
 import type { Peer } from "./bridge-peer.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
+import { CrossSessionLayoutLedger } from "./cross-session-layout-ledger.js";
 import {
   BackpressureLedger,
   type ResumeFailure,
@@ -116,6 +122,25 @@ export interface BridgeConnection {
   unsubscribeForPeer(peer: Peer, name: string): Promise<CommandResponse>;
 
   /**
+   * Turn on cross-session layout coverage for this peer: the shared client
+   * holds one `enableCrossSessionLayoutChange` reference on the peer's behalf
+   * until it disables or is removed. Idempotent per peer.
+   */
+  enableCrossSessionLayoutForPeer(peer: Peer): Promise<void>;
+
+  /** Give back this peer's coverage reference. A no-op for a peer that holds none. */
+  disableCrossSessionLayoutForPeer(peer: Peer): Promise<void>;
+
+  /**
+   * Whether `msg` crosses the bridge to `peer`. The relay's raw
+   * `%subscription-changed` frames reach no peer; the decoded
+   * `cross-session-layout-*` events reach only peers that enabled coverage;
+   * everything else is the transport's own forwarding policy to decide.
+   * [LAW:single-enforcer] Both transports route events through this.
+   */
+  deliversEvent(peer: Peer, msg: EmitterMessage): boolean;
+
+  /**
    * Account `bytes` of pane output sent to `peer` for `paneId`. The transport
    * calls this around the actual send. When the per-pane sum across all
    * peers crosses `outputHighWatermark`, the helper fires
@@ -175,6 +200,7 @@ export function createBridgeConnection(
     reportResumeFailure,
   });
   const subscription = new SubscriptionLedger({ client });
+  const crossSessionLayout = new CrossSessionLayoutLedger({ client });
 
   // [LAW:one-source-of-truth] The façade holds NO peer roster of its own — each
   // ledger is the single source of truth for its own peers (keyed by the shared
@@ -198,6 +224,7 @@ export function createBridgeConnection(
       // (last-owner unsubscribe); the two are independent tmux commands.
       backpressure.releasePeer(peer);
       subscription.releasePeer(peer);
+      crossSessionLayout.releasePeer(peer);
     },
 
     subscribeForPeer(peer, name, what, format) {
@@ -206,6 +233,22 @@ export function createBridgeConnection(
 
     unsubscribeForPeer(peer, name) {
       return subscription.unsubscribe(peer, name);
+    },
+
+    enableCrossSessionLayoutForPeer(peer) {
+      return crossSessionLayout.enable(peer);
+    },
+
+    disableCrossSessionLayoutForPeer(peer) {
+      return crossSessionLayout.disable(peer);
+    },
+
+    deliversEvent(peer, msg) {
+      if (isCrossSessionLayoutRelayFrame(msg)) return false;
+      if (isCrossSessionLayoutMessage(msg)) {
+        return crossSessionLayout.isEnabled(peer);
+      }
+      return true;
     },
 
     accountOutput(peer, paneId, bytes) {
@@ -229,6 +272,7 @@ export function createBridgeConnection(
       // destructured `const { dispose } = bridge; dispose();` still works.
       backpressure.dispose();
       subscription.dispose();
+      crossSessionLayout.dispose();
     },
   };
 }

@@ -30,6 +30,10 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
+import {
+  isCrossSessionLayoutMessage,
+  type CrossSessionLayoutMessage,
+} from "../../cross-session-layout-messages.js";
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
 import {
@@ -353,11 +357,14 @@ class Connection {
     private readonly opts: WebSocketBridgeOptions,
     private readonly defaults: ResolvedDefaults,
   ) {
-    // The WS server forwards parsed tmux events over the wire; synthetic
-    // lifecycle events are bridge-internal and the peer has its own
-    // connection-state via the welcome handshake.
+    // The WS server forwards parsed tmux events and the decoded
+    // cross-session layout events over the wire; synthetic lifecycle events
+    // are bridge-internal and the peer has its own connection-state via the
+    // welcome handshake.
     this.onAnyEventRef = (msg: EmitterMessage): void => {
-      if (isTmuxMessage(msg)) this.onTmuxEvent(msg);
+      if (isTmuxMessage(msg) || isCrossSessionLayoutMessage(msg)) {
+        this.onWireEvent(msg);
+      }
     };
     // [LAW:single-enforcer] Byte channel is multiplexer-shaped; the bridge
     //   attaches one all-panes sink instead of inspecting every wildcard
@@ -937,7 +944,7 @@ class Connection {
   // -------------------------------------------------------------------------
   //
   // Two channels, disjoint by message type:
-  //   - `onTmuxEvent` handles non-byte tmux messages via the JSON event
+  //   - `onWireEvent` handles non-byte tmux messages via the JSON event
   //     frame. `EmitterTmuxMessage` excludes `PaneOutputMessage` by
   //     construction, so a byte message cannot reach this method — the
   //     type system enforces it.
@@ -946,11 +953,14 @@ class Connection {
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
   // -------------------------------------------------------------------------
-  private onTmuxEvent(msg: EmitterTmuxMessage): void {
+  private onWireEvent(
+    msg: EmitterTmuxMessage | CrossSessionLayoutMessage,
+  ): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
     if (this.state.kind !== "running" && this.state.kind !== "draining") {
       return;
     }
+    if (!this.state.bridge.deliversEvent(this.state.peer, msg)) return;
     const encoded = encodeServerFrame({ k: "event", msg });
     this.wsSend(encoded);
     this.emit({

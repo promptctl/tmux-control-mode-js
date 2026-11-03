@@ -53,10 +53,7 @@ function createFakeTransport(): FakeTransport {
 // Three notifications + a fake-out: a session-changed, a window-add, and
 // then a transport close. The parser strips trailing \n and produces
 // strongly-typed messages.
-const NOTIFICATIONS = [
-  "%session-changed $0 main\n",
-  "%window-add @1\n",
-];
+const NOTIFICATIONS = ["%session-changed $0 main\n", "%window-add @1\n"];
 
 describe("toReadableStream", () => {
   it("emits every notification followed by exit, then closes", async () => {
@@ -167,6 +164,20 @@ describe("toEventEmitter", () => {
       "session-changed",
       "window-add",
     ]);
+  });
+
+  it("re-emits cross-session layout events, which a consumer opts into", () => {
+    const transport = createFakeTransport();
+    const client = new TmuxClient(transport);
+    const ee = toEventEmitter(client);
+
+    const seen: unknown[] = [];
+    ee.on("cross-session-layout-overrun", (m: unknown) => seen.push(m));
+    const overrun = { type: "cross-session-layout-overrun", lostEntries: 3 };
+    (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
+      overrun,
+    );
+    expect(seen).toEqual([overrun]);
   });
 
   it("emits the synthetic exit message when the transport closes", () => {

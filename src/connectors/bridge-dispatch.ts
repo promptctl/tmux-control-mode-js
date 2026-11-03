@@ -117,6 +117,12 @@ function runBridgeDispatch(
     const [name] = req.args;
     return bridge.unsubscribeForPeer(peer, name);
   }
+  if (req.method === "enableCrossSessionLayoutChange") {
+    return bridge.enableCrossSessionLayoutForPeer(peer).then(() => null);
+  }
+  if (req.method === "disableCrossSessionLayoutChange") {
+    return bridge.disableCrossSessionLayoutForPeer(peer).then(() => null);
+  }
   return dispatchRpcRequest(client, req);
 }
 

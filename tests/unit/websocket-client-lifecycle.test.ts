@@ -657,3 +657,44 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
     });
   });
 });
+
+describe("WebSocketTmuxClient — cross-session layout coverage", () => {
+  it("enables over RPC and emits the decoded events the server forwards", async () => {
+    const { client, hub } = makeClient();
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    const ws = hub.latest();
+
+    const enabled = client.enableCrossSessionLayoutChange();
+    const call = sentFrames(ws).find((f) => f.k === "call");
+    expect(call).toMatchObject({
+      method: "enableCrossSessionLayoutChange",
+      args: [],
+    });
+    ws.fire("message", {
+      data: encodeServerFrame({
+        k: "result",
+        id: call!.id!,
+        ok: true,
+        response: null,
+      }),
+    });
+    await expect(enabled).resolves.toBeNull();
+
+    const seen: unknown[] = [];
+    client.on("cross-session-layout-change", (ev) => seen.push(ev));
+    const change = {
+      type: "cross-session-layout-change",
+      sessionId: 1,
+      windowId: 7,
+      windowLayout: "b25d,80x24,0,0,0",
+      windowVisibleLayout: "b25d,80x24,0,0,0",
+      windowFlags: "*",
+    } as const;
+    ws.fire("message", {
+      data: encodeServerFrame({ k: "event", msg: change }),
+    });
+    expect(seen).toEqual([change]);
+  });
+});

@@ -84,7 +84,11 @@ function makeControllableWc(): ControllableWc {
 
 type BridgeSurface = Pick<
   BridgeConnection,
-  "registerPeer" | "removePeer" | "accountOutput" | "ackOutput"
+  | "registerPeer"
+  | "removePeer"
+  | "accountOutput"
+  | "ackOutput"
+  | "deliversEvent"
 >;
 type ClientSurface = Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 
@@ -103,6 +107,7 @@ function makeBridge(): BridgeSurface & {
     removePeer: vi.fn(),
     accountOutput: vi.fn(),
     ackOutput: vi.fn(),
+    deliversEvent: vi.fn(() => true),
   };
 }
 

@@ -75,7 +75,11 @@ export interface SenderState {
 export interface SenderRegistryDeps {
   readonly bridge: Pick<
     BridgeConnection,
-    "registerPeer" | "removePeer" | "accountOutput" | "ackOutput"
+    | "registerPeer"
+    | "removePeer"
+    | "accountOutput"
+    | "ackOutput"
+    | "deliversEvent"
   >;
   readonly client: Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 }
@@ -267,6 +271,8 @@ export class SenderRegistry {
         continue;
       }
       if (!state.isSubscribed) continue;
+      // [LAW:single-enforcer] The bridge decides which events reach which peer.
+      if (!this.deps.bridge.deliversEvent(state.peer, msg)) continue;
       wc.send(IPC.event, msg);
     }
   }
