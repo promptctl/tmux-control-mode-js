@@ -3,6 +3,7 @@
 //
 
 import type {
+  NewWindowResult,
   PaneRecord,
   SessionRecord,
   WindowRecord,
@@ -884,6 +885,20 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     width: Number(width),
     height: Number(height),
   };
+}
+
+/**
+ * Parse the whole reply to `newWindow()`'s `new-window -P -F` (protocol/
+ * encoder.ts): exactly one line, `@N\t%N`. Returns null for any other
+ * reply — a different line count included — same discipline as
+ * `parseWindowRecordLine`.
+ */
+export function parseNewWindowReply(
+  lines: readonly string[],
+): NewWindowResult | null {
+  const match = lines.length === 1 ? /^(@\d+)\t(%\d+)$/.exec(lines[0]) : null;
+  if (match === null) return null;
+  return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
 }
 
 /**

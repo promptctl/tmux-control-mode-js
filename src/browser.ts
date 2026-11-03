@@ -41,6 +41,7 @@ export type {
 export type {
   CommandResponse,
   PaneCapture,
+  NewWindowResult,
   PaneRecord,
   SessionRecord,
   TmuxMessage,
@@ -63,6 +64,8 @@ export { UnsupportedTmuxVersionError } from "./errors.js";
 export {
   TmuxCommandError,
   TmuxProtocolError,
+  TmuxInvalidCommandError,
+  TmuxReplyFormatError,
   TransportClosedError,
   TransportSendError,
   isConnectionGone,
@@ -94,6 +97,7 @@ export {
   queryClipboard,
   queryTmuxVersion,
   capturePane,
+  newWindow,
   getOwnClient,
 } from "./commands/index.js";
 export type { OwnClient } from "./commands/index.js";

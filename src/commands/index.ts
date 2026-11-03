@@ -14,6 +14,7 @@
 import type { TmuxConnection } from "../client.js";
 import type {
   CommandResponse,
+  NewWindowResult,
   PaneCapture,
   PaneRecord,
   SessionRecord,
@@ -38,11 +39,13 @@ import {
   sendKeys as encodeSendKeys,
   splitWindow as encodeSplitWindow,
   capturePane as encodeCapturePane,
+  newWindow as encodeNewWindow,
 } from "../protocol/encoder.js";
 import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
+  parseNewWindowReply,
 } from "../pane-output.js";
 import { latin1ToBytes } from "../protocol/byte-codec.js";
 import {
@@ -51,7 +54,10 @@ import {
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
-import { UnsupportedTmuxVersionError } from "../errors.js";
+import {
+  TmuxReplyFormatError,
+  UnsupportedTmuxVersionError,
+} from "../errors.js";
 
 export { PaneAction };
 export type { SplitOptions };
@@ -116,6 +122,55 @@ export async function capturePane(
     offset += lines[i].length;
   }
   return { bytes, lineCount: response.output.length };
+}
+
+// [LAW:one-source-of-truth] Command and reply format live in encoder.ts,
+// the reply grammar in pane-output.ts. A missing session rejects through
+// execute() as TmuxCommandError with tmux's text ("can't find session: X").
+// A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
+// instead (verified on tmux 3.8), and the library, typed over any
+// TmuxConnection, cannot stat the tmux host's filesystem. A caller that
+// must not fall back checks the path on the host it controls.
+// [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
+// throws rather than inventing ids.
+export async function newWindow(
+  client: TmuxConnection,
+  options: {
+    readonly session: string;
+    readonly cwd: string;
+    readonly command?: string;
+  },
+): Promise<NewWindowResult> {
+  // [LAW:no-silent-failure] Each of these would succeed somewhere the caller
+  // did not ask for, so it is refused by field name: session '' ('=:') is the
+  // control client's own session; a cwd that is empty or not absolute ('',
+  // 'proj', '~/proj' — quoted, so tmux never expands '~') starts the pane in
+  // $HOME; command '' is not "the default shell" (that is an omitted
+  // command); a newline anywhere splits the command line.
+  for (const field of ["session", "cwd", "command"] as const) {
+    const value = options[field];
+    if (value === "" || value?.includes("\n")) {
+      throw new RangeError(
+        `newWindow: ${field} must be non-empty and one line: ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  if (!options.cwd.startsWith("/")) {
+    throw new RangeError(
+      `newWindow: cwd must be an absolute path: ${JSON.stringify(options.cwd)}`,
+    );
+  }
+  const command = encodeNewWindow(
+    options.session,
+    options.cwd,
+    options.command,
+  );
+  const response = await client.execute(command);
+  const result = parseNewWindowReply(response.output);
+  if (result === null) {
+    throw new TmuxReplyFormatError(command, response.output);
+  }
+  return result;
 }
 
 // [LAW:types-are-the-program] The encoder returns null for empty keys
@@ -214,9 +269,7 @@ export async function queryTmuxVersion(
     .map((line) => parseTmuxVersion(line))
     .find((v): v is TmuxVersion => v !== null);
   if (version === undefined) {
-    throw new Error(
-      `could not determine tmux version from reply: ${JSON.stringify(response.output)}`,
-    );
+    throw new TmuxReplyFormatError(displayMessageVersion(), response.output);
   }
   return version;
 }
@@ -243,9 +296,7 @@ const OWN_CLIENT_LINE = /^(\d+) (\S+) (.+)$/;
 export function parseOwnClientLine(lines: readonly string[]): OwnClient {
   const match = lines.length === 1 ? OWN_CLIENT_LINE.exec(lines[0]) : null;
   if (match === null) {
-    throw new Error(
-      `could not parse own-client reply: ${JSON.stringify(lines)}`,
-    );
+    throw new TmuxReplyFormatError(displayMessageOwnClient(), lines);
   }
   return {
     pid: Number(match[1]),
@@ -255,9 +306,7 @@ export function parseOwnClientLine(lines: readonly string[]): OwnClient {
 }
 
 /** Identify this connection's own tmux client (see {@link OwnClient}). */
-export async function getOwnClient(
-  client: TmuxConnection,
-): Promise<OwnClient> {
+export async function getOwnClient(client: TmuxConnection): Promise<OwnClient> {
   const response = await client.execute(displayMessageOwnClient());
   return parseOwnClientLine(response.output);
 }

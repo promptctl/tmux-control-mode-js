@@ -200,6 +200,56 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
+ * `execute()` refused a command whose line would not get exactly one reply,
+ * so correlating it would shift every later pending command onto the wrong
+ * reply. A newline splits it into several commands; an empty line detaches
+ * the control client (SPEC §4.1); a blank or comment-only line gets no reply
+ * at all. Nothing was sent.
+ */
+export class TmuxInvalidCommandError extends Error {
+  readonly command: string;
+
+  constructor(command: string) {
+    super(`command must be one non-empty line: ${JSON.stringify(command)}`);
+    this.name = "TmuxInvalidCommandError";
+    this.command = command;
+  }
+}
+
+// [LAW:single-enforcer] The one predicate every TmuxConnection.execute
+// (TmuxClient, the WebSocket client, the Electron renderer) applies before
+// sending, so a caller sees the same typed error locally and over a bridge.
+export function invalidCommand(
+  command: string,
+): TmuxInvalidCommandError | null {
+  const trimmed = command.trim();
+  return trimmed === "" || trimmed.startsWith("#") || command.includes("\n")
+    ? new TmuxInvalidCommandError(command)
+    : null;
+}
+
+/**
+ * A command succeeded but its reply does not have the shape of the `-F`
+ * format the library sent with it (e.g. `newWindow`'s `@N\t%N`). The block
+ * closed normally, so this is not a {@link TmuxProtocolError}; it means the
+ * library's reply format and the running tmux disagree. Whatever the command
+ * does (`newWindow` creates a window) did happen. `output` is the raw reply.
+ */
+export class TmuxReplyFormatError extends Error {
+  readonly command: string;
+  readonly output: readonly string[];
+
+  constructor(command: string, output: readonly string[]) {
+    super(
+      `unexpected reply to ${JSON.stringify(command)}: ${JSON.stringify(output)}`,
+    );
+    this.name = "TmuxReplyFormatError";
+    this.command = command;
+    this.output = output;
+  }
+}
+
+/**
  * Classify a command rejection as "the connection is already gone" — the
  * transport refused the send ({@link TransportSendError}) or closed before
  * tmux replied ({@link TransportClosedError}). Both mean the command never got

@@ -17,7 +17,15 @@ import ts from "typescript";
 
 import { TmuxClient } from "../../src/client.js";
 import { isTmuxMessage } from "../../src/emitter.js";
-import { TmuxCommandError } from "../../src/errors.js";
+import {
+  TmuxCommandError,
+  TmuxInvalidCommandError,
+} from "../../src/errors.js";
+import { dispatchBridgeRequest } from "../../src/connectors/bridge-dispatch.js";
+import type {
+  BridgeConnection,
+  Peer,
+} from "../../src/connectors/bridge-connection.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 import { paneScope, sessionScope } from "../../src/pane-output.js";
@@ -857,6 +865,39 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     await expect(callPromise).rejects.toMatchObject({
       code: "BRIDGE_CLOSED",
+    });
+  });
+
+  it("refuses an unsendable command renderer-side with the same TmuxInvalidCommandError a local TmuxClient throws", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+
+    const renderer = hub.createRenderer();
+    const proxy = createRendererBridge(renderer.ipcRenderer);
+
+    await expect(
+      proxy.execute("new-window -c '/tmp/a\nb'"),
+    ).rejects.toBeInstanceOf(TmuxInvalidCommandError);
+  });
+
+  it("classifies an unsendable command from a raw RPC peer as BRIDGE_INVALID_ARG, not BRIDGE_INTERNAL", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+
+    // execute is not bridge-stateful, so dispatch never touches the bridge.
+    const outcome = await dispatchBridgeRequest(
+      {} as BridgeConnection,
+      client,
+      {} as Peer,
+      { method: "execute", args: ["# comment only"] },
+    );
+    expect(outcome).toMatchObject({
+      kind: "bridge-error",
+      error: { code: "BRIDGE_INVALID_ARG" },
     });
   });
 

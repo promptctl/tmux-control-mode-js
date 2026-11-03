@@ -7,7 +7,15 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync, mkdirSync, rmSync } from "node:fs";
+import {
+  readFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
@@ -27,6 +35,7 @@ import {
   queryClipboard,
   requestReport,
   capturePane,
+  newWindow,
 } from "../../src/commands/index.js";
 import { tmuxEscape } from "../../src/protocol/encoder.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
@@ -1357,4 +1366,76 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     },
     15000,
   );
+
+  it(
+    "CMD-05: newWindow() creates a window in a non-attached session with the given cwd and command, returning its pane id",
+    async () => {
+      sessionName = uniqueSession("cmd-nw");
+      client = await createSession(socketName, sessionName);
+      const target = uniqueSession("cmd-nw-target");
+      await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
+      // realpath: macOS /var/folders is a symlink to /private/var/folders,
+      // and tmux reports the resolved path. '#S' in the name: tmux format-
+      // expands -c, so an unescaped cwd would land elsewhere.
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "nw-#S-")));
+
+      try {
+        const created = await newWindow(client, {
+          session: target,
+          cwd,
+          command: "sleep 60",
+        });
+
+        const pane = (await listPanes(client)).find(
+          (p) => p.paneId === created.paneId,
+        );
+        expect(pane).toMatchObject({
+          sessionName: target,
+          windowId: created.windowId,
+          cwd,
+        });
+        // tmux reports the start command re-quoted from its argv ("sleep 60").
+        expect(pane?.startCommand).toContain("sleep 60");
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    15000,
+  );
+
+  // The missing name is a prefix of a live session: tmux's inexact matching
+  // would put the window there, so this pins newWindow's exact targeting.
+  it("CMD-05: newWindow() rejects with tmux's error text for a nonexistent session, even one prefixing a live session", async () => {
+    sessionName = uniqueSession("cmd-nw-nosess");
+    client = await createSession(socketName, sessionName);
+
+    const windowsBefore = (await listWindows(client)).length;
+    const attempt = newWindow(client, {
+      session: sessionName.slice(0, -1),
+      cwd: tmpdir(),
+    });
+    await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
+    await expect(attempt).rejects.toThrow(/can't find session/);
+    expect(await listWindows(client)).toHaveLength(windowsBefore);
+  }, 15000);
+
+  // Pins tmux's behavior newWindow documents rather than hides: a cwd that
+  // does not exist does not fail new-window; the pane starts in $HOME. If a
+  // tmux release starts rejecting instead, this fails and newWindow's doc
+  // comment needs revisiting.
+  it("CMD-05: newWindow() with a nonexistent cwd starts the pane in $HOME (tmux falls back, does not reject)", async () => {
+    sessionName = uniqueSession("cmd-nw-nocwd");
+    client = await createSession(socketName, sessionName);
+
+    const created = await newWindow(client, {
+      session: sessionName,
+      cwd: join(tmpdir(), "nw-does-not-exist", uniqueSession("x")),
+      command: "sleep 60",
+    });
+
+    const pane = (await listPanes(client)).find(
+      (p) => p.paneId === created.paneId,
+    );
+    expect(pane?.cwd).toBe(realpathSync(homedir()));
+  }, 15000);
 });

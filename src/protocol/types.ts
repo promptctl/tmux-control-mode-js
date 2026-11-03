@@ -410,6 +410,16 @@ export interface PaneCapture {
   readonly lineCount: number;
 }
 
+/**
+ * The window and pane `newWindow()` created: `@N` and `%N` as numbers, the
+ * same id form {@link PaneRecord} and `capturePane(paneId)` use, so the
+ * result feeds straight into them.
+ */
+export interface NewWindowResult {
+  readonly windowId: number;
+  readonly paneId: number;
+}
+
 // [LAW:one-source-of-truth] The canonical synthetic response for any operation
 // that resolves without issuing a correlated tmux command: an empty `sendKeys`
 // input, or a bridge refcounted no-op (a subscribe/unsubscribe that only bumps

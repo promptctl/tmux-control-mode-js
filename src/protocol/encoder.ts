@@ -19,6 +19,12 @@ export function tmuxEscape(arg: string): string {
   return "'" + arg.replace(/'/g, "'\\''") + "'";
 }
 
+// [LAW:single-enforcer] For an argument tmux format-expands (new-window -c):
+// '##' is tmux's literal '#', so '#S' or '#{...}' in a path stays as written.
+export function tmuxFormatLiteral(arg: string): string {
+  return tmuxEscape(arg.replaceAll("#", "##"));
+}
+
 export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
@@ -109,6 +115,27 @@ export function refreshClientPaneAction(
 // visible screen.
 export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
+}
+
+// [LAW:one-source-of-truth] new-window wire format and its `-P -F` reply
+// format live here only; pane-output.ts's parseNewWindowReply is the sole
+// reader. -d: create without selecting it, so a restore never moves an
+// attached client's focus. `=name:` targets the session by exact name:
+// without '=' tmux falls back to prefix and glob matching ('work:' lands in
+// 'workspace'), and the ':' leaves the window index to tmux. An empty name
+// has no exact form ('=:' still means the current session) — newWindow
+// rejects it before this is called. tmux format-expands -c but not the
+// command (verified on 3.2a and 3.8).
+export function newWindow(
+  session: string,
+  cwd: string,
+  command?: string,
+): string {
+  const commandPart = command !== undefined ? ` ${tmuxEscape(command)}` : "";
+  return (
+    `new-window -d -t ${tmuxEscape(`=${session}:`)} -c ${tmuxFormatLiteral(cwd)} ` +
+    `-P -F '#{window_id}\t#{pane_id}'${commandPart}`
+  );
 }
 
 export function refreshClientSubscribe(

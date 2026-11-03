@@ -37,6 +37,7 @@
 import type { TmuxConnection } from "../client.js";
 import {
   TmuxCommandError,
+  TmuxInvalidCommandError,
   TransportClosedError,
   TransportSendError,
 } from "../errors.js";
@@ -153,6 +154,16 @@ function classifyDispatchError(method: RpcMethod, err: unknown): BridgeOutcome {
     return {
       kind: "bridge-error",
       error: new BridgeError("BRIDGE_CLOSED", err.message),
+    };
+  }
+  // [LAW:one-type-per-behavior] A command execute() refused as unsendable is
+  // the caller's bad argument, the same as any other invalid RPC argument, so
+  // it carries BRIDGE_INVALID_ARG, never BRIDGE_INTERNAL (which means "bug").
+  // Reached by a raw RPC peer; library clients refuse it before sending.
+  if (err instanceof TmuxInvalidCommandError) {
+    return {
+      kind: "bridge-error",
+      error: new BridgeError("BRIDGE_INVALID_ARG", err.message),
     };
   }
   return { kind: "bridge-error", error: internalError(method, err) };

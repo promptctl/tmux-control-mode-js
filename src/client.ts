@@ -29,6 +29,7 @@ import type { TmuxTransport, SendResult } from "./transport/types.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
+  invalidCommand,
   TransportClosedError,
   TransportSendError,
 } from "./errors.js";
@@ -231,6 +232,11 @@ export class TmuxClient implements TmuxConnection {
       // transport to get its own closed bookkeeping right.
       if (this.currentConnectionState.status === "closed") {
         reject(new TransportSendError("transport closed"));
+        return;
+      }
+      const invalid = invalidCommand(command);
+      if (invalid !== null) {
+        reject(invalid);
         return;
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)

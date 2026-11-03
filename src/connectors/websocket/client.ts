@@ -66,6 +66,7 @@ import type { SplitOptions, TmuxConnection } from "../../client.js";
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import { type AttachOptions, type BytesSink } from "../../pane-output.js";
 import { TopologyRouter } from "../../topology-router.js";
+import { invalidCommand } from "../../errors.js";
 import {
   BridgeError,
   decodePaneOutput,
@@ -277,6 +278,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Proxied TmuxClient methods — signatures match exactly
   // -------------------------------------------------------------------------
   execute(command: string): Promise<CommandResponse> {
+    const invalid = invalidCommand(command);
+    if (invalid !== null) return Promise.reject(invalid);
     return this.call("execute", [command]);
   }
 
