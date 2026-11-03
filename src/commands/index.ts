@@ -137,7 +137,8 @@ export async function capturePane(
 // instead (verified on tmux 3.8), and the library, typed over any
 // TmuxConnection, cannot stat the tmux host's filesystem. A caller that
 // must not fall back checks the path on the host it controls; paneCwd() reads
-// which directory the pane actually started in. Before tmux 3.7 the ids come
+// the directory the pane's process is in now (its live cwd, not the requested
+// string), which right after the spawn is where it started. Before tmux 3.7 the ids come
 // back before the pane's child has chdir'd, so a listPanes() straight after
 // can still report the server's cwd (see PANE_CWD_MIN_VERSION).
 // [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line

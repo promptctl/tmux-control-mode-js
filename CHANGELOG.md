@@ -56,7 +56,8 @@ All notable changes to this project are documented here. Format follows
 
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
-  symlinks resolved, or tmux's `$HOME` fallback) with one call and no polling. Below 3.7 it
+  symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a
+  caller never polls for a changing value. Below 3.7 it
   rejects with `UnsupportedTmuxVersionError`, because older tmux forks the pane
   before the child changes directory. When tmux cannot read the cwd at all
   it rejects with the new `PaneCwdUnavailableError`.

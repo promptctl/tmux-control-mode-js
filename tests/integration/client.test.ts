@@ -45,6 +45,7 @@ import type { BytesSink } from "../../src/pane-output.js";
 import {
   TmuxCommandError,
   UnsupportedTmuxVersionError,
+  PaneCwdUnavailableError,
 } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
@@ -1444,8 +1445,18 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     );
   }, 15000);
 
-  // No waitForPane here: the point of paneCwd is that its first read is the
-  // answer, so a single call straight after newWindow must already be right.
+  // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so
+  // the only retry allowed is on PaneCwdUnavailableError (no path yet), never
+  // on a path that differs from the expected one.
+  async function settledPaneCwd(c: TmuxClient, paneId: number) {
+    for (;;) {
+      try {
+        return await paneCwd(c, paneId);
+      } catch (err) {
+        if (!(err instanceof PaneCwdUnavailableError)) throw err;
+      }
+    }
+  }
   it.skipIf(!tmuxAtLeast(PANE_CWD_MIN_VERSION))(
     "CMD-06: paneCwd() straight after newWindow() reads the requested cwd, or the $HOME fallback for a missing one",
     async () => {
@@ -1465,8 +1476,8 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           command: "sleep 60",
         });
 
-        expect(await paneCwd(client, made.paneId)).toBe(cwd);
-        expect(await paneCwd(client, missing.paneId)).toBe(
+        expect(await settledPaneCwd(client, made.paneId)).toBe(cwd);
+        expect(await settledPaneCwd(client, missing.paneId)).toBe(
           realpathSync(homedir()),
         );
       } finally {

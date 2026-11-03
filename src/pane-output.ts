@@ -906,13 +906,13 @@ export function parseNewWindowReply(
 /**
  * Parse the whole reply to `paneCwd()`'s `display-message -p
  * '#{pane_current_path}'`: exactly one line, decoded to Unicode text, with
- * the one trailing `\r` CRLF residue can leave (see `parser.ts`'s `feed()`)
- * dropped. "" is tmux's answer when it cannot read the pane's cwd (dead pane,
+ * trailing `\r` CRLF residue dropped the way `parsePaneListLine` drops it
+ * (see `parser.ts`'s `processLine()`). "" is tmux's answer when it cannot read the pane's cwd (dead pane,
  * or a child that does not own the pty yet); `paneCwd()` rejects it. Null for
  * any other shape, including the two lines a path with a newline prints.
  */
 export function parsePaneCwdReply(lines: readonly string[]): string | null {
-  return lines.length === 1 ? decodeField(lines[0].replace(/\r$/, "")) : null;
+  return lines.length === 1 ? decodeField(lines[0].replace(/\r*$/, "")) : null;
 }
 
 /**

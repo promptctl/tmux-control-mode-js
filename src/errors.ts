@@ -273,8 +273,8 @@ export class TmuxReplyFormatError extends Error {
  * tmux answered `paneCwd()` with no path: it could not read the pane's cwd.
  * That happens for a dead pane, or for a new pane whose child has not yet
  * taken its pty (a window of microseconds after `newWindow()` returns). Not a
- * {@link TmuxReplyFormatError}: the reply has the right shape, and a caller
- * may retry.
+ * {@link TmuxReplyFormatError}: the reply has the right shape. A retry helps
+ * only straight after `newWindow()`; a dead pane stays unreadable.
  */
 export class PaneCwdUnavailableError extends Error {
   readonly paneId: number;
