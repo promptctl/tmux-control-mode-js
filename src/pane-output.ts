@@ -902,6 +902,15 @@ export function parseNewWindowReply(
 }
 
 /**
+ * Parse the whole reply to `paneCwd()`'s `display-message -p
+ * '#{pane_current_path}'`: exactly one line, decoded to Unicode text. Null
+ * for any other shape, including the two lines a path with a newline prints.
+ */
+export function parsePaneCwdReply(lines: readonly string[]): string | null {
+  return lines.length === 1 ? decodeField(lines[0]) : null;
+}
+
+/**
  * Parse one line from the fixed, library-owned `list-sessions -F '...'`
  * format built by `listSessionsCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{session_windows} #{session_attached}`.

@@ -206,6 +206,13 @@ export function displayMessageVersion(): string {
   return `display-message -p "#{version}"`;
 }
 
+// [LAW:one-source-of-truth] The pane-cwd read wire format lives here only;
+// its reply grammar is parsePaneCwdReply (pane-output.ts). The path is the
+// whole reply, so it needs none of escapeFreeTextField's tab escaping.
+export function displayMessagePaneCwd(paneId: number): string {
+  return `display-message -p -t %${paneId} "#{pane_current_path}"`;
+}
+
 // [LAW:one-source-of-truth] The own-client probe wire format lives here only;
 // its line grammar lives in commands/index.ts (parseOwnClientLine). Name goes
 // last because it is the only field that is not a single space-free token: a

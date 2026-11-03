@@ -13,6 +13,7 @@ import {
   requestReport,
   queryClipboard,
   queryTmuxVersion,
+  paneCwd,
 } from "../../src/commands/index.js";
 import {
   TmuxReplyFormatError,
@@ -24,9 +25,12 @@ import type { CommandResponse } from "../../src/protocol/types.js";
 
 // Minimal TmuxConnection fake: records every command string and answers the
 // version probe with a configurable version line. Every other command resolves
-// to an empty success. on/off/attachBytesSink are unused by the command
-// free-functions and are inert here.
-function fakeConnection(versionReply: string | string[]): {
+// to a success carrying `otherReply` (empty by default). on/off/attachBytesSink
+// are unused by the command free-functions and are inert here.
+function fakeConnection(
+  versionReply: string | string[],
+  otherReply: string[] = [],
+): {
   conn: TmuxConnection;
   sent: string[];
 } {
@@ -47,7 +51,7 @@ function fakeConnection(versionReply: string | string[]): {
           ),
         );
       }
-      return Promise.resolve(respond([]));
+      return Promise.resolve(respond(otherReply));
     },
     on() {},
     off() {},
@@ -158,4 +162,37 @@ describe("queryClipboard version gate", () => {
     await queryClipboard(conn);
     expect(sent.some((c) => c.startsWith("refresh-client -l"))).toBe(true);
   });
+});
+
+describe("paneCwd version gate", () => {
+  it("rejects below tmux 3.7 with the 3.7 requirement and never reads the path", async () => {
+    const { conn, sent } = fakeConnection("3.6b", ["/srv"]);
+
+    const err: unknown = await paneCwd(conn, 4).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnsupportedTmuxVersionError);
+    expect((err as UnsupportedTmuxVersionError).required).toEqual({
+      major: 3,
+      minor: 7,
+    });
+    expect(sent.some((c) => c.includes("#{pane_current_path}"))).toBe(false);
+  });
+
+  it("reads the target pane's path once on tmux 3.7, decoded from latin1", async () => {
+    // "/srv/café" as tmux sends it: UTF-8 bytes in a latin1 container.
+    const { conn, sent } = fakeConnection("3.7", ["/srv/cafÃ©"]);
+
+    await expect(paneCwd(conn, 4)).resolves.toBe("/srv/café");
+    expect(sent.filter((c) => c.includes("#{pane_current_path}"))).toEqual([
+      'display-message -p -t %4 "#{pane_current_path}"',
+    ]);
+  });
+
+  it.each([[[]], [["/a", "b"]]])(
+    "treats a reply of %j as a reply-shape error, not a path",
+    async (reply) => {
+      const { conn } = fakeConnection("3.8", reply);
+      await expect(paneCwd(conn, 1)).rejects.toThrow(TmuxReplyFormatError);
+    },
+  );
 });

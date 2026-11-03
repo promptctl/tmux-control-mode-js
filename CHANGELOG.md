@@ -54,6 +54,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
+  function reads the directory a new pane actually started in (the requested
+  cwd, or tmux's `$HOME` fallback) with one call and no polling. Below 3.7 it
+  rejects with `UnsupportedTmuxVersionError`, because older tmux forks the pane
+  before the child changes directory.
 - `topology-error` event on every `TmuxClient`-shaped connection, emitted when a
   topology bootstrap (`list-panes -a`) fails. Distinguishes "topology empty
   because bootstrap failed" from "topology empty because tmux has no panes" — a

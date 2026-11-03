@@ -82,6 +82,7 @@ export {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   REQUEST_REPORT_MIN_VERSION,
+  PANE_CWD_MIN_VERSION,
   parseTmuxVersion,
   meetsTmuxVersion,
 } from "./tmux-compat.js";
@@ -106,6 +107,7 @@ export {
   queryTmuxVersion,
   capturePane,
   newWindow,
+  paneCwd,
   getOwnClient,
 } from "./commands/index.js";
 export type { OwnClient } from "./commands/index.js";
