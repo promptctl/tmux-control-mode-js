@@ -18,8 +18,9 @@ type LayoutChange = Extract<TmuxMessage, { type: "layout-change" }>;
  * Pane sizes a %layout-change carries, and whether list-panes is still needed.
  * Sizes match what list-panes reports: every tiled pane at its layout size,
  * with a zoomed pane overlaid at its visible (full-window) size. list-panes
- * is needed when the layout is malformed, or when the window holds a pane the
- * layout omits — a floating pane (tmux 3.8+), whose size only list-panes has.
+ * is needed when a known pane has no size here — a floating pane (tmux 3.8+)
+ * the layout omits, or any pane of a layout the parser rejected (`rejected`
+ * carries why).
  */
 export function layoutPaneDimensions(
   ev: LayoutChange,
@@ -27,18 +28,20 @@ export function layoutPaneDimensions(
 ): {
   readonly updates: ReadonlyMap<number, PaneDimensions>;
   readonly needsListPanes: boolean;
+  readonly rejected: readonly string[];
 } {
   const updates = new Map<number, PaneDimensions>();
+  const rejected: string[] = [];
   for (const layout of [ev.layout, ev.visibleLayout]) {
-    if (layout.kind !== "parsed") continue;
+    if (layout.kind === "malformed") {
+      rejected.push(layout.reason);
+      continue;
+    }
     for (const p of layout.panes)
       updates.set(p.paneId, { w: p.width, h: p.height });
   }
-  const needsListPanes =
-    ev.layout.kind === "malformed" ||
-    ev.visibleLayout.kind === "malformed" ||
-    knownPaneIds.some((id) => !updates.has(id));
-  return { updates, needsListPanes };
+  const needsListPanes = knownPaneIds.some((id) => !updates.has(id));
+  return { updates, needsListPanes, rejected };
 }
 
 export class RefreshPolicy {
@@ -68,10 +71,14 @@ export class RefreshPolicy {
       // [LAW:dataflow-not-control-flow] Pane geometry must feel instant when a
       // user resizes their terminal; the event carries it, so apply it with
       // no round-trip. list-panes only for what the layout lacks.
-      const { updates, needsListPanes } = layoutPaneDimensions(
+      const { updates, needsListPanes, rejected } = layoutPaneDimensions(
         ev,
         this.knownPaneIds(ev.windowId),
       );
+      // A rejected layout silently costs a round-trip per event; say why.
+      // [LAW:no-silent-failure]
+      for (const reason of rejected)
+        console.warn(`[refresh] layout-change @${ev.windowId}: ${reason}`);
       this.model.applyPaneDimensions(updates);
       if (needsListPanes) void this.refreshWindowDimensions(ev.windowId);
       return;
@@ -135,11 +142,11 @@ export class RefreshPolicy {
   }
 
   private knownPaneIds(windowId: number): number[] {
-    return this.model.sessions
-      .flatMap((s) =>
-        s.windows.filter((w) => w.id === windowId).flatMap((w) => w.panes),
-      )
-      .map((p) => p.id);
+    for (const s of this.model.sessions) {
+      const win = s.windows.find((w) => w.id === windowId);
+      if (win !== undefined) return win.panes.map((p) => p.id);
+    }
+    return [];
   }
 
   async refreshWindowDimensions(windowId: number): Promise<void> {

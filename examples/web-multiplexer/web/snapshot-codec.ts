@@ -156,6 +156,29 @@ export function mergePaneRowsByWindow(
 }
 
 /**
+ * Rewrite the width/height fields (PANES_FORMAT fields 4 and 5) of every pane
+ * row named in `updates`; other rows and fields pass through byte-for-byte.
+ */
+export function patchPaneRowDimensions(
+  existing: string,
+  updates: ReadonlyMap<number, { readonly w: number; readonly h: number }>,
+): string {
+  return encodeSnapshotLines(
+    existing
+      .split("\\n")
+      .filter((l) => l.length > 0)
+      .map((line) => {
+        const parts = line.split("|");
+        const u = updates.get(stripPrefix(parts[1] ?? ""));
+        if (u === undefined) return line;
+        parts[4] = String(u.w);
+        parts[5] = String(u.h);
+        return parts.join("|");
+      }),
+  );
+}
+
+/**
  * Assemble the session/window/pane tree from the three latest subscription
  * values. Pure function of the three strings — the same inputs always
  * produce the same tree, so callers can rebuild eagerly on any change.

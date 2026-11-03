@@ -13,6 +13,7 @@ import {
   buildSessionTree,
   mergeSessionRows,
   mergePaneRowsByWindow,
+  patchPaneRowDimensions,
   SESSIONS_SUB,
   WINDOWS_SUB,
   PANES_SUB,
@@ -167,22 +168,15 @@ export class TmuxModel {
   }
 
   /**
-   * Apply a targeted pane-geometry update in place. Reassigns `sessions` to a
-   * new tree with new pane objects for any updated pane so MobX observers
-   * that depend on `sessions` re-run. [LAW:dataflow-not-control-flow]
+   * Fast-path geometry: patch the pane sizes into the latest panes snapshot
+   * and rebuild. Patching `sessions` directly would be undone by the next
+   * rebuild from a stale snapshot (any sessions/windows tick that beats the
+   * panes tick). [LAW:single-enforcer] [LAW:one-source-of-truth]
    */
   applyPaneDimensions(updates: ReadonlyMap<number, PaneDimensions>): void {
-    if (updates.size === 0) return;
-    this.sessions = this.sessions.map((s) => ({
-      ...s,
-      windows: s.windows.map((win) => ({
-        ...win,
-        panes: win.panes.map((p) => {
-          const u = updates.get(p.id);
-          return u !== undefined ? { ...p, width: u.w, height: u.h } : p;
-        }),
-      })),
-    }));
+    if (updates.size === 0 || this.latestPanes === null) return;
+    this.latestPanes = patchPaneRowDimensions(this.latestPanes, updates);
+    this.rebuild();
   }
 
   /**

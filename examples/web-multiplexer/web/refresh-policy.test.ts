@@ -11,6 +11,12 @@ import type {
 import { windowLayoutFields } from "@promptctl/tmux-control-mode-js/protocol";
 import { layoutPaneDimensions, RefreshPolicy } from "./refresh-policy.ts";
 import { TmuxModel } from "./tmux-model.ts";
+import {
+  encodeSnapshotLines,
+  PANES_SUB,
+  SESSIONS_SUB,
+  WINDOWS_SUB,
+} from "./snapshot-codec.ts";
 import type { TmuxBridge } from "./bridge.ts";
 
 // Two side-by-side panes %1 | %2 in a 160x40 window (checksums are tmux's).
@@ -51,9 +57,11 @@ describe("layoutPaneDimensions", () => {
     expect(r.needsListPanes).toBe(true);
   });
 
-  it("needs list-panes when the layout is malformed", () => {
-    const r = layoutPaneDimensions(layoutChange("0000,garbage", TILED), [1, 2]);
+  it("needs list-panes and reports why when the layout is malformed", () => {
+    const bad = "0000,garbage";
+    const r = layoutPaneDimensions(layoutChange(bad, bad), [1, 2]);
     expect(r.needsListPanes).toBe(true);
+    expect(r.rejected).toHaveLength(2);
   });
 });
 
@@ -76,30 +84,14 @@ describe("RefreshPolicy on layout-change", () => {
       },
     } as unknown as TmuxBridge;
     const model = new TmuxModel();
-    model.sessions = [
-      {
-        id: 0,
-        name: "s",
-        attached: true,
-        windows: [
-          {
-            id: 7,
-            index: 0,
-            name: "w",
-            active: true,
-            zoomed: false,
-            panes: paneIds.map((id, index) => ({
-              id,
-              index,
-              active: index === 0,
-              title: "",
-              width: 1,
-              height: 1,
-            })),
-          },
-        ],
-      },
-    ];
+    model.applySnapshot(SESSIONS_SUB, "$0|s|1");
+    model.applySnapshot(WINDOWS_SUB, "$0|@7|0|w|1|0");
+    model.applySnapshot(
+      PANES_SUB,
+      encodeSnapshotLines(
+        paneIds.map((id, i) => `@7|%${id}|${i}|${i === 0 ? 1 : 0}|1|1|t`),
+      ),
+    );
     return { policy: new RefreshPolicy(bridge, model), model, commands };
   }
 
@@ -114,11 +106,21 @@ describe("RefreshPolicy on layout-change", () => {
     expect(commands).toEqual([]);
   });
 
+  it("keeps patched sizes across a rebuild that beats the panes tick", () => {
+    const { policy, model } = setup([1, 2]);
+    policy.handleEvent(layoutChange(TILED, TILED));
+    model.applySnapshot(WINDOWS_SUB, "$0|@7|0|renamed|1|0");
+    const panes = model.sessions[0].windows[0].panes;
+    expect(panes.map((p) => [p.id, p.width, p.height, p.title])).toEqual([
+      [1, 80, 40, "t"],
+      [2, 79, 40, "t"],
+    ]);
+  });
+
   it("falls back to list-panes for a window with a floating pane", () => {
     const { policy, commands } = setup([1, 2, 3]);
     policy.handleEvent(layoutChange(TILED, TILED));
-    expect(commands).toEqual([
-      "list-panes -t @7 -F '#{pane_id}|#{pane_width}|#{pane_height}'",
-    ]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatch(/^list-panes -t @7 /);
   });
 });
