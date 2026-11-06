@@ -60,10 +60,6 @@ interface Fixture {
   observabilityEvents: BridgeObservabilityEvent[];
 }
 
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
-
 interface BridgeOptions {
   readonly authenticateToken?: string;
   readonly deniedMethods?: ReadonlySet<string>;
@@ -146,7 +142,7 @@ async function startFixture(
       // Kill the whole isolated server, not just the session, so there is
       // NO path by which this test can touch the developer's default tmux
       // server.
-      killServer(socketName);
+      killTmuxServer(socketName);
     },
   };
 }

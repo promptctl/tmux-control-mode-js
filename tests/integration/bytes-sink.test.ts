@@ -34,14 +34,6 @@ import {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// ---------------------------------------------------------------------------
-// Isolation helpers
-// ---------------------------------------------------------------------------
-
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
-
 async function getFirstPaneId(client: TmuxClient): Promise<number> {
   const response = await client.execute(
     "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
@@ -71,7 +63,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     afterEach(async () => {
       client?.close();
       client = null;
-      killServer(socketName);
+      killTmuxServer(socketName);
     });
 
     it("INT-19: bytes from echo arrive in the fake xterm terminal", async () => {
@@ -133,7 +125,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     afterEach(async () => {
       client?.close();
       client = null;
-      killServer(socketName);
+      killTmuxServer(socketName);
     });
 
     it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
@@ -237,7 +229,7 @@ describe.skipIf(!RUN_INTEGRATION)("INT-23: disposer idempotency", () => {
   afterEach(async () => {
     client?.close();
     client = null;
-    killServer(socketName);
+    killTmuxServer(socketName);
   });
 
   it("INT-23: disposing an attachXtermSink twice does not throw and stops delivery", async () => {

@@ -8,12 +8,12 @@
 // tests/integration/client.test.ts.
 
 import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
-import { execSync } from "node:child_process";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
   attachClient,
+  tmux,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import type {
@@ -23,14 +23,6 @@ import type {
 } from "../../src/cross-session-layout.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
-function exec(socketName: string, args: string): void {
-  execSync(tmuxCmd(socketName, args), { stdio: "ignore" });
-}
 
 /**
  * Resolve with every `cross-session-layout-change` event observed within
@@ -75,8 +67,8 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   it("delivers a layout change from a session the client is not attached to", async () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
 
     const clientA = await attachClient(socketName, sessionA);
     try {
@@ -88,18 +80,18 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       // client is NOT attached to. split-window triggers %layout-change,
       // which tmux never delivers to clientA at all (SPEC.md §6.2) since
       // the window isn't in clientA's session.
-      exec(socketName, `split-window -t ${sessionB}`);
+      tmux(socketName, ["split-window", "-t", sessionB]);
 
       const events = await settle();
       expect(events.length).toBeGreaterThanOrEqual(1);
       const sessionIds = await (async () => {
-        const out = execSync(
-          tmuxCmd(
-            socketName,
-            `display-message -p -t ${sessionB} "#{session_id}"`,
-          ),
-          { encoding: "utf8" },
-        ).trim();
+        const out = tmux(socketName, [
+          "display-message",
+          "-p",
+          "-t",
+          sessionB,
+          "#{session_id}",
+        ]);
         return out;
       })();
       const expectedSessionId = Number(sessionIds.replace("$", ""));
@@ -119,9 +111,9 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
     const sessionC = uniqueName("c");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
-    exec(socketName, `new-session -d -s ${sessionC}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionC]);
 
     const clientA = await attachClient(socketName, sessionA);
     try {
@@ -132,8 +124,8 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       // this is the scenario that overwrote-and-lost an entry before the
       // append-queue fix (a single last-write-wins slot would only ever
       // report the second one).
-      exec(socketName, `split-window -t ${sessionB}`);
-      exec(socketName, `split-window -t ${sessionC}`);
+      tmux(socketName, ["split-window", "-t", sessionB]);
+      tmux(socketName, ["split-window", "-t", sessionC]);
 
       const events = await settle();
       const bySession = new Set(events.map((e) => e.sessionId));
@@ -150,9 +142,9 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
     const sessionC = uniqueName("c");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
-    exec(socketName, `new-session -d -s ${sessionC}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionC]);
 
     const clientA = await attachClient(socketName, sessionA);
     const clientB = await attachClient(socketName, sessionB);
@@ -162,7 +154,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       const a = collectCrossSessionLayoutChanges(clientA, 3000);
       const b = collectCrossSessionLayoutChanges(clientB, 3000);
 
-      exec(socketName, `split-window -t ${sessionC}`);
+      tmux(socketName, ["split-window", "-t", sessionC]);
 
       const [eventsA, eventsB] = await Promise.all([a.settle(), b.settle()]);
       // One command can fire the hook more than once, on either side of a
@@ -182,8 +174,8 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   it("never emits a decode-error diagnostic under normal (non-overflow) operation", async () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
 
     const clientA = await attachClient(socketName, sessionA);
     try {
@@ -193,7 +185,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
         decodeErrors.push(e),
       );
 
-      exec(socketName, `split-window -t ${sessionB}`);
+      tmux(socketName, ["split-window", "-t", sessionB]);
       await new Promise((r) => setTimeout(r, 3000));
 
       expect(decodeErrors).toEqual([]);
@@ -206,8 +198,8 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   it("restores a hook cleared by an index-less set-hook and keeps relaying", async () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
 
     const clientA = await attachClient(socketName, sessionA);
     try {
@@ -219,7 +211,12 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       clientA.on("cross-session-layout-uncovered", (e) => diagnostics.push(e));
 
       // A re-sourced tmux.conf: replaces the whole hook array.
-      exec(socketName, `set-hook -g window-layout-changed "display-message x"`);
+      tmux(socketName, [
+        "set-hook",
+        "-g",
+        "window-layout-changed",
+        "display-message x",
+      ]);
       // Every window reads uncovered until the repair lands; the latest
       // report is the truth.
       await vi.waitFor(
@@ -239,7 +236,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
       );
 
       const { settle } = collectCrossSessionLayoutChanges(clientA, 3000);
-      exec(socketName, `split-window -t ${sessionB}`);
+      tmux(socketName, ["split-window", "-t", sessionB]);
       expect((await settle()).length).toBeGreaterThanOrEqual(1);
     } finally {
       await clientA.disableCrossSessionLayoutChange();
@@ -250,13 +247,16 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   it("reports a window a window-local hook shadows, and its return", async () => {
     const sessionA = uniqueName("a");
     const sessionB = uniqueName("b");
-    exec(socketName, `new-session -d -s ${sessionA}`);
-    exec(socketName, `new-session -d -s ${sessionB}`);
+    tmux(socketName, ["new-session", "-d", "-s", sessionA]);
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
     const windowId = Number(
-      execSync(
-        tmuxCmd(socketName, `display-message -p -t ${sessionB} "#{window_id}"`),
-        { encoding: "utf8" },
-      )
+      tmux(socketName, [
+        "display-message",
+        "-p",
+        "-t",
+        sessionB,
+        "#{window_id}",
+      ])
         .trim()
         .replace("@", ""),
     );
@@ -269,10 +269,14 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
         reports.push([...e.windowIds]),
       );
 
-      exec(
-        socketName,
-        `set-hook -w -t ${sessionB} window-layout-changed "display-message x"`,
-      );
+      tmux(socketName, [
+        "set-hook",
+        "-w",
+        "-t",
+        sessionB,
+        "window-layout-changed",
+        "display-message x",
+      ]);
       // The first tick may land before the hook and report [] first; the
       // latest report is the truth.
       const latest = (expected: number[]) =>
@@ -282,7 +286,13 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
         });
       await latest([windowId]);
 
-      exec(socketName, `set-hook -wu -t ${sessionB} window-layout-changed`);
+      tmux(socketName, [
+        "set-hook",
+        "-wu",
+        "-t",
+        sessionB,
+        "window-layout-changed",
+      ]);
       await latest([]);
     } finally {
       await clientA.disableCrossSessionLayoutChange();

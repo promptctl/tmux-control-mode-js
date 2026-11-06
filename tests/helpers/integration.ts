@@ -29,6 +29,22 @@ export function uniqueSocket(family: TestSocketPrefix, tag: string): string {
   return `${family}${tag}-${uniqueSuffix()}`;
 }
 
+/**
+ * Run `tmux args...` against the isolated server `socketName` and return its
+ * trimmed stdout. `-f /dev/null` keeps the developer's tmux.conf from shaping
+ * a server this call starts, so local runs match CI. Argv, not a shell string:
+ * no argument is ever quoted. stderr is piped so a failure's error carries
+ * tmux's reason.
+ * [LAW:single-enforcer] The one place an integration test builds a tmux CLI
+ * invocation.
+ */
+export function tmux(socketName: string, args: readonly string[]): string {
+  return execFileSync("tmux", ["-f", "/dev/null", "-L", socketName, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
 /** A session (or other tmux object) name unique per test invocation. */
 export function uniqueName(tag: string): string {
   return `${tag}-${uniqueSuffix()}`;
@@ -191,32 +207,19 @@ export async function attachSession(
     readonly newSessionFlags?: readonly string[];
   } = {},
 ): Promise<TmuxClient> {
-  execFileSync(
-    "tmux",
-    [
-      "-L",
-      socketName,
-      "new-session",
-      "-d",
-      "-s",
-      sessionName,
-      ...newSessionFlags,
-    ],
-    // stderr piped so a failed new-session's error carries tmux's reason.
-    { stdio: ["ignore", "ignore", "pipe"] },
-  );
+  tmux(socketName, [
+    "new-session",
+    "-d",
+    "-s",
+    sessionName,
+    ...newSessionFlags,
+  ]);
   try {
     return await attachClient(socketName, sessionName, attach);
   } catch (err) {
     // The session is this helper's; a failed attach must not leave it (and,
     // via it, the isolated server) running.
-    execFileSync(
-      "tmux",
-      ["-L", socketName, "kill-session", "-t", sessionName],
-      {
-        stdio: "ignore",
-      },
-    );
+    tmux(socketName, ["kill-session", "-t", sessionName]);
     throw err;
   }
 }

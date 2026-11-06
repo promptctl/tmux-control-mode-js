@@ -8,15 +8,12 @@
 //
 // Server isolation pattern (identical to client.test.ts):
 //   - `uniqueSocket()` allocates a unique `-L <name>` socket per describe block.
-//   - `killServer()` tears the isolated server down in afterEach by delegating
-//     to the shared `killTmuxServer()` helper, regardless of whether any
-//     session lingers.
-//   - `tmuxCmd()` builds every `tmux -L <socket> …` string this file runs
-//     itself (session setup is the shared attachSession), so no raw `tmux`
-//     prefix can escape the isolation layer.
+//   - the shared `killTmuxServer()` tears the isolated server down in
+//     afterEach, regardless of whether any session lingers.
+//   - the shared `tmux()` runs every tmux CLI call, so no raw `tmux` prefix
+//     can escape the isolation layer.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
@@ -24,6 +21,7 @@ import {
   pollUntil,
   attachSession,
   attachClient,
+  tmux,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import {
@@ -40,15 +38,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-// [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
 
 /**
  * Parse numeric IDs from `list-panes -a` output.
@@ -110,7 +99,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 
@@ -323,9 +312,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Create a second session to move a window into.
     const sessionB = uniqueName("move-b");
-    execSync(tmuxCmd(socketName, `new-session -d -s ${sessionB}`), {
-      stdio: "ignore",
-    });
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
 
     // Create a second window in A so we have a movable window.
     await client.execute("new-window");
@@ -359,10 +346,13 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     );
 
     // Move the window from A to B.
-    execSync(
-      tmuxCmd(socketName, `move-window -s @${windowToMove} -t ${sessionB}:`),
-      { stdio: "ignore" },
-    );
+    tmux(socketName, [
+      "move-window",
+      "-s",
+      `@${windowToMove}`,
+      "-t",
+      `${sessionB}:`,
+    ]);
 
     // Allow topology-changed notifications to propagate.
     await new Promise<void>((resolve) => setTimeout(resolve, 300));
@@ -429,13 +419,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // seed path for pre-existing panes — the client's own list-panes -a
     // query must populate topology before the first byte from any pane.
     const sessionX = uniqueName("boot-x");
-    execSync(tmuxCmd(socketName, `new-session -d -s ${sessionX}`), {
-      stdio: "ignore",
-    });
+    tmux(socketName, ["new-session", "-d", "-s", sessionX]);
     // Add a second window before attaching so the bootstrap sees ≥2 panes.
-    execSync(tmuxCmd(socketName, `new-window -t ${sessionX}:`), {
-      stdio: "ignore",
-    });
+    tmux(socketName, ["new-window", "-t", `${sessionX}:`]);
 
     // Attach as a client AFTER the windows are created.
     const c = await attachClient(socketName, sessionX);
@@ -498,9 +484,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // Create session B independently — the control-mode client attached to
     // A can still send commands targeting B's pane (the server is shared).
     const sessionB = uniqueName("iso-b");
-    execSync(tmuxCmd(socketName, `new-session -d -s ${sessionB}`), {
-      stdio: "ignore",
-    });
+    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
 
     const allPanes = await listAllPanes(client);
     // The global pane list should show panes from both sessions.

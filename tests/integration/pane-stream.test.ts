@@ -29,10 +29,6 @@ import type {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-function killServer(socket: string): void {
-  killTmuxServer(socket);
-}
-
 // Start sessions at a known geometry so the resize test has a clear delta to
 // assert against.
 function createSession(socket: string, session: string): Promise<TmuxClient> {
@@ -112,7 +108,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     afterEach(() => {
       stream?.dispose();
       client?.close();
-      if (socket !== "") killServer(socket);
+      if (socket !== "") killTmuxServer(socket);
       socket = "";
     });
 

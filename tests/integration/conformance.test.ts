@@ -27,10 +27,6 @@ import type { TmuxEventMap } from "../../src/emitter.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
-
 // The catalogue's field set for a variant — the shape real tmux must reproduce.
 function sampleKeys(type: TmuxMessage["type"]): string[] {
   return Object.keys(MESSAGE_SAMPLES[type]).sort();
@@ -46,7 +42,7 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 
