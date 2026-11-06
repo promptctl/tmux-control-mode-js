@@ -94,16 +94,7 @@ export class MirrorRegistry {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
       return notJoined;
     }
-    let hub: Hub;
-    try {
-      hub = this.ensureHub(paneId);
-    } catch (err) {
-      viewer.sendControl({
-        kind: "error",
-        message: `could not tap pane %${paneId}: ${String(err)}`,
-      });
-      return notJoined;
-    }
+    let hub = this.ensureHub(paneId);
 
     // Geometry first: a fresh XtermSink buffers every write until its first
     // resize (the `.4` first-paint finding), so the viewer needs cols/rows
@@ -133,6 +124,16 @@ export class MirrorRegistry {
       return notJoined;
     }
     viewer.sendBytes(buildMirrorSeed(capture.output));
+
+    if (this.closed) {
+      viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
+      return notJoined;
+    }
+    // While this viewer awaited, the hub may have been dropped: another
+    // joiner's failed seed GC'd it, or its tap died. Joining the dropped hub
+    // would leave this viewer on a stream that never produces bytes and that
+    // liveness no longer watches, so join the pane's current hub instead.
+    if (this.hubs.get(paneId) !== hub) hub = this.ensureHub(paneId);
 
     // Join the live stream. From here every tapped byte reaches this viewer.
     hub.viewers.add(viewer);
@@ -175,10 +176,7 @@ export class MirrorRegistry {
     return { client: this.client, dir: this.dir };
   }
 
-  /**
-   * Get the hub for a pane, creating (and tapping) it on first viewer. Throws
-   * (registering nothing) when the tap cannot be stood up.
-   */
+  /** Get the hub for a pane, creating (and tapping) it on first viewer. */
   private ensureHub(paneId: number): Hub {
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;
@@ -195,8 +193,19 @@ export class MirrorRegistry {
         (data) => {
           for (const v of viewers) v.sendBytes(data);
         },
-        // A tap that fails to stand up / errors mid-stream means the pane is gone.
-        { onReadError: () => this.endHub(hub) },
+        // The tap logs why it died; the viewers learn only that it did. The
+        // callback names the hub by its viewer set, so it never refers to the
+        // `hub` binding still being initialised here.
+        {
+          onReadError: () => {
+            const current = this.hubs.get(paneId);
+            if (current?.viewers !== viewers) return;
+            this.endHub(current, {
+              kind: "error",
+              message: `could not tap pane %${paneId}`,
+            });
+          },
+        },
       ),
     };
     this.hubs.set(paneId, hub);
@@ -216,17 +225,18 @@ export class MirrorRegistry {
   private gcHub(hub: Hub): void {
     if (hub.viewers.size > 0) return;
     hub.dispose();
+    if (this.hubs.get(hub.paneId) !== hub) return;
     this.hubs.delete(hub.paneId);
     if (this.hubs.size === 0) this.stopLiveness();
   }
 
-  /** Pane vanished: tell its viewers, close them, and drop the hub. */
-  private endHub(hub: Hub): void {
+  /** The hub's stream ended: tell its viewers why, close them, drop the hub. */
+  private endHub(hub: Hub, frame: MirrorControlFrame): void {
     if (this.hubs.get(hub.paneId) !== hub) return;
     this.hubs.delete(hub.paneId);
     hub.dispose();
     for (const v of hub.viewers) {
-      v.sendControl({ kind: "gone" });
+      v.sendControl(frame);
       v.close();
     }
     hub.viewers.clear();
@@ -287,7 +297,7 @@ export class MirrorRegistry {
         }),
       );
       for (const hub of [...this.hubs.values()]) {
-        if (!present.has(hub.paneId)) this.endHub(hub);
+        if (!present.has(hub.paneId)) this.endHub(hub, { kind: "gone" });
       }
     } finally {
       this.checking = false;

@@ -18,9 +18,11 @@
 //   response) and `onBytes` (forward tapped bytes). It knows nothing about
 //   sockets, FIFO directory ownership, or which panes are interesting — the
 //   caller owns the lifecycle and the byte destination.
-// [LAW:no-silent-failure] A `pipe-pane` that fails (pane closed between the
-//   caller's enumeration and the tap) untaps itself and surfaces a warning,
-//   rather than leaving a dead FIFO masquerading as a live tap.
+// [LAW:single-enforcer] It also owns the failure policy. Every way a tap can
+//   fail to stand up or die (mkfifo throws, `pipe-pane` rejects or returns
+//   %error, the FIFO read errors) goes through one path: log the detail here,
+//   tear down, then fire `onReadError` on a later microtask. Callers never wrap
+//   the call in try/catch; they react only through `onReadError`.
 
 import { createReadStream, rmSync, type ReadStream } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -35,11 +37,12 @@ export type TapSink = (data: Uint8Array) => void;
 
 export interface PaneTapOptions {
   /**
-   * Invoked at most once when the tap tears ITSELF down — a failed `pipe-pane`
-   * (the pane vanished before the tap stood up) or a FIFO read error. NOT
-   * invoked when the caller's disposer is what stops the tap. Lets the owner
-   * drop the pane from its live-tap set (so a firehose `refresh` can re-tap) or
-   * surface a "pane gone" signal to a mirror's viewers. [LAW:no-silent-failure]
+   * Invoked at most once when the tap dies on its own: it could not stand up
+   * (mkfifo failed, or `pipe-pane` failed because the pane vanished) or its
+   * FIFO read errored. Always invoked asynchronously, after `tapPaneToFifo`
+   * has returned, so an owner can reference the object it is building. NOT
+   * invoked when the caller's disposer is what stops the tap. The detail is
+   * logged here; the owner only decides what the death means to it.
    */
   readonly onReadError?: () => void;
 }
@@ -50,12 +53,9 @@ export interface PaneTapOptions {
  * calling it twice is safe. The caller owns `dir` (its creation and removal) so
  * one directory can host many taps.
  *
- * Throws if the FIFO cannot be created (e.g. `mkfifo` missing or the path
- * taken): nothing has been stood up, so there is no tap to hand back and
- * `onReadError` does not fire. Past that point the tap is best-effort — a pane
- * that vanished between the caller deciding to tap it and this call fails the
- * async `pipe-pane` and self-disposes — and once standing it stays live until
- * disposed or the FIFO read errors.
+ * Never throws. A leftover path at the FIFO's location is removed first, so a
+ * stale FIFO from an earlier tap cannot block this one. Any failure tears the
+ * tap down (removing the FIFO) and reports through `onReadError`.
  */
 export function tapPaneToFifo(
   execute: TapExecute,
@@ -69,7 +69,7 @@ export function tapPaneToFifo(
   let disposed = false;
 
   // Tear-down owned by the caller's disposer. Self-tear-down (error paths)
-  // routes through `selfDispose`, which additionally fires `onReadError`.
+  // routes through `fail`, which additionally fires `onReadError`.
   const dispose = (): void => {
     if (disposed) return;
     disposed = true;
@@ -87,16 +87,21 @@ export function tapPaneToFifo(
     }
   };
 
-  const selfDispose = (): void => {
+  const fail = (detail: string): void => {
     if (disposed) return;
+    console.warn(`[pane-tap] tap of %${paneId} failed: ${detail}`);
     dispose();
-    options.onReadError?.();
+    // Deferred so the callback never runs inside the caller's construction.
+    queueMicrotask(() => options.onReadError?.());
   };
 
-  // [LAW:no-ambient-temporal-coupling] A synchronous failure throws rather than
-  //   firing `onReadError`: the caller is still mid-construction of whatever
-  //   owns this tap, so a callback here would run against a half-built owner.
-  execFileSync("mkfifo", [fifoPath]);
+  try {
+    rmSync(fifoPath, { force: true });
+    execFileSync("mkfifo", [fifoPath]);
+  } catch (err) {
+    fail(`mkfifo: ${err instanceof Error ? err.message : String(err)}`);
+    return dispose;
+  }
 
   // `r+` keeps the read end open across the writer coming and going.
   stream = createReadStream(fifoPath, { flags: "r+" });
@@ -104,18 +109,14 @@ export function tapPaneToFifo(
     const bytes = typeof buf === "string" ? Buffer.from(buf) : buf;
     onBytes(new Uint8Array(bytes));
   });
-  stream.on("error", (err) => {
-    console.warn(`[pane-tap] fifo read error for %${paneId}:`, err.message);
-    selfDispose();
-  });
+  stream.on("error", (err) => fail(`fifo read: ${err.message}`));
 
   void execute(`pipe-pane -t %${paneId} "cat >> '${fifoPath}'"`).then(
     (resp) => {
-      if (!resp.success && !disposed) {
-        console.warn(`[pane-tap] pipe-pane failed for %${paneId}`);
-        selfDispose();
-      }
+      if (!resp.success) fail("pipe-pane returned %error");
     },
+    (err: unknown) =>
+      fail(`pipe-pane: ${err instanceof Error ? err.message : String(err)}`),
   );
 
   return dispose;

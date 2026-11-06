@@ -37,15 +37,34 @@ export type FirehoseSink = (paneId: number, data: Uint8Array) => void;
 export interface PaneFirehoseOptions {
   /** How often to re-enumerate panes to tap new ones / drop vanished ones. */
   readonly refreshIntervalMs?: number;
+  /** Clock for the retry backoff; injectable so tests control time. */
+  readonly now?: () => number;
 }
 
 /** Default cadence for discovering panes created after the firehose started. */
 const DEFAULT_REFRESH_MS = 1500;
 
+/** Longest wait before re-tapping a pane whose taps keep dying. */
+const MAX_RETRY_MS = 60_000;
+
+/**
+ * A pane whose tap died and has not yet delivered a byte since. Each death in
+ * the streak doubles the wait before the next attempt (refresh interval, then
+ * 2x, 4x, … capped at MAX_RETRY_MS), so a host where mkfifo or pipe-pane keeps
+ * failing costs one blocking spawn and one warning per pane per backoff step,
+ * not per refresh tick. The streak ends when the pane delivers bytes or leaves
+ * `list-panes`.
+ */
+interface RetryState {
+  readonly failures: number;
+  readonly retryAt: number;
+}
+
 export class PaneFirehose {
   // paneId → disposer returned by `tapPaneToFifo`. The set of keys IS the set
   // of tapped panes (the derived projection of `list-panes -a`).
   private readonly taps = new Map<number, () => void>();
+  private readonly retries = new Map<number, RetryState>();
   private dir: string | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private refreshing = false;
@@ -116,8 +135,15 @@ export class PaneFirehose {
         }),
       );
 
+      const now = this.now();
       for (const paneId of current) {
-        if (!this.taps.has(paneId)) this.tap(paneId);
+        if (this.taps.has(paneId)) continue;
+        const retry = this.retries.get(paneId);
+        if (retry !== undefined && retry.retryAt > now) continue;
+        this.tap(paneId);
+      }
+      for (const paneId of [...this.retries.keys()]) {
+        if (!current.has(paneId)) this.retries.delete(paneId);
       }
       for (const paneId of [...this.taps.keys()]) {
         if (!current.has(paneId)) this.untap(paneId);
@@ -134,24 +160,33 @@ export class PaneFirehose {
    */
   private tap(paneId: number): void {
     if (this.dir === null) return;
-    let dispose: () => void;
-    try {
-      dispose = tapPaneToFifo(
-        this.execute,
-        this.dir,
-        paneId,
-        (data) => this.onBytes(paneId, data),
-        // A self-tear-down (pipe-pane failure / FIFO read error) must drop the
-        // map entry so the next `refresh` can re-tap a still-present pane —
-        // preserving "map keys == live taps". [LAW:one-source-of-truth]
-        { onReadError: () => this.taps.delete(paneId) },
-      );
-    } catch (err) {
-      // Not tapped, so not in the map; the next `refresh` retries the pane.
-      console.warn(`[pane-firehose] could not tap %${paneId}:`, err);
-      return;
-    }
+    const dispose = tapPaneToFifo(
+      this.execute,
+      this.dir,
+      paneId,
+      (data) => {
+        this.retries.delete(paneId);
+        this.onBytes(paneId, data);
+      },
+      // A tap that died must leave the map so a later `refresh` can re-tap a
+      // still-present pane — preserving "map keys == live taps" — and must
+      // push that retry back. [LAW:one-source-of-truth]
+      { onReadError: () => this.tapDied(paneId, dispose) },
+    );
     this.taps.set(paneId, dispose);
+  }
+
+  private tapDied(paneId: number, dispose: () => void): void {
+    if (this.taps.get(paneId) !== dispose) return;
+    this.taps.delete(paneId);
+    const failures = (this.retries.get(paneId)?.failures ?? 0) + 1;
+    const interval = this.options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
+    const wait = Math.min(interval * 2 ** (failures - 1), MAX_RETRY_MS);
+    this.retries.set(paneId, { failures, retryAt: this.now() + wait });
+  }
+
+  private now(): number {
+    return (this.options.now ?? Date.now)();
   }
 
   /** Stop piping a pane, close its stream, and remove its FIFO. */
