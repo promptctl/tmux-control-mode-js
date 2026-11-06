@@ -486,7 +486,7 @@ export class SinkRegistry {
    *
    * Called by the transport adapter when the connection closes. Guarantees
    * `end()` is called exactly once per attached sink even if the caller still
-   * holds disposers from earlier `attach()` calls — the inner bucket Maps are
+   * holds disposers from earlier `attach()` calls — the inner bucket Sets are
    * cleared first so any subsequent disposer invocation sees `bucket.delete()`
    * return `false` and becomes a no-op.
    *
@@ -734,10 +734,6 @@ export class TopologyEpochTracker {
   // only ever increases. Per-window counters that reset after a clear would
   // allow pre-clear and post-clear tokens to collide (both start at 1).
   private windowEpoch = 0;
-  // Queries started and not yet settled. Kept apart from the staleness gens
-  // above: a window-close makes a bootstrap stale without settling it.
-  private readonly outstandingBootstraps = new Set<number>();
-  private readonly outstandingRefreshes = new Set<number>();
 
   /**
    * Call immediately before the `list-panes -a` execute(). Returns captured gen.
@@ -751,7 +747,6 @@ export class TopologyEpochTracker {
   startBootstrap(): number {
     this.windowGens.clear();
     this.latestBootstrapStartGen = ++this.bootstrapGen;
-    this.outstandingBootstraps.add(this.latestBootstrapStartGen);
     return this.latestBootstrapStartGen;
   }
 
@@ -779,7 +774,6 @@ export class TopologyEpochTracker {
   startWindowRefresh(windowId: number): number {
     const gen = ++this.windowEpoch;
     this.windowGens.set(windowId, gen);
-    this.outstandingRefreshes.add(gen);
     return gen;
   }
 
@@ -802,30 +796,6 @@ export class TopologyEpochTracker {
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
     this.windowGens.delete(windowId);
-  }
-
-  /**
-   * Call when a bootstrap's command settles, on every path (applied, stale,
-   * failed). Bootstrap gens and window-refresh tokens are drawn from separate
-   * counters, so each is tracked in its own set.
-   */
-  settleBootstrap(gen: number): void {
-    this.outstandingBootstraps.delete(gen);
-  }
-
-  /** Call when a window refresh's command settles, on every path. */
-  settleWindowRefresh(token: number): void {
-    this.outstandingRefreshes.delete(token);
-  }
-
-  /**
-   * True while any topology query is in flight — i.e. a pane topology does not
-   * know yet may still be placed by a result that has not arrived.
-   */
-  hasOutstandingQuery(): boolean {
-    return (
-      this.outstandingBootstraps.size > 0 || this.outstandingRefreshes.size > 0
-    );
   }
 }
 

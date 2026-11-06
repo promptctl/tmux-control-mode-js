@@ -125,8 +125,13 @@ export class TopologyRouter {
   // Chunks for panes topology did not know when they arrived, held while a
   // topology query that may place them is outstanding. Each carries the attach
   // seq at arrival so replay never reaches a sink attached afterwards.
-  // Empty is the resting state; releaseHeld() is the only drain.
+  // Empty is the resting state; releaseHeld() drains it after every query and
+  // onTransportClose() discards it with the connection.
   private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
+  // Topology queries started and not yet settled. Only bootstrap() and
+  // refreshWindow() start queries, so the router owns this count; the epoch
+  // tracker answers staleness, not liveness.
+  private inFlight = 0;
 
   constructor(
     reportTopologyError: ReportTopologyError,
@@ -274,7 +279,7 @@ export class TopologyRouter {
     if (
       meta === undefined &&
       this.sinks.hasTopologyDependentSinks() &&
-      this.epoch.hasOutstandingQuery()
+      this.inFlight > 0
     ) {
       this.held.push({ chunk: payload, attachedBy: this.sinks.attachSeq() });
     }
@@ -290,7 +295,7 @@ export class TopologyRouter {
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
     const pending = this.held;
-    const canStillPlace = this.epoch.hasOutstandingQuery();
+    const canStillPlace = this.inFlight > 0;
     this.held = [];
     for (const h of pending) {
       const meta = this.topology.get(h.chunk.paneId);
@@ -371,11 +376,20 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startBootstrap();
+    this.inFlight++;
     try {
       const r = await run(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
       );
-      if (!this.epoch.isBootstrapCurrent(gen)) return;
+      if (!this.epoch.isBootstrapCurrent(gen)) {
+        // A window-close mid-flight makes this result stale without starting a
+        // replacement. Still the latest bootstrap means nothing newer will
+        // seed, so re-query: otherwise the topology stays empty and every held
+        // chunk is dropped. The re-run counts itself in flight before this
+        // finally releases, so held chunks wait for it.
+        if (this.epoch.isLatestBootstrap(gen)) void this.bootstrap();
+        return;
+      }
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null ? [parsed] : [];
@@ -414,7 +428,7 @@ export class TopologyRouter {
       //   [LAW:no-ambient-temporal-coupling]
       this.reportTopologyError(bootstrapError(err));
     } finally {
-      this.epoch.settleBootstrap(gen);
+      this.inFlight--;
       this.releaseHeld();
     }
   }
@@ -423,6 +437,7 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startWindowRefresh(windowId);
+    this.inFlight++;
     try {
       const r = await run(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
@@ -437,10 +452,13 @@ export class TopologyRouter {
       this.topology.updateWindow(windowId, entries);
       this.interest?.recompute();
     } catch {
+      // [LAW:single-enforcer] Same staleness authority as the success path: a
+      //   newer refresh or a window-close owns this window now.
+      if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
     } finally {
-      this.epoch.settleWindowRefresh(gen);
+      this.inFlight--;
       this.releaseHeld();
     }
   }

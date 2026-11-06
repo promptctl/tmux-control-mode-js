@@ -584,7 +584,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     return { run, replies };
   }
   const settle = () => new Promise<void>((r) => setTimeout(r, 0));
-  const text = (s: ReturnType<typeof makeSink>) =>
+  const paneIdsOf = (s: ReturnType<typeof makeSink>) =>
     s.chunks.map((c) => c.paneId);
 
   it("delivers a chunk that beat the attach-triggered bootstrap once it lands", async () => {
@@ -599,7 +599,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
     replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
-    expect(text(sink)).toEqual([5]);
+    expect(paneIdsOf(sink)).toEqual([5]);
   });
 
   it("delivers a chunk that beat a window-add refresh once it lands", async () => {
@@ -616,7 +616,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(sink.chunks).toHaveLength(0);
     replies[1]!.resolve(makeOkResponse(["%7 @3 $1"]));
     await settle();
-    expect(text(sink)).toEqual([7]);
+    expect(paneIdsOf(sink)).toEqual([7]);
   });
 
   it("keeps per-pane order: a held chunk is replayed before later chunks", async () => {
@@ -645,7 +645,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
     for (const r of replies) r.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
-    expect(text(early)).toEqual([5]);
+    expect(paneIdsOf(early)).toEqual([5]);
     expect(late.chunks).toHaveLength(0);
   });
 
@@ -662,8 +662,8 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.dispatchBytes(makeChunk(5));
     replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
-    expect(text(server)).toEqual([5]);
-    expect(text(pane)).toEqual([5]);
+    expect(paneIdsOf(server)).toEqual([5]);
+    expect(paneIdsOf(pane)).toEqual([5]);
   });
 
   it("waits for the superseding bootstrap rather than dropping at the stale one", async () => {
@@ -680,7 +680,25 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(sink.chunks).toHaveLength(0);
     replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
-    expect(text(sink)).toEqual([5]);
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
+  it("re-queries when a window-close makes the only bootstrap stale", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.handleNotification({ type: "window-close", windowId: 9 });
+    router.dispatchBytes(makeChunk(5));
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"])); // stale: closed @9
+    await settle();
+    expect(replies).toHaveLength(2);
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5]);
   });
 
   it("drops held chunks once no query can place them (failed bootstrap)", async () => {
