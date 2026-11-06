@@ -33,8 +33,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // Helpers (mirror tests/integration/pane-scope.test.ts conventions)
 // ---------------------------------------------------------------------------
 
-// [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }

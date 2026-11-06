@@ -669,7 +669,11 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     probe: async ({ client, exec }) => {
       const other = uniqueName("cov-sesswitch");
       exec(`new-session -d -s ${other}`);
-      const p = waitForEvent(client, "session-changed");
+      const p = waitForEvent(
+        client,
+        "session-changed",
+        (e) => e.name === other,
+      );
       await client.execute(`switch-client -t ${other}`);
       await p;
     },

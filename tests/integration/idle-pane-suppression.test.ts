@@ -17,10 +17,9 @@ import {
   pollUntil,
   attachSession,
   attachClient,
-  type AttachOptions,
+  type ClientAttachOptions,
 } from "../helpers/integration.js";
-import type { TmuxClient } from "../../src/client.js";
-import { type TmuxClientOptions } from "../../src/client.js";
+import type { TmuxClient, TmuxClientOptions } from "../../src/client.js";
 import {
   serverScope,
   windowScope,
@@ -37,36 +36,30 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // Server-isolation helpers (same pattern as pane-scope.test.ts)
 // ---------------------------------------------------------------------------
 
-// [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
 
 /**
- * A transport that records every command sent to tmux while delegating to the
- * real spawned transport. `sent` is the live capture used by assertions.
+ * A transport that records into `sent` every command sent to tmux while
+ * delegating to the real spawned transport.
  */
-function recordingTransport(inner: TmuxTransport): {
-  transport: TmuxTransport;
-  sent: string[];
-} {
-  const sent: string[] = [];
+function recordingTransport(
+  inner: TmuxTransport,
+  sent: string[],
+): TmuxTransport {
   return {
-    sent,
-    transport: {
-      // [LAW:one-source-of-truth] `sent` means "accepted for delivery" — a
-      // refused send (ok: false) never reached tmux, so it must not appear
-      // here as if it did.
-      send: (cmd) => {
-        const result = inner.send(cmd);
-        if (result.ok) sent.push(cmd);
-        return result;
-      },
-      onData: (cb) => inner.onData(cb),
-      onClose: (cb) => inner.onClose(cb),
-      close: () => inner.close(),
+    // [LAW:one-source-of-truth] `sent` means "accepted for delivery" — a
+    // refused send (ok: false) never reached tmux, so it must not appear
+    // here as if it did.
+    send: (cmd) => {
+      const result = inner.send(cmd);
+      if (result.ok) sent.push(cmd);
+      return result;
     },
+    onData: (cb) => inner.onData(cb),
+    onClose: (cb) => inner.onClose(cb),
+    close: () => inner.close(),
   };
 }
 
@@ -75,19 +68,15 @@ interface Recorded {
   sent: string[];
 }
 
-/** Wrap a fresh recording transport around each spawned one, keeping its log. */
+/** Attach via `connect` through a recording transport, keeping its log. */
 async function recorded(
-  connect: (opts: AttachOptions) => Promise<TmuxClient>,
+  connect: (opts: ClientAttachOptions) => Promise<TmuxClient>,
   clientOptions?: TmuxClientOptions,
 ): Promise<Recorded> {
-  let sent: string[] = [];
+  const sent: string[] = [];
   const client = await connect({
     clientOptions,
-    wrapTransport: (inner) => {
-      const r = recordingTransport(inner);
-      sent = r.sent;
-      return r.transport;
-    },
+    wrapTransport: (inner) => recordingTransport(inner, sent),
   });
   return { client, sent };
 }

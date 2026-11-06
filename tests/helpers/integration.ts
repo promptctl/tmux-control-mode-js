@@ -82,7 +82,7 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
  * if it reaches terminal "closed" (a failed attach), naming the reason, rather
  * than waiting out `ms`.
  */
-export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+export function waitReady(client: TmuxClient, ms = 8000): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const settle = (s: ConnectionState): void => {
       if (s.status !== "ready" && s.status !== "closed") return;
@@ -102,7 +102,7 @@ export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
   });
 }
 
-export interface AttachOptions {
+export interface ClientAttachOptions {
   readonly clientOptions?: TmuxClientOptions;
   /** Wrap the spawned transport, e.g. to record the commands sent through it. */
   readonly wrapTransport?: (inner: TmuxTransport) => TmuxTransport;
@@ -110,15 +110,18 @@ export interface AttachOptions {
 
 /**
  * Attach a control client to the existing `sessionName` on `socketName` and
- * resolve once it is ready. A failed attach rejects via waitReady (terminal
- * "closed", or its timeout) and closes the client first, so the spawned child
- * never outlives the failure.
+ * resolve once it is ready AND tmux's startup `%session-changed` has arrived.
+ * tmux sends that notification after the greeting that makes the client
+ * ready, and the router re-bootstraps on it; resolving at "ready" alone would
+ * let both land inside the caller's test body. A failed attach rejects (closed
+ * before ready, or a timeout) and closes the client first, so the spawned
+ * child never outlives the failure.
  * [LAW:single-enforcer] The one place an integration test attaches a client.
  */
 export async function attachClient(
   socketName: string,
   sessionName: string,
-  { clientOptions, wrapTransport = (t) => t }: AttachOptions = {},
+  { clientOptions, wrapTransport = (t) => t }: ClientAttachOptions = {},
 ): Promise<TmuxClient> {
   const client = new TmuxClient(
     wrapTransport(
@@ -128,8 +131,11 @@ export async function attachClient(
     ),
     clientOptions,
   );
+  // Armed before the first await: the startup notification can arrive in the
+  // same chunk as the greeting.
+  const startup = waitForEvent(client, "session-changed", () => true, 8000);
   try {
-    await waitReady(client);
+    await Promise.all([waitReady(client), startup]);
   } catch (err) {
     client.close();
     throw err;
@@ -147,7 +153,9 @@ export async function attachSession(
   {
     newSessionFlags = [],
     ...attach
-  }: AttachOptions & { readonly newSessionFlags?: readonly string[] } = {},
+  }: ClientAttachOptions & {
+    readonly newSessionFlags?: readonly string[];
+  } = {},
 ): Promise<TmuxClient> {
   execFileSync(
     "tmux",
@@ -160,7 +168,8 @@ export async function attachSession(
       sessionName,
       ...newSessionFlags,
     ],
-    { stdio: "ignore" },
+    // stderr piped so a failed new-session's error carries tmux's reason.
+    { stdio: ["ignore", "ignore", "pipe"] },
   );
   return attachClient(socketName, sessionName, attach);
 }

@@ -47,10 +47,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // socket name; teardown delegates to the shared `killTmuxServer()` helper,
 // which lists and kills every session on that isolated socket, so tmux's
 // exit-empty default guarantees the isolated server exits.
-//
-// [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
-// `tmux -L <socket> ...` command line. No execSync string interpolation
-// with a raw "tmux" prefix exists anywhere else in this file.
 // ---------------------------------------------------------------------------
 
 interface Fixture {

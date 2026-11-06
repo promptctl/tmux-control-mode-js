@@ -38,8 +38,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // Isolation helpers
 // ---------------------------------------------------------------------------
 
-// [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }

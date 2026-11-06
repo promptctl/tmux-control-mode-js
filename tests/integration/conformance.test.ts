@@ -27,9 +27,6 @@ import type { TmuxEventMap } from "../../src/emitter.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// [LAW:single-enforcer] The only place this file builds a `tmux -L <socket>`
-// line, mirroring client.test.ts's isolation discipline: each test gets its own
-// server so nothing reaches the developer's tmux.
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
