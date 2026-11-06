@@ -19,9 +19,6 @@ import {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
 describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   let socketName: string;
   let client: TmuxClient | null = null;
@@ -33,7 +30,7 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    killTmuxServer(socketName);
   });
 
   it("C-b c creates a new window (window-add observed, list-windows shows 2)", async () => {

@@ -29,14 +29,6 @@ import { attachLineSink } from "../../src/line-sink.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// ---------------------------------------------------------------------------
-// Helpers (mirror tests/integration/pane-scope.test.ts conventions)
-// ---------------------------------------------------------------------------
-
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
-
 async function listAllPanes(
   client: TmuxClient,
 ): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
@@ -111,7 +103,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 

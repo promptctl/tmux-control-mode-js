@@ -31,14 +31,6 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// ---------------------------------------------------------------------------
-// Server-isolation helpers (same pattern as pane-scope.test.ts)
-// ---------------------------------------------------------------------------
-
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
-
 /**
  * A transport that records into `sent` every command sent to tmux while
  * delegating to the real spawned transport.
@@ -168,7 +160,7 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
   afterEach(() => {
     for (const c of clients) c.close();
     clients.length = 0;
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 

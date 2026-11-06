@@ -6,7 +6,6 @@
 // real-world behaviour against an actual tmux binary.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
 import {
   readFileSync,
   mkdirSync,
@@ -24,6 +23,7 @@ import {
   waitForEvent,
   withSecondClient,
   attachSession,
+  tmux,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
@@ -100,23 +100,10 @@ function tmuxAtLeast(need: TmuxVersion): boolean {
 // which lists and kills every session on the isolated socket; tmux's
 // exit-empty default then terminates the now-empty server.
 //
-// [LAW:single-enforcer] `tmuxCmd()` builds every `tmux -L <socket> ...`
-// command line this file runs itself; session setup goes through the shared
-// attachSession in tests/helpers/integration.ts.
+// Every tmux CLI call goes through the shared `tmux()` in
+// tests/helpers/integration.ts.
 // [LAW:one-source-of-truth] Teardown itself lives in
 // `tests/helpers/reap-test-sockets.ts` so it isn't re-implemented per file.
-
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
-/**
- * Kill the isolated tmux server entirely. Best-effort; safe if already gone.
- * Used in afterEach so no isolated server (and no session in it) leaks.
- */
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
 
 // ---------------------------------------------------------------------------
 // 1. Command Correlation
@@ -140,7 +127,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   afterEach(() => {
     client?.close();
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 
@@ -164,9 +151,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
     // steal a pending entry, `execute()` here would resolve with the
     // greeting's empty output (or hang, if the greeting is corrupted).
     sessionName = uniqueName("test-corr");
-    execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-      stdio: "ignore",
-    });
+    tmux(socketName, ["new-session", "-d", "-s", sessionName]);
     const transport = spawnTmux(["attach-session", "-t", sessionName], {
       socketPath: socketName,
     });
@@ -235,7 +220,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 
@@ -359,7 +344,7 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
   });
 
   afterEach(() => {
-    if (socketName !== "") killServer(socketName);
+    if (socketName !== "") killTmuxServer(socketName);
     socketName = "";
   });
 
@@ -407,10 +392,22 @@ function sideWindow(
   return {
     target,
     windowId: parseWindowId(
-      exec(
-        `new-session -d -s ${session} \\; ` +
-          `new-window -d -P -F '#{window_id}' -n side -t ${session}`,
-      ),
+      exec([
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        ";",
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-n",
+        "side",
+        "-t",
+        session,
+      ]),
     ),
   };
 }
@@ -449,17 +446,17 @@ function parseWindowId(out: string): number {
 /**
  * What a probe is handed: the attached control client plus the isolated
  * socket/session, so a probe can drive side channels (a second client, a
- * window in another session) on the SAME server. `exec` runs a raw tmux
- * command against the isolated socket.
- * [LAW:single-enforcer] Only the probe runner builds the tmux command line
- * (via tmuxCmd); probes ask for effects, they don't format sockets.
+ * window in another session) on the SAME server. `exec` runs a tmux argv
+ * against the isolated socket.
+ * [LAW:single-enforcer] Only the probe runner wires `exec` (via the shared
+ * tmux()); probes ask for effects, they don't format sockets.
  */
 interface ProbeCtx {
   readonly client: TmuxClient;
   readonly socketName: string;
   readonly sessionName: string;
   /** Run a tmux command on the probe's server; returns its stdout. */
-  exec(args: string): string;
+  exec(args: readonly string[]): string;
 }
 
 /**
@@ -623,7 +620,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
         "unlinked-window-close",
         (ev) => ev.windowId === windowId,
       );
-      exec(`kill-window -t ${target}`);
+      exec(["kill-window", "-t", target]);
       await p;
     },
   },
@@ -633,9 +630,9 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       // A window created in ANOTHER session on the same server is unlinked from
       // this client's session, so it arrives as %unlinked-window-add.
       const other = uniqueName("cov-unlinkadd");
-      exec(`new-session -d -s ${other}`);
+      exec(["new-session", "-d", "-s", other]);
       const p = waitForEvent(client, "unlinked-window-add");
-      exec(`new-window -d -t ${other}`);
+      exec(["new-window", "-d", "-t", other]);
       await p;
     },
   },
@@ -643,9 +640,9 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     kind: "observed",
     probe: async ({ client, exec }) => {
       const other = uniqueName("cov-unlinkren");
-      exec(`new-session -d -s ${other}`);
+      exec(["new-session", "-d", "-s", other]);
       const p = waitForEvent(client, "unlinked-window-renamed");
-      exec(`rename-window -t ${other} cov-unlinked-renamed`);
+      exec(["rename-window", "-t", other, "cov-unlinked-renamed"]);
       await p;
     },
   },
@@ -653,7 +650,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     kind: "observed",
     probe: async ({ client, exec }) => {
       const p = waitForEvent(client, "sessions-changed");
-      exec(`new-session -d -s ${uniqueName("cov-sesadd")}`);
+      exec(["new-session", "-d", "-s", uniqueName("cov-sesadd")]);
       await p;
     },
   },
@@ -669,7 +666,7 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
     kind: "observed",
     probe: async ({ client, exec }) => {
       const other = uniqueName("cov-sesswitch");
-      exec(`new-session -d -s ${other}`);
+      exec(["new-session", "-d", "-s", other]);
       const p = waitForEvent(
         client,
         "session-changed",
@@ -700,9 +697,15 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       // Match the switch by its target session: c2's own attach also sends
       // the primary a %client-session-changed, and it can arrive late.
       const otherId = Number(
-        exec(`new-session -d -P -F '#{session_id}' -s ${other}`)
-          .trim()
-          .slice(1),
+        exec([
+          "new-session",
+          "-d",
+          "-P",
+          "-F",
+          "#{session_id}",
+          "-s",
+          other,
+        ]).slice(1),
       );
       await withSecondClient(socketName, sessionName, async (c2) => {
         const p = waitForEvent(
@@ -802,13 +805,13 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       // Unlinking a window from another session while it stays linked in
       // this client's session is %window-close on every supported version.
       const { target, windowId } = sideWindow(exec, "cov-winclose");
-      exec(`link-window -d -s ${target} -t ${sessionName}:`);
+      exec(["link-window", "-d", "-s", target, "-t", `${sessionName}:`]);
       const p = waitForEvent(
         client,
         "window-close",
         (ev) => ev.windowId === windowId,
       );
-      exec(`unlink-window -t ${target}`);
+      exec(["unlink-window", "-t", target]);
       await p;
     },
   },
@@ -973,11 +976,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
             client,
             socketName,
             sessionName,
-            exec: (args) =>
-              execSync(tmuxCmd(socketName, args), {
-                encoding: "utf8",
-                stdio: ["ignore", "pipe", "ignore"],
-              }),
+            exec: (args) => tmux(socketName, args),
           });
         } finally {
           // Uniform cleanup for every probe, regardless of what it did to the
@@ -987,7 +986,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
           // is idempotent (transport.close() → child.kill(), a no-op on an
           // already-exited process). [LAW:no-ambient-temporal-coupling]
           client?.close();
-          killServer(socketName);
+          killTmuxServer(socketName);
         }
       },
       20000,
@@ -1003,13 +1002,15 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
       const c = await attachSession(socketName, sessionName);
       client = c;
       const windowId = parseWindowId(
-        execSync(
-          tmuxCmd(
-            socketName,
-            `new-window -d -P -F '#{window_id}' -t ${sessionName}`,
-          ),
-          { encoding: "utf8" },
-        ),
+        tmux(socketName, [
+          "new-window",
+          "-d",
+          "-P",
+          "-F",
+          "#{window_id}",
+          "-t",
+          sessionName,
+        ]),
       );
       const types = ["window-close", "unlinked-window-close"] as const;
       const closed = new Promise<void>((resolve, reject) => {
@@ -1032,7 +1033,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
       await closed;
     } finally {
       client?.close();
-      killServer(socketName);
+      killTmuxServer(socketName);
     }
   }, 20000);
 });
@@ -1058,7 +1059,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   afterEach(() => {
     client?.close();
     client = null;
-    killServer(socketName);
+    killTmuxServer(socketName);
     socketName = "";
   });
 
@@ -1110,21 +1111,20 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
     mkdirSync(weirdDir, { recursive: true });
     try {
-      // Created via tmux's own CLI (execSync), not as a control-mode
-      // command string: tmux's control-mode
-      // command-line tokenizer is a separate, less-standard parser from
-      // a POSIX shell's, and its handling of a literal tab inside a
-      // quoted -c argument has been observed to vary by tmux version. A
-      // CLI invocation hands tmux an already-tokenized argv element —
-      // the shell's own (standard, stable) single-quote handling is the
-      // only parser involved — so this avoids that variance entirely.
-      execSync(
-        tmuxCmd(
-          socketName,
-          `new-window -t ${sessionName} -n tabtest -c ${tmuxEscape(weirdDir)}`,
-        ),
-        { stdio: "ignore" },
-      );
+      // Created via tmux's own CLI, not as a control-mode command string:
+      // tmux's control-mode tokenizer's handling of a literal tab inside a
+      // quoted -c argument has been observed to vary by tmux version. The
+      // CLI receives weirdDir as one argv element, so no tokenizer splits it
+      // (tmux still format-expands -c; weirdDir has no `#`).
+      tmux(socketName, [
+        "new-window",
+        "-t",
+        sessionName,
+        "-n",
+        "tabtest",
+        "-c",
+        weirdDir,
+      ]);
       // Found at all means not dropped by the split-by-tab desync, and the
       // cwd decoded back to the literal backslash/tab it was created with —
       // not the escaped wire form, and not truncated at the tab.

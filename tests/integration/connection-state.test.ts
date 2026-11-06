@@ -2,7 +2,6 @@
 // End-to-end ConnectionState lifecycle against a real tmux server.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execSync } from "node:child_process";
 
 import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
@@ -13,17 +12,10 @@ import {
   uniqueName,
   waitForEvent,
   waitReady,
+  tmux,
 } from "../helpers/integration.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
-function killServer(socketName: string): void {
-  killTmuxServer(socketName);
-}
 
 describe.skipIf(!RUN_INTEGRATION)(
   "TmuxClient — ConnectionState against real tmux",
@@ -42,14 +34,12 @@ describe.skipIf(!RUN_INTEGRATION)(
       } catch {
         // ignore — we may have already closed during the test
       }
-      killServer(socketName);
+      killTmuxServer(socketName);
     });
 
     it("transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed", async () => {
       const sessionName = uniqueName("connstate");
-      execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-        stdio: "ignore",
-      });
+      tmux(socketName, ["new-session", "-d", "-s", sessionName]);
       const transport = spawnTmux(["attach-session", "-t", sessionName], {
         socketPath: socketName,
       });
@@ -75,7 +65,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         "connection-state",
         (e) => e.state.status === "closed",
       );
-      killServer(socketName);
+      killTmuxServer(socketName);
       const { state: finalState } = await closed;
       expect(finalState.status).toBe("closed");
       // tmux exits cleanly once its last session is killed: reason is

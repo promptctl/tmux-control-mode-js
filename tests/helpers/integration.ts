@@ -6,7 +6,7 @@
 // already armed first). Integration tests import these; they do not redeclare
 // them.
 
-import { execFileSync } from "node:child_process";
+import { tmux } from "./tmux-cli.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
@@ -28,6 +28,8 @@ function uniqueSuffix(): string {
 export function uniqueSocket(family: TestSocketPrefix, tag: string): string {
   return `${family}${tag}-${uniqueSuffix()}`;
 }
+
+export { tmux };
 
 /** A session (or other tmux object) name unique per test invocation. */
 export function uniqueName(tag: string): string {
@@ -191,32 +193,24 @@ export async function attachSession(
     readonly newSessionFlags?: readonly string[];
   } = {},
 ): Promise<TmuxClient> {
-  execFileSync(
-    "tmux",
-    [
-      "-L",
-      socketName,
-      "new-session",
-      "-d",
-      "-s",
-      sessionName,
-      ...newSessionFlags,
-    ],
-    // stderr piped so a failed new-session's error carries tmux's reason.
-    { stdio: ["ignore", "ignore", "pipe"] },
-  );
+  tmux(socketName, [
+    "new-session",
+    "-d",
+    "-s",
+    sessionName,
+    ...newSessionFlags,
+  ]);
   try {
     return await attachClient(socketName, sessionName, attach);
   } catch (err) {
     // The session is this helper's; a failed attach must not leave it (and,
-    // via it, the isolated server) running.
-    execFileSync(
-      "tmux",
-      ["-L", socketName, "kill-session", "-t", sessionName],
-      {
-        stdio: "ignore",
-      },
-    );
+    // via it, the isolated server) running. Best-effort: the session or
+    // server may already be gone, and that must not replace `err`.
+    try {
+      tmux(socketName, ["kill-session", "-t", sessionName]);
+    } catch {
+      // Already gone is the outcome cleanup wanted; `err` is the signal.
+    }
     throw err;
   }
 }
