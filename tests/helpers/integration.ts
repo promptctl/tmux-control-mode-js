@@ -82,7 +82,7 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
  * if it reaches terminal "closed" (a failed attach), naming the reason, rather
  * than waiting out `ms`.
  */
-export function waitReady(client: TmuxClient, ms = 8000): Promise<void> {
+export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const settle = (s: ConnectionState): void => {
       if (s.status !== "ready" && s.status !== "closed") return;
@@ -109,14 +109,58 @@ export interface ClientAttachOptions {
 }
 
 /**
+ * Resolve once `client` is ready AND tmux's startup `%session-changed` has
+ * arrived. tmux sends that notification after the greeting that makes the
+ * client ready, and the router re-bootstraps on it (harmless for topology, but
+ * it puts a `list-panes` and an interest recompute on the wire); resolving at
+ * "ready" alone would let both land inside a test that asserts on the command
+ * stream. Rejects at once on terminal "closed" — before or after ready — naming
+ * the reason. Every path clears the timer and both listeners.
+ */
+function waitAttached(client: TmuxClient, ms: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let sawStartup = false;
+    const done = (err?: Error): void => {
+      clearTimeout(timer);
+      client.off("connection-state", onState);
+      client.off("session-changed", onStartup);
+      if (err) reject(err);
+      else resolve();
+    };
+    const check = (): void => {
+      const s = client.connectionState;
+      if (s.status === "closed")
+        done(new Error(`client closed before attach (reason: ${s.reason})`));
+      else if (s.status === "ready" && sawStartup) done();
+    };
+    const onState = (): void => check();
+    const onStartup = (): void => {
+      sawStartup = true;
+      check();
+    };
+    const timer = setTimeout(
+      () =>
+        done(
+          new Error(
+            `client not attached within ${ms}ms (ready: ${client.connectionState.status === "ready"}, startup session-changed: ${sawStartup})`,
+          ),
+        ),
+      ms,
+    );
+    client.on("connection-state", onState);
+    client.on("session-changed", onStartup);
+    check();
+  });
+}
+
+/**
  * Attach a control client to the existing `sessionName` on `socketName` and
- * resolve once it is ready AND tmux's startup `%session-changed` has arrived.
- * tmux sends that notification after the greeting that makes the client
- * ready, and the router re-bootstraps on it; resolving at "ready" alone would
- * let both land inside the caller's test body. A failed attach rejects (closed
- * before ready, or a timeout) and closes the client first, so the spawned
- * child never outlives the failure.
- * [LAW:single-enforcer] The one place an integration test attaches a client.
+ * resolve once it is attached (see waitAttached). A failed attach closes the
+ * client before rejecting, so the spawned child never outlives the failure.
+ * [LAW:single-enforcer] The one place an integration test attaches a client
+ * through `attach-session` for use as a fixture; tests that exercise the
+ * attach itself (connection-state, watch-server, client.test's synchronous
+ * execute) build theirs by hand on purpose.
  */
 export async function attachClient(
   socketName: string,
@@ -131,11 +175,10 @@ export async function attachClient(
     ),
     clientOptions,
   );
-  // Armed before the first await: the startup notification can arrive in the
-  // same chunk as the greeting.
-  const startup = waitForEvent(client, "session-changed", () => true, 8000);
   try {
-    await Promise.all([waitReady(client), startup]);
+    // 8s: under vitest's 10s hook timeout, so a hung attach fails with this
+    // helper's named error and its cleanup, not vitest's generic timeout.
+    await waitAttached(client, 8000);
   } catch (err) {
     client.close();
     throw err;

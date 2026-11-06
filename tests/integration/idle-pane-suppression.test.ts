@@ -17,7 +17,6 @@ import {
   pollUntil,
   attachSession,
   attachClient,
-  type ClientAttachOptions,
 } from "../helpers/integration.js";
 import type { TmuxClient, TmuxClientOptions } from "../../src/client.js";
 import {
@@ -68,34 +67,30 @@ interface Recorded {
   sent: string[];
 }
 
-/** Attach via `connect` through a recording transport, keeping its log. */
-async function recorded(
-  connect: (opts: ClientAttachOptions) => Promise<TmuxClient>,
+/** Create a session on the isolated socket and return a recorded ready client. */
+async function createClient(
+  socketName: string,
+  sessionName: string,
   clientOptions?: TmuxClientOptions,
 ): Promise<Recorded> {
   const sent: string[] = [];
-  const client = await connect({
+  const client = await attachSession(socketName, sessionName, {
     clientOptions,
     wrapTransport: (inner) => recordingTransport(inner, sent),
   });
   return { client, sent };
 }
 
-/** Create a session on the isolated socket and return a ready client. */
-function createClient(
-  socketName: string,
-  sessionName: string,
-  options?: TmuxClientOptions,
-): Promise<Recorded> {
-  return recorded((o) => attachSession(socketName, sessionName, o), options);
-}
-
-/** Attach a (possibly second) control-mode client to an existing session. */
-function attachRecorded(
+/** Attach a recorded (possibly second) control-mode client to a session. */
+async function attachRecorded(
   socketName: string,
   sessionName: string,
 ): Promise<Recorded> {
-  return recorded((o) => attachClient(socketName, sessionName, o));
+  const sent: string[] = [];
+  const client = await attachClient(socketName, sessionName, {
+    wrapTransport: (inner) => recordingTransport(inner, sent),
+  });
+  return { client, sent };
 }
 
 async function listAllPanes(
