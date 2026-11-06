@@ -16,6 +16,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, uniqueName } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import { sendKeys, setSize } from "../../src/commands/index.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
@@ -25,16 +26,6 @@ import type {
 } from "../../packages/pane-terminal/src/sink/index.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-js-pstream-${prefix}-${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2, 7)}`;
-}
-
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 function tmuxCmd(socket: string, args: string): string {
   return `tmux -L ${socket} ${args}`;
@@ -127,7 +118,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let stream: PaneStream | null;
 
     beforeEach(() => {
-      socket = uniqueSocket("ps");
+      socket = uniqueSocket("tmux-js-pstream-", "ps");
       stream = null;
     });
 
@@ -139,7 +130,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it("attach() seeds with capture-pane output + cursor", async () => {
-      session = uniqueSession("seed");
+      session = uniqueName("seed");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
 
@@ -171,7 +162,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
-      session = uniqueSession("size");
+      session = uniqueName("size");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
 

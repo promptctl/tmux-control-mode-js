@@ -8,16 +8,14 @@ import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  waitForEvent,
+  waitReady,
+} from "../helpers/integration.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 function tmuxCmd(socketName: string, args: string): string {
   return `tmux -L ${socketName} ${args}`;
@@ -34,7 +32,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null;
 
     beforeEach(() => {
-      socketName = uniqueSocket("connstate");
+      socketName = uniqueSocket("tmux-js-test-", "connstate");
       client = null;
     });
 
@@ -48,7 +46,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it("transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed", async () => {
-      const sessionName = uniqueSession("connstate");
+      const sessionName = uniqueName("connstate");
       execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
         stdio: "ignore",
       });
@@ -63,39 +61,22 @@ describe.skipIf(!RUN_INTEGRATION)(
       const seen: ConnectionState[] = [];
       client.on("connection-state", (ev) => seen.push(ev.state));
 
-      // [LAW:no-defensive-null-guards] client is non-null once constructed
-      // above; bind it so the Promise-executor closure keeps that fact
-      // instead of widening back to `TmuxClient | null` and forcing a
-      // defensive `?.` on a value that cannot be null here.
-      const activeClient = client;
       // Wait for the client to consume tmux's unsolicited startup
       // %begin/%end greeting (see TmuxClient.awaitingGreeting) — that is
       // what "ready" now means, not merely "first byte received".
-      await new Promise<void>((resolve) => {
-        const onState = (ev: { state: ConnectionState }) => {
-          if (ev.state.status === "ready") {
-            activeClient.off("connection-state", onState);
-            resolve();
-          }
-        };
-        activeClient.on("connection-state", onState);
-      });
+      await waitReady(client);
       expect(client.connectionState).toEqual({ status: "ready" });
 
       // Kill the only session on the isolated socket; tmux's exit-empty
       // default then kills the server out from under the client;
       // observe `closed{exit}`.
-      const closed = new Promise<ConnectionState>((resolve) => {
-        const onState = (ev: { state: ConnectionState }) => {
-          if (ev.state.status === "closed") {
-            client?.off("connection-state", onState);
-            resolve(ev.state);
-          }
-        };
-        client?.on("connection-state", onState);
-      });
+      const closed = waitForEvent(
+        client,
+        "connection-state",
+        (e) => e.state.status === "closed",
+      );
       killServer(socketName);
-      const finalState = await closed;
+      const { state: finalState } = await closed;
       expect(finalState.status).toBe("closed");
       // tmux exits cleanly once its last session is killed: reason is
       // 'exit'. (Some tmux builds may report a SIGTERM-driven

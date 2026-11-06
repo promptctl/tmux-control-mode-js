@@ -13,6 +13,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, uniqueName, pollUntil } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
@@ -28,14 +29,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 // Helpers (mirror tests/integration/pane-scope.test.ts conventions)
 // ---------------------------------------------------------------------------
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-line-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
 function tmuxCmd(socketName: string, args: string): string {
@@ -95,24 +88,6 @@ function emitLineInPane(
     .then(() => undefined);
 }
 
-function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const check = () => {
-      if (pred()) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`waitFor: condition not met within ${timeoutMs} ms`));
-        return;
-      }
-      setTimeout(check, 5);
-    };
-    check();
-  });
-}
-
 /**
  * Block until `marker` is rendered in the pane's visible content.
  *
@@ -152,7 +127,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("line");
+    socketName = uniqueSocket("tmux-line-test-", "line");
   });
 
   afterEach(() => {
@@ -165,7 +140,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-10/15: paneScope + serverScope + paneId carried through ─────────
 
   it("LINE-10: paneScope receives complete lines without trailing newlines", async () => {
-    const session = uniqueSession("p-lines");
+    const session = uniqueName("p-lines");
     client = await createClient(socketName, session);
 
     const panes = await listAllPanes(client);
@@ -179,7 +154,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `LINE10-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await waitFor(() => lines.some((l) => l.line.includes(marker)));
+    await pollUntil(() => lines.some((l) => l.line.includes(marker)));
 
     const matched = lines.find((l) => l.line.includes(marker));
     expect(matched).toBeDefined();
@@ -195,7 +170,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-13: multiple line consumers, one pane (shared decoder) ──────────
 
   it("LINE-13: N consumers on the same pane each receive every line", async () => {
-    const session = uniqueSession("multi");
+    const session = uniqueName("multi");
     client = await createClient(socketName, session);
 
     const panes = await listAllPanes(client);
@@ -216,7 +191,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `LINE13-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await waitFor(
+    await pollUntil(
       () =>
         a.some((l) => l.includes(marker)) &&
         b.some((l) => l.includes(marker)) &&
@@ -239,7 +214,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-14: sessionScope line delivery ──────────────────────────────────
 
   it("LINE-14: sessionScope delivers lines from every pane in the session", async () => {
-    const session = uniqueSession("sess-line");
+    const session = uniqueName("sess-line");
     client = await createClient(socketName, session);
 
     const before = await listAllPanes(client);
@@ -261,7 +236,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
       await emitLineInPane(client, p.paneId, marker);
     }
 
-    await waitFor(() =>
+    await pollUntil(() =>
       [...markers.entries()].every(([paneId, m]) =>
         lines.some((l) => l.paneId === paneId && l.line.includes(m)),
       ),
@@ -276,7 +251,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-15: serverScope across two panes — paneId carried ───────────────
 
   it("LINE-15: serverScope tags each line with the originating paneId", async () => {
-    const session = uniqueSession("srv-line");
+    const session = uniqueName("srv-line");
     client = await createClient(socketName, session);
 
     await client.execute("new-window");
@@ -295,7 +270,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     await emitLineInPane(client, paneA, markerA);
     await emitLineInPane(client, paneB, markerB);
 
-    await waitFor(
+    await pollUntil(
       () =>
         lines.some((l) => l.paneId === paneA && l.line.includes(markerA)) &&
         lines.some((l) => l.paneId === paneB && l.line.includes(markerB)),
@@ -315,7 +290,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── windowScope isolation (parity with SCOPE-05) ──────────────────────────
 
   it("LINE-14b: windowScope delivers panes in the target window, not others", async () => {
-    const session = uniqueSession("win-line");
+    const session = uniqueName("win-line");
     client = await createClient(socketName, session);
 
     await client.execute("new-window");
@@ -338,7 +313,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     await emitLineInPane(client, wantPane, wantMarker);
     await emitLineInPane(client, otherPane, otherMarker);
 
-    await waitFor(() => lines.some((l) => l.line.includes(wantMarker)));
+    await pollUntil(() => lines.some((l) => l.line.includes(wantMarker)));
     // Give other-window output a fair chance to (incorrectly) arrive.
     await new Promise<void>((r) => setTimeout(r, 250));
 
@@ -351,7 +326,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-16: buffered tail flush on detach (no newline) ───────────────────
 
   it("LINE-16: detaching the last consumer flushes a partial trailing line", async () => {
-    const session = uniqueSession("flush");
+    const session = uniqueName("flush");
     client = await createClient(socketName, session);
 
     const panes = await listAllPanes(client);
@@ -394,7 +369,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-17: no extra flush event when buffer is empty ────────────────────
 
   it("LINE-17: detaching a fully-consumed pane produces no extra event", async () => {
-    const session = uniqueSession("noflush");
+    const session = uniqueName("noflush");
     client = await createClient(socketName, session);
 
     const panes = await listAllPanes(client);
@@ -407,7 +382,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `NOFLUSH-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await waitFor(() => lines.some((l) => l.includes(marker)));
+    await pollUntil(() => lines.some((l) => l.includes(marker)));
 
     // Wait for the shell to settle (prompt redraw etc) so the buffer
     // empties as much as possible before we measure. We can't drive tmux
@@ -429,7 +404,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   // ── LINE-18: detach during dispatch — co-consumer still receives ──────────
 
   it("LINE-18: a consumer disposing inside its handler doesn't starve siblings", async () => {
-    const session = uniqueSession("during");
+    const session = uniqueName("during");
     client = await createClient(socketName, session);
 
     const panes = await listAllPanes(client);
@@ -453,7 +428,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `DUR-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await waitFor(
+    await pollUntil(
       () =>
         a.some((l) => l.includes(marker)) && b.some((l) => l.includes(marker)),
     );

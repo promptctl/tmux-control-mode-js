@@ -18,6 +18,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, uniqueName, pollUntil } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
@@ -33,14 +34,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-scope-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
 function tmuxCmd(socketName: string, args: string): string {
@@ -123,28 +116,6 @@ function makeRecordingSink(
   };
 }
 
-/**
- * Wait until at least one recorded entry satisfies `pred`, polling on a
- * 5 ms tick. Rejects after `timeoutMs` (default 8 000).
- */
-function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const check = () => {
-      if (pred()) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`waitFor: condition not met within ${timeoutMs} ms`));
-        return;
-      }
-      setTimeout(check, 5);
-    };
-    check();
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -154,7 +125,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("scope");
+    socketName = uniqueSocket("tmux-scope-test-", "scope");
   });
 
   afterEach(() => {
@@ -167,7 +138,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 1: serverScope baseline ─────────────────────────────────────────
 
   it("SCOPE-01: serverScope receives bytes from panes in multiple windows", async () => {
-    const session = uniqueSession("srv");
+    const session = uniqueName("srv");
     client = await createClient(socketName, session);
 
     const arrived: { paneId: number; data: Uint8Array }[] = [];
@@ -178,7 +149,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(panesInit.length).toBeGreaterThan(0);
     const paneA = panesInit[0].paneId;
     await sendOutputToPane(client, paneA);
-    await waitFor(() => arrived.some((e) => e.paneId === paneA));
+    await pollUntil(() => arrived.some((e) => e.paneId === paneA));
 
     // Create a second window and produce output in its pane. Server scope
     // must deliver bytes from BOTH windows — it is not scoped to a session,
@@ -191,7 +162,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(newPanes.length).toBeGreaterThan(0);
     const paneB = newPanes[0].paneId;
     await sendOutputToPane(client, paneB);
-    await waitFor(() => arrived.some((e) => e.paneId === paneB));
+    await pollUntil(() => arrived.some((e) => e.paneId === paneB));
 
     dispose();
   }, 15000);
@@ -199,7 +170,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 2: paneScope isolation ───────────────────────────────────────────
 
   it("SCOPE-02: paneScope delivers only the subscribed pane", async () => {
-    const session = uniqueSession("pane-iso");
+    const session = uniqueName("pane-iso");
     client = await createClient(socketName, session);
 
     // Create a second window so we have two distinct panes.
@@ -223,7 +194,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Output from %X must arrive.
     await sendOutputToPane(client, paneX);
-    await waitFor(() => arrived.some((e) => e.paneId === paneX));
+    await pollUntil(() => arrived.some((e) => e.paneId === paneX));
 
     // Output from %Y must not arrive (wait briefly and assert empty for Y).
     await sendOutputToPane(client, paneY);
@@ -237,7 +208,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 3: sessionScope inclusion ───────────────────────────────────────
 
   it("SCOPE-03: sessionScope delivers bytes from all panes in the session", async () => {
-    const session = uniqueSession("sess-inc");
+    const session = uniqueName("sess-inc");
     client = await createClient(socketName, session);
 
     // Initial state: one pane in one window.
@@ -265,7 +236,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesAfter) {
       await sendOutputToPane(client, p.paneId);
     }
-    await waitFor(() =>
+    await pollUntil(() =>
       panesAfter.every((p) => arrived.some((e) => e.paneId === p.paneId)),
     );
 
@@ -279,7 +250,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
 
   it("SCOPE-04: sessionScope tracks a new window created after subscription", async () => {
-    const session = uniqueSession("sess-dyn");
+    const session = uniqueName("sess-dyn");
     client = await createClient(socketName, session);
 
     const allBefore = await listAllPanes(client);
@@ -309,7 +280,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Output in the new pane must arrive via the existing sessionScope subscription.
     await sendOutputToPane(client, newPane);
-    await waitFor(() => arrived.some((e) => e.paneId === newPane));
+    await pollUntil(() => arrived.some((e) => e.paneId === newPane));
 
     dispose();
   }, 15000);
@@ -317,7 +288,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 5: windowScope inclusion + isolation ─────────────────────────────
 
   it("SCOPE-05: windowScope delivers panes in target window, not others", async () => {
-    const session = uniqueSession("win-iso");
+    const session = uniqueName("win-iso");
     client = await createClient(socketName, session);
 
     // Create a second window.
@@ -349,7 +320,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesInN) {
       await sendOutputToPane(client, p.paneId);
     }
-    await waitFor(() =>
+    await pollUntil(() =>
       panesInN.every((p) => arrived.some((e) => e.paneId === p.paneId)),
     );
 
@@ -368,11 +339,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 6: pane move (sessionScope) ─────────────────────────────────────
 
   it("SCOPE-06: sessionScope excludes a window moved out of the session", async () => {
-    const sessionA = uniqueSession("move-a");
+    const sessionA = uniqueName("move-a");
     client = await createClient(socketName, sessionA);
 
     // Create a second session to move a window into.
-    const sessionB = uniqueSession("move-b");
+    const sessionB = uniqueName("move-b");
     execSync(tmuxCmd(socketName, `new-session -d -s ${sessionB}`), {
       stdio: "ignore",
     });
@@ -430,7 +401,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 7: multi-scope dispatch (no duplication) ─────────────────────────
 
   it("SCOPE-07: serverScope + paneScope each fire exactly once per chunk", async () => {
-    const session = uniqueSession("multi");
+    const session = uniqueName("multi");
     client = await createClient(socketName, session);
 
     const allPanes = await listAllPanes(client);
@@ -461,7 +432,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     await sendOutputToPane(client, paneX);
     // Wait until at least one chunk arrived via each path.
-    await waitFor(() => serverCount > 0 && paneCount > 0);
+    await pollUntil(() => serverCount > 0 && paneCount > 0);
 
     // Both sinks fired; neither double-fired relative to the other.
     // (Counts equal because each chunk routes through each matching scope exactly once.)
@@ -478,7 +449,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // bootstrap must seed a table with multiple panes. This exercises the
     // seed path for pre-existing panes — the client's own list-panes -a
     // query must populate topology before the first byte from any pane.
-    const sessionX = uniqueSession("boot-x");
+    const sessionX = uniqueName("boot-x");
     execSync(tmuxCmd(socketName, `new-session -d -s ${sessionX}`), {
       stdio: "ignore",
     });
@@ -525,7 +496,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of allPanes) {
       await sendOutputToPane(c, p.paneId);
     }
-    await waitFor(() =>
+    await pollUntil(() =>
       allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)),
     );
 
@@ -535,7 +506,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 9: no-consumer fast path ─────────────────────────────────────────
 
   it("SCOPE-09: zero-attachment path produces no dispatch work", async () => {
-    const session = uniqueSession("noconsumer");
+    const session = uniqueName("noconsumer");
     client = await createClient(socketName, session);
 
     const allPanes = await listAllPanes(client);
@@ -552,12 +523,12 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 10: two-session isolation ───────────────────────────────────────
 
   it("SCOPE-10: sessionScope($A) receives bytes from $A but NOT from $B", async () => {
-    const sessionA = uniqueSession("iso-a");
+    const sessionA = uniqueName("iso-a");
     client = await createClient(socketName, sessionA);
 
     // Create session B independently — the control-mode client attached to
     // A can still send commands targeting B's pane (the server is shared).
-    const sessionB = uniqueSession("iso-b");
+    const sessionB = uniqueName("iso-b");
     execSync(tmuxCmd(socketName, `new-session -d -s ${sessionB}`), {
       stdio: "ignore",
     });
@@ -585,7 +556,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // Output from A's pane must arrive.
     const paneA = panesA[0].paneId;
     await sendOutputToPane(client, paneA);
-    await waitFor(() => arrived.some((e) => e.paneId === paneA));
+    await pollUntil(() => arrived.some((e) => e.paneId === paneA));
 
     // Output from B's pane — sent via the same control-mode client which has
     // server-wide command authority — must NOT arrive to A's sessionScope sink.
@@ -600,7 +571,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   // ── Test 11: window-kill removes panes from routing ───────────────────────
 
   it("SCOPE-11: killing a window removes its panes from sessionScope routing", async () => {
-    const session = uniqueSession("wkill");
+    const session = uniqueName("wkill");
     client = await createClient(socketName, session);
 
     // Create a second window so we have two to work with.
@@ -631,7 +602,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of allPanes) {
       await sendOutputToPane(client, p.paneId);
     }
-    await waitFor(() =>
+    await pollUntil(() =>
       allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)),
     );
     arrived.length = 0; // reset
@@ -648,7 +619,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesInKept) {
       await sendOutputToPane(client, p.paneId);
     }
-    await waitFor(() =>
+    await pollUntil(() =>
       panesInKept.every((p) => arrived.some((e) => e.paneId === p.paneId)),
     );
 
