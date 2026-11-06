@@ -11,10 +11,7 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
-import {
-  killTmuxServer,
-  type TEST_SOCKET_PREFIXES,
-} from "./reap-test-sockets.js";
+import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 
 /** A socket family the reaper collects; any other prefix would leak. */
 export type TestSocketPrefix = (typeof TEST_SOCKET_PREFIXES)[number];
@@ -32,7 +29,7 @@ export function uniqueSocket(family: TestSocketPrefix, tag: string): string {
   return `${family}${tag}-${uniqueSuffix()}`;
 }
 
-export { tmux } from "./tmux-cli.js";
+export { tmux };
 
 /** A session (or other tmux object) name unique per test invocation. */
 export function uniqueName(tag: string): string {
@@ -207,9 +204,13 @@ export async function attachSession(
     return await attachClient(socketName, sessionName, attach);
   } catch (err) {
     // The session is this helper's; a failed attach must not leave it (and,
-    // via it, the isolated server) running. Best-effort: the server may
-    // already be gone, and that must not replace `err`.
-    killTmuxServer(socketName);
+    // via it, the isolated server) running. Best-effort: the session or
+    // server may already be gone, and that must not replace `err`.
+    try {
+      tmux(socketName, ["kill-session", "-t", sessionName]);
+    } catch {
+      // Already gone is the outcome cleanup wanted; `err` is the signal.
+    }
     throw err;
   }
 }

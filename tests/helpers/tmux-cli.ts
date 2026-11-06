@@ -8,8 +8,8 @@ import { execFileSync } from "node:child_process";
  * some: an element ending in `;` is a command separator, and format-taking
  * arguments (`-F`, `-c`, display formats) still expand `#{...}`. stderr is
  * piped so a failure's error carries tmux's reason.
- * [LAW:single-enforcer] The one place a test builds a tmux invocation against
- * a server. Kept free of src/ imports so the reaper's globalSetup can share it.
+ * [LAW:single-enforcer] The one place a vitest suite builds a tmux invocation
+ * against a server (the Playwright specs in tests/e2e keep their own). Kept free of src/ imports so the reaper's globalSetup can share it.
  */
 export function tmux(socketName: string, args: readonly string[]): string {
   return execFileSync("tmux", ["-f", "/dev/null", "-L", socketName, ...args], {

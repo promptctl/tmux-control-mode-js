@@ -62,8 +62,7 @@ export interface ReapOptions {
   // behavioral test injects a temp dir so it needs no real tmux.
   dir?: string | null;
   // Best-effort termination of a live daemon before its socket is unlinked.
-  // Defaults to killing every session on the socket (tmux's `exit-empty`
-  // default then exits the now-sessionless server); the test injects a no-op.
+  // Defaults to `kill-server` on the socket; the test injects a no-op.
   killServer?: (socket: string) => void;
 }
 
@@ -71,17 +70,11 @@ export interface ReapOptions {
 // implementation instead of re-declaring it. [LAW:one-source-of-truth]
 export function killTmuxServer(socket: string): void {
   try {
-    const names = tmux(socket, ["list-sessions", "-F", "#{session_name}"])
-      .split("\n")
-      .filter((line) => line.length > 0);
-    for (const name of names) {
-      tmux(socket, ["kill-session", "-t", name]);
-    }
+    tmux(socket, ["kill-server"]);
   } catch {
-    // A stale socket file has no live server to list sessions from — that
-    // failing here is the expected "already dead" case, not a swallowed
-    // error: the unlink below is the actual reap and it is allowed to fail
-    // loudly.
+    // A stale socket file has no live server to kill — that failing here is
+    // the expected "already dead" case, not a swallowed error: the unlink
+    // below is the actual reap and it is allowed to fail loudly.
   }
 }
 

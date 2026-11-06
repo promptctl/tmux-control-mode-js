@@ -737,12 +737,16 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
       );
     const deadline = Date.now() + 8_000;
     while (!hasA() && Date.now() < deadline) {
-      await fx.tmux.execute(`send-keys -t %${paneA} 'echo ws-int21-a' Enter`);
+      await fx.tmux.execute(
+        `send-keys -t %${paneA} "printf 'ws-%s' int21-a" Enter`,
+      );
       await new Promise<void>((r) => setTimeout(r, 200));
     }
     expect(hasA()).toBe(true);
 
-    await fx.tmux.execute(`send-keys -t %${paneB!} 'echo ws-int21-b' Enter`);
+    await fx.tmux.execute(
+      `send-keys -t %${paneB!} "printf 'ws-%s' int21-b" Enter`,
+    );
     // Brief wait to catch any session B leakage.
     await new Promise<void>((r) => setTimeout(r, 500));
 
