@@ -447,8 +447,9 @@ function parseWindowId(out: string): number {
  * What a probe is handed: the attached control client plus the isolated
  * socket/session, so a probe can drive side channels (a second client, a
  * window in another session) on the SAME server. `exec` runs a tmux argv
- * against the isolated socket; probes ask for effects, they don't format
- * sockets.
+ * against the isolated socket.
+ * [LAW:single-enforcer] Only the probe runner wires `exec` (via the shared
+ * tmux()); probes ask for effects, they don't format sockets.
  */
 interface ProbeCtx {
   readonly client: TmuxClient;
@@ -1113,7 +1114,8 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       // Created via tmux's own CLI, not as a control-mode command string:
       // tmux's control-mode tokenizer's handling of a literal tab inside a
       // quoted -c argument has been observed to vary by tmux version. The
-      // CLI receives weirdDir as one argv element, so no parser is involved.
+      // CLI receives weirdDir as one argv element, so no tokenizer splits it
+      // (tmux still format-expands -c; weirdDir has no `#`).
       tmux(socketName, [
         "new-window",
         "-t",

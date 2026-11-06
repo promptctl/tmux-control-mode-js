@@ -49,26 +49,18 @@ describe.skipIf(!RUN_INTEGRATION)(
 
     beforeEach(async () => {
       socketName = uniqueSocket("tmux-js-test-", "watch");
-      tmux(socketName, [
-        "new-session",
-        "-d",
-        "-s",
-        "a",
-        "-x",
-        "120",
-        "-y",
-        "40",
-      ]);
-      tmux(socketName, [
-        "new-session",
-        "-d",
-        "-s",
-        "b",
-        "-x",
-        "120",
-        "-y",
-        "40",
-      ]);
+      for (const s of ["a", "b"]) {
+        tmux(socketName, [
+          "new-session",
+          "-d",
+          "-s",
+          s,
+          "-x",
+          "120",
+          "-y",
+          "40",
+        ]);
+      }
       watcher = new TmuxClient(
         spawnTmux(watchServerArgs("a"), { socketPath: socketName }),
         { idlePaneSuppression: true },

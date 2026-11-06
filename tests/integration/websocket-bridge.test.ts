@@ -682,41 +682,32 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     const sessionBName = `s-bytes-scope-B-${Date.now()}`;
     await fx.tmux.execute(`new-session -d -s ${sessionBName}`);
 
-    // Get all panes — find one in $A (original session) and one in $B.
-    const listResp = await fx.tmux.execute(
-      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-    );
-    let paneA: number | null = null;
-    let paneB: number | null = null;
-    for (const line of listResp.output) {
-      const p = parsePaneListLine(line);
-      if (p === null) continue;
-      if (paneA === null && p.sessionId !== -1) {
-        // First pane from the session we attached (session with the tmux client).
-        // The tmux client's session is the one named fx.sessionName; find it
-        // by querying session ID.
-        paneA = p.paneId;
-      } else if (paneB === null) {
-        paneB = p.paneId;
-      }
-      if (paneA !== null && paneB !== null) break;
-    }
-    expect(paneA).not.toBeNull();
-    expect(paneB).not.toBeNull();
-
     // Determine the session ID for session A (the original session).
     const sessionIdResp = await fx.tmux.execute(
       `list-sessions -F '#{session_id} #{session_name}'`,
     );
-    let sessionAId: string | null = null;
+    let sessionAId: number | null = null;
     for (const line of sessionIdResp.output) {
-      const m = line.match(/^(\$\d+)\s+(.+)$/);
+      const m = line.match(/^\$(\d+)\s+(.+)$/);
       if (m && m[2] === fx.sessionName) {
-        sessionAId = m[1];
+        sessionAId = Number(m[1]);
         break;
       }
     }
     expect(sessionAId).not.toBeNull();
+
+    // Pick each pane by its session, never by list position: list-panes -a
+    // order is not a contract, and assuming it made paneA land in $B.
+    const listResp = await fx.tmux.execute(
+      "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
+    );
+    const panes = listResp.output
+      .map(parsePaneListLine)
+      .filter((p) => p !== null);
+    const paneA = panes.find((p) => p.sessionId === sessionAId)?.paneId;
+    const paneB = panes.find((p) => p.sessionId !== sessionAId)?.paneId;
+    expect(paneA).toBeDefined();
+    expect(paneB).toBeDefined();
 
     const { client } = createWsBackedClient(fx.url);
     await waitForState(client, "ready");
@@ -731,28 +722,29 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
         },
         end() {},
       },
-      // sessionAId is "$N" — sessionScope takes the numeric N.
-      { scope: sessionScope(parseInt(sessionAId!.slice(1), 10)) },
+      { scope: sessionScope(sessionAId!) },
     );
 
-    // Drive output in session A's pane and session B's pane.
-    await fx.tmux.execute(`send-keys -t %${paneA} 'echo ws-int21-a' Enter`);
-    await fx.tmux.execute(`send-keys -t %${paneB!} 'echo ws-int21-b' Enter`);
-
-    // Wait for session A's bytes to arrive.
+    // The scope matches a pane only once the attach-triggered topology
+    // bootstrap lands, and that resolves over the WebSocket after
+    // attachBytesSink returns. Re-provoke A until its bytes arrive: that
+    // observation is the proof the scope is live, so B's provocation below
+    // tests exclusion rather than racing the bootstrap.
+    // [LAW:no-ambient-temporal-coupling]
     const hasA = () =>
       (received.get(paneA!) ?? []).some((d) =>
         Buffer.from(d).toString().includes("ws-int21-a"),
       );
     const deadline = Date.now() + 8_000;
     while (!hasA() && Date.now() < deadline) {
-      await new Promise<void>((r) => setTimeout(r, 30));
+      await fx.tmux.execute(`send-keys -t %${paneA} 'echo ws-int21-a' Enter`);
+      await new Promise<void>((r) => setTimeout(r, 200));
     }
-
-    // Brief extra wait to catch any session B leakage.
-    await new Promise<void>((r) => setTimeout(r, 500));
-
     expect(hasA()).toBe(true);
+
+    await fx.tmux.execute(`send-keys -t %${paneB!} 'echo ws-int21-b' Enter`);
+    // Brief wait to catch any session B leakage.
+    await new Promise<void>((r) => setTimeout(r, 500));
 
     // Session B's pane should not have delivered bytes to this scope.
     const hasB = (received.get(paneB!) ?? []).some((d) =>

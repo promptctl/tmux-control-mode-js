@@ -14,9 +14,9 @@
 // vitest globalSetup (reap before AND after every run); the seams below let the
 // behavioral test drive it against a temp dir with no real tmux.
 
-import { execSync } from "node:child_process";
 import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmux } from "./tmux-cli.js";
 
 // [LAW:one-source-of-truth] The canonical registry of socket-name prefixes the
 // suite mints. Every `tmux -L <name>` a test allocates begins with one of these.
@@ -71,19 +71,11 @@ export interface ReapOptions {
 // implementation instead of re-declaring it. [LAW:one-source-of-truth]
 export function killTmuxServer(socket: string): void {
   try {
-    const names = execSync(
-      `tmux -L ${socket} list-sessions -F '#{session_name}'`,
-      {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-    )
+    const names = tmux(socket, ["list-sessions", "-F", "#{session_name}"])
       .split("\n")
       .filter((line) => line.length > 0);
     for (const name of names) {
-      execSync(`tmux -L ${socket} kill-session -t ${name}`, {
-        stdio: "ignore",
-      });
+      tmux(socket, ["kill-session", "-t", name]);
     }
   } catch {
     // A stale socket file has no live server to list sessions from — that

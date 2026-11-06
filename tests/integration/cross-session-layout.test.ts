@@ -84,17 +84,15 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
 
       const events = await settle();
       expect(events.length).toBeGreaterThanOrEqual(1);
-      const sessionIds = await (async () => {
-        const out = tmux(socketName, [
+      const expectedSessionId = Number(
+        tmux(socketName, [
           "display-message",
           "-p",
           "-t",
           sessionB,
           "#{session_id}",
-        ]);
-        return out;
-      })();
-      const expectedSessionId = Number(sessionIds.replace("$", ""));
+        ]).replace("$", ""),
+      );
       expect(events.some((e) => e.sessionId === expectedSessionId)).toBe(true);
       // Classic checksum-string format, matching native %layout-change —
       // never the tmux-3.8+ JSON `#{window_layout}` rendering.
@@ -256,9 +254,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
         "-t",
         sessionB,
         "#{window_id}",
-      ])
-        .trim()
-        .replace("@", ""),
+      ]).replace("@", ""),
     );
 
     const clientA = await attachClient(socketName, sessionA);
