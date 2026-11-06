@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { includeIgnoreFile } from "@eslint/compat";
 import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 import eslintConfigPrettier from "eslint-config-prettier";
@@ -20,13 +22,11 @@ export default tseslint.config(
   ...tseslint.configs.strict,
   ...tseslint.configs.stylistic,
   eslintConfigPrettier,
+  // [LAW:one-source-of-truth] .gitignore decides what is not source, as it
+  // does for prettier; ESLint does not read it on its own.
+  includeIgnoreFile(fileURLToPath(new URL(".gitignore", import.meta.url))),
   {
-    ignores: [
-      "dist/**",
-      "node_modules/**",
-      "**/dist/**",
-      "packages/pane-terminal/eslint/**",
-    ],
+    ignores: ["packages/pane-terminal/eslint/**"],
   },
   {
     plugins: { "pane-terminal": paneTerminal },

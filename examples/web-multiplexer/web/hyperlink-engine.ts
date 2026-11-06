@@ -396,7 +396,7 @@ export class HyperlinkEngine {
       (a, b) => a.lastSeq - b.lastSeq,
     );
     const drop = this.registry.size - this.capacity;
-    for (const link of ordered.slice(0, drop)) this.registry.delete(link.uri);
+    for (let i = 0; i < drop; i++) this.registry.delete(ordered[i].uri);
   }
 }
 

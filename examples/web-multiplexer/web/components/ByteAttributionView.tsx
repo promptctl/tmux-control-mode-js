@@ -28,8 +28,10 @@ import {
   Switch,
 } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
-import type { ByteAttributionStore } from "../byte-attribution-store.ts";
-import { type PaneStat } from "../byte-attribution-store.ts";
+import type {
+  ByteAttributionStore,
+  PaneStat,
+} from "../byte-attribution-store.ts";
 import type { AttributedCell } from "../byte-attribution-engine.ts";
 import { parseEscapes, type EscapeEvent } from "../escape-parse-engine.ts";
 

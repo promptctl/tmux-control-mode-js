@@ -55,8 +55,9 @@ export function createWrapperTracker<L extends object, W>(): WrapperTracker<
       const map = byChannel.get(channel);
       if (map === undefined) return null;
       const arr = map.get(listener);
-      const wrapper = arr?.pop();
-      if (arr === undefined || wrapper === undefined) return null;
+      if (arr === undefined) return null;
+      const wrapper = arr.pop();
+      if (wrapper === undefined) return null;
       if (arr.length === 0) {
         map.delete(listener);
         if (map.size === 0) byChannel.delete(channel);

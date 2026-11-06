@@ -49,7 +49,7 @@ export interface MirrorViewer {
 interface Hub {
   readonly paneId: number;
   readonly viewers: Set<MirrorViewer>;
-  dispose: () => void;
+  readonly dispose: () => void;
 }
 
 /** How often to re-check that every mirrored pane still exists. */
@@ -172,23 +172,21 @@ export class MirrorRegistry {
     if (existing !== undefined) return existing;
 
     const { client, dir } = this.ensureClient();
+    const viewers = new Set<MirrorViewer>();
     const hub: Hub = {
       paneId,
-      viewers: new Set(),
-      dispose: () => {
-        // no-op: placeholder until the tap below installs the real disposer.
-      },
+      viewers,
+      dispose: tapPaneToFifo(
+        (command) => client.execute(command),
+        dir,
+        paneId,
+        (data) => {
+          for (const v of viewers) v.sendBytes(data);
+        },
+        // A tap that fails to stand up / errors mid-stream means the pane is gone.
+        { onReadError: () => this.endHub(hub) },
+      ),
     };
-    hub.dispose = tapPaneToFifo(
-      (command) => client.execute(command),
-      dir,
-      paneId,
-      (data) => {
-        for (const v of hub.viewers) v.sendBytes(data);
-      },
-      // A tap that fails to stand up / errors mid-stream means the pane is gone.
-      { onReadError: () => this.endHub(hub) },
-    );
     this.hubs.set(paneId, hub);
     this.startLiveness();
     return hub;

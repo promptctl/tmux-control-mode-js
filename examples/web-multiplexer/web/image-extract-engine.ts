@@ -375,10 +375,10 @@ function expandRawToRgba(
   for (let p = 0; p < pixels; p++) {
     const src = p * channels;
     const dst = p * 4;
-    // Copy R,G,B (and A when present); the length check above keeps every
-    // subarray in bounds.
-    rgba.set(bytes.subarray(src, src + channels), dst);
-    if (channels === 3) rgba[dst + 3] = 255;
+    rgba[dst] = bytes[src];
+    rgba[dst + 1] = bytes[src + 1];
+    rgba[dst + 2] = bytes[src + 2];
+    rgba[dst + 3] = channels === 4 ? bytes[src + 3] : 255;
   }
   return rgba;
 }
@@ -433,8 +433,8 @@ function decodeSixel(body: number[]): DecodeResult | null {
 
   try {
     for (let i = 0; i < data.length; ) {
-      const ch = data.charAt(i);
-      const code = data.charCodeAt(i);
+      const ch = data[i];
+      const code = ch.charCodeAt(0);
       if (code >= 0x3f && code <= 0x7e) {
         paintColumn(code);
         i++;
@@ -572,11 +572,7 @@ function defaultSixelPalette(): Map<number, Rgb> {
     { r: 204, g: 204, b: 51 },
     { r: 135, g: 135, b: 135 },
   ];
-  for (let i = 0; i < 256; i++) {
-    const color = base[i % base.length];
-    if (color === undefined) throw new Error("sixel base palette is empty");
-    p.set(i, color);
-  }
+  for (let i = 0; i < 256; i++) p.set(i, base[i % base.length]);
   return p;
 }
 

@@ -122,7 +122,6 @@ describe("Gate 3 — heap delta over 60s of detached output", () => {
     // it must say so loudly rather than silently passing. CI wires --expose-gc
     // in the bench:gate script.
     expect(true).toBe(true);
-
     console.warn(
       "[gate-3] skipped: launch node with --expose-gc to enable the heap-delta gate.",
     );

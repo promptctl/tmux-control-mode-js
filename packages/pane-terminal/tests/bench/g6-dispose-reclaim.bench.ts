@@ -226,7 +226,6 @@ describe("Gate 6 — dispose() reclaim", () => {
   it("declares the SKIP reason when --expose-gc is not present", () => {
     if (gc !== null) return;
     expect(true).toBe(true);
-
     console.warn(
       "[gate-6] skipped: launch node with --expose-gc to enable the dispose-reclaim gate.",
     );
