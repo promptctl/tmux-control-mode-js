@@ -58,6 +58,9 @@ type RunCommand = (cmd: string) => Promise<CommandResponse>;
  *   optional callback: a TopologyRouter that silently drops bootstrap failures
  *   is not constructible.
  */
+// Cap on output held for unplaced panes (see TopologyRouter.hold).
+export const HELD_BYTES_LIMIT = 4 * 1024 * 1024;
+
 export type ReportTopologyError = (error: Error) => void;
 
 // [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
@@ -121,6 +124,21 @@ export class TopologyRouter {
   // [LAW:effects-at-boundaries] The one seam from a failed bootstrap effect to
   //   the outside world. The router computes; this reports.
   private readonly reportTopologyError: ReportTopologyError;
+
+  // Chunks for panes topology did not know when they arrived, held while a
+  // topology query that may place them is outstanding. Each carries the attach
+  // seq at arrival so replay never reaches a sink attached afterwards.
+  // Empty is the resting state; releaseHeld() drains it after every query and
+  // onTransportClose() discards it with the connection.
+  private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
+  // Bytes in `held`, and bytes refused because holding them would exceed
+  // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
+  private heldBytes = 0;
+  private refusedBytes = 0;
+  // Topology queries started and not yet settled. Only bootstrap() and
+  // refreshWindow() start queries, so the router owns this count; the epoch
+  // tracker answers staleness, not liveness.
+  private inFlight = 0;
 
   constructor(
     reportTopologyError: ReportTopologyError,
@@ -210,6 +228,9 @@ export class TopologyRouter {
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
+    this.held = [];
+    this.heldBytes = 0;
+    this.refusedBytes = 0;
     this.sinks.endAll();
   }
 
@@ -257,7 +278,80 @@ export class TopologyRouter {
    * attach still matches future chunks for matching panes).
    */
   dispatchBytes(payload: ChunkPayload): void {
-    this.sinks.dispatch(payload, this.topology.get(payload.paneId));
+    const meta = this.topology.get(payload.paneId);
+    this.sinks.dispatch(payload, meta);
+    // A pane topology does not know yet matched no window/session scope. If a
+    // query in flight may still place it, hold the chunk for replay instead of
+    // losing it: output provoked from another tmux client is not ordered with
+    // our command stream, so it can land before the attach-triggered
+    // bootstrap (or a window-add refresh) does.
+    if (
+      meta === undefined &&
+      this.sinks.hasTopologyDependentSinks() &&
+      this.inFlight > 0
+    ) {
+      this.hold(payload);
+    }
+  }
+
+  // [LAW:no-silent-failure] A query can stall (tmux's command queue is serial:
+  //   one `run-shell 'sleep 30'` delays every reply behind it), so the hold is
+  //   capped. Past the cap the newest chunks are refused, keeping the earliest
+  //   output this hold exists for, and the refusal is reported, not hidden.
+  private hold(payload: ChunkPayload): void {
+    const size = payload.data.byteLength;
+    if (this.heldBytes + size > HELD_BYTES_LIMIT) {
+      this.refusedBytes += size;
+      return;
+    }
+    this.heldBytes += size;
+    // ChunkPayload data may not be retained past dispatch; copy to hold.
+    this.held.push({
+      chunk: { ...payload, data: payload.data.slice() },
+      attachedBy: this.sinks.attachSeq(),
+    });
+  }
+
+  // Replay every held chunk whose pane topology now knows, in arrival order,
+  // to the window/session attachments that existed when it arrived. Chunks
+  // still unplaced wait while a query remains outstanding; once none does,
+  // nothing can place them and they are dropped (pane/server sinks already got
+  // them live). Runs synchronously at the end of every query, so per-pane
+  // order holds against any chunk dispatched after it.
+  // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
+  //   an empty list makes it a no-op.
+  private releaseHeld(): void {
+    const pending = this.held;
+    const run = this.runCommand;
+    this.held = [];
+    this.heldBytes = 0;
+    if (this.refusedBytes > 0) {
+      this.reportTopologyError(
+        new Error(
+          `topology hold overflow: ${this.refusedBytes} bytes of early output ` +
+            `for unplaced panes were not delivered to session/window sinks`,
+        ),
+      );
+      this.refusedBytes = 0;
+    }
+    for (const h of pending) {
+      // A replayed sink's write may close the transport; the rest of this
+      // episode's chunks go with it.
+      if (this.runCommand !== run) return;
+      const meta = this.topology.get(h.chunk.paneId);
+      if (meta !== undefined) {
+        this.sinks.dispatch(h.chunk, meta, {
+          kind: "replay",
+          attachedBy: h.attachedBy,
+        });
+      } else if (this.inFlight > 0) {
+        // Read per chunk: a replayed sink's write may attach a topology sink,
+        // which starts a query that can still place the rest.
+        // Already copied and counted once; re-holding cannot exceed the cap.
+        this.held.push(h);
+        this.heldBytes += h.chunk.data.byteLength;
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -326,11 +420,25 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startBootstrap();
+    this.inFlight++;
     try {
       const r = await run(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
       );
-      if (!this.epoch.isBootstrapCurrent(gen)) return;
+      if (!this.epoch.isBootstrapCurrent(gen)) {
+        // A window-close mid-flight makes this result stale without starting a
+        // replacement. Still the latest bootstrap means nothing newer will
+        // seed, so re-query: otherwise the topology stays empty and every held
+        // chunk is dropped. The re-run counts itself in flight before this
+        // finally releases, so held chunks wait for it.
+        if (
+          this.runCommand === run &&
+          this.needsTopology() &&
+          this.epoch.isLatestBootstrap(gen)
+        )
+          void this.bootstrap();
+        return;
+      }
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
         return parsed !== null ? [parsed] : [];
@@ -368,6 +476,9 @@ export class TopologyRouter {
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
       this.reportTopologyError(bootstrapError(err));
+    } finally {
+      this.inFlight--;
+      this.releaseHeld();
     }
   }
 
@@ -375,6 +486,7 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startWindowRefresh(windowId);
+    this.inFlight++;
     try {
       const r = await run(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
@@ -389,8 +501,14 @@ export class TopologyRouter {
       this.topology.updateWindow(windowId, entries);
       this.interest?.recompute();
     } catch {
+      // [LAW:single-enforcer] Same staleness authority as the success path: a
+      //   newer refresh or a window-close owns this window now.
+      if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+    } finally {
+      this.inFlight--;
+      this.releaseHeld();
     }
   }
 }

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { TopologyRouter } from "../../src/topology-router.js";
+import { HELD_BYTES_LIMIT, TopologyRouter } from "../../src/topology-router.js";
 import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
@@ -561,5 +561,212 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     expect(errors[0]?.message).toMatch(/^topology bootstrap failed:/);
     // The raw thrown value is preserved as `.cause`.
     expect((errors[0] as Error & { cause?: unknown })?.cause).toBe(weird);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Held chunks: output for a pane topology does not know yet, while a query
+// that may place it is in flight, reaches topology-scoped sinks once placed.
+// ---------------------------------------------------------------------------
+
+describe("TopologyRouter — chunks that arrive before topology places their pane", () => {
+  // A runner whose replies the test releases one at a time, in order.
+  function controlledRun() {
+    const replies: {
+      cmd: string;
+      resolve: (r: CommandResponse) => void;
+      reject: (e: unknown) => void;
+    }[] = [];
+    const run = (cmd: string) =>
+      new Promise<CommandResponse>((resolve, reject) => {
+        replies.push({ cmd, resolve, reject });
+      });
+    return { run, replies };
+  }
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+  const paneIdsOf = (s: ReturnType<typeof makeSink>) =>
+    s.chunks.map((c) => c.paneId);
+
+  it("delivers a chunk that beat the attach-triggered bootstrap once it lands", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+
+    router.dispatchBytes(makeChunk(5));
+    expect(sink.chunks).toHaveLength(0);
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
+  it("delivers a chunk that beat a window-add refresh once it lands", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: windowScope(3) });
+    replies[0]!.resolve(makeOkResponse([]));
+    await settle();
+
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    router.dispatchBytes(makeChunk(7));
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
+  it("keeps per-pane order: a held chunk is replayed before later chunks", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+
+    router.dispatchBytes(makeChunk(5, new Uint8Array([1])));
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(5, new Uint8Array([2])));
+    expect(sink.chunks.map((c) => c.data[0])).toEqual([1, 2]);
+  });
+
+  it("does not replay to a sink attached after the chunk arrived", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const early = makeSink();
+    router.attachBytesSink(early, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    const late = makeSink();
+    router.attachBytesSink(late, { scope: sessionScope(1) });
+
+    for (const r of replies) r.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(early)).toEqual([5]);
+    expect(late.chunks).toHaveLength(0);
+  });
+
+  it("does not duplicate the chunk to pane- or server-scoped sinks", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    const server = makeSink();
+    const pane = makeSink();
+    router.attachBytesSink(server);
+    router.attachBytesSink(pane, { scope: paneScope(5) });
+
+    router.dispatchBytes(makeChunk(5));
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(server)).toEqual([5]);
+    expect(paneIdsOf(pane)).toEqual([5]);
+  });
+
+  it("waits for the superseding bootstrap rather than dropping at the stale one", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    router.handleNotification({ type: "sessions-changed" });
+
+    replies[0]!.resolve(makeOkResponse([])); // stale, places nothing
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
+  it("re-queries when a window-close makes the only bootstrap stale", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.handleNotification({ type: "window-close", windowId: 9 });
+    router.dispatchBytes(makeChunk(5));
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"])); // stale: closed @9
+    await settle();
+    expect(replies).toHaveLength(2);
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
+  it("a superseded refresh that fails does not remove the window", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: windowScope(3) });
+    replies[0]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    replies[1]!.reject(new Error("stale refresh failed"));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
+  it("drops held chunks once no query can place them (failed bootstrap)", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    replies[0]!.reject(new Error("boom"));
+    await settle();
+
+    // A later bootstrap placing %5 must not resurrect the dropped chunk.
+    router.handleNotification({ type: "sessions-changed" });
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+  });
+
+  it("replays the bytes as they arrived, not a buffer reused since", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    const buf = new Uint8Array([1]);
+    router.dispatchBytes(makeChunk(5, buf));
+    buf[0] = 9;
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks.map((c) => c.data[0])).toEqual([1]);
+  });
+
+  it("refuses output past the hold cap and reports it", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5, new Uint8Array(HELD_BYTES_LIMIT)));
+    router.dispatchBytes(makeChunk(5, new Uint8Array(1)));
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks.map((c) => c.data.byteLength)).toEqual([
+      HELD_BYTES_LIMIT,
+    ]);
+    expect(errors.map((e) => e.message)).toEqual([
+      expect.stringMatching(/^topology hold overflow: 1 bytes/),
+    ]);
   });
 });
