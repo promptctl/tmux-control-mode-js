@@ -42,6 +42,11 @@ function ofType<T extends TmuxMessage["type"]>(
   return messages.filter((m): m is MessageOf<T> => m.type === type);
 }
 
+function found<T>(value: T | undefined, what: string): T {
+  if (value === undefined) throw new Error(`expected ${what}, found none`);
+  return value;
+}
+
 function asType<T extends TmuxMessage["type"]>(
   message: TmuxMessage | undefined,
   type: T,
@@ -194,7 +199,10 @@ describe("fixture: output-octal-escapes.txt", () => {
 
   it("decodes \\012 as newline in first output", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
-    const first = ofType(messages, "output").find((m) => m.paneId === 1)!;
+    const first = found(
+      ofType(messages, "output").find((m) => m.paneId === 1),
+      "a matching output message",
+    );
     // "hello\012" → hello + newline
     expect(first.data[5]).toBe(10);
   });
@@ -202,24 +210,26 @@ describe("fixture: output-octal-escapes.txt", () => {
   it("decodes ANSI escape: \\033[1;32m", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
     // "green bold" line: starts with ESC
-    const ansiMsg = ofType(messages, "output").find((m) => m.data[0] === 27)!;
-    expect(ansiMsg).toBeDefined();
+    const ansiMsg = found(
+      ofType(messages, "output").find((m) => m.data[0] === 27),
+      "a matching output message",
+    );
     expect(ansiMsg.data[0]).toBe(27); // ESC
   });
 
   it("decodes \\134 as backslash", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
     // "\\134backslash\\134test\\012" — first byte is 0x5c
-    const backslashMsg = ofType(messages, "output").find(
-      (m) => m.data[0] === 0x5c,
-    )!;
-    expect(backslashMsg).toBeDefined();
+    const backslashMsg = found(
+      ofType(messages, "output").find((m) => m.data[0] === 0x5c),
+      "a matching output message",
+    );
     expect(backslashMsg.data[0]).toBe(0x5c);
   });
 
   it("\\000 null byte decodes correctly", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
-    const nullMsg = ofType(messages, "output").find((m) => m.data[0] === 0)!;
+    const nullMsg = ofType(messages, "output").find((m) => m.data[0] === 0);
     expect(nullMsg).toBeDefined();
   });
 
@@ -232,8 +242,10 @@ describe("fixture: output-octal-escapes.txt", () => {
 
   it("pane 3 VT sequence starts with ESC", () => {
     const { messages } = collect(fixtureContent("output-octal-escapes.txt"));
-    const pane3Msg = ofType(messages, "output").find((m) => m.paneId === 3)!;
-    expect(pane3Msg).toBeDefined();
+    const pane3Msg = found(
+      ofType(messages, "output").find((m) => m.paneId === 3),
+      "a matching output message",
+    );
     expect(pane3Msg.data[0]).toBe(27); // ESC from \033
   });
 });
@@ -318,13 +330,13 @@ describe("fixture: pause-continue.txt", () => {
 
   it("pause for pane 1", () => {
     const { messages } = collect(fixtureContent("pause-continue.txt"));
-    const pause = ofType(messages, "pause")[0]!;
+    const pause = ofType(messages, "pause")[0];
     expect(pause.paneId).toBe(1);
   });
 
   it("continue for pane 1", () => {
     const { messages } = collect(fixtureContent("pause-continue.txt"));
-    const cont = ofType(messages, "continue")[0]!;
+    const cont = ofType(messages, "continue")[0];
     expect(cont.paneId).toBe(1);
   });
 
@@ -559,10 +571,10 @@ describe("fixture: layout-change.txt", () => {
 
   it("layout-change @2 has windowId=2", () => {
     const { messages } = collect(fixtureContent("layout-change.txt"));
-    const win2 = ofType(messages, "layout-change").find(
-      (m) => m.windowId === 2,
-    )!;
-    expect(win2).toBeDefined();
+    const win2 = found(
+      ofType(messages, "layout-change").find((m) => m.windowId === 2),
+      "a matching layout-change message",
+    );
     expect(win2.windowId).toBe(2);
   });
 });
@@ -738,7 +750,7 @@ describe("fixture: session-events.txt", () => {
 
   it("session-renamed: sessionId=1, name=work", () => {
     const { messages } = collect(fixtureContent("session-events.txt"));
-    const renamed = ofType(messages, "session-renamed")[0]!;
+    const renamed = ofType(messages, "session-renamed")[0];
     expect(renamed).toMatchObject({ sessionId: 1, name: "work" });
   });
 

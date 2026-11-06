@@ -134,9 +134,9 @@ export class PaneFirehose {
    */
   private tap(paneId: number): void {
     if (this.dir === null) return;
-    this.taps.set(
-      paneId,
-      tapPaneToFifo(
+    let dispose: () => void;
+    try {
+      dispose = tapPaneToFifo(
         this.execute,
         this.dir,
         paneId,
@@ -145,8 +145,13 @@ export class PaneFirehose {
         // map entry so the next `refresh` can re-tap a still-present pane —
         // preserving "map keys == live taps". [LAW:one-source-of-truth]
         { onReadError: () => this.taps.delete(paneId) },
-      ),
-    );
+      );
+    } catch (err) {
+      // Not tapped, so not in the map; the next `refresh` retries the pane.
+      console.warn(`[pane-firehose] could not tap %${paneId}:`, err);
+      return;
+    }
+    this.taps.set(paneId, dispose);
   }
 
   /** Stop piping a pane, close its stream, and remove its FIFO. */

@@ -1,4 +1,4 @@
-import { createRoot } from "react-dom/client";
+import { mountRoot } from "./mount-root.ts";
 import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "@xterm/xterm/css/xterm.css";
@@ -18,9 +18,7 @@ const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.ho
 // StrictMode's intentional double-mount in dev is benign.
 const bridge = new WebSocketBridge();
 
-const root = document.getElementById("root");
-if (root === null) throw new Error("index.html is missing #root");
-createRoot(root).render(
+mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     <App bridge={bridge} connectUrl={WS_URL} />
   </MantineProvider>,

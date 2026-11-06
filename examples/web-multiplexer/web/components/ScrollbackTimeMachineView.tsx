@@ -37,8 +37,11 @@ import {
 import { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import type { ScrollbackTimeMachineStore } from "../scrollback-store.ts";
-import { PLAYBACK_RATES, type PlaybackRate } from "../scrollback-store.ts";
+import {
+  type ScrollbackTimeMachineStore,
+  PLAYBACK_RATES,
+  type PlaybackRate,
+} from "../scrollback-store.ts";
 import { activityHistogram } from "../session-recording-engine.ts";
 import { bytesBetween } from "../session-recording-engine.ts";
 import {

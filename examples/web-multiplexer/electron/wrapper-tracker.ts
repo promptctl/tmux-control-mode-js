@@ -21,15 +21,17 @@
 // [LAW:single-enforcer] All bookkeeping mutations (add, remove, prune-empty)
 // live here; the preload never touches the maps directly.
 
-export interface WrapperTracker<L, W> {
+// `W` excludes undefined/null so `pop()` returning undefined can only mean
+// "nothing tracked", never a tracked undefined wrapper.
+export interface WrapperTracker<L, W extends NonNullable<unknown>> {
   add(channel: string, listener: L, wrapper: W): void;
   remove(channel: string, listener: L): W | null;
 }
 
-export function createWrapperTracker<L extends object, W>(): WrapperTracker<
-  L,
-  W
-> {
+export function createWrapperTracker<
+  L extends object,
+  W extends NonNullable<unknown>,
+>(): WrapperTracker<L, W> {
   const byChannel = new Map<string, Map<L, W[]>>();
 
   const channelMap = (channel: string): Map<L, W[]> => {

@@ -7,7 +7,7 @@
 // [LAW:one-source-of-truth] One App component, two entry points. Adding
 // a UI feature in App is automatically picked up by both transports.
 
-import { createRoot } from "react-dom/client";
+import { mountRoot } from "./mount-root.ts";
 import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "@xterm/xterm/css/xterm.css";
@@ -47,9 +47,7 @@ const bridge = new ElectronBridge(window.tmuxIpc, demoIpc);
 
 // connectUrl is unused by ElectronBridge — pass an empty string to keep
 // the App prop contract uniform across transports.
-const root = document.getElementById("root");
-if (root === null) throw new Error("index.html is missing #root");
-createRoot(root).render(
+mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     <App bridge={bridge} connectUrl="" />
   </MantineProvider>,

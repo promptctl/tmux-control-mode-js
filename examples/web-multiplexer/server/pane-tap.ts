@@ -50,9 +50,12 @@ export interface PaneTapOptions {
  * calling it twice is safe. The caller owns `dir` (its creation and removal) so
  * one directory can host many taps.
  *
- * The tap is best-effort to STAND UP — a pane that vanished between the caller
- * deciding to tap it and this call fails the `pipe-pane` and self-disposes — but
- * once standing it stays live until disposed or the FIFO read errors.
+ * Throws if the FIFO cannot be created (e.g. `mkfifo` missing or the path
+ * taken): nothing has been stood up, so there is no tap to hand back and
+ * `onReadError` does not fire. Past that point the tap is best-effort — a pane
+ * that vanished between the caller deciding to tap it and this call fails the
+ * async `pipe-pane` and self-disposes — and once standing it stays live until
+ * disposed or the FIFO read errors.
  */
 export function tapPaneToFifo(
   execute: TapExecute,
@@ -90,13 +93,10 @@ export function tapPaneToFifo(
     options.onReadError?.();
   };
 
-  try {
-    execFileSync("mkfifo", [fifoPath]);
-  } catch (err) {
-    console.warn(`[pane-tap] mkfifo failed for %${paneId}:`, err);
-    selfDispose();
-    return dispose;
-  }
+  // [LAW:no-ambient-temporal-coupling] A synchronous failure throws rather than
+  //   firing `onReadError`: the caller is still mid-construction of whatever
+  //   owns this tap, so a callback here would run against a half-built owner.
+  execFileSync("mkfifo", [fifoPath]);
 
   // `r+` keeps the read end open across the writer coming and going.
   stream = createReadStream(fifoPath, { flags: "r+" });

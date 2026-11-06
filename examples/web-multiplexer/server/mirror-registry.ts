@@ -94,7 +94,16 @@ export class MirrorRegistry {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
       return notJoined;
     }
-    const hub = this.ensureHub(paneId);
+    let hub: Hub;
+    try {
+      hub = this.ensureHub(paneId);
+    } catch (err) {
+      viewer.sendControl({
+        kind: "error",
+        message: `could not tap pane %${paneId}: ${String(err)}`,
+      });
+      return notJoined;
+    }
 
     // Geometry first: a fresh XtermSink buffers every write until its first
     // resize (the `.4` first-paint finding), so the viewer needs cols/rows
@@ -166,7 +175,10 @@ export class MirrorRegistry {
     return { client: this.client, dir: this.dir };
   }
 
-  /** Get the hub for a pane, creating (and tapping) it on first viewer. */
+  /**
+   * Get the hub for a pane, creating (and tapping) it on first viewer. Throws
+   * (registering nothing) when the tap cannot be stood up.
+   */
   private ensureHub(paneId: number): Hub {
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;

@@ -6,7 +6,7 @@
 // The page is a projection and nothing else. [LAW:decomposition]
 
 import { useMemo } from "react";
-import { createRoot } from "react-dom/client";
+import { mountRoot } from "./mount-root.ts";
 import { observer } from "mobx-react-lite";
 import {
   MantineProvider,
@@ -88,9 +88,7 @@ function NoPane() {
 
 const paneId = parseMirrorPane(window.location.search);
 
-const root = document.getElementById("root");
-if (root === null) throw new Error("index.html is missing #root");
-createRoot(root).render(
+mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     {paneId === null ? <NoPane /> : <ViewerApp paneId={paneId} />}
   </MantineProvider>,
