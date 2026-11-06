@@ -13,11 +13,13 @@
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  attachSession,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import { sendKeys, setSize } from "../../src/commands/index.js";
 import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
 import type {
@@ -27,30 +29,15 @@ import type {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-function tmuxCmd(socket: string, args: string): string {
-  return `tmux -L ${socket} ${args}`;
-}
-
 function killServer(socket: string): void {
   killTmuxServer(socket);
 }
 
+// Start sessions at a known geometry so the resize test has a clear delta to
+// assert against.
 function createSession(socket: string, session: string): Promise<TmuxClient> {
-  // Start the session at a known geometry so the resize test has a clear
-  // delta to assert against.
-  execSync(tmuxCmd(socket, `new-session -d -s ${session} -x 80 -y 24`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", session], {
-    socketPath: socket,
-  });
-  const client = new TmuxClient(transport);
-  return new Promise((resolve) => {
-    const handler = (): void => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
+  return attachSession(socket, session, {
+    newSessionFlags: ["-x", "80", "-y", "24"],
   });
 }
 

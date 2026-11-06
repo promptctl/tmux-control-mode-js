@@ -9,10 +9,13 @@
 
 import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName, waitReady } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  attachClient,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import type {
   CrossSessionLayoutChangeMessage,
   CrossSessionLayoutDecodeErrorMessage,
@@ -27,19 +30,6 @@ function tmuxCmd(socketName: string, args: string): string {
 
 function exec(socketName: string, args: string): void {
   execSync(tmuxCmd(socketName, args), { stdio: "ignore" });
-}
-
-async function attachClient(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  const client = new TmuxClient(
-    spawnTmux(["attach-session", "-t", sessionName], {
-      socketPath: socketName,
-    }),
-  );
-  await waitReady(client);
-  return client;
 }
 
 /**

@@ -12,11 +12,13 @@
 // (bytes arriving, IPC messages sent) not implementation internals.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, pollUntil } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  pollUntil,
+  attachSession,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
 import {
@@ -36,33 +38,8 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // Isolation helpers
 // ---------------------------------------------------------------------------
 
-// [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
-}
-
-function createClient(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
-  });
 }
 
 async function getFirstPaneId(client: TmuxClient): Promise<number> {
@@ -88,7 +65,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
     beforeEach(async () => {
       socketName = uniqueSocket("tmux-bytes-sink-test-", "xterm");
-      client = await createClient(socketName, "xterm-test");
+      client = await attachSession(socketName, "xterm-test");
     });
 
     afterEach(async () => {
@@ -150,7 +127,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
     beforeEach(async () => {
       socketName = uniqueSocket("tmux-bytes-sink-test-", "electron");
-      client = await createClient(socketName, "electron-test");
+      client = await attachSession(socketName, "electron-test");
     });
 
     afterEach(async () => {
@@ -254,7 +231,7 @@ describe.skipIf(!RUN_INTEGRATION)("INT-23: disposer idempotency", () => {
 
   beforeEach(async () => {
     socketName = uniqueSocket("tmux-bytes-sink-test-", "disposer");
-    client = await createClient(socketName, "disposer-test");
+    client = await attachSession(socketName, "disposer-test");
   });
 
   afterEach(async () => {

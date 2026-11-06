@@ -12,15 +12,14 @@
 // like the rest of the integration suite; skipped, not failed, without tmux.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
   waitForEvent,
+  attachSession,
 } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import type { TmuxClient } from "../../src/client.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
@@ -28,35 +27,8 @@ import type { TmuxEventMap } from "../../src/emitter.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// [LAW:single-enforcer] The only place this file builds a `tmux -L <socket>`
-// line, mirroring client.test.ts's isolation discipline: each test gets its own
-// server so nothing reaches the developer's tmux.
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
-}
-
-function createSession(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-  // Wait for the post-attach handshake (see client.test.ts) before resolving.
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
-  });
 }
 
 // The catalogue's field set for a variant — the shape real tmux must reproduce.
@@ -93,7 +65,7 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
 
   for (const { type, cause } of CAUSABLE) {
     it(`live %${type} surfaces with the catalogue's field shape`, async () => {
-      const c = await createSession(socketName, uniqueName(`conf-${type}`));
+      const c = await attachSession(socketName, uniqueName(`conf-${type}`));
       client = c;
       const evt = waitForEvent(c, type);
       await c.execute(cause);
@@ -104,7 +76,7 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
   }
 
   it("live command-correlation contract: resolve on success, reject on error", async () => {
-    const c = await createSession(socketName, uniqueName("conf-cmd"));
+    const c = await attachSession(socketName, uniqueName("conf-cmd"));
     client = c;
 
     // %begin/%end → resolve with success.

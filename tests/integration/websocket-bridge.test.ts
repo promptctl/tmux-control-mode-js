@@ -7,7 +7,6 @@
 // works end-to-end: browser API surface → JSON/binary over the wire → tmux.
 
 import { describe, it, afterEach, beforeEach, expect } from "vitest";
-import { execSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
   WebSocket as WsClient,
@@ -15,10 +14,13 @@ import {
   type WebSocket as WsWebSocket,
 } from "ws";
 
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, pollUntil } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  pollUntil,
+  attachSession,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
@@ -45,10 +47,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // socket name; teardown delegates to the shared `killTmuxServer()` helper,
 // which lists and kills every session on that isolated socket, so tmux's
 // exit-empty default guarantees the isolated server exits.
-//
-// [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
-// `tmux -L <socket> ...` command line. No execSync string interpolation
-// with a raw "tmux" prefix exists anywhere else in this file.
 // ---------------------------------------------------------------------------
 
 interface Fixture {
@@ -62,33 +60,8 @@ interface Fixture {
   observabilityEvents: BridgeObservabilityEvent[];
 }
 
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
-
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
-}
-
-async function createTmuxClient(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-  await new Promise<void>((resolve) => {
-    const h = () => {
-      client.off("session-changed", h);
-      resolve();
-    };
-    client.on("session-changed", h);
-  });
-  return client;
 }
 
 interface BridgeOptions {
@@ -106,7 +79,7 @@ async function startFixture(
 ): Promise<Fixture> {
   const socketName = uniqueSocket("tmux-bridge-test-", sessionPrefix);
   const sessionName = `s-${sessionPrefix}`;
-  const tmux = await createTmuxClient(socketName, sessionName);
+  const tmux = await attachSession(socketName, sessionName);
 
   const observabilityEvents: BridgeObservabilityEvent[] = [];
 
