@@ -17,7 +17,7 @@ import { observer } from "mobx-react-lite";
 import { Badge, Menu, Tooltip, Text } from "@mantine/core";
 
 import type { DemoStore } from "../store.ts";
-import { getDemoIpc } from "../demo-ipc.ts";
+import { getDemoIpc, type DemoIpc } from "../demo-ipc.ts";
 
 interface Props {
   readonly demoStore: DemoStore;
@@ -33,7 +33,9 @@ export const SocketBadge = observer(function SocketBadge({
   if (ipc === null) {
     return <ReconnectBadge demoStore={demoStore} connectUrl={connectUrl} />;
   }
-  return <PickerBadge demoStore={demoStore} connectUrl={connectUrl} />;
+  return (
+    <PickerBadge demoStore={demoStore} connectUrl={connectUrl} ipc={ipc} />
+  );
 });
 
 const ReconnectBadge = observer(function ReconnectBadge({
@@ -74,8 +76,8 @@ const ReconnectBadge = observer(function ReconnectBadge({
 const PickerBadge = observer(function PickerBadge({
   demoStore,
   connectUrl,
-}: Props) {
-  const ipc = getDemoIpc()!;
+  ipc,
+}: Props & { readonly ipc: DemoIpc }) {
   const connState = demoStore.connState;
   const [opened, setOpened] = useState(false);
   const [sockets, setSockets] = useState<readonly string[] | null>(null);

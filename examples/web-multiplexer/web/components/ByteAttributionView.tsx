@@ -28,11 +28,8 @@ import {
   Switch,
 } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
-import type { UiStore } from "../ui-store.ts";
-import {
-  ByteAttributionStore,
-  type PaneStat,
-} from "../byte-attribution-store.ts";
+import type { ByteAttributionStore } from "../byte-attribution-store.ts";
+import { type PaneStat } from "../byte-attribution-store.ts";
 import type { AttributedCell } from "../byte-attribution-engine.ts";
 import { parseEscapes, type EscapeEvent } from "../escape-parse-engine.ts";
 
@@ -45,7 +42,6 @@ const DEFAULT_FG = "#d4d4d4";
 interface Props {
   readonly demoStore: DemoStore;
   readonly store: ByteAttributionStore;
-  readonly uiStore: UiStore;
 }
 
 /** Which cell's provenance the panel shows. */
@@ -57,7 +53,6 @@ interface CellRef {
 export const ByteAttributionView = observer(function ByteAttributionView({
   demoStore,
   store,
-  uiStore,
 }: Props) {
   const ready = demoStore.connState === "ready";
   const [hovered, setHovered] = useState<CellRef | null>(null);

@@ -197,7 +197,7 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
 
   it("refuses sends after close with a typed result (no throw, no delivery)", () => {
     const server = new MockTmuxServer();
-    const client = new TmuxClient(server);
+    new TmuxClient(server);
     server.start();
     server.close();
 

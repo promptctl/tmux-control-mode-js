@@ -118,7 +118,7 @@ describe("summarizeEvent — exit and empty fallthrough", () => {
 // One representative per remaining branch, so every arm of the summarizer
 // has its contract pinned before SD5 consolidates the three copies.
 describe("summarizeEvent — full branch coverage", () => {
-  const cases: ReadonlyArray<readonly [TmuxMessage, string]> = [
+  const cases: readonly (readonly [TmuxMessage, string])[] = [
     [{ type: "pause", paneId: 5 }, "$0:@1.%5"],
     [{ type: "continue", paneId: 9 }, "%9"],
     [{ type: "pane-mode-changed", paneId: 5 }, "$0:@1.%5"],

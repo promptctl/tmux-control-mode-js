@@ -47,7 +47,9 @@ const bridge = new ElectronBridge(window.tmuxIpc, demoIpc);
 
 // connectUrl is unused by ElectronBridge — pass an empty string to keep
 // the App prop contract uniform across transports.
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (root === null) throw new Error("index.html is missing #root");
+createRoot(root).render(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     <App bridge={bridge} connectUrl="" />
   </MantineProvider>,

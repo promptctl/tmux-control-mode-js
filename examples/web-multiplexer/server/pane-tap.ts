@@ -74,7 +74,9 @@ export function tapPaneToFifo(
     stream = null;
     // Best-effort: the pane may already be gone, in which case pipe-pane errors
     // harmlessly. Not awaited — teardown shouldn't block on tmux.
-    void execute(`pipe-pane -t %${paneId}`).catch(() => {});
+    void execute(`pipe-pane -t %${paneId}`).catch(() => {
+      // no-op: the pane being gone already detached the pipe (see above).
+    });
     try {
       rmSync(fifoPath, { force: true });
     } catch {

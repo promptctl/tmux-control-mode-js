@@ -58,7 +58,7 @@ interface Props {
 }
 
 /** Visually compelling, copy-pasteable starting points. */
-const PRESETS: ReadonlyArray<{ label: string; value: string }> = [
+const PRESETS: readonly { label: string; value: string }[] = [
   { label: "SGR colors", value: "\\e[31mred \\e[32mgreen \\e[34mblue\\e[0m" },
   {
     label: "bold + underline",

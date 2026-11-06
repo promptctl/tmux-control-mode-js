@@ -49,21 +49,21 @@ interface FakeWs extends ServerWebSocketLike {
   fireClose(code?: number, reason?: string): void;
   // Drained on every `send` call — string for JSON frames, Uint8Array for
   // binary pane-output frames.
-  readonly outbound: Array<string | Uint8Array>;
+  readonly outbound: (string | Uint8Array)[];
 }
 
 function createFakeWs(): FakeWs {
   let buffered = 0;
-  type Listeners = {
+  interface Listeners {
     message?: (data: unknown, isBinary: boolean) => void;
     close?: (code: number, reason: Buffer | string) => void;
     error?: (err: Error) => void;
     pong?: () => void;
     ping?: () => void;
-  };
+  }
   const listeners: Listeners = {};
 
-  const outbound: Array<string | Uint8Array> = [];
+  const outbound: (string | Uint8Array)[] = [];
   let readyState: number = WEBSOCKET_OPEN;
 
   const ws: FakeWs = {
@@ -750,7 +750,7 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     // so overriding it to throw once exercises onHello's registerPeer/wiring
     // catch block without disturbing the client's own setup.
     const originalOn = client.on.bind(client);
-    client.on = ((event: "*", handler: never) => {
+    client.on = ((_event: "*", _handler: never) => {
       throw new Error("listener wiring boom");
     }) as typeof client.on;
     const bridge = createWebSocketBridge({
@@ -791,7 +791,7 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     // (via attachBytesSink failing, which triggers the catch after client.on
     // already succeeded) proves those two still run despite it.
     const originalOff = client.off.bind(client);
-    client.off = ((event: "*", handler: never) => {
+    client.off = ((_event: "*", _handler: never) => {
       throw new Error("client.off boom");
     }) as typeof client.off;
     client.attachBytesSink = (() => {

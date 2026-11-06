@@ -173,8 +173,8 @@ function makeClient(
 
 // Returns the parsed JSON for every text frame that looks like a JSON
 // client frame; binary placeholders are skipped.
-function sentFrames(ws: MockWS): Array<{ k: string; id?: string }> {
-  const out: Array<{ k: string; id?: string }> = [];
+function sentFrames(ws: MockWS): { k: string; id?: string }[] {
+  const out: { k: string; id?: string }[] = [];
   for (const s of ws.sent) {
     if (s === "<binary>") continue;
     try {

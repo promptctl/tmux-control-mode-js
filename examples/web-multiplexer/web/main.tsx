@@ -18,7 +18,9 @@ const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.ho
 // StrictMode's intentional double-mount in dev is benign.
 const bridge = new WebSocketBridge();
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (root === null) throw new Error("index.html is missing #root");
+createRoot(root).render(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     <App bridge={bridge} connectUrl={WS_URL} />
   </MantineProvider>,

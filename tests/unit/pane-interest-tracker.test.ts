@@ -28,7 +28,7 @@ import {
 const sink: BytesSink = { write: () => undefined, end: () => undefined };
 
 interface Recorder {
-  readonly events: Array<{ kind: "interesting" | "idle"; paneId: number }>;
+  readonly events: { kind: "interesting" | "idle"; paneId: number }[];
   onPaneBecameInteresting(paneId: number): void;
   onPaneBecameIdle(paneId: number): void;
 }

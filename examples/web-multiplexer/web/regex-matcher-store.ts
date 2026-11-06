@@ -34,8 +34,8 @@ const MAX_PATTERN_LEN = 1000;
 export type { RegexMatch } from "./regex-match-engine.ts";
 
 export class RegexMatcherStore {
-  pattern: string = "";
-  caseInsensitive: boolean = true;
+  pattern = "";
+  caseInsensitive = true;
   /**
    * [LAW:no-silent-failure] An invalid regex is surfaced here, inline, never
    * swallowed into "no matches". While set, the engine has no pattern, so the
@@ -43,13 +43,13 @@ export class RegexMatcherStore {
    */
   compileError: string | null = null;
   /** True while the firehose taps are open (regex mode is active). */
-  active: boolean = false;
+  active = false;
   /**
    * [LAW:one-source-of-truth] Change-signal for the non-observable engine.
    * Bumped once per drain tick / compile so the `matches` computed recomputes
    * without making the engine's internals observable.
    */
-  version: number = 0;
+  version = 0;
 
   private readonly engine = new RegexMatchEngine(MATCH_CAP);
   private readonly accum = new Map<number, string[]>();

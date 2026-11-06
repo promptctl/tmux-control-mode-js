@@ -4,7 +4,7 @@
 // Tests are derived from the type-shape design's promises, not from any
 // implementation detail. Each test names the behavior it asserts.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { TopologyRouter } from "../../src/topology-router.js";
 import type { TopologyRouterOptions } from "../../src/topology-router.js";

@@ -291,8 +291,8 @@ const LinkRow = observer(function LinkRow({
 
 /** Lowercased URI scheme (`https`, `file`, …), or null if the URI has none. */
 function schemeOf(uri: string): string | null {
-  const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(uri);
-  return m === null ? null : m[1]!.toLowerCase();
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(uri)?.[1];
+  return scheme === undefined ? null : scheme.toLowerCase();
 }
 
 function buildPaneLocations(demoStore: DemoStore): Map<number, PaneLocation> {

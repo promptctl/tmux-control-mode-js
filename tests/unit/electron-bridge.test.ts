@@ -29,7 +29,6 @@ import { paneScope, sessionScope } from "../../src/pane-output.js";
 import {
   IPC,
   type IpcRendererLike,
-  type WebContentsLike,
   parseAckMessage,
   BridgeError,
 } from "../../src/connectors/electron/types.js";
@@ -39,11 +38,7 @@ import {
   TmuxClientProxy,
 } from "../../src/connectors/electron/renderer.js";
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
-import {
-  createIpcHub,
-  type FakeRenderer,
-  type IpcHub,
-} from "./_helpers/ipc-hub.js";
+import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 
@@ -1253,7 +1248,7 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     const proxyB = createRendererBridge(b.ipcRenderer);
     const proxyC = createRendererBridge(c.ipcRenderer);
 
-    const got: Array<"a" | "c"> = [];
+    const got: ("a" | "c")[] = [];
     proxyA.attachBytesSink(
       {
         write() {
@@ -1578,10 +1573,10 @@ describe("Electron IPC bridge — renderer import graph", () => {
 
   async function walk(entry: string): Promise<{
     files: Set<string>;
-    allImports: Array<{ from: string; spec: string }>;
+    allImports: { from: string; spec: string }[];
   }> {
     const files = new Set<string>();
-    const allImports: Array<{ from: string; spec: string }> = [];
+    const allImports: { from: string; spec: string }[] = [];
     const queue: string[] = [entry];
     while (queue.length > 0) {
       const f = queue.shift()!;

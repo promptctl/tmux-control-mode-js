@@ -46,9 +46,7 @@ const TOTAL_TICKS = DURATION_S * TICKS_PER_SECOND;
 const BYTES_PER_TICK = Math.ceil(BYTES_PER_SECOND / TICKS_PER_SECOND);
 const BYTES_PER_STREAM_PER_TICK = Math.ceil(BYTES_PER_TICK / STREAM_COUNT);
 
-interface ExposedGc {
-  (): void;
-}
+type ExposedGc = () => void;
 
 function getGc(): ExposedGc | null {
   // Node exposes `global.gc` only when launched with --expose-gc. Vitest
@@ -124,7 +122,7 @@ describe("Gate 3 — heap delta over 60s of detached output", () => {
     // it must say so loudly rather than silently passing. CI wires --expose-gc
     // in the bench:gate script.
     expect(true).toBe(true);
-    // eslint-disable-next-line no-console
+
     console.warn(
       "[gate-3] skipped: launch node with --expose-gc to enable the heap-delta gate.",
     );

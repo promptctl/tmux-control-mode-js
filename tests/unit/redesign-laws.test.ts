@@ -118,11 +118,11 @@ type WsListener = (...args: unknown[]) => void;
 function createFakeWs(): ServerWebSocketLike & {
   setBuffered(n: number): void;
   feedClient(frame: object): void;
-  readonly outbound: Array<string | Uint8Array>;
+  readonly outbound: (string | Uint8Array)[];
 } {
   let buffered = 0;
   const listeners: Record<string, WsListener | undefined> = {};
-  const outbound: Array<string | Uint8Array> = [];
+  const outbound: (string | Uint8Array)[] = [];
 
   const ws = {
     readyState: WEBSOCKET_OPEN as number,

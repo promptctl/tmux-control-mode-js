@@ -183,7 +183,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
       // Fake WebContents that records messages sent on any channel.
       const ipcMessages: { channel: string; payload: unknown }[] = [];
-      let destroyed = false;
+      const destroyed = false;
       const fakeWc: WebContentsLike = {
         send(channel: string, ...args: unknown[]) {
           if (!destroyed) ipcMessages.push({ channel, payload: args[0] });

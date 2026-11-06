@@ -96,10 +96,10 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
   // and is non-flaky (proven by client.test.ts's Notification coverage block).
   // The check is SHAPE conformance against the catalogue — field set + the
   // discriminant — since real ids/names differ from the sample's literals.
-  const CAUSABLE: ReadonlyArray<{
+  const CAUSABLE: readonly {
     readonly type: keyof TmuxEventMap & TmuxMessage["type"];
     readonly cause: string;
-  }> = [
+  }[] = [
     { type: "window-add", cause: "new-window" },
     { type: "window-renamed", cause: "rename-window conformance-target" },
     { type: "layout-change", cause: "split-window -h" },

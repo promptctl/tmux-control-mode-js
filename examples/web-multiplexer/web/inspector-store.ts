@@ -41,8 +41,8 @@ const MAX_ENTRIES = 1000;
 
 export class InspectorStore {
   entries: InspectorEntry[] = [];
-  paused: boolean = false;
-  search: string = "";
+  paused = false;
+  search = "";
   hiddenDirections: Record<WireEntry["dir"], boolean> = {
     out: false,
     "in-event": false,

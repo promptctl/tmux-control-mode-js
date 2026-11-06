@@ -38,10 +38,10 @@ export class CollabInput {
    */
   async sendKeys(paneId: number, keys: string): Promise<void> {
     if (this.closed) return;
-    this.ensureClient();
+    const client = this.ensureClient();
     await this.ready;
     if (this.closed) return;
-    const response = await sendKeys(this.client!, `%${paneId}`, keys).catch(
+    const response = await sendKeys(client, `%${paneId}`, keys).catch(
       asCommandResponse,
     );
     if (!response.success) {
@@ -56,11 +56,12 @@ export class CollabInput {
     this.client = null;
   }
 
-  private ensureClient(): void {
+  private ensureClient(): TmuxClient {
     if (this.client === null) {
       const { client, ready } = spawnReadyControlClient();
       this.client = client;
       this.ready = ready;
     }
+    return this.client;
   }
 }

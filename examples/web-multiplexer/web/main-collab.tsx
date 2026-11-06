@@ -88,7 +88,9 @@ function NoPane() {
 
 const paneId = parseMirrorPane(window.location.search);
 
-createRoot(document.getElementById("root")!).render(
+const root = document.getElementById("root");
+if (root === null) throw new Error("index.html is missing #root");
+createRoot(root).render(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     {paneId === null ? <NoPane /> : <CollabApp paneId={paneId} />}
   </MantineProvider>,

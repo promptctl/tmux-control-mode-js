@@ -55,6 +55,11 @@ interface Hub {
 /** How often to re-check that every mirrored pane still exists. */
 const LIVENESS_INTERVAL_MS = 1500;
 
+/** Disposer for a viewer that was refused before joining: nothing to undo. */
+function notJoined(): void {
+  // no-op: the viewer never joined a hub, so there is nothing to remove.
+}
+
 export class MirrorRegistry {
   private readonly hubs = new Map<number, Hub>();
   private client: TmuxClient | null = null;
@@ -80,43 +85,43 @@ export class MirrorRegistry {
   async addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
     if (this.closed) {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return () => {};
+      return notJoined;
     }
     // Settle the dedicated client before the first tap/seed (cold-start race).
-    this.ensureClient();
+    const { client } = this.ensureClient();
     await this.ready;
     if (this.closed) {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return () => {};
+      return notJoined;
     }
     const hub = this.ensureHub(paneId);
 
     // Geometry first: a fresh XtermSink buffers every write until its first
     // resize (the `.4` first-paint finding), so the viewer needs cols/rows
     // before the seed bytes mean anything.
-    const size = await this.querySize(paneId);
+    const size = await this.querySize(client, paneId);
     if (size === null) {
       viewer.sendControl({
         kind: "error",
         message: `pane %${paneId} not found`,
       });
       this.gcHub(hub);
-      return () => {};
+      return notJoined;
     }
     viewer.sendControl({ kind: "size", cols: size.cols, rows: size.rows });
 
     // Seed = the pane's current rendered screen. Sent BEFORE the viewer joins
     // the live fan-out, so live bytes never race ahead of the seed.
-    const capture = await this.client!.execute(
-      `capture-pane -e -p -t %${paneId}`,
-    ).catch(asCommandResponse);
+    const capture = await client
+      .execute(`capture-pane -e -p -t %${paneId}`)
+      .catch(asCommandResponse);
     if (!capture.success) {
       viewer.sendControl({
         kind: "error",
         message: `capture-pane failed for %${paneId}`,
       });
       this.gcHub(hub);
-      return () => {};
+      return notJoined;
     }
     viewer.sendBytes(buildMirrorSeed(capture.output));
 
@@ -151,16 +156,14 @@ export class MirrorRegistry {
   // -------------------------------------------------------------------------
 
   /** Lazily spawn the one control client + FIFO dir the registry shares. */
-  private ensureClient(): TmuxClient {
+  private ensureClient(): { client: TmuxClient; dir: string } {
     if (this.client === null) {
       const { client, ready } = spawnReadyControlClient();
       this.client = client;
       this.ready = ready;
     }
-    if (this.dir === null) {
-      this.dir = mkdtempSync(join(tmpdir(), "tmux-mirror-"));
-    }
-    return this.client;
+    this.dir ??= mkdtempSync(join(tmpdir(), "tmux-mirror-"));
+    return { client: this.client, dir: this.dir };
   }
 
   /** Get the hub for a pane, creating (and tapping) it on first viewer. */
@@ -168,11 +171,17 @@ export class MirrorRegistry {
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;
 
-    const client = this.ensureClient();
-    const hub: Hub = { paneId, viewers: new Set(), dispose: () => {} };
+    const { client, dir } = this.ensureClient();
+    const hub: Hub = {
+      paneId,
+      viewers: new Set(),
+      dispose: () => {
+        // no-op: placeholder until the tap below installs the real disposer.
+      },
+    };
     hub.dispose = tapPaneToFifo(
       (command) => client.execute(command),
-      this.dir!,
+      dir,
       paneId,
       (data) => {
         for (const v of hub.viewers) v.sendBytes(data);
@@ -220,11 +229,14 @@ export class MirrorRegistry {
   }
 
   private async querySize(
+    client: TmuxClient,
     paneId: number,
   ): Promise<{ cols: number; rows: number } | null> {
-    const r = await this.client!.execute(
-      `display-message -p -t %${paneId} -F '#{pane_width} #{pane_height}'`,
-    ).catch(asCommandResponse);
+    const r = await client
+      .execute(
+        `display-message -p -t %${paneId} -F '#{pane_width} #{pane_height}'`,
+      )
+      .catch(asCommandResponse);
     if (!r.success || r.output.length === 0) return null;
     const m = /^(\d+)\s+(\d+)$/.exec(r.output[0].trim());
     if (m === null) return null;

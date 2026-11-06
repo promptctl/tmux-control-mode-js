@@ -272,7 +272,7 @@ export class ObservablePaneStream {
   // [LAW:dataflow-not-control-flow] `isActive` is a value with an explicit
   // lifetime, not a `Date.now()` computation in render. The timer is the sole
   // authority that clears it; MobX propagates the change to the UI.
-  isActive: boolean = false;
+  isActive = false;
 
   /** The underlying data carrier — pass to `<PaneTerminal stream={...} />`. */
   readonly stream: PaneStream;
