@@ -17,6 +17,7 @@ import {
 
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 
@@ -61,10 +62,6 @@ interface Fixture {
   observabilityEvents: BridgeObservabilityEvent[];
 }
 
-function uniqueSocket(prefix: string): string {
-  return `tmux-bridge-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 function tmuxCmd(socketName: string, args: string): string {
   return `tmux -L ${socketName} ${args}`;
 }
@@ -107,7 +104,7 @@ async function startFixture(
   sessionPrefix: string,
   options: BridgeOptions = {},
 ): Promise<Fixture> {
-  const socketName = uniqueSocket(sessionPrefix);
+  const socketName = uniqueSocket("tmux-bridge-test-", sessionPrefix);
   const sessionName = `s-${sessionPrefix}`;
   const tmux = await createTmuxClient(socketName, sessionName);
 

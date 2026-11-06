@@ -6,6 +6,11 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  waitForEvent,
+} from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import {
   bindKeymap,
@@ -17,12 +22,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 // [LAW:single-enforcer] Socket/session helpers mirror client.test.ts so the
 // isolation model is identical — each test gets its own tmux server.
-function uniqueSocket(prefix: string): string {
-  return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
@@ -46,35 +45,12 @@ function createSession(
   });
 }
 
-// Wait for an event type, with timeout.
-function waitFor<T extends { type: string }>(
-  client: TmuxClient,
-  type: T["type"],
-  timeoutMs: number,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      client.off(type as any, handler);
-      reject(new Error(`timeout waiting for ${type}`));
-    }, timeoutMs);
-    const handler = () => {
-      clearTimeout(timer);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      client.off(type as any, handler);
-      resolve();
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    client.on(type as any, handler);
-  });
-}
-
 describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   let socketName: string;
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("keymap");
+    socketName = uniqueSocket("tmux-js-test-", "keymap");
   });
 
   afterEach(() => {
@@ -84,10 +60,10 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   });
 
   it("C-b c creates a new window (window-add observed, list-windows shows 2)", async () => {
-    client = await createSession(socketName, uniqueSession("test-keymap"));
+    client = await createSession(socketName, uniqueName("test-keymap"));
     const bound = bindKeymap(client, defaultTmuxKeymap());
 
-    const windowAdded = waitFor(client, "window-add", 5000);
+    const windowAdded = waitForEvent(client, "window-add", () => true, 5000);
     expect(bound.handleKey(parseChord("C-b"))).toBe(true);
     expect(bound.handleKey(parseChord("c"))).toBe(true);
     await windowAdded;
@@ -98,10 +74,15 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   }, 15000);
 
   it("C-b % splits the window (layout-change observed, 2 panes)", async () => {
-    client = await createSession(socketName, uniqueSession("test-keymap"));
+    client = await createSession(socketName, uniqueName("test-keymap"));
     const bound = bindKeymap(client, defaultTmuxKeymap());
 
-    const layoutChanged = waitFor(client, "layout-change", 5000);
+    const layoutChanged = waitForEvent(
+      client,
+      "layout-change",
+      () => true,
+      5000,
+    );
     bound.handleKey(parseChord("C-b"));
     bound.handleKey(parseChord("%"));
     await layoutChanged;
@@ -112,12 +93,12 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   }, 15000);
 
   it("C-b <digit> selects the window at that index", async () => {
-    client = await createSession(socketName, uniqueSession("test-keymap"));
+    client = await createSession(socketName, uniqueName("test-keymap"));
     const bound = bindKeymap(client, defaultTmuxKeymap());
 
     // Create two extra windows so we have three total.
     for (let i = 0; i < 2; i++) {
-      const added = waitFor(client, "window-add", 5000);
+      const added = waitForEvent(client, "window-add", () => true, 5000);
       bound.handleKey(parseChord("C-b"));
       bound.handleKey(parseChord("c"));
       await added;
@@ -149,7 +130,7 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   }, 15000);
 
   it("non-prefix key in root mode returns handled=false and does not dispatch", async () => {
-    client = await createSession(socketName, uniqueSession("test-keymap"));
+    client = await createSession(socketName, uniqueName("test-keymap"));
     const bound = bindKeymap(client, defaultTmuxKeymap());
 
     expect(bound.handleKey(parseChord("a"))).toBe(false);
@@ -162,7 +143,7 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   }, 15000);
 
   it("unbound chord in prefix mode is swallowed (handled=true, no dispatch)", async () => {
-    client = await createSession(socketName, uniqueSession("test-keymap"));
+    client = await createSession(socketName, uniqueName("test-keymap"));
     const bound = bindKeymap(client, defaultTmuxKeymap());
 
     expect(bound.handleKey(parseChord("C-b"))).toBe(true);

@@ -8,16 +8,9 @@ import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, uniqueName } from "../helpers/integration.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function uniqueSession(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 function tmuxCmd(socketName: string, args: string): string {
   return `tmux -L ${socketName} ${args}`;
@@ -34,7 +27,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null;
 
     beforeEach(() => {
-      socketName = uniqueSocket("connstate");
+      socketName = uniqueSocket("tmux-js-test-", "connstate");
       client = null;
     });
 
@@ -48,7 +41,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it("transitions connecting → ready once the startup greeting is consumed, then closed{exit} once the server's last session is killed", async () => {
-      const sessionName = uniqueSession("connstate");
+      const sessionName = uniqueName("connstate");
       execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
         stdio: "ignore",
       });

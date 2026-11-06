@@ -15,6 +15,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, pollUntil } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import { paneScope, parsePaneListLine } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
@@ -34,10 +35,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 // Isolation helpers (mirrors pane-scope.test.ts)
 // ---------------------------------------------------------------------------
-
-function uniqueSocket(prefix: string): string {
-  return `tmux-bytes-sink-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
 function tmuxCmd(socketName: string, args: string): string {
@@ -79,24 +76,6 @@ async function getFirstPaneId(client: TmuxClient): Promise<number> {
   throw new Error("no panes found");
 }
 
-function waitFor(pred: () => boolean, timeoutMs = 8000): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + timeoutMs;
-    const check = () => {
-      if (pred()) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`waitFor: condition not met within ${timeoutMs}ms`));
-        return;
-      }
-      setTimeout(check, 10);
-    };
-    check();
-  });
-}
-
 // ---------------------------------------------------------------------------
 // INT-19: XtermBytesSink round-trip
 // ---------------------------------------------------------------------------
@@ -108,7 +87,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null = null;
 
     beforeEach(async () => {
-      socketName = uniqueSocket("xterm");
+      socketName = uniqueSocket("tmux-bytes-sink-test-", "xterm");
       client = await createClient(socketName, "xterm-test");
     });
 
@@ -133,7 +112,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       await client!.execute(`send-keys -t %${paneId} 'echo int19-hello' Enter`);
 
-      await waitFor(() => {
+      await pollUntil(() => {
         const all = Buffer.concat(received).toString();
         return all.includes("int19-hello");
       });
@@ -170,7 +149,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null = null;
 
     beforeEach(async () => {
-      socketName = uniqueSocket("electron");
+      socketName = uniqueSocket("tmux-bytes-sink-test-", "electron");
       client = await createClient(socketName, "electron-test");
     });
 
@@ -201,7 +180,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       await client!.execute(`send-keys -t %${paneId} 'echo int22-hello' Enter`);
 
-      await waitFor(() =>
+      await pollUntil(() =>
         ipcMessages.some(
           (m) =>
             m.channel === IPC.event &&
@@ -274,7 +253,7 @@ describe.skipIf(!RUN_INTEGRATION)("INT-23: disposer idempotency", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(async () => {
-    socketName = uniqueSocket("disposer");
+    socketName = uniqueSocket("tmux-bytes-sink-test-", "disposer");
     client = await createClient(socketName, "disposer-test");
   });
 
@@ -314,7 +293,7 @@ describe.skipIf(!RUN_INTEGRATION)("INT-23: disposer idempotency", () => {
 
     // Confirm the sink is live — drive output and wait.
     await client!.execute(`send-keys -t %${paneId} 'echo int23-before' Enter`);
-    await waitFor(() => {
+    await pollUntil(() => {
       const all = Buffer.concat(received).toString();
       return all.includes("int23-before");
     });

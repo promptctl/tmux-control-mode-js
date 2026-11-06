@@ -11,8 +11,8 @@ import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { uniqueSocket, uniqueName, waitReady } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
-import type { ConnectionStateMessage } from "../../src/connection-state.js";
 import type {
   CrossSessionLayoutChangeMessage,
   CrossSessionLayoutDecodeErrorMessage,
@@ -21,39 +21,12 @@ import type {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-function uniqueSocket(prefix: string): string {
-  // [LAW:one-source-of-truth] Must start with a prefix registered in
-  // tests/helpers/reap-test-sockets.ts's TEST_SOCKET_PREFIXES, or this
-  // suite's sockets leak uncollected. "tmux-js-test-" is already registered.
-  return `tmux-js-test-${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function uniqueName(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
 function tmuxCmd(socketName: string, args: string): string {
   return `tmux -L ${socketName} ${args}`;
 }
 
 function exec(socketName: string, args: string): void {
   execSync(tmuxCmd(socketName, args), { stdio: "ignore" });
-}
-
-function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const h = (e: ConnectionStateMessage) => {
-      if (e.state.status !== "ready") return;
-      clearTimeout(timer);
-      client.off("connection-state", h);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      client.off("connection-state", h);
-      reject(new Error(`client did not reach ready state within ${ms}ms`));
-    }, ms);
-    client.on("connection-state", h);
-  });
 }
 
 async function attachClient(
@@ -102,7 +75,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   let socketName: string;
 
   beforeEach(() => {
-    socketName = uniqueSocket("xsl");
+    socketName = uniqueSocket("tmux-js-test-", "xsl");
   });
 
   afterEach(() => {
