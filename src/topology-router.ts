@@ -58,6 +58,9 @@ type RunCommand = (cmd: string) => Promise<CommandResponse>;
  *   optional callback: a TopologyRouter that silently drops bootstrap failures
  *   is not constructible.
  */
+// Cap on output held for unplaced panes (see TopologyRouter.hold).
+export const HELD_BYTES_LIMIT = 4 * 1024 * 1024;
+
 export type ReportTopologyError = (error: Error) => void;
 
 // [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
@@ -128,6 +131,10 @@ export class TopologyRouter {
   // Empty is the resting state; releaseHeld() drains it after every query and
   // onTransportClose() discards it with the connection.
   private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
+  // Bytes in `held`, and bytes refused because holding them would exceed
+  // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
+  private heldBytes = 0;
+  private refusedBytes = 0;
   // Topology queries started and not yet settled. Only bootstrap() and
   // refreshWindow() start queries, so the router owns this count; the epoch
   // tracker answers staleness, not liveness.
@@ -222,6 +229,8 @@ export class TopologyRouter {
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
     this.held = [];
+    this.heldBytes = 0;
+    this.refusedBytes = 0;
     this.sinks.endAll();
   }
 
@@ -281,12 +290,26 @@ export class TopologyRouter {
       this.sinks.hasTopologyDependentSinks() &&
       this.inFlight > 0
     ) {
-      // ChunkPayload data may not be retained past dispatch; copy to hold.
-      this.held.push({
-        chunk: { ...payload, data: payload.data.slice() },
-        attachedBy: this.sinks.attachSeq(),
-      });
+      this.hold(payload);
     }
+  }
+
+  // [LAW:no-silent-failure] A query can stall (tmux's command queue is serial:
+  //   one `run-shell 'sleep 30'` delays every reply behind it), so the hold is
+  //   capped. Past the cap the newest chunks are refused, keeping the earliest
+  //   output this hold exists for, and the refusal is reported, not hidden.
+  private hold(payload: ChunkPayload): void {
+    const size = payload.data.byteLength;
+    if (this.heldBytes + size > HELD_BYTES_LIMIT) {
+      this.refusedBytes += size;
+      return;
+    }
+    this.heldBytes += size;
+    // ChunkPayload data may not be retained past dispatch; copy to hold.
+    this.held.push({
+      chunk: { ...payload, data: payload.data.slice() },
+      attachedBy: this.sinks.attachSeq(),
+    });
   }
 
   // Replay every held chunk whose pane topology now knows, in arrival order,
@@ -299,8 +322,22 @@ export class TopologyRouter {
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
     const pending = this.held;
+    const run = this.runCommand;
     this.held = [];
+    this.heldBytes = 0;
+    if (this.refusedBytes > 0) {
+      this.reportTopologyError(
+        new Error(
+          `topology hold overflow: ${this.refusedBytes} bytes of early output ` +
+            `for unplaced panes were not delivered to session/window sinks`,
+        ),
+      );
+      this.refusedBytes = 0;
+    }
     for (const h of pending) {
+      // A replayed sink's write may close the transport; the rest of this
+      // episode's chunks go with it.
+      if (this.runCommand !== run) return;
       const meta = this.topology.get(h.chunk.paneId);
       if (meta !== undefined) {
         this.sinks.dispatch(h.chunk, meta, {
@@ -310,7 +347,9 @@ export class TopologyRouter {
       } else if (this.inFlight > 0) {
         // Read per chunk: a replayed sink's write may attach a topology sink,
         // which starts a query that can still place the rest.
+        // Already copied and counted once; re-holding cannot exceed the cap.
         this.held.push(h);
+        this.heldBytes += h.chunk.data.byteLength;
       }
     }
   }

@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { TopologyRouter } from "../../src/topology-router.js";
+import { HELD_BYTES_LIMIT, TopologyRouter } from "../../src/topology-router.js";
 import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
@@ -735,16 +735,38 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(sink.chunks).toHaveLength(0);
   });
 
-  it("discards held chunks on transport close", async () => {
+  it("replays the bytes as they arrived, not a buffer reused since", async () => {
     const router = newRouter();
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     const sink = makeSink();
     router.attachBytesSink(sink, { scope: sessionScope(1) });
-    router.dispatchBytes(makeChunk(5));
-    router.onTransportClose();
+    const buf = new Uint8Array([1]);
+    router.dispatchBytes(makeChunk(5, buf));
+    buf[0] = 9;
+
     replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
-    expect(sink.chunks).toHaveLength(0);
+    expect(sink.chunks.map((c) => c.data[0])).toEqual([1]);
+  });
+
+  it("refuses output past the hold cap and reports it", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5, new Uint8Array(HELD_BYTES_LIMIT)));
+    router.dispatchBytes(makeChunk(5, new Uint8Array(1)));
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks.map((c) => c.data.byteLength)).toEqual([
+      HELD_BYTES_LIMIT,
+    ]);
+    expect(errors.map((e) => e.message)).toEqual([
+      expect.stringMatching(/^topology hold overflow: 1 bytes/),
+    ]);
   });
 });
