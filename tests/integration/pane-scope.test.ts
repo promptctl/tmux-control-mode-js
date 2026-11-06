@@ -215,6 +215,36 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
+  // ── Test 3b: sessionScope output provoked before topology lands ──────────
+
+  it("SCOPE-03b: sessionScope receives output provoked once, right after attach, from another client", async () => {
+    const session = uniqueName("sess-early");
+    client = await attachSession(socketName, session);
+    const [pane] = await listAllPanes(client);
+    expect(pane).toBeDefined();
+
+    const arrived: { paneId: number; data: Uint8Array }[] = [];
+    const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: sessionScope(pane!.sessionId),
+    });
+    // Provoke exactly once, through the tmux CLI — a client our command
+    // stream does not order — before the attach-triggered bootstrap replies.
+    tmux(socketName, [
+      "send-keys",
+      "-t",
+      `%${pane!.paneId}`,
+      "printf 'early-%s' scope",
+      "Enter",
+    ]);
+    const has = () =>
+      arrived.some((e) =>
+        Buffer.from(e.data).toString().includes("early-scope"),
+      );
+    await pollUntil(has);
+
+    dispose();
+  }, 15000);
+
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
 
   it("SCOPE-04: sessionScope tracks a new window created after subscription", async () => {

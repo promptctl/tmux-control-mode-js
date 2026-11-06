@@ -725,22 +725,20 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
       { scope: sessionScope(sessionAId!) },
     );
 
-    // The scope matches a pane only once the attach-triggered topology
-    // bootstrap lands, and that resolves over the WebSocket after
-    // attachBytesSink returns. Re-provoke A until its bytes arrive: that
-    // observation is the proof the scope is live, so B's provocation below
-    // tests exclusion rather than racing the bootstrap.
-    // [LAW:no-ambient-temporal-coupling]
+    // Provoke A exactly once, immediately: the attach-triggered bootstrap
+    // resolves over the WebSocket after attachBytesSink returns, and output
+    // that beats it must still reach the scope. A's arrival is also the proof
+    // the scope is live, so B's provocation below tests exclusion.
     const hasA = () =>
       (received.get(paneA!) ?? []).some((d) =>
         Buffer.from(d).toString().includes("ws-int21-a"),
       );
+    await fx.tmux.execute(
+      `send-keys -t %${paneA} "printf 'ws-%s' int21-a" Enter`,
+    );
     const deadline = Date.now() + 8_000;
     while (!hasA() && Date.now() < deadline) {
-      await fx.tmux.execute(
-        `send-keys -t %${paneA} "printf 'ws-%s' int21-a" Enter`,
-      );
-      await new Promise<void>((r) => setTimeout(r, 200));
+      await new Promise<void>((r) => setTimeout(r, 30));
     }
     expect(hasA()).toBe(true);
 

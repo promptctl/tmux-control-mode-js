@@ -122,6 +122,12 @@ export class TopologyRouter {
   //   the outside world. The router computes; this reports.
   private readonly reportTopologyError: ReportTopologyError;
 
+  // Chunks for panes topology did not know when they arrived, held while a
+  // topology query that may place them is outstanding. Each carries the attach
+  // seq at arrival so replay never reaches a sink attached afterwards.
+  // Empty is the resting state; releaseHeld() is the only drain.
+  private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
+
   constructor(
     reportTopologyError: ReportTopologyError,
     options?: TopologyRouterOptions,
@@ -210,6 +216,7 @@ export class TopologyRouter {
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
+    this.held = [];
     this.sinks.endAll();
   }
 
@@ -257,7 +264,45 @@ export class TopologyRouter {
    * attach still matches future chunks for matching panes).
    */
   dispatchBytes(payload: ChunkPayload): void {
-    this.sinks.dispatch(payload, this.topology.get(payload.paneId));
+    const meta = this.topology.get(payload.paneId);
+    this.sinks.dispatch(payload, meta);
+    // A pane topology does not know yet matched no window/session scope. If a
+    // query in flight may still place it, hold the chunk for replay instead of
+    // losing it: output provoked from another tmux client is not ordered with
+    // our command stream, so it can land before the attach-triggered
+    // bootstrap (or a window-add refresh) does.
+    if (
+      meta === undefined &&
+      this.sinks.hasTopologyDependentSinks() &&
+      this.epoch.hasOutstandingQuery()
+    ) {
+      this.held.push({ chunk: payload, attachedBy: this.sinks.attachSeq() });
+    }
+  }
+
+  // Replay every held chunk whose pane topology now knows, in arrival order,
+  // to the window/session attachments that existed when it arrived. Chunks
+  // still unplaced wait while a query remains outstanding; once none does,
+  // nothing can place them and they are dropped (pane/server sinks already got
+  // them live). Runs synchronously at the end of every query, so per-pane
+  // order holds against any chunk dispatched after it.
+  // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
+  //   an empty list makes it a no-op.
+  private releaseHeld(): void {
+    const pending = this.held;
+    const canStillPlace = this.epoch.hasOutstandingQuery();
+    this.held = [];
+    for (const h of pending) {
+      const meta = this.topology.get(h.chunk.paneId);
+      if (meta !== undefined) {
+        this.sinks.dispatch(h.chunk, meta, {
+          scopes: "topology",
+          attachedBy: h.attachedBy,
+        });
+      } else if (canStillPlace) {
+        this.held.push(h);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -368,6 +413,9 @@ export class TopologyRouter {
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
       this.reportTopologyError(bootstrapError(err));
+    } finally {
+      this.epoch.settleBootstrap(gen);
+      this.releaseHeld();
     }
   }
 
@@ -391,6 +439,9 @@ export class TopologyRouter {
     } catch {
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+    } finally {
+      this.epoch.settleWindowRefresh(gen);
+      this.releaseHeld();
     }
   }
 }

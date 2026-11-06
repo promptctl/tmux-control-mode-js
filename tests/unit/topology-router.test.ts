@@ -563,3 +563,153 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     expect((errors[0] as Error & { cause?: unknown })?.cause).toBe(weird);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Held chunks: output for a pane topology does not know yet, while a query
+// that may place it is in flight, reaches topology-scoped sinks once placed.
+// ---------------------------------------------------------------------------
+
+describe("TopologyRouter — chunks that arrive before topology places their pane", () => {
+  // A runner whose replies the test releases one at a time, in order.
+  function controlledRun() {
+    const replies: {
+      cmd: string;
+      resolve: (r: CommandResponse) => void;
+      reject: (e: unknown) => void;
+    }[] = [];
+    const run = (cmd: string) =>
+      new Promise<CommandResponse>((resolve, reject) => {
+        replies.push({ cmd, resolve, reject });
+      });
+    return { run, replies };
+  }
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+  const text = (s: ReturnType<typeof makeSink>) =>
+    s.chunks.map((c) => c.paneId);
+
+  it("delivers a chunk that beat the attach-triggered bootstrap once it lands", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+
+    router.dispatchBytes(makeChunk(5));
+    expect(sink.chunks).toHaveLength(0);
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(text(sink)).toEqual([5]);
+  });
+
+  it("delivers a chunk that beat a window-add refresh once it lands", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: windowScope(3) });
+    replies[0]!.resolve(makeOkResponse([]));
+    await settle();
+
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    router.dispatchBytes(makeChunk(7));
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    expect(text(sink)).toEqual([7]);
+  });
+
+  it("keeps per-pane order: a held chunk is replayed before later chunks", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+
+    router.dispatchBytes(makeChunk(5, new Uint8Array([1])));
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(5, new Uint8Array([2])));
+    expect(sink.chunks.map((c) => c.data[0])).toEqual([1, 2]);
+  });
+
+  it("does not replay to a sink attached after the chunk arrived", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const early = makeSink();
+    router.attachBytesSink(early, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    const late = makeSink();
+    router.attachBytesSink(late, { scope: sessionScope(1) });
+
+    for (const r of replies) r.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(text(early)).toEqual([5]);
+    expect(late.chunks).toHaveLength(0);
+  });
+
+  it("does not duplicate the chunk to pane- or server-scoped sinks", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    const server = makeSink();
+    const pane = makeSink();
+    router.attachBytesSink(server);
+    router.attachBytesSink(pane, { scope: paneScope(5) });
+
+    router.dispatchBytes(makeChunk(5));
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(text(server)).toEqual([5]);
+    expect(text(pane)).toEqual([5]);
+  });
+
+  it("waits for the superseding bootstrap rather than dropping at the stale one", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    router.handleNotification({ type: "sessions-changed" });
+
+    replies[0]!.resolve(makeOkResponse([])); // stale, places nothing
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(text(sink)).toEqual([5]);
+  });
+
+  it("drops held chunks once no query can place them (failed bootstrap)", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    replies[0]!.reject(new Error("boom"));
+    await settle();
+
+    // A later bootstrap placing %5 must not resurrect the dropped chunk.
+    router.handleNotification({ type: "sessions-changed" });
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+  });
+
+  it("discards held chunks on transport close", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(5));
+    router.onTransportClose();
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+  });
+});

@@ -251,8 +251,35 @@ export class PaneTopologyManager {
 // SinkRegistry — scope-bifurcated dispatch
 // ---------------------------------------------------------------------------
 
-// Internal per-scope bucket: token → sink. Token is unique per attachment.
-type Bucket = Map<symbol, BytesSink>;
+// One attachment: the sink plus its attach sequence number. The record object
+// IS the attachment's identity, so the same sink attached twice is two entries.
+interface Attachment {
+  readonly seq: number;
+  readonly sink: BytesSink;
+}
+
+// Internal per-scope bucket of attachments, in attach order.
+type Bucket = Set<Attachment>;
+
+/**
+ * Which attachments a dispatch may write to.
+ *
+ * Live dispatch admits every scope and every attachment. Replay of a held
+ * chunk (see TopologyRouter) admits only the topology scopes, since pane and
+ * server attachments already received it live, and only attachments made at or
+ * before the chunk arrived (`attachedBy` = `SinkRegistry.attachSeq()` then).
+ * [LAW:single-enforcer] Admission is a value on the one dispatch path, not a
+ *   second dispatch method.
+ */
+export interface DispatchAdmission {
+  readonly scopes: "all" | "topology";
+  readonly attachedBy: number;
+}
+
+export const liveAdmission: DispatchAdmission = {
+  scopes: "all",
+  attachedBy: Number.POSITIVE_INFINITY,
+};
 
 /**
  * Scope-bifurcated registry for `BytesSink` attachments.
@@ -266,36 +293,38 @@ type Bucket = Map<symbol, BytesSink>;
  *   own one instance; none duplicate the snapshot logic or the bucket layout.
  * [LAW:dataflow-not-control-flow] dispatch() runs the same four bucket lookups
  *   on every chunk. Which buckets are non-empty is data, not guarded control.
- * [LAW:types-are-the-program] Token-keyed Maps make per-attachment identity
- *   structural: each attach() call yields an independent entry even for the
- *   same sink instance, with no "is this sink already attached" check needed.
+ * [LAW:types-are-the-program] Attachment-record Sets make per-attachment
+ *   identity structural: each attach() call yields an independent entry even
+ *   for the same sink instance, with no "is this sink already attached" check.
  */
 export class SinkRegistry {
   // [LAW:one-source-of-truth] Four buckets are the sole attachment state.
   //   attach() writes one bucket. dispose() deletes from exactly that bucket.
   //   dispatch() reads all matching buckets. No second index exists.
-  private readonly serverAttachments: Bucket = new Map();
+  private readonly serverAttachments: Bucket = new Set();
   private readonly sessionAttachments = new Map<number, Bucket>();
   private readonly windowAttachments = new Map<number, Bucket>();
   private readonly paneAttachments = new Map<number, Bucket>();
+  // Monotone: every attach draws a strictly greater seq than all before it.
+  private lastSeq = 0;
 
   /**
    * Attach a sink to the given scope. Returns an idempotent disposer.
    *
    * Each call is an independent attachment — the same sink may be attached
-   * multiple times; each yields its own token and disposer. The disposer
+   * multiple times; each yields its own entry and disposer. The disposer
    * calls `sink.end()` exactly once on the first invocation.
    */
   attach(sink: BytesSink, scope: PaneScope): () => void {
-    const token = Symbol("BytesSink");
+    const attachment: Attachment = { seq: ++this.lastSeq, sink };
     const bucket = this.getOrCreateBucket(scope);
-    bucket.set(token, sink);
+    bucket.add(attachment);
 
     // [LAW:dataflow-not-control-flow] Idempotency is structural — delete()
     //   returns true only on the first removal, so end() fires at most once
     //   without a separate `disposed` flag.
     return () => {
-      const removed = bucket.delete(token);
+      const removed = bucket.delete(attachment);
       if (!removed) return;
       if (bucket.size === 0) this.pruneEmptyBucket(scope);
       sink.end();
@@ -367,13 +396,22 @@ export class SinkRegistry {
    *   chunk, regardless of which buckets are populated. Snapshots are taken
    *   before the first write so re-entrant attach/detach in a sink's write
    *   cannot back-fill or skip the current chunk.
+   *
+   * `admission` narrows which attachments are written; see DispatchAdmission.
    */
-  dispatch(msg: ChunkPayload, meta: PaneMeta | undefined): void {
+  dispatch(
+    msg: ChunkPayload,
+    meta: PaneMeta | undefined,
+    admission: DispatchAdmission = liveAdmission,
+  ): void {
     // Snapshot all four buckets synchronously before any write() call. The
     // up-front capture is load-bearing across buckets too: a pane-sink's write
     // attaching a server-sink must not deliver to it this chunk, so all four
     // memberships are frozen before the first write fires.
-    const paneSnap = snapshotBucket(this.paneAttachments.get(msg.paneId));
+    const everyScope = admission.scopes === "all";
+    const paneSnap = everyScope
+      ? snapshotBucket(this.paneAttachments.get(msg.paneId))
+      : undefined;
     const windowSnap =
       meta !== undefined
         ? snapshotBucket(this.windowAttachments.get(meta.windowId))
@@ -382,7 +420,9 @@ export class SinkRegistry {
       meta !== undefined
         ? snapshotBucket(this.sessionAttachments.get(meta.sessionId))
         : undefined;
-    const serverSnap = snapshotBucket(this.serverAttachments);
+    const serverSnap = everyScope
+      ? snapshotBucket(this.serverAttachments)
+      : undefined;
 
     // [LAW:no-defensive-null-guards] `undefined` is the no-sinks sentinel, not
     //   a defensive guard. The early exit is a performance gate (skip four
@@ -395,10 +435,19 @@ export class SinkRegistry {
     )
       return;
 
-    writeSnapshot(paneSnap, msg);
-    writeSnapshot(windowSnap, msg);
-    writeSnapshot(sessionSnap, msg);
-    writeSnapshot(serverSnap, msg);
+    const by = admission.attachedBy;
+    writeSnapshot(paneSnap, msg, by);
+    writeSnapshot(windowSnap, msg, by);
+    writeSnapshot(sessionSnap, msg, by);
+    writeSnapshot(serverSnap, msg, by);
+  }
+
+  /**
+   * The seq of the most recent attachment. A chunk stamped with this value
+   * admits exactly the attachments that existed when it arrived.
+   */
+  attachSeq(): number {
+    return this.lastSeq;
   }
 
   private getOrCreateBucket(scope: PaneScope): Bucket {
@@ -408,7 +457,7 @@ export class SinkRegistry {
       case "session": {
         let b = this.sessionAttachments.get(scope.sessionId);
         if (b === undefined) {
-          b = new Map();
+          b = new Set();
           this.sessionAttachments.set(scope.sessionId, b);
         }
         return b;
@@ -416,7 +465,7 @@ export class SinkRegistry {
       case "window": {
         let b = this.windowAttachments.get(scope.windowId);
         if (b === undefined) {
-          b = new Map();
+          b = new Set();
           this.windowAttachments.set(scope.windowId, b);
         }
         return b;
@@ -424,7 +473,7 @@ export class SinkRegistry {
       case "pane": {
         let b = this.paneAttachments.get(scope.paneId);
         if (b === undefined) {
-          b = new Map();
+          b = new Set();
           this.paneAttachments.set(scope.paneId, b);
         }
         return b;
@@ -455,7 +504,7 @@ export class SinkRegistry {
     const allSinks: BytesSink[] = [
       ...this.serverAttachments.values(),
       ...innerBuckets.flatMap((b) => [...b.values()]),
-    ];
+    ].map((a) => a.sink);
     // Clear inner buckets first — existing disposers see empty bucket and
     // become no-ops, preventing double-end on concurrent disposal.
     for (const b of innerBuckets) b.clear();
@@ -489,44 +538,49 @@ export class SinkRegistry {
 // object (a tagged wrapper would allocate per chunk — the exact cost this
 // representation exists to avoid):
 //   undefined        — no sinks for this scope (the no-consumer common case).
-//   BytesSink        — exactly one sink (the dominant one-terminal case); the
-//                      bare reference IS the frozen membership, no array.
-//   BytesSink[]      — two or more sinks, copied to freeze against re-entrant
+//   Attachment       — exactly one (the dominant one-terminal case); the bare
+//                      reference IS the frozen membership, no array.
+//   Attachment[]     — two or more, copied to freeze against re-entrant
 //                      mutation while iterating.
 // [LAW:types-are-the-program] The union is exactly as wide as the domain: a
 //   frozen membership is empty, single, or many — nothing else representable.
 //   The array arm is mutable (not `readonly`) so `Array.isArray` narrows it in
 //   writeSnapshot; immutability is guaranteed structurally — the array is
 //   module-private, built once by snapshotBucket and only ever iterated.
-type SinkSnapshot = undefined | BytesSink | BytesSink[];
+type SinkSnapshot = undefined | Attachment | Attachment[];
 
 // [LAW:dataflow-not-control-flow] The size branch selects a *materialization*
 //   strategy, not a behavior: every shape delivers the chunk to exactly the
 //   sinks present at dispatch entry. Capturing the sole reference for size===1
 //   is the allocation-free freeze for the hot path — over a steady %output
 //   stream this is the largest per-chunk allocation eliminated. The `Array.from`
-//   copy remains only for size>=2, where live-iterating a mutating Map is the
+//   copy remains only for size>=2, where live-iterating a mutating Set is the
 //   real re-entrancy hazard.
 function snapshotBucket(bucket: Bucket | undefined): SinkSnapshot {
   if (bucket === undefined || bucket.size === 0) return undefined;
   if (bucket.size === 1) {
     // The single (only) entry: returning its reference allocates nothing —
-    // V8's escape analysis scalar-replaces the non-escaping Map iterator.
-    for (const sink of bucket.values()) return sink;
+    // V8's escape analysis scalar-replaces the non-escaping Set iterator.
+    for (const attachment of bucket) return attachment;
   }
   return Array.from(bucket.values());
 }
 
 // [LAW:dataflow-not-control-flow] Dispatches on the snapshot's shape, not on
 //   any behavioral condition — the write to each frozen member runs the same
-//   way regardless of how membership was materialized.
-function writeSnapshot(snap: SinkSnapshot, msg: ChunkPayload): void {
+//   way regardless of how membership was materialized. Live dispatch passes
+//   attachedBy = +∞, so the seq comparison admits every member.
+function writeSnapshot(
+  snap: SinkSnapshot,
+  msg: ChunkPayload,
+  attachedBy: number,
+): void {
   if (snap === undefined) return;
   if (Array.isArray(snap)) {
-    for (const sink of snap) sink.write(msg);
+    for (const a of snap) if (a.seq <= attachedBy) a.sink.write(msg);
     return;
   }
-  snap.write(msg);
+  if (snap.seq <= attachedBy) snap.sink.write(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +734,10 @@ export class TopologyEpochTracker {
   // only ever increases. Per-window counters that reset after a clear would
   // allow pre-clear and post-clear tokens to collide (both start at 1).
   private windowEpoch = 0;
+  // Queries started and not yet settled. Kept apart from the staleness gens
+  // above: a window-close makes a bootstrap stale without settling it.
+  private readonly outstandingBootstraps = new Set<number>();
+  private readonly outstandingRefreshes = new Set<number>();
 
   /**
    * Call immediately before the `list-panes -a` execute(). Returns captured gen.
@@ -693,6 +751,7 @@ export class TopologyEpochTracker {
   startBootstrap(): number {
     this.windowGens.clear();
     this.latestBootstrapStartGen = ++this.bootstrapGen;
+    this.outstandingBootstraps.add(this.latestBootstrapStartGen);
     return this.latestBootstrapStartGen;
   }
 
@@ -720,6 +779,7 @@ export class TopologyEpochTracker {
   startWindowRefresh(windowId: number): number {
     const gen = ++this.windowEpoch;
     this.windowGens.set(windowId, gen);
+    this.outstandingRefreshes.add(gen);
     return gen;
   }
 
@@ -742,6 +802,30 @@ export class TopologyEpochTracker {
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
     this.windowGens.delete(windowId);
+  }
+
+  /**
+   * Call when a bootstrap's command settles, on every path (applied, stale,
+   * failed). Bootstrap gens and window-refresh tokens are drawn from separate
+   * counters, so each is tracked in its own set.
+   */
+  settleBootstrap(gen: number): void {
+    this.outstandingBootstraps.delete(gen);
+  }
+
+  /** Call when a window refresh's command settles, on every path. */
+  settleWindowRefresh(token: number): void {
+    this.outstandingRefreshes.delete(token);
+  }
+
+  /**
+   * True while any topology query is in flight — i.e. a pane topology does not
+   * know yet may still be placed by a result that has not arrived.
+   */
+  hasOutstandingQuery(): boolean {
+    return (
+      this.outstandingBootstraps.size > 0 || this.outstandingRefreshes.size > 0
+    );
   }
 }
 
