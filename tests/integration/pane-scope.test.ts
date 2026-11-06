@@ -11,8 +11,9 @@
 //   - `killServer()` tears the isolated server down in afterEach by delegating
 //     to the shared `killTmuxServer()` helper, regardless of whether any
 //     session lingers.
-//   - `tmuxCmd()` is the sole builder of `tmux -L <socket> …` strings so no
-//     raw `tmux` prefix can escape the isolation layer.
+//   - `tmuxCmd()` builds every `tmux -L <socket> …` string this file runs
+//     itself (session setup is the shared attachSession), so no raw `tmux`
+//     prefix can escape the isolation layer.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";

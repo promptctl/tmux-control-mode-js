@@ -11,7 +11,6 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
-import type { ConnectionState } from "../../src/connection-state.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 
 /** A socket family the reaper collects; any other prefix would leak. */
@@ -78,48 +77,20 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
 }
 
 /**
- * Resolve once `client` is "ready" — at once if it already is. Reject at once
- * if it reaches terminal "closed" (a failed attach), naming the reason, rather
- * than waiting out `ms`.
+ * Resolve once `client` is "ready" — and, with `startup`, once tmux's startup
+ * `%session-changed` has also arrived. Reject at once on terminal "closed"
+ * (before or after ready), naming the reason, rather than waiting out `ms`.
+ * Every path clears the timer and both listeners.
+ * [LAW:one-source-of-truth] The one ready/closed/timeout waiter; waitReady and
+ * attachClient are its two uses.
  */
-export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+function waitConnected(
+  client: TmuxClient,
+  ms: number,
+  startup: "await-startup" | "ready-only",
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const settle = (s: ConnectionState): void => {
-      if (s.status !== "ready" && s.status !== "closed") return;
-      clearTimeout(timer);
-      client.off("connection-state", handler);
-      if (s.status === "ready") resolve();
-      else
-        reject(new Error(`client closed before ready (reason: ${s.reason})`));
-    };
-    const handler = (e: { state: ConnectionState }) => settle(e.state);
-    const timer = setTimeout(() => {
-      client.off("connection-state", handler);
-      reject(new Error(`client did not reach ready state within ${ms}ms`));
-    }, ms);
-    client.on("connection-state", handler);
-    settle(client.connectionState);
-  });
-}
-
-export interface ClientAttachOptions {
-  readonly clientOptions?: TmuxClientOptions;
-  /** Wrap the spawned transport, e.g. to record the commands sent through it. */
-  readonly wrapTransport?: (inner: TmuxTransport) => TmuxTransport;
-}
-
-/**
- * Resolve once `client` is ready AND tmux's startup `%session-changed` has
- * arrived. tmux sends that notification after the greeting that makes the
- * client ready, and the router re-bootstraps on it (harmless for topology, but
- * it puts a `list-panes` and an interest recompute on the wire); resolving at
- * "ready" alone would let both land inside a test that asserts on the command
- * stream. Rejects at once on terminal "closed" — before or after ready — naming
- * the reason. Every path clears the timer and both listeners.
- */
-function waitAttached(client: TmuxClient, ms: number): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    let sawStartup = false;
+    let sawStartup = startup === "ready-only";
     const done = (err?: Error): void => {
       clearTimeout(timer);
       client.off("connection-state", onState);
@@ -142,7 +113,7 @@ function waitAttached(client: TmuxClient, ms: number): Promise<void> {
       () =>
         done(
           new Error(
-            `client not attached within ${ms}ms (ready: ${client.connectionState.status === "ready"}, startup session-changed: ${sawStartup})`,
+            `client not attached within ${ms}ms (status: ${client.connectionState.status}, startup session-changed: ${sawStartup})`,
           ),
         ),
       ms,
@@ -154,8 +125,27 @@ function waitAttached(client: TmuxClient, ms: number): Promise<void> {
 }
 
 /**
+ * Resolve once `client` is "ready" — at once if it already is. Reject at once
+ * if it reaches terminal "closed" (a failed attach), naming the reason.
+ */
+export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+  return waitConnected(client, ms, "ready-only");
+}
+
+export interface ClientAttachOptions {
+  readonly clientOptions?: TmuxClientOptions;
+  /** Wrap the spawned transport, e.g. to record the commands sent through it. */
+  readonly wrapTransport?: (inner: TmuxTransport) => TmuxTransport;
+}
+
+/**
  * Attach a control client to the existing `sessionName` on `socketName` and
- * resolve once it is attached (see waitAttached). A failed attach closes the
+ * resolve once it is ready AND tmux's startup `%session-changed` has arrived.
+ * tmux sends that notification after the greeting that makes the client ready;
+ * waiting for it keeps the notification itself (and the re-bootstrap
+ * `list-panes` the router sends on it) out of the caller's test body. The
+ * replies to the bootstrap commands, and any interest recompute they cause,
+ * can still arrive after this resolves. A failed attach closes the
  * client before rejecting, so the spawned child never outlives the failure.
  * [LAW:single-enforcer] The one place an integration test attaches a client
  * through `attach-session` for use as a fixture; tests that exercise the
@@ -176,9 +166,10 @@ export async function attachClient(
     clientOptions,
   );
   try {
-    // 8s: under vitest's 10s hook timeout, so a hung attach fails with this
+    // 8s: under vitest's 10s hook timeout (attachSession's new-session runs
+    // first but takes milliseconds), so a hung attach fails with this
     // helper's named error and its cleanup, not vitest's generic timeout.
-    await waitAttached(client, 8000);
+    await waitConnected(client, 8000, "await-startup");
   } catch (err) {
     client.close();
     throw err;
@@ -214,7 +205,20 @@ export async function attachSession(
     // stderr piped so a failed new-session's error carries tmux's reason.
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  return attachClient(socketName, sessionName, attach);
+  try {
+    return await attachClient(socketName, sessionName, attach);
+  } catch (err) {
+    // The session is this helper's; a failed attach must not leave it (and,
+    // via it, the isolated server) running.
+    execFileSync(
+      "tmux",
+      ["-L", socketName, "kill-session", "-t", sessionName],
+      {
+        stdio: "ignore",
+      },
+    );
+    throw err;
+  }
 }
 
 /**

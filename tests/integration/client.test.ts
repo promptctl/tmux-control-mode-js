@@ -100,8 +100,9 @@ function tmuxAtLeast(need: TmuxVersion): boolean {
 // which lists and kills every session on the isolated socket; tmux's
 // exit-empty default then terminates the now-empty server.
 //
-// [LAW:single-enforcer] `tmuxCmd()` is the only place that builds the
-// `tmux -L <socket> ...` command line in this file.
+// [LAW:single-enforcer] `tmuxCmd()` builds every `tmux -L <socket> ...`
+// command line this file runs itself; session setup goes through the shared
+// attachSession in tests/helpers/integration.ts.
 // [LAW:one-source-of-truth] Teardown itself lives in
 // `tests/helpers/reap-test-sockets.ts` so it isn't re-implemented per file.
 
@@ -696,9 +697,19 @@ const COVERAGE: Readonly<Record<string, Coverage>> = {
       // switches session — the switching client itself gets %session-changed.
       // So a SECOND client must do the switching while the primary observes.
       const other = uniqueName("cov-cliswitch");
-      exec(`new-session -d -s ${other}`);
+      // Match the switch by its target session: c2's own attach also sends
+      // the primary a %client-session-changed, and it can arrive late.
+      const otherId = Number(
+        exec(`new-session -d -P -F '#{session_id}' -s ${other}`)
+          .trim()
+          .slice(1),
+      );
       await withSecondClient(socketName, sessionName, async (c2) => {
-        const p = waitForEvent(client, "client-session-changed");
+        const p = waitForEvent(
+          client,
+          "client-session-changed",
+          (e) => e.sessionId === otherId,
+        );
         await c2.execute(`switch-client -t ${other}`);
         await p;
       });
@@ -1099,8 +1110,8 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
     mkdirSync(weirdDir, { recursive: true });
     try {
-      // Created via tmux's own CLI (execSync), same as createSession
-      // above, not as a control-mode command string: tmux's control-mode
+      // Created via tmux's own CLI (execSync), not as a control-mode
+      // command string: tmux's control-mode
       // command-line tokenizer is a separate, less-standard parser from
       // a POSIX shell's, and its handling of a literal tab inside a
       // quoted -c argument has been observed to vary by tmux version. A
