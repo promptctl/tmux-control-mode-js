@@ -10,11 +10,17 @@
 //   wrapper captures outbound commands; nothing reaches into the suppressor.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName, pollUntil } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  pollUntil,
+  attachSession,
+  attachClient,
+  type AttachOptions,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
+import { type TmuxClientOptions } from "../../src/client.js";
 import {
   serverScope,
   windowScope,
@@ -32,9 +38,6 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
 
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
@@ -67,36 +70,43 @@ function recordingTransport(inner: TmuxTransport): {
   };
 }
 
+interface Recorded {
+  client: TmuxClient;
+  sent: string[];
+}
+
+/** Wrap a fresh recording transport around each spawned one, keeping its log. */
+async function recorded(
+  connect: (opts: AttachOptions) => Promise<TmuxClient>,
+  clientOptions?: TmuxClientOptions,
+): Promise<Recorded> {
+  let sent: string[] = [];
+  const client = await connect({
+    clientOptions,
+    wrapTransport: (inner) => {
+      const r = recordingTransport(inner);
+      sent = r.sent;
+      return r.transport;
+    },
+  });
+  return { client, sent };
+}
+
 /** Create a session on the isolated socket and return a ready client. */
 function createClient(
   socketName: string,
   sessionName: string,
-  options?: ConstructorParameters<typeof TmuxClient>[1],
-): Promise<{ client: TmuxClient; sent: string[] }> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  return attachClient(socketName, sessionName, options);
+  options?: TmuxClientOptions,
+): Promise<Recorded> {
+  return recorded((o) => attachSession(socketName, sessionName, o), options);
 }
 
 /** Attach a (possibly second) control-mode client to an existing session. */
-function attachClient(
+function attachRecorded(
   socketName: string,
   sessionName: string,
-  options?: ConstructorParameters<typeof TmuxClient>[1],
-): Promise<{ client: TmuxClient; sent: string[] }> {
-  const inner = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const { transport, sent } = recordingTransport(inner);
-  const client = new TmuxClient(transport, options);
-  return new Promise((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
-      resolve({ client, sent });
-    };
-    client.on("session-changed", handler);
-  });
+): Promise<Recorded> {
+  return recorded((o) => attachClient(socketName, sessionName, o));
 }
 
 async function listAllPanes(
@@ -343,7 +353,7 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
 
     // Client 2: a SECOND control-mode client on the same session, no
     // suppression, with a serverScope sink that records arrivals.
-    const c2 = await attachClient(socketName, session);
+    const c2 = await attachRecorded(socketName, session);
     clients.push(c2.client);
     const arrived: number[] = [];
     c2.client.attachBytesSink(makeRecordingSink(arrived), {

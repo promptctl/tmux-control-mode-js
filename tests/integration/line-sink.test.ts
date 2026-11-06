@@ -10,11 +10,14 @@
 // isolated servers — the developer's default tmux server is never touched.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName, pollUntil } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  pollUntil,
+  attachSession,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
   sessionScope,
@@ -31,32 +34,9 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 // ---------------------------------------------------------------------------
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.
-function tmuxCmd(socketName: string, args: string): string {
-  return `tmux -L ${socketName} ${args}`;
-}
 
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
-}
-
-function createClient(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
-  });
 }
 
 async function listAllPanes(
@@ -141,7 +121,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-10: paneScope receives complete lines without trailing newlines", async () => {
     const session = uniqueName("p-lines");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const panes = await listAllPanes(client);
     expect(panes.length).toBeGreaterThan(0);
@@ -171,7 +151,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-13: N consumers on the same pane each receive every line", async () => {
     const session = uniqueName("multi");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const panes = await listAllPanes(client);
     const paneA = panes[0].paneId;
@@ -215,7 +195,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-14: sessionScope delivers lines from every pane in the session", async () => {
     const session = uniqueName("sess-line");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const before = await listAllPanes(client);
     const sessionId = before[0].sessionId;
@@ -252,7 +232,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-15: serverScope tags each line with the originating paneId", async () => {
     const session = uniqueName("srv-line");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     await client.execute("new-window");
     const all = await listAllPanes(client);
@@ -291,7 +271,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-14b: windowScope delivers panes in the target window, not others", async () => {
     const session = uniqueName("win-line");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     await client.execute("new-window");
     const panes = await listAllPanes(client);
@@ -327,7 +307,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-16: detaching the last consumer flushes a partial trailing line", async () => {
     const session = uniqueName("flush");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const panes = await listAllPanes(client);
     const paneA = panes[0].paneId;
@@ -370,7 +350,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-17: detaching a fully-consumed pane produces no extra event", async () => {
     const session = uniqueName("noflush");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const panes = await listAllPanes(client);
     const paneA = panes[0].paneId;
@@ -405,7 +385,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
   it("LINE-18: a consumer disposing inside its handler doesn't starve siblings", async () => {
     const session = uniqueName("during");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const panes = await listAllPanes(client);
     const paneA = panes[0].paneId;

@@ -21,9 +21,9 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
-  waitReady,
   waitForEvent,
   withSecondClient,
+  attachSession,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import { WIRE_MESSAGE_TYPES } from "../../src/protocol/parser.js";
@@ -117,43 +117,6 @@ function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
 
-/**
- * Create a detached tmux session on an isolated socket and return a
- * TmuxClient attached to it, once its connectionState reaches "ready".
- *
- * Protocol detail: `attach-session` in control mode sends an unsolicited
- * startup %begin/%end pair before any user command's own guard block
- * (SPEC.md §5). TmuxClient consumes that pair internally and does not reach
- * "ready" until it closes (see TmuxClient.awaitingGreeting) — so waiting on
- * "ready" here is just observing the client's own lifecycle state, not a
- * workaround. Most callers don't actually need to wait at all: execute()
- * correlates correctly the instant a TmuxClient is constructed (see
- * "execute() issued synchronously..." below) — this helper waits anyway so
- * tests built on it get a clean, singular starting point.
- *
- * [LAW:dataflow-not-control-flow] Session creation and transport construction
- * always run unconditionally; variability lives in sessionName/socketName.
- */
-async function createSession(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const client = new TmuxClient(
-    spawnTmux(["attach-session", "-t", sessionName], {
-      socketPath: socketName,
-    }),
-  );
-  // [LAW:one-source-of-truth] Readiness-waiting lives only in waitReady; this
-  // delegates rather than re-implementing the connection-state handler, and so
-  // inherits its legible timeout — a hung attach rejects (the caller's finally
-  // still runs) instead of leaking the spawned child until the suite timeout.
-  await waitReady(client);
-  return client;
-}
-
 // ---------------------------------------------------------------------------
 // 1. Command Correlation
 // ---------------------------------------------------------------------------
@@ -182,7 +145,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   it("execute(list-windows) resolves success with output", async () => {
     sessionName = uniqueName("test-corr");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const response: CommandResponse = await client.execute("list-windows");
 
@@ -195,7 +158,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   }, 15000);
 
   it("execute() issued synchronously after construction correlates to its own response, not tmux's startup greeting", async () => {
-    // Deliberately bypasses createSession()'s wait-for-ready: this proves
+    // Deliberately bypasses attachSession()'s wait-for-ready: this proves
     // the client doesn't need it. If the startup greeting could still
     // steal a pending entry, `execute()` here would resolve with the
     // greeting's empty output (or hang, if the greeting is corrupted).
@@ -216,7 +179,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   it("execute(invalid-command-xyz) resolves with success: false", async () => {
     sessionName = uniqueName("test-corr");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     // TmuxClient rejects with TmuxCommandError on %error. The original
     // CommandResponse is on err.response.
@@ -231,7 +194,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
 
   it("concurrent execute() calls all resolve (FIFO ordering)", async () => {
     sessionName = uniqueName("test-corr");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     // [LAW:dataflow-not-control-flow] All three commands are enqueued
     // unconditionally; the FIFO queue decides when each resolves.
@@ -277,14 +240,14 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
   it("setSize accepts a non-default size", async () => {
     sessionName = uniqueName("test-size");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
     const r = await setSize(client, 120, 40);
     expect(r.success).toBe(true);
   }, 15000);
 
   it("setPaneAction(paneId, 'on') succeeds", async () => {
     sessionName = uniqueName("test-pane");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
     // Default `list-panes` output starts with the pane index; use the
     // session-relative target form instead. Translate to a numeric pane id
     // by parsing the first %N occurrence in default list-panes output.
@@ -300,7 +263,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
   it("subscribeRaw and unsubscribe each resolve with success", async () => {
     sessionName = uniqueName("test-sub");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
     const sub = await subscribeRaw(
       client,
       "test-sub-1",
@@ -314,7 +277,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
   it("setFlags(['pause-after=2']) and clearFlags(['pause-after']) both succeed", async () => {
     sessionName = uniqueName("test-flag");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
     const setR = await setFlags(client, ["pause-after=2"]);
     expect(setR.success).toBe(true);
     const clearR = await clearFlags(client, ["pause-after"]);
@@ -325,7 +288,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     "queryClipboard returns a successful response",
     async () => {
       sessionName = uniqueName("test-clip");
-      client = await createSession(socketName, sessionName);
+      client = await attachSession(socketName, sessionName);
       const r = await queryClipboard(client);
       // Note: contents may be empty in a CI/headless environment; success is
       // about the protocol round-trip, not the clipboard payload.
@@ -342,7 +305,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     "queryClipboard rejects below its floor and the connection survives",
     async () => {
       sessionName = uniqueName("test-clip-old");
-      client = await createSession(socketName, sessionName);
+      client = await attachSession(socketName, sessionName);
       await expect(queryClipboard(client)).rejects.toBeInstanceOf(
         UnsupportedTmuxVersionError,
       );
@@ -356,7 +319,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     "requestReport succeeds against an existing pane",
     async () => {
       sessionName = uniqueName("test-rep");
-      client = await createSession(socketName, sessionName);
+      client = await attachSession(socketName, sessionName);
       const list = await client.execute("list-panes");
       const match = list.output.join("\n").match(/%(\d+)/);
       expect(match).not.toBeNull();
@@ -373,7 +336,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
 
   it("detach() causes tmux to send %exit and the transport to close", async () => {
     sessionName = uniqueName("test-det");
-    const c = await createSession(socketName, sessionName);
+    const c = await attachSession(socketName, sessionName);
     client = c;
     const exitPromise = waitForEvent(c, "exit");
     c.detach();
@@ -401,7 +364,7 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
 
   it("exit event fires when transport is closed", async () => {
     sessionName = uniqueName("test-lifecycle");
-    const client = await createSession(socketName, sessionName);
+    const client = await attachSession(socketName, sessionName);
 
     const exitPromise = waitForEvent(client, "exit");
 
@@ -990,7 +953,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
         const sessionName = uniqueName(`cov-${name}`);
         let client: TmuxClient | null = null;
         try {
-          client = await createSession(socketName, sessionName);
+          client = await attachSession(socketName, sessionName);
           await probe({
             client,
             socketName,
@@ -1022,7 +985,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
     const sessionName = uniqueName("cov-ownkill");
     let client: TmuxClient | null = null;
     try {
-      const c = await createSession(socketName, sessionName);
+      const c = await attachSession(socketName, sessionName);
       client = c;
       const windowId = parseWindowId(
         execSync(
@@ -1086,7 +1049,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-01: listWindows() returns structured WindowRecords with at least one entry", async () => {
     sessionName = uniqueName("cmd-lw");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     // [LAW:types-are-the-program] Type the client as TmuxConnection — the
     // free function takes the minimal interface, not the full TmuxClient.
@@ -1105,7 +1068,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-02: listPanes() returns structured PaneRecords with at least one entry", async () => {
     sessionName = uniqueName("cmd-lp");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const panes = await listPanes(client);
 
@@ -1127,7 +1090,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash", async () => {
     sessionName = uniqueName("cmd-lp-tab");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const weirdDir = `/tmp/tmux-js-test-tab-${Date.now()}-a\\b\tc`;
     mkdirSync(weirdDir, { recursive: true });
@@ -1161,7 +1124,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-03: listSessions() returns structured SessionRecords with at least one entry", async () => {
     sessionName = uniqueName("cmd-ls");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const sessions = await listSessions(client);
 
@@ -1177,7 +1140,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-03: sendKeys() delivers keystrokes that produce pane output", async () => {
     sessionName = uniqueName("cmd-sk");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     // Identify the initial pane.
     const panesResp = await client.execute(
@@ -1232,7 +1195,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-04: capturePane() returns the pane's full history as byte-faithful bytes with a matching line count", async () => {
     sessionName = uniqueName("cmd-cap");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const panesResp = await client.execute(
       "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
@@ -1292,7 +1255,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
   it("CMD-05: newWindow() creates a window in a non-attached session with the given cwd and command, returning its pane id", async () => {
     sessionName = uniqueName("cmd-nw");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
     const target = uniqueName("cmd-nw-target");
     await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
     // realpath: macOS /var/folders is a symlink to /private/var/folders,
@@ -1326,7 +1289,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   // would put the window there, so this pins newWindow's exact targeting.
   it("CMD-05: newWindow() rejects with tmux's error text for a nonexistent session, even one prefixing a live session", async () => {
     sessionName = uniqueName("cmd-nw-nosess");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const windowsBefore = (await listWindows(client)).length;
     const attempt = newWindow(client, {
@@ -1350,7 +1313,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   // tmux 3.3 sets to $HOME even though it never chdir'd there.
   it("CMD-05: newWindow() with a nonexistent cwd starts the pane in tmux's fallback dir (tmux falls back, does not reject)", async () => {
     sessionName = uniqueName("cmd-nw-nocwd");
-    client = await createSession(socketName, sessionName);
+    client = await attachSession(socketName, sessionName);
 
     const created = await newWindow(client, {
       session: sessionName,
@@ -1387,7 +1350,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     "CMD-06: paneCwd() straight after newWindow() reads the requested cwd, or the $HOME fallback for a missing one",
     async () => {
       sessionName = uniqueName("cmd-pcwd");
-      client = await createSession(socketName, sessionName);
+      client = await attachSession(socketName, sessionName);
       const cwd = realpathSync(mkdtempSync(join(tmpdir(), "pcwd-")));
 
       try {
@@ -1417,7 +1380,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     "CMD-06: paneCwd() rejects below tmux 3.7 with UnsupportedTmuxVersionError",
     async () => {
       sessionName = uniqueName("cmd-pcwd-old");
-      client = await createSession(socketName, sessionName);
+      client = await attachSession(socketName, sessionName);
       const [pane] = await listPanes(client);
 
       await expect(paneCwd(client, pane.paneId)).rejects.toBeInstanceOf(

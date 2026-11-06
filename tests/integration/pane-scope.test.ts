@@ -16,10 +16,15 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
-import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName, pollUntil } from "../helpers/integration.js";
-import { TmuxClient } from "../../src/client.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  pollUntil,
+  attachSession,
+  attachClient,
+} from "../helpers/integration.js";
+import type { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
   sessionScope,
@@ -42,33 +47,6 @@ function tmuxCmd(socketName: string, args: string): string {
 
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
-}
-
-/**
- * Create a detached session on the isolated socket and return a ready client.
- *
- * Waits for "session-changed" before resolving — that event is the reliable
- * signal that the startup %begin/%end pair has been consumed and the FIFO
- * queue is ready for caller commands.
- */
-function createClient(
-  socketName: string,
-  sessionName: string,
-): Promise<TmuxClient> {
-  execSync(tmuxCmd(socketName, `new-session -d -s ${sessionName}`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", sessionName], {
-    socketPath: socketName,
-  });
-  const client = new TmuxClient(transport);
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = () => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
-  });
 }
 
 /**
@@ -139,7 +117,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-01: serverScope receives bytes from panes in multiple windows", async () => {
     const session = uniqueName("srv");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const arrived: { paneId: number; data: Uint8Array }[] = [];
     const dispose = client.attachBytesSink(makeRecordingSink(arrived));
@@ -171,7 +149,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-02: paneScope delivers only the subscribed pane", async () => {
     const session = uniqueName("pane-iso");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     // Create a second window so we have two distinct panes.
     await client.execute("new-window");
@@ -209,7 +187,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-03: sessionScope delivers bytes from all panes in the session", async () => {
     const session = uniqueName("sess-inc");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     // Initial state: one pane in one window.
     const panesBefore = await listAllPanes(client);
@@ -251,7 +229,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-04: sessionScope tracks a new window created after subscription", async () => {
     const session = uniqueName("sess-dyn");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const allBefore = await listAllPanes(client);
     expect(allBefore.length).toBeGreaterThan(0);
@@ -289,7 +267,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-05: windowScope delivers panes in target window, not others", async () => {
     const session = uniqueName("win-iso");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     // Create a second window.
     await client.execute("new-window");
@@ -340,7 +318,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-06: sessionScope excludes a window moved out of the session", async () => {
     const sessionA = uniqueName("move-a");
-    client = await createClient(socketName, sessionA);
+    client = await attachSession(socketName, sessionA);
 
     // Create a second session to move a window into.
     const sessionB = uniqueName("move-b");
@@ -402,7 +380,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-07: serverScope + paneScope each fire exactly once per chunk", async () => {
     const session = uniqueName("multi");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const allPanes = await listAllPanes(client);
     expect(allPanes.length).toBeGreaterThan(0);
@@ -459,18 +437,8 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     });
 
     // Attach as a client AFTER the windows are created.
-    const transport = spawnTmux(["attach-session", "-t", sessionX], {
-      socketPath: socketName,
-    });
-    const c = new TmuxClient(transport);
+    const c = await attachClient(socketName, sessionX);
     client = c;
-    await new Promise<void>((resolve) => {
-      const h = () => {
-        c.off("session-changed", h);
-        resolve();
-      };
-      c.on("session-changed", h);
-    });
 
     // `listAllPanes` returns all panes visible via this client's session. All
     // panes share the same sessionId (only one session is attached).
@@ -507,7 +475,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-09: zero-attachment path produces no dispatch work", async () => {
     const session = uniqueName("noconsumer");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     const allPanes = await listAllPanes(client);
     const pane = allPanes[0].paneId;
@@ -524,7 +492,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-10: sessionScope($A) receives bytes from $A but NOT from $B", async () => {
     const sessionA = uniqueName("iso-a");
-    client = await createClient(socketName, sessionA);
+    client = await attachSession(socketName, sessionA);
 
     // Create session B independently — the control-mode client attached to
     // A can still send commands targeting B's pane (the server is shared).
@@ -572,7 +540,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   it("SCOPE-11: killing a window removes its panes from sessionScope routing", async () => {
     const session = uniqueName("wkill");
-    client = await createClient(socketName, session);
+    client = await attachSession(socketName, session);
 
     // Create a second window so we have two to work with.
     await client.execute("new-window");
