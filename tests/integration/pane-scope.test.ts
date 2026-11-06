@@ -116,10 +116,6 @@ function makeRecordingSink(
   };
 }
 
-/**
- * Wait until at least one recorded entry satisfies `pred`, polling on a
- * 5 ms tick. Rejects after `timeoutMs` (default 8 000).
- */
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

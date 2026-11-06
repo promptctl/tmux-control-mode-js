@@ -33,7 +33,7 @@ import {
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 // ---------------------------------------------------------------------------
-// Isolation helpers (mirrors pane-scope.test.ts)
+// Isolation helpers
 // ---------------------------------------------------------------------------
 
 // [LAW:single-enforcer] Only place that builds `tmux -L <socket> …` strings.

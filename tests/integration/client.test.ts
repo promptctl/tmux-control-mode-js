@@ -375,9 +375,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
     sessionName = uniqueName("test-det");
     const c = await createSession(socketName, sessionName);
     client = c;
-    const exitPromise = new Promise<void>((resolve) => {
-      c.on("exit", () => resolve());
-    });
+    const exitPromise = waitForEvent(c, "exit");
     c.detach();
     await exitPromise;
     client = null;
@@ -405,10 +403,7 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
     sessionName = uniqueName("test-lifecycle");
     const client = await createSession(socketName, sessionName);
 
-    // Wrap the exit event in a promise so we can await it deterministically.
-    const exitPromise = new Promise<void>((resolve) => {
-      client.on("exit", () => resolve());
-    });
+    const exitPromise = waitForEvent(client, "exit");
 
     // Execute a command first to verify the client is live, then close.
     await client.execute("list-windows");

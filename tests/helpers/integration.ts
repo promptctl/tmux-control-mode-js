@@ -9,6 +9,7 @@
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
+import type { ConnectionState } from "../../src/connection-state.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 
 /** A socket family the reaper collects; any other prefix would leak. */
@@ -47,11 +48,22 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
   ms = 12000,
 ): Promise<TmuxEventMap[K]> {
   return new Promise((resolve, reject) => {
-    const handler = (ev: TmuxEventMap[K]) => {
-      if (!match(ev)) return;
+    const settle = (fn: () => void) => {
       clearTimeout(timer);
       client.off(type, handler);
-      resolve(ev);
+      fn();
+    };
+    // A throwing matcher rejects this wait; it must not escape into the
+    // client's emit loop. [LAW:no-silent-failure]
+    const handler = (ev: TmuxEventMap[K]) => {
+      let hit: boolean;
+      try {
+        hit = match(ev);
+      } catch (err) {
+        settle(() => reject(err));
+        return;
+      }
+      if (hit) settle(() => resolve(ev));
     };
     const timer = setTimeout(() => {
       client.off(type, handler);
@@ -61,14 +73,29 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
   });
 }
 
-/** Resolve once `client` reaches connection state "ready". */
-export async function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
-  await waitForEvent(
-    client,
-    "connection-state",
-    (e) => e.state.status === "ready",
-    ms,
-  );
+/**
+ * Resolve once `client` is "ready" — at once if it already is. Reject at once
+ * if it reaches terminal "closed" (a failed attach), naming the reason, rather
+ * than waiting out `ms`.
+ */
+export function waitReady(client: TmuxClient, ms = 12000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const settle = (s: ConnectionState): void => {
+      if (s.status !== "ready" && s.status !== "closed") return;
+      clearTimeout(timer);
+      client.off("connection-state", handler);
+      if (s.status === "ready") resolve();
+      else
+        reject(new Error(`client closed before ready (reason: ${s.reason})`));
+    };
+    const handler = (e: { state: ConnectionState }) => settle(e.state);
+    const timer = setTimeout(() => {
+      client.off("connection-state", handler);
+      reject(new Error(`client did not reach ready state within ${ms}ms`));
+    }, ms);
+    client.on("connection-state", handler);
+    settle(client.connectionState);
+  });
 }
 
 /**
@@ -101,7 +128,13 @@ export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const deadline = Date.now() + ms;
     const check = () => {
-      if (pred()) return resolve();
+      let held: boolean;
+      try {
+        held = pred();
+      } catch (err) {
+        return reject(err);
+      }
+      if (held) return resolve();
       if (Date.now() >= deadline)
         return reject(new Error(`pollUntil: condition not met within ${ms}ms`));
       setTimeout(check, 5);

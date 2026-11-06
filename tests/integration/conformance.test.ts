@@ -15,7 +15,11 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { execSync } from "node:child_process";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket, uniqueName } from "../helpers/integration.js";
+import {
+  uniqueSocket,
+  uniqueName,
+  waitForEvent,
+} from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import { TmuxCommandError } from "../../src/errors.js";
 import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
@@ -55,19 +59,6 @@ function createSession(
   });
 }
 
-function nextMessage<K extends keyof TmuxEventMap>(
-  client: TmuxClient,
-  type: K,
-): Promise<TmuxEventMap[K]> {
-  return new Promise((resolve) => {
-    const handler = (ev: TmuxEventMap[K]) => {
-      client.off(type, handler);
-      resolve(ev);
-    };
-    client.on(type, handler);
-  });
-}
-
 // The catalogue's field set for a variant — the shape real tmux must reproduce.
 function sampleKeys(type: TmuxMessage["type"]): string[] {
   return Object.keys(MESSAGE_SAMPLES[type]).sort();
@@ -104,7 +95,7 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
     it(`live %${type} surfaces with the catalogue's field shape`, async () => {
       const c = await createSession(socketName, uniqueName(`conf-${type}`));
       client = c;
-      const evt = nextMessage(c, type);
+      const evt = waitForEvent(c, type);
       await c.execute(cause);
       const ev = await evt;
       expect(ev.type).toBe(type);

@@ -20,8 +20,6 @@ import {
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
-// [LAW:single-enforcer] Socket/session helpers mirror client.test.ts so the
-// isolation model is identical — each test gets its own tmux server.
 function killServer(socketName: string): void {
   killTmuxServer(socketName);
 }
