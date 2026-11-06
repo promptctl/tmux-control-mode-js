@@ -17,7 +17,7 @@ import {
 
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
-import { uniqueSocket } from "../helpers/integration.js";
+import { uniqueSocket, pollUntil } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
 
@@ -216,25 +216,12 @@ function createWsBackedClient(
   return { client, states, errors };
 }
 
-async function waitForState(
+function waitForState(
   client: WebSocketTmuxClient,
   target: ConnectionState["status"],
   timeoutMs = 5_000,
 ): Promise<void> {
-  if (client.connectionState.status === target) return;
-  await new Promise<void>((resolve, reject) => {
-    const deadline = setTimeout(
-      () => reject(new Error(`timeout waiting for status '${target}'`)),
-      timeoutMs,
-    );
-    const iv = setInterval(() => {
-      if (client.connectionState.status === target) {
-        clearTimeout(deadline);
-        clearInterval(iv);
-        resolve();
-      }
-    }, 20);
-  });
+  return pollUntil(() => client.connectionState.status === target, timeoutMs);
 }
 
 // ---------------------------------------------------------------------------

@@ -35,8 +35,8 @@ export function uniqueName(tag: string): string {
 
 /**
  * Resolve with the first `type` event `match` accepts; reject with a legible
- * message if none has within `ms`, so a missing notification fails as "did not
- * observe a matching %X" rather than an opaque vitest timeout. The handler is
+ * message if none has within `ms`, so a missing event fails as "did not
+ * observe a matching 'X' event" rather than an opaque vitest timeout. The handler is
  * registered synchronously, so a caller that binds `const p = waitForEvent(...)`
  * BEFORE provoking cannot miss an event that fires between the two calls.
  * [LAW:no-ambient-temporal-coupling] Observation is armed before provocation.
@@ -67,7 +67,9 @@ export function waitForEvent<K extends keyof TmuxEventMap>(
     };
     const timer = setTimeout(() => {
       client.off(type, handler);
-      reject(new Error(`did not observe a matching %${type} within ${ms}ms`));
+      reject(
+        new Error(`did not observe a matching "${type}" event within ${ms}ms`),
+      );
     }, ms);
     client.on(type, handler);
   });
