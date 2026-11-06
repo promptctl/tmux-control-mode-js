@@ -271,15 +271,14 @@ type Bucket = Set<Attachment>;
  * [LAW:single-enforcer] Admission is a value on the one dispatch path, not a
  *   second dispatch method.
  */
-export interface DispatchAdmission {
-  readonly scopes: "all" | "topology";
-  readonly attachedBy: number;
-}
+// [LAW:types-are-the-program] Exactly the two legal admissions: a replay that
+//   reached pane/server scopes again would duplicate delivery, so it cannot be
+//   expressed.
+export type DispatchAdmission =
+  | { readonly kind: "live" }
+  | { readonly kind: "replay"; readonly attachedBy: number };
 
-export const liveAdmission: DispatchAdmission = {
-  scopes: "all",
-  attachedBy: Number.POSITIVE_INFINITY,
-};
+export const liveAdmission: DispatchAdmission = { kind: "live" };
 
 /**
  * Scope-bifurcated registry for `BytesSink` attachments.
@@ -408,7 +407,7 @@ export class SinkRegistry {
     // up-front capture is load-bearing across buckets too: a pane-sink's write
     // attaching a server-sink must not deliver to it this chunk, so all four
     // memberships are frozen before the first write fires.
-    const everyScope = admission.scopes === "all";
+    const everyScope = admission.kind === "live";
     const paneSnap = everyScope
       ? snapshotBucket(this.paneAttachments.get(msg.paneId))
       : undefined;
@@ -435,7 +434,10 @@ export class SinkRegistry {
     )
       return;
 
-    const by = admission.attachedBy;
+    const by =
+      admission.kind === "live"
+        ? Number.POSITIVE_INFINITY
+        : admission.attachedBy;
     writeSnapshot(paneSnap, msg, by);
     writeSnapshot(windowSnap, msg, by);
     writeSnapshot(sessionSnap, msg, by);

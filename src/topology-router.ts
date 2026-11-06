@@ -281,7 +281,11 @@ export class TopologyRouter {
       this.sinks.hasTopologyDependentSinks() &&
       this.inFlight > 0
     ) {
-      this.held.push({ chunk: payload, attachedBy: this.sinks.attachSeq() });
+      // ChunkPayload data may not be retained past dispatch; copy to hold.
+      this.held.push({
+        chunk: { ...payload, data: payload.data.slice() },
+        attachedBy: this.sinks.attachSeq(),
+      });
     }
   }
 
@@ -295,16 +299,17 @@ export class TopologyRouter {
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
     const pending = this.held;
-    const canStillPlace = this.inFlight > 0;
     this.held = [];
     for (const h of pending) {
       const meta = this.topology.get(h.chunk.paneId);
       if (meta !== undefined) {
         this.sinks.dispatch(h.chunk, meta, {
-          scopes: "topology",
+          kind: "replay",
           attachedBy: h.attachedBy,
         });
-      } else if (canStillPlace) {
+      } else if (this.inFlight > 0) {
+        // Read per chunk: a replayed sink's write may attach a topology sink,
+        // which starts a query that can still place the rest.
         this.held.push(h);
       }
     }
@@ -387,7 +392,12 @@ export class TopologyRouter {
         // seed, so re-query: otherwise the topology stays empty and every held
         // chunk is dropped. The re-run counts itself in flight before this
         // finally releases, so held chunks wait for it.
-        if (this.epoch.isLatestBootstrap(gen)) void this.bootstrap();
+        if (
+          this.runCommand === run &&
+          this.needsTopology() &&
+          this.epoch.isLatestBootstrap(gen)
+        )
+          void this.bootstrap();
         return;
       }
       const entries = r.output.flatMap((line) => {

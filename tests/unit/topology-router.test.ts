@@ -701,6 +701,23 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(sink)).toEqual([5]);
   });
 
+  it("a superseded refresh that fails does not remove the window", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: windowScope(3) });
+    replies[0]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    replies[1]!.reject(new Error("stale refresh failed"));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
   it("drops held chunks once no query can place them (failed bootstrap)", async () => {
     const router = newRouter();
     const { run, replies } = controlledRun();
