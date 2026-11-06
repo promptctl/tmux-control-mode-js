@@ -57,18 +57,18 @@ export interface SearchHit {
 }
 
 export class SearchStore {
-  query: string = "";
-  caseSensitive: boolean = false;
-  backfilled: boolean = false;
-  backfilling: boolean = false;
+  query = "";
+  caseSensitive = false;
+  backfilled = false;
+  backfilling = false;
   /**
    * [LAW:one-source-of-truth] A change-signal, not a second source of truth.
    * The trigram index is a plain (non-observable) structure; bumping `version`
    * once per tick / backfill is how its mutations re-trigger the `results`
    * computed without making every posting set observable.
    */
-  version: number = 0;
-  totalLines: number = 0;
+  version = 0;
+  totalLines = 0;
 
   private readonly index = new TrigramIndex();
   private readonly lines = new Map<number, IndexedLine>();

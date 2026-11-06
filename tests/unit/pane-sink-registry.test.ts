@@ -139,7 +139,6 @@ describe("SinkRegistry.dispatch", () => {
     const reg = new SinkRegistry();
     const observed: string[] = [];
 
-    let disposeA!: () => void;
     const a: BytesSink = {
       write(): void {
         observed.push("a");
@@ -153,7 +152,7 @@ describe("SinkRegistry.dispatch", () => {
       },
       end(): void {},
     };
-    disposeA = reg.attach(a, paneScope(1));
+    const disposeA = reg.attach(a, paneScope(1));
     reg.attach(b, paneScope(1));
 
     reg.dispatch(paneOutput(1, 0x41), undefined);

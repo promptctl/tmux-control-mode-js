@@ -40,7 +40,7 @@ import { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import {
-  SyncScrollStore,
+  type SyncScrollStore,
   PLAYBACK_RATES,
   type PlaybackRate,
 } from "../sync-store.ts";

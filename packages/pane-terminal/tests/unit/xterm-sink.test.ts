@@ -115,7 +115,7 @@ function newSink(): {
 
 // rAF stub — happy-dom provides a real one but firing it is async; for
 // deterministic tests we replace it with a queue we flush manually.
-let rafQueue: Array<() => void> = [];
+let rafQueue: (() => void)[] = [];
 let rafSeq = 0;
 const realRaf = globalThis.requestAnimationFrame;
 const realCaf = globalThis.cancelAnimationFrame;

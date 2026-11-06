@@ -17,6 +17,7 @@
 // tests/e2e/web-multiplexer-electron.spec.ts.
 
 import { test, expect, _electron as electron } from "@playwright/test";
+import type { ElectronApplication, Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -59,8 +60,8 @@ function killSocket(name: string): void {
 
 interface AppHandle {
   socket: string;
-  app: import("@playwright/test").ElectronApplication;
-  page: import("@playwright/test").Page;
+  app: ElectronApplication;
+  page: Page;
 }
 
 async function launchApp(): Promise<AppHandle> {

@@ -31,7 +31,7 @@ export function escapeByte(code: number): string {
  * through; high/non-printable bytes appear as \xHH. When the input exceeds
  * `max`, a truncation suffix `… (N bytes)` is appended.
  */
-export function prettyBytes(bytes: Uint8Array, max: number = 48): string {
+export function prettyBytes(bytes: Uint8Array, max = 48): string {
   let out = "";
   let rendered = 0;
   for (const c of bytes) {

@@ -1351,6 +1351,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     // guaranteed to emit the minimal form and commonly emits a compound
     // parameter list (e.g. `\x1b[0;31m`) depending on tmux
     // version/terminfo/active cell attributes.
+    // eslint-disable-next-line no-control-regex -- the ESC byte is what tmux's -e capture emits
     const redMarker = /\x1b\[[0-9;]*31mcapture-test-marker/;
     const decoder = new TextDecoder();
     const deadline = Date.now() + 8000;

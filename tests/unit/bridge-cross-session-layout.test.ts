@@ -96,7 +96,7 @@ describe("BridgeConnection — cross-session layout coverage", () => {
 
   it("the peer's last call wins however enable and disable interleave", async () => {
     const { bridge, enable, disable } = makeBridge();
-    const gates: Array<() => void> = [];
+    const gates: (() => void)[] = [];
     const gated = (): Promise<void> => new Promise<void>((r) => gates.push(r));
     enable.mockImplementation(gated);
     disable.mockImplementation(gated);

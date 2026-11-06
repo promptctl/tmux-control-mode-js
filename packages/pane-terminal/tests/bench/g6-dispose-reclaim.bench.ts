@@ -116,9 +116,7 @@ const CYCLES = 24;
 // per-cycle backlog (empirically settles no-leak MIN to single-digit KB).
 const DRAIN_TICKS = 8;
 
-interface ExposedGc {
-  (): void;
-}
+type ExposedGc = () => void;
 
 function getGc(): ExposedGc | null {
   const candidate = (globalThis as { gc?: unknown }).gc;
@@ -228,7 +226,6 @@ describe("Gate 6 — dispose() reclaim", () => {
   it("declares the SKIP reason when --expose-gc is not present", () => {
     if (gc !== null) return;
     expect(true).toBe(true);
-    // eslint-disable-next-line no-console
     console.warn(
       "[gate-6] skipped: launch node with --expose-gc to enable the dispose-reclaim gate.",
     );

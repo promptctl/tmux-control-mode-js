@@ -68,6 +68,7 @@ let socketsCreated = 0;
 class FakeWebSocketCtor extends FakeSocket {
   constructor(url: string) {
     super(url);
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- the test reads back the socket the client constructed
     lastSocket = this;
     socketsCreated += 1;
   }

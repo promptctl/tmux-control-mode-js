@@ -192,7 +192,9 @@ export class ElectronBridge implements TmuxBridge {
             data: chunk.data,
           });
         },
-        end: (): void => {},
+        end: (): void => {
+          // no-op: pane output is pushed per chunk; there is no frame to flush.
+        },
       },
       { scope: serverScope },
     );

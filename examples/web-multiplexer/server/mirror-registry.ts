@@ -49,11 +49,16 @@ export interface MirrorViewer {
 interface Hub {
   readonly paneId: number;
   readonly viewers: Set<MirrorViewer>;
-  dispose: () => void;
+  readonly dispose: () => void;
 }
 
 /** How often to re-check that every mirrored pane still exists. */
 const LIVENESS_INTERVAL_MS = 1500;
+
+/** Disposer for a viewer that was refused before joining: nothing to undo. */
+function notJoined(): void {
+  // no-op: the viewer never joined a hub, so there is nothing to remove.
+}
 
 export class MirrorRegistry {
   private readonly hubs = new Map<number, Hub>();
@@ -80,45 +85,55 @@ export class MirrorRegistry {
   async addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
     if (this.closed) {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return () => {};
+      return notJoined;
     }
     // Settle the dedicated client before the first tap/seed (cold-start race).
-    this.ensureClient();
+    const { client } = this.ensureClient();
     await this.ready;
     if (this.closed) {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return () => {};
+      return notJoined;
     }
-    const hub = this.ensureHub(paneId);
+    let hub = this.ensureHub(paneId);
 
     // Geometry first: a fresh XtermSink buffers every write until its first
     // resize (the `.4` first-paint finding), so the viewer needs cols/rows
     // before the seed bytes mean anything.
-    const size = await this.querySize(paneId);
+    const size = await this.querySize(client, paneId);
     if (size === null) {
       viewer.sendControl({
         kind: "error",
         message: `pane %${paneId} not found`,
       });
       this.gcHub(hub);
-      return () => {};
+      return notJoined;
     }
     viewer.sendControl({ kind: "size", cols: size.cols, rows: size.rows });
 
     // Seed = the pane's current rendered screen. Sent BEFORE the viewer joins
     // the live fan-out, so live bytes never race ahead of the seed.
-    const capture = await this.client!.execute(
-      `capture-pane -e -p -t %${paneId}`,
-    ).catch(asCommandResponse);
+    const capture = await client
+      .execute(`capture-pane -e -p -t %${paneId}`)
+      .catch(asCommandResponse);
     if (!capture.success) {
       viewer.sendControl({
         kind: "error",
         message: `capture-pane failed for %${paneId}`,
       });
       this.gcHub(hub);
-      return () => {};
+      return notJoined;
     }
     viewer.sendBytes(buildMirrorSeed(capture.output));
+
+    if (this.closed) {
+      viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
+      return notJoined;
+    }
+    // While this viewer awaited, the hub may have been dropped: another
+    // joiner's failed seed GC'd it, or its tap died. Joining the dropped hub
+    // would leave this viewer on a stream that never produces bytes and that
+    // liveness no longer watches, so join the pane's current hub instead.
+    if (this.hubs.get(paneId) !== hub) hub = this.ensureHub(paneId);
 
     // Join the live stream. From here every tapped byte reaches this viewer.
     hub.viewers.add(viewer);
@@ -151,16 +166,14 @@ export class MirrorRegistry {
   // -------------------------------------------------------------------------
 
   /** Lazily spawn the one control client + FIFO dir the registry shares. */
-  private ensureClient(): TmuxClient {
+  private ensureClient(): { client: TmuxClient; dir: string } {
     if (this.client === null) {
       const { client, ready } = spawnReadyControlClient();
       this.client = client;
       this.ready = ready;
     }
-    if (this.dir === null) {
-      this.dir = mkdtempSync(join(tmpdir(), "tmux-mirror-"));
-    }
-    return this.client;
+    this.dir ??= mkdtempSync(join(tmpdir(), "tmux-mirror-"));
+    return { client: this.client, dir: this.dir };
   }
 
   /** Get the hub for a pane, creating (and tapping) it on first viewer. */
@@ -168,18 +181,33 @@ export class MirrorRegistry {
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;
 
-    const client = this.ensureClient();
-    const hub: Hub = { paneId, viewers: new Set(), dispose: () => {} };
-    hub.dispose = tapPaneToFifo(
-      (command) => client.execute(command),
-      this.dir!,
+    const { client, dir } = this.ensureClient();
+    const viewers = new Set<MirrorViewer>();
+    const hub: Hub = {
       paneId,
-      (data) => {
-        for (const v of hub.viewers) v.sendBytes(data);
-      },
-      // A tap that fails to stand up / errors mid-stream means the pane is gone.
-      { onReadError: () => this.endHub(hub) },
-    );
+      viewers,
+      dispose: tapPaneToFifo(
+        (command) => client.execute(command),
+        dir,
+        paneId,
+        (data) => {
+          for (const v of viewers) v.sendBytes(data);
+        },
+        // The tap logs why it died; the viewers learn only that it did. The
+        // callback names the hub by its viewer set, so it never refers to the
+        // `hub` binding still being initialised here.
+        {
+          onReadError: () => {
+            const current = this.hubs.get(paneId);
+            if (current?.viewers !== viewers) return;
+            this.endHub(current, {
+              kind: "error",
+              message: `could not tap pane %${paneId}`,
+            });
+          },
+        },
+      ),
+    };
     this.hubs.set(paneId, hub);
     this.startLiveness();
     return hub;
@@ -197,17 +225,18 @@ export class MirrorRegistry {
   private gcHub(hub: Hub): void {
     if (hub.viewers.size > 0) return;
     hub.dispose();
+    if (this.hubs.get(hub.paneId) !== hub) return;
     this.hubs.delete(hub.paneId);
     if (this.hubs.size === 0) this.stopLiveness();
   }
 
-  /** Pane vanished: tell its viewers, close them, and drop the hub. */
-  private endHub(hub: Hub): void {
+  /** The hub's stream ended: tell its viewers why, close them, drop the hub. */
+  private endHub(hub: Hub, frame: MirrorControlFrame): void {
     if (this.hubs.get(hub.paneId) !== hub) return;
     this.hubs.delete(hub.paneId);
     hub.dispose();
     for (const v of hub.viewers) {
-      v.sendControl({ kind: "gone" });
+      v.sendControl(frame);
       v.close();
     }
     hub.viewers.clear();
@@ -220,11 +249,14 @@ export class MirrorRegistry {
   }
 
   private async querySize(
+    client: TmuxClient,
     paneId: number,
   ): Promise<{ cols: number; rows: number } | null> {
-    const r = await this.client!.execute(
-      `display-message -p -t %${paneId} -F '#{pane_width} #{pane_height}'`,
-    ).catch(asCommandResponse);
+    const r = await client
+      .execute(
+        `display-message -p -t %${paneId} -F '#{pane_width} #{pane_height}'`,
+      )
+      .catch(asCommandResponse);
     if (!r.success || r.output.length === 0) return null;
     const m = /^(\d+)\s+(\d+)$/.exec(r.output[0].trim());
     if (m === null) return null;
@@ -265,7 +297,7 @@ export class MirrorRegistry {
         }),
       );
       for (const hub of [...this.hubs.values()]) {
-        if (!present.has(hub.paneId)) this.endHub(hub);
+        if (!present.has(hub.paneId)) this.endHub(hub, { kind: "gone" });
       }
     } finally {
       this.checking = false;

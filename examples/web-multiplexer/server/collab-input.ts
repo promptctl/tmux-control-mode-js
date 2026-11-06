@@ -16,13 +16,14 @@
 //   `ready` promise (the cold-start race), owned by `spawnReadyControlClient`.
 
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
-import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "./command-response.js";
-import { spawnReadyControlClient } from "./control-client.js";
+import {
+  spawnReadyControlClient,
+  type ReadyControlClient,
+} from "./control-client.js";
 
 export class CollabInput {
-  private client: TmuxClient | null = null;
-  private ready: Promise<void> | null = null;
+  private spawned: ReadyControlClient | null = null;
   private closed = false;
 
   /**
@@ -38,10 +39,10 @@ export class CollabInput {
    */
   async sendKeys(paneId: number, keys: string): Promise<void> {
     if (this.closed) return;
-    this.ensureClient();
-    await this.ready;
+    const { client, ready } = this.ensureClient();
+    await ready;
     if (this.closed) return;
-    const response = await sendKeys(this.client!, `%${paneId}`, keys).catch(
+    const response = await sendKeys(client, `%${paneId}`, keys).catch(
       asCommandResponse,
     );
     if (!response.success) {
@@ -52,15 +53,12 @@ export class CollabInput {
   /** Tear down the dedicated input client. */
   close(): void {
     this.closed = true;
-    this.client?.close();
-    this.client = null;
+    this.spawned?.client.close();
+    this.spawned = null;
   }
 
-  private ensureClient(): void {
-    if (this.client === null) {
-      const { client, ready } = spawnReadyControlClient();
-      this.client = client;
-      this.ready = ready;
-    }
+  private ensureClient(): ReadyControlClient {
+    this.spawned ??= spawnReadyControlClient();
+    return this.spawned;
   }
 }

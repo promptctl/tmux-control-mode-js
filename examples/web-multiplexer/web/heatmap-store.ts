@@ -31,9 +31,9 @@ const FLOOR_BPS = 1;
 
 export class HeatmapStore {
   /** paneId → bytes-per-second EMA. Observable. */
-  rates: Map<number, number> = new Map();
+  rates = new Map<number, number>();
   /** Peak rate observed across all panes, used to normalize colors. */
-  peakBps: number = 0;
+  peakBps = 0;
 
   private readonly accum = new Map<number, number>();
   private lastTick: number = Date.now();

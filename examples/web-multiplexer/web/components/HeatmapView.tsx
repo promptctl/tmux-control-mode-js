@@ -101,8 +101,7 @@ const SessionBlock = observer(function SessionBlock({
   heatmapStore: HeatmapStore;
   onPick: (pane: PaneInfo) => void;
 }) {
-  const allPanes: Array<{ pane: PaneInfo; winIdx: number; winName: string }> =
-    [];
+  const allPanes: { pane: PaneInfo; winIdx: number; winName: string }[] = [];
   for (const w of session.windows) {
     for (const p of w.panes) {
       allPanes.push({ pane: p, winIdx: w.index, winName: w.name });
@@ -254,7 +253,7 @@ function focusPane(
 function colorFor(t: number): string {
   if (t <= 0) return "#15181d";
   // Piecewise linear gradient through four stops.
-  const stops: Array<[number, [number, number, number]]> = [
+  const stops: [number, [number, number, number]][] = [
     [0.0, [21, 24, 29]], // near-black
     [0.15, [25, 74, 84]], // dim teal
     [0.45, [38, 166, 154]], // teal

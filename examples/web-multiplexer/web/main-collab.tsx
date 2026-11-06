@@ -6,7 +6,7 @@
 // is a collaborator on one pane and nothing else. [LAW:decomposition]
 
 import { useMemo } from "react";
-import { createRoot } from "react-dom/client";
+import { mountRoot } from "./mount-root.ts";
 import { observer } from "mobx-react-lite";
 import {
   MantineProvider,
@@ -88,7 +88,7 @@ function NoPane() {
 
 const paneId = parseMirrorPane(window.location.search);
 
-createRoot(document.getElementById("root")!).render(
+mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
     {paneId === null ? <NoPane /> : <CollabApp paneId={paneId} />}
   </MantineProvider>,

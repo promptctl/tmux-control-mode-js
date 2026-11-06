@@ -40,7 +40,6 @@ export default function globalSetup(): void {
   }
 
   if (removed.length > 0) {
-    // eslint-disable-next-line no-console
     console.log(
       `[e2e] removed ${removed.length} dead tmux socket(s) from ${dir}`,
     );

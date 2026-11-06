@@ -129,8 +129,7 @@ class OscLinkScanner {
     paneId: number,
     sink: (link: Hyperlink) => void,
   ): void {
-    for (let i = 0; i < data.length; i++) {
-      const b = data[i]!;
+    for (const b of data) {
       switch (this.mode) {
         case "ground":
           if (b === ESC) this.mode = "esc";
@@ -397,7 +396,7 @@ export class HyperlinkEngine {
       (a, b) => a.lastSeq - b.lastSeq,
     );
     const drop = this.registry.size - this.capacity;
-    for (let i = 0; i < drop; i++) this.registry.delete(ordered[i]!.uri);
+    for (let i = 0; i < drop; i++) this.registry.delete(ordered[i].uri);
   }
 }
 

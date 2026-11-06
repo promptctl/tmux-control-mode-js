@@ -108,10 +108,10 @@ describe("parseRpcRequest — envelope", () => {
 
 describe("parseRpcRequest — allowlist", () => {
   it("accepts every known RpcMethod", () => {
-    const expected: ReadonlyArray<{
+    const expected: readonly {
       method: RpcMethod;
       args: readonly unknown[];
-    }> = [
+    }[] = [
       { method: "execute", args: ["list-windows"] },
       { method: "listWindows", args: [] },
       { method: "listPanes", args: [] },

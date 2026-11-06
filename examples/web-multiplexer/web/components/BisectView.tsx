@@ -23,7 +23,7 @@ import { observer } from "mobx-react-lite";
 import { Stack, Group, Paper, Text, Badge, Button } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import { BisectStore } from "../bisect-store.ts";
+import type { BisectStore } from "../bisect-store.ts";
 import type { AttributionGrid } from "../byte-attribution-engine.ts";
 import type { EscapeEvent } from "../escape-parse-engine.ts";
 import { historyDepth } from "../scrollback-engine.ts";

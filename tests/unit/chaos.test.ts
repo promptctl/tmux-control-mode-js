@@ -401,7 +401,7 @@ describe("parser recovery under corruption", () => {
   // with a fixed seed as a permanent regression case.
   it("chaos regression (seed 30, truncate): a truncated %end guard terminator no longer wedges the block", () => {
     const seen: TmuxMessage[] = [];
-    const protocolErrors: Array<{ commandNumber: number; line: string }> = [];
+    const protocolErrors: { commandNumber: number; line: string }[] = [];
     const parser = new TmuxParser((m) => seen.push(m));
     parser.onProtocolError = (commandNumber, line) =>
       protocolErrors.push({ commandNumber, line });

@@ -77,7 +77,7 @@ class StubResizeObserver implements ResizeObserver {
 }
 
 // rAF stub — same pattern as xterm-sink.test.ts.
-let rafQueue: Array<() => void> = [];
+let rafQueue: (() => void)[] = [];
 const realRaf = globalThis.requestAnimationFrame;
 const realCaf = globalThis.cancelAnimationFrame;
 function installFakeRaf(): void {

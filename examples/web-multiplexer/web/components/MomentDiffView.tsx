@@ -29,8 +29,7 @@ import {
   Slider,
 } from "@mantine/core";
 import type { DemoStore } from "../store.ts";
-import type { UiStore } from "../ui-store.ts";
-import { MomentDiffStore } from "../moment-diff-store.ts";
+import type { MomentDiffStore } from "../moment-diff-store.ts";
 import type { CellChange, MomentDiff } from "../moment-diff-engine.ts";
 import { activityHistogram } from "../session-recording-engine.ts";
 import { historyDepth } from "../scrollback-engine.ts";
@@ -59,13 +58,11 @@ const CURSOR_B_COLOR = "#ffa94d"; // after
 interface Props {
   readonly demoStore: DemoStore;
   readonly store: MomentDiffStore;
-  readonly uiStore: UiStore;
 }
 
 export const MomentDiffView = observer(function MomentDiffView({
   demoStore,
   store,
-  uiStore,
 }: Props) {
   const ready = demoStore.connState === "ready";
   const diff = store.diff;

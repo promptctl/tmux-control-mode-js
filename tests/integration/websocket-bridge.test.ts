@@ -19,7 +19,6 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxMessage } from "../../src/protocol/types.js";
-import type { EmitterMessage } from "../../src/emitter.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
@@ -27,6 +26,7 @@ import type { ConnectionState } from "../../src/connection-state.js";
 import { BridgeError } from "../../src/connectors/websocket/protocol.js";
 import type {
   BridgeObservabilityEvent,
+  BrowserWebSocketLike,
   ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import {
@@ -208,7 +208,7 @@ function createWsBackedClient(
     createWebSocket: (u) =>
       new WsClient(u, {
         headers: extraHeaders,
-      }) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
+      }) as unknown as BrowserWebSocketLike,
     autoConnect: true,
     requestTimeoutMs: overrides.requestTimeoutMs,
     heartbeatIntervalMs: overrides.heartbeatIntervalMs,
@@ -425,9 +425,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
       const client = new WebSocketTmuxClient({
         url: fx.url,
         createWebSocket: (u) =>
-          new WsClient(
-            u,
-          ) as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike,
+          new WsClient(u) as unknown as BrowserWebSocketLike,
         onDraining: (dl) => {
           drainingDeadline = dl;
           statusAtNotice = client.connectionState.status;
@@ -524,7 +522,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         createWebSocket: (u) => {
           const ws = new WsClient(u);
           lastWs = ws;
-          return ws as unknown as import("../../src/connectors/websocket/types.js").BrowserWebSocketLike;
+          return ws as unknown as BrowserWebSocketLike;
         },
         reconnect: {
           maxAttempts: 5,

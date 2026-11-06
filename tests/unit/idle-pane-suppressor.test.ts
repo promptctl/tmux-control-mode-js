@@ -28,7 +28,7 @@ function newRouter(options?: TopologyRouterOptions): TopologyRouter {
 
 describe("IdlePaneSuppressor", () => {
   function setup() {
-    const actions: Array<{ paneId: number; action: PaneAction }> = [];
+    const actions: { paneId: number; action: PaneAction }[] = [];
     const suppressor = new IdlePaneSuppressor((paneId, action) =>
       actions.push({ paneId, action }),
     );

@@ -761,11 +761,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             uiStore={uiStore}
           />
         ) : uiStore.appMode === "attribution" ? (
-          <ByteAttributionView
-            demoStore={demoStore}
-            store={attributionStore}
-            uiStore={uiStore}
-          />
+          <ByteAttributionView demoStore={demoStore} store={attributionStore} />
         ) : uiStore.appMode === "timemachine" ? (
           <ScrollbackTimeMachineView
             demoStore={demoStore}
@@ -773,11 +769,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             uiStore={uiStore}
           />
         ) : uiStore.appMode === "momentdiff" ? (
-          <MomentDiffView
-            demoStore={demoStore}
-            store={momentDiffStore}
-            uiStore={uiStore}
-          />
+          <MomentDiffView demoStore={demoStore} store={momentDiffStore} />
         ) : uiStore.appMode === "bisect" ? (
           <BisectView
             demoStore={demoStore}

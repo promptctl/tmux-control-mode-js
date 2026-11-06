@@ -34,7 +34,9 @@ const FAMILY_B = '"Test Mono B", monospace';
 // stays with the fallback metrics when it isn't. Tests that exercise the
 // refresh path attach a stub before the call; tests that just want a hit
 // don't need the stub.
-type FontsStub = { load: (s: string) => Promise<unknown> };
+interface FontsStub {
+  load: (s: string) => Promise<unknown>;
+}
 
 function installFontsStub(stub: FontsStub): void {
   Object.defineProperty(document, "fonts", {
