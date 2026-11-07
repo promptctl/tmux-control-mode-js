@@ -758,3 +758,98 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await client.close();
   }, 25_000);
 });
+
+// ---------------------------------------------------------------------------
+// Upstream tmux death (tmux-server-events-6sp.41l)
+//
+// The unit sibling (tests/unit/websocket-bridge.test.ts, "upstream close")
+// drives TmuxClient's close handler through a fake transport. This one kills
+// the real tmux server under a real `ws` socket and asserts what the
+// browser-side WebSocketTmuxClient actually sees: its in-flight call rejects
+// with the upstream's death as the reason, and its connection reaches
+// `closed` — not a `ready` connection that answers BRIDGE_CLOSED forever.
+//
+// The server is frozen with SIGSTOP before the call is issued and then killed
+// with SIGKILL, so the call is provably unanswered when tmux dies: a control
+// client gets its %begin/%end for `wait-for` and a foreground `run-shell` at
+// once, and a graceful kill-server drains its queue before the client sees the
+// exit, so none of those leaves a call in flight. A crash is the case the
+// ticket names, and the one where tmux cannot say goodbye.
+// ---------------------------------------------------------------------------
+
+// SIGKILL a process that may already be gone: ESRCH is the passing run, where
+// the test itself delivered the kill. Any other failure is real and surfaces.
+function killIfAlive(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+  }
+}
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — upstream tmux death",
+  () => {
+    it("killing the bridge's tmux closes the client's socket with a reason naming the upstream", async () => {
+      const fx = await startFixture("upstream-death");
+      const serverPid = Number(
+        (await fx.tmux.execute("display-message -p '#{pid}'")).output[0],
+      );
+      expect(Number.isInteger(serverPid) && serverPid > 1).toBe(true);
+      try {
+        const { client, states, errors } = createWsBackedClient(fx.url);
+        await waitForState(client, "ready");
+
+        // Frozen, tmux never reads the command: it is in flight at the bridge
+        // and stays so until the kill. The bridge's `call` event and its
+        // write to the tmux transport are one macrotask apart from nothing;
+        // pollUntil observes from a later one.
+        process.kill(serverPid, "SIGSTOP");
+        const pending = client.execute("list-windows").catch((e: unknown) => e);
+        await pollUntil(() =>
+          fx.observabilityEvents.some((e) => e.kind === "call"),
+        );
+
+        process.kill(serverPid, "SIGKILL");
+
+        expect(await pending).toMatchObject({
+          code: "BRIDGE_CLOSED",
+          message: expect.stringContaining("upstream") as string,
+        });
+        await waitForState(client, "closed");
+        expect(states.filter((s) => s.status === "closed")).toEqual([
+          { status: "closed", reason: "transport-error" },
+        ]);
+        expect(states.some((s) => s.status === "reconnecting")).toBe(false);
+        expect(errors).toContainEqual(
+          expect.objectContaining({
+            code: "BRIDGE_CLOSED",
+            message: expect.stringContaining("upstream") as string,
+          }),
+        );
+        // The bridge's own close event lands once the close handshake has
+        // round-tripped, after the client already observed the close.
+        await pollUntil(() =>
+          fx.observabilityEvents.some((e) => e.kind === "connection-closed"),
+        );
+        expect(
+          fx.observabilityEvents.filter((e) => e.kind === "connection-closed"),
+        ).toEqual([
+          expect.objectContaining({
+            errorCode: "BRIDGE_CLOSED",
+            reason: expect.stringContaining("upstream") as string,
+          }),
+        ]);
+        expect(
+          fx.observabilityEvents.filter((e) => e.kind === "upstream-closed"),
+        ).toEqual([expect.objectContaining({ reason: "transport-error" })]);
+      } finally {
+        // Between SIGSTOP and SIGKILL the server is frozen, and fx.shutdown()'s
+        // synchronous kill-server would block forever on a socket nobody
+        // answers.
+        killIfAlive(serverPid);
+        await fx.shutdown();
+      }
+    }, 15_000);
+  },
+);

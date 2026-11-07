@@ -50,6 +50,9 @@ interface FakeWs extends ServerWebSocketLike {
   // Drained on every `send` call — string for JSON frames, Uint8Array for
   // binary pane-output frames.
   readonly outbound: (string | Uint8Array)[];
+  // Every `close(code, reason)` the bridge issued, so the close reason it
+  // hands the peer is assertable.
+  readonly closeCalls: { code?: number; reason?: string }[];
 }
 
 function createFakeWs(): FakeWs {
@@ -64,6 +67,7 @@ function createFakeWs(): FakeWs {
   const listeners: Listeners = {};
 
   const outbound: (string | Uint8Array)[] = [];
+  const closeCalls: { code?: number; reason?: string }[] = [];
   let readyState: number = WEBSOCKET_OPEN;
 
   const ws: FakeWs = {
@@ -87,6 +91,7 @@ function createFakeWs(): FakeWs {
       listeners.close?.(code, reason);
     },
     outbound,
+    closeCalls,
 
     send(data) {
       if (typeof data === "string") {
@@ -112,8 +117,9 @@ function createFakeWs(): FakeWs {
       // Fake auto-replies pong synchronously so heartbeat code stays happy.
       listeners.pong?.();
     },
-    close() {
+    close(code?: number, reason?: string) {
       readyState = 3;
+      closeCalls.push({ code, reason });
     },
     terminate() {
       readyState = 3;
@@ -1179,4 +1185,260 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       );
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Upstream close (tmux-server-events-6sp.41l)
+//
+// The connection's own TmuxClient closing — tmux killed, its transport
+// failed, or it was disposed — is a fatal for the WebSocket peer: one fatal
+// `error` frame naming the upstream, then the socket closes, so the browser's
+// WebSocketTmuxClient reads it through its ordinary onClose path instead of
+// sitting `ready` on a dead tmux. `createFakeTransport().transport.close()`
+// drives TmuxClient's real close handler (reason "closed"), which emits
+// `connection-state { closed, transport-error }` synchronously.
+// ---------------------------------------------------------------------------
+
+function connectRunning(
+  bridge: ReturnType<typeof createWebSocketBridge>,
+): FakeWs {
+  const ws = createFakeWs();
+  void bridge.handleConnection(ws);
+  ws.feedClient({ k: "hello" });
+  return ws;
+}
+
+function fatalFrames(ws: FakeWs): FatalErrorFrame[] {
+  return readJsonFrames(ws).filter(
+    (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
+  );
+}
+
+function closedEvents(
+  events: BridgeObservabilityEvent[],
+): Extract<BridgeObservabilityEvent, { kind: "connection-closed" }>[] {
+  return events.filter(
+    (
+      e,
+    ): e is Extract<BridgeObservabilityEvent, { kind: "connection-closed" }> =>
+      e.kind === "connection-closed",
+  );
+}
+
+describe("WebSocket bridge — upstream close", () => {
+  it("closes the socket with a fatal naming the upstream; the in-flight call's reply is recorded but never reaches the closing socket", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedClient({
+      k: "call",
+      id: "x",
+      method: "execute",
+      args: ["list-windows"],
+    });
+    await flush();
+    expect(t.sent).toContain("list-windows\n");
+    expect(closedEvents(events)).toHaveLength(0);
+
+    t.transport.close();
+
+    // Synchronously, inside the upstream's connection-state emission.
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
+    ]);
+    expect(fatalFrames(ws)).toEqual([
+      {
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_CLOSED",
+          message: expect.stringMatching(/upstream/) as string,
+        },
+      },
+    ]);
+    expect(ws.closeCalls).toEqual([
+      { code: 1011, reason: expect.stringMatching(/upstream/) as string },
+    ]);
+    const framesAtClose = ws.outbound.length;
+
+    // The call TmuxClient rejected is replied to from onCall's continuation,
+    // on a later microtask: the socket is already closing, so the result
+    // frame is dropped, but the call's outcome is still observable.
+    await flush();
+    await flush();
+    expect(ws.outbound.length).toBe(framesAtClose);
+    expect(events.filter((e) => e.kind === "result")).toEqual([
+      expect.objectContaining({ id: "x", ok: false, code: "BRIDGE_CLOSED" }),
+    ]);
+
+    // The real close event lands; finalize runs once.
+    ws.fireClose(1011, ws.closeCalls[0].reason);
+    await flush();
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        errorCode: "BRIDGE_CLOSED",
+        reason: expect.stringMatching(/upstream/) as string,
+      }),
+    ]);
+  });
+
+  it("one shared upstream closing closes every connection on it", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const wsA = connectRunning(bridge);
+    const wsB = connectRunning(bridge);
+    await flush();
+    expect(events.filter((e) => e.kind === "connection-opened")).toHaveLength(
+      2,
+    );
+
+    t.transport.close();
+
+    for (const ws of [wsA, wsB]) {
+      expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+        "BRIDGE_CLOSED",
+      ]);
+      expect(ws.closeCalls).toHaveLength(1);
+      ws.fireClose(1011, ws.closeCalls[0].reason);
+    }
+    await flush();
+    expect(closedEvents(events).map((e) => e.errorCode)).toEqual([
+      "BRIDGE_CLOSED",
+      "BRIDGE_CLOSED",
+    ]);
+  });
+
+  it("an upstream closing during drain closes the socket and lets shutdown resolve", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const shutdown = bridge.shutdown(10_000);
+    expect(readJsonFrames(ws).some((f) => f.k === "draining")).toBe(true);
+
+    t.transport.close();
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual(["BRIDGE_CLOSED"]);
+    expect(ws.closeCalls).toHaveLength(1);
+    ws.fireClose(1011, ws.closeCalls[0].reason);
+
+    const outcome = await Promise.race([
+      shutdown.then(() => "resolved"),
+      new Promise<string>((r) => setTimeout(() => r("drain deadline"), 200)),
+    ]);
+    expect(outcome).toBe("resolved");
+    expect(closedEvents(events).map((e) => e.errorCode)).toEqual([
+      "BRIDGE_CLOSED",
+    ]);
+  });
+
+  it("an upstream close after another fatal is pending folds into that close instead of adding a second fatal", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    // A second hello on a running connection is a fatal protocol error; it
+    // claims the connection's one fatal before the real close has landed.
+    ws.feedClient({ k: "hello" });
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+
+    t.transport.close();
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+    expect(ws.closeCalls).toEqual([
+      { code: 1011, reason: "duplicate hello frame" },
+    ]);
+    // The wire keeps the first fatal; the upstream's death is still recorded.
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
+    ]);
+
+    ws.fireClose(1011, "duplicate hello frame");
+    await flush();
+    expect(closedEvents(events).map((e) => e.errorCode)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+  });
+
+  it("a shared upstream that already closed before createClient returned it is refused at hello, never opened", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    t.transport.close();
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+
+    let disposeCalls = 0;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      disposeClient: () => {
+        disposeCalls++;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    expect(fatalFrames(ws)).toEqual([
+      {
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_CLOSED",
+          message: expect.stringMatching(/upstream/) as string,
+        },
+      },
+    ]);
+    expect(ws.closeCalls).toEqual([
+      { code: 1011, reason: expect.stringMatching(/upstream/) as string },
+    ]);
+    expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(false);
+    expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
+    ]);
+    // The client createClient() handed over was released, not leaked.
+    expect(disposeCalls).toBe(1);
+
+    ws.fireClose(1011, ws.closeCalls[0].reason);
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        errorCode: "BRIDGE_CLOSED",
+        reason: expect.stringMatching(/upstream/) as string,
+      }),
+    ]);
+  });
 });
