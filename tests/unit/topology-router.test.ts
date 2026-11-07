@@ -848,8 +848,11 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     };
   }
 
-  async function movedPane(layoutChanges: [number, string][]) {
-    const router = newRouter();
+  async function movedPane(
+    layoutChanges: [number, string][],
+    onError: (e: Error) => void = () => undefined,
+  ) {
+    const router = new TopologyRouter(onError);
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     const oldSession = makeSink();
@@ -992,6 +995,34 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
+  });
+
+  it("re-places a moved-in pane with a server-wide query when its window's refresh fails", async () => {
+    const errors: Error[] = [];
+    const s = await movedPane(
+      [
+        [2, LAYOUT_4],
+        [3, LAYOUT_6_5],
+      ],
+      (e) => errors.push(e),
+    );
+    answerRefresh(s.replies, "all");
+    await settle();
+    [...s.replies]
+      .reverse()
+      .find((q) => q.cmd.includes("-t @3 "))!
+      .reject(new Error("server exited unexpectedly"));
+    await settle();
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology refresh of @3 failed: server exited unexpectedly",
+    ]);
+    expect(s.replies.at(-1)!.cmd).toContain("list-panes -a ");
+    answerRefresh(s.replies, "all");
+    await settle();
+    // The first 5 is the chunk held before the move was known.
+    s.router.dispatchBytes(makeChunk(5));
+    expect(paneIdsOf(s.newWindow)).toEqual([5, 5]);
+    expect(paneIdsOf(s.newSession)).toEqual([5, 5]);
   });
 
   it("removes a closed window once its refresh finds it gone", async () => {
