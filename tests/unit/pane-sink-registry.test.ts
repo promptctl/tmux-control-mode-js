@@ -380,49 +380,49 @@ describe("PaneTopologyManager", () => {
   it("seed populates the table from a full listing", () => {
     const t = new PaneTopologyManager();
     t.seed([
-      { paneId: 1, windowId: 10, sessionId: 100 },
-      { paneId: 2, windowId: 10, sessionId: 100 },
-      { paneId: 3, windowId: 20, sessionId: 100 },
+      { paneId: 1, windowId: 10, sessionId: 100, floating: false },
+      { paneId: 2, windowId: 10, sessionId: 100, floating: false },
+      { paneId: 3, windowId: 20, sessionId: 100, floating: false },
     ]);
-    expect(t.get(1)).toEqual({ windowId: 10, sessionId: 100 });
-    expect(t.get(3)).toEqual({ windowId: 20, sessionId: 100 });
+    expect(t.get(1)).toEqual({ windowId: 10, sessionId: 100, floating: false });
+    expect(t.get(3)).toEqual({ windowId: 20, sessionId: 100, floating: false });
     expect(t.get(99)).toBeUndefined();
   });
 
   it("seed replaces the table wholesale", () => {
     const t = new PaneTopologyManager();
-    t.seed([{ paneId: 1, windowId: 10, sessionId: 100 }]);
-    t.seed([{ paneId: 2, windowId: 20, sessionId: 200 }]);
+    t.seed([{ paneId: 1, windowId: 10, sessionId: 100, floating: false }]);
+    t.seed([{ paneId: 2, windowId: 20, sessionId: 200, floating: false }]);
     expect(t.get(1)).toBeUndefined();
-    expect(t.get(2)).toEqual({ windowId: 20, sessionId: 200 });
+    expect(t.get(2)).toEqual({ windowId: 20, sessionId: 200, floating: false });
   });
 
   it("removeWindow removes all panes in that window", () => {
     const t = new PaneTopologyManager();
     t.seed([
-      { paneId: 1, windowId: 10, sessionId: 100 },
-      { paneId: 2, windowId: 10, sessionId: 100 },
-      { paneId: 3, windowId: 20, sessionId: 100 },
+      { paneId: 1, windowId: 10, sessionId: 100, floating: false },
+      { paneId: 2, windowId: 10, sessionId: 100, floating: false },
+      { paneId: 3, windowId: 20, sessionId: 100, floating: false },
     ]);
     t.removeWindow(10);
     expect(t.get(1)).toBeUndefined();
     expect(t.get(2)).toBeUndefined();
-    expect(t.get(3)).toEqual({ windowId: 20, sessionId: 100 });
+    expect(t.get(3)).toEqual({ windowId: 20, sessionId: 100, floating: false });
   });
 
   it("updateWindow adds new panes and removes stale ones", () => {
     const t = new PaneTopologyManager();
     t.seed([
-      { paneId: 1, windowId: 10, sessionId: 100 },
-      { paneId: 2, windowId: 10, sessionId: 100 },
+      { paneId: 1, windowId: 10, sessionId: 100, floating: false },
+      { paneId: 2, windowId: 10, sessionId: 100, floating: false },
     ]);
     // Window 10 now only has pane 1 and a new pane 3.
     t.updateWindow(10, [
-      { paneId: 1, sessionId: 100 },
-      { paneId: 3, sessionId: 100 },
+      { paneId: 1, sessionId: 100, floating: false },
+      { paneId: 3, sessionId: 100, floating: false },
     ]);
-    expect(t.get(1)).toEqual({ windowId: 10, sessionId: 100 });
+    expect(t.get(1)).toEqual({ windowId: 10, sessionId: 100, floating: false });
     expect(t.get(2)).toBeUndefined();
-    expect(t.get(3)).toEqual({ windowId: 10, sessionId: 100 });
+    expect(t.get(3)).toEqual({ windowId: 10, sessionId: 100, floating: false });
   });
 });

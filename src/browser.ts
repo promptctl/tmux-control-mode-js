@@ -22,6 +22,8 @@ export {
   PaneTopologyManager,
   TopologyEpochTracker,
   parsePaneListLine,
+  PANE_LIST_FORMAT,
+  parsePaneList,
 } from "./pane-output.js";
 export type {
   BytesSink,
@@ -29,6 +31,7 @@ export type {
   AttachOptions,
   PaneScope,
   PaneMeta,
+  PaneListEntry,
 } from "./pane-output.js";
 
 export { isTmuxMessage } from "./emitter.js";

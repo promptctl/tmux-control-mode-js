@@ -137,6 +137,35 @@ export interface PaneMeta {
   readonly windowId: number;
 }
 
+/** One line of `list-panes -F "$PANE_LIST_FORMAT"`. */
+export interface PaneListEntry {
+  readonly paneId: number;
+  readonly windowId: number;
+  readonly sessionId: number;
+  // tmux 3.8 floating pane; false where the format is absent (older tmux has
+  // none) or left out of the -F string.
+  readonly floating: boolean;
+}
+
+/**
+ * The `list-panes -F` format `parsePaneListLine` reads, unquoted: a tmux
+ * command string quotes it, an argv passes it as is. The floating flag is
+ * empty on tmux without floating panes.
+ */
+export const PANE_LIST_FORMAT =
+  "#{pane_id} #{window_id} #{session_id} #{pane_floating_flag}";
+
+type PlacedPane = PaneMeta & { readonly floating: boolean };
+
+/** What a layout or refresh contradicted in the table, and so which query re-places it. */
+export interface Contradiction {
+  // Windows moved-in panes left, whose membership any earlier query misstates.
+  readonly left: ReadonlySet<number>;
+  // A tiled pane the layout omits went somewhere only a server-wide query can
+  // say: another window, maybe one in a session tmux sends no layout for.
+  readonly lostTrack: boolean;
+}
+
 /**
  * Maintains the paneId → {sessionId, windowId} table from bootstrap queries
  * and tmux topology notifications.
@@ -145,8 +174,8 @@ export interface PaneMeta {
  *   SinkRegistry.dispatch is the sole reader. No second table exists.
  */
 export class PaneTopologyManager {
-  // [LAW:one-source-of-truth] paneId → {sessionId, windowId}.
-  private readonly table = new Map<number, PaneMeta>();
+  // [LAW:one-source-of-truth] paneId → {sessionId, windowId, floating}.
+  private readonly table = new Map<number, PlacedPane>();
   // Reverse index: windowId → Set<paneId>. Needed for O(panes-in-window)
   // removal on window-close and for differential update on layout-change.
   private readonly windowIndex = new Map<number, Set<number>>();
@@ -171,17 +200,11 @@ export class PaneTopologyManager {
    * Wholesale replace the topology table from a full pane listing.
    * Called on bootstrap (list-panes -a) and on sessions-changed.
    */
-  seed(
-    entries: readonly {
-      paneId: number;
-      windowId: number;
-      sessionId: number;
-    }[],
-  ): void {
+  seed(entries: readonly PaneListEntry[]): void {
     this.table.clear();
     this.windowIndex.clear();
-    for (const { paneId, windowId, sessionId } of entries) {
-      this.table.set(paneId, { sessionId, windowId });
+    for (const { paneId, windowId, sessionId, floating } of entries) {
+      this.table.set(paneId, { sessionId, windowId, floating });
       let set = this.windowIndex.get(windowId);
       if (set === undefined) {
         set = new Set();
@@ -192,13 +215,15 @@ export class PaneTopologyManager {
   }
 
   /**
-   * Differential update for one window. Removes panes that moved away or
-   * closed, adds new panes. Called on layout-change (list-panes -t @W output).
+   * Differential update for one window from its `list-panes -t @W` reply:
+   * removes panes that moved away or closed, adds and re-places the rest.
+   * A tiled pane it removes went somewhere only a server-wide query can say,
+   * as with a layout's omission.
    */
   updateWindow(
     windowId: number,
-    entries: readonly { paneId: number; sessionId: number }[],
-  ): void {
+    entries: readonly Omit<PaneListEntry, "windowId">[],
+  ): Contradiction {
     const prev = this.windowIndex.get(windowId);
     const next = new Set(entries.map((e) => e.paneId));
 
@@ -206,20 +231,18 @@ export class PaneTopologyManager {
     // [LAW:one-source-of-truth] Only delete when table still maps the pane to
     // this window. A concurrent refresh for another window may have already
     // updated the entry — if so, that newer mapping is authoritative.
-    if (prev !== undefined) {
-      for (const paneId of prev) {
-        if (
-          !next.has(paneId) &&
-          this.table.get(paneId)?.windowId === windowId
-        ) {
-          this.table.delete(paneId);
-        }
+    let lostTrack = false;
+    for (const paneId of prev ?? []) {
+      const meta = this.table.get(paneId);
+      if (!next.has(paneId) && meta?.windowId === windowId) {
+        this.table.delete(paneId);
+        lostTrack ||= !meta.floating;
       }
     }
 
     // Add / update entries
-    for (const { paneId, sessionId } of entries) {
-      this.table.set(paneId, { sessionId, windowId });
+    for (const { paneId, sessionId, floating } of entries) {
+      this.table.set(paneId, { sessionId, windowId, floating });
     }
 
     if (next.size === 0) {
@@ -227,31 +250,47 @@ export class PaneTopologyManager {
     } else {
       this.windowIndex.set(windowId, next);
     }
+    return { left: new Set(), lostTrack };
   }
 
   /**
-   * Unplace every pane `layoutPanes` puts in `windowId` that the table maps
-   * to another window: it moved in, and the window refresh that follows
-   * re-places it; until then it matches no window/session scope. Returns the
-   * windows those panes left, whose membership any earlier query misstates.
+   * Unplace every pane whose placement a layout of `windowId` contradicts:
+   * one it lists that the table maps to another window (moved in), and a
+   * tiled one the table maps here that it omits (broken out or floated). A
+   * floating pane is never in a layout (tmux 3.8), so its omission says
+   * nothing. Until a query re-places them they match no window/session scope.
    */
-  unplaceMovedIn(
+  unplaceContradicted(
     windowId: number,
-    layoutPanes: Iterable<number>,
-  ): ReadonlySet<number> {
+    layoutPanes: readonly number[],
+  ): Contradiction {
+    const listed = new Set(layoutPanes);
+    let lostTrack = false;
+    for (const paneId of this.windowIndex.get(windowId) ?? []) {
+      const meta = this.table.get(paneId);
+      if (
+        !listed.has(paneId) &&
+        meta?.windowId === windowId &&
+        !meta.floating
+      ) {
+        this.table.delete(paneId);
+        lostTrack = true;
+      }
+    }
     const lost = new Set<number>();
-    for (const paneId of layoutPanes) {
+    for (const paneId of listed) {
       const meta = this.table.get(paneId);
       if (meta !== undefined && meta.windowId !== windowId) {
         this.table.delete(paneId);
         lost.add(meta.windowId);
       }
     }
-    return lost;
+    return { left: lost, lostTrack };
   }
 
   /**
-   * Remove all panes belonging to a window (window-close / unlinked-window-close).
+   * Unplace all panes belonging to a window: its membership changed
+   * (window-add / window-close) or its refresh found it gone.
    */
   removeWindow(windowId: number): void {
     const panes = this.windowIndex.get(windowId);
@@ -743,8 +782,8 @@ export class TopologyEpochTracker {
   private bootstrapGen = 0;
   // [LAW:types-are-the-program] The gen of the most recently *started* bootstrap.
   //   Distinct from bootstrapGen, which is also bumped by invalidateWindow: a
-  //   window-close invalidates an in-flight bootstrap's SUCCESS (its seed would
-  //   re-add the closed window's panes) but does NOT start a replacement, so it
+  //   window-add/-close invalidates an in-flight bootstrap's SUCCESS (its seed
+  //   can predate the window's change) but does NOT start a replacement, so it
   //   must not make a genuine bootstrap FAILURE look superseded. The success path
   //   asks isBootstrapCurrent; the failure path asks isLatestBootstrap — two
   //   distinct staleness questions, one enforcer. [LAW:single-enforcer]
@@ -803,6 +842,11 @@ export class TopologyEpochTracker {
     this.layoutsSinceBootstrap.set(windowId, panes);
   }
 
+  /** Call on a `layout-change` that did not parse: its window's last list no longer holds. */
+  forgetLayout(windowId: number): void {
+    this.layoutsSinceBootstrap.delete(windowId);
+  }
+
   /** Call after a current bootstrap seeds. Returns and forgets the layouts recorded since it started. */
   takeLayouts(): [number, readonly number[]][] {
     const taken = [...this.layoutsSinceBootstrap];
@@ -823,15 +867,14 @@ export class TopologyEpochTracker {
   }
 
   /**
-   * Call on `window-close` / `unlinked-window-close`. Invalidates any
-   * in-flight bootstrap (it would re-add the closed window's panes) and
-   * any in-flight per-window refresh for the same window.
+   * Call when a window's membership changes (window-add / window-close).
+   * Invalidates any in-flight bootstrap (its reply can predate the change)
+   * and any in-flight per-window refresh for the same window.
    *
-   * Deletes the window entry rather than incrementing it: the window is
-   * gone and no future refresh will be started for this id (until a new
-   * window-add assigns the same id). `isWindowRefreshCurrent` returns
-   * false for a missing key (`undefined !== gen`), so in-flight refreshes
-   * are still correctly discarded. Deletion keeps the Map bounded.
+   * Deletes the window entry rather than incrementing it, which keeps the
+   * Map bounded: `isWindowRefreshCurrent` returns false for a missing key
+   * (`undefined !== gen`), so in-flight refreshes are still discarded, and
+   * the refresh that follows the change sets a fresh entry.
    */
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
@@ -845,8 +888,8 @@ export class TopologyEpochTracker {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse one line from `list-panes -a -F '#{pane_id} #{window_id} #{session_id}'`
- * output (or the window-scoped variant `list-panes -t @W`).
+ * Parse one line of `list-panes -F "$PANE_LIST_FORMAT"` output (`-a` or
+ * `-t @W`). The three-field form without the floating flag parses too.
  *
  * Returns null for unparseable lines (trailing blank, unexpected format).
  *
@@ -857,16 +900,20 @@ export class TopologyEpochTracker {
  * tolerates any run of them, the same way `parseSessionRecordLine`'s
  * `Number()` comparison does for its own last field.
  */
-export function parsePaneListLine(
-  line: string,
-): { paneId: number; windowId: number; sessionId: number } | null {
-  const m = line.match(/^%(\d+) @(\d+) \$(\d+)\r*$/);
+export function parsePaneListLine(line: string): PaneListEntry | null {
+  const m = line.match(/^%(\d+) @(\d+) \$(\d+)(?: ([01]?))?\r*$/);
   if (m === null) return null;
   return {
     paneId: Number(m[1]),
     windowId: Number(m[2]),
     sessionId: Number(m[3]),
+    floating: m[4] === "1",
   };
+}
+
+/** Every pane in a `list-panes -F "$PANE_LIST_FORMAT"` reply, skipping lines that don't parse. */
+export function parsePaneList(output: readonly string[]): PaneListEntry[] {
+  return output.flatMap((line) => parsePaneListLine(line) ?? []);
 }
 
 // [LAW:one-source-of-truth] Decode a single latin1-container field to real

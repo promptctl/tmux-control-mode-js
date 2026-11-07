@@ -158,7 +158,15 @@ describe("parsePaneListLine", () => {
       paneId: 5,
       windowId: 2,
       sessionId: 1,
+      floating: false,
     });
+  });
+
+  it("reads the floating flag, and an empty one (older tmux) as tiled", () => {
+    expect(parsePaneListLine("%5 @2 $1 1")?.floating).toBe(true);
+    expect(parsePaneListLine("%5 @2 $1 0")?.floating).toBe(false);
+    expect(parsePaneListLine("%5 @2 $1 ")?.floating).toBe(false);
+    expect(parsePaneListLine("%5 @2 $1 1\r")?.floating).toBe(true);
   });
 
   // Regression: this is response-block output, where TmuxParser.feed() no
@@ -172,6 +180,7 @@ describe("parsePaneListLine", () => {
       paneId: 5,
       windowId: 2,
       sessionId: 1,
+      floating: false,
     });
   });
 
@@ -185,6 +194,7 @@ describe("parsePaneListLine", () => {
       paneId: 5,
       windowId: 2,
       sessionId: 1,
+      floating: false,
     });
   });
 });

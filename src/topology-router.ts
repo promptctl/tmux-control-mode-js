@@ -23,13 +23,16 @@ import {
   PaneTopologyManager,
   PaneInterestTracker,
   TopologyEpochTracker,
-  parsePaneListLine,
+  PANE_LIST_FORMAT,
+  type Contradiction,
+  parsePaneList,
   serverScope,
   type AttachOptions,
   type BytesSink,
   type ChunkPayload,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
+import { TmuxCommandError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
 export interface TopologyRouterOptions {
@@ -72,14 +75,22 @@ export type ReportTopologyError = (error: Error) => void;
 //   for a null-prototype object or a throwing `toString`, and a throw here would
 //   convert the caught rejection into an unhandled one — the exact silence this
 //   removes. The coercion is guarded with a structural-tag fallback.
-function bootstrapError(value: unknown): Error {
+function topologyError(query: string, value: unknown): Error {
   let detail: string;
   try {
     detail = value instanceof Error ? value.message : String(value);
   } catch {
     detail = Object.prototype.toString.call(value);
   }
-  return new Error(`topology bootstrap failed: ${detail}`, { cause: value });
+  return new Error(`topology ${query} failed: ${detail}`, { cause: value });
+}
+
+// tmux's %error answer to `list-panes -t @W` for a window that no longer exists.
+function isWindowGone(err: unknown): boolean {
+  return (
+    err instanceof TmuxCommandError &&
+    err.message.startsWith("can't find window")
+  );
 }
 
 /**
@@ -370,40 +381,45 @@ export class TopologyRouter {
    */
   handleNotification(msg: TmuxMessage): void {
     switch (msg.type) {
+      case "window-add":
+      case "unlinked-window-add":
       case "window-close":
       case "unlinked-window-close":
-        // Synchronous topology removal + epoch invalidation. Any in-flight
-        // list-panes result for this window will be discarded by the epoch check.
+        // Each says only that the window's membership changed: a close also
+        // comes for a window leaving one session that lives on in another
+        // (unlink-window, move-window), and an add for a known window brought
+        // along with the session it had (move-window, link-window). Its panes
+        // are unplaced and any query sent before the change is discarded; the
+        // refresh re-places them, or fails because the window no longer
+        // exists and leaves it removed.
         this.topology.removeWindow(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
-        break;
-      case "layout-change":
-        // A pane that join-pane/move-pane moved in still has its old entry,
-        // and tmux sends %output for it before list-panes answers, so a pane
-        // the layout lists but the table places elsewhere is unplaced now and
-        // its output held until the refresh places it. Moving out needs no
-        // check: the destination's own layout-change catches the pane, or the
-        // destination is outside the attached session and tmux sends nothing
-        // for it. The layout cannot place anything: tmux 3.8 omits floating
-        // panes, and it carries no session, so list-panes decides membership.
-        if (this.needsTopology()) {
-          const panes =
-            msg.layout.kind === "parsed"
-              ? msg.layout.panes.map((p) => p.paneId)
-              : [];
-          this.epoch.recordLayout(msg.windowId, panes);
-          const lost = this.topology.unplaceMovedIn(msg.windowId, panes);
-          // A new refresh supersedes any sent before the move.
-          for (const id of new Set([...lost, msg.windowId])) {
-            void this.refreshWindow(id);
-          }
-        }
-        break;
-      case "window-add":
-      case "unlinked-window-add":
         if (this.needsTopology()) {
           void this.refreshWindow(msg.windowId);
+        }
+        break;
+      case "layout-change":
+        // A moved pane keeps its old entry, and tmux sends %output for it
+        // before list-panes answers. join-pane/move-pane show up as a pane
+        // the layout lists but the table places elsewhere; break-pane only as
+        // the source layout omitting the pane, then %window-add. Either way
+        // the pane is unplaced now and its output held until a refresh places
+        // it. The layout cannot place anything: tmux 3.8 omits floating
+        // panes, and it carries no session, so list-panes decides membership.
+        // A layout that did not parse lists nothing, so it contradicts nothing.
+        if (this.needsTopology()) {
+          if (msg.layout.kind === "parsed") {
+            const panes = msg.layout.panes.map((p) => p.paneId);
+            this.epoch.recordLayout(msg.windowId, panes);
+            this.requery(
+              this.topology.unplaceContradicted(msg.windowId, panes),
+              msg.windowId,
+            );
+          } else {
+            this.epoch.forgetLayout(msg.windowId);
+            void this.refreshWindow(msg.windowId);
+          }
         }
         break;
       case "session-changed":
@@ -440,9 +456,7 @@ export class TopologyRouter {
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
-      const r = await run(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
+      const r = await run(`list-panes -a -F '${PANE_LIST_FORMAT}'`);
       if (!this.epoch.isBootstrapCurrent(gen)) {
         // A window-close mid-flight makes this result stale without starting a
         // replacement. Still the latest bootstrap means nothing newer will
@@ -457,20 +471,19 @@ export class TopologyRouter {
           void this.bootstrap();
         return;
       }
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
+      this.topology.seed(parsePaneList(r.output));
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
-      //   the move, so only the windows a pane left are asked again.
+      //   the move, so only what the layouts contradict is asked again.
+      const left = new Set<number>();
+      let lostTrack = false;
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
-        for (const id of this.topology.unplaceMovedIn(windowId, panes)) {
-          void this.refreshWindow(id);
-        }
+        const c = this.topology.unplaceContradicted(windowId, panes);
+        for (const id of c.left) left.add(id);
+        lostTrack ||= c.lostTrack;
       }
+      this.requery({ left, lostTrack });
       this.interest?.recompute();
     } catch (err) {
       // [FRAMING:representation] A bootstrap that settles after its transport
@@ -502,10 +515,23 @@ export class TopologyRouter {
       //   window events, a new topology-scoped attach) re-attempt this, so a
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
-      this.reportTopologyError(bootstrapError(err));
+      this.reportTopologyError(topologyError("bootstrap", err));
     } finally {
       this.inFlight--;
       this.releaseHeld();
+    }
+  }
+
+  // The query that re-places what the table was told it got wrong: a pane lost track
+  // of needs the server-wide one, which supersedes every window refresh.
+  // A new refresh supersedes any sent before the move.
+  private requery(c: Contradiction, ...windows: number[]): void {
+    if (c.lostTrack) {
+      void this.bootstrap();
+      return;
+    }
+    for (const id of new Set([...c.left, ...windows])) {
+      void this.refreshWindow(id);
     }
   }
 
@@ -516,23 +542,25 @@ export class TopologyRouter {
     this.inFlight++;
     try {
       const r = await run(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
+        `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`,
       );
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
-      });
-      this.topology.updateWindow(windowId, entries);
+      this.requery(
+        this.topology.updateWindow(windowId, parsePaneList(r.output)),
+      );
       this.interest?.recompute();
-    } catch {
+    } catch (err) {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
       //   newer refresh or a window-close owns this window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+      // A window that no longer exists is the answer a close's refresh
+      // expects; any other failure left a live window's panes unplaced.
+      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
+      if (this.runCommand === run && !isWindowGone(err)) {
+        this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
+      }
     } finally {
       this.inFlight--;
       this.releaseHeld();
