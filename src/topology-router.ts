@@ -28,6 +28,7 @@ import {
   type AttachOptions,
   type BytesSink,
   type ChunkPayload,
+  type PaneMeta,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
 
@@ -135,10 +136,13 @@ export class TopologyRouter {
   // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
   private heldBytes = 0;
   private refusedBytes = 0;
-  // Topology queries started and not yet settled. Only bootstrap() and
-  // refreshWindow() start queries, so the router owns this count; the epoch
-  // tracker answers staleness, not liveness.
-  private inFlight = 0;
+  // Topology queries started and not yet settled, by kind. Only bootstrap()
+  // and refreshWindow() start queries, so the router owns these counts; the
+  // epoch tracker answers staleness, not liveness. A window's refresh is what
+  // re-places a pane moved out of it (join-pane/move-pane/break-pane), so
+  // while one is out, that window's mapping is not trusted for routing.
+  private bootstrapsInFlight = 0;
+  private readonly refreshesInFlight = new Map<number, number>();
 
   constructor(
     reportTopologyError: ReportTopologyError,
@@ -278,20 +282,34 @@ export class TopologyRouter {
    * attach still matches future chunks for matching panes).
    */
   dispatchBytes(payload: ChunkPayload): void {
-    const meta = this.topology.get(payload.paneId);
-    this.sinks.dispatch(payload, meta);
-    // A pane topology does not know yet matched no window/session scope. If a
-    // query in flight may still place it, hold the chunk for replay instead of
-    // losing it: output provoked from another tmux client is not ordered with
-    // our command stream, so it can land before the attach-triggered
-    // bootstrap (or a window-add refresh) does.
+    const placed = this.placement(payload.paneId);
+    this.sinks.dispatch(payload, placed);
+    // An unplaced pane matched no window/session scope. If a query in flight
+    // may still place it, hold the chunk for replay instead of losing it or
+    // sending it to a stale window: output provoked from another tmux client
+    // is not ordered with our command stream, so it can land before the
+    // attach-triggered bootstrap, a window-add refresh, or the refresh that
+    // follows a pane moving windows.
     if (
-      meta === undefined &&
+      placed === undefined &&
       this.sinks.hasTopologyDependentSinks() &&
-      this.inFlight > 0
+      this.queriesInFlight()
     ) {
       this.hold(payload);
     }
+  }
+
+  // Where a pane's output may be routed to window/session scopes: its topology
+  // entry, unless a refresh of that window is outstanding and may move it.
+  private placement(paneId: number): PaneMeta | undefined {
+    const meta = this.topology.get(paneId);
+    return meta !== undefined && !this.refreshesInFlight.has(meta.windowId)
+      ? meta
+      : undefined;
+  }
+
+  private queriesInFlight(): boolean {
+    return this.bootstrapsInFlight > 0 || this.refreshesInFlight.size > 0;
   }
 
   // [LAW:no-silent-failure] A query can stall (tmux's command queue is serial:
@@ -338,13 +356,13 @@ export class TopologyRouter {
       // A replayed sink's write may close the transport; the rest of this
       // episode's chunks go with it.
       if (this.runCommand !== run) return;
-      const meta = this.topology.get(h.chunk.paneId);
-      if (meta !== undefined) {
-        this.sinks.dispatch(h.chunk, meta, {
+      const placed = this.placement(h.chunk.paneId);
+      if (placed !== undefined) {
+        this.sinks.dispatch(h.chunk, placed, {
           kind: "replay",
           attachedBy: h.attachedBy,
         });
-      } else if (this.inFlight > 0) {
+      } else if (this.queriesInFlight()) {
         // Read per chunk: a replayed sink's write may attach a topology sink,
         // which starts a query that can still place the rest.
         // Already copied and counted once; re-holding cannot exceed the cap.
@@ -420,7 +438,7 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startBootstrap();
-    this.inFlight++;
+    this.bootstrapsInFlight++;
     try {
       const r = await run(
         "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
@@ -477,7 +495,7 @@ export class TopologyRouter {
       //   [LAW:no-ambient-temporal-coupling]
       this.reportTopologyError(bootstrapError(err));
     } finally {
-      this.inFlight--;
+      this.bootstrapsInFlight--;
       this.releaseHeld();
     }
   }
@@ -486,7 +504,10 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startWindowRefresh(windowId);
-    this.inFlight++;
+    this.refreshesInFlight.set(
+      windowId,
+      (this.refreshesInFlight.get(windowId) ?? 0) + 1,
+    );
     try {
       const r = await run(
         `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
@@ -507,7 +528,10 @@ export class TopologyRouter {
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
     } finally {
-      this.inFlight--;
+      // Before releaseHeld: the settled refresh no longer holds this window.
+      const left = (this.refreshesInFlight.get(windowId) ?? 0) - 1;
+      if (left > 0) this.refreshesInFlight.set(windowId, left);
+      else this.refreshesInFlight.delete(windowId);
       this.releaseHeld();
     }
   }

@@ -69,6 +69,17 @@ function sendOutputToPane(client: TmuxClient, paneId: number): Promise<void> {
     .then(() => undefined);
 }
 
+const decoder = new TextDecoder();
+function textOf(
+  arrived: { paneId: number; data: Uint8Array }[],
+  paneId: number,
+): string {
+  return arrived
+    .filter((e) => e.paneId === paneId)
+    .map((e) => decoder.decode(e.data))
+    .join("");
+}
+
 /**
  * Return a `BytesSink` that collects every chunk where `paneId` matches a set.
  * `arrived` is the live reference — push to it from `write`.
@@ -364,18 +375,10 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(movedPanes.length).toBeGreaterThan(0);
     const movedPane = movedPanes[0].paneId;
 
-    const arrived: { paneId: number }[] = [];
-    const dispose = client.attachBytesSink(
-      {
-        write(msg) {
-          arrived.push({ paneId: msg.paneId });
-        },
-        end() {},
-      },
-      { scope: sessionScope(sessionAId) },
-    );
-
-    // Move the window from A to B.
+    const inA: { paneId: number; data: Uint8Array }[] = [];
+    const dispose = client.attachBytesSink(makeRecordingSink(inA), {
+      scope: sessionScope(sessionAId),
+    });
     tmux(socketName, [
       "move-window",
       "-s",
@@ -383,18 +386,61 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       "-t",
       `${sessionB}:`,
     ]);
-
-    // Allow topology-changed notifications to propagate.
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
-
-    const beforeCount = arrived.length;
-
-    // Output in the moved pane — now in B — must NOT arrive to the A sink.
     await sendOutputToPane(client, movedPane);
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
-    expect(arrived.length).toBe(beforeCount);
 
+    // tmux sends %output only for panes in the attached session, so once
+    // moved the pane is silent here: settle on the pane having printed (the
+    // typed line and its echo), then one command round-trip.
+    const marker = `scope-test-${movedPane}`;
+    await pollUntil(
+      () =>
+        tmux(socketName, ["capture-pane", "-p", "-t", `%${movedPane}`]).split(
+          marker,
+        ).length > 2,
+    );
+    await client.execute("display-message -p flush");
+    // Only this test's own output counts: the shell's earlier prompt may
+    // legitimately reach A before the move.
+    expect(textOf(inA, movedPane)).not.toContain(marker);
     dispose();
+  }, 20000);
+
+  it("SCOPE-06b: a pane joined into another window routes to it, not its old window", async () => {
+    const session = uniqueName("join");
+    client = await attachSession(socketName, session);
+    // Two panes in the first window, so it survives the join and reports the
+    // move as a layout-change; a second window to join into.
+    await client.execute("split-window");
+    await client.execute("new-window");
+
+    const all = await listAllPanes(client);
+    const windowIds = [...new Set(all.map((p) => p.windowId))];
+    expect(windowIds.length).toBe(2);
+    const [fromWindow, toWindow] = windowIds;
+    const movedPane = all.filter((p) => p.windowId === fromWindow)[1].paneId;
+
+    const inFrom: { paneId: number; data: Uint8Array }[] = [];
+    const inTo: { paneId: number; data: Uint8Array }[] = [];
+    const disposeFrom = client.attachBytesSink(makeRecordingSink(inFrom), {
+      scope: windowScope(fromWindow),
+    });
+    const disposeTo = client.attachBytesSink(makeRecordingSink(inTo), {
+      scope: windowScope(toWindow),
+    });
+    tmux(socketName, [
+      "join-pane",
+      "-s",
+      `%${movedPane}`,
+      "-t",
+      `@${toWindow}`,
+    ]);
+    await sendOutputToPane(client, movedPane);
+
+    const marker = `scope-test-${movedPane}`;
+    await pollUntil(() => textOf(inTo, movedPane).includes(marker));
+    expect(textOf(inFrom, movedPane)).not.toContain(marker);
+    disposeFrom();
+    disposeTo();
   }, 20000);
 
   // ── Test 7: multi-scope dispatch (no duplication) ─────────────────────────

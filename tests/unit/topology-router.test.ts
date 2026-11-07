@@ -11,6 +11,7 @@ import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -714,6 +715,8 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.handleNotification({ type: "window-add", windowId: 3 });
     replies[1]!.reject(new Error("stale refresh failed"));
     await settle();
+    replies[2]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
     router.dispatchBytes(makeChunk(7));
     expect(paneIdsOf(sink)).toEqual([7]);
   });
@@ -768,5 +771,61 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(errors.map((e) => e.message)).toEqual([
       expect.stringMatching(/^topology hold overflow: 1 bytes/),
     ]);
+  });
+
+  // %5 starts in @2/$1; another client moves it to @3/$2, and %5 prints
+  // before the refreshes that follow the move reply.
+  async function movedPane() {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const oldSession = makeSink();
+    const newSession = makeSink();
+    const newWindow = makeSink();
+    const pane = makeSink();
+    router.attachBytesSink(oldSession, { scope: sessionScope(1) });
+    router.attachBytesSink(newSession, { scope: sessionScope(2) });
+    router.attachBytesSink(newWindow, { scope: windowScope(3) });
+    router.attachBytesSink(pane, { scope: paneScope(5) });
+    for (const r of replies.splice(0)) r.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    router.handleNotification({
+      type: "layout-change",
+      windowId: 2,
+      ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
+    });
+    router.handleNotification({
+      type: "layout-change",
+      windowId: 3,
+      ...windowLayoutFields("b25d,80x24,0,0,0", "b25d,80x24,0,0,0", "*"),
+    });
+    router.dispatchBytes(makeChunk(5));
+    return { router, replies, oldSession, newSession, newWindow, pane };
+  }
+
+  it("routes a moved pane's output to its new window and session, not its old ones", async () => {
+    const s = await movedPane();
+    expect(paneIdsOf(s.pane)).toEqual([5]);
+    expect(s.oldSession.chunks).toHaveLength(0);
+
+    s.replies[0]!.resolve(makeOkResponse([])); // @2 no longer has %5
+    await settle();
+    s.replies[1]!.resolve(makeOkResponse(["%5 @3 $2"]));
+    await settle();
+    expect(s.oldSession.chunks).toHaveLength(0);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+    expect(paneIdsOf(s.newWindow)).toEqual([5]);
+    expect(paneIdsOf(s.pane)).toEqual([5]);
+  });
+
+  it("routes a moved pane correctly when the new window's refresh lands first", async () => {
+    const s = await movedPane();
+    s.replies[1]!.resolve(makeOkResponse(["%5 @3 $2"]));
+    await settle();
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+    s.replies[0]!.resolve(makeOkResponse([]));
+    await settle();
+    expect(s.oldSession.chunks).toHaveLength(0);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
   });
 });
