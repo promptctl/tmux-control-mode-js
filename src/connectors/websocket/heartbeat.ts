@@ -22,15 +22,21 @@ export interface HeartbeatHandlers<Token> {
   onTimeout(): void;
 }
 
+// The single in-flight ping: its deadline, and the token it was sent with or
+// `null` when the transport refused it and no pong can answer.
+// [LAW:types-are-the-program] The token is wrapped so a `void` token
+// (`undefined`) stays distinct from "no ping was sent"; unwrapped, a bare
+// `onPong()` would match a refusal.
+interface Inflight<Token> {
+  readonly deadline: ReturnType<typeof setTimeout>;
+  readonly sent: { readonly token: Token } | null;
+}
+
 export class Heartbeat<Token = void> {
   private timer: ReturnType<typeof setInterval> | null = null;
-  private pongDeadline: ReturnType<typeof setTimeout> | null = null;
-  // Meaningful only while `pongDeadline !== null` — the single in-flight ping
-  // the next pong must match: the token it was sent with, or `null` when the
-  // transport refused it and no pong can answer. [LAW:types-are-the-program]
-  // The token is wrapped so a `void` token (`undefined`) stays distinct from
-  // "no ping was sent"; unwrapped, a bare `onPong()` would match a refusal.
-  private outstanding: { readonly token: Token } | null = null;
+  // [LAW:one-source-of-truth] "Is a ping outstanding" and "which ping" are one
+  // value: present while a pong is awaited, null otherwise.
+  private inflight: Inflight<Token> | null = null;
 
   constructor(
     private readonly intervalMs: number,
@@ -41,35 +47,40 @@ export class Heartbeat<Token = void> {
   start(): void {
     // [LAW:composability] Idempotent: a second start() without an intervening
     // stop() is a no-op, so the instance owns at most one interval by
-    // construction — no leaked timer racing on pongDeadline/outstanding.
+    // construction — no leaked timer racing on `inflight`.
     if (this.timer !== null) return;
     if (this.intervalMs <= 0) return;
     this.timer = setInterval(() => {
       this.handlers.onTick?.();
-      if (this.pongDeadline !== null) return; // pong still outstanding
+      if (this.inflight !== null) return; // pong still outstanding
       // [LAW:dataflow-not-control-flow] Every tick that pings arms the
-      // deadline. The ping's outcome flows through the token: one that was
-      // sent leaves the token its pong must carry, one the transport refused
-      // leaves none, so no pong can clear it and the deadline is what reports
-      // the refusal. [LAW:no-silent-failure] The refusal is not swallowed; it
-      // reaches the owner as onTimeout, the one liveness verdict this probe
-      // gives, under the same bound a ping that was dropped unanswered gets.
+      // deadline. The ping's outcome flows through `sent`: a ping that went
+      // out leaves the token its pong must carry, one the transport refused
+      // leaves null, so no pong can clear it and the deadline is what reports
+      // the refusal. [LAW:no-silent-failure] The refusal reaches the owner as
+      // onTimeout, the one liveness verdict this probe gives, under the same
+      // bound a ping that was dropped unanswered gets: one timing path for
+      // both, so the owner's documented bound does not depend on how the
+      // transport fails. The error object is not forwarded: liveness is the
+      // owner's only question of this probe, and the transports it runs over
+      // do not throw from a send once open.
+      let sent: Inflight<Token>["sent"];
       try {
-        this.outstanding = { token: this.handlers.ping() };
+        sent = { token: this.handlers.ping() };
       } catch {
-        this.outstanding = null;
+        sent = null;
       }
-      this.pongDeadline = setTimeout(() => {
+      const deadline = setTimeout(() => {
         // [LAW:composability] Reset before firing so the probe self-heals: a
         // consumer that keeps the heartbeat running past a missed pong resumes
         // pinging on the next tick instead of wedging on a stale deadline. The
         // collaborator must be correct standalone, not only when the consumer
         // happens to stop-and-rebuild it on timeout.
-        this.pongDeadline = null;
-        this.outstanding = null;
+        this.inflight = null;
         this.handlers.onTimeout();
       }, this.timeoutMs);
-      this.pongDeadline.unref?.();
+      deadline.unref?.();
+      this.inflight = { deadline, sent };
     }, this.intervalMs);
     this.timer.unref?.();
   }
@@ -87,16 +98,14 @@ export class Heartbeat<Token = void> {
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type
   onPong(...args: [Token] extends [void] ? [] : [token: Token]): void;
   onPong(token?: Token): void {
-    // [LAW:dataflow-not-control-flow] The deadline's presence is the "is a ping
-    // outstanding" signal; the token only disambiguates which ping. A pong that
-    // does not match the outstanding token (a stale or duplicate reply) is
-    // ignored so it cannot clear a fresh ping's deadline, and no pong matches
-    // a ping the transport refused.
-    if (this.pongDeadline === null) return;
-    if (this.outstanding === null || token !== this.outstanding.token) return;
-    clearTimeout(this.pongDeadline);
-    this.pongDeadline = null;
-    this.outstanding = null;
+    // [LAW:dataflow-not-control-flow] A pong clears the deadline only of the
+    // ping it answers. One that does not match the outstanding token (a stale
+    // or duplicate reply) is ignored so it cannot clear a fresh ping's
+    // deadline, and no pong matches a ping the transport refused.
+    if (this.inflight === null || this.inflight.sent === null) return;
+    if (token !== this.inflight.sent.token) return;
+    clearTimeout(this.inflight.deadline);
+    this.inflight = null;
   }
 
   stop(): void {
@@ -104,10 +113,9 @@ export class Heartbeat<Token = void> {
       clearInterval(this.timer);
       this.timer = null;
     }
-    if (this.pongDeadline !== null) {
-      clearTimeout(this.pongDeadline);
-      this.pongDeadline = null;
+    if (this.inflight !== null) {
+      clearTimeout(this.inflight.deadline);
+      this.inflight = null;
     }
-    this.outstanding = null;
   }
 }

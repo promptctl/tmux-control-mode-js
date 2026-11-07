@@ -144,10 +144,12 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
         }
         return;
       }
-      // A live peer answers a ping synchronously so heartbeat code stays
-      // happy; a silent one does not.
+      // A live peer answers a ping; a silent one does not. The pong arrives
+      // after `ping()` returns, as it does from a real socket's read side:
+      // delivered synchronously it would land before the heartbeat has armed
+      // the deadline it clears, and the live peer would be timed out.
       if (!ws.answersPings) return;
-      listeners.pong?.();
+      queueMicrotask(() => listeners.pong?.());
     },
     close(code?: number, reason?: string) {
       readyState = 3;
@@ -1598,6 +1600,30 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
     expect(fatalFrames(ws)).toHaveLength(0);
     expect(ws.closeCalls).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a live peer that answers pings is never timed out", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(
+      2 * (HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs),
+    );
+
+    expect(fatalFrames(ws)).toHaveLength(0);
+    expect(ws.closeCalls).toHaveLength(0);
+    expect(ws.terminateCalls).toBe(0);
+    expect(closedEvents(events)).toHaveLength(0);
   });
 
   it("a heartbeat timeout on a live connection is the fatal; the next deadline terminates the peer that never answers it", async () => {

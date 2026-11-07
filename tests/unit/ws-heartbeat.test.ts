@@ -175,9 +175,14 @@ describe("Heartbeat — ping() throws", () => {
     expect(onTimeout).not.toHaveBeenCalled();
     vi.advanceTimersByTime(50); // the deadline expires: the same bound a dropped ping gets
     expect(onTimeout).toHaveBeenCalledTimes(1);
-    // The probe self-heals as after any timeout: the next tick pings again.
+    // The probe self-heals as after any timeout: the next tick pings again,
+    // and that ping's pong clears its fresh deadline — the refusal left no
+    // state behind that a later healthy cycle could trip on.
     vi.advanceTimersByTime(50); // completes tick 2's interval (200ms total)
     expect(ping).toHaveBeenCalledTimes(2);
+    hb.onPong();
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
   });
 
   it("a pong carrying an id cannot clear the deadline of a ping that was never sent", () => {
