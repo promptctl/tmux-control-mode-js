@@ -359,7 +359,12 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     // typed error is rebuilt from a wire payload. Real Electron's
     // structured-clone serializer drops `.code` on Error subclasses, so the
     // payload pair is what keeps the error machine-distinguishable.
-    throw BridgeError.fromPayload(result.error);
+    const err = BridgeError.fromPayload(result.error);
+    // [LAW:no-ambient-temporal-coupling] This reply can beat main's `closed`
+    //   event over IPC; it is the renderer's first word that the connection
+    //   dropped, so the router hears it before the caller's catch runs.
+    if (err.code === "BRIDGE_CLOSED") this.router.onTransportLost();
+    throw err;
   }
 
   private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {

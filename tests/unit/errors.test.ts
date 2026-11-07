@@ -1,12 +1,6 @@
 // tests/unit/errors.test.ts
 import { describe, it, expect } from "vitest";
-import {
-  isConnectionGone,
-  TmuxCommandError,
-  TransportClosedError,
-  TransportSendError,
-} from "../../src/errors.js";
-import { BridgeError } from "../../src/connectors/errors.js";
+import { TmuxCommandError } from "../../src/errors.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 
 function errorResponse(output: string[]): CommandResponse {
@@ -50,23 +44,5 @@ describe("TmuxCommandError — headline selection", () => {
       errorResponse(["\r\r", "real diagnostic"]),
     );
     expect(err.message).toBe("real diagnostic");
-  });
-});
-
-describe("isConnectionGone", () => {
-  it.each([
-    new TransportClosedError("exited"),
-    new TransportSendError("not connected"),
-    new BridgeError("BRIDGE_CLOSED", "close 1006"),
-  ])("calls %s gone", (err) => {
-    expect(isConnectionGone(err)).toBe(true);
-  });
-
-  it.each([
-    new BridgeError("BRIDGE_TIMEOUT", "deadline"),
-    new BridgeError("BRIDGE_INTERNAL", "bug"),
-    new Error("server exited unexpectedly"),
-  ])("does not call %s gone", (err) => {
-    expect(isConnectionGone(err)).toBe(false);
   });
 });

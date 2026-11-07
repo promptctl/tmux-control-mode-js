@@ -29,6 +29,7 @@ import { paneScope, sessionScope } from "../../src/pane-output.js";
 import {
   IPC,
   type IpcRendererLike,
+  type IpcRendererOnListener,
   parseAckMessage,
   BridgeError,
 } from "../../src/connectors/electron/types.js";
@@ -529,6 +530,43 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toMatch(/^topology bootstrap failed:/);
     expect((err as Error & { cause?: unknown }).cause).toBeDefined();
+  });
+
+  it("does not report a bootstrap whose BRIDGE_CLOSED reply beats main's closed event", async () => {
+    // The race: main rejects the in-flight invoke as BRIDGE_CLOSED, and that
+    // reply reaches the renderer while its last connection-state is still ready.
+    let listener: IpcRendererOnListener | undefined;
+    const invokes: string[] = [];
+    const ipc: IpcRendererLike = {
+      on: (_c, l) => {
+        listener = l;
+      },
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: (_c, req) => {
+        invokes.push(JSON.stringify(req));
+        return Promise.resolve({
+          status: "bridge-error",
+          error: new BridgeError("BRIDGE_CLOSED", "exited").toPayload(),
+        });
+      },
+    };
+    const proxy = createRendererBridge(ipc);
+    const errors: unknown[] = [];
+    proxy.on("topology-error", (ev) => errors.push(ev));
+    listener!(
+      {},
+      {
+        type: "connection-state",
+        state: { status: "ready" },
+      },
+    );
+    proxy.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
+    // The fake replies through microtasks only; one macrotask drains them all.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toEqual([]);
+    // No recovery query follows the dropped one.
+    expect(invokes).toHaveLength(1);
   });
 
   it("preserves Uint8Array contents through OutputMessage round-trip", () => {

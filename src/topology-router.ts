@@ -32,7 +32,7 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
-import { isConnectionGone, TmuxCommandError } from "./errors.js";
+import { TmuxCommandError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
 export interface TopologyRouterOptions {
@@ -124,6 +124,15 @@ export class TopologyRouter {
   //   onTransportReady sets it; onTransportClose clears it.
   private runCommand: RunCommand | null = null;
 
+  // The runner topology queries use: the live connection's only. An adapter
+  // may keep `runCommand` through a reconnect backoff so queued pane actions
+  // reach the next connection, but a query's answer must come from the
+  // connection it was asked on.
+  // [LAW:no-ambient-temporal-coupling] null → ready → (lost | close) → null.
+  //   onTransportLost retires it before the adapter rejects what was in flight,
+  //   so every failure path's identity check sees the drop, whatever the error.
+  private queryRun: RunCommand | null = null;
+
   // Idle-pane suppression. Both null when the feature is off (the default), in
   // which case every `this.interest?.recompute()` is a genuine no-op and the
   // router issues no pane-action traffic. [LAW:no-mode-explosion]
@@ -211,6 +220,7 @@ export class TopologyRouter {
    */
   onTransportReady(runCommand: RunCommand): void {
     this.runCommand = runCommand;
+    this.queryRun = runCommand;
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
     //   Before runCommand exists, sendPaneAction drops every action — but the
     //   only panes the tracker can mark interesting pre-ready are pane-scope
@@ -227,6 +237,15 @@ export class TopologyRouter {
   }
 
   /**
+   * Called by the transport adapter the moment the connection drops, before it
+   * rejects the commands in flight. Topology queries stop until the next
+   * {@link onTransportReady}, whose bootstrap re-seeds; sinks stay attached.
+   */
+  onTransportLost(): void {
+    this.queryRun = null;
+  }
+
+  /**
    * Called by the transport adapter when the connection closes.
    *
    * Calls `end()` exactly once on every still-attached sink and clears all
@@ -235,6 +254,7 @@ export class TopologyRouter {
    */
   onTransportClose(): void {
     this.runCommand = null;
+    this.queryRun = null;
     // [LAW:no-ambient-temporal-coupling] runCommand is already null, so the
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
@@ -260,10 +280,10 @@ export class TopologyRouter {
     const scope = options?.scope ?? serverScope;
     const dispose = this.sinks.attach(sink, scope);
     // [LAW:dataflow-not-control-flow] Bootstrap trigger is driven by the data
-    //   of the scope value and the current runCommand state — not by a flag.
+    //   of the scope value and the current queryRun state — not by a flag.
     if (
       (scope.kind === "session" || scope.kind === "window") &&
-      this.runCommand !== null
+      this.queryRun !== null
     ) {
       void this.bootstrap();
     }
@@ -451,8 +471,8 @@ export class TopologyRouter {
   // [LAW:single-enforcer] One bootstrap implementation. No transport adapter
   //   re-implements it.
   private async bootstrap(): Promise<void> {
-    if (this.runCommand === null) return;
-    const run = this.runCommand;
+    if (this.queryRun === null) return;
+    const run = this.queryRun;
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
@@ -464,7 +484,7 @@ export class TopologyRouter {
         // chunk is dropped. The re-run counts itself in flight before this
         // finally releases, so held chunks wait for it.
         if (
-          this.runCommand === run &&
+          this.queryRun === run &&
           this.needsTopology() &&
           this.epoch.isLatestBootstrap(gen)
         )
@@ -496,9 +516,7 @@ export class TopologyRouter {
       //   runner) — the value-only `=== null` check misses the reconnect (ABA)
       //   case, where a stale rejection would fire on a healthy new connection.
       //   Not a silent drop: the current connection's own bootstrap still reports.
-      //   A rejection because the connection dropped is the same artifact seen
-      //   before the adapter swaps runners (a reconnect backoff keeps the old one).
-      if (this.runCommand !== run || isConnectionGone(err)) return;
+      if (this.queryRun !== run) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
       //   path too: if a newer bootstrap has since started, it owns the outcome
       //   (it will seed a healthy topology or report its own failure), so this
@@ -538,8 +556,8 @@ export class TopologyRouter {
   }
 
   private async refreshWindow(windowId: number): Promise<void> {
-    if (this.runCommand === null) return;
-    const run = this.runCommand;
+    if (this.queryRun === null) return;
+    const run = this.queryRun;
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     try {
@@ -555,6 +573,9 @@ export class TopologyRouter {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
       //   newer refresh or a window-close owns this window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
+      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap: the
+      //   next connection's bootstrap re-seeds, so the table is left for it.
+      if (this.queryRun !== run) return;
       // A refresh is sent because the window's rows are suspect, so they go
       // whatever the failure; their panes are held, not misrouted.
       this.topology.removeWindow(windowId);
@@ -562,12 +583,7 @@ export class TopologyRouter {
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
-      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
-      if (
-        this.runCommand === run &&
-        !isWindowGone(err) &&
-        !isConnectionGone(err)
-      ) {
+      if (!isWindowGone(err)) {
         if (this.needsTopology()) void this.bootstrap();
         this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
       }

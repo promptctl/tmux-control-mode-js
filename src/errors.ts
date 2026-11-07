@@ -289,8 +289,7 @@ export class PaneCwdUnavailableError extends Error {
 /**
  * Classify a command rejection as "the connection is already gone" — the
  * transport refused the send ({@link TransportSendError}) or closed before
- * tmux replied ({@link TransportClosedError}), directly or as the `cause` of
- * an error wrapping it. Both mean the command never got
+ * tmux replied ({@link TransportClosedError}). Both mean the command never got
  * a verdict from a live tmux, so the operation it drove is *moot*: the pane /
  * subscription it targeted is being torn down and, on reconnect, re-driven.
  *
@@ -304,8 +303,4 @@ export class PaneCwdUnavailableError extends Error {
  *   check, so the two sites cannot drift on what "gone" means.
  */
 export const isConnectionGone = (err: unknown): boolean =>
-  err instanceof TransportClosedError ||
-  err instanceof TransportSendError ||
-  // A wrapper that keeps one of these as its cause (a bridge's BRIDGE_CLOSED)
-  // reports the same "no verdict from a live tmux".
-  (err instanceof Error && isConnectionGone(err.cause));
+  err instanceof TransportClosedError || err instanceof TransportSendError;

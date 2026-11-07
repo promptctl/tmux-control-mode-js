@@ -652,6 +652,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // in-flight calls or queued frames; draining it rejects both. The
     // pre-fix bug (M2) was a separate outbox surviving teardown, then
     // re-sending frames whose caller was already rejected.
+    // [LAW:no-ambient-temporal-coupling] The router retires its query runner
+    //   first, so the rejections drain delivers read as the drop they are.
+    this.router.onTransportLost();
     this.outbox.drain(err);
     this.serverLimits = null;
     // The drain notice was scoped to the connection that just ended; calls

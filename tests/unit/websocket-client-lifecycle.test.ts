@@ -24,6 +24,7 @@ import {
   type WelcomeFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
+import { sessionScope } from "../../src/pane-output.js";
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket hub. One hub per test; produces one MockWS per `openSocket`
@@ -751,6 +752,42 @@ describe("WebSocketTmuxClient — cross-session layout coverage across reconnect
     // Two enables, one disable: the new server-side peer gets one enable.
     expect(enableCalls(hub.sockets[1])).toBe(1);
     answerCalls(hub.sockets[1], answered);
+    await client.close();
+  });
+});
+
+describe("topology across a reconnect", () => {
+  it("does not report a bootstrap the drop rejected, and re-seeds on the next connection", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    const errors: unknown[] = [];
+    client.on("topology-error", (ev) => errors.push(ev));
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    await new Promise((r) => setImmediate(r));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    const bootstraps = (ws: MockWS) =>
+      ws.sent.filter((s) => s.includes("list-panes -a")).length;
+    expect(bootstraps(hub.sockets[0]!)).toBe(1);
+
+    hub.fireClose(0, 1006, "abnormal");
+    expect(client.connectionState.status).toBe("reconnecting");
+    await new Promise((r) => setImmediate(r));
+    expect(errors).toEqual([]);
+
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(1);
+    hub.welcome(1);
+    await new Promise((r) => setImmediate(r));
+    // One bootstrap: the new connection's own, not a recovery query beside it.
+    expect(bootstraps(hub.sockets[1]!)).toBe(1);
+    expect(errors).toEqual([]);
     await client.close();
   });
 });
