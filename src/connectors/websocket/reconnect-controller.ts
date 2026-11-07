@@ -27,15 +27,27 @@ export interface ReconnectHandlers {
   onRetry(): void;
 }
 
+declare const maxAttempts: unique symbol;
+declare const backoffFactor: unique symbol;
+
+/** A retry budget: a positive integer, or `Infinity` for unlimited. `0` is
+ *  the off switch, as `0` is for the heartbeat. [LAW:types-are-the-program]
+ *  The switch is a literal in the type, not a `<= 0` check. */
+type MaxAttempts = 0 | (number & { readonly [maxAttempts]: true });
+
+/** A growth factor the backoff honors: a finite number >= 1. Below 1 the
+ *  delay decays to zero; `Infinity` jumps straight to the cap. */
+type BackoffFactor = number & { readonly [backoffFactor]: true };
+
 // [LAW:parse-dont-validate] The policy as the timer sees it: every field
 // resolved and stamped once, in the constructor, so `backoffDelay` computes
 // from values a timer honors and never re-applies a default or re-checks a
-// range. `maxAttempts: 0` is the off switch, as `0` is for the heartbeat.
+// range.
 interface BackoffSchedule {
-  readonly maxAttempts: number;
+  readonly maxAttempts: MaxAttempts;
   readonly initialDelayMs: DurationMs;
   readonly maxDelayMs: DurationMs;
-  readonly factor: number;
+  readonly factor: BackoffFactor;
   readonly jitterMs: 0 | DurationMs;
 }
 
@@ -49,13 +61,14 @@ const DEFAULTS = Object.freeze({
 // [LAW:one-type-per-behavior] The two shapes only a backoff policy has are
 // instances of the one parser factory, failing like every consumer option.
 const parseMaxAttempts = parser(
-  (v): v is number =>
+  (v): v is MaxAttempts =>
     v === Number.POSITIVE_INFINITY ||
     (Number.isInteger(v) && (v as number) >= 0),
   "0 (no reconnect), a positive integer, or Infinity",
 )(invalidArg);
 const parseBackoffFactor = parser(
-  (v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 1,
+  (v): v is BackoffFactor =>
+    typeof v === "number" && Number.isFinite(v) && v >= 1,
   "a finite number >= 1",
 )(invalidArg);
 const parseJitterMs = zeroOrDurationMsParser("no jitter")(invalidArg);

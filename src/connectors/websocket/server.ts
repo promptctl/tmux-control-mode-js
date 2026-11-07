@@ -207,8 +207,9 @@ export interface WebSocketBridge {
    * Begin graceful shutdown. Every live connection is told to drain;
    * new connections are rejected. Resolves once all connections close or
    * `drainMs` elapses (after which sockets are force-terminated). `drainMs`
-   * is an integer number of ms in [1, 2^31-1], or the call throws
-   * `BRIDGE_INVALID_ARG` before any connection is told anything. Default 10s.
+   * is an integer number of ms in [1, 2^31-1], or the returned promise
+   * rejects with `BRIDGE_INVALID_ARG` before any connection is told anything.
+   * Default 10s.
    */
   shutdown(drainMs?: number): Promise<void>;
 }
@@ -243,23 +244,20 @@ export function createWebSocketBridge(
     }
   }
 
-  // [LAW:parse-dont-validate] The drain bound is parsed before the async body
-  // starts, so a value no timer honors throws at the call — the same border
-  // every other option fails at — instead of rejecting a promise after every
-  // peer has already been told a deadline in the past.
-  function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
-    return drain(parseDurationMs("drainMs", drainMs));
-  }
-
-  async function drain(drainMs: DurationMs): Promise<void> {
+  // [LAW:parse-dont-validate] The drain bound is parsed before any peer is
+  // told anything, so a value no timer honors rejects the returned promise —
+  // the one failure channel the signature declares — and no connection is
+  // left holding a deadline in the past.
+  async function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
+    const bound = parseDurationMs("drainMs", drainMs);
     draining = true;
-    const deadlineMs = Date.now() + drainMs;
+    const deadlineMs = Date.now() + bound;
     for (const conn of connections) {
       conn.beginDrain(deadlineMs);
     }
     await Promise.race([
       allClosed(connections),
-      new Promise<void>((r) => setTimeout(r, drainMs).unref?.()),
+      new Promise<void>((r) => setTimeout(r, bound).unref?.()),
     ]);
     for (const conn of connections) conn.terminate();
   }

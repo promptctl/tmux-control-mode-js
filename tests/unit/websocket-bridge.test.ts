@@ -1930,7 +1930,7 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
     expect(fn).toThrow("maxInflight (0) must be an integer >= 1");
   });
 
-  it("shutdown(0) throws BRIDGE_INVALID_ARG naming drainMs at the call, and tells no peer to drain", async () => {
+  it("shutdown(0) rejects with BRIDGE_INVALID_ARG naming drainMs, and tells no peer to drain", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     t.feed(STARTUP_GREETING);
@@ -1938,10 +1938,12 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
     const ws = connectRunning(bridge);
     await flush();
 
-    const fn = (): unknown => bridge.shutdown(0);
-    expect(fn).toThrow(BridgeError);
-    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
-    expect(fn).toThrow("drainMs (0) must be an integer number of ms");
+    const rejection = bridge.shutdown(0);
+    await expect(rejection).rejects.toThrow(BridgeError);
+    await expect(rejection).rejects.toThrow(/BRIDGE_INVALID_ARG/);
+    await expect(rejection).rejects.toThrow(
+      "drainMs (0) must be an integer number of ms",
+    );
     expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome"]);
     expect(ws.terminateCalls).toBe(0);
     // The bridge is not draining: a new connection is still accepted.
