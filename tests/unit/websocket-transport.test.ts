@@ -367,3 +367,34 @@ describe("parseServerFrame — event type validation", () => {
     expect(frame.k).toBe("welcome");
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseServerFrame — welcome.limits.heartbeatIntervalMs is stamped at the
+// wire (6sp.lr4): the client runs its own probe at the server's advertised
+// period, so a period no timer honors is a protocol fault, not a silently
+// disabled heartbeat.
+// ---------------------------------------------------------------------------
+
+describe("parseServerFrame — welcome heartbeat interval", () => {
+  function welcome(heartbeatIntervalMs: number): string {
+    return JSON.stringify({
+      k: "welcome",
+      limits: { requestTimeoutMs: 5000, heartbeatIntervalMs, maxInflight: 4 },
+    });
+  }
+
+  it("accepts 0 as the server's heartbeat being off", () => {
+    const frame = parseServerFrame(welcome(0));
+    expect(frame.k).toBe("welcome");
+    if (frame.k !== "welcome") return;
+    expect(frame.limits.heartbeatIntervalMs).toBe(0);
+  });
+
+  it("rejects a negative interval with a BridgeProtocolError naming the field and value", () => {
+    const fn = (): unknown => parseServerFrame(welcome(-1));
+    expect(fn).toThrow(BridgeProtocolError);
+    expect(fn).toThrow(
+      "welcome.limits.heartbeatIntervalMs (-1) must be 0 (heartbeat off) or",
+    );
+  });
+});

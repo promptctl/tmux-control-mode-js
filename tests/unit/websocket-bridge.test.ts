@@ -21,6 +21,7 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import type { BridgeObservabilityEvent } from "../../src/connectors/websocket/types.js";
 import {
+  BridgeError,
   encodeClientFrame,
   parseServerFrame,
   type FatalErrorFrame,
@@ -1830,5 +1831,63 @@ describe("WebSocket bridge — socket end", () => {
     ]);
     ws.fireClose(1006, "");
     expect(closedEvents(events)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heartbeat cadence is parsed at construction (6sp.lr4).
+//
+// A timeout no pong could meet used to arm a deadline that fired on the next
+// macrotask, closing every peer for "silence" one interval after hello. The
+// bridge now refuses the option when it is built, naming it and its value;
+// `0` stays the interval's documented off switch.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — heartbeat options are parsed at construction", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function build(opts: {
+    heartbeatIntervalMs?: number;
+    heartbeatTimeoutMs?: number;
+  }): () => unknown {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    return () => createWebSocketBridge({ createClient: () => client, ...opts });
+  }
+
+  it("heartbeatTimeoutMs: 0 throws BRIDGE_INVALID_ARG naming the option and value", () => {
+    const fn = build({ heartbeatTimeoutMs: 0 });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("heartbeatTimeoutMs (0) must be");
+  });
+
+  it("a negative heartbeatIntervalMs throws naming the option, the value, and the off switch", () => {
+    const fn = build({ heartbeatIntervalMs: -1 });
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("heartbeatIntervalMs (-1) must be 0 (heartbeat off) or");
+  });
+
+  it("heartbeatIntervalMs: 0 constructs, and a running connection is never pinged or timed out", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      heartbeatIntervalMs: 0,
+      heartbeatTimeoutMs: 500,
+    });
+    const ws = connectRunning(bridge);
+    const pings = vi.spyOn(ws, "ping");
+    await flush();
+    expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome"]);
+
+    await vi.advanceTimersByTimeAsync(5 * 30_000);
+    expect(pings).not.toHaveBeenCalled();
+    expect(ws.closeCalls).toHaveLength(0);
+    expect(ws.terminateCalls).toBe(0);
   });
 });

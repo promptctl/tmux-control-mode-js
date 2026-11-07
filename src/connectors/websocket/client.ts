@@ -84,6 +84,12 @@ import {
 import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
 import { Heartbeat } from "./heartbeat.js";
+import {
+  parseDurationMs,
+  parseHeartbeatInterval,
+  type DurationMs,
+  type HeartbeatInterval,
+} from "./duration.js";
 import { Outbox } from "./outbox.js";
 import { ReconnectController } from "./reconnect-controller.js";
 
@@ -105,9 +111,12 @@ export interface WebSocketTmuxClientOptions {
   readonly reconnect?: ReconnectPolicy;
   /** Per-call timeout ms. Default: 30000. Server's welcome value wins if smaller. */
   readonly requestTimeoutMs?: number;
-  /** App-level ping interval ms. Default: matches server welcome. 0 disables. */
+  /** App-level ping interval ms: `0` disables, otherwise an integer number of
+   *  ms in [1, 2^31-1] or the constructor throws `BRIDGE_INVALID_ARG`.
+   *  Default: the server's welcome value. */
   readonly heartbeatIntervalMs?: number;
-  /** Pong timeout ms. Default: 10000. */
+  /** Pong timeout ms: an integer number of ms in [1, 2^31-1] or the
+   *  constructor throws `BRIDGE_INVALID_ARG`. Default: 10000. */
   readonly heartbeatTimeoutMs?: number;
   /** Connect at construction. Default: true. */
   readonly autoConnect?: boolean;
@@ -121,7 +130,6 @@ export interface WebSocketTmuxClientOptions {
 
 const DEFAULTS = Object.freeze({
   requestTimeoutMs: 30_000,
-  heartbeatIntervalMs: 30_000,
   heartbeatTimeoutMs: 10_000,
 }) satisfies Record<string, number>;
 
@@ -150,6 +158,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // built each welcome (its cadence is only known then, from the server limits)
   // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
   private heartbeat: Heartbeat<string> | null = null;
+  // [LAW:parse-dont-validate] The consumer's cadence choices, stamped once in
+  // the constructor so a bad value fails there with its option's name, not
+  // at every welcome. `undefined` for the interval means "the server's".
+  private readonly heartbeatIntervalMs: HeartbeatInterval | undefined;
+  private readonly heartbeatTimeoutMs: DurationMs;
 
   private ws: BrowserWebSocketLike | null = null;
   // [LAW:single-enforcer] One controller per connection scopes the lifetime
@@ -177,6 +190,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private lastError: Error | undefined = undefined;
 
   constructor(private readonly opts: WebSocketTmuxClientOptions) {
+    this.heartbeatIntervalMs =
+      opts.heartbeatIntervalMs === undefined
+        ? undefined
+        : parseHeartbeatInterval(
+            "heartbeatIntervalMs",
+            opts.heartbeatIntervalMs,
+          );
+    this.heartbeatTimeoutMs = parseDurationMs(
+      "heartbeatTimeoutMs",
+      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+    );
     // [LAW:decomposition] Wire the collaborators: the outbox transmits through
     // the shell's ready/OPEN gate; the reconnect controller reopens the socket
     // when its backoff timer fires. Neither knows connection state directly.
@@ -565,7 +589,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // transport-error because of a stale error from before the last reconnect.
     this.lastError = undefined;
     this.setConnectionState({ status: "ready" });
-    this.startHeartbeat();
+    this.startHeartbeat(frame.limits);
     // Restore this client's coverage on the new peer before anything queued
     // during the outage, so a queued disable lands after the enables it undoes.
     this.replayCrossSessionLayoutEnables();
@@ -770,22 +794,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Heartbeat is built per welcome and stopped in finalize — no probe state
   // outlives its connection.
   // -------------------------------------------------------------------------
-  private startHeartbeat(): void {
+  private startHeartbeat(limits: WelcomeLimits): void {
     this.heartbeat?.stop();
-    const config = this.heartbeatConfig();
-    // [LAW:dataflow-not-control-flow] A disabled heartbeat is the absence of a
-    // probe, not a probe that never ticks: null it out so `this.heartbeat`
-    // being non-null always means an active heartbeat, and nothing is allocated.
-    if (config === null) {
-      this.heartbeat = null;
-      return;
-    }
     // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
     // (Token = string); ping() emits the frame and returns the id the matching
     // pong will carry, so the shell holds no ping-id state.
+    // Cadence policy: the consumer's interval when given, else the server's
+    // advertised one — both stamped at their borders (constructor, parseWelcome).
     const heartbeat = new Heartbeat<string>(
-      config.intervalMs,
-      config.timeoutMs,
+      {
+        intervalMs: this.heartbeatIntervalMs ?? limits.heartbeatIntervalMs,
+        timeoutMs: this.heartbeatTimeoutMs,
+      },
       {
         ping: () => {
           const id = this.id();
@@ -804,23 +824,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     );
     this.heartbeat = heartbeat;
     heartbeat.start();
-  }
-
-  // [LAW:decomposition] Cadence policy, separate from probe construction:
-  // reconcile caller opts, server welcome limits, and defaults into the probe's
-  // interval/timeout. null means the heartbeat is disabled (interval <= 0).
-  private heartbeatConfig(): {
-    intervalMs: number;
-    timeoutMs: number;
-  } | null {
-    const intervalMs =
-      this.opts.heartbeatIntervalMs ??
-      this.serverLimits?.heartbeatIntervalMs ??
-      DEFAULTS.heartbeatIntervalMs;
-    if (intervalMs <= 0) return null;
-    const timeoutMs =
-      this.opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs;
-    return { intervalMs, timeoutMs };
   }
 
   // -------------------------------------------------------------------------

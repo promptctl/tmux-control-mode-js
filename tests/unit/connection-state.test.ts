@@ -15,6 +15,7 @@ import { createRendererBridge } from "../../src/connectors/electron/renderer.js"
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import {
   encodeServerFrame,
+  parseDurationMs,
   type ServerFrame,
   type WelcomeFrame,
 } from "../../src/connectors/websocket/protocol.js";
@@ -236,7 +237,7 @@ class MockWebSocketHub {
       k: "welcome",
       limits: {
         requestTimeoutMs: 30_000,
-        heartbeatIntervalMs: 30_000,
+        heartbeatIntervalMs: parseDurationMs("heartbeatIntervalMs", 30_000),
         maxInflight: 16,
       },
     };
