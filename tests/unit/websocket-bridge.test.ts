@@ -62,7 +62,13 @@ interface FakeWs extends ServerWebSocketLike {
   terminateCalls: number;
 }
 
-function createFakeWs(): FakeWs {
+// What a transport does with a ping once the bridge has issued `close()`.
+// `ws` drops it silently ("dropped"); another ServerWebSocketLike may throw
+// ("refused"). Both must leave the close handshake under the heartbeat's
+// deadline.
+type ClosingPing = "dropped" | "refused";
+
+function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
   let buffered = 0;
   interface Listeners {
     message?: (data: unknown, isBinary: boolean) => void;
@@ -129,11 +135,21 @@ function createFakeWs(): FakeWs {
       }
     },
     ping() {
-      // A live peer answers a ping synchronously so heartbeat code stays
-      // happy. Once the bridge has issued `close()`, there is no live peer
-      // behind the socket: like `ws`, the ping is dropped and no pong comes.
-      if (readyState !== WEBSOCKET_OPEN || !ws.answersPings) return;
-      listeners.pong?.();
+      // Once the bridge has issued `close()`, there is no live peer behind
+      // the socket: the ping is dropped or refused per `closingPing`, and no
+      // pong comes either way.
+      if (readyState !== WEBSOCKET_OPEN) {
+        if (closingPing === "refused") {
+          throw new Error(`WebSocket is not open: readyState ${readyState}`);
+        }
+        return;
+      }
+      // A live peer answers a ping; a silent one does not. The pong arrives
+      // after `ping()` returns, as it does from a real socket's read side:
+      // delivered synchronously it would land before the heartbeat has armed
+      // the deadline it clears, and the live peer would be timed out.
+      if (!ws.answersPings) return;
+      queueMicrotask(() => listeners.pong?.());
     },
     close(code?: number, reason?: string) {
       readyState = 3;
@@ -1220,8 +1236,9 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
 
 function connectRunning(
   bridge: ReturnType<typeof createWebSocketBridge>,
+  closingPing: ClosingPing = "dropped",
 ): FakeWs {
-  const ws = createFakeWs();
+  const ws = createFakeWs(closingPing);
   void bridge.handleConnection(ws);
   ws.feedClient({ k: "hello" });
   return ws;
@@ -1480,52 +1497,55 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
 
   const HEARTBEAT = { heartbeatIntervalMs: 1_000, heartbeatTimeoutMs: 500 };
 
-  it("a heartbeat timeout while a fatal is pending terminates the socket and reports that fatal", async () => {
-    vi.useFakeTimers();
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    t.feed(STARTUP_GREETING);
-    const events: BridgeObservabilityEvent[] = [];
-    const bridge = createWebSocketBridge({
-      createClient: () => client,
-      onEvent: (ev) => events.push(ev),
-      ...HEARTBEAT,
-    });
-    const ws = connectRunning(bridge);
-    await flush();
+  it.each<ClosingPing>(["dropped", "refused"])(
+    "a heartbeat timeout while a fatal is pending terminates the socket and reports that fatal (ping on the closing socket is %s)",
+    async (closingPing) => {
+      vi.useFakeTimers();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      const events: BridgeObservabilityEvent[] = [];
+      const bridge = createWebSocketBridge({
+        createClient: () => client,
+        onEvent: (ev) => events.push(ev),
+        ...HEARTBEAT,
+      });
+      const ws = connectRunning(bridge, closingPing);
+      await flush();
 
-    // A second hello on a running connection is the fatal; the peer never
-    // answers the close frame.
-    ws.feedClient({ k: "hello" });
-    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
-      "BRIDGE_PROTOCOL_ERROR",
-    ]);
-    expect(ws.closeCalls).toHaveLength(1);
-    expect(ws.terminateCalls).toBe(0);
-    expect(closedEvents(events)).toHaveLength(0);
+      // A second hello on a running connection is the fatal; the peer never
+      // answers the close frame.
+      ws.feedClient({ k: "hello" });
+      expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+        "BRIDGE_PROTOCOL_ERROR",
+      ]);
+      expect(ws.closeCalls).toHaveLength(1);
+      expect(ws.terminateCalls).toBe(0);
+      expect(closedEvents(events)).toHaveLength(0);
 
-    // Next tick pings a closing socket (no pong can come); its deadline
-    // fires with the fatal still pending.
-    await vi.advanceTimersByTimeAsync(
-      HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs,
-    );
+      // Next tick pings a closing socket — dropped or refused, no pong can
+      // come — and its deadline fires with the fatal still pending.
+      await vi.advanceTimersByTimeAsync(
+        HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs,
+      );
 
-    expect(ws.terminateCalls).toBe(1);
-    // No second fatal frame and no second close: the first fatal stands.
-    expect(fatalFrames(ws)).toHaveLength(1);
-    expect(ws.closeCalls).toHaveLength(1);
-    expect(closedEvents(events)).toEqual([
-      expect.objectContaining({
-        errorCode: "BRIDGE_PROTOCOL_ERROR",
-        reason: expect.stringMatching(/duplicate hello frame/) as string,
-        socketEnd: { kind: "terminated", by: "heartbeat" },
-      }),
-    ]);
+      expect(ws.terminateCalls).toBe(1);
+      // No second fatal frame and no second close: the first fatal stands.
+      expect(fatalFrames(ws)).toHaveLength(1);
+      expect(ws.closeCalls).toHaveLength(1);
+      expect(closedEvents(events)).toEqual([
+        expect.objectContaining({
+          errorCode: "BRIDGE_PROTOCOL_ERROR",
+          reason: expect.stringMatching(/duplicate hello frame/) as string,
+          socketEnd: { kind: "terminated", by: "heartbeat" },
+        }),
+      ]);
 
-    // The close event ws emits after terminate() finds the connection closed.
-    ws.fireClose(1006, "");
-    expect(closedEvents(events)).toHaveLength(1);
-  });
+      // The close event ws emits after terminate() finds the connection closed.
+      ws.fireClose(1006, "");
+      expect(closedEvents(events)).toHaveLength(1);
+    },
+  );
 
   it("a transport's own close timer winning the race reports the same fatal, not its empty close reason", async () => {
     const t = createFakeTransport();
@@ -1580,6 +1600,30 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
     expect(fatalFrames(ws)).toHaveLength(0);
     expect(ws.closeCalls).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a live peer that answers pings is never timed out", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(
+      2 * (HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs),
+    );
+
+    expect(fatalFrames(ws)).toHaveLength(0);
+    expect(ws.closeCalls).toHaveLength(0);
+    expect(ws.terminateCalls).toBe(0);
+    expect(closedEvents(events)).toHaveLength(0);
   });
 
   it("a heartbeat timeout on a live connection is the fatal; the next deadline terminates the peer that never answers it", async () => {
