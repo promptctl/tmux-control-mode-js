@@ -12,6 +12,7 @@ import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import { TmuxCommandError } from "../../src/errors.js";
+import { BridgeError } from "../../src/connectors/errors.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
@@ -870,7 +871,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     }
     router.dispatchBytes(makeChunk(4));
     router.dispatchBytes(makeChunk(5));
-    return { router, replies, oldSession, newSession, newWindow, pane };
+    return { router, run, replies, oldSession, newSession, newWindow, pane };
   }
 
   it("routes a moved pane's output to its new window and session, not its old ones", async () => {
@@ -992,6 +993,96 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     await settle();
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
+    ]);
+  });
+
+  // Any error class: a reconnect backoff's queued query can also time out.
+  const drops = [
+    new BridgeError("BRIDGE_CLOSED", "close 1006"),
+    new BridgeError("BRIDGE_TIMEOUT", "deadline"),
+    new Error("server exited unexpectedly"),
+  ];
+
+  it.each(drops)(
+    "neither reports nor re-queries a refresh its connection dropped (%s)",
+    async (drop) => {
+      const errors: Error[] = [];
+      const s = await movedPane([[3, LAYOUT_6_5]], (e) => errors.push(e));
+      const sent = s.replies.length;
+      s.router.onTransportLost(s.run);
+      [...s.replies]
+        .reverse()
+        .find((q) => q.cmd.includes("-t @3 "))!
+        .reject(drop);
+      await settle();
+      expect(errors).toEqual([]);
+      expect(s.replies.slice(sent)).toEqual([]);
+    },
+  );
+
+  it.each(drops)(
+    "neither reports nor re-queries a bootstrap its connection dropped (%s)",
+    async (drop) => {
+      const errors: Error[] = [];
+      const router = new TopologyRouter((e) => errors.push(e));
+      const { run, replies } = controlledRun();
+      router.onTransportReady(run);
+      router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+      router.onTransportLost(run);
+      replies[0]!.reject(drop);
+      await settle();
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it("routes nothing by the previous connection's rows after a reconnect", async () => {
+    const router = new TopologyRouter(() => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    const oldSession = makeSink();
+    const newSession = makeSink();
+    router.attachBytesSink(oldSession, { scope: sessionScope(1) });
+    router.attachBytesSink(newSession, { scope: sessionScope(2) });
+    first.replies.at(-1)!.resolve(makeOkResponse(BEFORE));
+    await settle();
+    router.onTransportLost(first.run);
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    // %5 moved to $2 during the outage; until the new bootstrap lands its
+    // output is held, not sent to $1 by the old row.
+    router.dispatchBytes(makeChunk(5));
+    expect(paneIdsOf(oldSession)).toEqual([]);
+    next.replies.at(-1)!.resolve(makeOkResponse([...AFTER[2], ...AFTER[3]]));
+    await settle();
+    expect(paneIdsOf(oldSession)).toEqual([]);
+    expect(paneIdsOf(newSession)).toEqual([5]);
+  });
+
+  it("ignores a late loss from an earlier connection", async () => {
+    const router = new TopologyRouter(() => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    const asked = next.replies.length;
+    router.onTransportLost(first.run);
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    expect(next.replies.length).toBeGreaterThan(asked);
+  });
+
+  it("queries nothing while the connection is lost, and re-seeds on the next", async () => {
+    const router = new TopologyRouter(() => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    router.onTransportLost(first.run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    expect(first.replies).toEqual([]);
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    expect(next.replies.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -a "),
     ]);
   });
 

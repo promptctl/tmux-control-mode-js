@@ -48,7 +48,7 @@ export interface TopologyRouterOptions {
 // [LAW:types-are-the-program] The command runner is a first-class param, not
 // an ambient dependency. TopologyRouter has no TmuxClient reference — the transport
 // adapter injects the one capability the router needs (executing a command string).
-type RunCommand = (cmd: string) => Promise<CommandResponse>;
+export type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
 /**
  * Reporting seam for a failed topology bootstrap.
@@ -123,6 +123,15 @@ export class TopologyRouter {
   // [LAW:no-ambient-temporal-coupling] The state machine is: null → ready → null.
   //   onTransportReady sets it; onTransportClose clears it.
   private runCommand: RunCommand | null = null;
+
+  // The runner topology queries use: the live connection's only. An adapter
+  // may keep `runCommand` through a reconnect backoff so queued pane actions
+  // reach the next connection, but a query's answer must come from the
+  // connection it was asked on.
+  // [LAW:no-ambient-temporal-coupling] null → ready → (lost | close) → null.
+  //   onTransportLost retires it before the adapter rejects what was in flight,
+  //   so every failure path's identity check sees the drop, whatever the error.
+  private queryRun: RunCommand | null = null;
 
   // Idle-pane suppression. Both null when the feature is off (the default), in
   // which case every `this.interest?.recompute()` is a genuine no-op and the
@@ -211,6 +220,7 @@ export class TopologyRouter {
    */
   onTransportReady(runCommand: RunCommand): void {
     this.runCommand = runCommand;
+    this.queryRun = runCommand;
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
     //   Before runCommand exists, sendPaneAction drops every action — but the
     //   only panes the tracker can mark interesting pre-ready are pane-scope
@@ -227,6 +237,22 @@ export class TopologyRouter {
   }
 
   /**
+   * Called by the transport adapter the moment the connection that `run`
+   * served drops, before it rejects the commands in flight. Topology queries
+   * stop until the next {@link onTransportReady}, whose bootstrap re-seeds;
+   * sinks stay attached.
+   */
+  onTransportLost(run: RunCommand): void {
+    // [LAW:single-enforcer] The same identity rule as every query path: late
+    //   evidence about an earlier connection says nothing about the current one.
+    if (this.queryRun !== run) return;
+    this.queryRun = null;
+    // The rows describe a server this client can no longer see; the next
+    // connection's bootstrap holds output until it seeds, so none misroutes.
+    this.topology.seed([]);
+  }
+
+  /**
    * Called by the transport adapter when the connection closes.
    *
    * Calls `end()` exactly once on every still-attached sink and clears all
@@ -235,6 +261,7 @@ export class TopologyRouter {
    */
   onTransportClose(): void {
     this.runCommand = null;
+    this.queryRun = null;
     // [LAW:no-ambient-temporal-coupling] runCommand is already null, so the
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
@@ -260,10 +287,10 @@ export class TopologyRouter {
     const scope = options?.scope ?? serverScope;
     const dispose = this.sinks.attach(sink, scope);
     // [LAW:dataflow-not-control-flow] Bootstrap trigger is driven by the data
-    //   of the scope value and the current runCommand state — not by a flag.
+    //   of the scope value and the current queryRun state — not by a flag.
     if (
       (scope.kind === "session" || scope.kind === "window") &&
-      this.runCommand !== null
+      this.queryRun !== null
     ) {
       void this.bootstrap();
     }
@@ -333,7 +360,7 @@ export class TopologyRouter {
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
     const pending = this.held;
-    const run = this.runCommand;
+    const run = this.queryRun;
     this.held = [];
     this.heldBytes = 0;
     if (this.refusedBytes > 0) {
@@ -348,7 +375,7 @@ export class TopologyRouter {
     for (const h of pending) {
       // A replayed sink's write may close the transport; the rest of this
       // episode's chunks go with it.
-      if (this.runCommand !== run) return;
+      if (this.queryRun !== run) return;
       const meta = this.topology.get(h.chunk.paneId);
       if (meta !== undefined) {
         this.sinks.dispatch(h.chunk, meta, {
@@ -451,8 +478,8 @@ export class TopologyRouter {
   // [LAW:single-enforcer] One bootstrap implementation. No transport adapter
   //   re-implements it.
   private async bootstrap(): Promise<void> {
-    if (this.runCommand === null) return;
-    const run = this.runCommand;
+    if (this.queryRun === null) return;
+    const run = this.queryRun;
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
@@ -464,7 +491,7 @@ export class TopologyRouter {
         // chunk is dropped. The re-run counts itself in flight before this
         // finally releases, so held chunks wait for it.
         if (
-          this.runCommand === run &&
+          this.queryRun === run &&
           this.needsTopology() &&
           this.epoch.isLatestBootstrap(gen)
         )
@@ -491,12 +518,12 @@ export class TopologyRouter {
       //   the CURRENT connection — `connection-state` already represents that,
       //   so a follow-on topology-error would be a misleading second signal.
       //   Compare IDENTITY, not a value: `run` is the exact runner this bootstrap
-      //   used, captured at entry. `this.runCommand !== run` is true both when the
-      //   transport closed (now null) AND when it closed-then-reopened (now a new
+      //   used, captured at entry. `this.queryRun !== run` is true both when the
+      //   transport dropped or closed (now null) AND when it reopened (now a new
       //   runner) — the value-only `=== null` check misses the reconnect (ABA)
       //   case, where a stale rejection would fire on a healthy new connection.
       //   Not a silent drop: the current connection's own bootstrap still reports.
-      if (this.runCommand !== run) return;
+      if (this.queryRun !== run) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
       //   path too: if a newer bootstrap has since started, it owns the outcome
       //   (it will seed a healthy topology or report its own failure), so this
@@ -536,8 +563,8 @@ export class TopologyRouter {
   }
 
   private async refreshWindow(windowId: number): Promise<void> {
-    if (this.runCommand === null) return;
-    const run = this.runCommand;
+    if (this.queryRun === null) return;
+    const run = this.queryRun;
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     try {
@@ -557,11 +584,12 @@ export class TopologyRouter {
       // whatever the failure; their panes are held, not misrouted.
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
+      if (this.queryRun !== run) return;
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
-      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
-      if (this.runCommand === run && !isWindowGone(err)) {
+      if (!isWindowGone(err)) {
         if (this.needsTopology()) void this.bootstrap();
         this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
       }
