@@ -46,6 +46,7 @@ interface FakeWs extends ServerWebSocketLike {
   bufferedAmount: number;
   setBuffered(n: number): void;
   feedClient(frame: object): void;
+  feedBinary(bytes: Uint8Array): void;
   fireClose(code?: number, reason?: string): void;
   fireError(err: Error): void;
   // Whether the peer behind an OPEN socket answers pings. Default true (a
@@ -91,6 +92,9 @@ function createFakeWs(): FakeWs {
     },
     feedClient(frame) {
       listeners.message?.(encodeClientFrame(frame as never), false);
+    },
+    feedBinary(bytes) {
+      listeners.message?.(bytes, true);
     },
     fireClose(code = 1000, reason = "") {
       readyState = 3;
@@ -1521,6 +1525,61 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
     // The close event ws emits after terminate() finds the connection closed.
     ws.fireClose(1006, "");
     expect(closedEvents(events)).toHaveLength(1);
+  });
+
+  it("a transport's own close timer winning the race reports the same fatal, not its empty close reason", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedClient({ k: "hello" });
+    // ws destroys a socket whose peer never answers close() and emits
+    // close(1006, "") — an abnormal closure with no reason text.
+    ws.fireClose(1006, "");
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        code: 1006,
+        errorCode: "BRIDGE_PROTOCOL_ERROR",
+        reason: expect.stringMatching(/duplicate hello frame/) as string,
+        socketEnd: { kind: "close-event", code: 1006, reason: "" },
+      }),
+    ]);
+  });
+
+  it("a frame delivered after the connection closed opens no close handshake and arms no heartbeat", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    // The peer closes cleanly: finalize runs with no fatal pending, so the
+    // write-once guard in sendFatalAndClose would not stop a later fatal.
+    ws.fireClose(1000, "bye");
+    expect(closedEvents(events)).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A binary frame and a text frame still in the transport's buffer.
+    ws.feedBinary(new Uint8Array([1, 2, 3]));
+    ws.feedClient({ k: "hello" });
+    expect(fatalFrames(ws)).toHaveLength(0);
+    expect(ws.closeCalls).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("a heartbeat timeout on a live connection is the fatal; the next deadline terminates the peer that never answers it", async () => {

@@ -149,7 +149,12 @@ export interface WebSocketBridgeOptions {
   /** Sliding-window rate limit per connection. Default: unlimited. */
   readonly rateLimit?: RateLimitConfig;
 
+  /** Ping period. The heartbeat is the one liveness bound the bridge owns:
+   *  a peer that misses a pong is closed, and a peer that then never answers
+   *  the close frame is terminated at the next pong deadline. `<= 0` turns
+   *  the heartbeat off, and with it both bounds. Default 30s. */
   readonly heartbeatIntervalMs?: number;
+  /** How long after a ping its pong may arrive. Default 10s. */
   readonly heartbeatTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly maxInflight?: number;
@@ -438,6 +443,10 @@ class Connection {
   // -------------------------------------------------------------------------
   private installWsListeners(): void {
     this.ws.on("message", (data: unknown, isBinary: boolean) => {
+      // [LAW:single-enforcer] A frame delivered after finalize meets the
+      // closed state here, before either branch can open a close handshake
+      // (sendFatalAndClose starts the heartbeat finalize already stopped).
+      if (this.state.kind === "closed") return;
       if (isBinary) {
         this.sendFatalAndClose(
           "BRIDGE_PROTOCOL_ERROR",
@@ -460,7 +469,7 @@ class Connection {
       // peer-initiated disconnect — set there, read here, so the one
       // existing emission site (finalize) can report it without a second,
       // manually-paired event at each sendFatalAndClose call site.
-      this.finalize(this.fatal, {
+      this.finalize(undefined, {
         kind: "close-event",
         code,
         reason: typeof reason === "string" ? reason : reason.toString("utf8"),
@@ -468,14 +477,8 @@ class Connection {
     });
 
     this.ws.on("error", (err: Error) => {
-      // [LAW:one-source-of-truth] A pending fatal is the reason the peer was
-      // already given; a socket error that ends that close handshake (the
-      // peer's TCP connection reset, say) is how the socket ended, carried
-      // on socketEnd, not a second reason. The socket-error BridgeError
-      // names only an error nothing preceded.
       this.finalize(
-        this.fatal ??
-          new BridgeError("BRIDGE_INTERNAL", `socket error: ${err.message}`),
+        new BridgeError("BRIDGE_INTERNAL", `socket error: ${err.message}`),
         { kind: "error", message: err.message },
       );
     });
@@ -489,7 +492,6 @@ class Connection {
   }
 
   private onFrame(raw: string): void {
-    if (this.state.kind === "closed") return;
     let frame: ClientFrame;
     try {
       frame = parseClientFrame(raw);
@@ -1125,13 +1127,8 @@ class Connection {
   }
 
   terminate(): void {
-    // [LAW:one-source-of-truth] `this.fatal` is the reason the peer was
-    // already given (sendFatalAndClose is write-once), so it is the reason
-    // connection-closed reports; the shutdown reason names only a
-    // termination nothing preceded.
     this.terminateWith(
-      this.fatal ??
-        new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
+      new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
       "shutdown",
     );
   }
@@ -1145,6 +1142,9 @@ class Connection {
   // means the peer missed a pong on a live connection and the fatal close
   // starts; a fatal pending means the peer is not answering the close
   // handshake either, so the socket is terminated with that fatal intact.
+  // The bound is one heartbeat cycle, the same a live connection gets; a
+  // transport with its own close timer (ws destroys the socket 30s after
+  // close()) may win the race, and its close event reports the same fatal.
   private onPongDeadline(): void {
     if (this.fatal === undefined) {
       this.sendFatalAndClose(
@@ -1163,7 +1163,7 @@ class Connection {
   // one event, so a shutdown and a stuck close handshake stay tellable
   // apart in the observability stream. [LAW:nothing-unseen]
   private terminateWith(
-    fatal: BridgeError,
+    reasonIfNoFatal: BridgeError,
     by: Extract<SocketEnd, { kind: "terminated" }>["by"],
   ): void {
     if (this.state.kind === "closed") return;
@@ -1172,7 +1172,7 @@ class Connection {
     } catch {
       // already gone
     }
-    this.finalize(fatal, { kind: "terminated", by });
+    this.finalize(reasonIfNoFatal, { kind: "terminated", by });
   }
 
   // -------------------------------------------------------------------------
@@ -1226,8 +1226,17 @@ class Connection {
   // -------------------------------------------------------------------------
   // Finalize — the single cleanup path.
   // -------------------------------------------------------------------------
-  private finalize(fatal: BridgeError | undefined, socketEnd: SocketEnd): void {
+  // [LAW:one-source-of-truth] A pending fatal is the reason the peer was
+  // already given (sendFatalAndClose is write-once), so it is the reason
+  // connection-closed reports, however the socket then ended. Callers pass
+  // only the reason for an ending nothing preceded: a socket error, a
+  // shutdown termination, or nothing at all for a peer's own close.
+  private finalize(
+    reasonIfNoFatal: BridgeError | undefined,
+    socketEnd: SocketEnd,
+  ): void {
     if (this.state.kind === "closed") return;
+    const fatal = this.fatal ?? reasonIfNoFatal;
 
     // Capture client/ctx/bridge/peer (if we ever reached running) into the
     // closed variant so disposal can reach them after the transition. The
@@ -1269,11 +1278,14 @@ class Connection {
     }
 
     const closeFrame = socketEnd.kind === "close-event" ? socketEnd : undefined;
+    // The close frame's own text rides on socketEnd; here the fatal's message
+    // comes first so a transport's empty-reason close (ws's 1006 "") cannot
+    // blank the reason the peer was given.
     this.emit({
       kind: "connection-closed",
       identity: this.identity,
       code: closeFrame?.code,
-      reason: closeFrame?.reason ?? fatal?.message,
+      reason: fatal?.message ?? closeFrame?.reason,
       errorCode: fatal?.code,
       socketEnd,
     });
