@@ -308,14 +308,12 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     });
 
     const tailMarker = `TAIL${Math.random().toString(36).slice(2, 8)}`;
-    // Replace the interactive shell with a long-lived sleep process so no
-    // shell prompt, PROMPT_CR expansion, or readline buffering can interfere.
-    // The exec output lands in the pane, admitting this consumer before the
-    // marker arrives. Wait until the pane actually shows the exec echo so the
-    // shell has been replaced before we type the marker.
-    const execMarker = "exec sleep 3600";
-    await client.execute(`send-keys -t %${paneA} '${execMarker}' Enter`);
-    await waitForPaneText(client, paneA, execMarker);
+    // Respawn the pane with sleep as its only process. Separate argv makes
+    // tmux execvp it rather than run `default-shell -c`, so no shell, line
+    // editor, or prompt ever touches the tty. The pty's line discipline
+    // echoes typed keys whatever process reads them, so the marker reaches
+    // the pane as soon as it is sent.
+    await client.execute(`respawn-pane -k -t %${paneA} sleep 3600`);
 
     // Type the marker WITHOUT Enter — the TTY driver echoes the characters
     // verbatim with no trailing newline. They land in the per-pane buffer
@@ -334,7 +332,9 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     const flushed = lines.slice(countBefore);
     expect(flushed.length).toBe(1);
     expect(flushed[0].includes(tailMarker)).toBe(true);
-  }, 15000);
+    // attachSession (8 s) + waitForPaneText (8 s) exceed 15 s; the helpers'
+    // named errors must fire before vitest's generic timeout.
+  }, 20000);
 
   // ── LINE-17: no extra flush event when buffer is empty ────────────────────
 

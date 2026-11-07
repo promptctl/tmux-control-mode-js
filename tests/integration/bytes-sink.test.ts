@@ -147,46 +147,32 @@ describe.skipIf(!RUN_INTEGRATION)(
         scope: paneScope(paneId),
       });
 
-      await client!.execute(`send-keys -t %${paneId} 'echo int22-hello' Enter`);
+      // The quotes vanish only when the shell runs the line, so "int22-hello"
+      // appears in the command's output, never in the line editor's echo of
+      // the typed `int22-''hello`.
+      await client!.execute(
+        `send-keys -t %${paneId} "echo int22-''hello" Enter`,
+      );
 
+      const outputs = () =>
+        ipcMessages
+          .filter(
+            (m) =>
+              m.channel === IPC.event &&
+              typeof m.payload === "object" &&
+              m.payload !== null &&
+              (m.payload as { type: string }).type === "output",
+          )
+          .map((m) => m.payload as { paneId: number; data: Uint8Array });
+
+      // The wait keys on the marker itself: the first output message can be
+      // the shell's prompt redraw, which arrives before the echo under load.
       await pollUntil(() =>
-        ipcMessages.some(
-          (m) =>
-            m.channel === IPC.event &&
-            typeof m.payload === "object" &&
-            m.payload !== null &&
-            (m.payload as { type: string }).type === "output",
-        ),
+        Buffer.concat(outputs().map((o) => o.data))
+          .toString()
+          .includes("int22-hello"),
       );
-
-      const outputMsg = ipcMessages.find(
-        (m) =>
-          m.channel === IPC.event &&
-          typeof m.payload === "object" &&
-          m.payload !== null &&
-          (m.payload as { type: string }).type === "output",
-      );
-      expect(outputMsg).toBeDefined();
-      const msg = outputMsg!.payload as {
-        type: string;
-        paneId: number;
-        data: Uint8Array;
-      };
-      expect(msg.type).toBe("output");
-      expect(msg.paneId).toBe(paneId);
-
-      // Concatenate all output chunks for this pane and check for marker.
-      const allChunks = ipcMessages
-        .filter(
-          (m) =>
-            m.channel === IPC.event &&
-            typeof m.payload === "object" &&
-            m.payload !== null &&
-            (m.payload as { paneId: number }).paneId === paneId,
-        )
-        .map((m) => (m.payload as { data: Uint8Array }).data);
-      const text = Buffer.concat(allChunks).toString();
-      expect(text).toContain("int22-hello");
+      expect(outputs().every((o) => o.paneId === paneId)).toBe(true);
 
       dispose();
     }, 15_000);
