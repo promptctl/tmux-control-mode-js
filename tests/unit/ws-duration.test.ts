@@ -1,27 +1,31 @@
 // tests/unit/ws-duration.test.ts
-// The one parser for every ms option the bridge and client hand to a timer,
-// and the heartbeat's off switch. Each row of the accept/reject table is a
-// case; the thrown message names the option and the value it was given.
+// The parser for a ms option the bridge or client hands to a timer, and the
+// heartbeat's off switch. Each row of the accept/reject table is a case; the
+// thrown message names the option and the value it was given. A timer
+// truncates a fractional delay (0.5 → 0 in a browser, 1 in Node), so a
+// fraction is a value no timer honors as written and is rejected like any
+// other.
 import { describe, it, expect } from "vitest";
 import { BridgeError } from "../../src/connectors/errors.js";
+import { DURATION_MAX_MS } from "../../src/connectors/websocket/duration.js";
 import {
-  DURATION_MAX_MS,
   parseDurationMs,
   parseHeartbeatInterval,
-} from "../../src/connectors/websocket/duration.js";
+} from "../../src/connectors/websocket/protocol.js";
 
 const REJECTED = [
   ["negative", -1],
   ["NaN", Number.NaN],
   ["+Infinity", Number.POSITIVE_INFINITY],
   ["-Infinity", Number.NEGATIVE_INFINITY],
+  ["the smallest positive", Number.MIN_VALUE],
+  ["a fraction below one", 0.5],
+  ["a fraction above one", 1.5],
   ["above the timer clamp", DURATION_MAX_MS + 1],
 ] as const;
 
 const ACCEPTED = [
-  ["the smallest positive", Number.MIN_VALUE],
   ["one", 1],
-  ["fractional", 0.5],
   ["the timer clamp itself", DURATION_MAX_MS],
 ] as const;
 
@@ -37,7 +41,7 @@ describe("parseDurationMs", () => {
       expect(fn).toThrow(BridgeError);
       expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
       expect(fn).toThrow(`heartbeatTimeoutMs (${v}) must be`);
-      expect(fn).toThrow(`(0, ${DURATION_MAX_MS}]`);
+      expect(fn).toThrow(`[1, ${DURATION_MAX_MS}]`);
     },
   );
 });

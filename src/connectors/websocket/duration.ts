@@ -1,8 +1,8 @@
 // src/connectors/websocket/duration.ts
 // A duration a JS timer honors as written, and the heartbeat's off switch.
 //
-// [LAW:parse-dont-validate] The one checkpoint for every ms option the bridge
-// and client hand to setTimeout/setInterval. The output types are the proof:
+// [LAW:parse-dont-validate] The checkpoint for a ms option the bridge or
+// client hands to setTimeout/setInterval. The output types are the proof:
 // a `DurationMs` or `HeartbeatInterval` can only come from this module, so
 // the units that own the timers (Heartbeat) demand them in their signatures
 // and never check again. Without the stamp, a `0` timeout arms a deadline that
@@ -16,8 +16,9 @@ import { BridgeError } from "../errors.js";
 
 declare const durationMs: unique symbol;
 
-/** A delay a timer honors as written: finite, > 0, and at most 2^31-1.
- *  Node and browsers clamp anything outside that range to 1 ms. */
+/** A delay a timer honors as written: an integer in [1, 2^31-1]. Timers
+ *  truncate a fractional delay (so 0.5 is 0 in a browser, 1 in Node), and
+ *  both clamp a delay outside the signed 32-bit range to 1 ms. */
 export type DurationMs = number & { readonly [durationMs]: true };
 
 /** Ping period; `0` is the off switch — no probe runs, and no liveness bound
@@ -29,11 +30,11 @@ export type HeartbeatInterval = 0 | DurationMs;
 export const DURATION_MAX_MS = 2_147_483_647;
 
 /** The accept shapes in words, for an error that names a value outside them. */
-export const DURATION_MS_SHAPE = `a finite number of ms in (0, ${DURATION_MAX_MS}]`;
+const DURATION_MS_SHAPE = `an integer number of ms in [1, ${DURATION_MAX_MS}]`;
 export const HEARTBEAT_INTERVAL_SHAPE = `0 (heartbeat off) or ${DURATION_MS_SHAPE}`;
 
-export function isDurationMs(value: number): value is DurationMs {
-  return Number.isFinite(value) && value > 0 && value <= DURATION_MAX_MS;
+function isDurationMs(value: number): value is DurationMs {
+  return Number.isInteger(value) && value >= 1 && value <= DURATION_MAX_MS;
 }
 
 export function isHeartbeatInterval(value: number): value is HeartbeatInterval {

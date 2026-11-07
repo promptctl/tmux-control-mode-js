@@ -58,9 +58,16 @@ import {
 } from "../errors.js";
 
 // [LAW:one-source-of-truth] `WelcomeLimits.heartbeatIntervalMs` is stamped by
-// duration.ts; the types are re-exported here because this is the public
-// home of the frame they appear on.
-export type { DurationMs, HeartbeatInterval } from "./duration.js";
+// duration.ts; the types and their parsers are re-exported here because this
+// is the public home of the frame they appear on. [LAW:composability] A
+// consumer building a welcome (a custom server, a test's fake) needs the
+// parser to produce the branded value; without it the only out is a cast.
+export {
+  parseDurationMs,
+  parseHeartbeatInterval,
+  type DurationMs,
+  type HeartbeatInterval,
+} from "./duration.js";
 import {
   HEARTBEAT_INTERVAL_SHAPE,
   isHeartbeatInterval,
@@ -409,9 +416,10 @@ function parseWelcome(x: unknown): WelcomeFrame {
     throw new BridgeProtocolError("welcome.limits missing or malformed");
   }
   // [LAW:parse-dont-validate] The wire border stamps the interval the client
-  // will run its own probe at. A server that advertises a negative or
-  // non-finite period is a non-conforming peer, reported as one — not a
-  // silently disabled heartbeat, and not a 1 ms storm from the timer clamp.
+  // will run its own probe at. A server that advertises a negative,
+  // fractional or non-finite period is a non-conforming peer, reported as one
+  // — not a silently disabled heartbeat, and not a ping storm from the timer
+  // clamp.
   if (!isHeartbeatInterval(l.heartbeatIntervalMs)) {
     throw new BridgeProtocolError(
       `welcome.limits.heartbeatIntervalMs (${l.heartbeatIntervalMs}) must be ${HEARTBEAT_INTERVAL_SHAPE}`,

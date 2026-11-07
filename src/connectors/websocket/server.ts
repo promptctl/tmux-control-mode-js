@@ -82,13 +82,8 @@ import type {
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
 import { RateLimiter } from "./rate-limiter.js";
-import { Heartbeat } from "./heartbeat.js";
-import {
-  parseDurationMs,
-  parseHeartbeatInterval,
-  type DurationMs,
-  type HeartbeatInterval,
-} from "./duration.js";
+import { Heartbeat, type HeartbeatCadence } from "./heartbeat.js";
+import { parseDurationMs, parseHeartbeatInterval } from "./duration.js";
 import { CallPump } from "./call-pump.js";
 import { Handshake } from "./handshake.js";
 
@@ -158,12 +153,12 @@ export interface WebSocketBridgeOptions {
   /** Ping period. The heartbeat is the one liveness bound the bridge owns:
    *  a peer that misses a pong is closed, and a peer that then never answers
    *  the close frame is terminated at the next pong deadline. `0` turns the
-   *  heartbeat off, and with it both bounds; otherwise a finite number of ms
-   *  in (0, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
+   *  heartbeat off, and with it both bounds; otherwise an integer number of
+   *  ms in [1, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
    *  Default 30s. */
   readonly heartbeatIntervalMs?: number;
-  /** How long after a ping its pong may arrive: a finite number of ms in
-   *  (0, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
+  /** How long after a ping its pong may arrive: an integer number of ms in
+   *  [1, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
    *  Default 10s. */
   readonly heartbeatTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
@@ -320,8 +315,7 @@ type ConnectionState =
 type RunningState = Extract<ConnectionState, { kind: "running" }>;
 
 interface ResolvedDefaults {
-  readonly heartbeatIntervalMs: HeartbeatInterval;
-  readonly heartbeatTimeoutMs: DurationMs;
+  readonly heartbeat: HeartbeatCadence;
   readonly requestTimeoutMs: number;
   readonly helloTimeoutMs: number;
   readonly maxInflight: number;
@@ -330,17 +324,20 @@ interface ResolvedDefaults {
 // [LAW:parse-dont-validate] The consumer's heartbeat options cross the border
 // once, here, at bridge construction: a value no pong could ever meet fails
 // with the option's name and value instead of as a liveness verdict against
-// every peer.
+// every peer. The result is the cadence in the shape Heartbeat takes, so no
+// caller re-packs the two values.
 function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
-    heartbeatIntervalMs: parseHeartbeatInterval(
-      "heartbeatIntervalMs",
-      opts.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs,
-    ),
-    heartbeatTimeoutMs: parseDurationMs(
-      "heartbeatTimeoutMs",
-      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
-    ),
+    heartbeat: {
+      intervalMs: parseHeartbeatInterval(
+        "heartbeatIntervalMs",
+        opts.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs,
+      ),
+      timeoutMs: parseDurationMs(
+        "heartbeatTimeoutMs",
+        opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+      ),
+    },
     requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     helloTimeoutMs: DEFAULTS.helloTimeoutMs,
     maxInflight: opts.maxInflight ?? DEFAULTS.maxInflight,
@@ -402,17 +399,11 @@ class Connection {
 
     this.rateLimiter = new RateLimiter(opts.rateLimit);
 
-    this.heartbeat = new Heartbeat(
-      {
-        intervalMs: defaults.heartbeatIntervalMs,
-        timeoutMs: defaults.heartbeatTimeoutMs,
-      },
-      {
-        onTick: () => this.maybeFlushBuffered(),
-        ping: () => this.ws.ping(),
-        onTimeout: () => this.onPongDeadline(),
-      },
-    );
+    this.heartbeat = new Heartbeat(defaults.heartbeat, {
+      onTick: () => this.maybeFlushBuffered(),
+      ping: () => this.ws.ping(),
+      onTimeout: () => this.onPongDeadline(),
+    });
 
     this.callPump = new CallPump(
       defaults.maxInflight,
@@ -827,7 +818,7 @@ class Connection {
       k: "welcome",
       limits: {
         requestTimeoutMs: this.defaults.requestTimeoutMs,
-        heartbeatIntervalMs: this.defaults.heartbeatIntervalMs,
+        heartbeatIntervalMs: this.defaults.heartbeat.intervalMs,
         maxInflight: this.defaults.maxInflight,
       },
     });
@@ -1170,7 +1161,7 @@ class Connection {
     if (this.fatal === undefined) {
       this.sendFatalAndClose(
         "BRIDGE_CLOSED",
-        `heartbeat timeout after ${this.defaults.heartbeatTimeoutMs}ms`,
+        `heartbeat timeout after ${this.defaults.heartbeat.timeoutMs}ms`,
       );
       return;
     }

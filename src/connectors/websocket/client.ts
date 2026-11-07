@@ -111,12 +111,12 @@ export interface WebSocketTmuxClientOptions {
   readonly reconnect?: ReconnectPolicy;
   /** Per-call timeout ms. Default: 30000. Server's welcome value wins if smaller. */
   readonly requestTimeoutMs?: number;
-  /** App-level ping interval ms: `0` disables, otherwise a finite number of
-   *  ms in (0, 2^31-1] or the constructor throws `BRIDGE_INVALID_ARG`.
+  /** App-level ping interval ms: `0` disables, otherwise an integer number of
+   *  ms in [1, 2^31-1] or the constructor throws `BRIDGE_INVALID_ARG`.
    *  Default: the server's welcome value. */
   readonly heartbeatIntervalMs?: number;
-  /** Pong timeout ms: a finite number of ms in (0, 2^31-1] or the constructor
-   *  throws `BRIDGE_INVALID_ARG`. Default: 10000. */
+  /** Pong timeout ms: an integer number of ms in [1, 2^31-1] or the
+   *  constructor throws `BRIDGE_INVALID_ARG`. Default: 10000. */
   readonly heartbeatTimeoutMs?: number;
   /** Connect at construction. Default: true. */
   readonly autoConnect?: boolean;
