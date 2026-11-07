@@ -13,9 +13,12 @@ export interface HeartbeatHandlers<Token> {
    *  owner as the idle-path backstop for the OS-buffer drain sample. */
   onTick?(): void;
   /** Send a ping and return the correlation token the matching pong will
-   *  carry. May throw; the heartbeat swallows the error and arms no deadline. */
+   *  carry. May throw: a ping the transport refuses is a ping no pong will
+   *  answer, so the deadline arms as for one that was sent and `onTimeout`
+   *  fires when it expires. */
   ping(): Token;
-  /** Called when the pong deadline expires. */
+  /** Called when the pong deadline expires: no matching pong arrived within
+   *  `timeoutMs` of the ping, or the transport refused to carry the ping. */
   onTimeout(): void;
 }
 
@@ -41,13 +44,18 @@ export class Heartbeat<Token = void> {
     this.timer = setInterval(() => {
       this.handlers.onTick?.();
       if (this.pongDeadline !== null) return; // pong still outstanding
-      let token: Token;
+      // [LAW:dataflow-not-control-flow] Every tick that pings arms the
+      // deadline. The ping's outcome flows through the token: one that was
+      // sent leaves the token its pong must carry, one the transport refused
+      // leaves none, so no pong can clear it and the deadline is what reports
+      // the refusal. [LAW:no-silent-failure] The refusal is not swallowed; it
+      // reaches the owner as onTimeout, the one liveness verdict this probe
+      // gives, under the same bound a ping that was dropped unanswered gets.
       try {
-        token = this.handlers.ping();
+        this.outstanding = this.handlers.ping();
       } catch {
-        return;
+        this.outstanding = undefined;
       }
-      this.outstanding = token;
       this.pongDeadline = setTimeout(() => {
         // [LAW:composability] Reset before firing so the probe self-heals: a
         // consumer that keeps the heartbeat running past a missed pong resumes

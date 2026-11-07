@@ -163,7 +163,7 @@ describe("Heartbeat — start() is idempotent", () => {
 });
 
 describe("Heartbeat — ping() throws", () => {
-  it("skips arming the deadline and retries on the next tick", () => {
+  it("a refused ping is a ping no pong will answer: the deadline arms and onTimeout fires", () => {
     vi.useFakeTimers();
     const ping = vi.fn().mockImplementationOnce(() => {
       throw new Error("send failed");
@@ -171,13 +171,29 @@ describe("Heartbeat — ping() throws", () => {
     const onTimeout = vi.fn();
     const hb = new Heartbeat(100, 50, { ping, onTimeout });
     hb.start();
-    vi.advanceTimersByTime(100); // tick 1 — ping throws, no deadline armed
-    // No deadline was armed, so the pong-timeout can never fire...
-    vi.advanceTimersByTime(50);
+    vi.advanceTimersByTime(100); // tick 1 — ping throws; the deadline arms anyway
     expect(onTimeout).not.toHaveBeenCalled();
-    // ...and the next tick retries the ping from a clean slate.
-    vi.advanceTimersByTime(50); // completes tick 2's interval (100ms total)
+    vi.advanceTimersByTime(50); // the deadline expires: the same bound a dropped ping gets
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+    // The probe self-heals as after any timeout: the next tick pings again.
+    vi.advanceTimersByTime(50); // completes tick 2's interval (200ms total)
     expect(ping).toHaveBeenCalledTimes(2);
+  });
+
+  it("a pong carrying an id cannot clear the deadline of a ping that was never sent", () => {
+    vi.useFakeTimers();
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat<string>(100, 50, {
+      ping: () => {
+        throw new Error("send failed");
+      },
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100);
+    hb.onPong("stale-id");
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
   });
 });
 
