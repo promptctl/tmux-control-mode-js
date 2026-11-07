@@ -90,6 +90,10 @@ export interface ServerWebSocketLike {
     cb?: (err?: Error) => void,
   ): void;
 
+  /** Send a transport-level ping. May throw: the bridge treats a ping the
+   *  transport refuses as one the peer never answered, so it ends the
+   *  connection under the heartbeat's pong deadline. `ws` drops a ping on a
+   *  closing socket silently, which the bridge handles the same way. */
   ping(data?: unknown, mask?: boolean, cb?: (err?: Error) => void): void;
 
   close(code?: number, reason?: string): void;

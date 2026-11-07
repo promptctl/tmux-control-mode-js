@@ -54,16 +54,13 @@ export class Heartbeat<Token = void> {
       this.handlers.onTick?.();
       if (this.inflight !== null) return; // pong still outstanding
       // [LAW:dataflow-not-control-flow] Every tick that pings arms the
-      // deadline. The ping's outcome flows through `sent`: a ping that went
-      // out leaves the token its pong must carry, one the transport refused
-      // leaves null, so no pong can clear it and the deadline is what reports
-      // the refusal. [LAW:no-silent-failure] The refusal reaches the owner as
-      // onTimeout, the one liveness verdict this probe gives, under the same
-      // bound a ping that was dropped unanswered gets: one timing path for
-      // both, so the owner's documented bound does not depend on how the
-      // transport fails. The error object is not forwarded: liveness is the
-      // owner's only question of this probe, and the transports it runs over
-      // do not throw from a send once open.
+      // deadline; the ping's outcome is the value of `sent`, not a branch over
+      // whether a deadline exists. One timing path for a refused and a dropped
+      // ping keeps the owner's documented bound independent of how the
+      // transport fails, which is why a refusal is not reported at once. The
+      // error object is not forwarded: liveness is the owner's only question
+      // of this probe, and the transports it runs over do not throw from a
+      // send once open. [LAW:no-silent-failure]
       let sent: Inflight<Token>["sent"];
       try {
         sent = { token: this.handlers.ping() };
