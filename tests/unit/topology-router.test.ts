@@ -11,6 +11,7 @@ import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -768,5 +769,127 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(errors.map((e) => e.message)).toEqual([
       expect.stringMatching(/^topology hold overflow: 1 bytes/),
     ]);
+  });
+
+  // %4 and %5 start in @2/$1, %6 in @3/$2. Another client moves %5 into @3,
+  // and %4 and %5 print before the refreshes that follow the move reply.
+  const LAYOUT_4 = "b261,80x24,0,0,4";
+  const LAYOUT_6_5 = "821f,80x24,0,0{40x24,0,0,6,39x24,41,0,5}";
+  const BEFORE = ["%4 @2 $1", "%5 @2 $1", "%6 @3 $2"];
+  const AFTER = { 2: ["%4 @2 $1"], 3: ["%6 @3 $2", "%5 @3 $2"] };
+
+  // Answer the latest refresh of `@windowId` with the post-move panes.
+  function answerRefresh(
+    replies: ReturnType<typeof controlledRun>["replies"],
+    windowId: 2 | 3,
+  ) {
+    const r = [...replies]
+      .reverse()
+      .find((q) => q.cmd.includes(`-t @${windowId} `));
+    if (r === undefined)
+      throw new Error(`expected a list-panes -t @${windowId} refresh`);
+    r.resolve(makeOkResponse(AFTER[windowId]));
+  }
+
+  function layoutChange(windowId: number, layout: string) {
+    return {
+      type: "layout-change" as const,
+      windowId,
+      ...windowLayoutFields(layout, layout, "*"),
+    };
+  }
+
+  async function movedPane(layoutChanges: [number, string][]) {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const oldSession = makeSink();
+    const newSession = makeSink();
+    const newWindow = makeSink();
+    const pane = makeSink();
+    router.attachBytesSink(oldSession, { scope: sessionScope(1) });
+    router.attachBytesSink(newSession, { scope: sessionScope(2) });
+    router.attachBytesSink(newWindow, { scope: windowScope(3) });
+    router.attachBytesSink(pane, { scope: paneScope(5) });
+    for (const r of replies.splice(0)) r.resolve(makeOkResponse(BEFORE));
+    await settle();
+    for (const [windowId, layout] of layoutChanges) {
+      router.handleNotification(layoutChange(windowId, layout));
+    }
+    router.dispatchBytes(makeChunk(4));
+    router.dispatchBytes(makeChunk(5));
+    return { replies, oldSession, newSession, newWindow, pane };
+  }
+
+  it("routes a moved pane's output to its new window and session, not its old ones", async () => {
+    const s = await movedPane([
+      [2, LAYOUT_4],
+      [3, LAYOUT_6_5],
+    ]);
+    expect(paneIdsOf(s.pane)).toEqual([5]);
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+
+    answerRefresh(s.replies, 2);
+    await settle();
+    answerRefresh(s.replies, 3);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+    expect(paneIdsOf(s.newWindow)).toEqual([5]);
+  });
+
+  it("routes a moved pane correctly when the new window's refresh lands first", async () => {
+    const s = await movedPane([
+      [2, LAYOUT_4],
+      [3, LAYOUT_6_5],
+    ]);
+    answerRefresh(s.replies, 3);
+    await settle();
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+    answerRefresh(s.replies, 2);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+  });
+
+  // tmux sends %layout-change only for windows in the attached session, so a
+  // pane joined in from another session's window announces itself only in
+  // the destination's layout.
+  it("routes a pane moved in from an unannounced window to its new session", async () => {
+    const s = await movedPane([[3, LAYOUT_6_5]]);
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    answerRefresh(s.replies, 2);
+    answerRefresh(s.replies, 3);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+  });
+
+  // tmux 3.8 leaves floating panes out of the layout, so %5 missing from
+  // @2's layout is not evidence it moved.
+  it("keeps routing a pane its own window's layout omits", async () => {
+    const s = await movedPane([[2, LAYOUT_4]]);
+    expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
+  });
+
+  it("does not let a bootstrap sent before a move put the moved pane back", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const oldSession = makeSink();
+    const newSession = makeSink();
+    router.attachBytesSink(oldSession, { scope: sessionScope(1) });
+    router.attachBytesSink(newSession, { scope: sessionScope(2) });
+    const bootstraps = replies.splice(0);
+    router.handleNotification(layoutChange(3, LAYOUT_6_5));
+    for (const r of bootstraps) r.resolve(makeOkResponse(BEFORE));
+    await settle();
+    router.dispatchBytes(makeChunk(5));
+    expect(oldSession.chunks).toHaveLength(0);
+    answerRefresh(replies, 2);
+    answerRefresh(replies, 3);
+    await settle();
+    expect(oldSession.chunks).toHaveLength(0);
+    expect(paneIdsOf(newSession)).toEqual([5]);
   });
 });

@@ -378,12 +378,30 @@ export class TopologyRouter {
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
         break;
+      case "layout-change":
+        // A pane that join-pane/move-pane moved in still has its old entry,
+        // and tmux sends %output for it before list-panes answers, so a pane
+        // the layout lists but the table places elsewhere is unplaced now and
+        // its output held until the refresh places it. Moving out needs no
+        // check: the destination's own layout-change catches the pane, or the
+        // destination is outside the attached session and tmux sends nothing
+        // for it. The layout cannot place anything: tmux 3.8 omits floating
+        // panes, and it carries no session, so list-panes decides membership.
+        if (this.needsTopology()) {
+          const panes =
+            msg.layout.kind === "parsed"
+              ? msg.layout.panes.map((p) => p.paneId)
+              : [];
+          this.epoch.recordLayout(msg.windowId, panes);
+          const lost = this.topology.unplaceMovedIn(msg.windowId, panes);
+          // A new refresh supersedes any sent before the move.
+          for (const id of new Set([...lost, msg.windowId])) {
+            void this.refreshWindow(id);
+          }
+        }
+        break;
       case "window-add":
       case "unlinked-window-add":
-      case "layout-change":
-        // list-panes, not msg.layout: membership needs every pane, and tmux
-        // 3.8 omits floating panes from the layout — adding one emits a
-        // layout-change whose layout string is unchanged.
         if (this.needsTopology()) {
           void this.refreshWindow(msg.windowId);
         }
@@ -444,6 +462,15 @@ export class TopologyRouter {
         return parsed !== null ? [parsed] : [];
       });
       this.topology.seed(entries);
+      // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
+      //   pane in its old window; the epoch tracker hands back the layouts
+      //   seen since it started, and their windows' refreshes already follow
+      //   the move, so only the windows a pane left are asked again.
+      for (const [windowId, panes] of this.epoch.takeLayouts()) {
+        for (const id of this.topology.unplaceMovedIn(windowId, panes)) {
+          void this.refreshWindow(id);
+        }
+      }
       this.interest?.recompute();
     } catch (err) {
       // [FRAMING:representation] A bootstrap that settles after its transport

@@ -69,6 +69,17 @@ function sendOutputToPane(client: TmuxClient, paneId: number): Promise<void> {
     .then(() => undefined);
 }
 
+const decoder = new TextDecoder();
+function textOf(
+  arrived: { paneId: number; data: Uint8Array }[],
+  paneId: number,
+): string {
+  return arrived
+    .filter((e) => e.paneId === paneId)
+    .map((e) => decoder.decode(e.data))
+    .join("");
+}
+
 /**
  * Return a `BytesSink` that collects every chunk where `paneId` matches a set.
  * `arrived` is the live reference — push to it from `write`.
@@ -334,67 +345,44 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
-  // ── Test 6: pane move (sessionScope) ─────────────────────────────────────
+  // ── Test 6: pane move (windowScope) ──────────────────────────────────────
 
-  it("SCOPE-06: sessionScope excludes a window moved out of the session", async () => {
-    const sessionA = uniqueName("move-a");
-    client = await attachSession(socketName, sessionA);
-
-    // Create a second session to move a window into.
-    const sessionB = uniqueName("move-b");
-    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
-
-    // Create a second window in A so we have a movable window.
+  it("SCOPE-06: a pane joined into another window routes to it, not its old window", async () => {
+    const session = uniqueName("join");
+    client = await attachSession(socketName, session);
+    // Two panes in the first window, so it survives the join and reports the
+    // move as a layout-change; a second window to join into.
+    await client.execute("split-window");
     await client.execute("new-window");
 
-    const allBefore = await listAllPanes(client);
-    expect(allBefore.length).toBeGreaterThanOrEqual(2);
-    const sessionAId = allBefore[0].sessionId;
+    const all = await listAllPanes(client);
+    const windowIds = [...new Set(all.map((p) => p.windowId))];
+    expect(windowIds.length).toBe(2);
+    const [fromWindow, toWindow] = windowIds;
+    const movedPane = all.filter((p) => p.windowId === fromWindow)[1].paneId;
 
-    const windowIds = [
-      ...new Set(
-        allBefore
-          .filter((p) => p.sessionId === sessionAId)
-          .map((p) => p.windowId),
-      ),
-    ];
-    expect(windowIds.length).toBeGreaterThanOrEqual(2);
-    const windowToMove = windowIds[1];
-    const movedPanes = allBefore.filter((p) => p.windowId === windowToMove);
-    expect(movedPanes.length).toBeGreaterThan(0);
-    const movedPane = movedPanes[0].paneId;
-
-    const arrived: { paneId: number }[] = [];
-    const dispose = client.attachBytesSink(
-      {
-        write(msg) {
-          arrived.push({ paneId: msg.paneId });
-        },
-        end() {},
-      },
-      { scope: sessionScope(sessionAId) },
-    );
-
-    // Move the window from A to B.
+    const inFrom: { paneId: number; data: Uint8Array }[] = [];
+    const inTo: { paneId: number; data: Uint8Array }[] = [];
+    const disposeFrom = client.attachBytesSink(makeRecordingSink(inFrom), {
+      scope: windowScope(fromWindow),
+    });
+    const disposeTo = client.attachBytesSink(makeRecordingSink(inTo), {
+      scope: windowScope(toWindow),
+    });
     tmux(socketName, [
-      "move-window",
+      "join-pane",
       "-s",
-      `@${windowToMove}`,
+      `%${movedPane}`,
       "-t",
-      `${sessionB}:`,
+      `@${toWindow}`,
     ]);
-
-    // Allow topology-changed notifications to propagate.
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
-
-    const beforeCount = arrived.length;
-
-    // Output in the moved pane — now in B — must NOT arrive to the A sink.
     await sendOutputToPane(client, movedPane);
-    await new Promise<void>((resolve) => setTimeout(resolve, 300));
-    expect(arrived.length).toBe(beforeCount);
 
-    dispose();
+    const marker = `scope-test-${movedPane}`;
+    await pollUntil(() => textOf(inTo, movedPane).includes(marker));
+    expect(textOf(inFrom, movedPane)).not.toContain(marker);
+    disposeFrom();
+    disposeTo();
   }, 20000);
 
   // ── Test 7: multi-scope dispatch (no duplication) ─────────────────────────

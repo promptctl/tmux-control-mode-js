@@ -230,6 +230,27 @@ export class PaneTopologyManager {
   }
 
   /**
+   * Unplace every pane `layoutPanes` puts in `windowId` that the table maps
+   * to another window: it moved in, and the window refresh that follows
+   * re-places it; until then it matches no window/session scope. Returns the
+   * windows those panes left, whose membership any earlier query misstates.
+   */
+  unplaceMovedIn(
+    windowId: number,
+    layoutPanes: Iterable<number>,
+  ): ReadonlySet<number> {
+    const lost = new Set<number>();
+    for (const paneId of layoutPanes) {
+      const meta = this.table.get(paneId);
+      if (meta !== undefined && meta.windowId !== windowId) {
+        this.table.delete(paneId);
+        lost.add(meta.windowId);
+      }
+    }
+    return lost;
+  }
+
+  /**
    * Remove all panes belonging to a window (window-close / unlinked-window-close).
    */
   removeWindow(windowId: number): void {
@@ -736,6 +757,10 @@ export class TopologyEpochTracker {
   // only ever increases. Per-window counters that reset after a clear would
   // allow pre-clear and post-clear tokens to collide (both start at 1).
   private windowEpoch = 0;
+  // Each window's latest layout pane list since the last bootstrap started:
+  // a bootstrap reply can predate a move these record, so its seed is checked
+  // against them once (takeLayouts).
+  private readonly layoutsSinceBootstrap = new Map<number, readonly number[]>();
 
   /**
    * Call immediately before the `list-panes -a` execute(). Returns captured gen.
@@ -748,6 +773,7 @@ export class TopologyEpochTracker {
    */
   startBootstrap(): number {
     this.windowGens.clear();
+    this.layoutsSinceBootstrap.clear();
     this.latestBootstrapStartGen = ++this.bootstrapGen;
     return this.latestBootstrapStartGen;
   }
@@ -770,6 +796,18 @@ export class TopologyEpochTracker {
    */
   isLatestBootstrap(gen: number): boolean {
     return this.latestBootstrapStartGen === gen;
+  }
+
+  /** Call on every `layout-change`, with the panes its layout lists. */
+  recordLayout(windowId: number, panes: readonly number[]): void {
+    this.layoutsSinceBootstrap.set(windowId, panes);
+  }
+
+  /** Call after a current bootstrap seeds. Returns and forgets the layouts recorded since it started. */
+  takeLayouts(): [number, readonly number[]][] {
+    const taken = [...this.layoutsSinceBootstrap];
+    this.layoutsSinceBootstrap.clear();
+    return taken;
   }
 
   /** Call immediately before the `list-panes -t @W` execute(). Returns captured gen. */
@@ -797,6 +835,7 @@ export class TopologyEpochTracker {
    */
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
+    this.layoutsSinceBootstrap.delete(windowId);
     this.windowGens.delete(windowId);
   }
 }
