@@ -321,7 +321,7 @@ export interface RateLimitConfig {
  */
 export interface ReconnectPolicy {
   /** Max attempts: `0` (no reconnect), a positive integer, or `Infinity` for
-   *  unlimited. Default: 0. */
+   *  unlimited. */
   readonly maxAttempts: number;
   /** First retry delay: an integer number of ms in [1, 2^31-1]. Default: 250. */
   readonly initialDelayMs?: number;
