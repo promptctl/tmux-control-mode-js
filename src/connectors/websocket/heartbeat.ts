@@ -8,10 +8,10 @@
 // difference is a value flowing through `ping()`/`onPong()`, not a second
 // class — so the outstanding-id bookkeeping lives here, never in the owner.
 
-import type { DurationMs, HeartbeatInterval } from "./duration.js";
+import type { DurationMs, HeartbeatInterval } from "./limits.js";
 
 /** The cadence a probe runs at: a ping every `intervalMs`, each pong due
- *  within `timeoutMs` of its ping. Both values are stamped by duration.ts, so
+ *  within `timeoutMs` of its ping. Both values are stamped by limits.ts, so
  *  a probe cannot be built with a deadline no pong can meet. */
 export interface HeartbeatCadence {
   readonly intervalMs: HeartbeatInterval;

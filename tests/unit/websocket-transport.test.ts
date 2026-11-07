@@ -398,3 +398,76 @@ describe("parseServerFrame — welcome heartbeat interval", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// parseServerFrame — welcome.limits.requestTimeoutMs and maxInflight are
+// stamped at the wire (6sp.1lh): the client runs every call's deadline at the
+// stricter of its own and the server's bound, so a bound no timer honors is a
+// protocol fault, not a deadline that fires before any reply can land.
+// ---------------------------------------------------------------------------
+
+describe("parseServerFrame — welcome call limits", () => {
+  function welcome(limits: Record<string, unknown>): string {
+    return JSON.stringify({
+      k: "welcome",
+      limits: {
+        requestTimeoutMs: 5000,
+        heartbeatIntervalMs: 0,
+        maxInflight: 4,
+        ...limits,
+      },
+    });
+  }
+
+  it("carries conforming limits through unchanged", () => {
+    const frame = parseServerFrame(welcome({}));
+    expect(frame.k).toBe("welcome");
+    if (frame.k !== "welcome") return;
+    expect(frame.limits).toEqual({
+      requestTimeoutMs: 5000,
+      heartbeatIntervalMs: 0,
+      maxInflight: 4,
+    });
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["a fraction", 0.5],
+    ["a string", "5000"],
+  ])(
+    "rejects a requestTimeoutMs of %s naming the field, the value, and the shape",
+    (_, v) => {
+      const fn = (): unknown =>
+        parseServerFrame(welcome({ requestTimeoutMs: v }));
+      expect(fn).toThrow(BridgeProtocolError);
+      expect(fn).toThrow(
+        `welcome.limits.requestTimeoutMs (${String(v)}) must be an integer number of ms in [1,`,
+      );
+    },
+  );
+
+  it.each([
+    ["zero", 0],
+    // JSON has no NaN; a server that computed one puts `null` on the wire.
+    ["null", null],
+    ["a fraction", 1.5],
+    ["missing", undefined],
+  ])(
+    "rejects a maxInflight of %s naming the field, the value, and the shape",
+    (_, v) => {
+      const fn = (): unknown => parseServerFrame(welcome({ maxInflight: v }));
+      expect(fn).toThrow(BridgeProtocolError);
+      expect(fn).toThrow(
+        `welcome.limits.maxInflight (${String(v)}) must be an integer >= 1`,
+      );
+    },
+  );
+
+  it("rejects a welcome with no limits object", () => {
+    const fn = (): unknown =>
+      parseServerFrame(JSON.stringify({ k: "welcome" }));
+    expect(fn).toThrow(BridgeProtocolError);
+    expect(fn).toThrow("welcome.limits missing or malformed");
+  });
+});

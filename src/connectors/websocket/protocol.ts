@@ -57,25 +57,41 @@ import {
   type BridgeErrorPayload,
 } from "../errors.js";
 
-// [LAW:one-source-of-truth] `WelcomeLimits.heartbeatIntervalMs` is stamped by
-// duration.ts; the types and their parsers are re-exported here because this
-// is the public home of the frame they appear on. [LAW:composability] A
-// consumer building a welcome (a custom server, a test's fake) needs the
-// parser to produce the branded value; without it the only out is a cast.
+// [LAW:one-source-of-truth] Every `WelcomeLimits` field is stamped by
+// limits.ts; the types and their parsers are re-exported here because this is
+// the public home of the frame they appear on. [LAW:composability] A consumer
+// building a welcome (a custom server, a test's fake) needs the parser to
+// produce the branded value; without it the only out is a cast.
 import {
-  HEARTBEAT_INTERVAL_SHAPE,
-  isHeartbeatInterval,
+  durationMsParser,
+  heartbeatIntervalParser,
+  positiveIntParser,
   parseDurationMs,
   parseHeartbeatInterval,
+  parsePositiveInt,
   type DurationMs,
   type HeartbeatInterval,
-} from "./duration.js";
+  type PositiveInt,
+} from "./limits.js";
 export {
   parseDurationMs,
   parseHeartbeatInterval,
+  parsePositiveInt,
   type DurationMs,
   type HeartbeatInterval,
+  type PositiveInt,
 };
+
+// [LAW:single-enforcer] The wire border runs the same parsers as the consumer
+// border; only the error differs. A server that advertises a limit no timer or
+// limiter honors is a non-conforming peer, reported as one — not a silently
+// disabled heartbeat, a ping storm from the timer clamp, or a call deadline
+// that fires before any reply.
+const protocolError = (message: string): Error =>
+  new BridgeProtocolError(message);
+const wireDurationMs = durationMsParser(protocolError);
+const wireHeartbeatInterval = heartbeatIntervalParser(protocolError);
+const wirePositiveInt = positiveIntParser(protocolError);
 
 // ---------------------------------------------------------------------------
 // RPC methods
@@ -138,11 +154,11 @@ export type ClientFrame = HelloFrame | CallFrame | PingFrame | ByeFrame;
 
 export interface WelcomeLimits {
   /** Max ms the server will wait for a tmux response per call. */
-  readonly requestTimeoutMs: number;
+  readonly requestTimeoutMs: DurationMs;
   /** Interval at which the server will ping; `0` when its heartbeat is off. */
   readonly heartbeatIntervalMs: HeartbeatInterval;
   /** Max in-flight calls permitted per connection. */
-  readonly maxInflight: number;
+  readonly maxInflight: PositiveInt;
 }
 
 export interface WelcomeFrame {
@@ -409,31 +425,25 @@ function parsePing(x: unknown): PingFrame {
 
 function parseWelcome(x: unknown): WelcomeFrame {
   const o = x as { limits?: unknown };
-  const l = o.limits as Partial<WelcomeLimits> | undefined;
-  if (
-    l === undefined ||
-    typeof l.requestTimeoutMs !== "number" ||
-    typeof l.heartbeatIntervalMs !== "number" ||
-    typeof l.maxInflight !== "number"
-  ) {
+  if (typeof o.limits !== "object" || o.limits === null) {
     throw new BridgeProtocolError("welcome.limits missing or malformed");
   }
-  // [LAW:parse-dont-validate] The wire border stamps the interval the client
-  // will run its own probe at. A server that advertises a negative,
-  // fractional or non-finite period is a non-conforming peer, reported as one
-  // — not a silently disabled heartbeat, and not a ping storm from the timer
-  // clamp.
-  if (!isHeartbeatInterval(l.heartbeatIntervalMs)) {
-    throw new BridgeProtocolError(
-      `welcome.limits.heartbeatIntervalMs (${l.heartbeatIntervalMs}) must be ${HEARTBEAT_INTERVAL_SHAPE}`,
-    );
-  }
+  const l = o.limits as Record<keyof WelcomeLimits, unknown>;
+  // [LAW:parse-dont-validate] The wire border stamps the limits the client
+  // will run its own timers at; a value outside a field's shape (including a
+  // non-number) names the field, the value, and the shape.
   return {
     k: "welcome",
     limits: {
-      requestTimeoutMs: l.requestTimeoutMs,
-      heartbeatIntervalMs: l.heartbeatIntervalMs,
-      maxInflight: l.maxInflight,
+      requestTimeoutMs: wireDurationMs(
+        "welcome.limits.requestTimeoutMs",
+        l.requestTimeoutMs,
+      ),
+      heartbeatIntervalMs: wireHeartbeatInterval(
+        "welcome.limits.heartbeatIntervalMs",
+        l.heartbeatIntervalMs,
+      ),
+      maxInflight: wirePositiveInt("welcome.limits.maxInflight", l.maxInflight),
     },
   };
 }

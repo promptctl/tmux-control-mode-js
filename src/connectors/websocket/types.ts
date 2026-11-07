@@ -313,20 +313,29 @@ export interface RateLimitConfig {
 // Reconnect policy (client side)
 // ---------------------------------------------------------------------------
 
+/**
+ * Exponential backoff with jitter for the client's reconnect. Every field is
+ * parsed when the client is constructed; one outside its shape makes the
+ * constructor throw `BRIDGE_INVALID_ARG` naming `reconnect.<field>` and the
+ * value, since a delay no timer honors is an immediate retry storm.
+ */
 export interface ReconnectPolicy {
-  /** Max attempts; Infinity for unlimited. Default: 0 (no reconnect). */
+  /** Max attempts: `0` (no reconnect), a positive integer, or `Infinity` for
+   *  unlimited. Default: 0. */
   readonly maxAttempts: number;
-  /** First retry delay ms. Default: 250. */
+  /** First retry delay: an integer number of ms in [1, 2^31-1]. Default: 250. */
   readonly initialDelayMs?: number;
   /**
-   * Ceiling on the exponential *base* delay ms, before jitter. Default: 10_000.
-   * `jitterMs` is added on top, so the effective maximum delay is
-   * `maxDelayMs + jitterMs` — the cap bounds the exponential growth; jitter then
+   * Ceiling on the exponential *base* delay, before jitter: an integer number
+   * of ms in [1, 2^31-1]. Default: 10_000. `jitterMs` is added on top, so the
+   * effective maximum delay is `maxDelayMs + jitterMs`, which must itself fit
+   * the timer's range — the cap bounds the exponential growth; jitter then
    * de-synchronizes reconnecting clients.
    */
   readonly maxDelayMs?: number;
-  /** Exponential backoff factor. Default: 2. */
+  /** Exponential backoff factor: a finite number >= 1. Default: 2. */
   readonly factor?: number;
-  /** Random jitter ms added on top of the (capped) base delay. Default: 250. */
+  /** Random jitter added on top of the (capped) base delay: `0` (no jitter)
+   *  or an integer number of ms in [1, 2^31-1]. Default: 250. */
   readonly jitterMs?: number;
 }

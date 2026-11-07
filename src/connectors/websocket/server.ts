@@ -83,7 +83,13 @@ import type {
 import { WEBSOCKET_OPEN } from "./types.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { Heartbeat, type HeartbeatCadence } from "./heartbeat.js";
-import { parseDurationMs, parseHeartbeatInterval } from "./duration.js";
+import {
+  parseDurationMs,
+  parseHeartbeatInterval,
+  parsePositiveInt,
+  type DurationMs,
+  type PositiveInt,
+} from "./limits.js";
 import { CallPump } from "./call-pump.js";
 import { Handshake } from "./handshake.js";
 
@@ -96,14 +102,9 @@ const DEFAULTS = Object.freeze({
   heartbeatTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
   helloTimeoutMs: 5_000,
+  drainMs: 10_000,
   maxInflight: 64,
-}) satisfies {
-  readonly heartbeatIntervalMs: number;
-  readonly heartbeatTimeoutMs: number;
-  readonly requestTimeoutMs: number;
-  readonly helloTimeoutMs: number;
-  readonly maxInflight: number;
-};
+}) satisfies Record<string, number>;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -161,7 +162,12 @@ export interface WebSocketBridgeOptions {
    *  [1, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
    *  Default 10s. */
   readonly heartbeatTimeoutMs?: number;
+  /** How long a call may wait for its tmux reply before the bridge answers
+   *  `BRIDGE_TIMEOUT`: an integer number of ms in [1, 2^31-1], or
+   *  `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`. Default 30s. */
   readonly requestTimeoutMs?: number;
+  /** Calls a connection may have in flight at once: an integer >= 1, or
+   *  `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`. Default 64. */
   readonly maxInflight?: number;
 
   /**
@@ -200,7 +206,9 @@ export interface WebSocketBridge {
   /**
    * Begin graceful shutdown. Every live connection is told to drain;
    * new connections are rejected. Resolves once all connections close or
-   * `drainMs` elapses (after which sockets are force-terminated).
+   * `drainMs` elapses (after which sockets are force-terminated). `drainMs`
+   * is an integer number of ms in [1, 2^31-1], or the call throws
+   * `BRIDGE_INVALID_ARG` before any connection is told anything. Default 10s.
    */
   shutdown(drainMs?: number): Promise<void>;
 }
@@ -235,7 +243,15 @@ export function createWebSocketBridge(
     }
   }
 
-  async function shutdown(drainMs = 10_000): Promise<void> {
+  // [LAW:parse-dont-validate] The drain bound is parsed before the async body
+  // starts, so a value no timer honors throws at the call — the same border
+  // every other option fails at — instead of rejecting a promise after every
+  // peer has already been told a deadline in the past.
+  function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
+    return drain(parseDurationMs("drainMs", drainMs));
+  }
+
+  async function drain(drainMs: DurationMs): Promise<void> {
     draining = true;
     const deadlineMs = Date.now() + drainMs;
     for (const conn of connections) {
@@ -316,16 +332,17 @@ type RunningState = Extract<ConnectionState, { kind: "running" }>;
 
 interface ResolvedDefaults {
   readonly heartbeat: HeartbeatCadence;
-  readonly requestTimeoutMs: number;
-  readonly helloTimeoutMs: number;
-  readonly maxInflight: number;
+  readonly requestTimeoutMs: DurationMs;
+  readonly helloTimeoutMs: DurationMs;
+  readonly maxInflight: PositiveInt;
 }
 
-// [LAW:parse-dont-validate] The consumer's heartbeat options cross the border
-// once, here, at bridge construction: a value no pong could ever meet fails
-// with the option's name and value instead of as a liveness verdict against
-// every peer. The result is the cadence in the shape Heartbeat takes, so no
-// caller re-packs the two values.
+// [LAW:parse-dont-validate] The consumer's timing and capacity options cross
+// the border once, here, at bridge construction: a timeout no reply could ever
+// meet, or a cap no call could ever fit under, fails with the option's name
+// and value instead of as a verdict against every peer. The results are in
+// the shapes Heartbeat, CallPump and Handshake take, so no caller re-packs
+// them and none checks again.
 function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
     heartbeat: {
@@ -338,9 +355,15 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
         opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
       ),
     },
-    requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
-    helloTimeoutMs: DEFAULTS.helloTimeoutMs,
-    maxInflight: opts.maxInflight ?? DEFAULTS.maxInflight,
+    requestTimeoutMs: parseDurationMs(
+      "requestTimeoutMs",
+      opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
+    ),
+    helloTimeoutMs: parseDurationMs("helloTimeoutMs", DEFAULTS.helloTimeoutMs),
+    maxInflight: parsePositiveInt(
+      "maxInflight",
+      opts.maxInflight ?? DEFAULTS.maxInflight,
+    ),
   };
 }
 
