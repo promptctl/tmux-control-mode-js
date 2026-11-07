@@ -62,17 +62,20 @@ import {
 // is the public home of the frame they appear on. [LAW:composability] A
 // consumer building a welcome (a custom server, a test's fake) needs the
 // parser to produce the branded value; without it the only out is a cast.
-export {
+import {
+  HEARTBEAT_INTERVAL_SHAPE,
+  isHeartbeatInterval,
   parseDurationMs,
   parseHeartbeatInterval,
   type DurationMs,
   type HeartbeatInterval,
 } from "./duration.js";
-import {
-  HEARTBEAT_INTERVAL_SHAPE,
-  isHeartbeatInterval,
+export {
+  parseDurationMs,
+  parseHeartbeatInterval,
+  type DurationMs,
   type HeartbeatInterval,
-} from "./duration.js";
+};
 
 // ---------------------------------------------------------------------------
 // RPC methods

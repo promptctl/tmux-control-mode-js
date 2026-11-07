@@ -13,13 +13,15 @@
 // These tests drive the client through a fake browser WebSocket so we can
 // inspect exactly which frames left the wire on each connection.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
 import {
   BridgeError,
   encodeServerFrame,
+  parseDurationMs,
+  type HeartbeatInterval,
   type ResultFrame,
   type ServerFrame,
   type WelcomeFrame,
@@ -122,14 +124,15 @@ class MockWebSocketHub {
     ws.fire("open", {});
   }
 
-  welcome(idx = -1): void {
+  /** Advertise a welcome; the heartbeat is off unless a test is about it. */
+  welcome(idx = -1, heartbeatIntervalMs: HeartbeatInterval = 0): void {
     const ws = idx === -1 ? this.latest() : this.sockets[idx];
     if (!ws) return;
     const welcome: WelcomeFrame = {
       k: "welcome",
       limits: {
         requestTimeoutMs: 30_000,
-        heartbeatIntervalMs: 0, // disable heartbeat in tests
+        heartbeatIntervalMs,
         maxInflight: 16,
       },
     };
@@ -835,5 +838,66 @@ describe("WebSocketTmuxClient — heartbeat options are parsed at construction",
     const { fn, hub } = build({ heartbeatIntervalMs: 0 });
     expect(fn).not.toThrow();
     expect(hub.sockets).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cadence policy: the client pings at the consumer's interval when one was
+// given, else at the one the server advertised in its welcome.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — heartbeat cadence is the consumer's interval, else the server's", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SERVER_INTERVAL = parseDurationMs("heartbeatIntervalMs", 1_000);
+
+  function connected(opts: { heartbeatIntervalMs?: number }): {
+    client: WebSocketTmuxClient;
+    hub: MockWebSocketHub;
+  } {
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      ...opts,
+    });
+    hub.open();
+    hub.welcome(-1, SERVER_INTERVAL);
+    return { client, hub };
+  }
+
+  function pingsSent(ws: MockWS): number {
+    return ws.sent.filter((s) => (JSON.parse(s) as { k: string }).k === "ping")
+      .length;
+  }
+
+  it("an omitted interval adopts the server's advertised one", async () => {
+    const { client, hub } = connected({});
+    await vi.advanceTimersByTimeAsync(SERVER_INTERVAL - 1);
+    expect(pingsSent(hub.latest())).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pingsSent(hub.latest())).toBe(1);
+    await client.close();
+  });
+
+  it("the consumer's 0 silences the probe the server advertised", async () => {
+    const { client, hub } = connected({ heartbeatIntervalMs: 0 });
+    await vi.advanceTimersByTimeAsync(SERVER_INTERVAL * 5);
+    expect(pingsSent(hub.latest())).toBe(0);
+    await client.close();
+  });
+
+  it("the consumer's interval wins over the server's", async () => {
+    const { client, hub } = connected({ heartbeatIntervalMs: 250 });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(pingsSent(hub.latest())).toBe(1);
+    await client.close();
   });
 });

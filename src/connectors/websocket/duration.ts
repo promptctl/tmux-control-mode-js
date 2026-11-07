@@ -17,8 +17,9 @@ import { BridgeError } from "../errors.js";
 declare const durationMs: unique symbol;
 
 /** A delay a timer honors as written: an integer in [1, 2^31-1]. Timers
- *  truncate a fractional delay (so 0.5 is 0 in a browser, 1 in Node), and
- *  both clamp a delay outside the signed 32-bit range to 1 ms. */
+ *  truncate a fractional delay (so 0.5 is 0 in a browser, 1 in Node). Out of
+ *  the signed 32-bit range, Node clamps to 1 ms and a browser wraps through
+ *  ToInt32 to a delay of 0 — either way a timer that fires every macrotask. */
 export type DurationMs = number & { readonly [durationMs]: true };
 
 /** Ping period; `0` is the off switch — no probe runs, and no liveness bound
