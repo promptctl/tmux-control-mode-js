@@ -11,7 +11,8 @@ import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
-import { TmuxCommandError } from "../../src/errors.js";
+import { TmuxCommandError, TransportClosedError } from "../../src/errors.js";
+import { BridgeError } from "../../src/connectors/errors.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
@@ -994,6 +995,43 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
   });
+
+  // A reconnect backoff keeps the old runner, so the error itself has to say
+  // the connection dropped.
+  const connectionDrops = [
+    new BridgeError("BRIDGE_CLOSED", "close 1006"),
+    new TransportClosedError("exited"),
+  ];
+
+  it.each(connectionDrops)(
+    "neither reports nor re-queries a refresh its connection dropped (%s)",
+    async (drop) => {
+      const errors: Error[] = [];
+      const s = await movedPane([[3, LAYOUT_6_5]], (e) => errors.push(e));
+      const sent = s.replies.length;
+      [...s.replies]
+        .reverse()
+        .find((q) => q.cmd.includes("-t @3 "))!
+        .reject(drop);
+      await settle();
+      expect(errors).toEqual([]);
+      expect(s.replies.slice(sent)).toEqual([]);
+    },
+  );
+
+  it.each(connectionDrops)(
+    "does not report a bootstrap its connection dropped (%s)",
+    async (drop) => {
+      const errors: Error[] = [];
+      const router = new TopologyRouter((e) => errors.push(e));
+      const { run, replies } = controlledRun();
+      router.onTransportReady(run);
+      router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+      replies[0]!.reject(drop);
+      await settle();
+      expect(errors).toEqual([]);
+    },
+  );
 
   it("re-places a moved-in pane with a server-wide query when its window's refresh fails", async () => {
     const errors: Error[] = [];

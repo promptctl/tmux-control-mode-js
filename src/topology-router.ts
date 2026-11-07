@@ -32,7 +32,7 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
-import { TmuxCommandError } from "./errors.js";
+import { isConnectionGone, TmuxCommandError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
 export interface TopologyRouterOptions {
@@ -496,7 +496,9 @@ export class TopologyRouter {
       //   runner) — the value-only `=== null` check misses the reconnect (ABA)
       //   case, where a stale rejection would fire on a healthy new connection.
       //   Not a silent drop: the current connection's own bootstrap still reports.
-      if (this.runCommand !== run) return;
+      //   A rejection because the connection dropped is the same artifact seen
+      //   before the adapter swaps runners (a reconnect backoff keeps the old one).
+      if (this.runCommand !== run || isConnectionGone(err)) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
       //   path too: if a newer bootstrap has since started, it owns the outcome
       //   (it will seed a healthy topology or report its own failure), so this
@@ -561,7 +563,11 @@ export class TopologyRouter {
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
       // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
-      if (this.runCommand === run && !isWindowGone(err)) {
+      if (
+        this.runCommand === run &&
+        !isWindowGone(err) &&
+        !isConnectionGone(err)
+      ) {
         if (this.needsTopology()) void this.bootstrap();
         this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
       }

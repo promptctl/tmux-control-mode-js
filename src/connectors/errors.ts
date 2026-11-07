@@ -35,6 +35,8 @@
 // error vocabulary.
 // ---------------------------------------------------------------------------
 
+import { TransportClosedError } from "../errors.js";
+
 export type BridgeErrorCode =
   /** tmux replied with %error (a tmux-level command failure). */
   | "TMUX_ERROR"
@@ -115,7 +117,15 @@ export class BridgeError extends Error {
   readonly code: BridgeErrorCode;
 
   constructor(code: BridgeErrorCode, message: string) {
-    super(`[${code}] ${message}`);
+    // [LAW:single-enforcer] A closed bridge is a closed transport to the core's
+    //   isConnectionGone, which sees this through `cause`; set here so every
+    //   BRIDGE_CLOSED carries it, fromPayload's included.
+    super(
+      `[${code}] ${message}`,
+      code === "BRIDGE_CLOSED"
+        ? { cause: new TransportClosedError(message) }
+        : undefined,
+    );
     this.name = "BridgeError";
     this.code = code;
   }
