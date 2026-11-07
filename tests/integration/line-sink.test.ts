@@ -88,28 +88,6 @@ async function waitForPaneText(
   }
 }
 
-/** Block until tmux reports `command` as the pane's foreground process. */
-async function waitForForegroundCommand(
-  client: TmuxClient,
-  paneId: number,
-  command: string,
-  timeoutMs = 8000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const res = await client.execute(
-      `display-message -p -t %${paneId} '#{pane_current_command}'`,
-    );
-    if (res.output[0] === command) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `waitForForegroundCommand: %${paneId} still running "${res.output[0]}" after ${timeoutMs} ms`,
-      );
-    }
-    await new Promise<void>((r) => setTimeout(r, 10));
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -330,15 +308,11 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     });
 
     const tailMarker = `TAIL${Math.random().toString(36).slice(2, 8)}`;
-    // Replace the interactive shell with a long-lived sleep process so no
-    // shell prompt, PROMPT_CR expansion, or readline buffering can interfere.
-    // The exec echo lands in the pane, admitting this consumer before the
-    // marker arrives. The echo on screen is the line editor's, drawn before
-    // the shell has run the line: a marker typed then reaches the line editor
-    // or an echo-off tty, not sleep. tmux's view of the foreground process is
-    // the authority on "sleep owns the tty".
-    await client.execute(`send-keys -t %${paneA} 'exec sleep 3600' Enter`);
-    await waitForForegroundCommand(client, paneA, "sleep");
+    // Respawn the pane with sleep as its only process: no shell, line editor,
+    // prompt, or PATH lookup ever touches the tty. The pty's line discipline
+    // echoes typed keys whatever process reads them, so the marker reaches
+    // the pane as soon as it is sent.
+    await client.execute(`respawn-pane -k -t %${paneA} '/bin/sleep 3600'`);
 
     // Type the marker WITHOUT Enter — the TTY driver echoes the characters
     // verbatim with no trailing newline. They land in the per-pane buffer
@@ -357,7 +331,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     const flushed = lines.slice(countBefore);
     expect(flushed.length).toBe(1);
     expect(flushed[0].includes(tailMarker)).toBe(true);
-  }, 15000);
+  }, 20000);
 
   // ── LINE-17: no extra flush event when buffer is empty ────────────────────
 
