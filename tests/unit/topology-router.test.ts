@@ -11,6 +11,7 @@ import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { windowScope, sessionScope, paneScope } from "../../src/pane-output.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
+import { TmuxCommandError } from "../../src/errors.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +24,16 @@ function makeChunk(paneId: number, data?: Uint8Array): ChunkPayload {
 
 function makeOkResponse(lines: string[] = []): CommandResponse {
   return { commandNumber: 1, timestamp: 0, output: lines, success: true };
+}
+
+// tmux's %error reply to list-panes -t for a window that no longer exists.
+function windowGone(target: string): TmuxCommandError {
+  return new TmuxCommandError({
+    commandNumber: 1,
+    timestamp: 0,
+    output: [`can't find window: ${target}`],
+    success: false,
+  });
 }
 
 function makeSink(): BytesSink & {
@@ -694,7 +705,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.dispatchBytes(makeChunk(5));
 
     replies[0]!.resolve(makeOkResponse(["%5 @2 $1"])); // stale: closed @9
-    replies[1]!.reject(new Error("can't find window: @9"));
+    replies[1]!.reject(windowGone("@9"));
     await settle();
     expect(replies).toHaveLength(3);
     expect(sink.chunks).toHaveLength(0);
@@ -976,7 +987,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.handleNotification({ type: "window-add", windowId: 3 });
     replies[1]!.reject(new Error("server exited unexpectedly"));
     router.handleNotification({ type: "window-close", windowId: 4 });
-    replies[2]!.reject(new Error("can't find window: @4"));
+    replies[2]!.reject(windowGone("@4"));
     await settle();
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
@@ -986,10 +997,49 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   it("removes a closed window once its refresh finds it gone", async () => {
     const s = await movedPane([]);
     s.router.handleNotification({ type: "window-close", windowId: 2 });
-    s.replies.at(-1)!.reject(new Error("can't find window: @2"));
+    s.replies.at(-1)!.reject(windowGone("@2"));
     await settle();
     s.router.dispatchBytes(makeChunk(4));
     expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
+  });
+
+  // An unparsed layout only refreshes its window; a pane gone from the
+  // reply may have joined a window tmux announces nothing for.
+  it("finds a pane a window refresh no longer lists with a server-wide query", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(2) });
+    replies[0]!.resolve(makeOkResponse(["%4 @2 $1", "%5 @2 $1"]));
+    await settle();
+    router.handleNotification(layoutChange(2, "0000,80x24,0,0,4"));
+    answerRefreshWith(replies, 2, ["%4 @2 $1"]);
+    await settle();
+    expect(replies.at(-1)!.cmd).toContain("list-panes -a ");
+    replies.at(-1)!.resolve(makeOkResponse(["%4 @2 $1", "%5 @7 $2"]));
+    await settle();
+    router.dispatchBytes(makeChunk(5));
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
+  it("asks once after a bootstrap whose seed several layouts contradict", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    router.handleNotification(layoutChange(2, LAYOUT_4));
+    router.handleNotification(layoutChange(3, "b263,80x24,0,0,6"));
+    for (const r of replies.splice(0)) {
+      if (r.cmd.includes("list-panes -a "))
+        r.resolve(
+          makeOkResponse(["%4 @2 $1", "%5 @2 $1", "%6 @3 $1", "%8 @3 $1"]),
+        );
+    }
+    await settle();
+    expect(
+      replies.filter((r) => r.cmd.includes("list-panes -a ")),
+    ).toHaveLength(1);
   });
 
   it("does not hold a bootstrap's seed to a layout an unparsed one replaced", async () => {

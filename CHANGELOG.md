@@ -8,6 +8,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `PaneTopologyManager.seed` and `updateWindow` entries carry a required
+  `floating` flag (tmux 3.8 floating panes), and `updateWindow` returns the
+  `Contradiction` it found. `parsePaneListLine` reads the flag from an
+  optional fourth field; query with the new `PANE_LIST_FORMAT` (unquoted) and
+  parse a whole reply with `parsePaneList`.
 - `parseTmuxVersion` accepts only tmux's own version shapes (`3.2a`,
   `next-3.6`, `3.4-rc`, bare or after the program name) and returns `null`
   for anything else. Vendor tags such as OpenBSD base's `openbsd-7.4` used to

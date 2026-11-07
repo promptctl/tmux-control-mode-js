@@ -49,7 +49,9 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 async function listAllPanes(
   client: TmuxClient,
 ): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const response = await client.execute(`list-panes -a -F ${PANE_LIST_FORMAT}`);
+  const response = await client.execute(
+    `list-panes -a -F '${PANE_LIST_FORMAT}'`,
+  );
   return response.output.flatMap((line) => {
     const parsed = parsePaneListLine(line);
     return parsed !== null ? [parsed] : [];

@@ -137,7 +137,7 @@ export interface PaneMeta {
   readonly windowId: number;
 }
 
-/** One line of `list-panes -F PANE_LIST_FORMAT`. */
+/** One line of `list-panes -F "$PANE_LIST_FORMAT"`. */
 export interface PaneListEntry {
   readonly paneId: number;
   readonly windowId: number;
@@ -148,15 +148,16 @@ export interface PaneListEntry {
 }
 
 /**
- * The `list-panes -F` format `parsePaneListLine` reads. The floating flag is
+ * The `list-panes -F` format `parsePaneListLine` reads, unquoted: a tmux
+ * command string quotes it, an argv passes it as is. The floating flag is
  * empty on tmux without floating panes.
  */
 export const PANE_LIST_FORMAT =
-  "'#{pane_id} #{window_id} #{session_id} #{pane_floating_flag}'";
+  "#{pane_id} #{window_id} #{session_id} #{pane_floating_flag}";
 
 type PlacedPane = PaneMeta & { readonly floating: boolean };
 
-/** What a layout contradicted in the table, and so which query re-places it. */
+/** What a layout or refresh contradicted in the table, and so which query re-places it. */
 export interface Contradiction {
   // Windows moved-in panes left, whose membership any earlier query misstates.
   readonly left: ReadonlySet<number>;
@@ -214,13 +215,15 @@ export class PaneTopologyManager {
   }
 
   /**
-   * Differential update for one window. Removes panes that moved away or
-   * closed, adds new panes. Called on layout-change (list-panes -t @W output).
+   * Differential update for one window from its `list-panes -t @W` reply:
+   * removes panes that moved away or closed, adds and re-places the rest.
+   * A tiled pane it removes went somewhere only a server-wide query can say,
+   * as with a layout's omission.
    */
   updateWindow(
     windowId: number,
     entries: readonly Omit<PaneListEntry, "windowId">[],
-  ): void {
+  ): Contradiction {
     const prev = this.windowIndex.get(windowId);
     const next = new Set(entries.map((e) => e.paneId));
 
@@ -228,14 +231,12 @@ export class PaneTopologyManager {
     // [LAW:one-source-of-truth] Only delete when table still maps the pane to
     // this window. A concurrent refresh for another window may have already
     // updated the entry — if so, that newer mapping is authoritative.
-    if (prev !== undefined) {
-      for (const paneId of prev) {
-        if (
-          !next.has(paneId) &&
-          this.table.get(paneId)?.windowId === windowId
-        ) {
-          this.table.delete(paneId);
-        }
+    let lostTrack = false;
+    for (const paneId of prev ?? []) {
+      const meta = this.table.get(paneId);
+      if (!next.has(paneId) && meta?.windowId === windowId) {
+        this.table.delete(paneId);
+        lostTrack ||= !meta.floating;
       }
     }
 
@@ -249,6 +250,7 @@ export class PaneTopologyManager {
     } else {
       this.windowIndex.set(windowId, next);
     }
+    return { left: new Set(), lostTrack };
   }
 
   /**
@@ -886,7 +888,7 @@ export class TopologyEpochTracker {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse one line of `list-panes -F PANE_LIST_FORMAT` output (`-a` or
+ * Parse one line of `list-panes -F "$PANE_LIST_FORMAT"` output (`-a` or
  * `-t @W`). The three-field form without the floating flag parses too.
  *
  * Returns null for unparseable lines (trailing blank, unexpected format).
@@ -907,6 +909,11 @@ export function parsePaneListLine(line: string): PaneListEntry | null {
     sessionId: Number(m[3]),
     floating: m[4] === "1",
   };
+}
+
+/** Every pane in a `list-panes -F "$PANE_LIST_FORMAT"` reply, skipping lines that don't parse. */
+export function parsePaneList(output: readonly string[]): PaneListEntry[] {
+  return output.flatMap((line) => parsePaneListLine(line) ?? []);
 }
 
 // [LAW:one-source-of-truth] Decode a single latin1-container field to real

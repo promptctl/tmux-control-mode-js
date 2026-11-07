@@ -89,6 +89,7 @@ export {
   TopologyEpochTracker,
   parsePaneListLine,
   PANE_LIST_FORMAT,
+  parsePaneList,
 } from "./pane-output.js";
 
 export { TopologyRouter } from "./topology-router.js";

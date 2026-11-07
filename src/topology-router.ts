@@ -25,13 +25,14 @@ import {
   TopologyEpochTracker,
   PANE_LIST_FORMAT,
   type Contradiction,
-  parsePaneListLine,
+  parsePaneList,
   serverScope,
   type AttachOptions,
   type BytesSink,
   type ChunkPayload,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
+import { TmuxCommandError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
 export interface TopologyRouterOptions {
@@ -84,9 +85,12 @@ function topologyError(query: string, value: unknown): Error {
   return new Error(`topology ${query} failed: ${detail}`, { cause: value });
 }
 
-// tmux's answer to `list-panes -t @W` for a window that no longer exists.
+// tmux's %error answer to `list-panes -t @W` for a window that no longer exists.
 function isWindowGone(err: unknown): boolean {
-  return err instanceof Error && err.message.startsWith("can't find window");
+  return (
+    err instanceof TmuxCommandError &&
+    err.message.startsWith("can't find window")
+  );
 }
 
 /**
@@ -452,7 +456,7 @@ export class TopologyRouter {
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
-      const r = await run(`list-panes -a -F ${PANE_LIST_FORMAT}`);
+      const r = await run(`list-panes -a -F '${PANE_LIST_FORMAT}'`);
       if (!this.epoch.isBootstrapCurrent(gen)) {
         // A window-close mid-flight makes this result stale without starting a
         // replacement. Still the latest bootstrap means nothing newer will
@@ -467,18 +471,19 @@ export class TopologyRouter {
           void this.bootstrap();
         return;
       }
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
+      this.topology.seed(parsePaneList(r.output));
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
       //   the move, so only what the layouts contradict is asked again.
+      const left = new Set<number>();
+      let lostTrack = false;
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
-        this.requery(this.topology.unplaceContradicted(windowId, panes));
+        const c = this.topology.unplaceContradicted(windowId, panes);
+        for (const id of c.left) left.add(id);
+        lostTrack ||= c.lostTrack;
       }
+      this.requery({ left, lostTrack });
       this.interest?.recompute();
     } catch (err) {
       // [FRAMING:representation] A bootstrap that settles after its transport
@@ -517,7 +522,7 @@ export class TopologyRouter {
     }
   }
 
-  // The query that re-places what a layout contradicted: a pane lost track
+  // The query that re-places what the table was told it got wrong: a pane lost track
   // of needs the server-wide one, which supersedes every window refresh.
   // A new refresh supersedes any sent before the move.
   private requery(c: Contradiction, ...windows: number[]): void {
@@ -536,13 +541,13 @@ export class TopologyRouter {
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     try {
-      const r = await run(`list-panes -t @${windowId} -F ${PANE_LIST_FORMAT}`);
+      const r = await run(
+        `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`,
+      );
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.updateWindow(windowId, entries);
+      this.requery(
+        this.topology.updateWindow(windowId, parsePaneList(r.output)),
+      );
       this.interest?.recompute();
     } catch (err) {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
