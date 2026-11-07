@@ -553,12 +553,16 @@ export class TopologyRouter {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
       //   newer refresh or a window-close owns this window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
+      // A refresh is sent because the window's rows are suspect, so they go
+      // whatever the failure; their panes are held, not misrouted.
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
       // A window that no longer exists is the answer a close's refresh
-      // expects; any other failure left a live window's panes unplaced.
+      // expects; any other failure may have left a live window's panes
+      // unplaced, so re-place them with the server-wide query and report it.
       // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
       if (this.runCommand === run && !isWindowGone(err)) {
+        if (this.needsTopology()) void this.bootstrap();
         this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
       }
     } finally {

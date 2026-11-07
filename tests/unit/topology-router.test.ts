@@ -848,8 +848,11 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     };
   }
 
-  async function movedPane(layoutChanges: [number, string][]) {
-    const router = newRouter();
+  async function movedPane(
+    layoutChanges: [number, string][],
+    onError: (e: Error) => void = () => undefined,
+  ) {
+    const router = new TopologyRouter(onError);
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     const oldSession = makeSink();
@@ -986,19 +989,43 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     await settle();
     router.handleNotification({ type: "window-add", windowId: 3 });
     replies[1]!.reject(new Error("server exited unexpectedly"));
-    router.handleNotification({ type: "window-close", windowId: 4 });
-    replies[2]!.reject(windowGone("@4"));
     await settle();
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
   });
 
+  it("re-places a moved-in pane with a server-wide query when its window's refresh fails", async () => {
+    const errors: Error[] = [];
+    // Only @3's layout announces the move, so @3's refresh is the one query
+    // that would have placed %5.
+    const s = await movedPane([[3, LAYOUT_6_5]], (e) => errors.push(e));
+    const refresh3 = () =>
+      [...s.replies].reverse().find((q) => q.cmd.includes("-t @3 "))!;
+    refresh3().reject(new Error("server exited unexpectedly"));
+    await settle();
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology refresh of @3 failed: server exited unexpectedly",
+    ]);
+    expect(s.replies.at(-1)!.cmd).toContain("list-panes -a ");
+    // Output between the failure and the server-wide answer is held for it.
+    s.router.dispatchBytes(makeChunk(5));
+    answerRefresh(s.replies, "all");
+    await settle();
+    // The first 5 is the chunk held when the layout unplaced %5.
+    expect(paneIdsOf(s.newWindow)).toEqual([5, 5]);
+    expect(paneIdsOf(s.newSession)).toEqual([5, 5]);
+  });
+
   it("removes a closed window once its refresh finds it gone", async () => {
-    const s = await movedPane([]);
+    const errors: Error[] = [];
+    const s = await movedPane([], (e) => errors.push(e));
     s.router.handleNotification({ type: "window-close", windowId: 2 });
     s.replies.at(-1)!.reject(windowGone("@2"));
     await settle();
+    // The answer a close expects: nothing to report, nothing to re-query.
+    expect(errors).toEqual([]);
+    expect(s.replies.at(-1)!.cmd).toContain("-t @2 ");
     s.router.dispatchBytes(makeChunk(4));
     expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
   });
