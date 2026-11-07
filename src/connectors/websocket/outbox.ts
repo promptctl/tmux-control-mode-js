@@ -11,6 +11,7 @@
 
 import { TmuxCommandError } from "../../errors.js";
 import { answersNull, type RpcResponseMap } from "../rpc.js";
+import type { DurationMs } from "./limits.js";
 import {
   BridgeError,
   BridgeProtocolError,
@@ -39,12 +40,13 @@ export class Outbox {
 
   // Register a call, arm its timeout, and attempt an immediate transmit.
   // Resolves/rejects when the matching result arrives, the deadline expires,
-  // or the connection drains.
+  // or the connection drains. [LAW:parse-dont-validate] The deadline arrives
+  // stamped by limits.ts, so it is one a reply can meet.
   enqueue<M extends RpcMethod>(
     id: string,
     method: M,
     frame: string,
-    timeoutMs: number,
+    timeoutMs: DurationMs,
   ): Promise<RpcResponseMap[M]> {
     return new Promise<RpcResponseMap[M]>((resolve, reject) => {
       const timer = setTimeout(() => {

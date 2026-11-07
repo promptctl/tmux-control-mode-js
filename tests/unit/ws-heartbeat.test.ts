@@ -8,7 +8,7 @@ import {
 import {
   parseDurationMs,
   parseHeartbeatInterval,
-} from "../../src/connectors/websocket/duration.js";
+} from "../../src/connectors/websocket/limits.js";
 
 // The probe only accepts a stamped cadence; tests go through the same parser
 // the bridge and client do.

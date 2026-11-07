@@ -2,6 +2,8 @@
 // [LAW:decomposition] Per-call in-flight tracking + timeout race extracted
 // from Connection. Owns `inflight`; Connection holds no call-timing state.
 
+import type { DurationMs, PositiveInt } from "./limits.js";
+
 export interface CallPumpHandlers {
   /** Fired when a call's timeout expires before `complete()` is called.
    *  `startedAt` is the ms-since-epoch timestamp when the call was tracked. */
@@ -14,9 +16,11 @@ export class CallPump {
     { timer: ReturnType<typeof setTimeout>; startedAt: number }
   >();
 
+  // [LAW:parse-dont-validate] Both bounds arrive stamped by limits.ts: a cap
+  // every call fits under at least once, and a deadline a reply can meet.
   constructor(
-    private readonly maxInflight: number,
-    private readonly requestTimeoutMs: number,
+    private readonly maxInflight: PositiveInt,
+    private readonly requestTimeoutMs: DurationMs,
     private readonly handlers: CallPumpHandlers,
   ) {}
 

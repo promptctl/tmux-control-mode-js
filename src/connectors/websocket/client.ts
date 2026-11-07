@@ -85,11 +85,12 @@ import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
 import { Heartbeat } from "./heartbeat.js";
 import {
+  minDurationMs,
   parseDurationMs,
   parseHeartbeatInterval,
   type DurationMs,
   type HeartbeatInterval,
-} from "./duration.js";
+} from "./limits.js";
 import { Outbox } from "./outbox.js";
 import { ReconnectController } from "./reconnect-controller.js";
 
@@ -107,9 +108,13 @@ export interface WebSocketTmuxClientOptions {
   ) => BrowserWebSocketLike;
   /** Subprotocol for handshake (useful to carry a bearer token). */
   readonly subprotocol?: string | string[];
-  /** Reconnect policy. Default: no reconnect. */
+  /** Reconnect policy; each field's shape is on `ReconnectPolicy`, and one
+   *  outside it makes the constructor throw `BRIDGE_INVALID_ARG`. Default: no
+   *  reconnect. */
   readonly reconnect?: ReconnectPolicy;
-  /** Per-call timeout ms. Default: 30000. Server's welcome value wins if smaller. */
+  /** Per-call timeout: an integer number of ms in [1, 2^31-1] or the
+   *  constructor throws `BRIDGE_INVALID_ARG`. Default: 30000. The server's
+   *  welcome value wins if smaller. */
   readonly requestTimeoutMs?: number;
   /** App-level ping interval ms: `0` disables, otherwise an integer number of
    *  ms in [1, 2^31-1] or the constructor throws `BRIDGE_INVALID_ARG`.
@@ -158,11 +163,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // built each welcome (its cadence is only known then, from the server limits)
   // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
   private heartbeat: Heartbeat<string> | null = null;
-  // [LAW:parse-dont-validate] The consumer's cadence choices, stamped once in
+  // [LAW:parse-dont-validate] The consumer's timing choices, stamped once in
   // the constructor so a bad value fails there with its option's name, not
-  // at every welcome. `undefined` for the interval means "the server's".
+  // at every welcome or every call. `undefined` for the interval means "the
+  // server's".
   private readonly heartbeatIntervalMs: HeartbeatInterval | undefined;
   private readonly heartbeatTimeoutMs: DurationMs;
+  private readonly requestTimeoutMs: DurationMs;
 
   private ws: BrowserWebSocketLike | null = null;
   // [LAW:single-enforcer] One controller per connection scopes the lifetime
@@ -200,6 +207,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.heartbeatTimeoutMs = parseDurationMs(
       "heartbeatTimeoutMs",
       opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+    );
+    this.requestTimeoutMs = parseDurationMs(
+      "requestTimeoutMs",
+      opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     );
     // [LAW:decomposition] Wire the collaborators: the outbox transmits through
     // the shell's ready/OPEN gate; the reconnect controller reopens the socket
@@ -443,10 +454,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return `r${this.nextId}`;
   }
 
-  private effectiveTimeoutMs(): number {
-    const fromOpts = this.opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs;
-    const fromServer = this.serverLimits?.requestTimeoutMs;
-    return fromServer !== undefined ? Math.min(fromOpts, fromServer) : fromOpts;
+  // The consumer's bound until a welcome lands (calls queue in the outbox
+  // before then), and the stricter of the consumer's and the server's after.
+  private effectiveTimeoutMs(): DurationMs {
+    return this.serverLimits === null
+      ? this.requestTimeoutMs
+      : minDurationMs(
+          this.requestTimeoutMs,
+          this.serverLimits.requestTimeoutMs,
+        );
   }
 
   // -------------------------------------------------------------------------

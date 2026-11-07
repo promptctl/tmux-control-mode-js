@@ -3,6 +3,8 @@
 // WebSocketTmuxClient. Pins the retry-budget accounting, the discriminated
 // schedule() decision, and the guarantee that a cancelled retry never fires.
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { BridgeError } from "../../src/connectors/errors.js";
+import { DURATION_MAX_MS } from "../../src/connectors/websocket/limits.js";
 import { ReconnectController } from "../../src/connectors/websocket/reconnect-controller.js";
 import type { ReconnectPolicy } from "../../src/connectors/websocket/types.js";
 
@@ -138,6 +140,94 @@ describe("ReconnectController — schedule + budget", () => {
     expect(ctl.schedule()).toEqual({ kind: "scheduled", attempt: 1 });
     expect(ctl.currentAttempt).toBe(1);
     ctl.cancel();
+  });
+});
+
+// The policy is parsed once, at construction (6sp.1lh): a delay no timer honors
+// is an immediate retry storm, a factor below one decays the delay to zero, and
+// a NaN budget is unlimited by accident. Each fails here, naming the field.
+describe("ReconnectController — the policy is parsed at construction", () => {
+  function build(policy: ReconnectPolicy): () => unknown {
+    return () => new ReconnectController(policy, { onRetry: vi.fn() });
+  }
+
+  it.each([
+    [
+      "initialDelayMs: 0",
+      { ...POLICY, initialDelayMs: 0 },
+      "reconnect.initialDelayMs (0) must be an integer number of ms",
+    ],
+    [
+      "initialDelayMs: NaN",
+      { ...POLICY, initialDelayMs: Number.NaN },
+      "reconnect.initialDelayMs (NaN) must be",
+    ],
+    [
+      "maxDelayMs: -1",
+      { ...POLICY, maxDelayMs: -1 },
+      "reconnect.maxDelayMs (-1) must be",
+    ],
+    [
+      "jitterMs: -1",
+      { ...POLICY, jitterMs: -1 },
+      "reconnect.jitterMs (-1) must be 0 (no jitter) or",
+    ],
+    [
+      "factor: 0.5",
+      { ...POLICY, factor: 0.5 },
+      "reconnect.factor (0.5) must be a finite number >= 1",
+    ],
+    [
+      "factor: Infinity",
+      { ...POLICY, factor: Number.POSITIVE_INFINITY },
+      "reconnect.factor (Infinity) must be",
+    ],
+    [
+      "maxAttempts: NaN",
+      { ...POLICY, maxAttempts: Number.NaN },
+      "reconnect.maxAttempts (NaN) must be 0 (no reconnect), a positive integer, or Infinity",
+    ],
+    [
+      "maxAttempts: -1",
+      { ...POLICY, maxAttempts: -1 },
+      "reconnect.maxAttempts (-1) must be",
+    ],
+    [
+      "maxAttempts: 1.5",
+      { ...POLICY, maxAttempts: 1.5 },
+      "reconnect.maxAttempts (1.5) must be",
+    ],
+    [
+      "maxDelayMs + jitterMs past the timer clamp",
+      { ...POLICY, maxDelayMs: DURATION_MAX_MS, jitterMs: 1 },
+      `reconnect.maxDelayMs + reconnect.jitterMs (${DURATION_MAX_MS} + 1) must be at most ${DURATION_MAX_MS}`,
+    ],
+  ] as const)(
+    "%s throws BRIDGE_INVALID_ARG naming the field and value",
+    (_, policy, message) => {
+      const fn = build(policy);
+      expect(fn).toThrow(BridgeError);
+      expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+      expect(fn).toThrow(message);
+    },
+  );
+
+  it("jitterMs: 0 and maxAttempts: Infinity are the documented switches, and construct", () => {
+    expect(
+      build({ ...POLICY, jitterMs: 0, maxAttempts: Number.POSITIVE_INFINITY }),
+    ).not.toThrow();
+  });
+
+  it("a policy of only maxAttempts takes the documented defaults", () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const onRetry = vi.fn();
+    const ctl = new ReconnectController({ maxAttempts: 1 }, { onRetry });
+    ctl.schedule();
+    vi.advanceTimersByTime(249);
+    expect(onRetry).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 });
 

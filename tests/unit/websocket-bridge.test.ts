@@ -1891,3 +1891,64 @@ describe("WebSocket bridge — heartbeat options are parsed at construction", ()
     expect(ws.terminateCalls).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Call limits and the drain bound are parsed at the same border (6sp.1lh). A
+// request timeout no reply could meet used to fail every call with
+// BRIDGE_TIMEOUT one macrotask after dispatch, reading as a slow tmux; a cap of
+// 0 refused every call as "max in-flight exceeded". Both now fail when the
+// bridge is built, naming the option and its value.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — call limits are parsed at construction", () => {
+  function build(opts: {
+    requestTimeoutMs?: number;
+    maxInflight?: number;
+  }): () => unknown {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    return () => createWebSocketBridge({ createClient: () => client, ...opts });
+  }
+
+  it("requestTimeoutMs: 0 throws BRIDGE_INVALID_ARG naming the option and value", () => {
+    const fn = build({ requestTimeoutMs: 0 });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("requestTimeoutMs (0) must be an integer number of ms");
+  });
+
+  it("a fractional requestTimeoutMs throws naming the option and value", () => {
+    const fn = build({ requestTimeoutMs: 0.5 });
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("requestTimeoutMs (0.5) must be");
+  });
+
+  it("maxInflight: 0 throws BRIDGE_INVALID_ARG naming the option and value", () => {
+    const fn = build({ maxInflight: 0 });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("maxInflight (0) must be an integer >= 1");
+  });
+
+  it("shutdown(0) rejects with BRIDGE_INVALID_ARG naming drainMs, and tells no peer to drain", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const rejection = bridge.shutdown(0);
+    await expect(rejection).rejects.toThrow(BridgeError);
+    await expect(rejection).rejects.toThrow(/BRIDGE_INVALID_ARG/);
+    await expect(rejection).rejects.toThrow(
+      "drainMs (0) must be an integer number of ms",
+    );
+    expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome"]);
+    expect(ws.terminateCalls).toBe(0);
+    // The bridge is not draining: a new connection is still accepted.
+    const later = connectRunning(bridge);
+    await flush();
+    expect(readJsonFrames(later).map((f) => f.k)).toEqual(["welcome"]);
+  });
+});

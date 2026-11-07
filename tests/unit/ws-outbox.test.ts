@@ -8,6 +8,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { Outbox } from "../../src/connectors/websocket/outbox.js";
 import {
   BridgeError,
+  parseDurationMs,
   type ResultFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
@@ -16,6 +17,10 @@ import { TmuxCommandError } from "../../src/errors.js";
 afterEach(() => {
   vi.useRealTimers();
 });
+
+// The outbox only accepts a stamped deadline; tests go through the same
+// parser the client does.
+const ms = (n: number) => parseDurationMs("requestTimeoutMs", n);
 
 function okResult(id: string): ResultFrame {
   const response: CommandResponse = {
@@ -34,7 +39,7 @@ describe("Outbox — transmit", () => {
       sent.push(frame);
       return true;
     });
-    void outbox.enqueue("r1", "execute", "frame-1", 1000);
+    void outbox.enqueue("r1", "execute", "frame-1", ms(1000));
     expect(sent).toEqual(["frame-1"]);
     // A later flush must not re-send an already-transmitted frame.
     outbox.flush();
@@ -49,7 +54,7 @@ describe("Outbox — transmit", () => {
       sent.push(frame);
       return true;
     });
-    void outbox.enqueue("r1", "execute", "frame-1", 1000);
+    void outbox.enqueue("r1", "execute", "frame-1", ms(1000));
     expect(sent).toEqual([]); // not ready — queued
     ready = true;
     outbox.flush();
@@ -68,9 +73,9 @@ describe("Outbox — transmit", () => {
       return true;
     });
     // None ready yet (all < 3) — nothing transmits at enqueue.
-    void outbox.enqueue("r1", "execute", "frame-1", 1000);
-    void outbox.enqueue("r2", "execute", "frame-2", 1000);
-    void outbox.enqueue("r3", "execute", "frame-3", 1000);
+    void outbox.enqueue("r1", "execute", "frame-1", ms(1000));
+    void outbox.enqueue("r2", "execute", "frame-2", ms(1000));
+    void outbox.enqueue("r3", "execute", "frame-3", ms(1000));
     expect(sent).toEqual([]);
     // Now accept from frame-2 onward: flush must stop at frame-1 (still fails),
     // so nothing goes out — FIFO is not skipped.
@@ -87,14 +92,14 @@ describe("Outbox — transmit", () => {
 describe("Outbox — settle", () => {
   it("resolves the matching pending on an ok result", async () => {
     const outbox = new Outbox(() => true);
-    const p = outbox.enqueue("r1", "execute", "frame-1", 1000);
+    const p = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
     outbox.settle(okResult("r1"));
     await expect(p).resolves.toMatchObject({ output: ["out-r1"] });
   });
 
   it("rejects the matching pending on an error result", async () => {
     const outbox = new Outbox(() => true);
-    const p = outbox.enqueue("r1", "execute", "frame-1", 1000);
+    const p = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
     outbox.settle({
       k: "result",
       id: "r1",
@@ -114,7 +119,7 @@ describe("Outbox — timeout", () => {
   it("rejects with BRIDGE_TIMEOUT when no result arrives in time", async () => {
     vi.useFakeTimers();
     const outbox = new Outbox(() => true);
-    const p = outbox.enqueue("r1", "execute", "frame-1", 50);
+    const p = outbox.enqueue("r1", "execute", "frame-1", ms(50));
     const settled = p.catch((e: unknown) => e);
     vi.advanceTimersByTime(50);
     const err = await settled;
@@ -125,7 +130,7 @@ describe("Outbox — timeout", () => {
   it("a result arriving after timeout is a no-op (pending already gone)", async () => {
     vi.useFakeTimers();
     const outbox = new Outbox(() => true);
-    const p = outbox.enqueue("r1", "execute", "frame-1", 50);
+    const p = outbox.enqueue("r1", "execute", "frame-1", ms(50));
     const settled = p.catch((e: unknown) => e);
     vi.advanceTimersByTime(50);
     await settled;
@@ -143,8 +148,8 @@ describe("Outbox — drain", () => {
       return true;
     });
     ready = false; // keep frames queued so drain has something to reject
-    const p1 = outbox.enqueue("r1", "execute", "frame-1", 1000);
-    const p2 = outbox.enqueue("r2", "execute", "frame-2", 1000);
+    const p1 = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
+    const p2 = outbox.enqueue("r2", "execute", "frame-2", ms(1000));
     const c1 = p1.catch((e: unknown) => e);
     const c2 = p2.catch((e: unknown) => e);
 
@@ -164,8 +169,8 @@ describe("Outbox — drain", () => {
     // The lost-result-frame path: send succeeds, but the connection dies before
     // the result comes back. drain() must still reject the caller.
     const outbox = new Outbox(() => true); // always transmits
-    const p1 = outbox.enqueue("r1", "execute", "frame-1", 1000);
-    const p2 = outbox.enqueue("r2", "execute", "frame-2", 1000);
+    const p1 = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
+    const p2 = outbox.enqueue("r2", "execute", "frame-2", ms(1000));
     const c1 = p1.catch((e: unknown) => e);
     const c2 = p2.catch((e: unknown) => e);
 
@@ -188,25 +193,30 @@ describe("Outbox — settle", () => {
 
   it("rejects a tmux %error result as TmuxCommandError, matching the Electron renderer", async () => {
     const outbox = new Outbox(() => true);
-    const p = outbox.enqueue("r1", "enableCrossSessionLayoutChange", "f", 1000);
+    const p = outbox.enqueue(
+      "r1",
+      "enableCrossSessionLayoutChange",
+      "f",
+      ms(1000),
+    );
     outbox.settle({ k: "result", id: "r1", ok: false, tmuxError: failed });
     await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
   });
 
   it("accepts a null response only for a method whose response is null", async () => {
     const outbox = new Outbox(() => true);
-    const exec = outbox.enqueue("r1", "execute", "f1", 1000);
+    const exec = outbox.enqueue("r1", "execute", "f1", ms(1000));
     const en = outbox.enqueue(
       "r2",
       "enableCrossSessionLayoutChange",
       "f2",
-      1000,
+      ms(1000),
     );
     const dis = outbox.enqueue(
       "r3",
       "disableCrossSessionLayoutChange",
       "f3",
-      1000,
+      ms(1000),
     );
     // A mismatch is returned as a protocol violation for the client's error
     // channel, as well as rejecting the call it answered.

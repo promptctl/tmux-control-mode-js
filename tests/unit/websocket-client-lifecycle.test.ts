@@ -16,11 +16,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
-import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
+import type {
+  BrowserWebSocketLike,
+  ReconnectPolicy,
+} from "../../src/connectors/websocket/types.js";
 import {
   BridgeError,
   encodeServerFrame,
   parseDurationMs,
+  parsePositiveInt,
+  type DurationMs,
   type HeartbeatInterval,
   type ResultFrame,
   type ServerFrame,
@@ -124,16 +129,21 @@ class MockWebSocketHub {
     ws.fire("open", {});
   }
 
-  /** Advertise a welcome; the heartbeat is off unless a test is about it. */
-  welcome(idx = -1, heartbeatIntervalMs: HeartbeatInterval = 0): void {
+  /** Advertise a welcome; the heartbeat is off and the server's call timeout
+   *  is 30s unless a test is about them. */
+  welcome(
+    idx = -1,
+    heartbeatIntervalMs: HeartbeatInterval = 0,
+    requestTimeoutMs: DurationMs = parseDurationMs("requestTimeoutMs", 30_000),
+  ): void {
     const ws = idx === -1 ? this.latest() : this.sockets[idx];
     if (!ws) return;
     const welcome: WelcomeFrame = {
       k: "welcome",
       limits: {
-        requestTimeoutMs: 30_000,
+        requestTimeoutMs,
         heartbeatIntervalMs,
-        maxInflight: 16,
+        maxInflight: parsePositiveInt("maxInflight", 16),
       },
     };
     ws.fire("message", {
@@ -838,6 +848,138 @@ describe("WebSocketTmuxClient — heartbeat options are parsed at construction",
     const { fn, hub } = build({ heartbeatIntervalMs: 0 });
     expect(fn).not.toThrow();
     expect(hub.sockets).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The call timeout and the reconnect policy are parsed at the same border
+// (6sp.1lh). A deadline no reply could meet used to reject every call with
+// BRIDGE_TIMEOUT one macrotask after it was sent; a negative retry delay was
+// an immediate retry storm. Both fail here, naming the option.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — call timeout and reconnect policy are parsed at construction", () => {
+  function build(opts: {
+    requestTimeoutMs?: number;
+    reconnect?: ReconnectPolicy;
+  }): { fn: () => unknown; hub: MockWebSocketHub } {
+    const hub = new MockWebSocketHub();
+    const fn = (): unknown =>
+      new WebSocketTmuxClient({
+        url: "ws://test/",
+        createWebSocket: hub.factory as unknown as (
+          url: string,
+        ) => BrowserWebSocketLike,
+        ...opts,
+      });
+    return { fn, hub };
+  }
+
+  it("requestTimeoutMs: 0 throws BRIDGE_INVALID_ARG naming the option and value, and opens no socket", () => {
+    const { fn, hub } = build({ requestTimeoutMs: 0 });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("requestTimeoutMs (0) must be an integer number of ms");
+    expect(hub.sockets).toHaveLength(0);
+  });
+
+  it("a negative reconnect.initialDelayMs throws naming the policy field and value, and opens no socket", () => {
+    const { fn, hub } = build({
+      reconnect: { maxAttempts: 1, initialDelayMs: -1 },
+    });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("reconnect.initialDelayMs (-1) must be");
+    expect(hub.sockets).toHaveLength(0);
+  });
+
+  it("reconnect.maxAttempts: 0 with default delays constructs and connects", () => {
+    const { fn, hub } = build({ reconnect: { maxAttempts: 0 } });
+    expect(fn).not.toThrow();
+    expect(hub.sockets).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The server's advertised call timeout is stamped at the wire and reconciled
+// with the consumer's: a call's deadline is the stricter of the two, and a
+// welcome advertising a bound no timer honors is a protocol fault on the
+// error channel, not a deadline every call then fails.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — the per-call deadline is the stricter of the consumer's and the server's", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function connected(requestTimeoutMs: number): {
+    client: WebSocketTmuxClient;
+    hub: MockWebSocketHub;
+    errors: BridgeError[];
+  } {
+    const hub = new MockWebSocketHub();
+    const errors: BridgeError[] = [];
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      requestTimeoutMs,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: (e) => errors.push(e),
+    });
+    hub.open();
+    return { client, hub, errors };
+  }
+
+  async function timesOutAt(p: Promise<unknown>, ms: number): Promise<void> {
+    let settled: unknown = null;
+    p.catch((e: unknown) => {
+      settled = e;
+    });
+    await vi.advanceTimersByTimeAsync(ms - 1);
+    expect(settled).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBeInstanceOf(BridgeError);
+    expect((settled as BridgeError).code).toBe("BRIDGE_TIMEOUT");
+  }
+
+  it("uses the server's bound when it is the smaller", async () => {
+    const { client, hub } = connected(5_000);
+    hub.welcome(-1, 0, parseDurationMs("requestTimeoutMs", 1_000));
+    await timesOutAt(client.listSessions(), 1_000);
+    await client.close();
+  });
+
+  it("uses the consumer's bound when it is the smaller", async () => {
+    const { client, hub } = connected(500);
+    hub.welcome(-1, 0, parseDurationMs("requestTimeoutMs", 1_000));
+    await timesOutAt(client.listSessions(), 500);
+    await client.close();
+  });
+
+  it("a welcome advertising requestTimeoutMs: 0 is reported as BRIDGE_PROTOCOL_ERROR naming the field", () => {
+    const { client, hub, errors } = connected(5_000);
+    hub.latest().fire("message", {
+      data: JSON.stringify({
+        k: "welcome",
+        limits: {
+          requestTimeoutMs: 0,
+          heartbeatIntervalMs: 0,
+          maxInflight: 16,
+        },
+      }),
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.code).toBe("BRIDGE_PROTOCOL_ERROR");
+    expect(errors[0]!.message).toContain(
+      "welcome.limits.requestTimeoutMs (0) must be",
+    );
+    // The malformed welcome did not make the connection ready.
+    expect(client.connectionState.status).toBe("connecting");
+    void client.close();
   });
 });
 

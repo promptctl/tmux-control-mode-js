@@ -21,6 +21,22 @@ All notable changes to this project are documented here. Format follows
   `./websocket`), and a client rejects a welcome advertising any other value
   as `BRIDGE_PROTOCOL_ERROR` — a server configured with a negative interval
   must be reconfigured to `0`.
+- The same parsing covers every other ms and count option a timer or call
+  limiter consumes. `createWebSocketBridge` parses `requestTimeoutMs` and
+  `maxInflight` (an integer >= 1); `bridge.shutdown(drainMs)` rejects with
+  `BRIDGE_INVALID_ARG` for a `drainMs` outside [1, 2^31-1] before any peer is
+  told to drain, so `shutdown(0)` is no longer a "terminate now" idiom.
+  `WebSocketTmuxClient` parses `requestTimeoutMs` and every field of
+  `reconnect` (`maxAttempts` must be `0`, a positive integer, or `Infinity`;
+  `initialDelayMs` and `maxDelayMs` are durations; `factor` is finite and
+  >= 1; `jitterMs` is `0` or a duration; `maxDelayMs + jitterMs` must fit the
+  timer range) whether or not reconnect is on — `maxAttempts: -1` used to
+  disable reconnect silently and now throws. On the wire,
+  `WelcomeLimits.requestTimeoutMs` is `DurationMs` and `maxInflight` is the
+  new `PositiveInt` (parser `parsePositiveInt`, exported beside the others),
+  so a welcome built from raw numbers no longer compiles, and a client rejects
+  a welcome advertising `requestTimeoutMs: 0` or `maxInflight: 0` as
+  `BRIDGE_PROTOCOL_ERROR`.
 - `PaneTopologyManager.seed` and `updateWindow` entries carry a required
   `floating` flag (tmux 3.8 floating panes), and `updateWindow` returns the
   `Contradiction` it found. `parsePaneListLine` reads the flag from an

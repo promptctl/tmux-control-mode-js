@@ -16,6 +16,7 @@ import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import {
   encodeServerFrame,
   parseDurationMs,
+  parsePositiveInt,
   type ServerFrame,
   type WelcomeFrame,
 } from "../../src/connectors/websocket/protocol.js";
@@ -236,9 +237,9 @@ class MockWebSocketHub {
     const welcome: WelcomeFrame = {
       k: "welcome",
       limits: {
-        requestTimeoutMs: 30_000,
+        requestTimeoutMs: parseDurationMs("requestTimeoutMs", 30_000),
         heartbeatIntervalMs: parseDurationMs("heartbeatIntervalMs", 30_000),
-        maxInflight: 16,
+        maxInflight: parsePositiveInt("maxInflight", 16),
       },
     };
     ws.fire("message", {

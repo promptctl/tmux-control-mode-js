@@ -4,6 +4,14 @@
 // timer. The owner holds none of this; it asks for a decision and maps the
 // result onto connection state.
 
+import {
+  DURATION_MAX_MS,
+  invalidArg,
+  parseDurationMs,
+  parser,
+  zeroOrDurationMsParser,
+  type DurationMs,
+} from "./limits.js";
 import type { ReconnectPolicy } from "./types.js";
 
 // [LAW:dataflow-not-control-flow] The retry-or-stop decision is a value, not a
@@ -19,14 +27,94 @@ export interface ReconnectHandlers {
   onRetry(): void;
 }
 
+declare const maxAttempts: unique symbol;
+declare const backoffFactor: unique symbol;
+
+/** A retry budget: a positive integer, or `Infinity` for unlimited. `0` is
+ *  the off switch, as `0` is for the heartbeat. [LAW:types-are-the-program]
+ *  The switch is a literal in the type, not a `<= 0` check. */
+type MaxAttempts = 0 | (number & { readonly [maxAttempts]: true });
+
+/** A growth factor the backoff honors: a finite number >= 1. Below 1 the
+ *  delay decays to zero; `Infinity` jumps straight to the cap. */
+type BackoffFactor = number & { readonly [backoffFactor]: true };
+
+// [LAW:parse-dont-validate] The policy as the timer sees it: every field
+// resolved and stamped once, in the constructor, so `backoffDelay` computes
+// from values a timer honors and never re-applies a default or re-checks a
+// range.
+interface BackoffSchedule {
+  readonly maxAttempts: MaxAttempts;
+  readonly initialDelayMs: DurationMs;
+  readonly maxDelayMs: DurationMs;
+  readonly factor: BackoffFactor;
+  readonly jitterMs: 0 | DurationMs;
+}
+
+const DEFAULTS = Object.freeze({
+  initialDelayMs: 250,
+  maxDelayMs: 10_000,
+  factor: 2,
+  jitterMs: 250,
+}) satisfies Record<string, number>;
+
+// [LAW:one-type-per-behavior] The two shapes only a backoff policy has are
+// instances of the one parser factory, failing like every consumer option.
+const parseMaxAttempts = parser(
+  (v): v is MaxAttempts =>
+    v === Number.POSITIVE_INFINITY ||
+    (Number.isInteger(v) && (v as number) >= 0),
+  "0 (no reconnect), a positive integer, or Infinity",
+)(invalidArg);
+const parseBackoffFactor = parser(
+  (v): v is BackoffFactor =>
+    typeof v === "number" && Number.isFinite(v) && v >= 1,
+  "a finite number >= 1",
+)(invalidArg);
+const parseJitterMs = zeroOrDurationMsParser("no jitter")(invalidArg);
+
+function resolveSchedule(policy: ReconnectPolicy | undefined): BackoffSchedule {
+  const p = policy ?? { maxAttempts: 0 };
+  const schedule: BackoffSchedule = {
+    maxAttempts: parseMaxAttempts("reconnect.maxAttempts", p.maxAttempts),
+    initialDelayMs: parseDurationMs(
+      "reconnect.initialDelayMs",
+      p.initialDelayMs ?? DEFAULTS.initialDelayMs,
+    ),
+    maxDelayMs: parseDurationMs(
+      "reconnect.maxDelayMs",
+      p.maxDelayMs ?? DEFAULTS.maxDelayMs,
+    ),
+    factor: parseBackoffFactor("reconnect.factor", p.factor ?? DEFAULTS.factor),
+    jitterMs: parseJitterMs(
+      "reconnect.jitterMs",
+      p.jitterMs ?? DEFAULTS.jitterMs,
+    ),
+  };
+  // The largest delay the schedule can produce is the capped base plus the
+  // full jitter; past the timer's range Node clamps it to 1 ms, the storm the
+  // per-field stamps exist to prevent.
+  if (schedule.maxDelayMs + schedule.jitterMs > DURATION_MAX_MS) {
+    throw invalidArg(
+      `reconnect.maxDelayMs + reconnect.jitterMs (${schedule.maxDelayMs} + ${schedule.jitterMs}) must be at most ${DURATION_MAX_MS}`,
+    );
+  }
+  return schedule;
+}
+
 export class ReconnectController {
+  private readonly backoff: BackoffSchedule;
   private attempts = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Throws `BRIDGE_INVALID_ARG` naming `reconnect.<field>` and the value for
+   *  a policy field outside its shape (see `ReconnectPolicy`). */
   constructor(
-    private readonly policy: ReconnectPolicy | undefined,
+    policy: ReconnectPolicy | undefined,
     private readonly handlers: ReconnectHandlers,
-  ) {}
+  ) {
+    this.backoff = resolveSchedule(policy);
+  }
 
   /** Attempts used in the current episode — for republishing a reconnecting
    *  state's attempt number alongside a fresh error. */
@@ -59,8 +147,8 @@ export class ReconnectController {
   // the backoff wait; incrementing `attempts` and arming the timer happen here
   // together so the retry budget and the schedule can never disagree.
   schedule(): ReconnectDecision {
-    const policy = this.policy;
-    if (policy === undefined || policy.maxAttempts <= 0) {
+    const { maxAttempts } = this.backoff;
+    if (maxAttempts === 0) {
       return { kind: "disabled" };
     }
     // [LAW:one-source-of-truth] Idempotent while a retry is pending: a second
@@ -71,25 +159,26 @@ export class ReconnectController {
     if (this.timer !== null) {
       return { kind: "scheduled", attempt: this.attempts };
     }
-    if (this.attempts >= policy.maxAttempts) {
-      return { kind: "exhausted", maxAttempts: policy.maxAttempts };
+    if (this.attempts >= maxAttempts) {
+      return { kind: "exhausted", maxAttempts };
     }
     this.attempts += 1;
-    const delay = this.backoffDelay(policy);
     this.timer = setTimeout(() => {
       this.timer = null;
       this.handlers.onRetry();
-    }, delay);
+    }, this.backoffDelay());
     (this.timer as unknown as { unref?: () => void }).unref?.();
     return { kind: "scheduled", attempt: this.attempts };
   }
 
-  private backoffDelay(policy: ReconnectPolicy): number {
-    const initial = policy.initialDelayMs ?? 250;
-    const max = policy.maxDelayMs ?? 10_000;
-    const factor = policy.factor ?? 2;
-    const jitter = policy.jitterMs ?? 250;
-    const base = Math.min(initial * Math.pow(factor, this.attempts - 1), max);
-    return base + Math.random() * jitter;
+  // Exponential backoff with jitter: the base grows by `factor` per attempt
+  // up to `maxDelayMs`, and a uniform draw from [0, jitterMs) is added.
+  private backoffDelay(): number {
+    const s = this.backoff;
+    const base = Math.min(
+      s.initialDelayMs * Math.pow(s.factor, this.attempts - 1),
+      s.maxDelayMs,
+    );
+    return base + Math.random() * s.jitterMs;
   }
 }

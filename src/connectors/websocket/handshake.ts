@@ -2,13 +2,14 @@
 // [LAW:decomposition] Hello-phase timeout + authenticate() hook wrapper
 // extracted from Connection. Owns `helloDeadline`; Connection holds no
 // handshake timer state.
+import type { DurationMs } from "./limits.js";
 import type { AuthResult, UpgradeRequest } from "./types.js";
 
 export class Handshake {
   private deadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    private readonly timeoutMs: number,
+    private readonly timeoutMs: DurationMs,
     private readonly request: UpgradeRequest | undefined,
     private readonly authHook:
       | ((req: UpgradeRequest) => Promise<AuthResult> | AuthResult)
