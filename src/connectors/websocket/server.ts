@@ -113,7 +113,14 @@ export interface ConnectionContext {
 }
 
 export interface WebSocketBridgeOptions {
-  /** Produce (or look up) the TmuxClient backing a new connection. */
+  /**
+   * Produce (or look up) the TmuxClient backing a new connection. The client
+   * must be live: one whose `connectionState` is already `closed` is refused
+   * at hello with BRIDGE_CLOSED, and when a client closes later (tmux died,
+   * its transport failed, or it was disposed) every connection on it is
+   * closed with BRIDGE_CLOSED. A shared client therefore has to be replaced
+   * by the factory once its tmux is gone.
+   */
   readonly createClient: (
     ctx: ConnectionContext,
   ) => Promise<TmuxClient> | TmuxClient;
@@ -997,6 +1004,15 @@ class Connection {
   private closeForUpstream(
     state: Extract<TmuxConnectionState, { status: "closed" }>,
   ): void {
+    // Emitted before the fatal, unconditionally: when an earlier fatal is
+    // already pending, sendFatalAndClose's write-once guard keeps the wire
+    // consistent, but the upstream's death is still a fact about this
+    // connection and still lands on its panel. [LAW:nothing-unseen]
+    this.emit({
+      kind: "upstream-closed",
+      identity: this.identity,
+      reason: state.reason,
+    });
     this.sendFatalAndClose(
       "BRIDGE_CLOSED",
       `upstream tmux connection closed (${state.reason})`,

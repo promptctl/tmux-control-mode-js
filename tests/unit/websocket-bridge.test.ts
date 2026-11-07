@@ -1218,7 +1218,9 @@ function closedEvents(
   events: BridgeObservabilityEvent[],
 ): Extract<BridgeObservabilityEvent, { kind: "connection-closed" }>[] {
   return events.filter(
-    (e): e is Extract<BridgeObservabilityEvent, { kind: "connection-closed" }> =>
+    (
+      e,
+    ): e is Extract<BridgeObservabilityEvent, { kind: "connection-closed" }> =>
       e.kind === "connection-closed",
   );
 }
@@ -1249,6 +1251,9 @@ describe("WebSocket bridge — upstream close", () => {
     t.transport.close();
 
     // Synchronously, inside the upstream's connection-state emission.
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
+    ]);
     expect(fatalFrames(ws)).toEqual([
       {
         k: "error",
@@ -1333,9 +1338,7 @@ describe("WebSocket bridge — upstream close", () => {
     expect(readJsonFrames(ws).some((f) => f.k === "draining")).toBe(true);
 
     t.transport.close();
-    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
-      "BRIDGE_CLOSED",
-    ]);
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual(["BRIDGE_CLOSED"]);
     expect(ws.closeCalls).toHaveLength(1);
     ws.fireClose(1011, ws.closeCalls[0].reason);
 
@@ -1374,6 +1377,10 @@ describe("WebSocket bridge — upstream close", () => {
     ]);
     expect(ws.closeCalls).toEqual([
       { code: 1011, reason: "duplicate hello frame" },
+    ]);
+    // The wire keeps the first fatal; the upstream's death is still recorded.
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
     ]);
 
     ws.fireClose(1011, "duplicate hello frame");
@@ -1420,6 +1427,9 @@ describe("WebSocket bridge — upstream close", () => {
     ]);
     expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(false);
     expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({ reason: "transport-error" }),
+    ]);
     // The client createClient() handed over was released, not leaked.
     expect(disposeCalls).toBe(1);
 

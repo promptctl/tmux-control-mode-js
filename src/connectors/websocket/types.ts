@@ -10,6 +10,7 @@
 // bridge implementation wants a new method on the underlying socket, it
 // extends the relevant *Like interface here.
 
+import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { BridgeErrorCode } from "../errors.js";
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,21 @@ export type BridgeObservabilityEvent =
       readonly kind: "protocol-error";
       readonly identity: ConnectionIdentity;
       readonly message: string;
+    }
+  | {
+      // The TmuxClient behind this connection closed (tmux died, its
+      // transport failed, or it was disposed), so the bridge is closing the
+      // connection with BRIDGE_CLOSED. The upstream's typed close reason
+      // rides here; the `connection-closed` that follows shares its
+      // BRIDGE_CLOSED code with heartbeat timeout and shutdown, so this event
+      // is what tells a tmux death apart from a silent browser.
+      // [LAW:nothing-unseen]
+      readonly kind: "upstream-closed";
+      readonly identity: ConnectionIdentity;
+      readonly reason: Extract<
+        TmuxConnectionState,
+        { status: "closed" }
+      >["reason"];
     }
   | {
       // A pane's resume (Continue) was refused by a live tmux while the
