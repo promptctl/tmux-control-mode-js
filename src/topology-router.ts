@@ -139,10 +139,6 @@ export class TopologyRouter {
   // refreshWindow() start queries, so the router owns this count; the epoch
   // tracker answers staleness, not liveness.
   private inFlight = 0;
-  // Each window's latest layout since the last bootstrap started. A bootstrap
-  // sent before a move lists the moved pane in its old window, so its seed is
-  // checked against these again.
-  private readonly layoutsSinceBootstrap = new Map<number, readonly number[]>();
 
   constructor(
     reportTopologyError: ReportTopologyError,
@@ -379,7 +375,6 @@ export class TopologyRouter {
         // Synchronous topology removal + epoch invalidation. Any in-flight
         // list-panes result for this window will be discarded by the epoch check.
         this.topology.removeWindow(msg.windowId);
-        this.layoutsSinceBootstrap.delete(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
         break;
@@ -397,8 +392,12 @@ export class TopologyRouter {
             msg.layout.kind === "parsed"
               ? msg.layout.panes.map((p) => p.paneId)
               : [];
-          this.layoutsSinceBootstrap.set(msg.windowId, panes);
-          this.placeMovedIn(msg.windowId, panes);
+          this.epoch.recordLayout(msg.windowId, panes);
+          const lost = this.topology.unplaceMovedIn(msg.windowId, panes);
+          // A new refresh supersedes any sent before the move.
+          for (const id of new Set([...lost, msg.windowId])) {
+            void this.refreshWindow(id);
+          }
         }
         break;
       case "window-add":
@@ -439,7 +438,6 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startBootstrap();
-    this.layoutsSinceBootstrap.clear();
     this.inFlight++;
     try {
       const r = await run(
@@ -464,8 +462,14 @@ export class TopologyRouter {
         return parsed !== null ? [parsed] : [];
       });
       this.topology.seed(entries);
-      for (const [windowId, panes] of this.layoutsSinceBootstrap) {
-        this.placeMovedIn(windowId, panes);
+      // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
+      //   pane in its old window; the epoch tracker hands back the layouts
+      //   seen since it started, and their windows' refreshes already follow
+      //   the move, so only the windows a pane left are asked again.
+      for (const [windowId, panes] of this.epoch.takeLayouts()) {
+        for (const id of this.topology.unplaceMovedIn(windowId, panes)) {
+          void this.refreshWindow(id);
+        }
       }
       this.interest?.recompute();
     } catch (err) {
@@ -503,13 +507,6 @@ export class TopologyRouter {
       this.inFlight--;
       this.releaseHeld();
     }
-  }
-
-  // Unplace the panes `panes` moved into `windowId` and re-query every window
-  // they touch; a new refresh supersedes any sent before the move.
-  private placeMovedIn(windowId: number, panes: readonly number[]): void {
-    const lost = this.topology.movedIn(windowId, panes);
-    for (const id of new Set([...lost, windowId])) void this.refreshWindow(id);
   }
 
   private async refreshWindow(windowId: number): Promise<void> {

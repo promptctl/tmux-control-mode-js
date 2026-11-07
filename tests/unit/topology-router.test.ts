@@ -786,7 +786,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     const r = [...replies]
       .reverse()
       .find((q) => q.cmd.includes(`-t @${windowId} `));
-    r!.resolve(makeOkResponse(AFTER[windowId]));
+    if (r === undefined)
+      throw new Error(`expected a list-panes -t @${windowId} refresh`);
+    r.resolve(makeOkResponse(AFTER[windowId]));
   }
 
   function layoutChange(windowId: number, layout: string) {
