@@ -690,19 +690,6 @@ class Connection {
       unwind();
       return;
     }
-    // createClient() is caller-supplied and may hand back a shared client
-    // that already closed: its terminal `connection-state` was emitted
-    // before this connection's wildcard listener existed, so onUpstreamEvent
-    // below would never hear it and the connection would open onto a dead
-    // tmux. [LAW:parse-dont-validate] The one read of the acquired client's
-    // state, at its acquisition; from here to `state = running` nothing
-    // yields, so the listener wired below hears every later transition.
-    const upstream = client.connectionState;
-    if (upstream.status === "closed") {
-      unwind();
-      this.closeForUpstream(upstream);
-      return;
-    }
 
     // [LAW:single-enforcer] One BridgeConnection per Connection. It owns the
     // subscription refcount + per-pane outstanding-byte accounting + the
@@ -787,6 +774,20 @@ class Connection {
       const msg = err instanceof Error ? err.message : String(err);
       unwind();
       this.sendFatalAndClose("BRIDGE_INTERNAL", msg);
+      return;
+    }
+
+    // createClient() is caller-supplied and may hand back a shared client
+    // that already closed: its terminal `connection-state` was emitted
+    // before this connection's wildcard listener existed, so onUpstreamEvent
+    // would never hear it and the connection would open onto a dead tmux.
+    // Read after the listener is wired: every transition after this read
+    // reaches the listener whatever runs in between, and this one read
+    // covers everything before it. [LAW:no-ambient-temporal-coupling]
+    const upstream = client.connectionState;
+    if (upstream.status === "closed") {
+      unwind();
+      this.closeForUpstream(upstream);
       return;
     }
 
@@ -1004,10 +1005,10 @@ class Connection {
   private closeForUpstream(
     state: Extract<TmuxConnectionState, { status: "closed" }>,
   ): void {
-    // Emitted before the fatal, unconditionally: when an earlier fatal is
-    // already pending, sendFatalAndClose's write-once guard keeps the wire
-    // consistent, but the upstream's death is still a fact about this
-    // connection and still lands on its panel. [LAW:nothing-unseen]
+    // Emitted ahead of the fatal rather than behind its write-once guard:
+    // when an earlier fatal already holds the wire, the upstream's death is
+    // still a fact about this connection and still lands on its panel.
+    // [LAW:nothing-unseen]
     this.emit({
       kind: "upstream-closed",
       identity: this.identity,

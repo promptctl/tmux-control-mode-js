@@ -801,7 +801,9 @@ describe.skipIf(!RUN_INTEGRATION)(
         await waitForState(client, "ready");
 
         // Frozen, tmux never reads the command: it is in flight at the bridge
-        // and stays so until the kill.
+        // and stays so until the kill. The bridge's `call` event and its
+        // write to the tmux transport are one macrotask apart from nothing;
+        // pollUntil observes from a later one.
         process.kill(serverPid, "SIGSTOP");
         const pending = client.execute("list-windows").catch((e: unknown) => e);
         await pollUntil(() =>
