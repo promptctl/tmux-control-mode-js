@@ -156,6 +156,15 @@ export const PANE_LIST_FORMAT =
 
 type PlacedPane = PaneMeta & { readonly floating: boolean };
 
+/** What a layout contradicted in the table, and so which query re-places it. */
+export interface Contradiction {
+  // Windows moved-in panes left, whose membership any earlier query misstates.
+  readonly left: ReadonlySet<number>;
+  // A tiled pane the layout omits went somewhere only a server-wide query can
+  // say: another window, maybe one in a session tmux sends no layout for.
+  readonly lostTrack: boolean;
+}
+
 /**
  * Maintains the paneId → {sessionId, windowId} table from bootstrap queries
  * and tmux topology notifications.
@@ -247,15 +256,14 @@ export class PaneTopologyManager {
    * one it lists that the table maps to another window (moved in), and a
    * tiled one the table maps here that it omits (broken out or floated). A
    * floating pane is never in a layout (tmux 3.8), so its omission says
-   * nothing. The refreshes that follow re-place them; until then they match
-   * no window/session scope. Returns the windows moved-in panes left, whose
-   * membership any earlier query misstates.
+   * nothing. Until a query re-places them they match no window/session scope.
    */
   unplaceContradicted(
     windowId: number,
     layoutPanes: readonly number[],
-  ): ReadonlySet<number> {
+  ): Contradiction {
     const listed = new Set(layoutPanes);
+    let lostTrack = false;
     for (const paneId of this.windowIndex.get(windowId) ?? []) {
       const meta = this.table.get(paneId);
       if (
@@ -264,6 +272,7 @@ export class PaneTopologyManager {
         !meta.floating
       ) {
         this.table.delete(paneId);
+        lostTrack = true;
       }
     }
     const lost = new Set<number>();
@@ -274,7 +283,7 @@ export class PaneTopologyManager {
         lost.add(meta.windowId);
       }
     }
-    return lost;
+    return { left: lost, lostTrack };
   }
 
   /**
@@ -829,6 +838,11 @@ export class TopologyEpochTracker {
   /** Call on every `layout-change`, with the panes its layout lists. */
   recordLayout(windowId: number, panes: readonly number[]): void {
     this.layoutsSinceBootstrap.set(windowId, panes);
+  }
+
+  /** Call on a `layout-change` that did not parse: its window's last list no longer holds. */
+  forgetLayout(windowId: number): void {
+    this.layoutsSinceBootstrap.delete(windowId);
   }
 
   /** Call after a current bootstrap seeds. Returns and forgets the layouts recorded since it started. */

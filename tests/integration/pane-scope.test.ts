@@ -29,6 +29,7 @@ import {
   sessionScope,
   windowScope,
   paneScope,
+  PANE_LIST_FORMAT,
   parsePaneListLine,
 } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
@@ -48,9 +49,7 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 async function listAllPanes(
   client: TmuxClient,
 ): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const response = await client.execute(
-    "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-  );
+  const response = await client.execute(`list-panes -a -F ${PANE_LIST_FORMAT}`);
   return response.output.flatMap((line) => {
     const parsed = parsePaneListLine(line);
     return parsed !== null ? [parsed] : [];

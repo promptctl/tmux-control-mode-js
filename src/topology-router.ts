@@ -24,6 +24,7 @@ import {
   PaneInterestTracker,
   TopologyEpochTracker,
   PANE_LIST_FORMAT,
+  type Contradiction,
   parsePaneListLine,
   serverScope,
   type AttachOptions,
@@ -73,14 +74,19 @@ export type ReportTopologyError = (error: Error) => void;
 //   for a null-prototype object or a throwing `toString`, and a throw here would
 //   convert the caught rejection into an unhandled one — the exact silence this
 //   removes. The coercion is guarded with a structural-tag fallback.
-function bootstrapError(value: unknown): Error {
+function topologyError(query: string, value: unknown): Error {
   let detail: string;
   try {
     detail = value instanceof Error ? value.message : String(value);
   } catch {
     detail = Object.prototype.toString.call(value);
   }
-  return new Error(`topology bootstrap failed: ${detail}`, { cause: value });
+  return new Error(`topology ${query} failed: ${detail}`, { cause: value });
+}
+
+// tmux's answer to `list-panes -t @W` for a window that no longer exists.
+function isWindowGone(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith("can't find window");
 }
 
 /**
@@ -399,15 +405,16 @@ export class TopologyRouter {
         // panes, and it carries no session, so list-panes decides membership.
         // A layout that did not parse lists nothing, so it contradicts nothing.
         if (this.needsTopology()) {
-          let lost: ReadonlySet<number> = new Set();
           if (msg.layout.kind === "parsed") {
             const panes = msg.layout.panes.map((p) => p.paneId);
             this.epoch.recordLayout(msg.windowId, panes);
-            lost = this.topology.unplaceContradicted(msg.windowId, panes);
-          }
-          // A new refresh supersedes any sent before the move.
-          for (const id of new Set([...lost, msg.windowId])) {
-            void this.refreshWindow(id);
+            this.requery(
+              this.topology.unplaceContradicted(msg.windowId, panes),
+              msg.windowId,
+            );
+          } else {
+            this.epoch.forgetLayout(msg.windowId);
+            void this.refreshWindow(msg.windowId);
           }
         }
         break;
@@ -468,11 +475,9 @@ export class TopologyRouter {
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
-      //   the move, so only the windows a pane left are asked again.
+      //   the move, so only what the layouts contradict is asked again.
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
-        for (const id of this.topology.unplaceContradicted(windowId, panes)) {
-          void this.refreshWindow(id);
-        }
+        this.requery(this.topology.unplaceContradicted(windowId, panes));
       }
       this.interest?.recompute();
     } catch (err) {
@@ -505,10 +510,23 @@ export class TopologyRouter {
       //   window events, a new topology-scoped attach) re-attempt this, so a
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
-      this.reportTopologyError(bootstrapError(err));
+      this.reportTopologyError(topologyError("bootstrap", err));
     } finally {
       this.inFlight--;
       this.releaseHeld();
+    }
+  }
+
+  // The query that re-places what a layout contradicted: a pane lost track
+  // of needs the server-wide one, which supersedes every window refresh.
+  // A new refresh supersedes any sent before the move.
+  private requery(c: Contradiction, ...windows: number[]): void {
+    if (c.lostTrack) {
+      void this.bootstrap();
+      return;
+    }
+    for (const id of new Set([...c.left, ...windows])) {
+      void this.refreshWindow(id);
     }
   }
 
@@ -526,12 +544,18 @@ export class TopologyRouter {
       });
       this.topology.updateWindow(windowId, entries);
       this.interest?.recompute();
-    } catch {
+    } catch (err) {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
       //   newer refresh or a window-close owns this window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+      // A window that no longer exists is the answer a close's refresh
+      // expects; any other failure left a live window's panes unplaced.
+      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
+      if (this.runCommand === run && !isWindowGone(err)) {
+        this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
+      }
     } finally {
       this.inFlight--;
       this.releaseHeld();

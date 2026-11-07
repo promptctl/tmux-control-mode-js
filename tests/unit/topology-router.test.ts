@@ -544,7 +544,7 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
   it("normalizes a non-Error, non-string-coercible rejection without itself throwing", async () => {
     const errors: Error[] = [];
     const router = new TopologyRouter((e) => errors.push(e));
-    // A null-prototype object: `String(value)` throws on it, so bootstrapError
+    // A null-prototype object: `String(value)` throws on it, so topologyError
     // must fall back rather than convert the rejection into an unhandled one.
     const weird = Object.create(null) as object;
     const run = (cmd: string): Promise<CommandResponse> =>
@@ -802,17 +802,20 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   const BEFORE = ["%4 @2 $1", "%5 @2 $1", "%6 @3 $2"];
   const AFTER = { 2: ["%4 @2 $1"], 3: ["%6 @3 $2", "%5 @3 $2"] };
 
-  // Answer the latest refresh of `@windowId` with the post-move panes.
+  // Answer the latest refresh of `@windowId` (or, for "all", the latest
+  // list-panes -a) with the post-move panes.
   function answerRefresh(
     replies: ReturnType<typeof controlledRun>["replies"],
-    windowId: 2 | 3,
+    windowId: 2 | 3 | "all",
   ) {
-    const r = [...replies]
-      .reverse()
-      .find((q) => q.cmd.includes(`-t @${windowId} `));
-    if (r === undefined)
-      throw new Error(`expected a list-panes -t @${windowId} refresh`);
-    r.resolve(makeOkResponse(AFTER[windowId]));
+    const flag = windowId === "all" ? "-a " : `-t @${windowId} `;
+    const r = [...replies].reverse().find((q) => q.cmd.includes(flag));
+    if (r === undefined) throw new Error(`expected a list-panes ${flag}query`);
+    r.resolve(
+      makeOkResponse(
+        windowId === "all" ? [...AFTER[2], ...AFTER[3]] : AFTER[windowId],
+      ),
+    );
   }
 
   function answerRefreshWith(
@@ -864,7 +867,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(s.pane)).toEqual([5]);
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
 
-    answerRefresh(s.replies, 2);
+    answerRefresh(s.replies, "all");
     await settle();
     answerRefresh(s.replies, 3);
     await settle();
@@ -881,7 +884,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     answerRefresh(s.replies, 3);
     await settle();
     expect(paneIdsOf(s.newSession)).toEqual([5]);
-    answerRefresh(s.replies, 2);
+    answerRefresh(s.replies, "all");
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
@@ -920,8 +923,22 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     const s = await movedPane([[2, LAYOUT_4]]);
     s.router.handleNotification({ type: "window-add", windowId: 3 });
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
-    answerRefresh(s.replies, 2);
+    answerRefresh(s.replies, "all"); // stale: the window-add re-queries
     answerRefresh(s.replies, 3);
+    await settle();
+    expect(s.newSession.chunks).toHaveLength(0);
+    answerRefresh(s.replies, "all");
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+  });
+
+  // join-pane into a window of a session tmux sends no layout for: only the
+  // source layout's omission tells, and only list-panes -a finds the pane.
+  it("routes a pane joined out to an unannounced window once a server-wide query finds it", async () => {
+    const s = await movedPane([[2, LAYOUT_4]]);
+    expect(s.replies.at(-1)!.cmd).toContain("list-panes -a ");
+    answerRefresh(s.replies, "all");
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
@@ -948,6 +965,24 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(s.oldSession)).toEqual([4, 5, 4]);
   });
 
+  it("reports a refresh failure other than the window being gone", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter((e) => errors.push(e));
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    router.attachBytesSink(makeSink(), { scope: windowScope(3) });
+    replies[0]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    replies[1]!.reject(new Error("server exited unexpectedly"));
+    router.handleNotification({ type: "window-close", windowId: 4 });
+    replies[2]!.reject(new Error("can't find window: @4"));
+    await settle();
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology refresh of @3 failed: server exited unexpectedly",
+    ]);
+  });
+
   it("removes a closed window once its refresh finds it gone", async () => {
     const s = await movedPane([]);
     s.router.handleNotification({ type: "window-close", windowId: 2 });
@@ -955,6 +990,25 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     await settle();
     s.router.dispatchBytes(makeChunk(4));
     expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
+  });
+
+  it("does not hold a bootstrap's seed to a layout an unparsed one replaced", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.handleNotification(layoutChange(2, LAYOUT_4));
+    const bad = layoutChange(2, "0000,80x24,0,0,4");
+    expect(bad.layout.kind).not.toBe("parsed");
+    router.handleNotification(bad); // e.g. a split that added %6
+    for (const r of replies.splice(0)) {
+      if (r.cmd.includes("list-panes -a "))
+        r.resolve(makeOkResponse(["%4 @2 $1", "%6 @2 $1"]));
+    }
+    await settle();
+    router.dispatchBytes(makeChunk(6));
+    expect(paneIdsOf(sink)).toEqual([6]);
   });
 
   it("does not let a bootstrap sent before a move put the moved pane back", async () => {
