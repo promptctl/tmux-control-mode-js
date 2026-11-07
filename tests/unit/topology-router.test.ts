@@ -989,12 +989,20 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     await settle();
     router.handleNotification({ type: "window-add", windowId: 3 });
     replies[1]!.reject(new Error("server exited unexpectedly"));
-    router.handleNotification({ type: "window-close", windowId: 4 });
-    replies[2]!.reject(windowGone("@4"));
     await settle();
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
+  });
+
+  it("neither reports nor re-queries a refresh that finds its window gone", async () => {
+    const errors: Error[] = [];
+    const s = await movedPane([], (e) => errors.push(e));
+    s.router.handleNotification({ type: "window-close", windowId: 2 });
+    s.replies.at(-1)!.reject(windowGone("@2"));
+    await settle();
+    expect(errors).toEqual([]);
+    expect(s.replies.at(-1)!.cmd).toContain("-t @2 ");
   });
 
   it("re-places a moved-in pane with a server-wide query when its window's refresh fails", async () => {

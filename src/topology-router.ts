@@ -557,11 +557,12 @@ export class TopologyRouter {
       this.interest?.recompute();
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure left a live window's panes unplaced, so
-      // report it and re-place them with the server-wide query.
+      // re-place them with the server-wide query, then report it. Recovery
+      // goes first so a throwing error listener cannot skip it.
       // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
       if (this.runCommand === run && !isWindowGone(err)) {
+        if (this.needsTopology()) void this.bootstrap();
         this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
-        this.requery({ left: new Set(), lostTrack: true });
       }
     } finally {
       this.inFlight--;
