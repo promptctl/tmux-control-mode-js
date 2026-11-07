@@ -13,7 +13,7 @@
 // server-side API: enough surface to satisfy ServerWebSocketLike, plus a
 // test hook to set bufferedAmount for the watermark probes.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -53,6 +53,8 @@ interface FakeWs extends ServerWebSocketLike {
   // Every `close(code, reason)` the bridge issued, so the close reason it
   // hands the peer is assertable.
   readonly closeCalls: { code?: number; reason?: string }[];
+  // How many times the bridge forced the socket down with `terminate()`.
+  terminateCalls: number;
 }
 
 function createFakeWs(): FakeWs {
@@ -92,6 +94,7 @@ function createFakeWs(): FakeWs {
     },
     outbound,
     closeCalls,
+    terminateCalls: 0,
 
     send(data) {
       if (typeof data === "string") {
@@ -114,7 +117,10 @@ function createFakeWs(): FakeWs {
       }
     },
     ping() {
-      // Fake auto-replies pong synchronously so heartbeat code stays happy.
+      // A live peer answers a ping synchronously so heartbeat code stays
+      // happy. Once the bridge has issued `close()`, there is no live peer
+      // behind the socket: like `ws`, the ping is dropped and no pong comes.
+      if (readyState !== WEBSOCKET_OPEN) return;
       listeners.pong?.();
     },
     close(code?: number, reason?: string) {
@@ -123,6 +129,7 @@ function createFakeWs(): FakeWs {
     },
     terminate() {
       readyState = 3;
+      ws.terminateCalls++;
     },
     // The bridge supports either typed event channel (`on('message', ...)`,
     // etc.). We type-erase here to avoid duplicating every overload in the
@@ -1438,6 +1445,136 @@ describe("WebSocket bridge — upstream close", () => {
       expect.objectContaining({
         errorCode: "BRIDGE_CLOSED",
         reason: expect.stringMatching(/upstream/) as string,
+      }),
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Close handshake under the heartbeat (tmux-server-events-6sp.5x2)
+//
+// sendFatalAndClose issues `ws.close()` and then waits for the peer's close
+// frame; a peer that never answers would otherwise hold the connection open
+// until something outside the bridge (ws's own closeTimeout, or shutdown's
+// drain deadline) tears it down. The heartbeat's pong deadline bounds that
+// wait: once a fatal is pending, the next deadline terminates the socket and
+// finalize reports the pending fatal, not a second one.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — close handshake under the heartbeat", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const HEARTBEAT = { heartbeatIntervalMs: 1_000, heartbeatTimeoutMs: 500 };
+
+  it("a heartbeat timeout while a fatal is pending terminates the socket and reports that fatal", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    // A second hello on a running connection is the fatal; the peer never
+    // answers the close frame.
+    ws.feedClient({ k: "hello" });
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+    expect(ws.closeCalls).toHaveLength(1);
+    expect(ws.terminateCalls).toBe(0);
+    expect(closedEvents(events)).toHaveLength(0);
+
+    // Next tick pings a closing socket (no pong can come); its deadline
+    // fires with the fatal still pending.
+    await vi.advanceTimersByTimeAsync(
+      HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs,
+    );
+
+    expect(ws.terminateCalls).toBe(1);
+    // No second fatal frame and no second close: the first fatal stands.
+    expect(fatalFrames(ws)).toHaveLength(1);
+    expect(ws.closeCalls).toHaveLength(1);
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        errorCode: "BRIDGE_PROTOCOL_ERROR",
+        reason: expect.stringMatching(/duplicate hello frame/) as string,
+      }),
+    ]);
+
+    // The close event ws emits after terminate() finds the connection closed.
+    ws.fireClose(1006, "");
+    expect(closedEvents(events)).toHaveLength(1);
+  });
+
+  it("a fatal before hello is under the same deadline: the heartbeat is armed by the fatal, not by the handshake", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => new TmuxClient(t.transport),
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+
+    // An unknown frame kind before hello is a fatal protocol error.
+    ws.feedClient({ k: "not-a-frame" });
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+    expect(ws.terminateCalls).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(
+      HEARTBEAT.heartbeatIntervalMs + HEARTBEAT.heartbeatTimeoutMs,
+    );
+
+    expect(ws.terminateCalls).toBe(1);
+    expect(closedEvents(events).map((e) => e.errorCode)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+    expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+  });
+
+  it("shutdown's drain deadline reaching a connection with a pending fatal reports that fatal, not the shutdown", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+      ...HEARTBEAT,
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedClient({ k: "hello" });
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
+
+    // The drain deadline is shorter than the heartbeat's, so shutdown's
+    // terminate() is the one that reaches this connection.
+    const shutdown = bridge.shutdown(100);
+    await vi.advanceTimersByTimeAsync(100);
+    await shutdown;
+
+    expect(ws.terminateCalls).toBe(1);
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        errorCode: "BRIDGE_PROTOCOL_ERROR",
+        reason: expect.stringMatching(/duplicate hello frame/) as string,
       }),
     ]);
   });

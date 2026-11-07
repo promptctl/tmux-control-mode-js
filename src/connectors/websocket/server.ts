@@ -383,11 +383,7 @@ class Connection {
       {
         onTick: () => this.maybeFlushBuffered(),
         ping: () => this.ws.ping(),
-        onTimeout: () =>
-          this.sendFatalAndClose(
-            "BRIDGE_CLOSED",
-            `heartbeat timeout after ${defaults.heartbeatTimeoutMs}ms`,
-          ),
+        onTimeout: () => this.onPongDeadline(),
       },
     );
 
@@ -1121,16 +1117,48 @@ class Connection {
   }
 
   terminate(): void {
+    // [LAW:one-source-of-truth] `this.fatal` is the reason the peer was
+    // already given (sendFatalAndClose is write-once), so it is the reason
+    // connection-closed reports; the shutdown reason names only a
+    // termination nothing preceded.
+    this.terminateWith(
+      this.fatal ??
+        new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
+    );
+  }
+
+  // [LAW:single-enforcer] The heartbeat is the liveness mechanism this
+  // server owns, and the close handshake is a liveness question: once
+  // sendFatalAndClose has issued `ws.close()`, the peer's close frame is
+  // the only thing finalize is waiting on, and this deadline bounds that
+  // wait (RFC 6455 §7.1.1's "reasonable time"). `this.fatal` is the
+  // discriminator of which phase the connection is in: no fatal pending
+  // means the peer missed a pong on a live connection and the fatal close
+  // starts; a fatal pending means the peer is not answering the close
+  // handshake either, so the socket is terminated with that fatal intact.
+  private onPongDeadline(): void {
+    if (this.fatal === undefined) {
+      this.sendFatalAndClose(
+        "BRIDGE_CLOSED",
+        `heartbeat timeout after ${this.defaults.heartbeatTimeoutMs}ms`,
+      );
+      return;
+    }
+    this.terminateWith(this.fatal);
+  }
+
+  // [LAW:one-type-per-behavior] Forced close, from either caller: tear the
+  // socket down without waiting for the peer's close frame, and run the
+  // one cleanup path now. The `close` event `ws.terminate()` later emits
+  // finds the connection already closed.
+  private terminateWith(fatal: BridgeError): void {
     if (this.state.kind === "closed") return;
     try {
       this.ws.terminate();
     } catch {
       // already gone
     }
-    this.finalize(
-      new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
-      undefined,
-    );
+    this.finalize(fatal, undefined);
   }
 
   // -------------------------------------------------------------------------
@@ -1174,6 +1202,11 @@ class Connection {
     } catch {
       // ignore
     }
+    // [LAW:dataflow-not-control-flow] Every close handshake the bridge opens
+    // runs under the heartbeat's deadline (see onPongDeadline), whatever
+    // state the connection was in: a fatal before hello has no heartbeat
+    // running yet, and start() is idempotent for one that does.
+    this.heartbeat.start();
   }
 
   // -------------------------------------------------------------------------
