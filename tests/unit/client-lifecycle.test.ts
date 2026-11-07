@@ -20,6 +20,7 @@ import {
   TransportSendError,
 } from "../../src/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { sessionScope } from "../../src/pane-output.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -305,5 +306,37 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     const call = client.execute("list-windows");
     t.feed("%begin 1 1 0\n%end 1 1 0\n");
     return expect(call).resolves.toMatchObject({ success: true });
+  });
+});
+
+describe("TmuxClient — a refused send is this connection's drop", () => {
+  it("reports no topology-error and queries no more once a send is refused", async () => {
+    let refuse = false;
+    const sent: string[] = [];
+    const t = createFakeTransport();
+    const transport: TmuxTransport = {
+      ...t,
+      send(data) {
+        sent.push(data);
+        return refuse
+          ? ({ ok: false, reason: "stdin failed: EPIPE" } as const)
+          : ({ ok: true } as const);
+      },
+    };
+    const client = new TmuxClient(transport);
+    t.feed(STARTUP_GREETING);
+    const errors: unknown[] = [];
+    client.on("topology-error", (ev) => errors.push(ev));
+    refuse = true;
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    t.feed("%window-add @3\n");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(errors).toEqual([]);
+    // The refused bootstrap is the last thing asked.
+    expect(sent.filter((s) => s.startsWith("list-panes"))).toHaveLength(1);
   });
 });

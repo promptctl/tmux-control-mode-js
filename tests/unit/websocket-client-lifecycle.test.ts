@@ -790,4 +790,69 @@ describe("topology across a reconnect", () => {
     expect(errors).toEqual([]);
     await client.close();
   });
+
+  async function readyWithBootstrap() {
+    const { client, hub } = makeClient();
+    const errors: unknown[] = [];
+    client.on("topology-error", (ev) => errors.push(ev));
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    await new Promise((r) => setImmediate(r));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    const ws = hub.latest();
+    const queries = () =>
+      ws.sent
+        .map(
+          (raw) =>
+            JSON.parse(raw) as { k: string; id: string; args?: unknown[] },
+        )
+        .filter(
+          (f) =>
+            f.k === "call" && JSON.stringify(f.args).includes("list-panes"),
+        );
+    const refuse = (id: string, message: string) =>
+      ws.fire("message", {
+        data: encodeServerFrame({
+          k: "result",
+          id,
+          ok: false,
+          error: { code: "BRIDGE_CLOSED", message },
+        } satisfies ServerFrame),
+      });
+    return { client, ws, errors, queries, refuse };
+  }
+
+  it("does not report a query the server answered BRIDGE_CLOSED for (its tmux is gone)", async () => {
+    const s = await readyWithBootstrap();
+    s.refuse(s.queries()[0]!.id, "transport closed");
+    await new Promise((r) => setImmediate(r));
+    s.ws.fire("message", {
+      data: encodeServerFrame({
+        k: "event",
+        msg: { type: "window-add", windowId: 3 },
+      } satisfies ServerFrame),
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(s.errors).toEqual([]);
+    expect(s.queries()).toHaveLength(1);
+    await s.client.close();
+  });
+
+  it("still reports a query a draining server refused", async () => {
+    const s = await readyWithBootstrap();
+    s.ws.fire("message", {
+      data: encodeServerFrame({
+        k: "draining",
+        deadlineMs: 1234,
+      } satisfies ServerFrame),
+    });
+    s.refuse(s.queries()[0]!.id, "bridge is draining");
+    await new Promise((r) => setImmediate(r));
+    expect(s.errors).toHaveLength(1);
+    await s.client.close();
+  });
 });

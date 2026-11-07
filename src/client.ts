@@ -22,7 +22,7 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { TopologyRouter } from "./topology-router.js";
-import type { TopologyRouterOptions } from "./topology-router.js";
+import type { RunCommand, TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
@@ -366,7 +366,16 @@ export class TmuxClient implements TmuxConnection {
     this.currentConnectionState = next;
     this.emitter.emit({ type: "connection-state", state: next });
     if (next.status === "ready") {
-      this.router.onTransportReady((cmd) => this.execute(cmd));
+      // [LAW:no-ambient-temporal-coupling] A refused send (spawn stdin EPIPE)
+      //   can precede the transport's close; TmuxClient never reconnects, so
+      //   it is this connection's drop and the router hears it first.
+      const run: RunCommand = (cmd) =>
+        this.execute(cmd).catch((err: unknown) => {
+          if (err instanceof TransportSendError)
+            this.router.onTransportLost(run);
+          throw err;
+        });
+      this.router.onTransportReady(run);
     }
   }
 

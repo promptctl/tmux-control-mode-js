@@ -577,6 +577,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   onResult(frame: ResultFrame): void {
+    // [LAW:no-ambient-temporal-coupling] The server answers BRIDGE_CLOSED when
+    //   its upstream tmux is gone, ahead of its close frame, so the router hears
+    //   the drop before the rejection settles. A drain refusal is not a drop:
+    //   the `draining` frame precedes it on this socket and output keeps flowing.
+    if (
+      "error" in frame &&
+      frame.error.code === "BRIDGE_CLOSED" &&
+      !this.draining &&
+      this.routerRun !== null
+    )
+      this.router.onTransportLost(this.routerRun);
     const violation = this.outbox.settle(frame);
     // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
     if (violation !== undefined)
