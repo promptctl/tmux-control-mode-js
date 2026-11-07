@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
 import {
+  BridgeError,
   encodeServerFrame,
   type ResultFrame,
   type ServerFrame,
@@ -789,5 +790,50 @@ describe("topology across a reconnect", () => {
     expect(bootstraps(hub.sockets[1]!)).toBe(1);
     expect(errors).toEqual([]);
     await client.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Heartbeat cadence is parsed at construction (6sp.lr4). A pong deadline no
+// pong could meet fails here, naming the option, instead of closing every
+// connection one interval after welcome.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — heartbeat options are parsed at construction", () => {
+  function build(opts: {
+    heartbeatIntervalMs?: number;
+    heartbeatTimeoutMs?: number;
+  }): { fn: () => unknown; hub: MockWebSocketHub } {
+    const hub = new MockWebSocketHub();
+    const fn = (): unknown =>
+      new WebSocketTmuxClient({
+        url: "ws://test/",
+        createWebSocket: hub.factory as unknown as (
+          url: string,
+        ) => BrowserWebSocketLike,
+        ...opts,
+      });
+    return { fn, hub };
+  }
+
+  it("heartbeatTimeoutMs: 0 throws BRIDGE_INVALID_ARG naming the option and value, and opens no socket", () => {
+    const { fn, hub } = build({ heartbeatTimeoutMs: 0 });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("heartbeatTimeoutMs (0) must be");
+    expect(hub.sockets).toHaveLength(0);
+  });
+
+  it("a negative heartbeatIntervalMs throws naming the option, the value, and the off switch", () => {
+    const { fn, hub } = build({ heartbeatIntervalMs: -1 });
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("heartbeatIntervalMs (-1) must be 0 (heartbeat off) or");
+    expect(hub.sockets).toHaveLength(0);
+  });
+
+  it("heartbeatIntervalMs: 0 constructs and connects", () => {
+    const { fn, hub } = build({ heartbeatIntervalMs: 0 });
+    expect(fn).not.toThrow();
+    expect(hub.sockets).toHaveLength(1);
   });
 });

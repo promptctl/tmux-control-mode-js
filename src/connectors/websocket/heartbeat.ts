@@ -8,6 +8,16 @@
 // difference is a value flowing through `ping()`/`onPong()`, not a second
 // class — so the outstanding-id bookkeeping lives here, never in the owner.
 
+import type { DurationMs, HeartbeatInterval } from "./duration.js";
+
+/** The cadence a probe runs at: a ping every `intervalMs`, each pong due
+ *  within `timeoutMs` of its ping. Both values are stamped by duration.ts, so
+ *  a probe cannot be built with a deadline no pong can meet. */
+export interface HeartbeatCadence {
+  readonly intervalMs: HeartbeatInterval;
+  readonly timeoutMs: DurationMs;
+}
+
 export interface HeartbeatHandlers<Token> {
   /** Called on every tick before the ping-or-skip decision — used by the
    *  owner as the idle-path backstop for the OS-buffer drain sample. */
@@ -39,8 +49,7 @@ export class Heartbeat<Token = void> {
   private inflight: Inflight<Token> | null = null;
 
   constructor(
-    private readonly intervalMs: number,
-    private readonly timeoutMs: number,
+    private readonly cadence: HeartbeatCadence,
     private readonly handlers: HeartbeatHandlers<Token>,
   ) {}
 
@@ -49,7 +58,10 @@ export class Heartbeat<Token = void> {
     // stop() is a no-op, so the instance owns at most one interval by
     // construction — no leaked timer racing on `inflight`.
     if (this.timer !== null) return;
-    if (this.intervalMs <= 0) return;
+    // [LAW:dataflow-not-control-flow] The off switch is the cadence type's own
+    // literal, read once here where the timer lives; owners call start(),
+    // onPong() and stop() the same way whether or not a probe runs.
+    if (this.cadence.intervalMs === 0) return;
     this.timer = setInterval(() => {
       this.handlers.onTick?.();
       if (this.inflight !== null) return; // pong still outstanding
@@ -75,10 +87,10 @@ export class Heartbeat<Token = void> {
         // happens to stop-and-rebuild it on timeout.
         this.inflight = null;
         this.handlers.onTimeout();
-      }, this.timeoutMs);
+      }, this.cadence.timeoutMs);
       deadline.unref?.();
       this.inflight = { deadline, sent };
-    }, this.intervalMs);
+    }, this.cadence.intervalMs);
     this.timer.unref?.();
   }
 

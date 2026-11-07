@@ -8,6 +8,17 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `createWebSocketBridge` and `WebSocketTmuxClient` parse `heartbeatIntervalMs`
+  and `heartbeatTimeoutMs` at construction and throw
+  `BridgeError("BRIDGE_INVALID_ARG", ...)` naming the option and value when
+  one is not a finite number of ms in (0, 2^31-1]. `heartbeatIntervalMs: 0`
+  remains the off switch; a negative interval used to disable the heartbeat
+  silently and a non-positive timeout closed every peer with
+  `heartbeat timeout after 0ms` one interval after hello. On the wire,
+  `WelcomeLimits.heartbeatIntervalMs` is typed `HeartbeatInterval`
+  (`0 | DurationMs`, exported from `./websocket/protocol`), and a client
+  rejects a welcome advertising any other value as `BRIDGE_PROTOCOL_ERROR`
+  — a server configured with a negative interval must be reconfigured to `0`.
 - `PaneTopologyManager.seed` and `updateWindow` entries carry a required
   `floating` flag (tmux 3.8 floating panes), and `updateWindow` returns the
   `Contradiction` it found. `parsePaneListLine` reads the flag from an

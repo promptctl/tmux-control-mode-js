@@ -18,6 +18,7 @@ import {
   type ServerFrame,
   type WelcomeFrame,
 } from "../../src/connectors/websocket/protocol.js";
+import { parseDurationMs } from "../../src/connectors/websocket/duration.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 
 // ---------------------------------------------------------------------------
@@ -236,7 +237,7 @@ class MockWebSocketHub {
       k: "welcome",
       limits: {
         requestTimeoutMs: 30_000,
-        heartbeatIntervalMs: 30_000,
+        heartbeatIntervalMs: parseDurationMs("heartbeatIntervalMs", 30_000),
         maxInflight: 16,
       },
     };

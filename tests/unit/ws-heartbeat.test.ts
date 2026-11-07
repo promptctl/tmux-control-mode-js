@@ -1,18 +1,34 @@
 // tests/unit/ws-heartbeat.test.ts
 // Unit tests for the Heartbeat collaborator extracted from Connection.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { Heartbeat } from "../../src/connectors/websocket/heartbeat.js";
+import {
+  Heartbeat,
+  type HeartbeatCadence,
+} from "../../src/connectors/websocket/heartbeat.js";
+import {
+  parseDurationMs,
+  parseHeartbeatInterval,
+} from "../../src/connectors/websocket/duration.js";
+
+// The probe only accepts a stamped cadence; tests go through the same parser
+// the bridge and client do.
+function cadence(intervalMs: number, timeoutMs: number): HeartbeatCadence {
+  return {
+    intervalMs: parseHeartbeatInterval("intervalMs", intervalMs),
+    timeoutMs: parseDurationMs("timeoutMs", timeoutMs),
+  };
+}
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("Heartbeat — disabled", () => {
-  it("does not start a timer when intervalMs <= 0", () => {
+describe("Heartbeat — off", () => {
+  it("does not start a timer when the interval is 0, the off switch", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(0, 5000, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(0, 5000), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(60_000);
     expect(ping).not.toHaveBeenCalled();
@@ -26,7 +42,7 @@ describe("Heartbeat — normal operation", () => {
     const ticks: number[] = [];
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, {
+    const hb = new Heartbeat(cadence(100, 50), {
       onTick: () => ticks.push(Date.now()),
       ping,
       onTimeout,
@@ -41,7 +57,7 @@ describe("Heartbeat — normal operation", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100);
     expect(ping).toHaveBeenCalledTimes(1);
@@ -54,7 +70,7 @@ describe("Heartbeat — normal operation", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // ping sent, pong deadline armed
     hb.onPong(); // peer replied in time
@@ -66,7 +82,7 @@ describe("Heartbeat — normal operation", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 200, { ping, onTimeout }); // timeout > 2 intervals
+    const hb = new Heartbeat(cadence(100, 200), { ping, onTimeout }); // timeout > 2 intervals
     hb.start();
     vi.advanceTimersByTime(100); // tick 1 — ping sent
     vi.advanceTimersByTime(100); // tick 2 — pong not received, skip ping
@@ -77,7 +93,7 @@ describe("Heartbeat — normal operation", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 200, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(100, 200), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // tick 1 — ping #1
     hb.onPong();
@@ -89,7 +105,7 @@ describe("Heartbeat — normal operation", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // tick 1 — ping #1
     vi.advanceTimersByTime(50); // deadline expires → onTimeout fires
@@ -106,7 +122,7 @@ describe("Heartbeat — correlation token", () => {
     vi.useFakeTimers();
     let next = 0;
     const onTimeout = vi.fn();
-    const hb = new Heartbeat<string>(100, 50, {
+    const hb = new Heartbeat<string>(cadence(100, 50), {
       ping: () => `p${(next += 1)}`,
       onTimeout,
     });
@@ -121,7 +137,7 @@ describe("Heartbeat — correlation token", () => {
     vi.useFakeTimers();
     let next = 0;
     const onTimeout = vi.fn();
-    const hb = new Heartbeat<string>(100, 50, {
+    const hb = new Heartbeat<string>(cadence(100, 50), {
       ping: () => `p${(next += 1)}`,
       onTimeout,
     });
@@ -136,7 +152,7 @@ describe("Heartbeat — correlation token", () => {
     vi.useFakeTimers();
     let next = 0;
     const onTimeout = vi.fn();
-    const hb = new Heartbeat<string>(100, 50, {
+    const hb = new Heartbeat<string>(cadence(100, 50), {
       ping: () => `p${(next += 1)}`,
       onTimeout,
     });
@@ -154,7 +170,7 @@ describe("Heartbeat — start() is idempotent", () => {
   it("a second start() without stop() does not arm a second interval", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout: vi.fn() });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout: vi.fn() });
     hb.start();
     hb.start(); // must be a no-op — not a second racing interval
     vi.advanceTimersByTime(100);
@@ -169,7 +185,7 @@ describe("Heartbeat — ping() throws", () => {
       throw new Error("send failed");
     });
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // tick 1 — ping throws; the deadline arms anyway
     expect(onTimeout).not.toHaveBeenCalled();
@@ -188,7 +204,7 @@ describe("Heartbeat — ping() throws", () => {
   it("a pong carrying an id cannot clear the deadline of a ping that was never sent", () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat<string>(100, 50, {
+    const hb = new Heartbeat<string>(cadence(100, 50), {
       ping: () => {
         throw new Error("send failed");
       },
@@ -207,7 +223,7 @@ describe("Heartbeat — ping() throws", () => {
     // answer to an earlier ping) would clear a deadline nothing can answer.
     vi.useFakeTimers();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, {
+    const hb = new Heartbeat(cadence(100, 50), {
       ping: (): void => {
         throw new Error("send failed");
       },
@@ -226,7 +242,7 @@ describe("Heartbeat — stop() then start()", () => {
     vi.useFakeTimers();
     let next = 0;
     const onTimeout = vi.fn();
-    const hb = new Heartbeat<string>(100, 50, {
+    const hb = new Heartbeat<string>(cadence(100, 50), {
       ping: () => `p${(next += 1)}`,
       onTimeout,
     });
@@ -247,7 +263,7 @@ describe("Heartbeat — stop()", () => {
   it("stop() prevents further ticks", () => {
     vi.useFakeTimers();
     const ping = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping, onTimeout: vi.fn() });
+    const hb = new Heartbeat(cadence(100, 50), { ping, onTimeout: vi.fn() });
     hb.start();
     vi.advanceTimersByTime(100);
     hb.stop();
@@ -258,7 +274,7 @@ describe("Heartbeat — stop()", () => {
   it("stop() clears a pending pong deadline", () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();
-    const hb = new Heartbeat(100, 50, { ping: vi.fn(), onTimeout });
+    const hb = new Heartbeat(cadence(100, 50), { ping: vi.fn(), onTimeout });
     hb.start();
     vi.advanceTimersByTime(100); // ping sent, pong deadline armed
     hb.stop();
@@ -268,7 +284,10 @@ describe("Heartbeat — stop()", () => {
 
   it("onPong() after stop() is a no-op (does not throw)", () => {
     vi.useFakeTimers();
-    const hb = new Heartbeat(100, 50, { ping: vi.fn(), onTimeout: vi.fn() });
+    const hb = new Heartbeat(cadence(100, 50), {
+      ping: vi.fn(),
+      onTimeout: vi.fn(),
+    });
     hb.start();
     hb.stop();
     expect(() => hb.onPong()).not.toThrow();

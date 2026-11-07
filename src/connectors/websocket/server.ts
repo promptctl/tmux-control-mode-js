@@ -83,6 +83,12 @@ import type {
 import { WEBSOCKET_OPEN } from "./types.js";
 import { RateLimiter } from "./rate-limiter.js";
 import { Heartbeat } from "./heartbeat.js";
+import {
+  parseDurationMs,
+  parseHeartbeatInterval,
+  type DurationMs,
+  type HeartbeatInterval,
+} from "./duration.js";
 import { CallPump } from "./call-pump.js";
 import { Handshake } from "./handshake.js";
 
@@ -151,10 +157,14 @@ export interface WebSocketBridgeOptions {
 
   /** Ping period. The heartbeat is the one liveness bound the bridge owns:
    *  a peer that misses a pong is closed, and a peer that then never answers
-   *  the close frame is terminated at the next pong deadline. `<= 0` turns
-   *  the heartbeat off, and with it both bounds. Default 30s. */
+   *  the close frame is terminated at the next pong deadline. `0` turns the
+   *  heartbeat off, and with it both bounds; otherwise a finite number of ms
+   *  in (0, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
+   *  Default 30s. */
   readonly heartbeatIntervalMs?: number;
-  /** How long after a ping its pong may arrive. Default 10s. */
+  /** How long after a ping its pong may arrive: a finite number of ms in
+   *  (0, 2^31-1], or `createWebSocketBridge` throws `BRIDGE_INVALID_ARG`.
+   *  Default 10s. */
   readonly heartbeatTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly maxInflight?: number;
@@ -310,18 +320,27 @@ type ConnectionState =
 type RunningState = Extract<ConnectionState, { kind: "running" }>;
 
 interface ResolvedDefaults {
-  readonly heartbeatIntervalMs: number;
-  readonly heartbeatTimeoutMs: number;
+  readonly heartbeatIntervalMs: HeartbeatInterval;
+  readonly heartbeatTimeoutMs: DurationMs;
   readonly requestTimeoutMs: number;
   readonly helloTimeoutMs: number;
   readonly maxInflight: number;
 }
 
+// [LAW:parse-dont-validate] The consumer's heartbeat options cross the border
+// once, here, at bridge construction: a value no pong could ever meet fails
+// with the option's name and value instead of as a liveness verdict against
+// every peer.
 function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
-    heartbeatIntervalMs:
+    heartbeatIntervalMs: parseHeartbeatInterval(
+      "heartbeatIntervalMs",
       opts.heartbeatIntervalMs ?? DEFAULTS.heartbeatIntervalMs,
-    heartbeatTimeoutMs: opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+    ),
+    heartbeatTimeoutMs: parseDurationMs(
+      "heartbeatTimeoutMs",
+      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+    ),
     requestTimeoutMs: opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     helloTimeoutMs: DEFAULTS.helloTimeoutMs,
     maxInflight: opts.maxInflight ?? DEFAULTS.maxInflight,
@@ -384,8 +403,10 @@ class Connection {
     this.rateLimiter = new RateLimiter(opts.rateLimit);
 
     this.heartbeat = new Heartbeat(
-      defaults.heartbeatIntervalMs,
-      defaults.heartbeatTimeoutMs,
+      {
+        intervalMs: defaults.heartbeatIntervalMs,
+        timeoutMs: defaults.heartbeatTimeoutMs,
+      },
       {
         onTick: () => this.maybeFlushBuffered(),
         ping: () => this.ws.ping(),
