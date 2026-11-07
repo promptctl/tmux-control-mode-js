@@ -221,9 +221,6 @@ export class TopologyRouter {
   onTransportReady(runCommand: RunCommand): void {
     this.runCommand = runCommand;
     this.queryRun = runCommand;
-    // A previous connection's rows are unverified after the outage; the new
-    // connection starts empty, and its bootstrap holds output until it seeds.
-    this.topology.seed([]);
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
     //   Before runCommand exists, sendPaneAction drops every action — but the
     //   only panes the tracker can mark interesting pre-ready are pane-scope
@@ -240,13 +237,15 @@ export class TopologyRouter {
   }
 
   /**
-   * Called by the transport adapter once the connection will answer no new
-   * query (it dropped, or it is draining), before it rejects any. Topology
-   * queries stop until the next {@link onTransportReady}, whose bootstrap
-   * re-seeds; sinks stay attached.
+   * Called by the transport adapter the moment the connection drops, before it
+   * rejects the commands in flight. Topology queries stop until the next
+   * {@link onTransportReady}, whose bootstrap re-seeds; sinks stay attached.
    */
   onTransportLost(): void {
     this.queryRun = null;
+    // The rows describe a server this client can no longer see; the next
+    // connection's bootstrap holds output until it seeds, so none misroutes.
+    this.topology.seed([]);
   }
 
   /**
@@ -577,13 +576,12 @@ export class TopologyRouter {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
       //   newer refresh or a window-close owns this window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
-      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap: the
-      //   the next connection starts from an empty table its bootstrap seeds.
-      if (this.queryRun !== run) return;
       // A refresh is sent because the window's rows are suspect, so they go
       // whatever the failure; their panes are held, not misrouted.
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
+      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
+      if (this.queryRun !== run) return;
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.

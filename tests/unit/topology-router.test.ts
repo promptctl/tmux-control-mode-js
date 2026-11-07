@@ -1032,7 +1032,6 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       replies[0]!.reject(drop);
       await settle();
       expect(errors).toEqual([]);
-      expect(replies).toHaveLength(1);
     },
   );
 

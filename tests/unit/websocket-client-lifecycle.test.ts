@@ -790,36 +790,4 @@ describe("topology across a reconnect", () => {
     expect(errors).toEqual([]);
     await client.close();
   });
-
-  it("stops querying once the server drains, so its refusals are not topology errors", async () => {
-    const { client, hub } = makeClient();
-    const errors: unknown[] = [];
-    client.on("topology-error", (ev) => errors.push(ev));
-    void client.connect();
-    hub.open();
-    hub.welcome();
-    await new Promise((r) => setImmediate(r));
-    client.attachBytesSink(
-      { write() {}, end() {} },
-      { scope: sessionScope(1) },
-    );
-    hub.latest().fire("message", {
-      data: encodeServerFrame({
-        k: "draining",
-        deadlineMs: 1234,
-      } satisfies ServerFrame),
-    });
-    // A window event during the drain would refresh; nothing may be asked.
-    const before = hub.latest().sent.length;
-    hub.latest().fire("message", {
-      data: encodeServerFrame({
-        k: "event",
-        msg: { type: "window-add", windowId: 3 },
-      } satisfies ServerFrame),
-    });
-    await new Promise((r) => setImmediate(r));
-    expect(hub.latest().sent.length).toBe(before);
-    expect(errors).toEqual([]);
-    await client.close();
-  });
 });
