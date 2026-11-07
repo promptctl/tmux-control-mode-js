@@ -77,6 +77,7 @@ import type {
   ConnectionIdentity,
   RateLimitConfig,
   ServerWebSocketLike,
+  SocketEnd,
   UpgradeRequest,
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
@@ -460,15 +461,22 @@ class Connection {
       // existing emission site (finalize) can report it without a second,
       // manually-paired event at each sendFatalAndClose call site.
       this.finalize(this.fatal, {
+        kind: "close-event",
         code,
         reason: typeof reason === "string" ? reason : reason.toString("utf8"),
       });
     });
 
     this.ws.on("error", (err: Error) => {
+      // [LAW:one-source-of-truth] A pending fatal is the reason the peer was
+      // already given; a socket error that ends that close handshake (the
+      // peer's TCP connection reset, say) is how the socket ended, carried
+      // on socketEnd, not a second reason. The socket-error BridgeError
+      // names only an error nothing preceded.
       this.finalize(
-        new BridgeError("BRIDGE_INTERNAL", `socket error: ${err.message}`),
-        undefined,
+        this.fatal ??
+          new BridgeError("BRIDGE_INTERNAL", `socket error: ${err.message}`),
+        { kind: "error", message: err.message },
       );
     });
 
@@ -1124,6 +1132,7 @@ class Connection {
     this.terminateWith(
       this.fatal ??
         new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
+      "shutdown",
     );
   }
 
@@ -1144,21 +1153,26 @@ class Connection {
       );
       return;
     }
-    this.terminateWith(this.fatal);
+    this.terminateWith(this.fatal, "heartbeat");
   }
 
   // [LAW:one-type-per-behavior] Forced close, from either caller: tear the
   // socket down without waiting for the peer's close frame, and run the
   // one cleanup path now. The `close` event `ws.terminate()` later emits
-  // finds the connection already closed.
-  private terminateWith(fatal: BridgeError): void {
+  // finds the connection already closed. Who forced it is a value on the
+  // one event, so a shutdown and a stuck close handshake stay tellable
+  // apart in the observability stream. [LAW:nothing-unseen]
+  private terminateWith(
+    fatal: BridgeError,
+    by: Extract<SocketEnd, { kind: "terminated" }>["by"],
+  ): void {
     if (this.state.kind === "closed") return;
     try {
       this.ws.terminate();
     } catch {
       // already gone
     }
-    this.finalize(fatal, undefined);
+    this.finalize(fatal, { kind: "terminated", by });
   }
 
   // -------------------------------------------------------------------------
@@ -1202,20 +1216,17 @@ class Connection {
     } catch {
       // ignore
     }
-    // [LAW:dataflow-not-control-flow] Every close handshake the bridge opens
-    // runs under the heartbeat's deadline (see onPongDeadline), whatever
-    // state the connection was in: a fatal before hello has no heartbeat
-    // running yet, and start() is idempotent for one that does.
+    // [LAW:dataflow-not-control-flow] Every close handshake this connection
+    // opens runs under the heartbeat's deadline (see onPongDeadline),
+    // whatever state the connection was in: a fatal before hello has no
+    // heartbeat running yet, and start() is idempotent for one that does.
     this.heartbeat.start();
   }
 
   // -------------------------------------------------------------------------
   // Finalize — the single cleanup path.
   // -------------------------------------------------------------------------
-  private finalize(
-    fatal: BridgeError | undefined,
-    closeInfo: { code: number; reason: string } | undefined,
-  ): void {
+  private finalize(fatal: BridgeError | undefined, socketEnd: SocketEnd): void {
     if (this.state.kind === "closed") return;
 
     // Capture client/ctx/bridge/peer (if we ever reached running) into the
@@ -1257,12 +1268,14 @@ class Connection {
       this.disposeClientSafely(final.client, final.ctx);
     }
 
+    const closeFrame = socketEnd.kind === "close-event" ? socketEnd : undefined;
     this.emit({
       kind: "connection-closed",
       identity: this.identity,
-      code: closeInfo?.code,
-      reason: closeInfo?.reason ?? fatal?.message,
+      code: closeFrame?.code,
+      reason: closeFrame?.reason ?? fatal?.message,
       errorCode: fatal?.code,
+      socketEnd,
     });
 
     this.closed();

@@ -151,6 +151,29 @@ export type AuthorizeResult =
 // Observability event (server-side)
 // ---------------------------------------------------------------------------
 
+/**
+ * How the socket under a connection ended. `connection-closed` carries the
+ * reason the bridge gave the peer (`errorCode`/`reason`); this carries how the
+ * transport actually came down, which is a separate fact: the same fatal can
+ * end with the peer's close frame, with a socket error, or with the bridge
+ * tearing the socket down because the peer never answered.
+ * [LAW:types-are-the-program] [LAW:nothing-unseen]
+ */
+export type SocketEnd =
+  /** The socket's own close event: the peer's close frame, or the transport's
+   *  report of an abnormal closure (ws uses code 1006 for the latter). */
+  | {
+      readonly kind: "close-event";
+      readonly code: number;
+      readonly reason: string;
+    }
+  /** The socket's error event. */
+  | { readonly kind: "error"; readonly message: string }
+  /** The bridge forced the socket down without a close frame from the peer:
+   *  `shutdown`'s drain deadline passed, or the `heartbeat`'s pong deadline
+   *  passed while the bridge's close handshake was pending. */
+  | { readonly kind: "terminated"; readonly by: "shutdown" | "heartbeat" };
+
 export type BridgeObservabilityEvent =
   | {
       readonly kind: "connection-opened";
@@ -166,6 +189,7 @@ export type BridgeObservabilityEvent =
       // peer-initiated disconnect — the BridgeErrorCode the caller already
       // had in hand at the fatal-close site. [LAW:single-enforcer]
       readonly errorCode?: BridgeErrorCode;
+      readonly socketEnd: SocketEnd;
     }
   | {
       readonly kind: "call";
