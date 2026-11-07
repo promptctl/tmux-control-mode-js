@@ -1025,12 +1025,14 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
     expect(s.replies.at(-1)!.cmd).toContain("list-panes -a ");
+    // Output between the failure and the server-wide answer is held for it.
+    s.router.dispatchBytes(makeChunk(5));
     answerRefresh(s.replies, "all");
     await settle();
     // The first 5 is the chunk held before the move was known.
     s.router.dispatchBytes(makeChunk(5));
-    expect(paneIdsOf(s.newWindow)).toEqual([5, 5]);
-    expect(paneIdsOf(s.newSession)).toEqual([5, 5]);
+    expect(paneIdsOf(s.newWindow)).toEqual([5, 5, 5]);
+    expect(paneIdsOf(s.newSession)).toEqual([5, 5, 5]);
   });
 
   it("removes a closed window once its refresh finds it gone", async () => {
