@@ -372,20 +372,25 @@ export class TopologyRouter {
     switch (msg.type) {
       case "window-close":
       case "unlinked-window-close":
-        // Synchronous topology removal + epoch invalidation. Any in-flight
-        // list-panes result for this window will be discarded by the epoch check.
+        // tmux also sends these for a window leaving one session that lives
+        // on in another (unlink-window, move-window), so a close does not say
+        // the window is gone. Its panes are unplaced and any query sent before
+        // the close is discarded; the refresh re-places them, or fails because
+        // the window no longer exists and removes it.
         this.topology.removeWindow(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
+        if (this.needsTopology()) {
+          void this.refreshWindow(msg.windowId);
+        }
         break;
       case "layout-change":
-        // A pane that join-pane/move-pane moved in still has its old entry,
-        // and tmux sends %output for it before list-panes answers, so a pane
-        // the layout lists but the table places elsewhere is unplaced now and
-        // its output held until the refresh places it. Moving out needs no
-        // check: the destination's own layout-change catches the pane, or the
-        // destination is outside the attached session and tmux sends nothing
-        // for it. The layout cannot place anything: tmux 3.8 omits floating
+        // A moved pane keeps its old entry, and tmux sends %output for it
+        // before list-panes answers. join-pane/move-pane show up as a pane
+        // the layout lists but the table places elsewhere; break-pane only as
+        // the source layout omitting the pane, then %window-add. Either way
+        // the pane is unplaced now and its output held until a refresh places
+        // it. The layout cannot place anything: tmux 3.8 omits floating
         // panes, and it carries no session, so list-panes decides membership.
         if (this.needsTopology()) {
           const panes =
@@ -393,7 +398,7 @@ export class TopologyRouter {
               ? msg.layout.panes.map((p) => p.paneId)
               : [];
           this.epoch.recordLayout(msg.windowId, panes);
-          const lost = this.topology.unplaceMovedIn(msg.windowId, panes);
+          const lost = this.topology.unplaceContradicted(msg.windowId, panes);
           // A new refresh supersedes any sent before the move.
           for (const id of new Set([...lost, msg.windowId])) {
             void this.refreshWindow(id);
@@ -403,6 +408,9 @@ export class TopologyRouter {
       case "window-add":
       case "unlinked-window-add":
         if (this.needsTopology()) {
+          // move-window/link-window bring a known window's panes along with
+          // the session they had; a new window has none here.
+          this.topology.removeWindow(msg.windowId);
           void this.refreshWindow(msg.windowId);
         }
         break;
@@ -467,7 +475,7 @@ export class TopologyRouter {
       //   seen since it started, and their windows' refreshes already follow
       //   the move, so only the windows a pane left are asked again.
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
-        for (const id of this.topology.unplaceMovedIn(windowId, panes)) {
+        for (const id of this.topology.unplaceContradicted(windowId, panes)) {
           void this.refreshWindow(id);
         }
       }

@@ -230,17 +230,28 @@ export class PaneTopologyManager {
   }
 
   /**
-   * Unplace every pane `layoutPanes` puts in `windowId` that the table maps
-   * to another window: it moved in, and the window refresh that follows
-   * re-places it; until then it matches no window/session scope. Returns the
-   * windows those panes left, whose membership any earlier query misstates.
+   * Unplace every pane whose placement a layout of `windowId` contradicts:
+   * one it lists that the table maps to another window (moved in), and one
+   * the table maps here that it omits (broken out, or floated — tmux 3.8
+   * omits floating panes). The refreshes that follow re-place them; until
+   * then they match no window/session scope. Returns the windows moved-in
+   * panes left, whose membership any earlier query misstates.
    */
-  unplaceMovedIn(
+  unplaceContradicted(
     windowId: number,
-    layoutPanes: Iterable<number>,
+    layoutPanes: readonly number[],
   ): ReadonlySet<number> {
+    const listed = new Set(layoutPanes);
+    for (const paneId of this.windowIndex.get(windowId) ?? []) {
+      if (
+        !listed.has(paneId) &&
+        this.table.get(paneId)?.windowId === windowId
+      ) {
+        this.table.delete(paneId);
+      }
+    }
     const lost = new Set<number>();
-    for (const paneId of layoutPanes) {
+    for (const paneId of listed) {
       const meta = this.table.get(paneId);
       if (meta !== undefined && meta.windowId !== windowId) {
         this.table.delete(paneId);

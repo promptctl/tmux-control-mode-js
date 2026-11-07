@@ -694,10 +694,11 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.dispatchBytes(makeChunk(5));
 
     replies[0]!.resolve(makeOkResponse(["%5 @2 $1"])); // stale: closed @9
+    replies[1]!.reject(new Error("can't find window: @9"));
     await settle();
-    expect(replies).toHaveLength(2);
+    expect(replies).toHaveLength(3);
     expect(sink.chunks).toHaveLength(0);
-    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    replies[2]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
     expect(paneIdsOf(sink)).toEqual([5]);
   });
@@ -716,6 +717,8 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     replies[1]!.reject(new Error("stale refresh failed"));
     await settle();
     router.dispatchBytes(makeChunk(7));
+    replies[2]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
     expect(paneIdsOf(sink)).toEqual([7]);
   });
 
@@ -791,6 +794,17 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     r.resolve(makeOkResponse(AFTER[windowId]));
   }
 
+  function answerRefreshWith(
+    replies: ReturnType<typeof controlledRun>["replies"],
+    windowId: number,
+    lines: string[],
+  ) {
+    const r = replies.at(-1);
+    if (r === undefined || !r.cmd.includes(`-t @${windowId} `))
+      throw new Error(`expected a list-panes -t @${windowId} refresh`);
+    r.resolve(makeOkResponse(lines));
+  }
+
   function layoutChange(windowId: number, layout: string) {
     return {
       type: "layout-change" as const,
@@ -818,7 +832,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     }
     router.dispatchBytes(makeChunk(4));
     router.dispatchBytes(makeChunk(5));
-    return { replies, oldSession, newSession, newWindow, pane };
+    return { router, replies, oldSession, newSession, newWindow, pane };
   }
 
   it("routes a moved pane's output to its new window and session, not its old ones", async () => {
@@ -867,8 +881,45 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
   // tmux 3.8 leaves floating panes out of the layout, so %5 missing from
   // @2's layout is not evidence it moved.
-  it("keeps routing a pane its own window's layout omits", async () => {
+  it("routes a pane broken out of its window to the window it lands in", async () => {
+    // break-pane: the source layout omits the pane, then %window-add.
     const s = await movedPane([[2, LAYOUT_4]]);
+    s.router.handleNotification({ type: "window-add", windowId: 3 });
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    answerRefresh(s.replies, 2);
+    answerRefresh(s.replies, 3);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+  });
+
+  it("routes a window moved in from another session to its new session", async () => {
+    // move-window: only %window-add; the window keeps its id and panes.
+    const s = await movedPane([]);
+    s.router.handleNotification({ type: "window-add", windowId: 2 });
+    s.router.dispatchBytes(makeChunk(4));
+    expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
+    answerRefreshWith(s.replies, 2, ["%4 @2 $2"]);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
+    expect(paneIdsOf(s.newSession)).toEqual([4]);
+  });
+
+  it("keeps a window that a close only unlinked from another session", async () => {
+    const s = await movedPane([]);
+    s.router.handleNotification({ type: "window-close", windowId: 2 });
+    s.router.dispatchBytes(makeChunk(4));
+    answerRefreshWith(s.replies, 2, ["%4 @2 $1"]);
+    await settle();
+    expect(paneIdsOf(s.oldSession)).toEqual([4, 5, 4]);
+  });
+
+  it("removes a closed window once its refresh finds it gone", async () => {
+    const s = await movedPane([]);
+    s.router.handleNotification({ type: "window-close", windowId: 2 });
+    s.replies.at(-1)!.reject(new Error("can't find window: @2"));
+    await settle();
+    s.router.dispatchBytes(makeChunk(4));
     expect(paneIdsOf(s.oldSession)).toEqual([4, 5]);
   });
 
