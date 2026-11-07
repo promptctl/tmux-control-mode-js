@@ -139,6 +139,10 @@ export class TopologyRouter {
   // refreshWindow() start queries, so the router owns this count; the epoch
   // tracker answers staleness, not liveness.
   private inFlight = 0;
+  // Each window's latest layout since the last bootstrap started. A bootstrap
+  // sent before a move lists the moved pane in its old window, so its seed is
+  // checked against these again.
+  private readonly layoutsSinceBootstrap = new Map<number, readonly number[]>();
 
   constructor(
     reportTopologyError: ReportTopologyError,
@@ -375,35 +379,26 @@ export class TopologyRouter {
         // Synchronous topology removal + epoch invalidation. Any in-flight
         // list-panes result for this window will be discarded by the epoch check.
         this.topology.removeWindow(msg.windowId);
+        this.layoutsSinceBootstrap.delete(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
         break;
       case "layout-change":
-        // A pane that join-pane/move-pane/break-pane moved still has its old
-        // entry, and tmux sends %output for it before list-panes answers. The
-        // layout names the window's tiled panes, so every pane it contradicts
-        // is unplaced now and its output held until the refresh places it;
-        // panes the layout confirms keep routing live. A malformed layout
-        // confirms none. The layout cannot place anything: tmux 3.8 omits
-        // floating panes, and it carries no session, so list-panes still
-        // decides membership.
+        // A pane that join-pane/move-pane moved in still has its old entry,
+        // and tmux sends %output for it before list-panes answers, so a pane
+        // the layout lists but the table places elsewhere is unplaced now and
+        // its output held until the refresh places it. Moving out needs no
+        // check: the destination's own layout-change catches the pane, or the
+        // destination is outside the attached session and tmux sends nothing
+        // for it. The layout cannot place anything: tmux 3.8 omits floating
+        // panes, and it carries no session, so list-panes decides membership.
         if (this.needsTopology()) {
-          const lost = this.topology.unplaceContradicted(
-            msg.windowId,
-            new Set(
-              msg.layout.kind === "parsed"
-                ? msg.layout.panes.map((p) => p.paneId)
-                : [],
-            ),
-          );
-          // [LAW:single-enforcer] A query sent before the change may misstate
-          //   these windows' membership (and would put moved panes back), so
-          //   the epoch tracker voids it as it does for a close, and each
-          //   window is asked again.
-          for (const windowId of new Set([...lost, msg.windowId])) {
-            this.epoch.invalidateWindow(windowId);
-            void this.refreshWindow(windowId);
-          }
+          const panes =
+            msg.layout.kind === "parsed"
+              ? msg.layout.panes.map((p) => p.paneId)
+              : [];
+          this.layoutsSinceBootstrap.set(msg.windowId, panes);
+          this.placeMovedIn(msg.windowId, panes);
         }
         break;
       case "window-add":
@@ -444,6 +439,7 @@ export class TopologyRouter {
     if (this.runCommand === null) return;
     const run = this.runCommand;
     const gen = this.epoch.startBootstrap();
+    this.layoutsSinceBootstrap.clear();
     this.inFlight++;
     try {
       const r = await run(
@@ -468,6 +464,9 @@ export class TopologyRouter {
         return parsed !== null ? [parsed] : [];
       });
       this.topology.seed(entries);
+      for (const [windowId, panes] of this.layoutsSinceBootstrap) {
+        this.placeMovedIn(windowId, panes);
+      }
       this.interest?.recompute();
     } catch (err) {
       // [FRAMING:representation] A bootstrap that settles after its transport
@@ -504,6 +503,13 @@ export class TopologyRouter {
       this.inFlight--;
       this.releaseHeld();
     }
+  }
+
+  // Unplace the panes `panes` moved into `windowId` and re-query every window
+  // they touch; a new refresh supersedes any sent before the move.
+  private placeMovedIn(windowId: number, panes: readonly number[]): void {
+    const lost = this.topology.movedIn(windowId, panes);
+    for (const id of new Set([...lost, windowId])) void this.refreshWindow(id);
   }
 
   private async refreshWindow(windowId: number): Promise<void> {

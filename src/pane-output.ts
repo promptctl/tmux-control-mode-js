@@ -230,26 +230,16 @@ export class PaneTopologyManager {
   }
 
   /**
-   * Unplace every pane whose entry a window's layout contradicts: mapped to
-   * the window but absent from `layoutPanes` (moved out), or present in it
-   * but mapped elsewhere (moved in). The window refresh that follows re-places
-   * them; until then they match no window/session scope. Returns the windows
-   * that lost a pane, whose membership any earlier query now misstates.
+   * Unplace every pane `layoutPanes` puts in `windowId` that the table maps
+   * to another window: it moved in, and the window refresh that follows
+   * re-places it; until then it matches no window/session scope. Returns the
+   * windows those panes left, whose membership any earlier query misstates.
    */
-  unplaceContradicted(
+  movedIn(
     windowId: number,
-    layoutPanes: ReadonlySet<number>,
+    layoutPanes: Iterable<number>,
   ): ReadonlySet<number> {
     const lost = new Set<number>();
-    for (const paneId of this.windowIndex.get(windowId) ?? []) {
-      if (
-        !layoutPanes.has(paneId) &&
-        this.table.get(paneId)?.windowId === windowId
-      ) {
-        this.table.delete(paneId);
-        lost.add(windowId);
-      }
-    }
     for (const paneId of layoutPanes) {
       const meta = this.table.get(paneId);
       if (meta !== undefined && meta.windowId !== windowId) {
@@ -816,10 +806,9 @@ export class TopologyEpochTracker {
   }
 
   /**
-   * Call when a window's membership changes: `window-close` /
-   * `unlinked-window-close`, and `layout-change` (a pane may have moved in or
-   * out). Invalidates any in-flight bootstrap (it would re-add the departed
-   * panes) and any in-flight per-window refresh for the same window.
+   * Call on `window-close` / `unlinked-window-close`. Invalidates any
+   * in-flight bootstrap (it would re-add the closed window's panes) and
+   * any in-flight per-window refresh for the same window.
    *
    * Deletes the window entry rather than incrementing it: the window is
    * gone and no future refresh will be started for this id (until a new
