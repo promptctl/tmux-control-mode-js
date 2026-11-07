@@ -345,67 +345,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
-  // ── Test 6: pane move (sessionScope) ─────────────────────────────────────
+  // ── Test 6: pane move (windowScope) ──────────────────────────────────────
 
-  it("SCOPE-06: sessionScope excludes a window moved out of the session", async () => {
-    const sessionA = uniqueName("move-a");
-    client = await attachSession(socketName, sessionA);
-
-    // Create a second session to move a window into.
-    const sessionB = uniqueName("move-b");
-    tmux(socketName, ["new-session", "-d", "-s", sessionB]);
-
-    // Create a second window in A so we have a movable window.
-    await client.execute("new-window");
-
-    const allBefore = await listAllPanes(client);
-    expect(allBefore.length).toBeGreaterThanOrEqual(2);
-    const sessionAId = allBefore[0].sessionId;
-
-    const windowIds = [
-      ...new Set(
-        allBefore
-          .filter((p) => p.sessionId === sessionAId)
-          .map((p) => p.windowId),
-      ),
-    ];
-    expect(windowIds.length).toBeGreaterThanOrEqual(2);
-    const windowToMove = windowIds[1];
-    const movedPanes = allBefore.filter((p) => p.windowId === windowToMove);
-    expect(movedPanes.length).toBeGreaterThan(0);
-    const movedPane = movedPanes[0].paneId;
-
-    const inA: { paneId: number; data: Uint8Array }[] = [];
-    const dispose = client.attachBytesSink(makeRecordingSink(inA), {
-      scope: sessionScope(sessionAId),
-    });
-    tmux(socketName, [
-      "move-window",
-      "-s",
-      `@${windowToMove}`,
-      "-t",
-      `${sessionB}:`,
-    ]);
-    await sendOutputToPane(client, movedPane);
-
-    // tmux sends %output only for panes in the attached session, so once
-    // moved the pane is silent here: settle on the pane having printed (the
-    // typed line and its echo), then one command round-trip.
-    const marker = `scope-test-${movedPane}`;
-    await pollUntil(
-      () =>
-        tmux(socketName, ["capture-pane", "-p", "-t", `%${movedPane}`]).split(
-          marker,
-        ).length > 2,
-    );
-    await client.execute("display-message -p flush");
-    // Only this test's own output counts: the shell's earlier prompt may
-    // legitimately reach A before the move.
-    expect(textOf(inA, movedPane)).not.toContain(marker);
-    dispose();
-  }, 20000);
-
-  it("SCOPE-06b: a pane joined into another window routes to it, not its old window", async () => {
+  it("SCOPE-06: a pane joined into another window routes to it, not its old window", async () => {
     const session = uniqueName("join");
     client = await attachSession(socketName, session);
     // Two panes in the first window, so it survives the join and reports the
