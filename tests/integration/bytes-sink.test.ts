@@ -150,7 +150,9 @@ describe.skipIf(!RUN_INTEGRATION)(
       // The quotes vanish only when the shell runs the line, so "int22-hello"
       // appears in the command's output, never in the line editor's echo of
       // the typed `int22-''hello`.
-      await client!.execute(`send-keys -t %${paneId} "echo int22-''hello" Enter`);
+      await client!.execute(
+        `send-keys -t %${paneId} "echo int22-''hello" Enter`,
+      );
 
       const outputs = () =>
         ipcMessages
