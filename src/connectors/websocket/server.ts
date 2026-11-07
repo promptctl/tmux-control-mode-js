@@ -15,6 +15,10 @@
 //   - Translate TmuxClient failures into structured BridgeError payloads.
 //   - Drain on shutdown: stop accepting new calls, let pending complete,
 //     then close every live connection.
+//   - Close the socket when the upstream TmuxClient closes (tmux died, its
+//     transport failed, or it was disposed), so the browser learns of it the
+//     way it learns any other disconnect instead of holding a `ready`
+//     connection whose every call answers BRIDGE_CLOSED.
 //
 // What the bridge is NOT responsible for:
 //   - Creating the WebSocket server. Consumers bring `ws` (or any impl) and
@@ -32,6 +36,7 @@
 
 import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
+import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { EmitterMessage } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
@@ -348,7 +353,7 @@ class Connection {
     private readonly defaults: ResolvedDefaults,
   ) {
     this.onAnyEventRef = (msg: EmitterMessage): void => {
-      this.onWireEvent(msg);
+      this.onUpstreamEvent(msg);
     };
     // [LAW:single-enforcer] Byte channel is multiplexer-shaped; the bridge
     //   attaches one all-panes sink instead of inspecting every wildcard
@@ -678,6 +683,19 @@ class Connection {
       unwind();
       return;
     }
+    // createClient() is caller-supplied and may hand back a shared client
+    // that already closed: its terminal `connection-state` was emitted
+    // before this connection's wildcard listener existed, so onUpstreamEvent
+    // below would never hear it and the connection would open onto a dead
+    // tmux. [LAW:parse-dont-validate] The one read of the acquired client's
+    // state, at its acquisition; from here to `state = running` nothing
+    // yields, so the listener wired below hears every later transition.
+    const upstream = client.connectionState;
+    if (upstream.status === "closed") {
+      unwind();
+      this.closeForUpstream(upstream);
+      return;
+    }
 
     // [LAW:single-enforcer] One BridgeConnection per Connection. It owns the
     // subscription refcount + per-pane outstanding-byte accounting + the
@@ -942,16 +960,49 @@ class Connection {
   // -------------------------------------------------------------------------
   //
   // Two channels, disjoint by message type:
-  //   - `onWireEvent` receives every emitter event and asks the bridge who it
-  //     reaches. Built with `forwardsLifecycle: false`, the bridge's delivered
-  //     route can only be a tmux or cross-session-layout message, so the JSON
-  //     event frame never sees a lifecycle or byte message — the route type
-  //     enforces it.
+  //   - `onUpstreamEvent` receives every emitter event. The upstream's
+  //     terminal `connection-state` is this connection's own death notice
+  //     and is consumed here; everything else goes to `onWireEvent`, which
+  //     asks the bridge who it reaches. Built with `forwardsLifecycle:
+  //     false`, the bridge's delivered route can only be a tmux or
+  //     cross-session-layout message, so the JSON event frame never sees a
+  //     lifecycle or byte message — the route type enforces it.
   //   - `onByteOutput` handles `PaneOutputMessage` via the binary
   //     side-channel. Bytes are routed here via
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
   // -------------------------------------------------------------------------
+
+  // [LAW:one-source-of-truth] `connectionState` is the one authority for
+  // "the transport told us it closed" (src/client.ts); `closed` is terminal
+  // and emitted once. `exit` is not consulted: it can precede the close and
+  // already rides the wire as data for the browser to interpret.
+  private onUpstreamEvent(msg: EmitterMessage): void {
+    if (msg.type === "connection-state" && msg.state.status === "closed") {
+      this.closeForUpstream(msg.state);
+      return;
+    }
+    this.onWireEvent(msg);
+  }
+
+  // [LAW:single-enforcer] Upstream death routes through the same fatal-close
+  // enforcer as every other fatal; the close event it provokes drives
+  // `finalize`, which emits the one connection-closed event.
+  // [LAW:one-type-per-behavior] BRIDGE_CLOSED is the code bridge-dispatch
+  // already assigns to a call the upstream's close rejected; all three close
+  // reasons take this one path and the reason rides in the message.
+  // [LAW:no-silent-failure] Replaces a connection that stayed `ready` with
+  // no events and every call answered BRIDGE_CLOSED, indistinguishable from
+  // an idle tmux.
+  private closeForUpstream(
+    state: Extract<TmuxConnectionState, { status: "closed" }>,
+  ): void {
+    this.sendFatalAndClose(
+      "BRIDGE_CLOSED",
+      `upstream tmux connection closed (${state.reason})`,
+    );
+  }
+
   private onWireEvent(msg: EmitterMessage): void {
     if (this.ws.readyState !== WEBSOCKET_OPEN) return;
     if (this.state.kind !== "running" && this.state.kind !== "draining") {
