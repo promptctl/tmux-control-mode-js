@@ -25,9 +25,12 @@ export interface HeartbeatHandlers<Token> {
 export class Heartbeat<Token = void> {
   private timer: ReturnType<typeof setInterval> | null = null;
   private pongDeadline: ReturnType<typeof setTimeout> | null = null;
-  // Meaningful only while `pongDeadline !== null` — the token of the single
-  // in-flight ping the next pong must match.
-  private outstanding: Token | undefined = undefined;
+  // Meaningful only while `pongDeadline !== null` — the single in-flight ping
+  // the next pong must match: the token it was sent with, or `null` when the
+  // transport refused it and no pong can answer. [LAW:types-are-the-program]
+  // The token is wrapped so a `void` token (`undefined`) stays distinct from
+  // "no ping was sent"; unwrapped, a bare `onPong()` would match a refusal.
+  private outstanding: { readonly token: Token } | null = null;
 
   constructor(
     private readonly intervalMs: number,
@@ -52,9 +55,9 @@ export class Heartbeat<Token = void> {
       // reaches the owner as onTimeout, the one liveness verdict this probe
       // gives, under the same bound a ping that was dropped unanswered gets.
       try {
-        this.outstanding = this.handlers.ping();
+        this.outstanding = { token: this.handlers.ping() };
       } catch {
-        this.outstanding = undefined;
+        this.outstanding = null;
       }
       this.pongDeadline = setTimeout(() => {
         // [LAW:composability] Reset before firing so the probe self-heals: a
@@ -63,7 +66,7 @@ export class Heartbeat<Token = void> {
         // collaborator must be correct standalone, not only when the consumer
         // happens to stop-and-rebuild it on timeout.
         this.pongDeadline = null;
-        this.outstanding = undefined;
+        this.outstanding = null;
         this.handlers.onTimeout();
       }, this.timeoutMs);
       this.pongDeadline.unref?.();
@@ -87,12 +90,13 @@ export class Heartbeat<Token = void> {
     // [LAW:dataflow-not-control-flow] The deadline's presence is the "is a ping
     // outstanding" signal; the token only disambiguates which ping. A pong that
     // does not match the outstanding token (a stale or duplicate reply) is
-    // ignored so it cannot clear a fresh ping's deadline.
+    // ignored so it cannot clear a fresh ping's deadline, and no pong matches
+    // a ping the transport refused.
     if (this.pongDeadline === null) return;
-    if (token !== this.outstanding) return;
+    if (this.outstanding === null || token !== this.outstanding.token) return;
     clearTimeout(this.pongDeadline);
     this.pongDeadline = null;
-    this.outstanding = undefined;
+    this.outstanding = null;
   }
 
   stop(): void {
@@ -104,6 +108,6 @@ export class Heartbeat<Token = void> {
       clearTimeout(this.pongDeadline);
       this.pongDeadline = null;
     }
-    this.outstanding = undefined;
+    this.outstanding = null;
   }
 }

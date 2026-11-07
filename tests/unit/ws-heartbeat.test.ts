@@ -195,6 +195,25 @@ describe("Heartbeat — ping() throws", () => {
     vi.advanceTimersByTime(50);
     expect(onTimeout).toHaveBeenCalledTimes(1);
   });
+
+  it("a pong carrying no token cannot clear the deadline of a ping that was never sent", () => {
+    // The server's probe: pongs carry no id, so "refused" must not look like
+    // "sent with a void token" or any pong (an unsolicited one, or a late
+    // answer to an earlier ping) would clear a deadline nothing can answer.
+    vi.useFakeTimers();
+    const onTimeout = vi.fn();
+    const hb = new Heartbeat(100, 50, {
+      ping: (): void => {
+        throw new Error("send failed");
+      },
+      onTimeout,
+    });
+    hb.start();
+    vi.advanceTimersByTime(100);
+    hb.onPong();
+    vi.advanceTimersByTime(50);
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Heartbeat — stop() then start()", () => {
