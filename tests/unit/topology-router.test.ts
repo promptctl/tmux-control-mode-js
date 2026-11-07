@@ -714,12 +714,33 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
     router.handleNotification({ type: "window-add", windowId: 3 });
     router.handleNotification({ type: "window-add", windowId: 3 });
+    replies[2]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
     replies[1]!.reject(new Error("stale refresh failed"));
     await settle();
     router.dispatchBytes(makeChunk(7));
-    replies[2]!.resolve(makeOkResponse(["%7 @3 $1"]));
-    await settle();
     expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
+  it("re-queries when a window-add makes the only bootstrap stale", async () => {
+    // move-window during the bootstrap: its reply can list @9 in its old
+    // session, and move-window sends no layout to correct it.
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.handleNotification({ type: "window-add", windowId: 9 });
+    router.dispatchBytes(makeChunk(5));
+
+    replies[0]!.resolve(makeOkResponse(["%5 @9 $2"])); // stale: before the move
+    replies[1]!.resolve(makeOkResponse(["%5 @9 $1"])); // superseded by the re-query
+    await settle();
+    expect(replies).toHaveLength(3);
+    expect(sink.chunks).toHaveLength(0);
+    replies[2]!.resolve(makeOkResponse(["%5 @9 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5]);
   });
 
   it("drops held chunks once no query can place them (failed bootstrap)", async () => {
@@ -879,8 +900,21 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(s.newSession)).toEqual([5]);
   });
 
-  // tmux 3.8 leaves floating panes out of the layout, so %5 missing from
-  // @2's layout is not evidence it moved.
+  // tmux 3.8 leaves floating panes out of the layout, so a floating pane
+  // missing from it is not evidence it moved.
+  it("keeps routing a floating pane live through its window's layout changes", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    replies[0]!.resolve(makeOkResponse(["%4 @2 $1 0", "%5 @2 $1 1"]));
+    await settle();
+    router.handleNotification(layoutChange(2, LAYOUT_4));
+    router.dispatchBytes(makeChunk(5));
+    expect(paneIdsOf(sink)).toEqual([5]);
+  });
+
   it("routes a pane broken out of its window to the window it lands in", async () => {
     // break-pane: the source layout omits the pane, then %window-add.
     const s = await movedPane([[2, LAYOUT_4]]);

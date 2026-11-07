@@ -23,6 +23,7 @@ import {
   PaneTopologyManager,
   PaneInterestTracker,
   TopologyEpochTracker,
+  PANE_LIST_FORMAT,
   parsePaneListLine,
   serverScope,
   type AttachOptions,
@@ -370,13 +371,17 @@ export class TopologyRouter {
    */
   handleNotification(msg: TmuxMessage): void {
     switch (msg.type) {
+      case "window-add":
+      case "unlinked-window-add":
       case "window-close":
       case "unlinked-window-close":
-        // tmux also sends these for a window leaving one session that lives
-        // on in another (unlink-window, move-window), so a close does not say
-        // the window is gone. Its panes are unplaced and any query sent before
-        // the close is discarded; the refresh re-places them, or fails because
-        // the window no longer exists and removes it.
+        // Each says only that the window's membership changed: a close also
+        // comes for a window leaving one session that lives on in another
+        // (unlink-window, move-window), and an add for a known window brought
+        // along with the session it had (move-window, link-window). Its panes
+        // are unplaced and any query sent before the change is discarded; the
+        // refresh re-places them, or fails because the window no longer
+        // exists and leaves it removed.
         this.topology.removeWindow(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
@@ -392,26 +397,18 @@ export class TopologyRouter {
         // the pane is unplaced now and its output held until a refresh places
         // it. The layout cannot place anything: tmux 3.8 omits floating
         // panes, and it carries no session, so list-panes decides membership.
+        // A layout that did not parse lists nothing, so it contradicts nothing.
         if (this.needsTopology()) {
-          const panes =
-            msg.layout.kind === "parsed"
-              ? msg.layout.panes.map((p) => p.paneId)
-              : [];
-          this.epoch.recordLayout(msg.windowId, panes);
-          const lost = this.topology.unplaceContradicted(msg.windowId, panes);
+          let lost: ReadonlySet<number> = new Set();
+          if (msg.layout.kind === "parsed") {
+            const panes = msg.layout.panes.map((p) => p.paneId);
+            this.epoch.recordLayout(msg.windowId, panes);
+            lost = this.topology.unplaceContradicted(msg.windowId, panes);
+          }
           // A new refresh supersedes any sent before the move.
           for (const id of new Set([...lost, msg.windowId])) {
             void this.refreshWindow(id);
           }
-        }
-        break;
-      case "window-add":
-      case "unlinked-window-add":
-        if (this.needsTopology()) {
-          // move-window/link-window bring a known window's panes along with
-          // the session they had; a new window has none here.
-          this.topology.removeWindow(msg.windowId);
-          void this.refreshWindow(msg.windowId);
         }
         break;
       case "session-changed":
@@ -448,9 +445,7 @@ export class TopologyRouter {
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
-      const r = await run(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
+      const r = await run(`list-panes -a -F ${PANE_LIST_FORMAT}`);
       if (!this.epoch.isBootstrapCurrent(gen)) {
         // A window-close mid-flight makes this result stale without starting a
         // replacement. Still the latest bootstrap means nothing newer will
@@ -523,15 +518,11 @@ export class TopologyRouter {
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     try {
-      const r = await run(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
-      );
+      const r = await run(`list-panes -t @${windowId} -F ${PANE_LIST_FORMAT}`);
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
+        return parsed !== null ? [parsed] : [];
       });
       this.topology.updateWindow(windowId, entries);
       this.interest?.recompute();

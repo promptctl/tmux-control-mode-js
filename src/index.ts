@@ -77,6 +77,7 @@ export type {
   AttachOptions,
   PaneScope,
   PaneMeta,
+  PaneListEntry,
 } from "./pane-output.js";
 export {
   serverScope,
@@ -87,6 +88,7 @@ export {
   PaneTopologyManager,
   TopologyEpochTracker,
   parsePaneListLine,
+  PANE_LIST_FORMAT,
 } from "./pane-output.js";
 
 export { TopologyRouter } from "./topology-router.js";

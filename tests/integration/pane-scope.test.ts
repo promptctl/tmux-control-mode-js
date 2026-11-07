@@ -424,9 +424,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     tmux(socketName, ["new-window", "-d", "-t", `${other}:`]);
 
     const all = await listAllPanes(client);
-    const attachedId = all.find(
-      (p) => p.windowId === all[0].windowId,
-    )!.sessionId;
+    const attachedId = Number(
+      (
+        await client.execute("display-message -p '#{session_id}'")
+      ).output[0]!.trim().slice(1),
+    );
     const moved = all.find((p) => p.sessionId !== attachedId)!;
 
     const inAttached: { paneId: number; data: Uint8Array }[] = [];
@@ -664,8 +666,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Kill the second window and allow topology notifications to propagate.
     // [LAW:single-enforcer] window-close triggers TopologyRouter.handleNotification
-    // which calls topology.removeWindow() exactly once — the epoch mechanism
-    // ensures any in-flight list-panes result for this window is discarded.
+    // which unplaces the window's panes — the epoch mechanism ensures any
+    // in-flight list-panes result for this window is discarded, and the
+    // refresh that follows fails on the killed window and leaves it removed.
     await client.execute(`kill-window -t @${windowToKill}`);
     await new Promise<void>((resolve) => setTimeout(resolve, 300));
 

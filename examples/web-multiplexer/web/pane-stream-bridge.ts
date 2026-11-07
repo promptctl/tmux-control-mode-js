@@ -237,9 +237,7 @@ export class BridgePaneStreamClient implements TmuxConnection {
       if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
       const entries = r.output.flatMap((line) => {
         const parsed = parsePaneListLine(line);
-        return parsed !== null
-          ? [{ paneId: parsed.paneId, sessionId: parsed.sessionId }]
-          : [];
+        return parsed !== null ? [parsed] : [];
       });
       this.topology.updateWindow(windowId, entries);
     } catch {

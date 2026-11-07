@@ -55,7 +55,7 @@ function setup() {
 
 // A pane → {windowId, sessionId} entry for seeding.
 function pane(paneId: number, windowId: number, sessionId: number) {
-  return { paneId, windowId, sessionId };
+  return { paneId, windowId, sessionId, floating: false };
 }
 
 // ---------------------------------------------------------------------------
