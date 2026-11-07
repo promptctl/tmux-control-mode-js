@@ -149,15 +149,23 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       await client!.execute(`send-keys -t %${paneId} 'echo int22-hello' Enter`);
 
-      await pollUntil(() =>
-        ipcMessages.some(
-          (m) =>
-            m.channel === IPC.event &&
-            typeof m.payload === "object" &&
-            m.payload !== null &&
-            (m.payload as { type: string }).type === "output",
-        ),
-      );
+      // All output chunks for this pane, concatenated. The wait keys on the
+      // marker itself: the first output message can be the shell's prompt
+      // redraw, which arrives before the echo under load.
+      const paneText = () =>
+        Buffer.concat(
+          ipcMessages
+            .filter(
+              (m) =>
+                m.channel === IPC.event &&
+                typeof m.payload === "object" &&
+                m.payload !== null &&
+                (m.payload as { paneId: number }).paneId === paneId,
+            )
+            .map((m) => (m.payload as { data: Uint8Array }).data),
+        ).toString();
+
+      await pollUntil(() => paneText().includes("int22-hello"));
 
       const outputMsg = ipcMessages.find(
         (m) =>
@@ -174,19 +182,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       };
       expect(msg.type).toBe("output");
       expect(msg.paneId).toBe(paneId);
-
-      // Concatenate all output chunks for this pane and check for marker.
-      const allChunks = ipcMessages
-        .filter(
-          (m) =>
-            m.channel === IPC.event &&
-            typeof m.payload === "object" &&
-            m.payload !== null &&
-            (m.payload as { paneId: number }).paneId === paneId,
-        )
-        .map((m) => (m.payload as { data: Uint8Array }).data);
-      const text = Buffer.concat(allChunks).toString();
-      expect(text).toContain("int22-hello");
+      expect(paneText()).toContain("int22-hello");
 
       dispose();
     }, 15_000);

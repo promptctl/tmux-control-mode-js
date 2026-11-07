@@ -88,6 +88,28 @@ async function waitForPaneText(
   }
 }
 
+/** Block until tmux reports `command` as the pane's foreground process. */
+async function waitForForegroundCommand(
+  client: TmuxClient,
+  paneId: number,
+  command: string,
+  timeoutMs = 8000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await client.execute(
+      `display-message -p -t %${paneId} '#{pane_current_command}'`,
+    );
+    if (res.output[0] === command) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitForForegroundCommand: %${paneId} still running "${res.output[0]}" after ${timeoutMs} ms`,
+      );
+    }
+    await new Promise<void>((r) => setTimeout(r, 10));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -310,12 +332,13 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     const tailMarker = `TAIL${Math.random().toString(36).slice(2, 8)}`;
     // Replace the interactive shell with a long-lived sleep process so no
     // shell prompt, PROMPT_CR expansion, or readline buffering can interfere.
-    // The exec output lands in the pane, admitting this consumer before the
-    // marker arrives. Wait until the pane actually shows the exec echo so the
-    // shell has been replaced before we type the marker.
-    const execMarker = "exec sleep 3600";
-    await client.execute(`send-keys -t %${paneA} '${execMarker}' Enter`);
-    await waitForPaneText(client, paneA, execMarker);
+    // The exec echo lands in the pane, admitting this consumer before the
+    // marker arrives. The echo on screen is the line editor's, drawn before
+    // the shell has run the line: a marker typed then reaches the line editor
+    // or an echo-off tty, not sleep. tmux's view of the foreground process is
+    // the authority on "sleep owns the tty".
+    await client.execute(`send-keys -t %${paneA} 'exec sleep 3600' Enter`);
+    await waitForForegroundCommand(client, paneA, "sleep");
 
     // Type the marker WITHOUT Enter — the TTY driver echoes the characters
     // verbatim with no trailing newline. They land in the per-pane buffer
