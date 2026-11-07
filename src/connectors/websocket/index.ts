@@ -43,6 +43,7 @@ export {
   type AuthorizeResult,
   type ConnectionIdentity,
   type BridgeObservabilityEvent,
+  type SocketEnd,
   type RateLimitConfig,
   type ReconnectPolicy,
 } from "./types.js";

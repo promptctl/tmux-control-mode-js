@@ -77,6 +77,7 @@ import type {
   ConnectionIdentity,
   RateLimitConfig,
   ServerWebSocketLike,
+  SocketEnd,
   UpgradeRequest,
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
@@ -148,7 +149,12 @@ export interface WebSocketBridgeOptions {
   /** Sliding-window rate limit per connection. Default: unlimited. */
   readonly rateLimit?: RateLimitConfig;
 
+  /** Ping period. The heartbeat is the one liveness bound the bridge owns:
+   *  a peer that misses a pong is closed, and a peer that then never answers
+   *  the close frame is terminated at the next pong deadline. `<= 0` turns
+   *  the heartbeat off, and with it both bounds. Default 30s. */
   readonly heartbeatIntervalMs?: number;
+  /** How long after a ping its pong may arrive. Default 10s. */
   readonly heartbeatTimeoutMs?: number;
   readonly requestTimeoutMs?: number;
   readonly maxInflight?: number;
@@ -383,11 +389,7 @@ class Connection {
       {
         onTick: () => this.maybeFlushBuffered(),
         ping: () => this.ws.ping(),
-        onTimeout: () =>
-          this.sendFatalAndClose(
-            "BRIDGE_CLOSED",
-            `heartbeat timeout after ${defaults.heartbeatTimeoutMs}ms`,
-          ),
+        onTimeout: () => this.onPongDeadline(),
       },
     );
 
@@ -441,6 +443,10 @@ class Connection {
   // -------------------------------------------------------------------------
   private installWsListeners(): void {
     this.ws.on("message", (data: unknown, isBinary: boolean) => {
+      // [LAW:single-enforcer] A frame delivered after finalize meets the
+      // closed state here, before either branch can open a close handshake
+      // (sendFatalAndClose starts the heartbeat finalize already stopped).
+      if (this.state.kind === "closed") return;
       if (isBinary) {
         this.sendFatalAndClose(
           "BRIDGE_PROTOCOL_ERROR",
@@ -463,7 +469,8 @@ class Connection {
       // peer-initiated disconnect — set there, read here, so the one
       // existing emission site (finalize) can report it without a second,
       // manually-paired event at each sendFatalAndClose call site.
-      this.finalize(this.fatal, {
+      this.finalize(undefined, {
+        kind: "close-event",
         code,
         reason: typeof reason === "string" ? reason : reason.toString("utf8"),
       });
@@ -472,7 +479,7 @@ class Connection {
     this.ws.on("error", (err: Error) => {
       this.finalize(
         new BridgeError("BRIDGE_INTERNAL", `socket error: ${err.message}`),
-        undefined,
+        { kind: "error", message: err.message },
       );
     });
 
@@ -485,7 +492,6 @@ class Connection {
   }
 
   private onFrame(raw: string): void {
-    if (this.state.kind === "closed") return;
     let frame: ClientFrame;
     try {
       frame = parseClientFrame(raw);
@@ -1121,16 +1127,52 @@ class Connection {
   }
 
   terminate(): void {
+    this.terminateWith(
+      new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
+      "shutdown",
+    );
+  }
+
+  // [LAW:single-enforcer] The heartbeat is the liveness mechanism this
+  // server owns, and the close handshake is a liveness question: once
+  // sendFatalAndClose has issued `ws.close()`, the peer's close frame is
+  // the only thing finalize is waiting on, and this deadline bounds that
+  // wait (RFC 6455 §7.1.1's "reasonable time"). `this.fatal` is the
+  // discriminator of which phase the connection is in: no fatal pending
+  // means the peer missed a pong on a live connection and the fatal close
+  // starts; a fatal pending means the peer is not answering the close
+  // handshake either, so the socket is terminated with that fatal intact.
+  // The bound is one heartbeat cycle, the same a live connection gets; a
+  // transport with its own close timer (ws destroys the socket 30s after
+  // close()) may win the race, and its close event reports the same fatal.
+  private onPongDeadline(): void {
+    if (this.fatal === undefined) {
+      this.sendFatalAndClose(
+        "BRIDGE_CLOSED",
+        `heartbeat timeout after ${this.defaults.heartbeatTimeoutMs}ms`,
+      );
+      return;
+    }
+    this.terminateWith(this.fatal, "heartbeat");
+  }
+
+  // [LAW:one-type-per-behavior] Forced close, from either caller: tear the
+  // socket down without waiting for the peer's close frame, and run the
+  // one cleanup path now. The `close` event `ws.terminate()` later emits
+  // finds the connection already closed. Who forced it is a value on the
+  // one event, so a shutdown and a stuck close handshake stay tellable
+  // apart in the observability stream. [LAW:nothing-unseen]
+  private terminateWith(
+    reasonIfNoFatal: BridgeError,
+    by: Extract<SocketEnd, { kind: "terminated" }>["by"],
+  ): void {
     if (this.state.kind === "closed") return;
     try {
       this.ws.terminate();
     } catch {
       // already gone
     }
-    this.finalize(
-      new BridgeError("BRIDGE_CLOSED", "terminated by server shutdown"),
-      undefined,
-    );
+    this.finalize(reasonIfNoFatal, { kind: "terminated", by });
   }
 
   // -------------------------------------------------------------------------
@@ -1174,16 +1216,27 @@ class Connection {
     } catch {
       // ignore
     }
+    // [LAW:dataflow-not-control-flow] Every close handshake this connection
+    // opens runs under the heartbeat's deadline (see onPongDeadline),
+    // whatever state the connection was in: a fatal before hello has no
+    // heartbeat running yet, and start() is idempotent for one that does.
+    this.heartbeat.start();
   }
 
   // -------------------------------------------------------------------------
   // Finalize — the single cleanup path.
   // -------------------------------------------------------------------------
+  // [LAW:one-source-of-truth] A pending fatal is the reason the peer was
+  // already given (sendFatalAndClose is write-once), so it is the reason
+  // connection-closed reports, however the socket then ended. Callers pass
+  // only the reason for an ending nothing preceded: a socket error, a
+  // shutdown termination, or nothing at all for a peer's own close.
   private finalize(
-    fatal: BridgeError | undefined,
-    closeInfo: { code: number; reason: string } | undefined,
+    reasonIfNoFatal: BridgeError | undefined,
+    socketEnd: SocketEnd,
   ): void {
     if (this.state.kind === "closed") return;
+    const fatal = this.fatal ?? reasonIfNoFatal;
 
     // Capture client/ctx/bridge/peer (if we ever reached running) into the
     // closed variant so disposal can reach them after the transition. The
@@ -1224,12 +1277,17 @@ class Connection {
       this.disposeClientSafely(final.client, final.ctx);
     }
 
+    const closeFrame = socketEnd.kind === "close-event" ? socketEnd : undefined;
+    // The close frame's own text rides on socketEnd; here the fatal's message
+    // comes first so a transport's empty-reason close (ws's 1006 "") cannot
+    // blank the reason the peer was given.
     this.emit({
       kind: "connection-closed",
       identity: this.identity,
-      code: closeInfo?.code,
-      reason: closeInfo?.reason ?? fatal?.message,
+      code: closeFrame?.code,
+      reason: fatal?.message ?? closeFrame?.reason,
       errorCode: fatal?.code,
+      socketEnd,
     });
 
     this.closed();
