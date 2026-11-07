@@ -1036,6 +1036,29 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     },
   );
 
+  it("routes nothing by the previous connection's rows after a reconnect", async () => {
+    const router = new TopologyRouter(() => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    const oldSession = makeSink();
+    const newSession = makeSink();
+    router.attachBytesSink(oldSession, { scope: sessionScope(1) });
+    router.attachBytesSink(newSession, { scope: sessionScope(2) });
+    first.replies.at(-1)!.resolve(makeOkResponse(BEFORE));
+    await settle();
+    router.onTransportLost();
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    // %5 moved to $2 during the outage; until the new bootstrap lands its
+    // output is held, not sent to $1 by the old row.
+    router.dispatchBytes(makeChunk(5));
+    expect(paneIdsOf(oldSession)).toEqual([]);
+    next.replies.at(-1)!.resolve(makeOkResponse([...AFTER[2], ...AFTER[3]]));
+    await settle();
+    expect(paneIdsOf(oldSession)).toEqual([]);
+    expect(paneIdsOf(newSession)).toEqual([5]);
+  });
+
   it("queries nothing while the connection is lost, and re-seeds on the next", async () => {
     const router = new TopologyRouter(() => undefined);
     const first = controlledRun();

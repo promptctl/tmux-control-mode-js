@@ -587,6 +587,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // The server keeps serving in-flight calls until the deadline, so the
     // connection stays "ready"; only new calls are refused (see call()).
     this.draining = true;
+    // New calls are refused from here, so the router stops querying; the
+    // reconnect's bootstrap re-seeds.
+    this.router.onTransportLost();
     this.opts.onDraining?.(deadlineMs);
   }
 
