@@ -48,7 +48,7 @@ export interface TopologyRouterOptions {
 // [LAW:types-are-the-program] The command runner is a first-class param, not
 // an ambient dependency. TopologyRouter has no TmuxClient reference — the transport
 // adapter injects the one capability the router needs (executing a command string).
-type RunCommand = (cmd: string) => Promise<CommandResponse>;
+export type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
 /**
  * Reporting seam for a failed topology bootstrap.
@@ -237,11 +237,15 @@ export class TopologyRouter {
   }
 
   /**
-   * Called by the transport adapter the moment the connection drops, before it
-   * rejects the commands in flight. Topology queries stop until the next
-   * {@link onTransportReady}, whose bootstrap re-seeds; sinks stay attached.
+   * Called by the transport adapter the moment the connection that `run`
+   * served drops, before it rejects the commands in flight. Topology queries
+   * stop until the next {@link onTransportReady}, whose bootstrap re-seeds;
+   * sinks stay attached.
    */
-  onTransportLost(): void {
+  onTransportLost(run: RunCommand): void {
+    // [LAW:single-enforcer] The same identity rule as every query path: late
+    //   evidence about an earlier connection says nothing about the current one.
+    if (this.queryRun !== run) return;
     this.queryRun = null;
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.

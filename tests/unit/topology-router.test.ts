@@ -871,7 +871,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     }
     router.dispatchBytes(makeChunk(4));
     router.dispatchBytes(makeChunk(5));
-    return { router, replies, oldSession, newSession, newWindow, pane };
+    return { router, run, replies, oldSession, newSession, newWindow, pane };
   }
 
   it("routes a moved pane's output to its new window and session, not its old ones", async () => {
@@ -1009,7 +1009,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       const errors: Error[] = [];
       const s = await movedPane([[3, LAYOUT_6_5]], (e) => errors.push(e));
       const sent = s.replies.length;
-      s.router.onTransportLost();
+      s.router.onTransportLost(s.run);
       [...s.replies]
         .reverse()
         .find((q) => q.cmd.includes("-t @3 "))!
@@ -1028,7 +1028,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       const { run, replies } = controlledRun();
       router.onTransportReady(run);
       router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
-      router.onTransportLost();
+      router.onTransportLost(run);
       replies[0]!.reject(drop);
       await settle();
       expect(errors).toEqual([]);
@@ -1045,7 +1045,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.attachBytesSink(newSession, { scope: sessionScope(2) });
     first.replies.at(-1)!.resolve(makeOkResponse(BEFORE));
     await settle();
-    router.onTransportLost();
+    router.onTransportLost(first.run);
     const next = controlledRun();
     router.onTransportReady(next.run);
     // %5 moved to $2 during the outage; until the new bootstrap lands its
@@ -1058,11 +1058,24 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(newSession)).toEqual([5]);
   });
 
+  it("ignores a late loss from an earlier connection", async () => {
+    const router = new TopologyRouter(() => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    const asked = next.replies.length;
+    router.onTransportLost(first.run);
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    expect(next.replies.length).toBeGreaterThan(asked);
+  });
+
   it("queries nothing while the connection is lost, and re-seeds on the next", async () => {
     const router = new TopologyRouter(() => undefined);
     const first = controlledRun();
     router.onTransportReady(first.run);
-    router.onTransportLost();
+    router.onTransportLost(first.run);
     router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
     router.handleNotification({ type: "window-add", windowId: 3 });
     expect(first.replies).toEqual([]);

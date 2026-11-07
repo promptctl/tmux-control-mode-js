@@ -35,7 +35,7 @@ import {
   type SessionRecord,
   type WindowRecord,
 } from "../../protocol/types.js";
-import { TopologyRouter } from "../../topology-router.js";
+import { TopologyRouter, type RunCommand } from "../../topology-router.js";
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import type { TmuxConnection } from "../../client.js";
 import {
@@ -154,7 +154,17 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
       if (msg.type === "connection-state") {
         this.currentConnectionState = msg.state;
         if (msg.state.status === "ready") {
-          this.router.onTransportReady((cmd) => this.execute(cmd));
+          // [LAW:no-ambient-temporal-coupling] A BRIDGE_CLOSED reply can beat
+          //   main's `closed` event over IPC; it is the renderer's first word
+          //   that this connection dropped. The runner names the connection,
+          //   so a late reply from an earlier one retires nothing.
+          const run: RunCommand = (cmd) =>
+            this.execute(cmd).catch((err: unknown) => {
+              if (err instanceof BridgeError && err.code === "BRIDGE_CLOSED")
+                this.router.onTransportLost(run);
+              throw err;
+            });
+          this.router.onTransportReady(run);
         } else if (msg.state.status === "closed") {
           this.router.onTransportClose();
         }
@@ -359,12 +369,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     // typed error is rebuilt from a wire payload. Real Electron's
     // structured-clone serializer drops `.code` on Error subclasses, so the
     // payload pair is what keeps the error machine-distinguishable.
-    const err = BridgeError.fromPayload(result.error);
-    // [LAW:no-ambient-temporal-coupling] This reply can beat main's `closed`
-    //   event over IPC; it is the renderer's first word that the connection
-    //   dropped, so the router hears it before the caller's catch runs.
-    if (err.code === "BRIDGE_CLOSED") this.router.onTransportLost();
-    throw err;
+    throw BridgeError.fromPayload(result.error);
   }
 
   private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {

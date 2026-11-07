@@ -65,7 +65,7 @@ import type { SplitOptions, TmuxConnection } from "../../client.js";
 
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import { type AttachOptions, type BytesSink } from "../../pane-output.js";
-import { TopologyRouter } from "../../topology-router.js";
+import { TopologyRouter, type RunCommand } from "../../topology-router.js";
 import { invalidCommand } from "../../errors.js";
 import {
   BridgeError,
@@ -159,6 +159,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private connectionAbort: AbortController | null = null;
   private nextId = 0;
   private serverLimits: WelcomeLimits | null = null;
+  // The runner this connection handed the router; null until welcome and
+  // after the drop that retires it.
+  private routerRun: RunCommand | null = null;
   private userRequestedClose = false;
   // [LAW:one-source-of-truth] Single ConnectionState field — sole authority
   // for all connection state. setConnectionState() is the only writer.
@@ -569,7 +572,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.outbox.flush();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
     //   Called after setConnectionState("ready") so execute() accepts calls from within bootstrap.
-    this.router.onTransportReady((cmd) => this.execute(cmd));
+    this.routerRun = (cmd) => this.execute(cmd);
+    this.router.onTransportReady(this.routerRun);
   }
 
   onResult(frame: ResultFrame): void {
@@ -654,7 +658,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // re-sending frames whose caller was already rejected.
     // [LAW:no-ambient-temporal-coupling] The router retires its query runner
     //   first, so the rejections drain delivers read as the drop they are.
-    this.router.onTransportLost();
+    if (this.routerRun !== null) this.router.onTransportLost(this.routerRun);
+    this.routerRun = null;
     this.outbox.drain(err);
     this.serverLimits = null;
     // The drain notice was scoped to the connection that just ended; calls
