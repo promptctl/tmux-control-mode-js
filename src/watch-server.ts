@@ -38,10 +38,10 @@ const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
  * that session, matched exactly (`=`), never by tmux's prefix or pattern
  * fallback. Without one, to the session a bare `tmux attach-session` from the
  * same process would land in — for a consumer that has no session name yet,
- * e.g. to list the sessions. While a watcher is attached to a session, a bare
- * `tmux attach` passes over that session for one with no client. tmux ignores
- * client flags it does not know; confirm them on the running server with
- * `(await getOwnClient(client)).flags`.
+ * e.g. to list the sessions. Either way the watcher is a client of that
+ * session; README "Watching a whole server" lists what tmux does for one.
+ * tmux ignores client flags it does not know; confirm them on the running
+ * server with `(await getOwnClient(client)).flags`.
  */
 export function watchServerArgs(targetSession?: string): string[] {
   // [LAW:dataflow-not-control-flow] The target is a list of arguments that is

@@ -45,8 +45,16 @@ const closed = (client: TmuxClient) =>
 // SSH_AUTH_SOCK is in tmux's default `update-environment`: an attach without
 // `-E` copies the connecting process's value into the session. Every session
 // starts at SESSION_AUTH_SOCK and every watcher connects carrying another.
+// The watcher connects from outside any tmux pane, whatever pane the test run
+// itself sits in: an inherited TMUX_PANE steers a target-less attach.
 const SESSION_AUTH_SOCK = "/session-auth-sock";
-const WATCHER_ENV = { ...process.env, SSH_AUTH_SOCK: "/watcher-auth-sock" };
+const UNTOUCHED = `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`;
+const WATCHER_ENV = {
+  ...process.env,
+  TMUX: undefined,
+  TMUX_PANE: undefined,
+  SSH_AUTH_SOCK: "/watcher-auth-sock",
+};
 
 // Above the shared waiters' 12s default, so their named rejection — not
 // vitest's 5s default — is what a hang reports.
@@ -136,21 +144,15 @@ describe.skipIf(!RUN_INTEGRATION)(
     );
 
     it("leaves the attached session's environment as it was", () => {
-      expect(sessionAuthSocks(["a", "b"])).toEqual([
-        `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
-        `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
-      ]);
+      expect(sessionAuthSocks(["a"])).toEqual([UNTOUCHED]);
     });
 
-    it("attaches without a target, to a session tmux picks, and leaves every session's environment as it was", async () => {
+    it("attaches without a target to the session with no client, passing over the one a watcher holds, and leaves its environment as it was", async () => {
       const untargeted = spawnWatcher();
       try {
         await waitReady(untargeted);
-        expect(["a", "b"]).toContain(await sessionOf(untargeted));
-        expect(sessionAuthSocks(["a", "b"])).toEqual([
-          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
-          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
-        ]);
+        expect(await sessionOf(untargeted)).toBe("b");
+        expect(sessionAuthSocks(["b"])).toEqual([UNTOUCHED]);
       } finally {
         untargeted.close();
       }

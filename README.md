@@ -81,7 +81,9 @@ has no name yet, such as one about to call `listSessions`.
   because something tried to watch.
 - **Leaves the session's environment alone.** `-E` keeps tmux from copying the
   watcher process's `SSH_AUTH_SOCK`, `DISPLAY` and the rest of
-  `update-environment` into the session it attaches to.
+  `update-environment` into the session it attaches to. That covers the attach
+  only: a `switch-client` the watcher sends later copies them into the session
+  it switches to unless it carries `-E` too.
 - **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
   it sets a size of its own.
 - **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher
