@@ -270,8 +270,17 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     const session = uniqueName("flush");
     client = await attachSession(socketName, session);
 
-    const panes = await listAllPanes(client);
-    const paneA = panes[0].paneId;
+    // A pane with sleep as its only process. Separate argv makes tmux execvp
+    // it rather than run `default-shell -c`, so no shell, line editor, or
+    // prompt ever touches the tty. The pty's line discipline echoes typed
+    // keys whatever process reads them, so the marker reaches the pane as
+    // soon as it is sent. A new window, not a respawn of the session's first
+    // pane: before tmux 3.8 a respawn can crash the server while this control
+    // client is attached (RESPAWN_PANE_MIN_VERSION).
+    const { output } = await client.execute(
+      "new-window -d -P -F '#{pane_id} #{window_id} #{session_id}' sleep 3600",
+    );
+    const paneA = parsePaneListLine(output[0])!.paneId;
 
     const lines: string[] = [];
     const dispose = attachLineSink(client, (e) => lines.push(e.line), {
@@ -279,12 +288,6 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     });
 
     const tailMarker = `TAIL${Math.random().toString(36).slice(2, 8)}`;
-    // Respawn the pane with sleep as its only process. Separate argv makes
-    // tmux execvp it rather than run `default-shell -c`, so no shell, line
-    // editor, or prompt ever touches the tty. The pty's line discipline
-    // echoes typed keys whatever process reads them, so the marker reaches
-    // the pane as soon as it is sent.
-    await client.execute(`respawn-pane -k -t %${paneA} sleep 3600`);
 
     // Type the marker WITHOUT Enter — the TTY driver echoes the characters
     // verbatim with no trailing newline. They land in the per-pane buffer

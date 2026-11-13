@@ -1,10 +1,11 @@
 // tests/unit/commands-new-window.test.ts
 // Unit coverage for the commands that start a pane's process (newWindow,
 // respawnPane): the command each sends, what each refuses before sending, and
-// how newWindow reads the reply, against a fake TmuxConnection. What tmux does
-// with those commands is verified against real tmux in
-// tests/integration/client.test.ts's CMD-05; newEmptyWindow is in
-// command-version-gates.test.ts with the other version-gated commands.
+// how newWindow reads the reply, against a fake TmuxConnection that answers as
+// tmux 3.8. What tmux does with those commands is verified against real tmux in
+// tests/integration/client.test.ts's CMD-05; newEmptyWindow, and respawnPane
+// below its tmux floor, are in command-version-gates.test.ts with the other
+// version-gated commands.
 
 import { describe, it, expect } from "vitest";
 import type { TmuxConnection } from "../../src/client.js";
@@ -13,7 +14,10 @@ import { newWindow, respawnPane } from "../../src/commands/index.js";
 import type { PaneProcess } from "../../src/commands/index.js";
 import { TmuxReplyFormatError } from "../../src/errors.js";
 
-// Records every command sent, so "nothing was sent" is the empty list.
+const VERSION_PROBE = 'display-message -p "#{version}"';
+
+// Records every command sent, so "nothing was sent" is the empty list. The
+// version probe is answered as tmux 3.8, every other command with `output`.
 function fakeConnection(output: readonly string[]): {
   client: TmuxConnection;
   sent: string[];
@@ -25,7 +29,7 @@ function fakeConnection(output: readonly string[]): {
       return Promise.resolve({
         commandNumber: sent.length,
         timestamp: Date.now(),
-        output,
+        output: command === VERSION_PROBE ? ["3.8"] : output,
         success: true,
       });
     },
@@ -177,6 +181,7 @@ describe("respawnPane", () => {
     });
 
     expect(sent).toEqual([
+      VERSION_PROBE,
       "respawn-pane -t '%7' -c '/tmp/a##Sb' " +
         "-e 'QUOTE=it'\\''s' -e 'FORMAT=#{session_name}' -- 'echo #S'",
     ]);
@@ -186,14 +191,14 @@ describe("respawnPane", () => {
     const { client, sent } = fakeConnection([]);
     await respawnPane(client, 7);
 
-    expect(sent).toEqual(["respawn-pane -t '%7'"]);
+    expect(sent).toEqual([VERSION_PROBE, "respawn-pane -t '%7'"]);
   });
 
   it("puts a command starting with '-' after '--', so tmux does not read it as the kill flag", async () => {
     const { client, sent } = fakeConnection([]);
     await respawnPane(client, 7, { command: "-k" });
 
-    expect(sent).toEqual(["respawn-pane -t '%7' -- '-k'"]);
+    expect(sent).toEqual([VERSION_PROBE, "respawn-pane -t '%7' -- '-k'"]);
   });
 
   it.each(REFUSED)(

@@ -67,6 +67,7 @@ import {
   MESSAGE_NOTIFY_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
   EMPTY_WINDOW_MIN_VERSION,
+  RESPAWN_PANE_MIN_VERSION,
   missingCwdFallback,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
@@ -1421,78 +1422,92 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     }
   }, 15000);
 
-  it("CMD-05: respawnPane() starts a command in a dead pane, with its own environment and cwd", async () => {
-    sessionName = uniqueName("cmd-rp");
-    client = await attachSession(socketName, sessionName);
-    const sessionId = await sessionIdOf(client, sessionName);
-    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "rp-")));
+  it.skipIf(!tmuxAtLeast(RESPAWN_PANE_MIN_VERSION))(
+    "CMD-05: respawnPane() starts a command in a dead pane, with its own environment and cwd",
+    async () => {
+      sessionName = uniqueName("cmd-rp");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "rp-")));
 
-    try {
+      try {
+        await client.execute("set-option -wg remain-on-exit on");
+        const { paneId } = await newWindow(client, {
+          sessionId,
+          command: "sh -c 'exit 3'",
+        });
+        await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
+
+        await respawnPane(client, paneId, {
+          command: `sh -c 'echo "R=[$NW_R]"; exec sleep 60'`,
+          environment: { NW_R: "again" },
+          cwd,
+        });
+
+        await waitForPaneText(client, paneId, "R=[again]");
+        await waitForPane(
+          client,
+          (p) =>
+            p.paneId === paneId &&
+            p.cwd === cwd &&
+            p.currentCommand === "sleep",
+        );
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  it.skipIf(!tmuxAtLeast(RESPAWN_PANE_MIN_VERSION))(
+    "CMD-05: a bare respawnPane() runs a dead pane's command again, without the environment it first ran with",
+    async () => {
+      sessionName = uniqueName("cmd-rp-bare");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+
       await client.execute("set-option -wg remain-on-exit on");
       const { paneId } = await newWindow(client, {
         sessionId,
-        command: "sh -c 'exit 3'",
+        environment: { NW_ONCE: "set" },
+        command: `sh -c 'echo "once=[$NW_ONCE]"; exit 3'`,
       });
+      await waitForPaneText(client, paneId, "once=[set]");
       await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
 
-      await respawnPane(client, paneId, {
-        command: `sh -c 'echo "R=[$NW_R]"; exec sleep 60'`,
-        environment: { NW_R: "again" },
-        cwd,
+      await respawnPane(client, paneId);
+
+      await waitForPaneText(client, paneId, "once=[]");
+    },
+    20000,
+  );
+
+  it.skipIf(!tmuxAtLeast(RESPAWN_PANE_MIN_VERSION))(
+    "CMD-05: respawnPane() on a pane whose process is alive rejects and leaves the process running, also for a command that is tmux's kill flag",
+    async () => {
+      sessionName = uniqueName("cmd-rp-live");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+      const { paneId } = await newWindow(client, {
+        sessionId,
+        command: "sleep 60",
       });
-
-      await waitForPaneText(client, paneId, "R=[again]");
-      await waitForPane(
+      const { pid } = await waitForPane(
         client,
-        (p) =>
-          p.paneId === paneId && p.cwd === cwd && p.currentCommand === "sleep",
+        (p) => p.paneId === paneId && p.currentCommand === "sleep",
       );
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  }, 20000);
 
-  it("CMD-05: a bare respawnPane() runs a dead pane's command again, without the environment it first ran with", async () => {
-    sessionName = uniqueName("cmd-rp-bare");
-    client = await attachSession(socketName, sessionName);
-    const sessionId = await sessionIdOf(client, sessionName);
+      for (const command of ["sleep 61", "-k"]) {
+        const attempt = respawnPane(client, paneId, { command });
+        await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
+        await expect(attempt).rejects.toThrow(/still active/);
+      }
 
-    await client.execute("set-option -wg remain-on-exit on");
-    const { paneId } = await newWindow(client, {
-      sessionId,
-      environment: { NW_ONCE: "set" },
-      command: `sh -c 'echo "once=[$NW_ONCE]"; exit 3'`,
-    });
-    await waitForPaneText(client, paneId, "once=[set]");
-    await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
-
-    await respawnPane(client, paneId);
-
-    await waitForPaneText(client, paneId, "once=[]");
-  }, 20000);
-
-  it("CMD-05: respawnPane() on a pane whose process is alive rejects and leaves the process running, also for a command that is tmux's kill flag", async () => {
-    sessionName = uniqueName("cmd-rp-live");
-    client = await attachSession(socketName, sessionName);
-    const sessionId = await sessionIdOf(client, sessionName);
-    const { paneId } = await newWindow(client, {
-      sessionId,
-      command: "sleep 60",
-    });
-    const { pid } = await waitForPane(
-      client,
-      (p) => p.paneId === paneId && p.currentCommand === "sleep",
-    );
-
-    for (const command of ["sleep 61", "-k"]) {
-      const attempt = respawnPane(client, paneId, { command });
-      await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
-      await expect(attempt).rejects.toThrow(/still active/);
-    }
-
-    const after = await waitForPane(client, (p) => p.paneId === paneId);
-    expect(after).toMatchObject({ pid, currentCommand: "sleep" });
-  }, 15000);
+      const after = await waitForPane(client, (p) => p.paneId === paneId);
+      expect(after).toMatchObject({ pid, currentCommand: "sleep" });
+    },
+    15000,
+  );
 
   it.skipIf(!tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION))(
     "CMD-05: newEmptyWindow(), remain-on-exit failed, then respawnPane() with a command that does not exist leaves a dead pane naming the command",
@@ -1565,6 +1580,30 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
         newEmptyWindow(client, { sessionId }),
       ).rejects.toBeInstanceOf(UnsupportedTmuxVersionError);
       expect(await listWindows(client)).toHaveLength(windowsBefore);
+    },
+    15000,
+  );
+
+  it.skipIf(
+    RUNNING_TMUX_VERSION === null || tmuxAtLeast(RESPAWN_PANE_MIN_VERSION),
+  )(
+    "CMD-05: respawnPane() rejects below tmux 3.8 with UnsupportedTmuxVersionError and the dead pane stays dead",
+    async () => {
+      sessionName = uniqueName("cmd-rp-old");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+
+      await client.execute("set-option -wg remain-on-exit on");
+      const { paneId } = await newWindow(client, {
+        sessionId,
+        command: "sh -c 'exit 3'",
+      });
+      await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
+
+      await expect(
+        respawnPane(client, paneId, { command: "sleep 60" }),
+      ).rejects.toBeInstanceOf(UnsupportedTmuxVersionError);
+      await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
     },
     15000,
   );

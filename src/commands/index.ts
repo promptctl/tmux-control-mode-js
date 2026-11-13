@@ -62,6 +62,7 @@ import {
   QUERY_CLIPBOARD_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
   EMPTY_WINDOW_MIN_VERSION,
+  RESPAWN_PANE_MIN_VERSION,
   parseTmuxVersionValue,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
@@ -219,9 +220,13 @@ export async function newEmptyWindow(
 }
 
 /**
- * Start a process in a pane that has none (`respawn-pane`): the pane of
- * {@link newEmptyWindow}, or a dead one tmux kept under `remain-on-exit`. A
- * pane whose process is alive rejects with `TmuxCommandError`
+ * Start a process in a pane that has none (`respawn-pane`, tmux 3.8+): the
+ * pane of {@link newEmptyWindow}, or a dead one tmux kept under
+ * `remain-on-exit`. Below tmux 3.8 it rejects with
+ * `UnsupportedTmuxVersionError` and the pane is left as it was: there a
+ * respawn can crash the tmux server while a control client is attached, which
+ * this connection is (see RESPAWN_PANE_MIN_VERSION). A pane whose process is
+ * alive rejects with `TmuxCommandError`
  * (`respawn pane failed: pane work:1.0 still active`). Refuses the same values
  * as {@link newWindow}; {@link PaneProcess} says what an omitted field means
  * here.
@@ -231,7 +236,14 @@ export async function respawnPane(
   paneId: number,
   paneProcess: PaneProcess = {},
 ): Promise<CommandResponse> {
-  return client.execute(encodeRespawnPane(paneId, paneProcess));
+  // Rendered before the version probe, so a refused value sends nothing.
+  const command = encodeRespawnPane(paneId, paneProcess);
+  await requireTmuxVersion(
+    client,
+    "respawnPane (respawn-pane with a control client attached)",
+    RESPAWN_PANE_MIN_VERSION,
+  );
+  return client.execute(command);
 }
 
 // The directory the pane's foreground process is in now, which right after

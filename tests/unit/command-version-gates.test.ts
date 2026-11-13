@@ -15,6 +15,7 @@ import {
   queryTmuxVersion,
   paneCwd,
   newEmptyWindow,
+  respawnPane,
 } from "../../src/commands/index.js";
 import {
   PaneCwdUnavailableError,
@@ -198,6 +199,31 @@ describe("newEmptyWindow version gate", () => {
     await expect(newEmptyWindow(conn, { sessionId: 4 })).rejects.toThrow(
       TmuxReplyFormatError,
     );
+  });
+});
+
+describe("respawnPane version gate", () => {
+  it("rejects below tmux 3.8 with the 3.8 requirement and never sends respawn-pane", async () => {
+    const { conn, sent } = fakeConnection("3.7b");
+
+    const err: unknown = await respawnPane(conn, 7, { command: "top" }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(UnsupportedTmuxVersionError);
+    expect((err as UnsupportedTmuxVersionError).required).toEqual({
+      major: 3,
+      minor: 8,
+    });
+    expect(sent).toEqual(['display-message -p "#{version}"']);
+  });
+
+  it("on tmux 3.8 sends respawn-pane", async () => {
+    const { conn, sent } = fakeConnection("3.8");
+
+    await respawnPane(conn, 7, { command: "top" });
+
+    expect(sent.slice(1)).toEqual(["respawn-pane -t '%7' -- 'top'"]);
   });
 });
 

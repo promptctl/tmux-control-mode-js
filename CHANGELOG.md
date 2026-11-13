@@ -137,6 +137,9 @@ All notable changes to this project are documented here. Format follows
   starts one in it or in a dead pane. Between the two a caller sets what must
   hold before the process starts, such as `remain-on-exit failed`, which keeps
   the pane of a command that cannot run. The README shows the three calls.
+  `respawnPane` rejects with `UnsupportedTmuxVersionError` below
+  `RESPAWN_PANE_MIN_VERSION` (tmux 3.8): older tmux can crash its server when
+  a pane is respawned while a control client is attached.
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a

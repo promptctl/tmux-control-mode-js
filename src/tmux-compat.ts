@@ -72,6 +72,16 @@ export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
 export const EMPTY_WINDOW_MIN_VERSION: TmuxVersion = { major: 3, minor: 8 };
 
 /**
+ * `respawnPane()` sends `respawn-pane`. Before tmux 3.8 a respawn gives the
+ * pane a new, empty output buffer but keeps each client's read offset into the
+ * old one. With a control client attached, which this library's connection is,
+ * the next read can then run past the new buffer and the tmux server crashes,
+ * ending every session on it (reproduced on 3.7b, seen on 3.4). tmux 3.8
+ * resets the offsets when a pane is respawned (its CHANGES, issue 5498).
+ */
+export const RESPAWN_PANE_MIN_VERSION: TmuxVersion = { major: 3, minor: 8 };
+
+/**
  * Where a pane starts when its `new-window -c` directory does not exist and
  * $HOME does (with $HOME missing too, every version falls through to `/`). $HOME
  * on 3.2 and 3.4+; tmux 3.3's spawn.c tests

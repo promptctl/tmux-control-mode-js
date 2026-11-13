@@ -88,6 +88,7 @@ export {
   REQUEST_REPORT_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
   EMPTY_WINDOW_MIN_VERSION,
+  RESPAWN_PANE_MIN_VERSION,
   missingCwdFallback,
   parseTmuxVersion,
   meetsTmuxVersion,
