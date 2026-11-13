@@ -936,6 +936,49 @@ describe("binary garbage lines outside response block", () => {
   });
 });
 
+describe("unguarded lines", () => {
+  it("reports a non-% line outside a block, and never a block's own output", () => {
+    const unguarded: string[] = [];
+    const parser = new TmuxParser(() => {});
+    parser.onUnguardedLine = (line) => unguarded.push(line);
+    parser.feed(
+      "command attach-session: unknown flag -Z\r\n" +
+        "%begin 1 7 0\ninside the block\n%end 1 7 0\n" +
+        "'false' returned 1\n",
+    );
+    expect(unguarded).toEqual([
+      "command attach-session: unknown flag -Z",
+      "'false' returned 1",
+    ]);
+  });
+});
+
+// The first bytes of a real `tmux -CC` (3.8) stream.
+describe("-CC DCS introducer", () => {
+  it.each([
+    { where: "the stream's first line", before: "" },
+    {
+      where: "a line after a PTY's login banner",
+      before: "Last login: Fri\r\n",
+    },
+  ])("is dropped from $where, whose message is parsed", ({ before }) => {
+    const messages: TmuxMessage[] = [];
+    const parser = new TmuxParser((msg) => messages.push(msg));
+    parser.feed(
+      before + "\x1bP1000p%begin 1794601662 315 0\r\n%end 1794601662 315 0\r\n",
+    );
+    expect(messages.map((msg) => msg.type)).toEqual(["begin", "end"]);
+  });
+
+  it("is a block's own output when it opens a line inside one", () => {
+    const output: string[] = [];
+    const parser = new TmuxParser(() => {});
+    parser.onOutputLine = (_commandNumber, line) => output.push(line);
+    parser.feed("%begin 1 7 1\n\x1bP1000p%end 1 7 1\n%end 1 7 1\n");
+    expect(output).toEqual(["\x1bP1000p%end 1 7 1"]);
+  });
+});
+
 describe("very long line", () => {
   it("does not crash", () => {
     const longLine = "%unknown-type " + "x".repeat(50000) + "\n";

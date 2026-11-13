@@ -17,7 +17,7 @@
  * - `ready`         — safe to correlate a caller's command against the next
  *                     guard block. For spawn this is "the startup greeting's
  *                     %end/%error has been consumed", not merely "first byte
- *                     from stdout" (see TmuxClient.awaitingGreeting); for the
+ *                     from stdout" (see the TmuxClient constructor); for the
  *                     WebSocket connector this is "post-welcome".
  * - `reconnecting`  — connector is between attempts (only emitted by
  *                     transports that auto-reconnect, currently WebSocket).
@@ -32,11 +32,12 @@
  *                     This `reason` classifies the TRANSPORT's own close
  *                     signal — it is independent of, and can disagree with,
  *                     the `reason` on a client's `exit` event. `exit`'s
- *                     reason is tmux's own protocol-level explanation (SPEC.md
- *                     "Exit Reasons": `detached`, `lost tty`, …) when tmux
- *                     sent one, falling back to the transport's signal only
- *                     when tmux never got the chance to announce (a killed
- *                     server). So a graceful `%exit` can still ride a
+ *                     reason is tmux's own explanation: its text for a failed
+ *                     startup command (`can't find session: main`), else what
+ *                     its `%exit` said (SPEC.md "Exit Reasons": `detached`,
+ *                     `lost tty`, …), falling back to the transport's signal
+ *                     only when tmux never got the chance to announce (a
+ *                     killed server). So a graceful `%exit` can still ride a
  *                     transport close that itself reports an error (a flaky
  *                     pipe closing right after tmux said goodbye) and land
  *                     here as `transport-error` while `exit` carried tmux's

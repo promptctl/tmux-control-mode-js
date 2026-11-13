@@ -285,6 +285,9 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  */
 export const WIRE_MESSAGE_TYPES: ReadonlySet<string> = new Set(PARSERS.keys());
 
+// What `tmux -CC` writes before any protocol output (SPEC.md §12).
+const DCS_INTRODUCER = "\x1bP1000p";
+
 // ---------------------------------------------------------------------------
 // TmuxParser
 // ---------------------------------------------------------------------------
@@ -325,6 +328,16 @@ export class TmuxParser {
    */
   onProtocolError: ((commandNumber: number, line: string) => void) | null =
     null;
+
+  /**
+   * Optional callback for a non-`%` line outside any response block, its
+   * trailing `\r` run stripped. tmux writes one in place of a guard block
+   * when it cannot parse the command it was started with (`command
+   * attach-session: unknown flag -Z`), and after a block for what
+   * `run-shell` printed; the two look the same here, so the receiver tells
+   * them apart by when the line came.
+   */
+  onUnguardedLine: ((line: string) => void) | null = null;
 
   constructor(onMessage: (msg: TmuxMessage) => void) {
     this.emit = onMessage;
@@ -402,9 +415,18 @@ export class TmuxParser {
    * `CommandResponse.output`'s documented raw-byte-fidelity guarantee — one
    * byte pipe, no lossy decode, even for the line that happened to also be
    * the (malformed) terminator.
+   *
+   * The one thing dropped from `raw` first: the DCS introducer `-CC` writes
+   * in front of its first line (SPEC.md §12), which would otherwise hide that
+   * line's `%`. It is dropped from any line outside a response block, not
+   * only the stream's first: a PTY can deliver a login banner before it.
    */
-  private processLine(line: string): void {
+  private processLine(raw: string): void {
     const inResponseBlock = this.activeCommandNumber !== -1;
+    const line =
+      !inResponseBlock && raw.startsWith(DCS_INTRODUCER)
+        ? raw.slice(DCS_INTRODUCER.length)
+        : raw;
     let cleanEnd = line.length;
     while (cleanEnd > 0 && line.charCodeAt(cleanEnd - 1) === 0x0d) cleanEnd--;
     const cleanLine = cleanEnd === line.length ? line : line.slice(0, cleanEnd);
@@ -441,8 +463,11 @@ export class TmuxParser {
       return;
     }
 
-    // Outside a response block, a non-% line is malformed protocol; drop it.
-    if (!isNotification) return;
+    // Outside a response block, a non-% line is no protocol message.
+    if (!isNotification) {
+      this.onUnguardedLine?.(cleanLine);
+      return;
+    }
 
     const parser = PARSERS.get(typeStr);
     if (parser === undefined) {

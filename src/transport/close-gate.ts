@@ -27,14 +27,18 @@ export interface CloseGate {
   readonly onClose: (callback: (reason?: string) => void) => void;
   /**
    * The `SendResult.reason` string for a send refused because this gate is
-   * closed. [LAW:single-enforcer] The one formatting of "why is send
-   * refused" — previously duplicated identically across all three
-   * transports' `send()` implementations. Callers must check
-   * `state().closed` first — calling this on an open gate throws rather
-   * than silently claiming "transport closed" while it is not.
+   * closed: {@link closedSendReason} of its recorded reason. Callers must
+   * check `state().closed` first — calling this on an open gate throws
+   * rather than silently claiming "transport closed" while it is not.
    */
   readonly deniedSendReason: () => string;
 }
+
+// [LAW:single-enforcer] The one formatting of "not sent, because the
+// connection ended", for every transport's `send()` and for a `TmuxClient`
+// that refuses before asking its transport.
+export const closedSendReason = (reason: string | undefined): string =>
+  reason === undefined ? "transport closed" : `transport closed: ${reason}`;
 
 export function createCloseGate(): CloseGate {
   let state: TransportCloseState = { closed: false };
@@ -70,9 +74,7 @@ export function createCloseGate(): CloseGate {
           "CloseGate.deniedSendReason() called on a gate that is not closed",
         );
       }
-      return state.reason === undefined
-        ? "transport closed"
-        : `transport closed: ${state.reason}`;
+      return closedSendReason(state.reason);
     },
   };
 }

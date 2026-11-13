@@ -85,6 +85,11 @@ All notable changes to this project are documented here. Format follows
   with `%error` now reports `ok: false, code: "TMUX_ERROR"` instead of
   `ok: true`. Hosts that count `ok: false` results as bridge failures will
   see ordinary tmux errors (a mistyped command, a closed window) counted.
+- `TransportClosedError.reason` is the `exit` event's `reason`. After a bare
+  `%exit` it is `undefined` whatever the process's exit code; it used to be
+  the transport's own (`exit 1`). A command issued after the connection ended
+  rejects with `TransportSendError` reason `transport closed: <that reason>`
+  when there is one.
 
 ### Added
 
@@ -98,6 +103,12 @@ All notable changes to this project are documented here. Format follows
   The README lists what tmux still does for any attached client.
   `getOwnClient(client)` returns the
   connection's own client name and the flags tmux accepted.
+- `TmuxParser.onUnguardedLine` — called with each non-`%` line tmux writes
+  outside a response block (`run-shell` output, or its complaint about a
+  startup command it cannot parse). Such lines used to be dropped.
+- `TmuxParser` reads a `tmux -CC` stream as it comes off a PTY: the DCS
+  introducer in front of tmux's first line is dropped, wherever outside a
+  response block that line falls.
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a
@@ -128,6 +139,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A failed attach says why. When the command tmux was started with fails
+  (`can't find session: main`, `no sessions`, an unknown flag) or tmux never
+  reaches a server (`no server running on …`, from `watchServerArgs`' `-N`),
+  the `exit` event's `reason` is tmux's own text, and every command pending at
+  the end rejects with a `TransportClosedError` whose `reason` is that same
+  text. Both used to say only `exit 1`, or nothing. `spawnTmux` now reads the
+  child's stderr: it is the close reason when the child exits non-zero without
+  having written to stdout.
 - `queryClipboard` no longer kills the connection on tmux 3.2: it probes the
   running version and rejects with `UnsupportedTmuxVersionError` instead of
   sending `refresh-client -l`, which made the control client exit. Adds one

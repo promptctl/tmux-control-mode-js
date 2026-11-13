@@ -455,7 +455,7 @@ export class TopologyRouter {
         // added/removed elsewhere) so the topology table reflects the newly
         // attached session or session list. Transport adapters now call
         // onTransportReady only once the connection's own startup handshake
-        // is consumed (see TmuxClient.awaitingGreeting), so the bootstrap
+        // is consumed (see the TmuxClient constructor), so the bootstrap
         // that triggers is no longer racing an empty FIFO — this case is not
         // compensating for that anymore. tmux also emits `session-changed`
         // once, unconditionally, right after every attach's startup guard

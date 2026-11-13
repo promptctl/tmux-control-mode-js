@@ -73,7 +73,11 @@ export class TmuxCommandError extends Error {
  * wearing fake response fields.
  */
 export class TransportSendError extends Error {
-  /** The transport's stated refusal reason, verbatim. */
+  /**
+   * The transport's stated refusal reason, verbatim. For a command issued
+   * after the connection ended: `transport closed`, followed by `: ` and the
+   * `exit` event's `reason` when it had one.
+   */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -92,11 +96,18 @@ export class TransportSendError extends Error {
  * here tmux never got the chance to decide the command's fate at all.
  *
  * [LAW:types-are-the-program] "Sent, but the connection died before an
- * answer arrived" is its own domain category — it carries the transport's
- * close reason, not a fabricated `CommandResponse`.
+ * answer arrived" is its own domain category — it carries why the connection
+ * ended, not a fabricated `CommandResponse`.
  */
 export class TransportClosedError extends Error {
-  /** The transport's close reason, verbatim (`undefined` for a clean exit). */
+  /**
+   * The `reason` of the connection's `exit` event: tmux's text for a failed
+   * startup command, else what its `%exit` said, else the transport's close
+   * reason. `undefined` when tmux gave none. tmux's text is in the byte
+   * container the transport delivers (latin1 for `spawnTmux`), not decoded.
+   * Only the transport's reason can span lines: `spawnTmux` gives the end of
+   * what a child that never reached a server wrote to stderr.
+   */
   readonly reason: string | undefined;
 
   constructor(reason: string | undefined) {
