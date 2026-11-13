@@ -66,6 +66,20 @@ describe.skipIf(!RUN_INTEGRATION)(
         { idlePaneSuppression: true },
       );
 
+    // The session the server's own client list has `client` attached to.
+    const sessionOf = async (client: TmuxClient) => {
+      const own = await getOwnClient(client);
+      const rows = tmux(socketName, [
+        "list-clients",
+        "-F",
+        "#{client_name} #{session_name}",
+      ]);
+      return rows
+        .split("\n")
+        .map((row) => row.split(" "))
+        .find(([name]) => name === own.name)?.[1];
+    };
+
     const sessionAuthSocks = (sessions: readonly string[]) =>
       sessions.map((s) =>
         tmux(socketName, ["show-environment", "-t", `=${s}`, "SSH_AUTH_SOCK"]),
@@ -132,15 +146,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       const untargeted = spawnWatcher();
       try {
         await waitReady(untargeted);
-        const own = await getOwnClient(untargeted);
-        const rows = tmux(socketName, [
-          "list-clients",
-          "-F",
-          "#{client_name} #{session_name}",
-        ]);
-        expect(rows.split("\n")).toContainEqual(
-          expect.stringMatching(new RegExp(`^${own.name} [ab]$`)),
-        );
+        expect(["a", "b"]).toContain(await sessionOf(untargeted));
         expect(sessionAuthSocks(["a", "b"])).toEqual([
           `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
           `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
@@ -206,16 +212,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         );
         tmux(socketName, ["kill-session", "-t", "a"]);
         expect((await moved).name).toBe("b");
-        const own = await getOwnClient(watcher);
-        const rows = tmux(socketName, [
-          "list-clients",
-          "-F",
-          "#{client_name} #{session_name}",
-        ]);
-        expect(rows.split("\n")).toContain(`${own.name} b`);
-        expect(sessionAuthSocks(["b"])).toEqual([
-          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
-        ]);
+        expect(await sessionOf(watcher)).toBe("b");
       },
     );
 

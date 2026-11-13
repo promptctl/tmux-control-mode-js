@@ -8,7 +8,7 @@
 // - `-N` (tmux's own option): a server that is not running is not started.
 //   `attach-session` otherwise starts one, which loads the user's tmux.conf:
 //   its hooks and plugins run, and a session it creates is one the watcher
-//   caused. With `-N` tmux says "no server running on <socket>" and exits.
+//   caused. With `-N` tmux exits with an error instead.
 // - `-E`: tmux's `update-environment` is not applied, so the connecting
 //   process's SSH_AUTH_SOCK, DISPLAY, … are not copied into the attached
 //   session for every window the user opens there afterwards to inherit.
@@ -24,6 +24,9 @@
 // `{ idlePaneSuppression: true }`, which pauses per pane. `read-only` makes tmux
 // refuse the consumer's own deliberate commands (`send-keys` → "client is
 // read-only"); the watcher's presence is what must not disturb, not its use.
+// No argument hides the attach itself: tmux counts the watcher as a client of
+// the session and the attach as use of it. README "Watching a whole server"
+// lists what follows from that.
 //
 // Attaching (never `new-session`) is what keeps the watcher from adding a
 // session the user can see; it is also why a server with no sessions cannot
@@ -33,12 +36,11 @@ const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
 /**
  * Arguments for `spawnTmux` that attach a watcher. With `targetSession`, to
  * that session, matched exactly (`=`), never by tmux's prefix or pattern
- * fallback. Without one, to the session tmux picks — for a consumer that has
- * no session name yet, e.g. to list the sessions. tmux picks the session of
- * the pane the connecting process runs in (`TMUX_PANE`) when that pane is on
- * this server, otherwise the most recently used session, preferring one no
- * client is attached to. tmux ignores client flags it
- * does not know; confirm them on the running server with
+ * fallback. Without one, to the session a bare `tmux attach-session` from the
+ * same process would land in — for a consumer that has no session name yet,
+ * e.g. to list the sessions. While a watcher is attached to a session, a bare
+ * `tmux attach` passes over that session for one with no client. tmux ignores
+ * client flags it does not know; confirm them on the running server with
  * `(await getOwnClient(client)).flags`.
  */
 export function watchServerArgs(targetSession?: string): string[] {
