@@ -953,6 +953,26 @@ describe("unguarded lines", () => {
   });
 });
 
+// The first bytes of a real `tmux -CC` (3.8) stream.
+describe("-CC DCS introducer", () => {
+  it("is dropped from the first line, whose message is parsed", () => {
+    const messages: TmuxMessage[] = [];
+    const parser = new TmuxParser((msg) => messages.push(msg));
+    parser.feed(
+      "\x1bP1000p%begin 1794601662 315 0\r\n%end 1794601662 315 0\r\n",
+    );
+    expect(messages.map((msg) => msg.type)).toEqual(["begin", "end"]);
+  });
+
+  it("is a block's own output when it opens a line inside one", () => {
+    const output: string[] = [];
+    const parser = new TmuxParser(() => {});
+    parser.onOutputLine = (_commandNumber, line) => output.push(line);
+    parser.feed("%begin 1 7 1\n\x1bP1000p%end 1 7 1\n%end 1 7 1\n");
+    expect(output).toEqual(["\x1bP1000p%end 1 7 1"]);
+  });
+});
+
 describe("very long line", () => {
   it("does not crash", () => {
     const longLine = "%unknown-type " + "x".repeat(50000) + "\n";

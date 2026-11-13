@@ -73,7 +73,11 @@ export class TmuxCommandError extends Error {
  * wearing fake response fields.
  */
 export class TransportSendError extends Error {
-  /** The transport's stated refusal reason, verbatim. */
+  /**
+   * The transport's stated refusal reason, verbatim. For a command issued
+   * after the connection ended: `transport closed`, followed by `: ` and the
+   * `exit` event's `reason` when it had one.
+   */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -101,6 +105,8 @@ export class TransportClosedError extends Error {
    * startup command, else what its `%exit` said, else the transport's close
    * reason. `undefined` when tmux gave none. tmux's text is in the byte
    * container the transport delivers (latin1 for `spawnTmux`), not decoded.
+   * Only the transport's reason can span lines: `spawnTmux` gives the end of
+   * what a child that never reached a server wrote to stderr.
    */
   readonly reason: string | undefined;
 

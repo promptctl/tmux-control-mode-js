@@ -285,6 +285,9 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  */
 export const WIRE_MESSAGE_TYPES: ReadonlySet<string> = new Set(PARSERS.keys());
 
+// What `tmux -CC` writes before any protocol output (SPEC.md §12).
+const DCS_INTRODUCER = "\x1bP1000p";
+
 // ---------------------------------------------------------------------------
 // TmuxParser
 // ---------------------------------------------------------------------------
@@ -412,9 +415,17 @@ export class TmuxParser {
    * `CommandResponse.output`'s documented raw-byte-fidelity guarantee — one
    * byte pipe, no lossy decode, even for the line that happened to also be
    * the (malformed) terminator.
+   *
+   * The one thing dropped from `raw` first: the DCS introducer `-CC` writes
+   * before its first line (SPEC.md §12), which would otherwise hide that
+   * line's `%`.
    */
-  private processLine(line: string): void {
+  private processLine(raw: string): void {
     const inResponseBlock = this.activeCommandNumber !== -1;
+    const line =
+      !inResponseBlock && raw.startsWith(DCS_INTRODUCER)
+        ? raw.slice(DCS_INTRODUCER.length)
+        : raw;
     let cleanEnd = line.length;
     while (cleanEnd > 0 && line.charCodeAt(cleanEnd - 1) === 0x0d) cleanEnd--;
     const cleanLine = cleanEnd === line.length ? line : line.slice(0, cleanEnd);

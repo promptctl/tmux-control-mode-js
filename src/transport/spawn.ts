@@ -67,13 +67,14 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // exits non-zero having written nothing to stdout. That text is the close
   // reason for exactly that death. Once the child has written to stdout its
   // stderr explains nothing about a later exit (an `ssh` wrapper's
-  // connect-time warning), so from then on it is read only to keep the pipe
+  // connect-time warning), so the `close` handler below is the one place
+  // that decides whether the tail is used; reading it also keeps the pipe
   // from filling. Same byte container as stdout, bounded to its tail.
   let spoke = false;
   let stderrTail = "";
   child.stderr.setEncoding("latin1");
   child.stderr.on("data", (chunk: string) => {
-    if (!spoke) stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LENGTH);
+    stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LENGTH);
   });
 
   // [LAW:one-source-of-truth] The byte stream is the source of truth. tmux

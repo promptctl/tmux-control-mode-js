@@ -244,6 +244,22 @@ describe("TmuxClient — why the connection ended reaches 'exit' and every rejec
       reason: undefined,
       ready: true,
     },
+    {
+      ended:
+        "with no reason when an unguarded line came before a startup reply whose terminator was malformed",
+      wire: "Last login: Fri\n%begin 1 1 0\n%end\n%exit\n",
+      close: "exit 1",
+      reason: undefined,
+      ready: true,
+    },
+    {
+      ended:
+        "with no reason on a `-CC` stream, whose startup reply follows the DCS introducer",
+      wire: "\x1bP1000p%begin 1 1 0\r\n%end 1 1 0\r\n%exit\r\n\x1b\\",
+      close: "exit 1",
+      reason: undefined,
+      ready: true,
+    },
   ])("$ended", async ({ wire, close, reason, ready }) => {
     const t = createFakeTransport();
     const client = new TmuxClient(t);

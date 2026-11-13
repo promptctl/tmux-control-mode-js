@@ -30,6 +30,7 @@ import type { TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
 import { isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
+import { closedSendReason } from "./transport/close-gate.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
@@ -186,7 +187,9 @@ export class TmuxClient implements TmuxConnection {
       reject: (err) => {
         // The transport closed before tmux answered: 'closed' follows.
         if (err instanceof TransportClosedError) return;
-        if (err instanceof TmuxCommandError) this.startupFailure = err.message;
+        // A line that came before a reply tmux did send is not its failure.
+        this.startupFailure =
+          err instanceof TmuxCommandError ? err.message : undefined;
         this.setConnectionState({ status: "ready" });
       },
     });
@@ -237,13 +240,8 @@ export class TmuxClient implements TmuxConnection {
       // closed," so this consults it rather than trusting a third-party
       // transport to get its own closed bookkeeping right.
       if (this.currentConnectionState.status === "closed") {
-        const ended = this.announcedExit?.reason;
         reject(
-          new TransportSendError(
-            ended === undefined
-              ? "transport closed"
-              : `transport closed: ${ended}`,
-          ),
+          new TransportSendError(closedSendReason(this.announcedExit?.reason)),
         );
         return;
       }
