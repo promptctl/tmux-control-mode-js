@@ -92,11 +92,16 @@ export class TransportSendError extends Error {
  * here tmux never got the chance to decide the command's fate at all.
  *
  * [LAW:types-are-the-program] "Sent, but the connection died before an
- * answer arrived" is its own domain category — it carries the transport's
- * close reason, not a fabricated `CommandResponse`.
+ * answer arrived" is its own domain category — it carries why the connection
+ * ended, not a fabricated `CommandResponse`.
  */
 export class TransportClosedError extends Error {
-  /** The transport's close reason, verbatim (`undefined` for a clean exit). */
+  /**
+   * The `reason` of the connection's `exit` event: tmux's text for a failed
+   * startup command, else what its `%exit` said, else the transport's close
+   * reason. `undefined` when tmux gave none. tmux's text is in the byte
+   * container the transport delivers (latin1 for `spawnTmux`), not decoded.
+   */
   readonly reason: string | undefined;
 
   constructor(reason: string | undefined) {

@@ -192,7 +192,7 @@ function commandCheck(
       const client = new TmuxClient(server);
       // [LAW:no-ambient-temporal-coupling] The client now consumes tmux's own
       // unsolicited startup guard block before correlating any real command
-      // (see TmuxClient.awaitingGreeting) — start() is what delivers it here.
+      // (see the TmuxClient constructor) — start() is what delivers it here.
       // Skipping this would make the command's own guard block get consumed
       // as that greeting instead, hanging execute() forever.
       server.start();

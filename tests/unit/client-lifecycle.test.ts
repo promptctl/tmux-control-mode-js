@@ -190,6 +190,100 @@ describe("TmuxClient — exactly one 'exit' event", () => {
   });
 });
 
+// tmux-server-events-6sp.sik: a failed attach's text used to be discarded and
+// the caller got only `exit 1`. The wire traces are real tmux 3.8's.
+describe("TmuxClient — why the connection ended reaches 'exit' and every rejection", () => {
+  it.each([
+    {
+      ended: "with the startup command's %error text",
+      wire: "%begin 1 1 0\ncan't find session: nope\n%error 1 1 0\n%exit\n",
+      close: "exit 1",
+      reason: "can't find session: nope",
+      ready: true,
+    },
+    {
+      ended: "with the line tmux writes for a startup command it cannot parse",
+      wire: "command attach-session: unknown flag -Z\n%exit\n",
+      close: "exit 1",
+      reason: "command attach-session: unknown flag -Z",
+      ready: false,
+    },
+    {
+      ended: "with the transport's reason when tmux wrote nothing",
+      wire: "",
+      close: "no server running on /tmp/tmux-501/idle",
+      reason: "no server running on /tmp/tmux-501/idle",
+      ready: false,
+    },
+    {
+      ended: "with tmux's %exit reason, not the process's exit code",
+      wire: "%exit server exited unexpectedly\n",
+      close: "exit 1",
+      reason: "server exited unexpectedly",
+      ready: false,
+    },
+    {
+      ended: "with no reason on a bare %exit, whatever the exit code",
+      wire: STARTUP_GREETING + "%exit\n",
+      close: "exit 1",
+      reason: undefined,
+      ready: true,
+    },
+    {
+      ended: "with no reason when the only unguarded line was run-shell's",
+      wire: STARTUP_GREETING + "'false' returned 1\n%exit\n",
+      close: "exit 1",
+      reason: undefined,
+      ready: true,
+    },
+    {
+      ended:
+        "with no reason when an unguarded line came before a startup reply that succeeded",
+      wire: "Last login: Fri\n" + STARTUP_GREETING + "%exit\n",
+      close: "exit 1",
+      reason: undefined,
+      ready: true,
+    },
+  ])("$ended", async ({ wire, close, reason, ready }) => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const exits = vi.fn();
+    client.on("exit", exits);
+    const states: ConnectionState[] = [];
+    client.on("connection-state", (ev) => states.push(ev.state));
+
+    const pending = client.execute("list-sessions");
+    t.feed(wire);
+    t.triggerClose(close);
+
+    expect(exits).toHaveBeenCalledTimes(1);
+    expect(exits).toHaveBeenCalledWith({ type: "exit", reason });
+    await expect(pending).rejects.toBeInstanceOf(TransportClosedError);
+    await expect(pending).rejects.toMatchObject({ reason });
+    expect(states.some((s) => s.status === "ready")).toBe(ready);
+
+    const late = client.execute("list-sessions");
+    await expect(late).rejects.toBeInstanceOf(TransportSendError);
+    await expect(late).rejects.toMatchObject({
+      reason:
+        reason === undefined
+          ? "transport closed"
+          : `transport closed: ${reason}`,
+    });
+  });
+
+  it("a command issued before the startup reply gets its own reply, not the startup one", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+
+    const call = client.execute("list-sessions");
+    t.feed("%begin 1 1 0\nstartup output\n%end 1 1 0\n");
+    t.feed("%begin 2 2 1\n$0 main\n%end 2 2 1\n");
+
+    await expect(call).resolves.toMatchObject({ output: ["$0 main"] });
+  });
+});
+
 describe("TmuxClient — 'closed' is terminal", () => {
   it("a chunk delivered after close does not resurrect 'ready'", () => {
     const t = createFakeTransport();
@@ -279,10 +373,8 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
   });
 
   it("a malformed terminator on the startup greeting itself still reaches 'ready'", () => {
-    // Mirrors the existing %error-during-greeting behavior (see
-    // TmuxClient.handleMessage): there is no pending entry for the greeting,
-    // but the phase must still close so every subsequent guard block
-    // correlates normally.
+    // The startup reply settles like any other block, so every subsequent
+    // guard block correlates normally.
     const t = createFakeTransport();
     const client = new TmuxClient(t);
     const states: ConnectionState[] = [];

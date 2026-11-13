@@ -326,6 +326,16 @@ export class TmuxParser {
   onProtocolError: ((commandNumber: number, line: string) => void) | null =
     null;
 
+  /**
+   * Optional callback for a non-`%` line outside any response block, its
+   * trailing `\r` run stripped. tmux writes one in place of a guard block
+   * when it cannot parse the command it was started with (`command
+   * attach-session: unknown flag -Z`), and after a block for what
+   * `run-shell` printed; the two look the same here, so the receiver tells
+   * them apart by when the line came.
+   */
+  onUnguardedLine: ((line: string) => void) | null = null;
+
   constructor(onMessage: (msg: TmuxMessage) => void) {
     this.emit = onMessage;
   }
@@ -441,8 +451,11 @@ export class TmuxParser {
       return;
     }
 
-    // Outside a response block, a non-% line is malformed protocol; drop it.
-    if (!isNotification) return;
+    // Outside a response block, a non-% line is no protocol message.
+    if (!isNotification) {
+      this.onUnguardedLine?.(cleanLine);
+      return;
+    }
 
     const parser = PARSERS.get(typeStr);
     if (parser === undefined) {

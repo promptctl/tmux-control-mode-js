@@ -1,7 +1,7 @@
 // tests/unit/_helpers/greeting.ts
 // tmux emits one unsolicited %begin/%end guard pair on attach, before any
 // caller-issued command's own guard block (SPEC.md §5). TmuxClient consumes
-// that pair internally (see TmuxClient.awaitingGreeting) and does not reach
+// that pair internally (see the TmuxClient constructor) and does not reach
 // "ready" — or correlate any caller command — until it closes.
 //
 // [LAW:one-source-of-truth] Every fake-transport test that feeds raw

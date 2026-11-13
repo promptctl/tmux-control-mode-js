@@ -158,7 +158,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       }
     });
 
-    it("starts no server: with none running, a config that would create a session is never loaded", async () => {
+    it("starts no server: with none running, it ends saying so, and a config that would create a session is never loaded", async () => {
       const idleSocket = uniqueSocket("tmux-js-test-", "watch-idle");
       const dir = mkdtempSync(join(tmpdir(), "tmux-js-watch-"));
       const config = join(dir, "tmux.conf");
@@ -168,13 +168,17 @@ describe.skipIf(!RUN_INTEGRATION)(
           socketPath: idleSocket,
         }),
       );
+      const exit = waitForEvent(lone, "exit");
+      const command = lone.execute("list-sessions");
+      // tmux's two wordings for "no server": the socket was never created,
+      // or it exists with nothing listening.
+      const noServer = /error connecting to|no server running/;
       try {
-        await closed(lone);
-        // tmux's two wordings for "no server": the socket was never created,
-        // or it exists with nothing listening.
-        expect(() => tmux(idleSocket, ["list-sessions"])).toThrow(
-          /error connecting to|no server running/,
-        );
+        await expect(command).rejects.toMatchObject({
+          reason: expect.stringMatching(noServer),
+        });
+        expect((await exit).reason).toMatch(noServer);
+        expect(() => tmux(idleSocket, ["list-sessions"])).toThrow(noServer);
       } finally {
         lone.close();
         killTmuxServer(idleSocket);

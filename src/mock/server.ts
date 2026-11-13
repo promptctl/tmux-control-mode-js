@@ -183,7 +183,7 @@ export class MockTmuxServer implements TmuxTransport {
    * [LAW:one-source-of-truth] Real tmux emits one unsolicited %begin/%end
    * guard pair on attach, before any client-issued command's response or any
    * notification (SPEC.md §5) — TmuxClient depends on seeing exactly this
-   * shape to leave "connecting" (see TmuxClient.awaitingGreeting). Emitting
+   * shape to leave "connecting" (see the TmuxClient constructor). Emitting
    * it here, ahead of the scenario's own greeting notifications, keeps this
    * mock protocol-faithful: without it, every client attached to this server
    * would treat its first real command's guard block as the unsolicited

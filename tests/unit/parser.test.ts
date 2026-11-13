@@ -936,6 +936,23 @@ describe("binary garbage lines outside response block", () => {
   });
 });
 
+describe("unguarded lines", () => {
+  it("reports a non-% line outside a block, and never a block's own output", () => {
+    const unguarded: string[] = [];
+    const parser = new TmuxParser(() => {});
+    parser.onUnguardedLine = (line) => unguarded.push(line);
+    parser.feed(
+      "command attach-session: unknown flag -Z\r\n" +
+        "%begin 1 7 0\ninside the block\n%end 1 7 0\n" +
+        "'false' returned 1\n",
+    );
+    expect(unguarded).toEqual([
+      "command attach-session: unknown flag -Z",
+      "'false' returned 1",
+    ]);
+  });
+});
+
 describe("very long line", () => {
   it("does not crash", () => {
     const longLine = "%unknown-type " + "x".repeat(50000) + "\n";

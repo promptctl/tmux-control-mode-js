@@ -13,7 +13,11 @@ import {
 } from "./connection-state.js";
 import { TmuxParser } from "./protocol/parser.js";
 import { detachClient } from "./protocol/encoder.js";
-import type { CommandResponse, TmuxMessage } from "./protocol/types.js";
+import type {
+  CommandResponse,
+  ExitMessage,
+  TmuxMessage,
+} from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
 import type { EmitterMessage, TmuxEventMap } from "./emitter.js";
 import {
@@ -121,25 +125,18 @@ export class TmuxClient implements TmuxConnection {
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private userClosed = false;
 
-  // [LAW:no-ambient-temporal-coupling] tmux emits one unsolicited %begin/%end
-  // guard pair on attach, before any caller-issued command's response — a
-  // real protocol fact (SPEC.md §5) that used to live only in folklore (a
-  // test comment, a compensating re-bootstrap in TopologyRouter). This flag
-  // is that fact made representable: true for exactly the first guard block
-  // this client ever sees. While true, "begin" must not shift the FIFO (the
-  // greeting has no caller waiting for it) and "end"/"error" must not settle
-  // an entry (there is none) — they instead close the phase and flip
-  // connectionState to "ready", which is the one place readiness is asserted
-  // once this flag is false for good.
-  private awaitingGreeting = true;
+  // [LAW:one-source-of-truth] tmux's text for why the command it was started
+  // with failed. Written only while that command's reply is awaited
+  // (connectionState "connecting"): by the reply's own settle (see the
+  // constructor), or by a line tmux wrote outside any guard block in its
+  // place, which is how it reports a startup command it could not parse.
+  // Later, such a line is `run-shell` output and says nothing about the end.
+  private startupFailure: string | undefined;
 
-  // [LAW:single-enforcer] Set when a parsed %exit has already told consumers
-  // (via the standard notification path in handleMessage) that this
-  // connection is ending. Guards the transport's onClose handler below from
-  // emitting a second, synthetic 'exit' for the same disconnection — %exit
-  // itself must still flow through the ordinary notification channel (SPEC
-  // §23 requires it observable on its own, independent of transport close).
-  private exitAlreadyEmitted = false;
+  // [LAW:single-enforcer] The 'exit' this connection announced, once: tmux's
+  // own %exit, or the transport's close when tmux never sent one. Whatever
+  // rejects because the connection ended carries this reason.
+  private announcedExit: ExitMessage | undefined;
 
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
   //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
@@ -170,33 +167,42 @@ export class TmuxClient implements TmuxConnection {
     this.parser.onProtocolError = (commandNumber, line) => {
       this.handleProtocolError(commandNumber, line);
     };
+    this.parser.onUnguardedLine = (line) => {
+      if (this.currentConnectionState.status === "connecting" && line !== "") {
+        this.startupFailure = line;
+      }
+    };
 
-    // [LAW:no-ambient-temporal-coupling] "ready" is asserted from inside
-    // handleMessage once the startup greeting's guard block closes, not here
-    // on first byte — the greeting IS the first byte, and correlating a
-    // caller's command against it is the bug this phase gate exists to
-    // prevent (see awaitingGreeting).
+    // [LAW:no-ambient-temporal-coupling] tmux answers the command it was
+    // started with before any caller's command (SPEC.md §5), so that reply's
+    // entry heads the FIFO from the start and its %begin claims it like any
+    // other. Its settle is the one place readiness is asserted — when that
+    // guard block closes, not on first byte.
+    this.pending.push({
+      resolve: () => {
+        this.startupFailure = undefined;
+        this.setConnectionState({ status: "ready" });
+      },
+      reject: (err) => {
+        // The transport closed before tmux answered: 'closed' follows.
+        if (err instanceof TransportClosedError) return;
+        if (err instanceof TmuxCommandError) this.startupFailure = err.message;
+        this.setConnectionState({ status: "ready" });
+      },
+    });
+
     transport.onData((chunk) => {
       this.parser.feed(chunk);
     });
     transport.onClose((reason) => {
       this.router.onTransportClose();
-      this.settlePendingOnClose(reason);
-      // [LAW:single-enforcer] A synthetic 'exit' is only needed when tmux
-      // never got to send its own %exit (e.g. a killed server) — transport
-      // close is the one path guaranteed to fire on every disconnection, so
-      // it is the right place to guarantee 'exit' fires at least once, but
-      // not the right place to fire it unconditionally: a graceful shutdown
-      // already announced 'exit' via the ordinary notification path above.
-      if (!this.exitAlreadyEmitted) {
-        this.exitAlreadyEmitted = true;
-        this.emitter.emit({ type: "exit", reason });
-      }
+      // Transport close is the one path every disconnection takes, so it
+      // announces 'exit' when tmux never sent its own %exit (a killed server).
+      this.settlePendingOnClose(this.announceExit(reason).reason);
       // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
       // signal (`reason`, the raw parameter above) — independent of, and
-      // free to disagree with, whichever reason the 'exit' event above just
-      // carried (tmux's own %exit reason takes priority there). See
-      // ConnectionState's doc comment in connection-state.ts for why.
+      // free to disagree with, whichever reason the 'exit' event carried.
+      // See ConnectionState's doc comment in connection-state.ts for why.
       this.setConnectionState({
         status: "closed",
         reason: this.userClosed
@@ -231,7 +237,14 @@ export class TmuxClient implements TmuxConnection {
       // closed," so this consults it rather than trusting a third-party
       // transport to get its own closed bookkeeping right.
       if (this.currentConnectionState.status === "closed") {
-        reject(new TransportSendError("transport closed"));
+        const ended = this.announcedExit?.reason;
+        reject(
+          new TransportSendError(
+            ended === undefined
+              ? "transport closed"
+              : `transport closed: ${ended}`,
+          ),
+        );
         return;
       }
       const invalid = invalidCommand(command);
@@ -355,6 +368,22 @@ export class TmuxClient implements TmuxConnection {
     }
   }
 
+  // [LAW:single-enforcer] The one place 'exit' is emitted; a second
+  // announcement for the same connection (the transport's close after a
+  // %exit, or a second %exit from a misbehaving transport) changes nothing.
+  // A failed startup command explains the end better than what follows it:
+  // tmux's %exit is then bare and the process's own word is `exit 1`.
+  private announceExit(given: string | undefined): ExitMessage {
+    if (this.announcedExit === undefined) {
+      this.announcedExit = {
+        type: "exit",
+        reason: this.startupFailure ?? given,
+      };
+      this.emitter.emit(this.announcedExit);
+    }
+    return this.announcedExit;
+  }
+
   private setConnectionState(next: ConnectionState): void {
     // [LAW:types-are-the-program] 'closed' is documented (connection-state.ts)
     // as terminal for TmuxClient — no automatic transition leaves it. Enforced
@@ -380,89 +409,44 @@ export class TmuxClient implements TmuxConnection {
     // setConnectionState): once announced, nothing more should reach
     // consumers. Without this, a chunk delivered after the transport already
     // closed — a real race under delayed/chaotic delivery — could still
-    // dispatch here: pending/inflight are already cleared and settled, and a
-    // late %exit would re-announce an already-announced exit via the
-    // ordinary notification path below, which has no reason to check
-    // exitAlreadyEmitted since it isn't the synthetic path.
+    // dispatch here: pending/inflight are already cleared and settled.
     if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
-      // [LAW:no-ambient-temporal-coupling] The startup greeting's own %begin
-      // must never claim a caller's pending entry — awaitingGreeting is the
-      // one gate on that, checked here and nowhere else (single-enforcer).
-      if (this.awaitingGreeting) {
-        // No inflight is set: the greeting's output lines (if any) are
-        // captured by parser.onOutputLine into this.inflight?.output, which
-        // is null here, so they are correctly discarded.
-      } else {
-        const entry = this.pending.shift();
-        if (entry !== undefined) {
-          this.inflight = {
-            commandNumber: msg.commandNumber,
-            timestamp: msg.timestamp,
-            output: [],
-            resolve: entry.resolve,
-            reject: entry.reject,
-          };
-        }
+      const entry = this.pending.shift();
+      if (entry !== undefined) {
+        this.inflight = {
+          commandNumber: msg.commandNumber,
+          timestamp: msg.timestamp,
+          output: [],
+          resolve: entry.resolve,
+          reject: entry.reject,
+        };
       }
     } else if (msg.type === "end") {
-      if (this.awaitingGreeting) {
-        this.awaitingGreeting = false;
-        this.setConnectionState({ status: "ready" });
-      } else {
-        const entry = this.inflight;
-        this.inflight = null;
-        entry?.resolve({
+      const entry = this.inflight;
+      this.inflight = null;
+      entry?.resolve({
+        commandNumber: entry.commandNumber,
+        timestamp: entry.timestamp,
+        output: entry.output,
+        success: true,
+      });
+    } else if (msg.type === "error") {
+      const entry = this.inflight;
+      this.inflight = null;
+      entry?.reject(
+        new TmuxCommandError({
           commandNumber: entry.commandNumber,
           timestamp: entry.timestamp,
           output: entry.output,
-          success: true,
-        });
-      }
-    } else if (msg.type === "error") {
-      if (this.awaitingGreeting) {
-        // A tmux implementation detail failing its own startup guard block
-        // is not something a caller can retry or observe — there is no
-        // pending entry to reject. The phase still closes: correlation for
-        // every subsequent guard block must proceed normally regardless.
-        this.awaitingGreeting = false;
-        this.setConnectionState({ status: "ready" });
-      } else {
-        const entry = this.inflight;
-        this.inflight = null;
-        entry?.reject(
-          new TmuxCommandError({
-            commandNumber: entry.commandNumber,
-            timestamp: entry.timestamp,
-            output: entry.output,
-            success: false,
-          }),
-        );
-      }
+          success: false,
+        }),
+      );
     } else if (msg.type === "exit") {
-      // [LAW:single-enforcer] exitAlreadyEmitted is the one guard for "has
-      // exit been sent," checked here too — not just by the transport's
-      // onClose handler — so a second %exit from a misbehaving transport
-      // (TmuxTransport is a public seam, a trust boundary; SPEC guarantees
-      // tmux sends %exit at most once, but this doesn't assume that holds)
-      // can't re-fire the notification. The first %exit falls through to the
-      // ordinary notification path below like every other variant (SPEC §23
-      // requires %exit observable on its own).
-      //
-      // Deliberately not clearing awaitingGreeting here. Two cases:
-      //   1. %exit arrives mid-greeting: impossible through this method —
-      //      the parser enforces block purity (processLine's treatAsOutput),
-      //      so no notification, %exit included, can be dispatched while the
-      //      greeting's guard block is still open. It would be captured as
-      //      (discarded) output text of that block instead.
-      //   2. tmux dies with no trailing %end/%error at all (no closing guard
-      //      ever arrives): awaitingGreeting is stuck true, but harmlessly —
-      //      transport close makes connectionState terminal-closed, and the
-      //      guard at the top of this method returns before any
-      //      awaitingGreeting-gated branch could run again.
-      // Either way, clearing it here would be a write nothing ever observes.
-      if (this.exitAlreadyEmitted) return;
-      this.exitAlreadyEmitted = true;
+      // %exit is announced when tmux says it (SPEC §23 requires it observable
+      // on its own), not when the transport later closes.
+      this.announceExit(msg.reason);
+      return;
     }
 
     // [LAW:single-enforcer] Pane bytes flow exclusively through the router's
@@ -494,18 +478,9 @@ export class TmuxClient implements TmuxConnection {
     // handleMessage's identical guard) — settlePendingOnClose already ran, so
     // there is nothing left to settle here for a message arriving this late.
     if (this.currentConnectionState.status === "closed") return;
-    if (this.awaitingGreeting) {
-      // A malformed terminator on the startup greeting itself is not
-      // something a caller can retry or observe via a rejected command —
-      // there is no pending entry. The phase still closes: correlation for
-      // every subsequent guard block must proceed normally regardless.
-      this.awaitingGreeting = false;
-      this.setConnectionState({ status: "ready" });
-    } else {
-      const entry = this.inflight;
-      this.inflight = null;
-      entry?.reject(new TmuxProtocolError(commandNumber, line, entry.output));
-    }
+    const entry = this.inflight;
+    this.inflight = null;
+    entry?.reject(new TmuxProtocolError(commandNumber, line, entry.output));
     this.emitter.emit({ type: "protocol-error", commandNumber, line });
   }
 }

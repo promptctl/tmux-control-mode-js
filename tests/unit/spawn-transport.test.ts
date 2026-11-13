@@ -72,6 +72,41 @@ describe("spawnTmux lifecycle seam", () => {
     expect(reasons[0]).toMatch(/ENOENT/);
   });
 
+  // What a tmux that cannot reach a server does: nothing on stdout, its
+  // reason on stderr, a non-zero exit.
+  it.each([
+    {
+      child: "fails without writing to stdout: what it wrote to stderr",
+      script: "echo 'no server running on /tmp/x' >&2; exit 1",
+      reason: "no server running on /tmp/x",
+    },
+    {
+      child: "fails after writing to stdout: its exit code",
+      script: "echo warning >&2; echo %exit; exit 1",
+      reason: "exit 1",
+    },
+    {
+      child: "exits cleanly: no reason, whatever it wrote to stderr",
+      script: "echo warning >&2; exit 0",
+      reason: undefined,
+    },
+    {
+      child: "is killed: the signal, whatever it wrote to stderr",
+      script: "echo warning >&2; kill -TERM $$",
+      reason: "SIGTERM",
+    },
+    {
+      child: "fails after flooding stderr: the last 4096 characters",
+      script: "head -c 10000 /dev/zero | tr '\\0' x >&2; echo end >&2; exit 1",
+      reason: "x".repeat(4092) + "end",
+    },
+  ])("(c) a child that $child", async ({ script, reason }) => {
+    const reasons = collectCloses(shTransport(script));
+
+    await until(() => reasons.length > 0, "close dispatch");
+    expect(reasons).toEqual([reason]);
+  });
+
   it("(a) send after close refuses with the death reason", async () => {
     const transport = shTransport("exit 3");
     const reasons = collectCloses(transport);

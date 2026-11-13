@@ -104,6 +104,10 @@ has no name yet, such as one about to call `listSessions`.
   tmux older than 3.6, when the attached one does), when the server dies, or
   when another client detaches the watcher. tmux sends the same bare
   `%exit` for all of these, so the cause isn't reported.
+- **A failed attach says why.** When the watcher never attaches, `exit` carries
+  tmux's own text as its `reason` (`no server running on …`,
+  `can't find session: main`), and every command already sent rejects with a
+  `TransportClosedError` whose `reason` is that same text.
 
 Events in other sessions that tmux does not send to a control client are relayed
 separately (`cross-session-layout-change`).

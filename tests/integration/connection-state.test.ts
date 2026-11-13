@@ -52,7 +52,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       client.on("connection-state", (ev) => seen.push(ev.state));
 
       // Wait for the client to consume tmux's unsolicited startup
-      // %begin/%end greeting (see TmuxClient.awaitingGreeting) — that is
+      // %begin/%end greeting (see the TmuxClient constructor) — that is
       // what "ready" now means, not merely "first byte received".
       await waitReady(client);
       expect(client.connectionState).toEqual({ status: "ready" });

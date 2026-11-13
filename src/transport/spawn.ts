@@ -5,7 +5,6 @@
 import {
   spawn,
   type SpawnOptionsWithStdioTuple,
-  type StdioNull,
   type StdioPipe,
 } from "node:child_process";
 import type { TmuxTransport, SendResult, SpawnOptions } from "./types.js";
@@ -31,6 +30,9 @@ function buildArgv(
   return ["-C", ...socketArgs, ...userArgs];
 }
 
+// How much of a silent child's stderr is kept as its close reason.
+const STDERR_TAIL_LENGTH = 4096;
+
 // [LAW:dataflow-not-control-flow] Callback arrays always exist and may be empty;
 // every registration pushes and the close/error dispatch iterates the whole array.
 
@@ -48,17 +50,31 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   const dataCallbacks: ((chunk: string) => void)[] = [];
 
   // [LAW:no-defensive-null-guards] Typing the options triggers the spawn overload
-  // that returns ChildProcessByStdio<Writable, Readable, null> — stdin/stdout are
-  // non-null by construction, not by runtime assertion.
+  // that returns ChildProcessByStdio<Writable, Readable, Readable> — the three
+  // streams are non-null by construction, not by runtime assertion.
   const spawnOptions: SpawnOptionsWithStdioTuple<
     StdioPipe,
     StdioPipe,
-    StdioNull
+    StdioPipe
   > = {
-    stdio: ["pipe", "pipe", "ignore"],
+    stdio: ["pipe", "pipe", "pipe"],
     env: options?.env as NodeJS.ProcessEnv | undefined,
   };
   const child = spawn(tmuxPath, argv, spawnOptions);
+
+  // [LAW:no-silent-failure] A tmux that cannot reach a server (`-N` with none
+  // running, a bad socket path) says why on stderr and nowhere else, then
+  // exits non-zero having written nothing to stdout. That text is the close
+  // reason for exactly that death. Once the child has written to stdout its
+  // stderr explains nothing about a later exit (an `ssh` wrapper's
+  // connect-time warning), so from then on it is read only to keep the pipe
+  // from filling. Same byte container as stdout, bounded to its tail.
+  let spoke = false;
+  let stderrTail = "";
+  child.stderr.setEncoding("latin1");
+  child.stderr.on("data", (chunk: string) => {
+    if (!spoke) stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LENGTH);
+  });
 
   // [LAW:one-source-of-truth] The byte stream is the source of truth. tmux
   // emits pane output bytes 0x80-0xFF (UTF-8, raw) UNescaped; decoding the
@@ -80,6 +96,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   // other transports must use bytesToLatin1() from byte-codec.ts.
   child.stdout.setEncoding("latin1");
   child.stdout.on("data", (chunk: string) => {
+    spoke = true;
     dataCallbacks.forEach((cb) => cb(chunk));
   });
 
@@ -90,9 +107,11 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   const closeGate = createCloseGate();
 
   child.on("close", (code, signal) => {
-    closeGate.dispatch(
-      signal ?? (code !== null && code !== 0 ? `exit ${code}` : undefined),
-    );
+    const failure =
+      code === null || code === 0
+        ? undefined
+        : (spoke ? "" : stderrTail.trim()) || `exit ${code}`;
+    closeGate.dispatch(signal ?? failure);
   });
 
   child.on("error", (err) => {
