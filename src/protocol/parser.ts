@@ -417,8 +417,9 @@ export class TmuxParser {
    * the (malformed) terminator.
    *
    * The one thing dropped from `raw` first: the DCS introducer `-CC` writes
-   * before its first line (SPEC.md §12), which would otherwise hide that
-   * line's `%`.
+   * in front of its first line (SPEC.md §12), which would otherwise hide that
+   * line's `%`. It is dropped from any line outside a response block, not
+   * only the stream's first: a PTY can deliver a login banner before it.
    */
   private processLine(raw: string): void {
     const inResponseBlock = this.activeCommandNumber !== -1;

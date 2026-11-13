@@ -107,7 +107,8 @@ All notable changes to this project are documented here. Format follows
   outside a response block (`run-shell` output, or its complaint about a
   startup command it cannot parse). Such lines used to be dropped.
 - `TmuxParser` reads a `tmux -CC` stream as it comes off a PTY: the DCS
-  introducer before the first line is dropped.
+  introducer in front of tmux's first line is dropped, wherever outside a
+  response block that line falls.
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a

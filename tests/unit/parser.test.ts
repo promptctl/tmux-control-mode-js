@@ -955,11 +955,17 @@ describe("unguarded lines", () => {
 
 // The first bytes of a real `tmux -CC` (3.8) stream.
 describe("-CC DCS introducer", () => {
-  it("is dropped from the first line, whose message is parsed", () => {
+  it.each([
+    { where: "the stream's first line", before: "" },
+    {
+      where: "a line after a PTY's login banner",
+      before: "Last login: Fri\r\n",
+    },
+  ])("is dropped from $where, whose message is parsed", ({ before }) => {
     const messages: TmuxMessage[] = [];
     const parser = new TmuxParser((msg) => messages.push(msg));
     parser.feed(
-      "\x1bP1000p%begin 1794601662 315 0\r\n%end 1794601662 315 0\r\n",
+      before + "\x1bP1000p%begin 1794601662 315 0\r\n%end 1794601662 315 0\r\n",
     );
     expect(messages.map((msg) => msg.type)).toEqual(["begin", "end"]);
   });
