@@ -142,6 +142,14 @@ describe("newWindow", () => {
     });
   });
 
+  it("reads a reply line a CRLF transport left a carriage return on", async () => {
+    const { client } = fakeConnection(["@12\t%40\r"]);
+    await expect(newWindow(client, { session: "work" })).resolves.toEqual({
+      windowId: 12,
+      paneId: 40,
+    });
+  });
+
   it.each([[[]], [["%40"]], [["@12\t%40", "@13\t%41"]], [["@x\t%40"]]])(
     "rejects with TmuxReplyFormatError carrying the raw reply for %j",
     async (output) => {

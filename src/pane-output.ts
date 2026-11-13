@@ -1033,14 +1033,17 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
 
 /**
  * Parse the whole reply to `newWindow()`'s `new-window -P -F` (protocol/
- * encoder.ts): exactly one line, `@N\t%N`. Returns null for any other
- * reply — a different line count included — same discipline as
+ * encoder.ts): exactly one line, `@N\t%N`, with trailing `\r` CRLF residue
+ * allowed the way `parsePaneListLine` allows it — tmux has made the window by
+ * the time this reads the reply, so a refusal here loses its ids. Returns null
+ * for any other reply — a different line count included — same discipline as
  * `parseWindowRecordLine`.
  */
 export function parseNewWindowReply(
   lines: readonly string[],
 ): NewWindowResult | null {
-  const match = lines.length === 1 ? /^(@\d+)\t(%\d+)$/.exec(lines[0]) : null;
+  const match =
+    lines.length === 1 ? /^(@\d+)\t(%\d+)\r*$/.exec(lines[0]) : null;
   if (match === null) return null;
   return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
 }
