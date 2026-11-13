@@ -14,6 +14,7 @@ import {
   queryClipboard,
   queryTmuxVersion,
   paneCwd,
+  newEmptyWindow,
 } from "../../src/commands/index.js";
 import {
   PaneCwdUnavailableError,
@@ -206,4 +207,33 @@ describe("paneCwd version gate", () => {
       await expect(paneCwd(conn, 1)).rejects.toThrow(TmuxReplyFormatError);
     },
   );
+});
+
+describe("newEmptyWindow version gate", () => {
+  it("rejects below tmux 3.8 with the 3.8 requirement and never sends new-window", async () => {
+    const { conn, sent } = fakeConnection("3.7b", ["@3\t%7"]);
+
+    const err: unknown = await newEmptyWindow(conn, { session: "work" }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(UnsupportedTmuxVersionError);
+    expect((err as UnsupportedTmuxVersionError).required).toEqual({
+      major: 3,
+      minor: 8,
+    });
+    expect(sent).toEqual(['display-message -p "#{version}"']);
+  });
+
+  it("sends new-window -E on tmux 3.8 and returns the empty window's ids", async () => {
+    const { conn, sent } = fakeConnection("3.8", ["@3\t%7"]);
+
+    await expect(
+      newEmptyWindow(conn, { session: "work", select: true }),
+    ).resolves.toEqual({ windowId: 3, paneId: 7 });
+    expect(sent).toEqual([
+      'display-message -p "#{version}"',
+      "new-window -t '=work:' -P -F '#{window_id}\t#{pane_id}' -E",
+    ]);
+  });
 });

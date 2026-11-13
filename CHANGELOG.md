@@ -109,6 +109,32 @@ All notable changes to this project are documented here. Format follows
   `exit` reason; any other failure appears in this event only, whether or not
   the connection lives on. The Electron bridge forwards it to renderers; the
   WebSocket bridge does not.
+- `newWindow(client, { session, command?, environment?, cwd?, select? })` —
+  opens a window in the session with that exact name and resolves a
+  `NewWindowResult` (`windowId`, `paneId`). `environment` reaches the window's
+  process only (`new-window -e`; values arrive as written), `select: true`
+  makes it the session's current window (by default it opens in the
+  background), and an omitted `cwd` is the session's own directory. It rejects
+  with `RangeError` before sending when `session`, `command` or `cwd` is empty
+  or spans lines, `cwd` is not absolute, an environment name is empty or holds
+  `=` or a newline, or a value holds a newline; and with `TmuxCommandError`
+  when the session does not exist. The command is sent after `--`, so one
+  starting with `-` is never read as tmux flags. A `cwd` that does not exist
+  does not reject: tmux starts the pane in `$HOME`, except tmux 3.3, which
+  leaves it in the server's own cwd — the new `missingCwdFallback(version)`
+  returns `"home"` or `"server-cwd"` for a `TmuxVersion`.
+- `newEmptyWindow(client, { session, select? })` (tmux 3.8,
+  `EMPTY_WINDOW_MIN_VERSION`) and
+  `respawnPane(client, paneId, { command?, environment?, cwd? })` — a window
+  whose pane has no process, and the call that starts one in a pane that has
+  none (an empty pane, or a dead one kept by `remain-on-exit`). Between the
+  two a caller sets what must hold before the process starts: with
+  `set-option -p -t %N remain-on-exit failed`, a command that cannot run
+  leaves a dead pane `capturePane()` reads instead of a window that closes.
+  `newEmptyWindow` rejects with `UnsupportedTmuxVersionError` below 3.8;
+  `respawnPane` rejects with `TmuxCommandError` on a pane whose process is
+  alive. The option types are exported as `NewWindowPlacement` and
+  `PaneProcess`.
 - `watchServerArgs(targetSession?)` — arguments for `spawnTmux` that attach a
   connection which watches a whole server as an extra client: it never starts
   a server (`-N`), leaves the attached session's environment alone (`-E`),

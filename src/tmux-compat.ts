@@ -66,6 +66,12 @@ export const NO_DETACH_ON_DESTROY_MIN_VERSION: TmuxVersion = {
 export const PANE_CWD_MIN_VERSION: TmuxVersion = { major: 3, minor: 7 };
 
 /**
+ * `newEmptyWindow()` sends `new-window -E`, a window whose pane has no
+ * process. tmux 3.7 rejects it as an unknown flag. Available from tmux 3.8+.
+ */
+export const EMPTY_WINDOW_MIN_VERSION: TmuxVersion = { major: 3, minor: 8 };
+
+/**
  * Where a pane starts when its `new-window -c` directory does not exist and
  * $HOME does (with $HOME missing too, every version falls through to `/`). $HOME
  * on 3.2 and 3.4+; tmux 3.3's spawn.c tests

@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +44,8 @@ import {
   requestReport,
   capturePane,
   newWindow,
+  newEmptyWindow,
+  respawnPane,
   paneCwd,
 } from "../../src/commands/index.js";
 import { tmuxEscape } from "../../src/protocol/encoder.js";
@@ -62,6 +65,7 @@ import {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  EMPTY_WINDOW_MIN_VERSION,
   missingCwdFallback,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
@@ -420,18 +424,70 @@ async function waitForPane(
   client: TmuxClient,
   match: (pane: PaneRecord) => boolean,
 ): Promise<PaneRecord> {
+  const panes = await waitUntil(
+    () => listPanes(client),
+    (listing) => listing.some(match),
+  );
+  return panes.find(match)!;
+}
+
+/**
+ * Read until `done` accepts what was read. Only a value `done` refuses
+ * retries; a rejected read propagates, and the timeout carries the last value.
+ */
+async function waitUntil<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+): Promise<T> {
   const deadline = Date.now() + 8000;
   for (;;) {
-    const panes = await listPanes(client);
-    const found = panes.find(match);
-    if (found !== undefined) return found;
+    const value = await read();
+    if (done(value)) return value;
     if (Date.now() >= deadline) {
       throw new Error(
-        `no pane matched within 8000ms; last listing: ${JSON.stringify(panes)}`,
+        `not reached within 8000ms; last read: ${JSON.stringify(value)}`,
       );
     }
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/** The pane's captured text, once it contains `expected`. */
+function waitForPaneText(
+  client: TmuxClient,
+  paneId: number,
+  expected: string,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  return waitUntil(
+    async () => decoder.decode((await capturePane(client, paneId)).bytes),
+    (text) => text.includes(expected),
+  );
+}
+
+/** One line of `format` for `target`, as tmux prints it. */
+async function displayFormat(
+  client: TmuxClient,
+  target: string,
+  format: string,
+): Promise<string> {
+  const reply = await client.execute(
+    `display-message -p -t ${tmuxEscape(target)} ${tmuxEscape(format)}`,
+  );
+  return reply.output.join("\n");
+}
+
+/** The pane's exit status, once its process has exited and tmux kept it. */
+async function waitForDeadPane(
+  client: TmuxClient,
+  paneId: number,
+): Promise<string> {
+  const state = await waitUntil(
+    () =>
+      displayFormat(client, `%${paneId}`, "#{pane_dead} #{pane_dead_status}"),
+    (line) => line.startsWith("1 "),
+  );
+  return state.slice(2);
 }
 
 /** Parse `@<n>` window-id output, failing loudly on anything else. */
@@ -1348,6 +1404,190 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     );
     expect(pane.cwd).toBe(fallback);
   }, 15000);
+
+  it("CMD-05: newWindow() environment reaches the window's process as written and stays out of the session's environment", async () => {
+    sessionName = uniqueName("cmd-nw-env");
+    client = await attachSession(socketName, sessionName);
+    const literal = "#{session_name} $HOME 'q' a=b";
+
+    const created = await newWindow(client, {
+      session: sessionName,
+      command: `printf '[%s][%s]\\n' "$NW_PLAIN" "$NW_LITERAL"; sleep 60`,
+      environment: { NW_PLAIN: "plain", NW_LITERAL: literal },
+    });
+
+    await waitForPaneText(client, created.paneId, `[plain][${literal}]`);
+    const sessionEnvironment = await client.execute(
+      `show-environment -t ${tmuxEscape(sessionName)}`,
+    );
+    expect(sessionEnvironment.output.join("\n")).not.toMatch(/NW_/);
+  }, 15000);
+
+  it("CMD-05: newWindow() leaves the session's current window alone unless select is true", async () => {
+    sessionName = uniqueName("cmd-nw-sel");
+    client = await attachSession(socketName, sessionName);
+    const target = uniqueName("cmd-nw-sel-target");
+    await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
+    const currentWindow = () =>
+      displayFormat(client!, `=${target}:`, "#{window_id}");
+    const initial = await currentWindow();
+
+    await newWindow(client, { session: target, command: "sleep 60" });
+    expect(await currentWindow()).toBe(initial);
+
+    const selected = await newWindow(client, {
+      session: target,
+      command: "sleep 60",
+      select: true,
+    });
+    expect(await currentWindow()).toBe(`@${selected.windowId}`);
+  }, 15000);
+
+  // The control client's own session starts in this process's cwd, so a pane
+  // that lands in `start` took the target session's directory, not the
+  // client's.
+  it("CMD-05: newWindow() without cwd starts the pane in the target session's directory", async () => {
+    sessionName = uniqueName("cmd-nw-defcwd");
+    client = await attachSession(socketName, sessionName);
+    const target = uniqueName("cmd-nw-defcwd-target");
+    const start = realpathSync(mkdtempSync(join(tmpdir(), "nw-start-")));
+
+    try {
+      await client.execute(
+        `new-session -d -s ${tmuxEscape(target)} -c ${tmuxEscape(start)}`,
+      );
+      const created = await newWindow(client, {
+        session: target,
+        command: "sleep 60",
+      });
+
+      await waitForPane(
+        client,
+        (p) => p.paneId === created.paneId && p.cwd === start,
+      );
+    } finally {
+      rmSync(start, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("CMD-05: respawnPane() runs a command with its environment and cwd in a dead pane tmux kept", async () => {
+    sessionName = uniqueName("cmd-rp");
+    client = await attachSession(socketName, sessionName);
+    // '#S' in the name: tmux format-expands respawn-pane's -c as well.
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "rp-#S-")));
+    const release = join(cwd, "go");
+
+    try {
+      const created = await newWindow(client, {
+        session: sessionName,
+        command: `while [ ! -e '${release}' ]; do sleep 0.1; done; exit 3`,
+      });
+      await client.execute(
+        `set-option -p -t %${created.paneId} remain-on-exit on`,
+      );
+      writeFileSync(release, "");
+      expect(await waitForDeadPane(client, created.paneId)).toBe("3");
+
+      await respawnPane(client, created.paneId, {
+        command: `printf '[%s][%s]\\n' "$RP_VAR" "$(pwd -P)"; sleep 60`,
+        environment: { RP_VAR: "again" },
+        cwd,
+      });
+
+      await waitForPaneText(client, created.paneId, `[again][${cwd}]`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  // The '-k' case pins the '--' before the command on the running tmux:
+  // without it tmux reads '-k' as respawn-pane's kill flag, replies success,
+  // and the pane's process is gone.
+  it("CMD-05: respawnPane() rejects on a pane whose process is alive, whatever the command, and leaves the process running", async () => {
+    sessionName = uniqueName("cmd-rp-live");
+    client = await attachSession(socketName, sessionName);
+    const live = await newWindow(client, {
+      session: sessionName,
+      command: "sleep 60",
+    });
+    const pid = (await waitForPane(client, (p) => p.paneId === live.paneId))
+      .pid;
+
+    for (const command of ["true", "-k"]) {
+      const attempt = respawnPane(client, live.paneId, { command });
+      await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
+      await expect(attempt).rejects.toThrow(/still active/);
+    }
+    const after = await waitForPane(client, (p) => p.paneId === live.paneId);
+    expect(after.pid).toBe(pid);
+    expect(pid).toBeGreaterThan(0);
+  }, 15000);
+
+  it.skipIf(!tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION))(
+    "CMD-05: newEmptyWindow() then remain-on-exit failed then respawnPane() keeps the pane of a command that cannot run, with its output",
+    async () => {
+      sessionName = uniqueName("cmd-ew-fail");
+      client = await attachSession(socketName, sessionName);
+      const missing = uniqueName("no-such-command");
+
+      const { paneId } = await newEmptyWindow(client, {
+        session: sessionName,
+      });
+      await client.execute(`set-option -p -t %${paneId} remain-on-exit failed`);
+      await respawnPane(client, paneId, { command: missing });
+
+      expect(await waitForDeadPane(client, paneId)).toBe("127");
+      await waitForPaneText(client, paneId, missing);
+    },
+    15000,
+  );
+
+  it.skipIf(!tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION))(
+    "CMD-05: newEmptyWindow() with select is the session's current window, and respawnPane() starts its process with the given environment and cwd",
+    async () => {
+      sessionName = uniqueName("cmd-ew");
+      client = await attachSession(socketName, sessionName);
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ew-")));
+
+      try {
+        const { windowId, paneId } = await newEmptyWindow(client, {
+          session: sessionName,
+          select: true,
+        });
+        expect(
+          await displayFormat(client, `=${sessionName}:`, "#{window_id}"),
+        ).toBe(`@${windowId}`);
+
+        await respawnPane(client, paneId, {
+          command: `printf '[%s][%s]\\n' "$EW_VAR" "$(pwd -P)"; sleep 60`,
+          environment: { EW_VAR: "started" },
+          cwd,
+        });
+
+        await waitForPaneText(client, paneId, `[started][${cwd}]`);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    15000,
+  );
+
+  it.skipIf(
+    RUNNING_TMUX_VERSION === null || tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION),
+  )(
+    "CMD-05: newEmptyWindow() rejects below tmux 3.8 with UnsupportedTmuxVersionError and creates no window",
+    async () => {
+      sessionName = uniqueName("cmd-ew-old");
+      client = await attachSession(socketName, sessionName);
+      const windowsBefore = (await listWindows(client)).length;
+
+      await expect(
+        newEmptyWindow(client, { session: sessionName }),
+      ).rejects.toBeInstanceOf(UnsupportedTmuxVersionError);
+      expect(await listWindows(client)).toHaveLength(windowsBefore);
+    },
+    15000,
+  );
 
   // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so
   // the only retry allowed is on PaneCwdUnavailableError (no path yet), never
