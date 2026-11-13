@@ -129,8 +129,9 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:one-type-per-behavior] The owner of every block tmux marks as not
   // answering a command this client wrote: the command line tmux was started
-  // with, a hook, an `if-shell -b`. Each becomes one `unsolicited-response`;
-  // whether it failed and what it said are in the response.
+  // with, a hook, a background command. Each becomes one
+  // `unsolicited-response`; whether it failed and what it said are in the
+  // response.
   private readonly unsolicited: BlockOwner = {
     resolve: (response) => {
       this.startupReplied(undefined);

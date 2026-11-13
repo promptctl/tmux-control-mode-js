@@ -100,13 +100,14 @@ flag anchors are scoped by the named command. Do not reintroduce `tmux.1:NNNN`.
   - `cmd-queue.c:825-833` (`cmdq_guard()`)
 - `CMDQ_STATE_CONTROL` is set only on a command line the client wrote on its
   stdin (`control.c` `control_read_callback`); `control_error` writes the
-  literal 1. A command keeps the state of the command that inserted it (a
-  waited `if-shell`, `source-file`: `cmd-if-shell.c`, `cfg.c`
-  `cmdq_copy_state`). Blocks for the command line tmux was started with
-  (`server-client.c` `server_client_dispatch_command`), for the commands of
-  `after-*` and `command-error` hooks (`hooks.c`; `cmd-queue.c`
-  `cmdq_insert_hook` in 3.2) and for the command of `if-shell -b`
-  (`cmd-if-shell.c`) carry flags 0
+  literal 1. A command keeps the state of the command that inserted it
+  (`source-file`, and `if-shell` or `run-shell -C` without `-b`:
+  `cmd-if-shell.c`, `cmd-run-shell.c`, `cfg.c` `cmdq_copy_state`). Blocks for
+  the command line tmux was started with (`server-client.c`
+  `server_client_dispatch_command`), for the commands of `after-*` and
+  `command-error` hooks (`hooks.c`; `cmd-queue.c` `cmdq_insert_hook` in 3.2)
+  and for the commands `if-shell -b` and `run-shell -b -C` run in the
+  background (`cmd-if-shell.c`, `cmd-run-shell.c`) carry flags 0
 - `cmdq_guard()` is called at:
   - `cmd-queue.c:619` (begin, before command execution)
   - `cmd-queue.c:677` (error, on command failure)

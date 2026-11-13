@@ -208,9 +208,9 @@ Command output (the lines between `%begin` and `%end`/`%error`) is written via
 ### 5.5 Blocks for Commands the Client Did Not Write
 
 `flags` is 1 on a block for a command of a line the client wrote on its stdin
-(§4.2), for a command that such a command runs in its place (a waited
-`if-shell`, `source-file`), and on a parse error for such a line (§5.3). Every
-other block carries 0.
+(§4.2), for a command that such a command queues after itself (`source-file`,
+and `if-shell` or `run-shell -C` without `-b`), and on a parse error for such
+a line (§5.3). Every other block carries 0.
 
 The mark says a block answers the client's own lines, not which line. One line
 gets one block marked 1 per command tmux ran for it, and tmux runs nothing
@@ -225,7 +225,7 @@ Blocks marked 0, one per command:
   only a client that is not attached to a session.
 - The commands of an `after-*` hook a command sets off, after that command's
   own block, and of the `command-error` hook after a block that failed.
-- The command `if-shell -b` runs once its shell command has finished.
+- The commands `if-shell -b` and `run-shell -b -C` run in the background.
 
 ```
 %begin 1363006971 5 1
@@ -242,11 +242,11 @@ on 3.8.
 CMDQ_STATE_CONTROL)`); `control.c` `control_read_callback` is the only place a
 state is created with `CMDQ_STATE_CONTROL`, and `control_error` writes the
 literal 1. A command keeps the state of the command that inserted it
-(`cmd-if-shell.c`, `cfg.c` `cmdq_copy_state`). The startup command line is
-queued by `server-client.c` `server_client_dispatch_command`, hooks by
-`hooks.c` (`cmd-queue.c` `cmdq_insert_hook` in 3.2) and the command of
-`if-shell -b` by `cmd-if-shell.c` (`cmdq_get_command(cmdlist, NULL)`), none
-with that flag.
+(`cmd-if-shell.c`, `cmd-run-shell.c`, `cfg.c` `cmdq_copy_state`). The startup
+command line is queued by `server-client.c` `server_client_dispatch_command`,
+hooks by `hooks.c` (`cmd-queue.c` `cmdq_insert_hook` in 3.2) and a background
+command by `cmd-if-shell.c` and `cmd-run-shell.c` (`cmdq_get_command(cmdlist,
+NULL)`), none with that flag.
 
 ---
 

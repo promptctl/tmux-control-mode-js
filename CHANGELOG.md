@@ -104,10 +104,11 @@ All notable changes to this project are documented here. Format follows
   caller sent, carrying the whole `CommandResponse` (output, and `success`
   false for a `%error`). One per command: the command line tmux was started
   with (`tmux -C list-sessions` now delivers its listing here), a hook a
-  command set off (`after-*`, `command-error`), an `if-shell -b`. Only the
-  failure of the first startup command is also the `exit` reason; any other
-  failure appears in this event only, whether or not the connection lives on.
-  The Electron bridge forwards it to renderers; the WebSocket bridge does not.
+  command set off (`after-*`, `command-error`), an `if-shell -b` or
+  `run-shell -b -C`. Only the failure of the first startup command is also the
+  `exit` reason; any other failure appears in this event only, whether or not
+  the connection lives on. The Electron bridge forwards it to renderers; the
+  WebSocket bridge does not.
 - `watchServerArgs(targetSession?)` — arguments for `spawnTmux` that attach a
   connection which watches a whole server as an extra client: it never starts
   a server (`-N`), leaves the attached session's environment alone (`-E`),
