@@ -208,8 +208,8 @@ export class TopologyRouter {
 
   /**
    * Called by the transport adapter when the connection is ready to accept
-   * commands (e.g., once TmuxClient has consumed tmux's unsolicited startup
-   * guard block, or post-welcome for WebSocket) — i.e. connectionState
+   * commands (e.g., once tmux's reply to the command it was started with has
+   * closed, or post-welcome for WebSocket) — i.e. connectionState
    * reaching "ready", not merely the first byte arriving.
    *
    * Stores the runCommand callback and triggers a topology bootstrap if any

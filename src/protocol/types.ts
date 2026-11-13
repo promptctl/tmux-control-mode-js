@@ -6,6 +6,17 @@
 // Guards (command response framing)
 // ---------------------------------------------------------------------------
 
+/**
+ * `flags` on the three guards of a block for a command of a line this client
+ * wrote on its stdin. Every other block tmux writes to the client carries 0:
+ * the commands of the command line tmux was started with, of a hook a command
+ * set off, of an `if-shell -b` or `run-shell -b -C` (SPEC.md §5.5). Same in
+ * tmux 3.2 and later:
+ * `cmd-queue.c` `cmdq_fire_command` writes whether the command's state has
+ * `CMDQ_STATE_CONTROL`, which only `control.c` `control_read_callback` sets.
+ */
+export const CONTROL_FLAGS = 1;
+
 export interface BeginMessage {
   readonly type: "begin";
   readonly timestamp: number;
@@ -370,6 +381,24 @@ export interface CommandResponse {
    */
   readonly output: readonly string[];
   readonly success: boolean;
+}
+
+/**
+ * tmux's reply to a command this client did not write (a block whose guards
+ * do not carry {@link CONTROL_FLAGS}), one event per command: the command
+ * line tmux was started with, a hook a command set off, an `if-shell -b` or
+ * `run-shell -b -C`. `TmuxClient` builds it from the whole block, so like
+ * {@link ProtocolErrorMessage} it is not a `TmuxMessage`.
+ *
+ * A failed one (`response.success` false) does not by itself end the
+ * connection. When the first command tmux was started with fails, its text is
+ * also the `exit` event's `reason`. Any other failure appears in this event
+ * only: a hook's, or a later startup command's, whether the connection lives
+ * on or tmux then exits a client that list left unattached.
+ */
+export interface UnsolicitedResponseMessage {
+  readonly type: "unsolicited-response";
+  readonly response: CommandResponse;
 }
 
 /**

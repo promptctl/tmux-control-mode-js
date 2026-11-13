@@ -143,11 +143,14 @@ If the bufferevent encounters an I/O error, `control_error_callback()` sets
 
 ## 5. Command Response Protocol
 
-Each command produces exactly one response block consisting of:
+Each command tmux runs for the client produces exactly one response block
+consisting of:
 
 1. A `%begin` line
 2. Zero or more lines of output
 3. A `%end` line (success) or `%error` line (failure)
+
+That is every command, not only the ones the client wrote: §5.5.
 
 ### 5.1 Format
 
@@ -201,6 +204,49 @@ Command output (the lines between `%begin` and `%end`/`%error`) is written via
 | `cmdq_print()` | Command output/messages within response blocks | `cmd-queue.c:843-859` |
 | `cmd_capture_pane_exec()` | `capture-pane -p` output | `cmd-capture-pane.c:241-242` |
 | `control_error()` | Parse error messages | `control.c:527-529` |
+
+### 5.5 Blocks for Commands the Client Did Not Write
+
+`flags` is 1 on a block for a command of a line the client wrote on its stdin
+(§4.2), for a command that such a command queues after itself (`source-file`,
+and `if-shell` or `run-shell -C` without `-b`), and on a parse error for such
+a line (§5.3). Every other block carries 0.
+
+The mark says a block answers the client's own lines, not which line. One line
+gets one block marked 1 per command tmux ran for it, and tmux runs nothing
+after a command that fails: `display-message -p a \; kill-session -t gone \;
+display-message -p c` writes two.
+
+Blocks marked 0, one per command:
+
+- The command line tmux was started with, before any block marked 1.
+  `tmux -C attach-session -t a \; kill-session -t gone` writes two, and the
+  connection outlives the second one's failure: after the list, tmux exits
+  only a client that is not attached to a session.
+- The commands of an `after-*` hook a command sets off, after that command's
+  own block, and of the `command-error` hook after a block that failed.
+- The commands `if-shell -b` and `run-shell -b -C` run in the background.
+
+```
+%begin 1363006971 5 1
+%end 1363006971 5 1
+%begin 1363006971 6 0
+output of the after-rename-window hook
+%end 1363006971 6 0
+```
+
+tmux writes the field the same way from 3.2 on; the cases above were observed
+on 3.8.
+
+**Source:** `cmd-queue.c` `cmdq_fire_command` (`flags = !!(state->flags &
+CMDQ_STATE_CONTROL)`); `control.c` `control_read_callback` is the only place a
+state is created with `CMDQ_STATE_CONTROL`, and `control_error` writes the
+literal 1. A command keeps the state of the command that inserted it
+(`cmd-if-shell.c`, `cmd-run-shell.c`, `cfg.c` `cmdq_copy_state`). The startup
+command line is queued by `server-client.c` `server_client_dispatch_command`,
+hooks by `hooks.c` (`cmd-queue.c` `cmdq_insert_hook` in 3.2) and a background
+command by `cmd-if-shell.c` and `cmd-run-shell.c` (`cmdq_get_command(cmdlist,
+NULL)`), none with that flag.
 
 ---
 

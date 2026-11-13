@@ -456,7 +456,7 @@ describe("TmuxClient — topology bootstrap failure is observable", () => {
 
     // tmux answers that command with a %error guard block → execute() rejects →
     // the router lifts the failure to the topology-error seam.
-    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+    t.feed("%begin 1 1 1\n%error 1 1 1\n");
     await Promise.resolve();
     await Promise.resolve();
 

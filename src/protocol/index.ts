@@ -40,6 +40,7 @@ export type {
   ProtocolErrorMessage,
   TmuxMessage,
   CommandResponse,
+  UnsolicitedResponseMessage,
   PaneRecord,
   WindowRecord,
 } from "./types.js";

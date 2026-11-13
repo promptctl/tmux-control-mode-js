@@ -117,12 +117,16 @@ describe("BridgeConnection — cross-session layout coverage", () => {
   });
 
   it("routes lifecycle events only on transports that forward them, and topology-error nowhere", () => {
-    const lifecycle = { type: "reconnected" } as EmitterMessage;
+    const lifecycle = [
+      { type: "reconnected" },
+      { type: "unsolicited-response" },
+    ] as EmitterMessage[];
     const topology = { type: "topology-error" } as EmitterMessage;
     for (const forwards of [false, true]) {
       const { bridge } = makeBridge(forwards);
       const peer = bridge.registerPeer();
-      expect(delivers(bridge, peer, lifecycle)).toBe(forwards);
+      for (const msg of lifecycle)
+        expect(delivers(bridge, peer, msg)).toBe(forwards);
       expect(delivers(bridge, peer, topology)).toBe(false);
     }
   });

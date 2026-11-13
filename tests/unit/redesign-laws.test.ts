@@ -277,8 +277,8 @@ describe("fifo-correlation", () => {
     expect(transport.sent[0]).not.toContain('"id"');
 
     // Inject %begin/%end pairs in order; promises resolve FIFO.
-    transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
-    transport.inject("%begin 1001 2 0\n%end 1001 2 0\n");
+    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject("%begin 1001 2 1\n%end 1001 2 1\n");
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1.commandNumber).toBe(1);
@@ -305,7 +305,7 @@ describe("fifo-correlation", () => {
     // The next command correlates with the FIRST %begin/%end pair — proof
     // the failed entry did not leak a slot.
     const p = client.execute("cmd-beta");
-    transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
+    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
     expect((await p).commandNumber).toBe(1);
   });
 
@@ -327,7 +327,7 @@ describe("fifo-correlation", () => {
     await expect(client.execute("cmd-alpha")).rejects.toBeInstanceOf(TypeError);
 
     const p = client.execute("cmd-beta");
-    transport.inject("%begin 1000 1 0\n%end 1000 1 0\n");
+    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
     expect((await p).commandNumber).toBe(1);
   });
 });

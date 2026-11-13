@@ -21,7 +21,7 @@
 
 import type { TmuxTransport, SendResult } from "../transport/types.js";
 import { createCloseGate } from "../transport/close-gate.js";
-import type { TmuxMessage } from "../protocol/types.js";
+import { CONTROL_FLAGS, type TmuxMessage } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
 
 // ---------------------------------------------------------------------------
@@ -71,12 +71,6 @@ export interface MockServerOptions {
   /** Seconds-since-epoch source for guard timestamps. Default: `() => 0`. */
   readonly now?: () => number;
 }
-
-// [LAW:one-source-of-truth] SPEC.md §4 / SPEC_MANIFEST §4: control-client
-// command guards carry flags = 1 (CMDQ_STATE_CONTROL). The client never reads
-// this field; it is emitted for wire fidelity (the tutorial shows the real
-// shape).
-const CONTROL_FLAGS = 1;
 
 const DEFAULT_SCENARIO: MockScenario = {};
 
@@ -180,14 +174,12 @@ export class MockTmuxServer implements TmuxTransport {
    * the greeting is delivered at most once, so a double call (or a re-attach)
    * does not double-seed.
    *
-   * [LAW:one-source-of-truth] Real tmux emits one unsolicited %begin/%end
-   * guard pair on attach, before any client-issued command's response or any
-   * notification (SPEC.md §5) — TmuxClient depends on seeing exactly this
-   * shape to leave "connecting" (see the TmuxClient constructor). Emitting
-   * it here, ahead of the scenario's own greeting notifications, keeps this
-   * mock protocol-faithful: without it, every client attached to this server
-   * would treat its first real command's guard block as the unsolicited
-   * greeting and hang forever waiting for a response that already happened.
+   * [LAW:one-source-of-truth] Real tmux answers the command it was started
+   * with in one %begin/%end guard pair, flags 0, before any client-issued
+   * command's response or any notification (SPEC.md §5) — TmuxClient leaves
+   * "connecting" when that block closes. Emitting it here, ahead of the
+   * scenario's own greeting notifications, keeps this mock protocol-faithful:
+   * without it, a client attached to this server would stay "connecting".
    */
   start(): void {
     if (this.closeGate.state().closed || this.started) return;
@@ -198,13 +190,13 @@ export class MockTmuxServer implements TmuxTransport {
       type: "begin",
       timestamp,
       commandNumber: number,
-      flags: CONTROL_FLAGS,
+      flags: 0,
     });
     this.enqueueMessage({
       type: "end",
       timestamp,
       commandNumber: number,
-      flags: CONTROL_FLAGS,
+      flags: 0,
     });
     for (const msg of this.scenario.greeting ?? []) this.enqueueMessage(msg);
     this.flush();

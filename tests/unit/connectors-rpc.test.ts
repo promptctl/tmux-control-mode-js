@@ -64,9 +64,9 @@ function feedOk(
   commandNumber: number,
   lines: readonly string[] = [],
 ): void {
-  feed(`%begin ${commandNumber} ${commandNumber} 0\n`);
+  feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
   for (const l of lines) feed(l + "\n");
-  feed(`%end ${commandNumber} ${commandNumber} 0\n`);
+  feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,9 +373,9 @@ describe("dispatchRpcRequest — error propagation", () => {
       method: "execute",
       args: ["bogus"],
     });
-    t.feed("%begin 1 1 0\n");
+    t.feed("%begin 1 1 1\n");
     t.feed("unknown command\n");
-    t.feed("%error 1 1 0\n");
+    t.feed("%error 1 1 1\n");
 
     await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(p).rejects.toMatchObject({
