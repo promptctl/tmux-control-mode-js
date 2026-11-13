@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import type { ConnectionState } from "../../src/connection-state.js";
+import type { CommandResponse } from "../../src/protocol/types.js";
 import {
   TmuxInvalidCommandError,
   TmuxProtocolError,
@@ -67,7 +68,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
     t.feed(STARTUP_GREETING);
 
     const call = client.execute("list-windows");
-    t.feed("%begin 1 1 0\n");
+    t.feed("%begin 1 1 1\n");
     t.triggerClose("ENOENT");
 
     await expect(call).rejects.toBeInstanceOf(TransportClosedError);
@@ -79,7 +80,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
     t.feed(STARTUP_GREETING);
 
     const done = client.execute("list-windows");
-    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    t.feed("%begin 1 1 1\n%end 1 1 1\n");
     const hanging = client.execute("list-panes");
     t.triggerClose();
 
@@ -121,7 +122,7 @@ describe("TmuxClient — one command is one non-empty line", () => {
       expect(send).not.toHaveBeenCalled();
 
       const next = client.execute("list-windows");
-      t.feed("%begin 1 1 0\n%end 1 1 0\n");
+      t.feed("%begin 1 1 1\n%end 1 1 1\n");
       await expect(next).resolves.toMatchObject({ success: true });
     },
   );
@@ -300,6 +301,98 @@ describe("TmuxClient — why the connection ended reaches 'exit' and every rejec
   });
 });
 
+// tmux-server-events-6sp.lgu: tmux writes a guard block for every command it
+// runs for the client and marks with flags 1 the ones that answer a line the
+// client wrote. A block marked 0 used to take the oldest caller's entry, so
+// every reply after it went to the wrong caller.
+describe("TmuxClient — a reply to a command no caller wrote is an 'unsolicited-response'", () => {
+  function connect(): {
+    t: FakeTransport;
+    client: TmuxClient;
+    unsolicited: CommandResponse[];
+  } {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const unsolicited: CommandResponse[] = [];
+    client.on("unsolicited-response", (ev) => unsolicited.push(ev.response));
+    return { t, client, unsolicited };
+  }
+
+  it("a later command of the startup list takes no caller's reply, and its failure is not why the connection ended", async () => {
+    const { t, client, unsolicited } = connect();
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    const first = client.execute("list-sessions");
+    const second = client.execute("list-windows");
+    // tmux -C attach-session -t =a \; kill-session -t =nope
+    t.feed("%begin 7 1 0\n%end 7 1 0\n");
+    t.feed("%begin 7 2 0\ncan't find session: nope\n%error 7 2 0\n");
+    t.feed("%begin 7 3 1\n$0 a\n%end 7 3 1\n");
+    t.feed("%begin 7 4 1\n@0 zsh\n%end 7 4 1\n");
+
+    await expect(first).resolves.toMatchObject({ output: ["$0 a"] });
+    await expect(second).resolves.toMatchObject({ output: ["@0 zsh"] });
+    expect(unsolicited).toEqual([
+      { commandNumber: 1, timestamp: 7, output: [], success: true },
+      {
+        commandNumber: 2,
+        timestamp: 7,
+        output: ["can't find session: nope"],
+        success: false,
+      },
+    ]);
+
+    t.feed("%exit\n");
+    t.triggerClose("exit 1");
+    expect(exits).toHaveBeenCalledWith({ type: "exit", reason: undefined });
+  });
+
+  it("the startup command's own failed reply is announced as well as ending the connection", () => {
+    const { t, unsolicited } = connect();
+
+    t.feed("%begin 7 1 0\ncan't find session: nope\n%error 7 1 0\n");
+
+    expect(unsolicited).toEqual([
+      {
+        commandNumber: 1,
+        timestamp: 7,
+        output: ["can't find session: nope"],
+        success: false,
+      },
+    ]);
+  });
+
+  it("an after-hook's block between two callers' replies takes neither", async () => {
+    const { t, client, unsolicited } = connect();
+    t.feed(STARTUP_GREETING);
+    unsolicited.length = 0;
+
+    const rename = client.execute("rename-window x");
+    const show = client.execute("display-message -p ok");
+    t.feed("%begin 7 5 1\n%end 7 5 1\n");
+    t.feed("%begin 7 6 0\nhook ran\n%end 7 6 0\n");
+    t.feed("%begin 7 7 1\nok\n%end 7 7 1\n");
+
+    await expect(rename).resolves.toMatchObject({ output: [] });
+    await expect(show).resolves.toMatchObject({ output: ["ok"] });
+    expect(unsolicited).toEqual([
+      { commandNumber: 6, timestamp: 7, output: ["hook ran"], success: true },
+    ]);
+  });
+
+  it("a block the transport closed inside is not announced", () => {
+    const { t, unsolicited } = connect();
+    t.feed(STARTUP_GREETING);
+    unsolicited.length = 0;
+
+    t.feed("%begin 7 2 0\nhalf a reply\n");
+    t.triggerClose();
+
+    expect(unsolicited).toEqual([]);
+  });
+});
+
 describe("TmuxClient — 'closed' is terminal", () => {
   it("a chunk delivered after close does not resurrect 'ready'", () => {
     const t = createFakeTransport();
@@ -353,7 +446,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     client.on("window-add", notifications);
 
     const call = client.execute("list-windows");
-    t.feed("%begin 5 1 0\n");
+    t.feed("%begin 5 1 1\n");
     // Output tmux produced before the wire corrupted — this must survive on
     // the rejection, not be discarded (the diagnostic value TmuxCommandError
     // already preserves for a well-formed %error).
@@ -384,7 +477,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
 
     // The connection is not wedged: a subsequent command still correlates.
     const second = client.execute("list-panes");
-    t.feed("%begin 6 2 0\n%end 6 2 0\n");
+    t.feed("%begin 6 2 1\n%end 6 2 1\n");
     await expect(second).resolves.toMatchObject({ success: true });
   });
 
@@ -397,11 +490,15 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     client.on("connection-state", (ev) => states.push(ev.state));
     const protocolErrors = vi.fn();
     client.on("protocol-error", protocolErrors);
+    const unsolicited = vi.fn();
+    client.on("unsolicited-response", unsolicited);
 
-    t.feed("%begin 0 0 1\n");
+    t.feed("%begin 0 0 0\n");
     t.feed("%end 0 0\n"); // truncated greeting terminator
 
     expect(client.connectionState).toEqual({ status: "ready" });
+    // No response to announce: 'protocol-error' is the report.
+    expect(unsolicited).not.toHaveBeenCalled();
     expect(states).toContainEqual({ status: "ready" });
     expect(protocolErrors).toHaveBeenCalledWith({
       type: "protocol-error",
@@ -411,7 +508,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
 
     // The connection correlates normally from here on.
     const call = client.execute("list-windows");
-    t.feed("%begin 1 1 0\n%end 1 1 0\n");
+    t.feed("%begin 1 1 1\n%end 1 1 1\n");
     return expect(call).resolves.toMatchObject({ success: true });
   });
 });

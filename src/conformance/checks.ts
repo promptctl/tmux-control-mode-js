@@ -190,11 +190,8 @@ function commandCheck(
     run: async () => {
       const server = new MockTmuxServer(scenario);
       const client = new TmuxClient(server);
-      // [LAW:no-ambient-temporal-coupling] The client now consumes tmux's own
-      // unsolicited startup guard block before correlating any real command
-      // (see the TmuxClient constructor) — start() is what delivers it here.
-      // Skipping this would make the command's own guard block get consumed
-      // as that greeting instead, hanging execute() forever.
+      // start() delivers tmux's reply to the command it was started with,
+      // which is what takes the client from "connecting" to "ready".
       server.start();
       try {
         const response = await client.execute(command);

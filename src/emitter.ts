@@ -21,6 +21,7 @@ import type {
   PaneOutputMessage,
   ProtocolErrorMessage,
   TmuxMessage,
+  UnsolicitedResponseMessage,
 } from "./protocol/types.js";
 import type {
   ConnectionStateMessage,
@@ -58,6 +59,7 @@ export type SyntheticEmitterMessage =
   | ConnectionStateMessage
   | ReconnectedMessage
   | ProtocolErrorMessage
+  | UnsolicitedResponseMessage
   | TopologyErrorMessage
   | CrossSessionLayoutMessage;
 
@@ -81,6 +83,7 @@ const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
   "connection-state": true,
   reconnected: true,
   "protocol-error": true,
+  "unsolicited-response": true,
   "topology-error": true,
   "cross-session-layout-change": true,
   "cross-session-layout-decode-error": true,

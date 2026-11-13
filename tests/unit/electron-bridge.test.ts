@@ -99,9 +99,9 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
   for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +489,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
 
     // Reject that bootstrap → the MAIN client emits topology-error locally.
-    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+    t.feed("%begin 1 1 1\n%error 1 1 1\n");
 
     // The renderer proxy has its own router and reports its own failures; the
     // main client's per-instance topology-error must not cross the bridge.
@@ -524,7 +524,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     // Reject that bootstrap invoke with an %error guard block. The rejection
     // round-trips over IPC back to the proxy's router, which reports it.
-    t.feed("%begin 1 1 0\n%error 1 1 0\n");
+    t.feed("%begin 1 1 1\n%error 1 1 1\n");
 
     const err = await topologyError;
     expect(err).toBeInstanceOf(Error);
@@ -933,9 +933,9 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("bogus-cmd");
-    t.feed("%begin 1 1 0\n");
+    t.feed("%begin 1 1 1\n");
     t.feed("unknown command\n");
-    t.feed("%error 1 1 0\n");
+    t.feed("%error 1 1 1\n");
 
     await expect(pending).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(pending).rejects.toMatchObject({
@@ -2147,9 +2147,9 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       // tmux rejects A's subscribe. Both A and B must reject — B was
       // queued on the inflight promise, not optimistically resolved.
-      t.feed("%begin 1 1 0\n");
+      t.feed("%begin 1 1 1\n");
       t.feed("nope\n");
-      t.feed("%error 1 1 0\n");
+      t.feed("%error 1 1 1\n");
 
       await expect(aSub).rejects.toBeInstanceOf(TmuxCommandError);
       await expect(bSub).rejects.toBeInstanceOf(TmuxCommandError);

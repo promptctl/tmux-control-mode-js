@@ -91,13 +91,18 @@ flag anchors are scoped by the named command. Do not reintroduce `tmux.1:NNNN`.
 
 ## 4. Command Response Protocol (`%begin` / `%end` / `%error`)
 
-- Each command produces exactly one response block
+- Each command tmux runs for the client produces exactly one response block
 - Format: `%<guard> <timestamp> <command-number> <flags>`
   - `<guard>` is `begin`, `end`, or `error`
   - `<timestamp>` is `long` (seconds since epoch, `item->time`)
   - `<command-number>` is `u_int` (`item->number`), monotonically increasing
   - `<flags>` is `int`: 1 if `CMDQ_STATE_CONTROL`, 0 otherwise
   - `cmd-queue.c:825-833` (`cmdq_guard()`)
+- `CMDQ_STATE_CONTROL` is set only on a command line the client wrote on its
+  stdin (`control.c` `control_read_callback`); `control_error` writes the
+  literal 1. Blocks for the command line tmux was started with
+  (`server-client.c` `server_client_dispatch_command`) and for `after-*` hooks
+  (`hooks.c`; `cmd-queue.c` `cmdq_insert_hook` in 3.2) carry flags 0
 - `cmdq_guard()` is called at:
   - `cmd-queue.c:619` (begin, before command execution)
   - `cmd-queue.c:677` (error, on command failure)

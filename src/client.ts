@@ -28,7 +28,7 @@ import {
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
-import { isPaneOutput } from "./protocol/types.js";
+import { CONTROL_FLAGS, isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import { closedSendReason } from "./transport/close-gate.js";
 import {
@@ -109,6 +109,10 @@ interface InflightEntry {
   ) => void;
 }
 
+// Who a response block settles: a caller's `PendingEntry`, or the client's
+// own receiver of the replies no caller wrote the command for.
+type BlockOwner = Pick<InflightEntry, "resolve" | "reject">;
+
 // ---------------------------------------------------------------------------
 // TmuxClient
 // ---------------------------------------------------------------------------
@@ -119,8 +123,34 @@ export class TmuxClient implements TmuxConnection {
   private readonly emitter: TypedEmitter;
 
   // [LAW:single-enforcer] FIFO queue and inflight slot are the sole correlation state.
+  // The FIFO holds exactly the commands written on stdin and not yet begun.
   private readonly pending: PendingEntry[] = [];
   private inflight: InflightEntry | null = null;
+
+  // [LAW:one-type-per-behavior] The owner of every block tmux marks as not
+  // answering a command this client wrote: the command line tmux was started
+  // with, an after-hook. Each becomes one `unsolicited-response`; whether it
+  // failed and what it said are in the response.
+  private readonly unsolicited: BlockOwner = {
+    resolve: (response) => {
+      this.startupReplied(undefined);
+      this.emitter.emit({ type: "unsolicited-response", response });
+    },
+    reject: (err) => {
+      // The transport closed before the block did: 'closed' follows.
+      if (err instanceof TransportClosedError) return;
+      // A malformed terminator leaves no response; 'protocol-error' said so.
+      if (err instanceof TmuxProtocolError) {
+        this.startupReplied(undefined);
+        return;
+      }
+      this.startupReplied(err.message);
+      this.emitter.emit({
+        type: "unsolicited-response",
+        response: err.response,
+      });
+    },
+  };
 
   // [LAW:one-source-of-truth] connectionState is the single lifecycle field.
   private currentConnectionState: ConnectionState = { status: "connecting" };
@@ -128,8 +158,8 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:one-source-of-truth] tmux's text for why the command it was started
   // with failed. Written only while that command's reply is awaited
-  // (connectionState "connecting"): by the reply's own settle (see the
-  // constructor), or by a line tmux wrote outside any guard block in its
+  // (connectionState "connecting"): by the reply's own settle (see
+  // startupReplied), or by a line tmux wrote outside any guard block in its
   // place, which is how it reports a startup command it could not parse.
   // Later, such a line is `run-shell` output and says nothing about the end.
   private startupFailure: string | undefined;
@@ -173,26 +203,6 @@ export class TmuxClient implements TmuxConnection {
         this.startupFailure = line;
       }
     };
-
-    // [LAW:no-ambient-temporal-coupling] tmux answers the command it was
-    // started with before any caller's command (SPEC.md §5), so that reply's
-    // entry heads the FIFO from the start and its %begin claims it like any
-    // other. Its settle is the one place readiness is asserted — when that
-    // guard block closes, not on first byte.
-    this.pending.push({
-      resolve: () => {
-        this.startupFailure = undefined;
-        this.setConnectionState({ status: "ready" });
-      },
-      reject: (err) => {
-        // The transport closed before tmux answered: 'closed' follows.
-        if (err instanceof TransportClosedError) return;
-        // A line that came before a reply tmux did send is not its failure.
-        this.startupFailure =
-          err instanceof TmuxCommandError ? err.message : undefined;
-        this.setConnectionState({ status: "ready" });
-      },
-    });
 
     transport.onData((chunk) => {
       this.parser.feed(chunk);
@@ -382,6 +392,19 @@ export class TmuxClient implements TmuxConnection {
     return this.announcedExit;
   }
 
+  // [LAW:no-ambient-temporal-coupling] The first reply tmux sends answers the
+  // command it was started with, so the unsolicited reply that closes while
+  // the state is still 'connecting' is that one. It is the one place readiness
+  // is asserted (when that guard block closes, not on first byte) and it alone
+  // names the startup failure: a line that came before a reply tmux did send
+  // is not its failure, and a later unsolicited reply finds 'ready' and
+  // changes neither.
+  private startupReplied(failure: string | undefined): void {
+    if (this.currentConnectionState.status !== "connecting") return;
+    this.startupFailure = failure;
+    this.setConnectionState({ status: "ready" });
+  }
+
   private setConnectionState(next: ConnectionState): void {
     // [LAW:types-are-the-program] 'closed' is documented (connection-state.ts)
     // as terminal for TmuxClient — no automatic transition leaves it. Enforced
@@ -410,14 +433,19 @@ export class TmuxClient implements TmuxConnection {
     // dispatch here: pending/inflight are already cleared and settled.
     if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
-      const entry = this.pending.shift();
-      if (entry !== undefined) {
+      // [LAW:dataflow-not-control-flow] tmux says on the guard whether the
+      // block answers a command this client wrote, and that picks its owner;
+      // everything after treats every block alike. A reply to a command no
+      // caller wrote never takes a caller's entry.
+      const owner: BlockOwner | undefined =
+        msg.flags === CONTROL_FLAGS ? this.pending.shift() : this.unsolicited;
+      if (owner !== undefined) {
         this.inflight = {
           commandNumber: msg.commandNumber,
           timestamp: msg.timestamp,
           output: [],
-          resolve: entry.resolve,
-          reject: entry.reject,
+          resolve: owner.resolve,
+          reject: owner.reject,
         };
       }
     } else if (msg.type === "end") {

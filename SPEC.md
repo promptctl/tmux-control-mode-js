@@ -143,11 +143,14 @@ If the bufferevent encounters an I/O error, `control_error_callback()` sets
 
 ## 5. Command Response Protocol
 
-Each command produces exactly one response block consisting of:
+Each command tmux runs for the client produces exactly one response block
+consisting of:
 
 1. A `%begin` line
 2. Zero or more lines of output
 3. A `%end` line (success) or `%error` line (failure)
+
+That is every command, not only the ones the client wrote: §5.5.
 
 ### 5.1 Format
 
@@ -201,6 +204,38 @@ Command output (the lines between `%begin` and `%end`/`%error`) is written via
 | `cmdq_print()` | Command output/messages within response blocks | `cmd-queue.c:843-859` |
 | `cmd_capture_pane_exec()` | `capture-pane -p` output | `cmd-capture-pane.c:241-242` |
 | `control_error()` | Parse error messages | `control.c:527-529` |
+
+### 5.5 Blocks for Commands the Client Did Not Write
+
+`flags` is 1 on a block that answers a command line the client wrote on its
+stdin (§4.2), and on a parse error for such a line (§5.3). Every other block
+carries 0. A client that matches replies to its own commands by order counts
+only the blocks marked 1.
+
+Blocks marked 0:
+
+- One per command of the command line tmux was started with, before any block
+  marked 1. `tmux -C attach-session -t a \; kill-session -t gone` writes two,
+  and the connection outlives the second one's failure: after the list, tmux
+  exits only a client that is not attached to a session.
+- One per `after-*` hook a command sets off, after that command's own block.
+
+```
+%begin 1363006971 5 1
+%end 1363006971 5 1
+%begin 1363006971 6 0
+output of the after-rename-window hook
+%end 1363006971 6 0
+```
+
+The same holds from tmux 3.2 on.
+
+**Source:** `cmd-queue.c` `cmdq_fire_command` (`flags = !!(state->flags &
+CMDQ_STATE_CONTROL)`); `control.c` `control_read_callback` is the only place a
+state is created with `CMDQ_STATE_CONTROL`, and `control_error` writes the
+literal 1. The startup command line is queued by `server-client.c`
+`server_client_dispatch_command` and hooks by `hooks.c` (`cmd-queue.c`
+`cmdq_insert_hook` in 3.2), neither with that flag.
 
 ---
 

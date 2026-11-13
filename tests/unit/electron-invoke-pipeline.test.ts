@@ -107,7 +107,7 @@ describe("InvokePipeline — outcome encoding", () => {
       args: ["list-windows"],
     });
     // First post-greeting command is numbered 1; resolve it successfully.
-    feed("%begin 1 1 0\n@0 zsh 1 -\n%end 1 1 0\n");
+    feed("%begin 1 1 1\n@0 zsh 1 -\n%end 1 1 1\n");
 
     await expect(p).resolves.toMatchObject({
       status: "ok",
@@ -120,7 +120,7 @@ describe("InvokePipeline — outcome encoding", () => {
 
     const p = pipeline.handle(event, { method: "execute", args: ["bogus"] });
     // The command reached tmux, which rejected it with an %error guard block.
-    feed("%begin 1 1 0\n%error 1 1 0\n");
+    feed("%begin 1 1 1\n%error 1 1 1\n");
 
     await expect(p).resolves.toMatchObject({ status: "tmux-error" });
   });
@@ -168,7 +168,7 @@ describe("InvokePipeline — destroyed sender", () => {
     registry.teardown(event.sender);
     // Now the command resolves; the pipeline sees the abort flag and returns
     // BRIDGE_ABORTED instead of delivering the result to a dead renderer.
-    feed("%begin 1 1 0\n%end 1 1 0\n");
+    feed("%begin 1 1 1\n%end 1 1 1\n");
 
     await expect(p).resolves.toMatchObject({
       status: "bridge-error",

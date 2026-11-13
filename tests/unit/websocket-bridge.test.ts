@@ -210,9 +210,9 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[] = [],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
   for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 function readJsonFrames(ws: FakeWs): ServerFrame[] {
@@ -673,9 +673,9 @@ describe("WebSocket bridge — resume-failure observability", () => {
     t.feed(`%output %3 ${"x".repeat(1)}\n`);
     await flush();
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
-    t.feed(`%begin 2 2 0\n`);
+    t.feed(`%begin 2 2 1\n`);
     t.feed(`no current target\n`);
-    t.feed(`%error 2 2 0\n`);
+    t.feed(`%error 2 2 1\n`);
     await flush();
 
     const failures = events.filter((e) => e.kind === "pane-resume-failed");
@@ -1156,9 +1156,9 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
 
     ws.feedClient({ k: "call", id: "x", method: "execute", args: ["bogus"] });
     await flush();
-    t.feed(`%begin 1 1 0\n`);
+    t.feed(`%begin 1 1 1\n`);
     t.feed(`unknown command: bogus\n`);
-    t.feed(`%error 1 1 0\n`);
+    t.feed(`%error 1 1 1\n`);
     await flush();
 
     const frame = readJsonFrames(ws).find(

@@ -9,15 +9,13 @@
  * Lifecycle state for any `TmuxClient`-shaped class.
  *
  * - `connecting`    — pre-handshake. For spawn this spans the transport being
- *                     established AND tmux's unsolicited startup %begin/%end
- *                     greeting (SPEC.md §5) being consumed — that guard block
- *                     is real traffic, but caller commands are not yet safe
- *                     to correlate against it. For the WebSocket connector
+ *                     established AND tmux running the command it was
+ *                     started with (SPEC.md §5). For the WebSocket connector
  *                     this is "pre-welcome".
- * - `ready`         — safe to correlate a caller's command against the next
- *                     guard block. For spawn this is "the startup greeting's
- *                     %end/%error has been consumed", not merely "first byte
- *                     from stdout" (see the TmuxClient constructor); for the
+ * - `ready`         — tmux has answered. For spawn this is "the reply to the
+ *                     command tmux was started with has closed", not merely
+ *                     "first byte from stdout"; that reply, failed or not,
+ *                     is also an `unsolicited-response` event. For the
  *                     WebSocket connector this is "post-welcome".
  * - `reconnecting`  — connector is between attempts (only emitted by
  *                     transports that auto-reconnect, currently WebSocket).

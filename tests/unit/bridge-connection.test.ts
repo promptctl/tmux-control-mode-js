@@ -58,9 +58,9 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[] = [],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
   for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 function feedCommandError(
@@ -68,9 +68,9 @@ function feedCommandError(
   commandNumber: number,
   msg: string,
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
   t.feed(msg + "\n");
-  t.feed(`%error ${commandNumber} ${commandNumber} 0\n`);
+  t.feed(`%error ${commandNumber} ${commandNumber} 1\n`);
 }
 
 async function flush(): Promise<void> {
@@ -359,7 +359,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     // flow-control state is unknown, so this is a surface-and-retry case.
     bridge.ackOutput(peer, 2, 150);
     expect(continueCount(t, 2)).toBe(1);
-    t.feed("%begin 2 2 0\n");
+    t.feed("%begin 2 2 1\n");
     t.feed("%end 2 2\n");
     await flush();
 

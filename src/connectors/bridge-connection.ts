@@ -82,9 +82,10 @@ export interface BridgeConnectionOptions<L extends boolean = boolean> {
    */
   readonly reportCoverageReleaseFailure: (error: BridgeError) => void;
   /**
-   * Whether synthetic lifecycle events (reconnected, …) cross to peers. A
-   * transport fact: the WS peer learns connection state from its own welcome
-   * handshake, the Electron renderer from these events.
+   * Whether the events the client synthesizes ({@link LifecycleMessage})
+   * cross to peers. A transport fact: the Electron renderer mirrors the main
+   * client from these events; the WS wire carries tmux's own messages only,
+   * and its peer learns connection state from its own welcome handshake.
    */
   readonly forwardsLifecycle: L;
 }
@@ -209,7 +210,10 @@ export interface BridgeConnection<L extends boolean = boolean> {
   dispose(): void;
 }
 
-/** Synthetic lifecycle events (connection-state, reconnected, protocol-error). */
+/**
+ * Events the client synthesizes about its one connection (connection-state,
+ * reconnected, protocol-error, unsolicited-response).
+ */
 export type LifecycleMessage = Exclude<
   EmitterMessage,
   | EmitterTmuxMessage

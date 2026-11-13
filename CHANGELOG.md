@@ -8,6 +8,13 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `TmuxClient` reads the `flags` field of `%begin`. A transport that writes
+  guard lines itself (a fake in a test, a replay) must write flags 0 on the
+  block that answers the command tmux was started with and flags 1 on every
+  reply to a command the client sent, as tmux does. With flags 1 on the first
+  block the client stays `connecting`; with flags 0 on a reply, `execute()`
+  never settles. `MockTmuxServer.start()` writes its greeting with flags 0.
+
 - `createWebSocketBridge` and `WebSocketTmuxClient` parse `heartbeatIntervalMs`
   and `heartbeatTimeoutMs` at construction and throw
   `BridgeError("BRIDGE_INVALID_ARG", ...)` naming the option and value when
@@ -93,6 +100,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `unsolicited-response` event on `TmuxClient`: tmux's reply to a command no
+  caller sent, carrying the whole `CommandResponse` (output, and `success`
+  false for a `%error`). One per command of the command line tmux was started
+  with (`tmux -C list-sessions` now delivers its listing here) and one per
+  `after-*` hook a command set off. A later startup command or a hook can fail
+  on a connection that lives on; this event is the only place its text
+  appears. The Electron bridge forwards it to renderers; the WebSocket bridge
+  does not.
 - `watchServerArgs(targetSession?)` — arguments for `spawnTmux` that attach a
   connection which watches a whole server as an extra client: it never starts
   a server (`-N`), leaves the attached session's environment alone (`-E`),
@@ -139,6 +154,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A reply to a command no caller sent no longer takes a caller's place. tmux
+  writes a response block for each command of the command line it was started
+  with and for each `after-*` hook; the client used to hand every block after
+  the first to the oldest pending `execute()`, so a startup list of two
+  commands, or one hook, gave that caller the wrong output and shifted every
+  later reply by one for the rest of the connection. The client now assigns a
+  block to a caller only when tmux marks it as answering a line the client
+  wrote (`flags` 1, SPEC.md §5.5).
 - A failed attach says why. When the command tmux was started with fails
   (`can't find session: main`, `no sessions`, an unknown flag) or tmux never
   reaches a server (`no server running on …`, from `watchServerArgs`' `-N`),
