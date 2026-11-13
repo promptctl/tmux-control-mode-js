@@ -1,10 +1,17 @@
 // src/watch-server.ts
 // Spawn arguments for a connection that watches a whole tmux server without
-// disturbing it — tmux-server-events-6sp.s3u.
+// disturbing it — tmux-server-events-6sp.s3u, 6sp.6fc.
 //
-// [LAW:one-source-of-truth] The watcher's client flags are defined here only.
-// Each one answers a way a control client would otherwise change what the
-// user sees (all probed on tmux 3.8):
+// [LAW:one-source-of-truth] The watcher's arguments are defined here only.
+// Each one answers a way a control client would otherwise change the server
+// it connects to (all probed on tmux 3.8):
+// - `-N` (tmux's own option): a server that is not running is not started.
+//   `attach-session` otherwise starts one, which loads the user's tmux.conf:
+//   its hooks and plugins run, and a session it creates is one the watcher
+//   caused. With `-N` tmux says "no server running on <socket>" and exits.
+// - `-E`: tmux's `update-environment` is not applied, so the connecting
+//   process's SSH_AUTH_SOCK, DISPLAY, … are not copied into the attached
+//   session for every window the user opens there afterwards to inherit.
 // - ignore-size: the client's size never takes part in window sizing.
 // - no-detach-on-destroy: when the attached session ends, the client moves to
 //   another session instead of exiting, so one connection outlives any one
@@ -24,17 +31,19 @@
 const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
 
 /**
- * Arguments for `spawnTmux` that attach a watcher to `targetSession`, matched
- * exactly (`=`), never by tmux's prefix or pattern fallback. tmux
- * ignores client flags it does not know; confirm them on the running server
- * with `(await getOwnClient(client)).flags`.
+ * Arguments for `spawnTmux` that attach a watcher. With `targetSession`, to
+ * that session, matched exactly (`=`), never by tmux's prefix or pattern
+ * fallback. Without one, to the session tmux picks — for a consumer that has
+ * no session name yet, e.g. to list the sessions. tmux picks the session of
+ * the pane the connecting process runs in (`TMUX_PANE`) when that pane is on
+ * this server, otherwise the most recently used session, preferring one no
+ * client is attached to. tmux ignores client flags it
+ * does not know; confirm them on the running server with
+ * `(await getOwnClient(client)).flags`.
  */
-export function watchServerArgs(targetSession: string): string[] {
-  return [
-    "attach-session",
-    "-t",
-    `=${targetSession}`,
-    "-f",
-    WATCH_CLIENT_FLAGS,
-  ];
+export function watchServerArgs(targetSession?: string): string[] {
+  // [LAW:dataflow-not-control-flow] The target is a list of arguments that is
+  // empty when tmux is to pick; the same argv is assembled either way.
+  const target = targetSession === undefined ? [] : ["-t", `=${targetSession}`];
+  return ["-N", "attach-session", "-E", "-f", WATCH_CLIENT_FLAGS, ...target];
 }

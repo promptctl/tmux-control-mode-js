@@ -69,9 +69,21 @@ const client = new TmuxClient(spawnTmux(watchServerArgs("main")), {
 const self = await getOwnClient(client);
 ```
 
+`watchServerArgs()` with no session name attaches to the session tmux picks, for
+a consumer that has no name yet, such as one about to call `listSessions`. tmux
+picks the session of the pane the process runs in when that pane is on this
+server, otherwise the most recently used one, preferring a session with no
+client attached.
+
 - **Attaches, never creates.** `watchServerArgs` attaches to an existing session,
   so the watcher adds no session the user can see. It cannot watch a server that
   has no sessions.
+- **Never starts a server.** With none running, tmux exits instead of starting
+  one (`-N`), so the user's `tmux.conf`, its hooks and its plugins do not run
+  because something tried to watch.
+- **Leaves the session's environment alone.** `-E` keeps tmux from copying the
+  watcher process's `SSH_AUTH_SOCK`, `DISPLAY` and the rest of
+  `update-environment` into the session it attaches to.
 - **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
   it sets a size of its own.
 - **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher

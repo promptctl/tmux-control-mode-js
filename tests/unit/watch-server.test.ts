@@ -1,5 +1,5 @@
 // tests/unit/watch-server.test.ts
-// watchServerArgs argv and the own-client reply grammar — tmux-server-events-6sp.s3u.
+// watchServerArgs argv and the own-client reply grammar — tmux-server-events-6sp.s3u, 6sp.6fc.
 
 import { describe, it, expect } from "vitest";
 import { watchServerArgs } from "../../src/watch-server.js";
@@ -7,14 +7,20 @@ import { parseOwnClientLine } from "../../src/commands/index.js";
 import { TmuxReplyFormatError } from "../../src/errors.js";
 
 describe("watchServerArgs", () => {
-  it("attaches to the named session with the non-disturbing client flags", () => {
-    expect(watchServerArgs("main")).toEqual([
-      "attach-session",
-      "-t",
-      "=main",
-      "-f",
-      "ignore-size,no-detach-on-destroy",
-    ]);
+  const nonDisturbing = [
+    "-N",
+    "attach-session",
+    "-E",
+    "-f",
+    "ignore-size,no-detach-on-destroy",
+  ];
+
+  it("attaches to the named session, matched exactly", () => {
+    expect(watchServerArgs("main")).toEqual([...nonDisturbing, "-t", "=main"]);
+  });
+
+  it("names no session when given none, leaving the pick to tmux", () => {
+    expect(watchServerArgs()).toEqual(nonDisturbing);
   });
 });
 

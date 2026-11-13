@@ -1,11 +1,15 @@
 // tests/integration/watch-server.test.ts
 // Real-tmux integration tests for watching a server without disturbing it
-// (tmux-server-events-6sp.s3u).
+// (tmux-server-events-6sp.s3u; 6sp.6fc for the session environment, the
+// target-less form and the server that is not running).
 //
 // [LAW:verifiable-goals] Gated behind TMUX_INTEGRATION=1, same convention as
 // tests/integration/client.test.ts.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
@@ -38,6 +42,12 @@ const TMUX_SUPPORTS_NO_DETACH_ON_DESTROY = (() => {
 const closed = (client: TmuxClient) =>
   waitForEvent(client, "connection-state", (e) => e.state.status === "closed");
 
+// SSH_AUTH_SOCK is in tmux's default `update-environment`: an attach without
+// `-E` copies the connecting process's value into the session. Every session
+// starts at SESSION_AUTH_SOCK and every watcher connects carrying another.
+const SESSION_AUTH_SOCK = "/session-auth-sock";
+const WATCHER_ENV = { ...process.env, SSH_AUTH_SOCK: "/watcher-auth-sock" };
+
 // Above the shared waiters' 12s default, so their named rejection — not
 // vitest's 5s default — is what a hang reports.
 describe.skipIf(!RUN_INTEGRATION)(
@@ -46,6 +56,20 @@ describe.skipIf(!RUN_INTEGRATION)(
   () => {
     let socketName: string;
     let watcher: TmuxClient;
+
+    const spawnWatcher = (targetSession?: string) =>
+      new TmuxClient(
+        spawnTmux(watchServerArgs(targetSession), {
+          socketPath: socketName,
+          env: WATCHER_ENV,
+        }),
+        { idlePaneSuppression: true },
+      );
+
+    const sessionAuthSocks = (sessions: readonly string[]) =>
+      sessions.map((s) =>
+        tmux(socketName, ["show-environment", "-t", `=${s}`, "SSH_AUTH_SOCK"]),
+      );
 
     beforeEach(async () => {
       socketName = uniqueSocket("tmux-js-test-", "watch");
@@ -60,11 +84,15 @@ describe.skipIf(!RUN_INTEGRATION)(
           "-y",
           "40",
         ]);
+        tmux(socketName, [
+          "set-environment",
+          "-t",
+          `=${s}`,
+          "SSH_AUTH_SOCK",
+          SESSION_AUTH_SOCK,
+        ]);
       }
-      watcher = new TmuxClient(
-        spawnTmux(watchServerArgs("a"), { socketPath: socketName }),
-        { idlePaneSuppression: true },
-      );
+      watcher = spawnWatcher("a");
       await waitReady(watcher);
     });
 
@@ -92,6 +120,59 @@ describe.skipIf(!RUN_INTEGRATION)(
         expect(rows.split("\n")).toContain(`${own.name} ${own.pid}`);
       },
     );
+
+    it("leaves the attached session's environment as it was", () => {
+      expect(sessionAuthSocks(["a", "b"])).toEqual([
+        `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
+        `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
+      ]);
+    });
+
+    it("attaches without a target, to a session tmux picks, and leaves every session's environment as it was", async () => {
+      const untargeted = spawnWatcher();
+      try {
+        await waitReady(untargeted);
+        const own = await getOwnClient(untargeted);
+        const rows = tmux(socketName, [
+          "list-clients",
+          "-F",
+          "#{client_name} #{session_name}",
+        ]);
+        expect(rows.split("\n")).toContainEqual(
+          expect.stringMatching(new RegExp(`^${own.name} [ab]$`)),
+        );
+        expect(sessionAuthSocks(["a", "b"])).toEqual([
+          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
+          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
+        ]);
+      } finally {
+        untargeted.close();
+      }
+    });
+
+    it("starts no server: with none running, a config that would create a session is never loaded", async () => {
+      const idleSocket = uniqueSocket("tmux-js-test-", "watch-idle");
+      const dir = mkdtempSync(join(tmpdir(), "tmux-js-watch-"));
+      const config = join(dir, "tmux.conf");
+      writeFileSync(config, "new-session -d -s from-config\n");
+      const lone = new TmuxClient(
+        spawnTmux(["-f", config, ...watchServerArgs()], {
+          socketPath: idleSocket,
+        }),
+      );
+      try {
+        await closed(lone);
+        // tmux's two wordings for "no server": the socket was never created,
+        // or it exists with nothing listening.
+        expect(() => tmux(idleSocket, ["list-sessions"])).toThrow(
+          /error connecting to|no server running/,
+        );
+      } finally {
+        lone.close();
+        killTmuxServer(idleSocket);
+        rmSync(dir, { recursive: true });
+      }
+    });
 
     it("does not resize the user's client's windows, even when it sets a size of its own", async () => {
       // The user's client: a second control client that takes part in sizing by
@@ -132,6 +213,9 @@ describe.skipIf(!RUN_INTEGRATION)(
           "#{client_name} #{session_name}",
         ]);
         expect(rows.split("\n")).toContain(`${own.name} b`);
+        expect(sessionAuthSocks(["b"])).toEqual([
+          `SSH_AUTH_SOCK=${SESSION_AUTH_SOCK}`,
+        ]);
       },
     );
 
