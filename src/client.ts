@@ -123,14 +123,14 @@ export class TmuxClient implements TmuxConnection {
   private readonly emitter: TypedEmitter;
 
   // [LAW:single-enforcer] FIFO queue and inflight slot are the sole correlation state.
-  // The FIFO holds exactly the commands written on stdin and not yet begun.
+  // The FIFO holds one entry per execute() no %begin has claimed yet.
   private readonly pending: PendingEntry[] = [];
   private inflight: InflightEntry | null = null;
 
   // [LAW:one-type-per-behavior] The owner of every block tmux marks as not
   // answering a command this client wrote: the command line tmux was started
-  // with, an after-hook. Each becomes one `unsolicited-response`; whether it
-  // failed and what it said are in the response.
+  // with, a hook, an `if-shell -b`. Each becomes one `unsolicited-response`;
+  // whether it failed and what it said are in the response.
   private readonly unsolicited: BlockOwner = {
     resolve: (response) => {
       this.startupReplied(undefined);

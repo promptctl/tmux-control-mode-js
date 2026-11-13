@@ -207,18 +207,25 @@ Command output (the lines between `%begin` and `%end`/`%error`) is written via
 
 ### 5.5 Blocks for Commands the Client Did Not Write
 
-`flags` is 1 on a block that answers a command line the client wrote on its
-stdin (§4.2), and on a parse error for such a line (§5.3). Every other block
-carries 0. A client that matches replies to its own commands by order counts
-only the blocks marked 1.
+`flags` is 1 on a block for a command of a line the client wrote on its stdin
+(§4.2), for a command that such a command runs in its place (a waited
+`if-shell`, `source-file`), and on a parse error for such a line (§5.3). Every
+other block carries 0.
 
-Blocks marked 0:
+The mark says a block answers the client's own lines, not which line. One line
+gets one block marked 1 per command tmux ran for it, and tmux runs nothing
+after a command that fails: `display-message -p a \; kill-session -t gone \;
+display-message -p c` writes two.
 
-- One per command of the command line tmux was started with, before any block
-  marked 1. `tmux -C attach-session -t a \; kill-session -t gone` writes two,
-  and the connection outlives the second one's failure: after the list, tmux
-  exits only a client that is not attached to a session.
-- One per `after-*` hook a command sets off, after that command's own block.
+Blocks marked 0, one per command:
+
+- The command line tmux was started with, before any block marked 1.
+  `tmux -C attach-session -t a \; kill-session -t gone` writes two, and the
+  connection outlives the second one's failure: after the list, tmux exits
+  only a client that is not attached to a session.
+- The commands of an `after-*` hook a command sets off, after that command's
+  own block, and of the `command-error` hook after a block that failed.
+- The command `if-shell -b` runs once its shell command has finished.
 
 ```
 %begin 1363006971 5 1
@@ -228,14 +235,18 @@ output of the after-rename-window hook
 %end 1363006971 6 0
 ```
 
-The same holds from tmux 3.2 on.
+tmux writes the field the same way from 3.2 on; the cases above were observed
+on 3.8.
 
 **Source:** `cmd-queue.c` `cmdq_fire_command` (`flags = !!(state->flags &
 CMDQ_STATE_CONTROL)`); `control.c` `control_read_callback` is the only place a
 state is created with `CMDQ_STATE_CONTROL`, and `control_error` writes the
-literal 1. The startup command line is queued by `server-client.c`
-`server_client_dispatch_command` and hooks by `hooks.c` (`cmd-queue.c`
-`cmdq_insert_hook` in 3.2), neither with that flag.
+literal 1. A command keeps the state of the command that inserted it
+(`cmd-if-shell.c`, `cfg.c` `cmdq_copy_state`). The startup command line is
+queued by `server-client.c` `server_client_dispatch_command`, hooks by
+`hooks.c` (`cmd-queue.c` `cmdq_insert_hook` in 3.2) and the command of
+`if-shell -b` by `cmd-if-shell.c` (`cmdq_get_command(cmdlist, NULL)`), none
+with that flag.
 
 ---
 
