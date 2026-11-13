@@ -9,10 +9,50 @@
 
 import type { PaneAction } from "./types.js";
 
-// [LAW:one-source-of-truth] Encoder owns the SplitOptions shape.
+// [LAW:one-source-of-truth] Encoder owns the option shapes its commands render.
 export interface SplitOptions {
   readonly vertical?: boolean;
   readonly target?: string;
+}
+
+/**
+ * The process a pane runs: what tmux's `new-window` and `respawn-pane` both
+ * take for it.
+ */
+export interface PaneProcess {
+  /**
+   * A command line for the pane's shell (`default-shell -c`). Omitted: an
+   * interactive shell, or, from `respawnPane` on a pane that has run a
+   * command, that command again.
+   */
+  readonly command?: string;
+  /**
+   * Variables for this process alone, on top of the session's environment,
+   * which is not changed. Values arrive as written: tmux expands nothing in
+   * them. `respawnPane` does not carry an earlier process's over.
+   */
+  readonly environment?: Readonly<Record<string, string>>;
+  /**
+   * The absolute directory the process starts in. Omitted: where tmux starts
+   * a new window of the session from `newWindow`, the directory the pane was
+   * created or last respawned with from `respawnPane`.
+   */
+  readonly cwd?: string;
+}
+
+/** Where `newWindow` and `newEmptyWindow` put the window. */
+export interface NewWindowPlacement {
+  /**
+   * The session's id, as `listSessions()` reports it. tmux counts ids from 0
+   * for each server, so one read from an earlier server names a different
+   * session, or none.
+   */
+  readonly sessionId: number;
+  /**
+   * `true` makes the window the session's current one, so a terminal attached
+   * to that session shows it. Otherwise it opens in the background.
+   */
+  readonly select?: boolean;
 }
 
 export function tmuxEscape(arg: string): string {
@@ -117,24 +157,103 @@ export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
 }
 
-// [LAW:one-source-of-truth] new-window wire format and its `-P -F` reply
-// format live here only; pane-output.ts's parseNewWindowReply is the sole
-// reader. -d: create without selecting it, so a restore never moves an
-// attached client's focus. `=name:` targets the session by exact name:
-// without '=' tmux falls back to prefix and glob matching ('work:' lands in
-// 'workspace'), and the ':' leaves the window index to tmux. An empty name
-// has no exact form ('=:' still means the current session) — newWindow
-// rejects it before this is called. tmux format-expands -c but not the
-// command (verified on 3.2a and 3.8).
-export function newWindow(
-  session: string,
-  cwd: string,
-  command?: string,
-): string {
-  const commandPart = command !== undefined ? ` ${tmuxEscape(command)}` : "";
+// A newline would end the command line, and tmux would read the rest as a
+// second command.
+function oneLine(field: string, value: string): string {
+  if (value.includes("\n")) {
+    throw new RangeError(`${field} must be one line: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function nonEmptyLine(field: string, value: string): string {
+  if (value === "") throw new RangeError(`${field} must not be empty`);
+  return oneLine(field, value);
+}
+
+// tmux resolves a relative directory against its own cwds, not the caller's,
+// and never expands '~' in a quoted argument.
+function absoluteDir(field: string, value: string): string {
+  if (!value.startsWith("/")) {
+    throw new RangeError(
+      `${field} must be an absolute path: ${JSON.stringify(value)}`,
+    );
+  }
+  return oneLine(field, value);
+}
+
+// tmux splits a -e argument at its first '=' and silently drops one that has
+// none, so a name holding '=' would set a different variable and an empty
+// name none at all.
+function environmentEntry(name: string, value: string): string {
+  if (name === "" || /[=\n]/.test(name)) {
+    throw new RangeError(
+      `PaneProcess.environment name must be non-empty, one line and hold no '=': ${JSON.stringify(name)}`,
+    );
+  }
+  return `${name}=${oneLine(`PaneProcess.environment value of ${name}`, value)}`;
+}
+
+// [LAW:one-source-of-truth] How a pane's process is written for tmux, shared
+// by new-window and respawn-pane: `[-c dir] [-e NAME=VALUE]... [-- command]`.
+// tmux format-expands -c but neither -e nor the command (verified on 3.2a and
+// 3.8). '--' ends tmux's flag parsing, so a command starting with '-' is the
+// command (without it, `respawn-pane '-k'` kills a live pane).
+// [LAW:single-enforcer] The one place a caller's process becomes command
+// text, so the one place a value tmux would honor somewhere else is refused:
+// an empty command is not "the default shell" (tmux 3.8 makes an empty pane
+// of it).
+function paneProcessArgs({
+  command,
+  environment = {},
+  cwd,
+}: PaneProcess): string {
+  const args = [
+    ...(cwd === undefined
+      ? []
+      : ["-c", tmuxFormatLiteral(absoluteDir("PaneProcess.cwd", cwd))]),
+    ...Object.entries(environment).flatMap(([name, value]) => [
+      "-e",
+      tmuxEscape(environmentEntry(name, value)),
+    ]),
+    ...(command === undefined
+      ? []
+      : ["--", tmuxEscape(nonEmptyLine("PaneProcess.command", command))]),
+  ];
+  return args.map((arg) => ` ${arg}`).join("");
+}
+
+// [LAW:one-source-of-truth] new-window's target and its `-P -F` reply format
+// live here only; pane-output.ts's parseNewWindowReply is the sole reader.
+// `$N:` is the session with id N and nothing else: an id is the one session
+// target tmux resolves without falling back to a name, a prefix, a glob or a
+// client's name, and the ':' leaves the window index to tmux. -d creates the
+// window without selecting it, so no attached client's view changes.
+function newWindowIn({ sessionId, select }: NewWindowPlacement): string {
+  const detached = select === true ? "" : " -d";
   return (
-    `new-window -d -t ${tmuxEscape(`=${session}:`)} -c ${tmuxFormatLiteral(cwd)} ` +
-    `-P -F '#{window_id}\t#{pane_id}'${commandPart}`
+    `new-window${detached} -t ${tmuxEscape(`$${sessionId}:`)} ` +
+    `-P -F '#{window_id}\t#{pane_id}'`
+  );
+}
+
+export function newWindow(
+  placement: NewWindowPlacement,
+  paneProcess: PaneProcess,
+): string {
+  return newWindowIn(placement) + paneProcessArgs(paneProcess);
+}
+
+// -E (tmux 3.8) makes the window's pane with no process in it.
+export function newEmptyWindow(placement: NewWindowPlacement): string {
+  return `${newWindowIn(placement)} -E`;
+}
+
+// [LAW:one-source-of-truth] respawn-pane wire format lives here only. No -k:
+// a pane whose process is alive is refused by tmux, not killed.
+export function respawnPane(paneId: number, paneProcess: PaneProcess): string {
+  return (
+    `respawn-pane -t ${tmuxEscape(`%${paneId}`)}` + paneProcessArgs(paneProcess)
   );
 }
 

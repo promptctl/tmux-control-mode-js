@@ -21,7 +21,11 @@ import type {
   WindowRecord,
 } from "../protocol/types.js";
 import { PaneAction, emptyKeysResponse } from "../protocol/types.js";
-import type { SplitOptions } from "../protocol/encoder.js";
+import type {
+  NewWindowPlacement,
+  PaneProcess,
+  SplitOptions,
+} from "../protocol/encoder.js";
 import {
   refreshClientSize,
   refreshClientPaneAction,
@@ -41,6 +45,8 @@ import {
   splitWindow as encodeSplitWindow,
   capturePane as encodeCapturePane,
   newWindow as encodeNewWindow,
+  newEmptyWindow as encodeNewEmptyWindow,
+  respawnPane as encodeRespawnPane,
 } from "../protocol/encoder.js";
 import {
   parseWindowRecordLine,
@@ -55,6 +61,7 @@ import {
   REQUEST_REPORT_MIN_VERSION,
   QUERY_CLIPBOARD_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  EMPTY_WINDOW_MIN_VERSION,
   parseTmuxVersionValue,
   meetsTmuxVersion,
 } from "../tmux-compat.js";
@@ -66,7 +73,7 @@ import {
 } from "../errors.js";
 
 export { PaneAction };
-export type { SplitOptions };
+export type { NewWindowPlacement, PaneProcess, SplitOptions };
 
 // [LAW:one-source-of-truth] The command string lives in encoder.ts, the line
 // grammar lives in pane-output.ts; this function is pure dispatch + filter,
@@ -131,58 +138,97 @@ export async function capturePane(
 }
 
 // [LAW:one-source-of-truth] Command and reply format live in encoder.ts,
-// the reply grammar in pane-output.ts. A missing session rejects through
-// execute() as TmuxCommandError with tmux's text ("can't find session: X").
-// A cwd that does not exist does NOT reject: tmux starts the pane in $HOME
-// instead (verified on tmux 3.8; tmux 3.3 keeps the server's cwd, see
-// missingCwdFallback in tmux-compat.ts), and the library, typed over any
-// TmuxConnection, cannot stat the tmux host's filesystem. A caller that
-// must not fall back checks the path on the host it controls; paneCwd() reads
-// the directory the pane's process is in now (its live cwd, not the requested
-// string), which right after the spawn is where it started. Before tmux 3.7 the ids come
-// back before the pane's child has chdir'd, so a listPanes() straight after
-// can still report the server's cwd (see PANE_CWD_MIN_VERSION).
+// the reply grammar in pane-output.ts.
 // [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
 // throws rather than inventing ids.
-export async function newWindow(
+async function createWindow(
   client: TmuxConnection,
-  options: {
-    readonly session: string;
-    readonly cwd: string;
-    readonly command?: string;
-  },
+  command: string,
 ): Promise<NewWindowResult> {
-  // [LAW:no-silent-failure] Each of these would succeed somewhere the caller
-  // did not ask for, so it is refused by field name: session '' ('=:') is the
-  // control client's own session; a cwd that is empty or not absolute ('',
-  // 'proj', '~/proj' — quoted, so tmux never expands '~') is resolved by tmux
-  // against its own cwds, not the caller's; command '' is
-  // not "the default shell" (that is an omitted
-  // command); a newline anywhere splits the command line.
-  for (const field of ["session", "cwd", "command"] as const) {
-    const value = options[field];
-    if (value === "" || value?.includes("\n")) {
-      throw new RangeError(
-        `newWindow: ${field} must be non-empty and one line: ${JSON.stringify(value)}`,
-      );
-    }
-  }
-  if (!options.cwd.startsWith("/")) {
-    throw new RangeError(
-      `newWindow: cwd must be an absolute path: ${JSON.stringify(options.cwd)}`,
-    );
-  }
-  const command = encodeNewWindow(
-    options.session,
-    options.cwd,
-    options.command,
-  );
   const response = await client.execute(command);
   const result = parseNewWindowReply(response.output);
   if (result === null) {
     throw new TmuxReplyFormatError(command, response.output);
   }
   return result;
+}
+
+/**
+ * Open a window in the session with id `sessionId` and start a process in its
+ * pane (`new-window`). A caller that holds a session's name reads the id on
+ * this connection first:
+ * `(await listSessions(client)).find((s) => s.sessionName === name)`.
+ *
+ * Rejects with `TmuxCommandError` carrying tmux's text when tmux refuses
+ * (`can't find session: $9`). Rejects with `RangeError`, nothing sent, for a
+ * value tmux would honor somewhere other than asked: a `cwd` that is not
+ * absolute, an empty `command`, an environment name that is empty or holds
+ * `=`, a newline in any of them.
+ *
+ * tmux does not refuse a command that cannot run: the ids come back and the
+ * window closes when the shell exits. {@link newEmptyWindow} is how to keep
+ * that pane.
+ *
+ * A `cwd` that does not exist does NOT reject: tmux starts the pane in $HOME
+ * instead (verified on tmux 3.8; tmux 3.3 keeps the server's cwd, see
+ * missingCwdFallback in tmux-compat.ts), and the library, typed over any
+ * TmuxConnection, cannot stat the tmux host's filesystem. A caller that must
+ * not fall back checks the path on the host it controls; paneCwd() reads the
+ * directory the pane's process is in now (its live cwd, not the requested
+ * string), which right after the spawn is where it started. Before tmux 3.7
+ * the ids come back before the pane's child has chdir'd, so a listPanes()
+ * straight after can still report the server's cwd (see PANE_CWD_MIN_VERSION).
+ */
+export async function newWindow(
+  client: TmuxConnection,
+  options: NewWindowPlacement & PaneProcess,
+): Promise<NewWindowResult> {
+  return createWindow(client, encodeNewWindow(options, options));
+}
+
+/**
+ * Open a window whose pane has no process (`new-window -E`, tmux 3.8+; below
+ * that it rejects with `UnsupportedTmuxVersionError` and makes no window).
+ * Nothing runs in the pane until {@link respawnPane}, so what must hold before
+ * the process starts is set in between, each step its own call:
+ *
+ * ```ts
+ * const { windowId, paneId } = await newEmptyWindow(client, { sessionId });
+ * await client.execute(`set-option -p -t %${paneId} remain-on-exit failed`);
+ * await respawnPane(client, paneId, { command });
+ * ```
+ *
+ * With `remain-on-exit failed` a command that cannot run leaves a dead pane
+ * holding the shell's message, where `newWindow` leaves nothing. The window
+ * exists from the first call: when a later one rejects, the caller finishes
+ * it or removes it (`kill-window -t @${windowId}`).
+ */
+export async function newEmptyWindow(
+  client: TmuxConnection,
+  placement: NewWindowPlacement,
+): Promise<NewWindowResult> {
+  await requireTmuxVersion(
+    client,
+    "newEmptyWindow (new-window -E)",
+    EMPTY_WINDOW_MIN_VERSION,
+  );
+  return createWindow(client, encodeNewEmptyWindow(placement));
+}
+
+/**
+ * Start a process in a pane that has none (`respawn-pane`): the pane of
+ * {@link newEmptyWindow}, or a dead one tmux kept under `remain-on-exit`. A
+ * pane whose process is alive rejects with `TmuxCommandError`
+ * (`respawn pane failed: pane work:1.0 still active`). Refuses the same values
+ * as {@link newWindow}; {@link PaneProcess} says what an omitted field means
+ * here.
+ */
+export async function respawnPane(
+  client: TmuxConnection,
+  paneId: number,
+  paneProcess: PaneProcess = {},
+): Promise<CommandResponse> {
+  return client.execute(encodeRespawnPane(paneId, paneProcess));
 }
 
 // The directory the pane's foreground process is in now, which right after

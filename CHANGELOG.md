@@ -125,6 +125,18 @@ All notable changes to this project are documented here. Format follows
 - `TmuxParser` reads a `tmux -CC` stream as it comes off a PTY: the DCS
   introducer in front of tmux's first line is dropped, wherever outside a
   response block that line falls.
+- `newWindow(client, { sessionId, command, environment, select, cwd })` opens
+  a window in the session with that id (`listSessions()` reports it) and
+  returns the new window's and pane's ids. `environment` is for the window's
+  process alone, `select: true` makes the window the session's current one
+  (otherwise it opens in the background), and an omitted `cwd` is where tmux
+  starts a new window of that session.
+- `newEmptyWindow(client, { sessionId, select })` and
+  `EMPTY_WINDOW_MIN_VERSION` (tmux 3.8) open a window whose pane has no
+  process, and `respawnPane(client, paneId, { command, environment, cwd })`
+  starts one in it or in a dead pane. Between the two a caller sets what must
+  hold before the process starts, such as `remain-on-exit failed`, which keeps
+  the pane of a command that cannot run. The README shows the three calls.
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a

@@ -235,6 +235,40 @@ export async function withSecondClient(
   }
 }
 
+/**
+ * Resolve once one line of the pane's text contains `text`; reject, quoting
+ * the last capture, if none does within `ms`. Reads plain text with wrapped
+ * lines joined and history included (`capture-pane -p -J -S -`), so neither
+ * the pane's width nor a shell that colours its output can split `text`.
+ *
+ * [LAW:no-ambient-temporal-coupling] The pane's own text is the authority on
+ * "tmux has processed this", replacing a sleep that guesses how long the
+ * pty round-trip takes. tmux serves `%output` and command replies over one
+ * ordered stream: by the time this `capture-pane` reply parses, the `%output`
+ * carrying the same bytes has already been parsed and dispatched to the
+ * client's sinks.
+ */
+export async function waitForPaneText(
+  client: TmuxClient,
+  paneId: number,
+  text: string,
+  ms = 8000,
+): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const { output } = await client.execute(
+      `capture-pane -p -J -S - -t %${paneId}`,
+    );
+    if (output.some((line) => line.includes(text))) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitForPaneText: %${paneId} never showed "${text}" within ${ms}ms; last capture: ${JSON.stringify(output)}`,
+      );
+    }
+    await new Promise<void>((r) => setTimeout(r, 10));
+  }
+}
+
 /** Poll `pred` until it holds; reject if it has not within `ms`. */
 export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
   return new Promise<void>((resolve, reject) => {

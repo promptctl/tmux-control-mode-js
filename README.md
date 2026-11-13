@@ -40,7 +40,8 @@ actually called:
 - `requestReport(client, ...)` — needs tmux **3.5+** (`refresh-client -r`; tmux 3.4 rejects the flag as unknown). On older tmux it probes the running version first and rejects with a typed `UnsupportedTmuxVersionError` naming the requirement, instead of leaking tmux's raw flag error.
 - `newWindow(client, { cwd })` with a directory that does not exist starts the pane in `$HOME` rather than rejecting, except on tmux **3.3**, where a spawn bug leaves it in the tmux server's own cwd (while `$PWD` still says `$HOME`).
 - `paneCwd(client, paneId)` — needs tmux **3.7+**. It reads the directory the pane's foreground process is in, so straight after `newWindow()` it returns the requested cwd with symlinks resolved (on macOS, `/tmp/x` reads back as `/private/tmp/x`), or tmux's fallback (`$HOME`, or `/` when that is missing too) when that directory is missing. A shell whose startup files `cd` elsewhere can move it before the read. When tmux cannot read the cwd (a dead pane, or a child that has not taken its pty yet) it rejects with `PaneCwdUnavailableError`. Before 3.7, tmux forks the pane before the child changes directory, so an early read can return the server's own cwd; on those versions `paneCwd` rejects with `UnsupportedTmuxVersionError` instead of guessing.
-- All three reject with `UnrecognizedTmuxVersionError` (carrying the raw reply) when the running tmux reports a version that is not a tmux version shape — e.g. OpenBSD base's `openbsd-7.4` — rather than guessing whether the feature is there.
+- `newEmptyWindow(client, { sessionId })` — needs tmux **3.8+** (`new-window -E`; tmux 3.7 rejects the flag as unknown). On older tmux it rejects with `UnsupportedTmuxVersionError` and opens no window.
+- Each of the calls above that needs a newer tmux rejects with `UnrecognizedTmuxVersionError` (carrying the raw reply) when the running tmux reports a version that is not a tmux version shape — e.g. OpenBSD base's `openbsd-7.4` — rather than guessing whether the feature is there.
 - `watchServerArgs` — its `no-detach-on-destroy` client flag needs tmux **3.6+**. Older tmux silently ignores it, so the watcher exits when its attached session ends instead of moving to another one; `(await getOwnClient(client)).flags` shows whether the flag took effect.
 
 Some notifications are parsed on every tmux but only emitted by a newer one;
@@ -52,6 +53,45 @@ on older tmux the listener simply never fires:
 
 No known breaking changes through tmux 3.7 (the version `SPEC.md` is derived
 from).
+
+## Opening a window in a session
+
+`newWindow` opens a window in the session whose id it is given, and starts a
+command there:
+
+```ts
+import { listSessions, newWindow } from "@promptctl/tmux-control-mode-js";
+
+const session = (await listSessions(client)).find(
+  (s) => s.sessionName === "work",
+);
+const { windowId, paneId } = await newWindow(client, {
+  sessionId: session.sessionId,
+  command: "npm run dev",
+  environment: { PORT: "8080" },
+  select: true, // omitted: the window opens in the background
+  cwd: "/home/me/project", // omitted: where tmux starts a new window there
+});
+```
+
+The session is named by id because an id is the one session target tmux
+resolves to that session or to nothing; a name can also match as a prefix, a
+pattern, another session's id or a client. `environment` is for the window's
+process alone: the session's environment is not changed.
+
+tmux does not refuse a command that cannot run: the window closes when the
+shell exits. To keep that pane and the shell's message on screen (tmux
+**3.8+**), open the window empty, set the option, then start the command, each
+its own call:
+
+```ts
+const { windowId, paneId } = await newEmptyWindow(client, { sessionId });
+await client.execute(`set-option -p -t %${paneId} remain-on-exit failed`);
+await respawnPane(client, paneId, { command, environment, cwd });
+```
+
+The window exists from the first call. If a later one rejects, finish it or
+remove it with `kill-window -t @${windowId}`.
 
 ## Watching a whole server
 

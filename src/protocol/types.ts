@@ -472,7 +472,8 @@ export interface PaneCapture {
 }
 
 /**
- * The window and pane `newWindow()` created: `@N` and `%N` as numbers, the
+ * The window and pane `newWindow()` or `newEmptyWindow()` created: `@N` and
+ * `%N` as numbers, the
  * same id form {@link PaneRecord} and `capturePane(paneId)` use, so the
  * result feeds straight into them.
  */

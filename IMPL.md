@@ -188,6 +188,9 @@ not a command-function because its bare-newline signal cannot be correlated.)
 | `queryTmuxVersion(client)` | `src/commands/index.ts` | `display-message -p "#{version}"` |
 | `requestReport(client, paneId, report)` | `src/commands/index.ts` | `refresh-client -r` (tmux 3.5+; version-gated — see §2.2) |
 | `queryClipboard(client)` | `src/commands/index.ts` | `refresh-client -l` |
+| `newWindow(client, options)` | `src/commands/index.ts` | `new-window -t '$<id>:' -P -F …` |
+| `newEmptyWindow(client, placement)` | `src/commands/index.ts` | `new-window … -E` (tmux 3.8+; version-gated) |
+| `respawnPane(client, paneId, process?)` | `src/commands/index.ts` | `respawn-pane -t %<pane>` |
 
 ---
 

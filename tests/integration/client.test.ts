@@ -23,6 +23,7 @@ import {
   waitForEvent,
   withSecondClient,
   attachSession,
+  waitForPaneText,
   tmux,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
@@ -43,6 +44,8 @@ import {
   requestReport,
   capturePane,
   newWindow,
+  newEmptyWindow,
+  respawnPane,
   paneCwd,
 } from "../../src/commands/index.js";
 import { tmuxEscape } from "../../src/protocol/encoder.js";
@@ -62,6 +65,7 @@ import {
   PASTE_BUFFER_NOTIFY_MIN_VERSION,
   MESSAGE_NOTIFY_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  EMPTY_WINDOW_MIN_VERSION,
   missingCwdFallback,
   meetsTmuxVersion,
 } from "../../src/tmux-compat.js";
@@ -441,6 +445,54 @@ function parseWindowId(out: string): number {
     throw new Error(`expected a tmux window id, got ${JSON.stringify(out)}`);
   }
   return Number(m[1]);
+}
+
+/** The id of the session named `name`, read as a caller holding a name does. */
+async function sessionIdOf(client: TmuxClient, name: string): Promise<number> {
+  const sessions = await listSessions(client);
+  const session = sessions.find((s) => s.sessionName === name);
+  if (session === undefined) {
+    throw new Error(
+      `no session named ${JSON.stringify(name)} in ${JSON.stringify(sessions)}`,
+    );
+  }
+  return session.sessionId;
+}
+
+async function currentWindowId(
+  client: TmuxClient,
+  sessionId: number,
+): Promise<number> {
+  const { output } = await client.execute(
+    `display-message -p -t ${tmuxEscape(`$${sessionId}:`)} '#{window_id}'`,
+  );
+  return parseWindowId(output.join("\n"));
+}
+
+// `1 <exit status>` once the pane's process has exited and tmux kept the pane.
+const DEAD_STATUS = "#{pane_dead} #{pane_dead_status}";
+
+/** Resolve once `format`, read on the pane, is `expected`. */
+async function waitForPaneFormat(
+  client: TmuxClient,
+  paneId: number,
+  format: string,
+  expected: string,
+): Promise<void> {
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    const { output } = await client.execute(
+      `display-message -p -t %${paneId} ${tmuxEscape(format)}`,
+    );
+    const got = output.join("\n").trim();
+    if (got === expected) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `%${paneId}: ${format} was ${JSON.stringify(got)}, not ${JSON.stringify(expected)}, within 8000ms`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 /**
@@ -1268,11 +1320,16 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     expect(capture!.lineCount).toBe(text.split("\n").length);
   }, 15000);
 
-  it("CMD-05: newWindow() creates a window in a non-attached session with the given cwd and command, returning its pane id", async () => {
+  it("CMD-05: newWindow() opens a window in the session with the given id, not the client's own, with the given cwd and command", async () => {
     sessionName = uniqueName("cmd-nw");
     client = await attachSession(socketName, sessionName);
     const target = uniqueName("cmd-nw-target");
     await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
+    const sessionId = await sessionIdOf(client, target);
+    // A session whose NAME is the text of the target's id: tmux looks an id
+    // up as an id only, so this one must not get the window.
+    const decoy = `$${sessionId}`;
+    await client.execute(`new-session -d -s ${tmuxEscape(decoy)}`);
     // realpath: macOS /var/folders is a symlink to /private/var/folders,
     // and tmux reports the resolved path. '#S' in the name: tmux format-
     // expands -c, so an unescaped cwd would land elsewhere.
@@ -1280,7 +1337,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
     try {
       const created = await newWindow(client, {
-        session: target,
+        sessionId,
         cwd,
         command: "sleep 60",
       });
@@ -1300,21 +1357,226 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     }
   }, 15000);
 
-  // The missing name is a prefix of a live session: tmux's inexact matching
-  // would put the window there, so this pins newWindow's exact targeting.
-  it("CMD-05: newWindow() rejects with tmux's error text for a nonexistent session, even one prefixing a live session", async () => {
+  it("CMD-05: newWindow() rejects with tmux's error text for an id no session has, and no session gains a window", async () => {
     sessionName = uniqueName("cmd-nw-nosess");
     client = await attachSession(socketName, sessionName);
 
     const windowsBefore = (await listWindows(client)).length;
-    const attempt = newWindow(client, {
-      session: sessionName.slice(0, -1),
-      cwd: tmpdir(),
-    });
+    const attempt = newWindow(client, { sessionId: 99, command: "sleep 60" });
     await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
-    await expect(attempt).rejects.toThrow(/can't find session/);
+    await expect(attempt).rejects.toThrow(/can't find session: \$99/);
     expect(await listWindows(client)).toHaveLength(windowsBefore);
   }, 15000);
+
+  it("CMD-05: newWindow() gives its environment to the window's process as written, and leaves the session's environment alone", async () => {
+    sessionName = uniqueName("cmd-nw-env");
+    client = await attachSession(socketName, sessionName);
+    const sessionId = await sessionIdOf(client, sessionName);
+    const literal = "#{session_name} $HOME 'q' a=b";
+
+    const { paneId } = await newWindow(client, {
+      sessionId,
+      environment: { NW_A: literal, NW_B: "two" },
+      command: `sh -c 'echo "A=[$NW_A] B=[$NW_B]"; exec sleep 60'`,
+    });
+
+    await waitForPaneText(client, paneId, `A=[${literal}] B=[two]`);
+    const { output } = await client.execute(
+      `show-environment -t ${tmuxEscape(`$${sessionId}`)}`,
+    );
+    expect(output.filter((line) => /^-?NW_[AB]\b/.test(line))).toEqual([]);
+  }, 15000);
+
+  it("CMD-05: newWindow() opens in the background unless select is true, which makes it the session's current window", async () => {
+    sessionName = uniqueName("cmd-nw-select");
+    client = await attachSession(socketName, sessionName);
+    const target = uniqueName("cmd-nw-select-target");
+    await client.execute(`new-session -d -s ${tmuxEscape(target)}`);
+    const sessionId = await sessionIdOf(client, target);
+    const before = await currentWindowId(client, sessionId);
+
+    const background = await newWindow(client, {
+      sessionId,
+      command: "sleep 60",
+    });
+    expect(background.windowId).not.toBe(before);
+    expect(await currentWindowId(client, sessionId)).toBe(before);
+
+    const selected = await newWindow(client, {
+      sessionId,
+      select: true,
+      command: "sleep 60",
+    });
+    expect(await currentWindowId(client, sessionId)).toBe(selected.windowId);
+  }, 15000);
+
+  it("CMD-05: newWindow() with no cwd starts the pane where tmux starts a new window of that session", async () => {
+    sessionName = uniqueName("cmd-nw-defcwd");
+    client = await attachSession(socketName, sessionName);
+    const target = uniqueName("cmd-nw-defcwd-target");
+    const sessionDir = realpathSync(mkdtempSync(join(tmpdir(), "nw-def-")));
+
+    try {
+      await client.execute(
+        `new-session -d -s ${tmuxEscape(target)} -c ${tmuxEscape(sessionDir)}`,
+      );
+      const { paneId } = await newWindow(client, {
+        sessionId: await sessionIdOf(client, target),
+        command: "sleep 60",
+      });
+
+      await waitForPane(
+        client,
+        (p) => p.paneId === paneId && p.cwd === sessionDir,
+      );
+    } finally {
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("CMD-05: respawnPane() starts a command in a dead pane, with its own environment and cwd", async () => {
+    sessionName = uniqueName("cmd-rp");
+    client = await attachSession(socketName, sessionName);
+    const sessionId = await sessionIdOf(client, sessionName);
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "rp-")));
+
+    try {
+      await client.execute("set-option -wg remain-on-exit on");
+      const { paneId } = await newWindow(client, {
+        sessionId,
+        command: "sh -c 'exit 3'",
+      });
+      await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
+
+      await respawnPane(client, paneId, {
+        command: `sh -c 'echo "R=[$NW_R]"; exec sleep 60'`,
+        environment: { NW_R: "again" },
+        cwd,
+      });
+
+      await waitForPaneText(client, paneId, "R=[again]");
+      await waitForPane(
+        client,
+        (p) =>
+          p.paneId === paneId && p.cwd === cwd && p.currentCommand === "sleep",
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("CMD-05: a bare respawnPane() runs a dead pane's command again, without the environment it first ran with", async () => {
+    sessionName = uniqueName("cmd-rp-bare");
+    client = await attachSession(socketName, sessionName);
+    const sessionId = await sessionIdOf(client, sessionName);
+
+    await client.execute("set-option -wg remain-on-exit on");
+    const { paneId } = await newWindow(client, {
+      sessionId,
+      environment: { NW_ONCE: "set" },
+      command: `sh -c 'echo "once=[$NW_ONCE]"; exit 3'`,
+    });
+    await waitForPaneText(client, paneId, "once=[set]");
+    await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 3");
+
+    await respawnPane(client, paneId);
+
+    await waitForPaneText(client, paneId, "once=[]");
+  }, 20000);
+
+  it("CMD-05: respawnPane() on a pane whose process is alive rejects and leaves the process running, also for a command that is tmux's kill flag", async () => {
+    sessionName = uniqueName("cmd-rp-live");
+    client = await attachSession(socketName, sessionName);
+    const sessionId = await sessionIdOf(client, sessionName);
+    const { paneId } = await newWindow(client, {
+      sessionId,
+      command: "sleep 60",
+    });
+    const { pid } = await waitForPane(
+      client,
+      (p) => p.paneId === paneId && p.currentCommand === "sleep",
+    );
+
+    for (const command of ["sleep 61", "-k"]) {
+      const attempt = respawnPane(client, paneId, { command });
+      await expect(attempt).rejects.toBeInstanceOf(TmuxCommandError);
+      await expect(attempt).rejects.toThrow(/still active/);
+    }
+
+    const after = await waitForPane(client, (p) => p.paneId === paneId);
+    expect(after).toMatchObject({ pid, currentCommand: "sleep" });
+  }, 15000);
+
+  it.skipIf(!tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION))(
+    "CMD-05: newEmptyWindow(), remain-on-exit failed, then respawnPane() with a command that does not exist leaves a dead pane naming the command",
+    async () => {
+      sessionName = uniqueName("cmd-new-keep");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+
+      const { paneId } = await newEmptyWindow(client, { sessionId });
+      await client.execute(`set-option -p -t %${paneId} remain-on-exit failed`);
+      await respawnPane(client, paneId, { command: "nw-no-such-command" });
+
+      await waitForPaneFormat(client, paneId, DEAD_STATUS, "1 127");
+      await waitForPaneText(client, paneId, "nw-no-such-command");
+    },
+    20000,
+  );
+
+  it.skipIf(!tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION))(
+    "CMD-05: newEmptyWindow() with select is the session's current window, and respawnPane() starts a process there with its environment and cwd",
+    async () => {
+      sessionName = uniqueName("cmd-new-sel");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+      const cwd = realpathSync(mkdtempSync(join(tmpdir(), "new-")));
+
+      try {
+        const { windowId, paneId } = await newEmptyWindow(client, {
+          sessionId,
+          select: true,
+        });
+        expect(await currentWindowId(client, sessionId)).toBe(windowId);
+
+        await respawnPane(client, paneId, {
+          command: `sh -c 'echo "E=[$NW_E]"; exec sleep 60'`,
+          environment: { NW_E: "here" },
+          cwd,
+        });
+
+        await waitForPaneText(client, paneId, "E=[here]");
+        await waitForPane(
+          client,
+          (p) =>
+            p.paneId === paneId &&
+            p.cwd === cwd &&
+            p.currentCommand === "sleep",
+        );
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+    20000,
+  );
+
+  it.skipIf(
+    RUNNING_TMUX_VERSION === null || tmuxAtLeast(EMPTY_WINDOW_MIN_VERSION),
+  )(
+    "CMD-05: newEmptyWindow() rejects below tmux 3.8 with UnsupportedTmuxVersionError and opens no window",
+    async () => {
+      sessionName = uniqueName("cmd-new-old");
+      client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
+
+      const windowsBefore = (await listWindows(client)).length;
+      await expect(
+        newEmptyWindow(client, { sessionId }),
+      ).rejects.toBeInstanceOf(UnsupportedTmuxVersionError);
+      expect(await listWindows(client)).toHaveLength(windowsBefore);
+    },
+    15000,
+  );
 
   // Pins tmux's behavior newWindow documents rather than hides: a cwd that
   // does not exist does not fail new-window; the pane starts in $HOME, or on
@@ -1331,7 +1593,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     client = await attachSession(socketName, sessionName);
 
     const created = await newWindow(client, {
-      session: sessionName,
+      sessionId: await sessionIdOf(client, sessionName),
       cwd: join(tmpdir(), "nw-does-not-exist", uniqueName("x")),
       command: "sleep 60",
     });
@@ -1366,16 +1628,17 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     async () => {
       sessionName = uniqueName("cmd-pcwd");
       client = await attachSession(socketName, sessionName);
+      const sessionId = await sessionIdOf(client, sessionName);
       const cwd = realpathSync(mkdtempSync(join(tmpdir(), "pcwd-")));
 
       try {
         const made = await newWindow(client, {
-          session: sessionName,
+          sessionId,
           cwd,
           command: "sleep 60",
         });
         const missing = await newWindow(client, {
-          session: sessionName,
+          sessionId,
           cwd: join(cwd, "does-not-exist"),
           command: "sleep 60",
         });

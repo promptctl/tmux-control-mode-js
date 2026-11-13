@@ -14,6 +14,7 @@ import {
   queryClipboard,
   queryTmuxVersion,
   paneCwd,
+  newEmptyWindow,
 } from "../../src/commands/index.js";
 import {
   PaneCwdUnavailableError,
@@ -162,6 +163,41 @@ describe("queryClipboard version gate", () => {
     const { conn, sent } = fakeConnection("3.3a");
     await queryClipboard(conn);
     expect(sent.some((c) => c.startsWith("refresh-client -l"))).toBe(true);
+  });
+});
+
+describe("newEmptyWindow version gate", () => {
+  it("rejects below tmux 3.8 with the 3.8 requirement and never sends new-window", async () => {
+    const { conn, sent } = fakeConnection("3.7b", ["@3\t%7"]);
+
+    const err: unknown = await newEmptyWindow(conn, { sessionId: 4 }).catch(
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(UnsupportedTmuxVersionError);
+    expect((err as UnsupportedTmuxVersionError).required).toEqual({
+      major: 3,
+      minor: 8,
+    });
+    expect(sent).toEqual(['display-message -p "#{version}"']);
+  });
+
+  it("on tmux 3.8 opens a window with no process (-E) and returns its ids", async () => {
+    const { conn, sent } = fakeConnection("3.8", ["@3\t%7"]);
+
+    await expect(
+      newEmptyWindow(conn, { sessionId: 4, select: true }),
+    ).resolves.toEqual({ windowId: 3, paneId: 7 });
+    expect(sent.slice(1)).toEqual([
+      "new-window -t '$4:' -P -F '#{window_id}\t#{pane_id}' -E",
+    ]);
+  });
+
+  it("rejects a reply that is not one id pair as TmuxReplyFormatError", async () => {
+    const { conn } = fakeConnection("3.8", []);
+    await expect(newEmptyWindow(conn, { sessionId: 4 })).rejects.toThrow(
+      TmuxReplyFormatError,
+    );
   });
 });
 
