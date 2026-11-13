@@ -22,6 +22,8 @@ import {
   uniqueSocket,
   uniqueName,
   waitForEvent,
+  waitUntil,
+  waitForPaneText,
   withSecondClient,
   attachSession,
   tmux,
@@ -429,40 +431,6 @@ async function waitForPane(
     (listing) => listing.some(match),
   );
   return panes.find(match)!;
-}
-
-/**
- * Read until `done` accepts what was read. Only a value `done` refuses
- * retries; a rejected read propagates, and the timeout carries the last value.
- */
-async function waitUntil<T>(
-  read: () => Promise<T>,
-  done: (value: T) => boolean,
-): Promise<T> {
-  const deadline = Date.now() + 8000;
-  for (;;) {
-    const value = await read();
-    if (done(value)) return value;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `not reached within 8000ms; last read: ${JSON.stringify(value)}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
-}
-
-/** The pane's captured text, once it contains `expected`. */
-function waitForPaneText(
-  client: TmuxClient,
-  paneId: number,
-  expected: string,
-): Promise<string> {
-  const decoder = new TextDecoder();
-  return waitUntil(
-    async () => decoder.decode((await capturePane(client, paneId)).bytes),
-    (text) => text.includes(expected),
-  );
 }
 
 /** One line of `format` for `target`, as tmux prints it. */
@@ -1495,6 +1463,36 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       });
 
       await waitForPaneText(client, created.paneId, `[again][${cwd}]`);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  it("CMD-05: respawnPane() with no options runs the pane's command again in its directory, without the earlier environment", async () => {
+    sessionName = uniqueName("cmd-rp-bare");
+    client = await attachSession(socketName, sessionName);
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "rp-bare-")));
+    const release = join(cwd, "go");
+
+    try {
+      const created = await newWindow(client, {
+        session: sessionName,
+        command:
+          `while [ ! -e '${release}' ]; do sleep 0.1; done; ` +
+          `printf '[%s][%s]\\n' "$RP_VAR" "$(pwd -P)"; exit 3`,
+        environment: { RP_VAR: "first" },
+        cwd,
+      });
+      await client.execute(
+        `set-option -p -t %${created.paneId} remain-on-exit on`,
+      );
+      writeFileSync(release, "");
+      expect(await waitForDeadPane(client, created.paneId)).toBe("3");
+      await waitForPaneText(client, created.paneId, `[first][${cwd}]`);
+
+      await respawnPane(client, created.paneId);
+
+      await waitForPaneText(client, created.paneId, `[][${cwd}]`);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -151,9 +151,14 @@ async function createWindow(
 }
 
 /**
- * Open a window in `session` (matched by exact name) and start a process in
- * it: one `new-window`, on any supported tmux.
+ * Open a window in the session named `session` and start a process in it: one
+ * `new-window`, on any supported tmux.
  *
+ * - `session`: the session's whole name, never a prefix or pattern of one.
+ *   One no session has rejects as `TmuxCommandError` with tmux's text ("can't
+ *   find session: X"), with one exception tmux has no flag against: a name
+ *   that is some client's name (`client-1234`, `/dev/ttys003`) opens the
+ *   window in the session that client is attached to.
  * - `command`: one shell command line, run by the session's shell. Omitted,
  *   tmux runs the session's `default-command`, else the user's shell. A
  *   command that cannot run (not on PATH) still resolves with ids: the shell
@@ -182,10 +187,9 @@ async function createWindow(
  *
  * A value tmux would honor somewhere else is refused with a `RangeError`
  * naming the field, and nothing is sent: an empty or multi-line `session`,
- * `command` or `cwd`, a `cwd` that is not absolute, an environment name that
- * is empty or holds `=` or a newline, a value that holds a newline. A missing
- * session rejects as `TmuxCommandError` with tmux's text ("can't find
- * session: X").
+ * `command` or `cwd`, a `session` starting with `$` (tmux reads it as a
+ * session id, never as a name), a `cwd` that is not absolute, an environment
+ * name that is empty or holds `=` or a newline, a value that holds a newline.
  */
 // [LAW:one-source-of-truth] Command, reply format and refusals live in
 // encoder.ts, the reply grammar in pane-output.ts.
@@ -241,19 +245,21 @@ export async function newEmptyWindow(
  * pane whose process is alive rejects as `TmuxCommandError` with tmux's text
  * ("respawn pane failed: pane work:1.0 still active").
  *
- * `process` takes what {@link newWindow} takes, refused the same way, with
- * these meanings for an omitted field: `command` — the pane's own command
- * again (the one it was created or last respawned with; an empty window's is
- * the session's `default-command` when the window was made, else the user's
- * shell); `cwd` — the directory the pane was created or last respawned with.
+ * `paneProcess` takes what {@link newWindow} takes, refused the same way,
+ * with these meanings for an omitted field: `command` — the pane's own
+ * command again (the one it was created or last respawned with; an empty
+ * window's is the session's `default-command` when the window was made, else
+ * the user's shell); `cwd` — the directory the pane was created or last
+ * respawned with; `environment` — none: tmux does not keep an earlier
+ * `environment`, so a command run again gets it only if it is passed again.
  */
 // `async` so an encoder refusal is a rejection, as newWindow's is.
 export async function respawnPane(
   client: TmuxConnection,
   paneId: number,
-  process?: PaneProcess,
+  paneProcess?: PaneProcess,
 ): Promise<CommandResponse> {
-  return client.execute(encodeRespawnPane(paneId, process));
+  return client.execute(encodeRespawnPane(paneId, paneProcess));
 }
 
 // The directory the pane's foreground process is in now, which right after

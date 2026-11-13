@@ -11,6 +11,7 @@ import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
+import { capturePane } from "../../src/commands/index.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 
 /** A socket family the reaper collects; any other prefix would leak. */
@@ -253,4 +254,46 @@ export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
     };
     check();
   });
+}
+
+/**
+ * Read until `done` accepts what was read, and resolve with that value: for a
+ * condition only tmux can report, where `pollUntil` watches one the test
+ * process already holds. Only a value `done` refuses retries; a rejected read
+ * propagates, and the timeout carries the last value.
+ */
+export async function waitUntil<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+  ms = 8000,
+): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = await read();
+    if (done(value)) return value;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `waitUntil: not reached within ${ms}ms; last read: ${JSON.stringify(value)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/**
+ * The pane's captured text (history included), once it contains `expected`.
+ * tmux serves `%output` and command replies over one ordered stream, so by
+ * the time a capture holding the text parses, the `%output` carrying it has
+ * already been dispatched to the client's sinks.
+ */
+export function waitForPaneText(
+  client: TmuxClient,
+  paneId: number,
+  expected: string,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  return waitUntil(
+    async () => decoder.decode((await capturePane(client, paneId)).bytes),
+    (text) => text.includes(expected),
+  );
 }

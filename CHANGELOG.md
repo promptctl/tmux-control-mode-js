@@ -116,9 +116,11 @@ All notable changes to this project are documented here. Format follows
   makes it the session's current window (by default it opens in the
   background), and an omitted `cwd` is the session's own directory. It rejects
   with `RangeError` before sending when `session`, `command` or `cwd` is empty
-  or spans lines, `cwd` is not absolute, an environment name is empty or holds
-  `=` or a newline, or a value holds a newline; and with `TmuxCommandError`
-  when the session does not exist. The command is sent after `--`, so one
+  or spans lines, `session` starts with `$` (tmux reads that as a session id),
+  `cwd` is not absolute, an environment name is empty or holds `=` or a
+  newline, or a value holds a newline; and with `TmuxCommandError` when no
+  session has that name (unless a client does: tmux then uses that client's
+  session). The command is sent after `--`, so one
   starting with `-` is never read as tmux flags. A `cwd` that does not exist
   does not reject: tmux starts the pane in `$HOME`, except tmux 3.3, which
   leaves it in the server's own cwd — the new `missingCwdFallback(version)`
@@ -133,7 +135,9 @@ All notable changes to this project are documented here. Format follows
   leaves a dead pane `capturePane()` reads instead of a window that closes.
   `newEmptyWindow` rejects with `UnsupportedTmuxVersionError` below 3.8;
   `respawnPane` rejects with `TmuxCommandError` on a pane whose process is
-  alive. The option types are exported as `NewWindowPlacement` and
+  alive; with no options it runs the pane's command again in the same
+  directory, without the earlier `environment`, which tmux does not keep. The
+  option types are exported as `NewWindowPlacement` and
   `PaneProcess`.
 - `watchServerArgs(targetSession?)` — arguments for `spawnTmux` that attach a
   connection which watches a whole server as an extra client: it never starts

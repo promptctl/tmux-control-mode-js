@@ -147,9 +147,9 @@ function oneLine(field: string, value: string): string {
 // tmux resolves a cwd that is not absolute ('proj', '~/proj' — quoted, so
 // '~' is never expanded) against its own cwds, not the caller's.
 function absoluteDir(cwd: string): string {
-  if (!oneLine("cwd", cwd).startsWith("/")) {
+  if (!oneLine("PaneProcess.cwd", cwd).startsWith("/")) {
     throw new RangeError(
-      `cwd must be an absolute path: ${JSON.stringify(cwd)}`,
+      `PaneProcess.cwd must be an absolute path: ${JSON.stringify(cwd)}`,
     );
   }
   return cwd;
@@ -160,15 +160,31 @@ function absoluteDir(cwd: string): string {
 function environmentEntry(name: string, value: string): string {
   if (name === "" || name.includes("=") || name.includes("\n")) {
     throw new RangeError(
-      `environment name must be non-empty, one line and without '=': ${JSON.stringify(name)}`,
+      `PaneProcess.environment name must be non-empty, one line and without '=': ${JSON.stringify(name)}`,
     );
   }
   if (value.includes("\n")) {
     throw new RangeError(
-      `environment value of ${name} must be one line: ${JSON.stringify(value)}`,
+      `PaneProcess.environment value of ${name} must be one line: ${JSON.stringify(value)}`,
     );
   }
   return `${name}=${value}`;
+}
+
+// `=name:` targets the session by exact name: without '=' tmux falls back to
+// prefix and glob matching ('work:' lands in 'workspace'), and the ':' leaves
+// the window index to tmux. Two names have no exact form and are refused: an
+// empty one ('=:' is the control client's own session), and one starting with
+// '$', which tmux reads as a session id and never as a name ('=$1:' is the
+// session with id 1 even when another is named '$1'; verified on 3.7b and
+// 3.8).
+function exactSessionTarget(name: string): string {
+  if (oneLine("NewWindowPlacement.session", name).startsWith("$")) {
+    throw new RangeError(
+      `NewWindowPlacement.session must be a session name, and tmux reads one starting with '$' as a session id: ${JSON.stringify(name)}`,
+    );
+  }
+  return `=${name}:`;
 }
 
 // [LAW:one-source-of-truth] The one rendering of a PaneProcess, for every
@@ -183,15 +199,15 @@ function environmentEntry(name: string, value: string): string {
 // new-window's target. An empty command is refused: it is not the default
 // shell (that is an omitted command), and tmux 3.8 reads `new-window ''` as
 // an empty pane.
-function paneProcessArgs(process: PaneProcess): string {
-  const { command, environment = {}, cwd } = process;
+function paneProcessArgs(paneProcess: PaneProcess): string {
+  const { command, environment = {}, cwd } = paneProcess;
   return [
     ...(cwd !== undefined ? [`-c ${tmuxFormatLiteral(absoluteDir(cwd))}`] : []),
     ...Object.entries(environment).map(
       ([name, value]) => `-e ${tmuxEscape(environmentEntry(name, value))}`,
     ),
     ...(command !== undefined
-      ? [`-- ${tmuxEscape(oneLine("command", command))}`]
+      ? [`-- ${tmuxEscape(oneLine("PaneProcess.command", command))}`]
       : []),
   ]
     .map((part) => ` ${part}`)
@@ -201,25 +217,25 @@ function paneProcessArgs(process: PaneProcess): string {
 // [LAW:one-source-of-truth] new-window wire format and its `-P -F` reply
 // format live here only; pane-output.ts's parseNewWindowReply is the sole
 // reader. -d: create without selecting it, so no attached client's view
-// changes. `=name:` targets the session by exact name: without '=' tmux falls
-// back to prefix and glob matching ('work:' lands in 'workspace'), and the
-// ':' leaves the window index to tmux. An empty name has no exact form ('=:'
-// is the control client's own session), so it is refused.
+// changes.
 // [LAW:types-are-the-program] `start` is a process or "empty" (-E, tmux
 // 3.8+), so an empty window with a command cannot be written.
 export function newWindow(
   placement: NewWindowPlacement,
   start: PaneProcess | "empty",
 ): string {
-  const target = tmuxEscape(`=${oneLine("session", placement.session)}:`);
+  const target = tmuxEscape(exactSessionTarget(placement.session));
   const detached = placement.select === true ? "" : " -d";
   const startArgs = start === "empty" ? " -E" : paneProcessArgs(start);
   return `new-window${detached} -t ${target} -P -F '#{window_id}\t#{pane_id}'${startArgs}`;
 }
 
 // [LAW:one-source-of-truth] respawn-pane wire format lives here only.
-export function respawnPane(paneId: number, process: PaneProcess = {}): string {
-  return `respawn-pane -t ${tmuxEscape(`%${paneId}`)}${paneProcessArgs(process)}`;
+export function respawnPane(
+  paneId: number,
+  paneProcess: PaneProcess = {},
+): string {
+  return `respawn-pane -t ${tmuxEscape(`%${paneId}`)}${paneProcessArgs(paneProcess)}`;
 }
 
 export function refreshClientSubscribe(

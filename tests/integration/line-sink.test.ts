@@ -15,6 +15,7 @@ import {
   uniqueSocket,
   uniqueName,
   pollUntil,
+  waitForPaneText,
   attachSession,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -56,36 +57,6 @@ function emitLineInPane(
   return client
     .execute(`send-keys -t %${paneId} 'echo ${marker}' Enter`)
     .then(() => undefined);
-}
-
-/**
- * Block until `marker` is rendered in the pane's visible content.
- *
- * [LAW:no-ambient-temporal-coupling] The pane's screen state is the authority
- * on "tmux has processed the echoed keystrokes", replacing a fixed sleep that
- * guesses how long the keystroke→PTY→tmux round-trip takes. tmux serves
- * `%output` and command responses over one ordered stream: by the time this
- * `capture-pane` reply parses, the `%output` carrying the same bytes has
- * already been parsed and dispatched into the line pipeline's per-pane buffer.
- * So a marker visible here is a marker the line sink has buffered.
- */
-async function waitForPaneText(
-  client: TmuxClient,
-  paneId: number,
-  marker: string,
-  timeoutMs = 8000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const res = await client.execute(`capture-pane -p -t %${paneId}`);
-    if (res.output.some((line) => line.includes(marker))) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `waitForPaneText: %${paneId} never rendered "${marker}" within ${timeoutMs} ms`,
-      );
-    }
-    await new Promise<void>((r) => setTimeout(r, 10));
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,9 +290,10 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     // verbatim with no trailing newline. They land in the per-pane buffer
     // as a partial trailing line; dispose() flushes them.
     await client.execute(`send-keys -t %${paneA} '${tailMarker}'`);
-    // Wait until tmux has rendered the marker — which, by the ordered-stream
-    // guarantee in waitForPaneText, means the line pipeline has already
-    // buffered it. This is the precondition dispose()'s flush depends on.
+    // [LAW:no-ambient-temporal-coupling] Wait until tmux has rendered the
+    // marker — which, by the ordered-stream guarantee in waitForPaneText,
+    // means the line pipeline has already buffered it. This is the
+    // precondition dispose()'s flush depends on.
     await waitForPaneText(client, paneA, tailMarker);
 
     const countBefore = lines.length;

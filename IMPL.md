@@ -181,7 +181,7 @@ not a command-function because its bare-newline signal cannot be correlated.)
 | `splitWindow(client, options?)` | `src/commands/index.ts` | `split-window -h`/`-v` |
 | `newWindow(client, options)` | `src/commands/index.ts` | `new-window [-d] -t '=<session>:' -P -F … [-c dir] [-e NAME=VALUE]… [-- command]` |
 | `newEmptyWindow(client, placement)` | `src/commands/index.ts` | `new-window [-d] -t '=<session>:' -P -F … -E` (tmux 3.8+; version-gated) |
-| `respawnPane(client, paneId, process?)` | `src/commands/index.ts` | `respawn-pane -t %<id> [-c dir] [-e NAME=VALUE]… [-- command]` |
+| `respawnPane(client, paneId, paneProcess?)` | `src/commands/index.ts` | `respawn-pane -t %<id> [-c dir] [-e NAME=VALUE]… [-- command]` |
 | `setSize(client, width, height)` | `src/commands/index.ts` | `refresh-client -C <w>x<h>` |
 | `setPaneAction(client, paneId, action)` | `src/commands/index.ts` | `refresh-client -A` (pane flow control) |
 | `subscribeRaw(client, name, what, format)` | `src/commands/index.ts` | `refresh-client -B` (subscribe) |

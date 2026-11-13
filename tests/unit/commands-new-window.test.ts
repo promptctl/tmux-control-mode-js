@@ -39,18 +39,19 @@ function fakeConnection(output: readonly string[]): {
 
 const NEW_WINDOW = "new-window -d -t '=work:' -P -F '#{window_id}\t#{pane_id}'";
 
-// A process tmux would honor somewhere else than the caller asked.
-const REFUSED_PROCESSES: readonly PaneProcess[] = [
-  { cwd: "" },
-  { cwd: "proj" },
-  { cwd: "~/proj" },
-  { cwd: "/tmp/a\nb" },
-  { command: "" },
-  { command: "a\nb" },
-  { environment: { "": "v" } },
-  { environment: { "A=B": "v" } },
-  { environment: { "A\nB": "v" } },
-  { environment: { A: "a\nb" } },
+// A process tmux would honor somewhere else than the caller asked, and the
+// field the refusal names.
+const REFUSED_PROCESSES: readonly (readonly [PaneProcess, string])[] = [
+  [{ cwd: "" }, "PaneProcess.cwd"],
+  [{ cwd: "proj" }, "PaneProcess.cwd"],
+  [{ cwd: "~/proj" }, "PaneProcess.cwd"],
+  [{ cwd: "/tmp/a\nb" }, "PaneProcess.cwd"],
+  [{ command: "" }, "PaneProcess.command"],
+  [{ command: "a\nb" }, "PaneProcess.command"],
+  [{ environment: { "": "v" } }, "PaneProcess.environment name"],
+  [{ environment: { "A=B": "v" } }, "PaneProcess.environment name"],
+  [{ environment: { "A\nB": "v" } }, "PaneProcess.environment name"],
+  [{ environment: { A: "a\nb" } }, "PaneProcess.environment value of A"],
 ];
 
 describe("newWindow", () => {
@@ -99,6 +100,15 @@ describe("newWindow", () => {
     ]);
   });
 
+  it("sends a session name that holds '$' after its first character", async () => {
+    const { client, sent } = fakeConnection(["@3\t%7"]);
+    await newWindow(client, { session: "a$1" });
+
+    expect(sent).toEqual([
+      "new-window -d -t '=a$1:' -P -F '#{window_id}\t#{pane_id}'",
+    ]);
+  });
+
   it("omits -c and the command when neither is given, leaving both to tmux", async () => {
     const { client, sent } = fakeConnection(["@3\t%7"]);
     await newWindow(client, { session: "work" });
@@ -114,12 +124,12 @@ describe("newWindow", () => {
   });
 
   it.each(REFUSED_PROCESSES)(
-    "rejects a process tmux would honor somewhere else, without sending: %j",
-    async (process) => {
+    "rejects a process tmux would honor somewhere else, without sending: %j names %s",
+    async (paneProcess, field) => {
       const { client, sent } = fakeConnection(["@3\t%7"]);
-      await expect(
-        newWindow(client, { session: "work", ...process }),
-      ).rejects.toBeInstanceOf(RangeError);
+      const attempt = newWindow(client, { session: "work", ...paneProcess });
+      await expect(attempt).rejects.toBeInstanceOf(RangeError);
+      await expect(attempt).rejects.toThrow(field);
       expect(sent).toEqual([]);
     },
   );
@@ -144,17 +154,22 @@ describe("newWindow", () => {
 });
 
 // '' would be '=:', the control client's own session; a newline would end the
-// command line. newEmptyWindow renders before its version read, so nothing at
-// all is sent.
+// command line; '$1' is the session with id 1, whatever it is named.
+// newEmptyWindow renders before its version read, so nothing at all is sent.
 describe.each([
   ["newWindow", newWindow],
   ["newEmptyWindow", newEmptyWindow],
 ])("%s session", (_name, open) => {
-  it.each(["", "wo\nrk"])("rejects %j without sending", async (session) => {
-    const { client, sent } = fakeConnection(["@3\t%7"]);
-    await expect(open(client, { session })).rejects.toBeInstanceOf(RangeError);
-    expect(sent).toEqual([]);
-  });
+  it.each(["", "wo\nrk", "$1", "$work"])(
+    "rejects %j without sending",
+    async (session) => {
+      const { client, sent } = fakeConnection(["@3\t%7"]);
+      const attempt = open(client, { session });
+      await expect(attempt).rejects.toBeInstanceOf(RangeError);
+      await expect(attempt).rejects.toThrow("NewWindowPlacement.session");
+      expect(sent).toEqual([]);
+    },
+  );
 });
 
 describe("respawnPane", () => {
@@ -187,12 +202,12 @@ describe("respawnPane", () => {
   });
 
   it.each(REFUSED_PROCESSES)(
-    "rejects a process tmux would honor somewhere else, without sending: %j",
-    async (process) => {
+    "rejects a process tmux would honor somewhere else, without sending: %j names %s",
+    async (paneProcess, field) => {
       const { client, sent } = fakeConnection([]);
-      await expect(respawnPane(client, 7, process)).rejects.toBeInstanceOf(
-        RangeError,
-      );
+      const attempt = respawnPane(client, 7, paneProcess);
+      await expect(attempt).rejects.toBeInstanceOf(RangeError);
+      await expect(attempt).rejects.toThrow(field);
       expect(sent).toEqual([]);
     },
   );
