@@ -140,7 +140,8 @@ export async function capturePane(
 // [LAW:one-source-of-truth] Command and reply format live in encoder.ts,
 // the reply grammar in pane-output.ts.
 // [LAW:no-silent-failure] A reply that is not exactly one `@N\t%N` line
-// throws rather than inventing ids.
+// throws rather than inventing ids. The error names the tmux command and
+// does not quote the line sent, which holds every -e value.
 async function createWindow(
   client: TmuxConnection,
   command: string,
@@ -148,7 +149,7 @@ async function createWindow(
   const response = await client.execute(command);
   const result = parseNewWindowReply(response.output);
   if (result === null) {
-    throw new TmuxReplyFormatError(command, response.output);
+    throw new TmuxReplyFormatError("new-window", response.output);
   }
   return result;
 }
@@ -164,7 +165,8 @@ async function createWindow(
  * (`can't find session: $9`). Rejects with `RangeError`, nothing sent, for a
  * value tmux would honor somewhere other than asked: a `cwd` that is not
  * absolute, an empty `command`, an environment name that is empty or holds
- * `=`, a newline in any of them.
+ * `=`, a newline or NUL in any of them. The error names the field and never
+ * quotes an `environment` value.
  *
  * tmux does not refuse a command that cannot run: the ids come back and the
  * window closes when the shell exits. {@link newEmptyWindow} is how to keep

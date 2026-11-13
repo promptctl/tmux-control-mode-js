@@ -159,12 +159,16 @@ export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
 }
 
-// A newline would end the command line, and tmux would read the rest as a
-// second command. The refusal names the field and leaves the value out: an
-// environment value is often a credential, and execute()'s own one-line check
-// would quote the whole command line, every -e value in it.
+// tmux reads a command line up to its first newline or NUL. It takes what
+// follows a newline as a second command, and drops what follows a NUL while
+// replying success: `-e 'A=x<NUL>y' -- cmd` opens the window without cmd
+// (verified on 3.7b and 3.8). The refusal names the field and leaves the
+// value out: an environment value is often a credential, and execute()'s own
+// one-line check would quote the whole command line, every -e value in it.
 function oneLine(field: string, value: string): string {
-  if (value.includes("\n")) throw new RangeError(`${field} must be one line`);
+  if (/[\n\0]/.test(value)) {
+    throw new RangeError(`${field} must hold no newline or NUL`);
+  }
   return value;
 }
 
@@ -186,13 +190,15 @@ function absoluteDir(field: string, value: string): string {
 
 // tmux splits a -e argument at its first '=' and silently drops one that has
 // none, so a name holding '=' would set a different variable and an empty
-// name none at all.
+// name none at all. A refused name is not quoted either: one written as
+// `NAME=value` holds the value.
 function environmentEntry(name: string, value: string): string {
-  if (name === "" || /[=\n]/.test(name)) {
+  if (name === "" || name.includes("=")) {
     throw new RangeError(
-      `PaneProcess.environment name must be non-empty, one line and hold no '=': ${JSON.stringify(name)}`,
+      "PaneProcess.environment name must be non-empty and hold no '='",
     );
   }
+  oneLine("PaneProcess.environment name", name);
   return `${name}=${oneLine(`PaneProcess.environment value of ${name}`, value)}`;
 }
 

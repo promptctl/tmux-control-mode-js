@@ -42,12 +42,16 @@ const REFUSED: readonly (readonly [PaneProcess, string])[] = [
   [{ cwd: "proj" }, "PaneProcess.cwd"],
   [{ cwd: "~/proj" }, "PaneProcess.cwd"],
   [{ cwd: "/tmp/a\nb" }, "PaneProcess.cwd"],
+  [{ cwd: "/tmp/a\0b" }, "PaneProcess.cwd"],
   [{ command: "" }, "PaneProcess.command"],
   [{ command: "a\nb" }, "PaneProcess.command"],
+  [{ command: "a\0b" }, "PaneProcess.command"],
   [{ environment: { "": "v" } }, "PaneProcess.environment name"],
   [{ environment: { "A=B": "v" } }, "PaneProcess.environment name"],
   [{ environment: { "A\nB": "v" } }, "PaneProcess.environment name"],
+  [{ environment: { "A\0B": "v" } }, "PaneProcess.environment name"],
   [{ environment: { A: "a\nb" } }, "PaneProcess.environment value of A"],
+  [{ environment: { A: "a\0b" } }, "PaneProcess.environment value of A"],
 ];
 
 describe("newWindow", () => {
@@ -121,17 +125,25 @@ describe("newWindow", () => {
     },
   );
 
-  it("refuses a multi-line environment value by its variable's name, without quoting the value", async () => {
-    const { client } = fakeConnection(["@3\t%7"]);
-    const attempt = newWindow(client, {
-      sessionId: 4,
-      environment: { API_KEY: "s3cret\n" },
-    });
+  // An environment value is often a credential, and errors are logged.
+  it.each<readonly [string, Record<string, string>, readonly string[]]>([
+    ["a refused value", { API_KEY: "s3cret\n" }, ["@3\t%7"]],
+    ["a refused name written NAME=value", { "API_KEY=s3cret": "" }, ["@3\t%7"]],
+    ["a reply that is not the ids", { API_KEY: "s3cret" }, ["nonsense"]],
+  ])(
+    "rejects without quoting an environment value: %s",
+    async (_case, environment, output) => {
+      const { client } = fakeConnection(output);
+      const error: unknown = await newWindow(client, {
+        sessionId: 4,
+        environment,
+      }).catch((e: unknown) => e);
 
-    await expect(attempt).rejects.toMatchObject({
-      message: "PaneProcess.environment value of API_KEY must be one line",
-    });
-  });
+      expect(error).toBeInstanceOf(Error);
+      expect(JSON.stringify(error)).not.toContain("s3cret");
+      expect((error as Error).message).not.toContain("s3cret");
+    },
+  );
 
   it.each([[["@12\t%40"]], [["@12\t%40\r"]]])(
     "parses the reply %j into numeric window and pane ids",

@@ -425,18 +425,12 @@ async function waitForPane(
   client: TmuxClient,
   match: (pane: PaneRecord) => boolean,
 ): Promise<PaneRecord> {
-  const deadline = Date.now() + 8000;
-  for (;;) {
-    const panes = await listPanes(client);
-    const found = panes.find(match);
-    if (found !== undefined) return found;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `no pane matched within 8000ms; last listing: ${JSON.stringify(panes)}`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  const panes = await readUntil(
+    () => listPanes(client),
+    (listing) => listing.some(match),
+    "no pane matched",
+  );
+  return panes.filter(match)[0];
 }
 
 /** Parse `@<n>` window-id output, failing loudly on anything else. */
