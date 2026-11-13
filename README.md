@@ -55,8 +55,8 @@ from).
 
 ## Watching a whole server
 
-One connection can follow every session on a server without changing what the
-user sees:
+One connection can follow every session on a server as an extra client that
+creates, resizes and reconfigures nothing:
 
 ```ts
 import {
@@ -69,14 +69,33 @@ const client = new TmuxClient(spawnTmux(watchServerArgs("main")), {
 const self = await getOwnClient(client);
 ```
 
+`watchServerArgs()` with no session name attaches to the session a bare
+`tmux attach-session` from the same process would land in, for a consumer that
+has no name yet, such as one about to call `listSessions`.
+
 - **Attaches, never creates.** `watchServerArgs` attaches to an existing session,
   so the watcher adds no session the user can see. It cannot watch a server that
   has no sessions.
+- **Never starts a server.** With none running, tmux exits instead of starting
+  one (`-N`), so the user's `tmux.conf`, its hooks and its plugins do not run
+  because something tried to watch.
+- **Leaves the session's environment alone.** `-E` keeps tmux from copying the
+  watcher process's `SSH_AUTH_SOCK`, `DISPLAY` and the rest of
+  `update-environment` into the session it attaches to. That covers the attach
+  only: a `switch-client` the watcher sends later copies them into the session
+  it switches to unless it carries `-E` too.
 - **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
   it sets a size of its own.
 - **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher
   to another session when its own one ends (`session-changed`). When the last
   session ends, tmux exits as usual and the watcher gets `exit`.
+- **Is still a client.** No flag hides the attach itself, and tmux treats it
+  like the user's own. While the watcher is attached to a session, a bare
+  `tmux attach` passes over that session for one with no client. The attach
+  makes the session the most recently used one, which is where a bare
+  `tmux attach` lands once the watcher has gone. Alerts on the session's
+  current window clear, and the user's `client-attached` and
+  `client-session-changed` hooks run.
 - **Knows itself.** tmux counts the watcher like any client (`session_attached`,
   `list-clients`, `%client-detached`). Filter it out by `self.name`. tmux silently
   ignores client flags it doesn't know, so `self.flags` shows which ones took

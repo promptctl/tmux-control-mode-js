@@ -88,6 +88,16 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `watchServerArgs(targetSession?)` — arguments for `spawnTmux` that attach a
+  connection which watches a whole server as an extra client: it never starts
+  a server (`-N`), leaves the attached session's environment alone (`-E`),
+  takes no part in window sizing (`ignore-size`) and moves to another session
+  when its own ends (`no-detach-on-destroy`, tmux 3.6+). With a session name
+  it attaches to exactly that session; with none, to the session a bare
+  `tmux attach-session` would land in, for a consumer that has no name yet.
+  The README lists what tmux still does for any attached client.
+  `getOwnClient(client)` returns the
+  connection's own client name and the flags tmux accepted.
 - `paneCwd(client, paneId)` and `PANE_CWD_MIN_VERSION` (tmux 3.7). The
   function reads the directory a new pane is in (the requested cwd with
   symlinks resolved, or tmux's `$HOME` fallback) with one call: any path it returns is the settled one, so a
