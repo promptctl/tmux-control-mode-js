@@ -29,7 +29,9 @@ export interface PaneProcess {
   /**
    * Variables for this process alone, on top of the session's environment,
    * which is not changed. Values arrive as written: tmux expands nothing in
-   * them. `respawnPane` does not carry an earlier process's over.
+   * them. The exceptions are `TMUX_PANE`, `SHELL` and `PWD`, which tmux sets
+   * itself after these. `respawnPane` does not carry an earlier process's
+   * over.
    */
   readonly environment?: Readonly<Record<string, string>>;
   /**
@@ -158,11 +160,11 @@ export function capturePane(paneId: number): string {
 }
 
 // A newline would end the command line, and tmux would read the rest as a
-// second command.
+// second command. The refusal names the field and leaves the value out: an
+// environment value is often a credential, and execute()'s own one-line check
+// would quote the whole command line, every -e value in it.
 function oneLine(field: string, value: string): string {
-  if (value.includes("\n")) {
-    throw new RangeError(`${field} must be one line: ${JSON.stringify(value)}`);
-  }
+  if (value.includes("\n")) throw new RangeError(`${field} must be one line`);
   return value;
 }
 

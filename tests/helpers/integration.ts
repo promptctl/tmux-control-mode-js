@@ -254,15 +254,33 @@ export async function waitForPaneText(
   text: string,
   ms = 8000,
 ): Promise<void> {
+  await readUntil(
+    async () =>
+      (await client.execute(`capture-pane -p -J -S - -t %${paneId}`)).output,
+    (output) => output.some((line) => line.includes(text)),
+    `waitForPaneText: %${paneId} never showed "${text}"`,
+    ms,
+  );
+}
+
+/**
+ * Call `read` until `done` holds for what it returns, and resolve with that;
+ * reject as `what`, quoting the last value read, if none does within `ms`. A
+ * rejection from `read` propagates.
+ */
+export async function readUntil<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+  what: string,
+  ms = 8000,
+): Promise<T> {
   const deadline = Date.now() + ms;
   for (;;) {
-    const { output } = await client.execute(
-      `capture-pane -p -J -S - -t %${paneId}`,
-    );
-    if (output.some((line) => line.includes(text))) return;
+    const value = await read();
+    if (done(value)) return value;
     if (Date.now() >= deadline) {
       throw new Error(
-        `waitForPaneText: %${paneId} never showed "${text}" within ${ms}ms; last capture: ${JSON.stringify(output)}`,
+        `${what} within ${ms}ms; last read: ${JSON.stringify(value)}`,
       );
     }
     await new Promise<void>((r) => setTimeout(r, 10));

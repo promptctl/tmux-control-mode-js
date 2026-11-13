@@ -24,6 +24,7 @@ import {
   withSecondClient,
   attachSession,
   waitForPaneText,
+  readUntil,
   tmux,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
@@ -479,20 +480,12 @@ async function waitForPaneFormat(
   format: string,
   expected: string,
 ): Promise<void> {
-  const deadline = Date.now() + 8000;
-  for (;;) {
-    const { output } = await client.execute(
-      `display-message -p -t %${paneId} ${tmuxEscape(format)}`,
-    );
-    const got = output.join("\n").trim();
-    if (got === expected) return;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `%${paneId}: ${format} was ${JSON.stringify(got)}, not ${JSON.stringify(expected)}, within 8000ms`,
-      );
-    }
-    await new Promise((r) => setTimeout(r, 50));
-  }
+  const command = `display-message -p -t %${paneId} ${tmuxEscape(format)}`;
+  await readUntil(
+    async () => (await client.execute(command)).output.join("\n").trim(),
+    (got) => got === expected,
+    `%${paneId}: ${format} was not ${JSON.stringify(expected)}`,
+  );
 }
 
 /**
@@ -1538,6 +1531,10 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           select: true,
         });
         expect(await currentWindowId(client, sessionId)).toBe(windowId);
+        // No process yet, so tmux has no cwd to read for the pane.
+        await expect(paneCwd(client, paneId)).rejects.toBeInstanceOf(
+          PaneCwdUnavailableError,
+        );
 
         await respawnPane(client, paneId, {
           command: `sh -c 'echo "E=[$NW_E]"; exec sleep 60'`,

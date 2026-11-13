@@ -157,7 +157,8 @@ async function createWindow(
  * Open a window in the session with id `sessionId` and start a process in its
  * pane (`new-window`). A caller that holds a session's name reads the id on
  * this connection first:
- * `(await listSessions(client)).find((s) => s.sessionName === name)`.
+ * `(await listSessions(client)).find((s) => s.sessionName === name)?.sessionId`,
+ * which is `undefined` when no session has that name.
  *
  * Rejects with `TmuxCommandError` carrying tmux's text when tmux refuses
  * (`can't find session: $9`). Rejects with `RangeError`, nothing sent, for a

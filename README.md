@@ -65,6 +65,7 @@ import { listSessions, newWindow } from "@promptctl/tmux-control-mode-js";
 const session = (await listSessions(client)).find(
   (s) => s.sessionName === "work",
 );
+if (session === undefined) throw new Error("no session named work");
 const { windowId, paneId } = await newWindow(client, {
   sessionId: session.sessionId,
   command: "npm run dev",

@@ -121,6 +121,18 @@ describe("newWindow", () => {
     },
   );
 
+  it("refuses a multi-line environment value by its variable's name, without quoting the value", async () => {
+    const { client } = fakeConnection(["@3\t%7"]);
+    const attempt = newWindow(client, {
+      sessionId: 4,
+      environment: { API_KEY: "s3cret\n" },
+    });
+
+    await expect(attempt).rejects.toMatchObject({
+      message: "PaneProcess.environment value of API_KEY must be one line",
+    });
+  });
+
   it.each([[["@12\t%40"]], [["@12\t%40\r"]]])(
     "parses the reply %j into numeric window and pane ids",
     async (output) => {
