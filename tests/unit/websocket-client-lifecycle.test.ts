@@ -222,8 +222,8 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       const { client, hub } = makeClient();
       void client.connect();
 
-      // Open the socket but DO NOT send welcome yet. hello is sent via
-      // rawSend (immediate). The server in this state is pending-hello
+      // Open the socket but DO NOT send welcome yet. hello is sent
+      // immediately on open. The server in this state is pending-hello
       // and would reject any non-hello frame with a protocol error.
       // ConnectionState stays "connecting" until welcome arrives.
       hub.open();
