@@ -219,7 +219,8 @@ export interface WebSocketBridge {
    * new connections are rejected. Resolves once all connections close or
    * `drainMs` elapses (after which sockets are force-terminated). `drainMs`
    * is an integer number of ms in [1, 2^31-1], or the returned promise
-   * rejects with `BRIDGE_INVALID_ARG` before any connection is told anything.
+   * rejects with `BRIDGE_INVALID_ARG` and the call changes nothing, whether it
+   * is the first call or a later one.
    * Default 10s. The first call owns the drain: a later call settles with it,
    * and its `drainMs` does not move the deadline peers were told. A handshake
    * in flight when the drain starts is welcomed and told the same deadline.
