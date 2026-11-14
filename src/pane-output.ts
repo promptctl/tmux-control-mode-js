@@ -986,7 +986,9 @@ function parseSigilId(
 
 // The tab-separated fields of one record line, or null when it does not have
 // `count` of them. A reply line can keep a trailing `\r` (see `parser.ts`'s
-// `feed()`); it is dropped here, once, so no field parser meets it.
+// `feed()`); it is dropped here, so no field parser meets it.
+// `parseRecordReply` also drops it from each line of a record split over
+// several, where it would otherwise sit inside a field.
 function recordFields(line: string, count: number): string[] | null {
   const fields = line.replace(/\r*$/, "").split("\t");
   return fields.length === count ? fields : null;
@@ -1006,9 +1008,9 @@ function completeRecord<T extends object>(fields: {
 // backslash. Only `pane_current_path` and `pane_current_command` in the
 // tab-separated pane listing are encoded this way (see that function's doc
 // comment for why the other free-text fields need no such treatment) — this
-// is the sole reverse,
-// and the two must only ever change together. `paneCwd()` reads the same
-// variable alone on its line, unescaped, so its parser does not use this.
+// is the sole reverse, and the two must only ever change together.
+// `paneCwd()` reads the same variable alone on its line, unescaped, so its
+// parser does not use this.
 // Scanning left to right and consuming exactly one escape pair per backslash
 // keeps a run of escapes unambiguous regardless of what precedes it in the
 // field.
