@@ -70,6 +70,12 @@ describe("parsePaneRecordLine", () => {
     expect(parsePaneRecordLine(line)?.process).toEqual({ state: "empty" });
   });
 
+  // What tmux 3.7 reports for `split-window -I`: pid 0, which no process has.
+  it("parses an empty pane whose pid tmux renders as 0 as empty", () => {
+    const line = paneLine({ cwd: "", pid: "0", currentCommand: "bash" });
+    expect(parsePaneRecordLine(line)?.process).toEqual({ state: "empty" });
+  });
+
   it("parses a dead pane as dead, whether tmux kept its pid (3.7) or not (3.8)", () => {
     for (const pid of ["", "619"]) {
       const line = paneLine({

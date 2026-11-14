@@ -1172,6 +1172,30 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     );
   }, 15000);
 
+  // tmux 3.8 renders this pane's pid as "", 3.7 as 0; neither names a process.
+  it("CMD-02: listPanes() lists a pane that never had a process (split-window -I) as empty", async () => {
+    sessionName = uniqueName("cmd-lp-empty");
+    client = await attachSession(socketName, sessionName);
+
+    const paneId = Number(
+      tmux(socketName, [
+        "split-window",
+        "-d",
+        "-I",
+        "-t",
+        sessionName,
+        "-P",
+        "-F",
+        "#{pane_id}",
+      ]).slice(1),
+    );
+
+    await waitForPane(
+      client,
+      (p) => p.paneId === paneId && p.process.state === "empty",
+    );
+  }, 15000);
+
   it("CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash", async () => {
     sessionName = uniqueName("cmd-lp-tab");
     client = await attachSession(socketName, sessionName);

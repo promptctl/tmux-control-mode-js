@@ -13,9 +13,10 @@ All notable changes to this project are documented here. Format follows
   `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
   currentCommand }`, `{ state: "dead" }` for a pane `remain-on-exit` kept
   after its process exited, or `{ state: "empty" }` for a pane that never had
-  one (`newEmptyWindow()`). Before, a pane with no process read as `pid: 0`
-  and `cwd: ""`, its `currentCommand` the default shell's name or the exited
-  command, and on tmux 3.7 a dead pane kept the exited process's pid. A
+  one (`newEmptyWindow()`, `split-window -I`). Before, a pane with no
+  process read as `pid: 0` and `cwd: ""`, its `currentCommand` the default
+  shell's name or the exited command, and on tmux 3.7 a dead pane kept the
+  exited process's pid. A
   running pane's `cwd` is `null` when tmux cannot read it, where it was
   `""`. Read `p.process.pid` after checking `p.process.state === "running"`.
   The bridge wire carries the new shape; upgrade server and client together.

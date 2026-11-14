@@ -448,7 +448,7 @@ export interface WindowRecord {
  * - `dead`: its process exited and `remain-on-exit` kept the pane
  *   (`#{pane_dead}`); `respawnPane()` starts a new one.
  * - `empty`: the pane never had a process (`newEmptyWindow()`,
- *   `split-window ''`).
+ *   `split-window -I`).
  *
  * Only `running` has a pid, cwd and command: for the other two tmux reports
  * none, or the exited process's (a dead pane's pid on tmux 3.7, its command
