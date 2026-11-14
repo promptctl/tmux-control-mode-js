@@ -8,6 +8,10 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `TopologyRouter`'s constructor takes a `DeliveryQueue` first:
+  `new TopologyRouter(delivery, reportTopologyError, options)`. A transport
+  adapter passes the queue its own entry points step through, so the
+  router's sinks and error reports run after the adapter's transition.
 - `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
   `currentCommand` move into `process`, a `PaneProcessState` (exported from
   `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
@@ -38,6 +42,18 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A listener, a sink or `onError` may call `close()` or `connect()` at any
+  transition, and the client ends in the state its last call asked for.
+  `TmuxClient`, `WebSocketTmuxClient` and the Electron `TmuxClientProxy` now
+  call consumer code only once the transition that caused it has finished,
+  before the call that caused it returns. Before, a `WebSocketTmuxClient`
+  callback that closed or reconnected mid-transition could leave a heartbeat
+  timer or socket running on a closed client, or announce a connection the
+  callback had ended. Listeners hear events in the order the client reached them:
+  `exit` before `closed`, `ready` before `reconnected` before a `closed` its
+  listener caused. A listener that throws no longer stops the others: every
+  listener runs, and the throw — an `AggregateError` when several threw —
+  leaves through the call that delivered the event.
 - `execute()` rejects a command holding a NUL with `TmuxInvalidCommandError`,
   and nothing is sent. tmux ends a command line at a NUL, runs what precedes
   it and replies success, so `execute("new-window -e 'A=x<NUL>y' -- cmd")`
@@ -94,6 +110,13 @@ All notable changes to this project are documented here. Format follows
   `begin` report. Upgrade a WebSocket bridge and its clients together: an
   older `WebSocketTmuxClient`
   reports a `begin` or `line` `protocol-error` frame through `onError`.
+
+### Added
+
+- `DeliveryQueue` (and its `Outcome` type), exported from `.`: runs a
+  transport adapter's entry points as run-to-completion steps and delivers
+  what they post to consumer code once the outermost step has finished.
+  `TopologyRouter` takes one.
 
 ## [0.2.0]
 

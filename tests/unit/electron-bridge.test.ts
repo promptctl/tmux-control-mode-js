@@ -2389,3 +2389,31 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
     expect(disable).toHaveBeenCalledTimes(1);
   });
 });
+
+// 6sp.9f7: a listener runs once the proxy's transition has committed.
+describe("Electron TmuxClientProxy — a listener may close() the proxy", () => {
+  it("closing from main's 'closed' announces closed{disposed} exactly once, after main's", () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+    const r = hub.createRenderer();
+    const proxy = createRendererBridge(r.ipcRenderer);
+    const states: string[] = [];
+    proxy.on("connection-state", (ev) => {
+      states.push(
+        ev.state.status === "closed"
+          ? `closed:${ev.state.reason}`
+          : ev.state.status,
+      );
+      if (ev.state.status === "closed") proxy.close();
+    });
+
+    t.fireClose("killed");
+
+    expect(states).toEqual(["closed:transport-error", "closed:disposed"]);
+    proxy.close();
+    expect(states).toHaveLength(2);
+  });
+});

@@ -21,6 +21,7 @@ import {
   TransportSendError,
 } from "../../src/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { sessionScope } from "../../src/pane-output.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -636,5 +637,73 @@ describe("TmuxClient — a line the parser cannot read", () => {
       type: "exit",
       reason: 'malformed %begin: "%begin 0 x 0"',
     });
+  });
+});
+
+// A listener that calls back into the client runs only once the client's
+// transition has committed (6sp.9f7).
+describe("TmuxClient — listeners hear a transition once it has committed", () => {
+  it("a 'ready' listener's close() rejects the bootstrap sent before it ran, and reports no topology error", async () => {
+    const t = createFakeTransport();
+    const sent: string[] = [];
+    t.send = (data) => {
+      sent.push(data);
+      return { ok: true } as const;
+    };
+    t.close = () => t.triggerClose();
+    const client = new TmuxClient(t);
+    const ends = vi.fn();
+    client.attachBytesSink(
+      { write: () => {}, end: ends },
+      { scope: sessionScope(1) },
+    );
+    const topologyErrors = vi.fn();
+    client.on("topology-error", topologyErrors);
+    client.on("connection-state", (ev) => {
+      if (ev.state.status === "ready") client.close();
+    });
+
+    t.feed(STARTUP_GREETING);
+    await new Promise((r) => setImmediate(r));
+
+    // The bootstrap went out within the step that reached ready.
+    expect(sent.some((s) => s.startsWith("list-panes -a"))).toBe(true);
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+    expect(ends).toHaveBeenCalledTimes(1);
+    expect(topologyErrors).not.toHaveBeenCalled();
+  });
+
+  it("a listener that throws mid-chunk does not cut the rest of the chunk short", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const boom = new Error("listener broke");
+    client.on("window-add", () => {
+      throw boom;
+    });
+    const closes = vi.fn();
+    client.on("window-close", closes);
+
+    expect(() => t.feed("%window-add @1\n%window-close @1\n")).toThrow(boom);
+    expect(closes).toHaveBeenCalledTimes(1);
+  });
+
+  it("'exit' is heard before 'closed'", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const heard: string[] = [];
+    client.on("*", (ev) =>
+      heard.push(
+        ev.type === "connection-state" ? `state:${ev.state.status}` : ev.type,
+      ),
+    );
+
+    t.triggerClose("killed");
+
+    expect(heard).toEqual(["exit", "state:closed"]);
   });
 });

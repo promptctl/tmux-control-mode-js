@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { IdlePaneSuppressor } from "../../src/idle-pane-suppressor.js";
 import { TopologyRouter } from "../../src/topology-router.js";
+import { DeliveryQueue } from "../../src/delivery-queue.js";
 import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import { PaneAction } from "../../src/protocol/types.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
@@ -19,7 +20,7 @@ const sink: BytesSink = { write: () => undefined, end: () => undefined };
 // These tests exercise idle-suppression wiring, not bootstrap failure — supply
 // a no-op topology-error reporter.
 function newRouter(options?: TopologyRouterOptions): TopologyRouter {
-  return new TopologyRouter(() => undefined, options);
+  return new TopologyRouter(new DeliveryQueue(), () => undefined, options);
 }
 
 // ---------------------------------------------------------------------------

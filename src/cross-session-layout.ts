@@ -17,6 +17,7 @@
 // emits a diagnostic rather than swallowing.
 
 import type { TmuxConnection } from "./client.js";
+import type { DeliveryQueue } from "./delivery-queue.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
 import { isConnectionGone, TmuxCommandError } from "./errors.js";
 import { tmuxEscape } from "./protocol/encoder.js";
@@ -307,37 +308,47 @@ export class CrossSessionLayoutRelay {
   // rather than acting on a decision taken before it waited — so racing
   // calls, and a step that failed, leave state the next step corrects.
   private queue: Promise<void> = Promise.resolve();
+  // A listener runs within its client's delivery, so it is an entry point:
+  // the delivery's synchronous part is one step.
   private readonly onSubscriptionChanged = (
     msg: SubscriptionChangedMessage,
   ): void => {
     if (msg.name !== SUBSCRIPTION_NAME) return;
-    void this.handleDelivery(msg.value);
+    this.delivery.step(() => void this.handleDelivery(msg.value));
   };
 
+  // [LAW:single-enforcer] What the relay reports is posted to its client's
+  //   queue; every relay entry point that posts — a delivery, and the code
+  //   resuming after each awaited command — runs as one of its steps.
   constructor(
     private readonly client: TmuxConnection,
+    private readonly delivery: DeliveryQueue,
     private readonly emit: (msg: CrossSessionLayoutMessage) => void,
   ) {}
+
+  private report(msg: CrossSessionLayoutMessage): void {
+    this.delivery.post(this.emit, msg);
+  }
 
   /** Idempotent-in-effect: safe to call from any process at any time. Rejects, and counts for nothing, if the subscription could not be set up. */
   enable(): Promise<void> {
     this.refCount += 1;
     return this.serialize(async () => {
       const joined = this.subscribed;
-      try {
-        await this.reconcile();
-      } catch (err) {
-        this.refCount -= 1;
-        throw err;
-      }
-      // A listener joining a live subscription would otherwise never hear
-      // the current set: deliveries report only changes.
-      if (joined && this.reportedUncovered !== null) {
-        this.emit({
-          type: "cross-session-layout-uncovered",
-          windowIds: this.reportedUncovered,
-        });
-      }
+      await this.delivery.settle(this.reconcile(), (reconciled) => {
+        if (!reconciled.ok) {
+          this.refCount -= 1;
+          throw reconciled.error;
+        }
+        // A listener joining a live subscription would otherwise never hear
+        // the current set: deliveries report only changes.
+        if (joined && this.reportedUncovered !== null) {
+          this.report({
+            type: "cross-session-layout-uncovered",
+            windowIds: this.reportedUncovered,
+          });
+        }
+      });
     });
   }
 
@@ -407,7 +418,7 @@ export class CrossSessionLayoutRelay {
     const generation = this.generation;
     const delivery = decodeDelivery(value);
     if (delivery.coverage === null) {
-      this.emit({
+      this.report({
         type: "cross-session-layout-decode-error",
         skippedBytes: value.length - delivery.buffer.length,
       });
@@ -419,10 +430,10 @@ export class CrossSessionLayoutRelay {
     this.lastSeq = plan.lastSeq;
 
     for (const skip of skips) {
-      this.emit({ type: "cross-session-layout-decode-error", ...skip });
+      this.report({ type: "cross-session-layout-decode-error", ...skip });
     }
     if (plan.lostEntries > 0) {
-      this.emit({
+      this.report({
         type: "cross-session-layout-overrun",
         lostEntries: plan.lostEntries,
       });
@@ -447,7 +458,7 @@ export class CrossSessionLayoutRelay {
   private reportCoverage(generation: number, coverage: Coverage): void {
     if (coverage.epoch !== this.epoch) {
       this.epoch = coverage.epoch;
-      this.emit({ type: "cross-session-layout-hook-restored" });
+      this.report({ type: "cross-session-layout-hook-restored" });
     }
     const { uncovered } = coverage;
     if (
@@ -455,7 +466,7 @@ export class CrossSessionLayoutRelay {
       !sameIds(uncovered, this.reportedUncovered)
     ) {
       this.reportedUncovered = uncovered;
-      this.emit({
+      this.report({
         type: "cross-session-layout-uncovered",
         windowIds: uncovered,
       });
@@ -470,15 +481,13 @@ export class CrossSessionLayoutRelay {
   private async repair(generation: number): Promise<void> {
     this.repairQueued = false;
     if (generation !== this.generation) return;
-    try {
-      await this.ensureHook("if-missing");
-    } catch (err) {
-      if (isConnectionGone(err)) return;
-      this.emit({
+    await this.delivery.settle(this.ensureHook("if-missing"), (repaired) => {
+      if (repaired.ok || isConnectionGone(repaired.error)) return;
+      this.report({
         type: "cross-session-layout-repair-failed",
-        reason: failureReason(err),
+        reason: failureReason(repaired.error),
       });
-    }
+    });
   }
 
   /**
@@ -505,8 +514,12 @@ export class CrossSessionLayoutRelay {
     generation: number,
     windowId: number,
   ): Promise<void> {
-    const message = await this.fetch(windowId);
-    if (message !== null && generation === this.generation) this.emit(message);
+    await this.delivery.settle(this.fetch(windowId), (fetched) => {
+      if (!fetched.ok) throw fetched.error;
+      if (fetched.value !== null && generation === this.generation) {
+        this.report(fetched.value);
+      }
+    });
   }
 
   /** `null` when the connection closed mid-fetch — see {@link CrossSessionLayoutFetchFailedMessage}. */

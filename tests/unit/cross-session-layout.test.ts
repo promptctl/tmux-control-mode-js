@@ -12,6 +12,7 @@ import {
   planDelivery,
 } from "../../src/cross-session-layout.js";
 import type { CrossSessionLayoutMessage } from "../../src/cross-session-layout.js";
+import { DeliveryQueue } from "../../src/delivery-queue.js";
 import type { TmuxConnection } from "../../src/client.js";
 import { TmuxCommandError, TransportClosedError } from "../../src/errors.js";
 import type {
@@ -208,7 +209,11 @@ function fakeConnection(
 
 function relayOver(fake: ReturnType<typeof fakeConnection>) {
   const emitted: CrossSessionLayoutMessage[] = [];
-  const relay = new CrossSessionLayoutRelay(fake.conn, (m) => emitted.push(m));
+  const relay = new CrossSessionLayoutRelay(
+    fake.conn,
+    new DeliveryQueue(),
+    (m) => emitted.push(m),
+  );
   return { relay, emitted };
 }
 
