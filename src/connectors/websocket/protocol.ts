@@ -18,6 +18,7 @@ import type { DeliveredRoute } from "../bridge-connection.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
+  PaneProcessState,
   PaneRecord,
   ProtocolErrorMessage,
   SessionRecord,
@@ -428,6 +429,10 @@ interface WireKind<T> {
 
 const NUMBER: WireKind<number> = { is: isNumber, shape: "a number" };
 const STRING: WireKind<string> = { is: isString, shape: "a string" };
+const STRING_OR_NULL: WireKind<string | null> = {
+  is: (v): v is string | null => v === null || isString(v),
+  shape: "a string or null",
+};
 const NON_EMPTY_STRING: WireKind<string> = {
   is: (v): v is string => isString(v) && v.length > 0,
   shape: "a non-empty string",
@@ -808,6 +813,17 @@ function parseEvent(x: unknown): EventFrame {
   };
 }
 
+const PANE_PROCESS_STATE_PARSERS: WireUnion<PaneProcessState, "state"> = {
+  running: (m) => ({
+    state: "running",
+    pid: m.read("pid", NUMBER),
+    cwd: m.read("cwd", STRING_OR_NULL),
+    currentCommand: m.read("currentCommand", STRING),
+  }),
+  dead: () => ({ state: "dead" }),
+  empty: () => ({ state: "empty" }),
+};
+
 const records =
   <T>(parse: (m: WireObject<T>) => Complete<T>) =>
   (x: unknown, path: string): readonly T[] =>
@@ -838,10 +854,8 @@ const RESPONSE_PARSERS: {
     windowId: m.read("windowId", NUMBER),
     windowName: m.read("windowName", STRING),
     paneId: m.read("paneId", NUMBER),
-    cwd: m.read("cwd", STRING),
-    pid: m.read("pid", NUMBER),
+    process: m.object("process").union("state", PANE_PROCESS_STATE_PARSERS),
     startCommand: m.read("startCommand", STRING),
-    currentCommand: m.read("currentCommand", STRING),
     width: m.read("width", NUMBER),
     height: m.read("height", NUMBER),
   })),

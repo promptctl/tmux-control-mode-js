@@ -46,6 +46,7 @@ export type {
   PaneCapture,
   NewWindowResult,
   PaneGeometry,
+  PaneProcessState,
   PaneRecord,
   SessionRecord,
   TmuxMessage,

@@ -434,6 +434,11 @@ async function waitForPane(
   return panes.filter(match)[0];
 }
 
+/** A listed pane's running process, or undefined when it has none. */
+function running(pane: PaneRecord) {
+  return pane.process.state === "running" ? pane.process : undefined;
+}
+
 /** Parse `@<n>` window-id output, failing loudly on anything else. */
 function parseWindowId(out: string): number {
   const m = /^@(\d+)$/.exec(out.trim());
@@ -1135,13 +1140,33 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     expect(Number.isInteger(p.windowId)).toBe(true);
     expect(typeof p.windowName).toBe("string");
     expect(Number.isInteger(p.paneId)).toBe(true);
-    expect(typeof p.cwd).toBe("string");
-    expect(p.cwd.length).toBeGreaterThan(0);
-    expect(Number.isInteger(p.pid)).toBe(true);
     expect(typeof p.startCommand).toBe("string");
-    expect(typeof p.currentCommand).toBe("string");
+    const proc = running(p);
+    expect(Number.isInteger(proc?.pid)).toBe(true);
+    expect(proc?.cwd).toMatch(/^\//);
+    expect(typeof proc?.currentCommand).toBe("string");
     expect(Number.isInteger(p.width)).toBe(true);
     expect(Number.isInteger(p.height)).toBe(true);
+  }, 15000);
+
+  // tmux 3.7 still reports a dead pane's exited pid, 3.8 an empty one; on
+  // both the record has no pid to read.
+  it("CMD-02: listPanes() lists a pane whose process exited under remain-on-exit as dead", async () => {
+    sessionName = uniqueName("cmd-lp-dead");
+    client = await attachSession(socketName, sessionName);
+    const sessionId = await sessionIdOf(client, sessionName);
+
+    const { paneId } = await newWindow(client, {
+      sessionId,
+      command: "sh -c 'read x; exit 3'",
+    });
+    await client.execute(`set-option -p -t %${paneId} remain-on-exit on`);
+    await client.execute(`send-keys -t %${paneId} Enter`);
+
+    await waitForPane(
+      client,
+      (p) => p.paneId === paneId && p.process.state === "dead",
+    );
   }, 15000);
 
   it("CMD-02 regression (tmux-pane-detail-aha.fpf): listPanes() does not drop a pane whose cwd contains a literal tab or backslash", async () => {
@@ -1170,7 +1195,9 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       // not the escaped wire form, and not truncated at the tab.
       await waitForPane(
         client,
-        (p) => p.windowName === "tabtest" && p.cwd.includes("a\\b\tc"),
+        (p) =>
+          p.windowName === "tabtest" &&
+          running(p)?.cwd?.includes("a\\b\tc") === true,
       );
     } finally {
       rmSync(weirdDir, { recursive: true, force: true });
@@ -1332,7 +1359,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
       const pane = await waitForPane(
         client,
-        (p) => p.paneId === created.paneId && p.cwd === cwd,
+        (p) => p.paneId === created.paneId && running(p)?.cwd === cwd,
       );
       expect(pane).toMatchObject({
         sessionName: target,
@@ -1415,7 +1442,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
 
       await waitForPane(
         client,
-        (p) => p.paneId === paneId && p.cwd === sessionDir,
+        (p) => p.paneId === paneId && running(p)?.cwd === sessionDir,
       );
     } finally {
       rmSync(sessionDir, { recursive: true, force: true });
@@ -1449,8 +1476,8 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           client,
           (p) =>
             p.paneId === paneId &&
-            p.cwd === cwd &&
-            p.currentCommand === "sleep",
+            running(p)?.cwd === cwd &&
+            running(p)?.currentCommand === "sleep",
         );
       } finally {
         rmSync(cwd, { recursive: true, force: true });
@@ -1492,9 +1519,9 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
         sessionId,
         command: "sleep 60",
       });
-      const { pid } = await waitForPane(
+      const { process: before } = await waitForPane(
         client,
-        (p) => p.paneId === paneId && p.currentCommand === "sleep",
+        (p) => p.paneId === paneId && running(p)?.currentCommand === "sleep",
       );
 
       for (const command of ["sleep 61", "-k"]) {
@@ -1504,7 +1531,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       }
 
       const after = await waitForPane(client, (p) => p.paneId === paneId);
-      expect(after).toMatchObject({ pid, currentCommand: "sleep" });
+      expect(after.process).toEqual(before);
     },
     15000,
   );
@@ -1544,6 +1571,10 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
         await expect(paneCwd(client, paneId)).rejects.toBeInstanceOf(
           PaneCwdUnavailableError,
         );
+        const listed = await listPanes(client);
+        expect(listed.find((p) => p.paneId === paneId)?.process).toEqual({
+          state: "empty",
+        });
 
         await respawnPane(client, paneId, {
           command: `sh -c 'echo "E=[$NW_E]"; exec sleep 60'`,
@@ -1556,8 +1587,8 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
           client,
           (p) =>
             p.paneId === paneId &&
-            p.cwd === cwd &&
-            p.currentCommand === "sleep",
+            running(p)?.cwd === cwd &&
+            running(p)?.currentCommand === "sleep",
         );
       } finally {
         rmSync(cwd, { recursive: true, force: true });
@@ -1628,14 +1659,14 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
-    // tmux can report the running command before its path ("" = no path
+    // tmux can report the running command before its path (null = no path
     // yet, as paneCwd's PaneCwdUnavailableError below), so wait past both.
     const pane = await waitForPane(
       client,
       (p) =>
         p.paneId === created.paneId &&
-        p.currentCommand === "sleep" &&
-        p.cwd !== "",
+        running(p)?.currentCommand === "sleep" &&
+        typeof running(p)?.cwd === "string",
     );
     const fallback = realpathSync(
       RUNNING_TMUX_VERSION !== null &&
@@ -1643,7 +1674,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
         ? process.cwd()
         : homedir(),
     );
-    expect(pane.cwd).toBe(fallback);
+    expect(running(pane)?.cwd).toBe(fallback);
   }, 15000);
 
   // No waitForPane here: on 3.7 any path paneCwd reads is the settled one, so

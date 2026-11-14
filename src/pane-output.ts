@@ -4,11 +4,13 @@
 
 import type {
   NewWindowResult,
+  PaneProcessState,
   PaneRecord,
   SessionRecord,
   WindowRecord,
 } from "./protocol/types.js";
 import { latin1ToBytes } from "./protocol/byte-codec.js";
+import { parseUint } from "./protocol/uint.js";
 
 // [LAW:types-are-the-program] BytesSink is the byte contract; PaneScope
 //   encodes membership as a value (a discriminated union), not as a method.
@@ -927,9 +929,29 @@ function decodeField(latin1Field: string): string {
 
 // tmux's #{session_id}/#{window_id}/#{pane_id} format variables are always
 // sigil-prefixed ($N / @N / %N respectively — see SPEC.md and
-// parsePaneListLine's regex below); Number() on the raw field is NaN.
-function parseSigilId(field: string): number {
-  return Number(field.slice(1));
+// parsePaneListLine's regex above).
+function parseSigilId(
+  sigil: "$" | "@" | "%",
+  field: string,
+): number | undefined {
+  return field.startsWith(sigil) ? parseUint(field.slice(1)) : undefined;
+}
+
+// The tab-separated fields of one record line, or null when it does not have
+// `count` of them. A reply line can keep a trailing `\r` (see `parser.ts`'s
+// `feed()`); it is dropped here, once, so no field parser meets it.
+function recordFields(line: string, count: number): string[] | null {
+  const fields = line.replace(/\r*$/, "").split("\t");
+  return fields.length === count ? fields : null;
+}
+
+// [LAW:parse-dont-validate] A record whose every field parsed, or null: a
+// field parser answers undefined for a value it cannot read, and one such
+// field makes the whole line unreadable, never a record holding NaN.
+function completeRecord<T extends object>(fields: {
+  readonly [K in keyof T]: T[K] | undefined;
+}): T | null {
+  return Object.values(fields).includes(undefined) ? null : (fields as T);
 }
 
 // Reverses protocol/encoder.ts's `escapeFreeTextField`: a backslash-prefixed
@@ -970,45 +992,70 @@ function unescapeFreeTextField(field: string): string {
  * `#{session_id} #{session_name} #{window_id} #{window_name}
  * #{window_width} #{window_height}`.
  *
- * Returns null for an unparseable line (trailing blank, unexpected field
- * count) — the caller filters, matching `parsePaneListLine`'s discipline.
+ * Returns null for a line it cannot read: a field count other than six, or
+ * an id or size that is not an unsigned integer.
  */
 export function parseWindowRecordLine(line: string): WindowRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 6) return null;
+  const fields = recordFields(line, 6);
+  if (fields === null) return null;
   const [sessionId, sessionName, windowId, windowName, width, height] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  return completeRecord<WindowRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowId: parseSigilId(windowId),
+    windowId: parseSigilId("@", windowId),
     windowName: decodeField(windowName),
-    width: Number(width),
-    height: Number(height),
-  };
+    width: parseUint(width),
+    height: parseUint(height),
+  });
+}
+
+// [LAW:types-are-the-program] The one place tmux's stand-ins for a pane with
+// no process (an empty pid and path, a dead pane's stale pid and command)
+// become a state: `#{pane_dead}` says dead, an empty pid with it unset says
+// the pane never had a process. Anything else is an unreadable line.
+function parsePaneProcess(
+  dead: string,
+  pid: string,
+  cwd: string,
+  currentCommand: string,
+): PaneProcessState | undefined {
+  if (dead === "1") return { state: "dead" };
+  if (dead !== "0") return undefined;
+  if (pid === "") return { state: "empty" };
+  const runningPid = parseUint(pid);
+  return runningPid === undefined
+    ? undefined
+    : {
+        state: "running",
+        pid: runningPid,
+        cwd: cwd === "" ? null : decodeField(unescapeFreeTextField(cwd)),
+        currentCommand: decodeField(currentCommand),
+      };
 }
 
 /**
  * Parse one line from the fixed, library-owned `list-panes -a -F '...'`
  * format built by `listPanesCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{window_id} #{window_name} #{pane_id}
- * #{pane_current_path} #{pane_pid} #{pane_start_command}
+ * #{pane_dead} #{pane_current_path} #{pane_pid} #{pane_start_command}
  * #{pane_current_command} #{pane_width} #{pane_height}`, with
  * `pane_current_path` backslash-escaped by the encoder (see
  * `escapeFreeTextField` there) so a literal tab or backslash in the cwd
  * cannot desync this split.
  *
- * Returns null for an unparseable line, same discipline as
- * `parseWindowRecordLine`.
+ * Returns null for a line it cannot read, as `parseWindowRecordLine` does,
+ * and for a `#{pane_dead}`/`#{pane_pid}` pair that names no process state.
  */
 export function parsePaneRecordLine(line: string): PaneRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 11) return null;
+  const fields = recordFields(line, 12);
+  if (fields === null) return null;
   const [
     sessionId,
     sessionName,
     windowId,
     windowName,
     paneId,
+    dead,
     cwd,
     pid,
     startCommand,
@@ -1016,19 +1063,17 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     width,
     height,
   ] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  return completeRecord<PaneRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowId: parseSigilId(windowId),
+    windowId: parseSigilId("@", windowId),
     windowName: decodeField(windowName),
-    paneId: parseSigilId(paneId),
-    cwd: decodeField(unescapeFreeTextField(cwd)),
-    pid: Number(pid),
+    paneId: parseSigilId("%", paneId),
+    process: parsePaneProcess(dead, pid, cwd, currentCommand),
     startCommand: decodeField(startCommand),
-    currentCommand: decodeField(currentCommand),
-    width: Number(width),
-    height: Number(height),
-  };
+    width: parseUint(width),
+    height: parseUint(height),
+  });
 }
 
 /**
@@ -1041,10 +1086,13 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
 export function parseNewWindowReply(
   lines: readonly string[],
 ): NewWindowResult | null {
-  const match =
-    lines.length === 1 ? /^(@\d+)\t(%\d+)\r*$/.exec(lines[0]) : null;
-  if (match === null) return null;
-  return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
+  const fields = lines.length === 1 ? recordFields(lines[0], 2) : null;
+  if (fields === null) return null;
+  const [windowId, paneId] = fields;
+  return completeRecord<NewWindowResult>({
+    windowId: parseSigilId("@", windowId),
+    paneId: parseSigilId("%", paneId),
+  });
 }
 
 /**
@@ -1064,25 +1112,21 @@ export function parsePaneCwdReply(lines: readonly string[]): string | null {
  * format built by `listSessionsCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{session_windows} #{session_attached}`.
  *
- * Returns null for an unparseable line, same discipline as
- * `parseWindowRecordLine`/`parsePaneRecordLine`.
+ * Returns null for a line it cannot read, as `parseWindowRecordLine` does.
  *
  * `#{session_attached}` is tmux's count of attached clients (0/1/2/...), not
  * a boolean flag, so `attached` is any non-zero count rather than an
- * `=== "1"` check. Compared via `Number()`, not string equality, so a
- * trailing `\r` surviving on this field (response-block output no longer
- * strips it, since raw pane-capture bytes need it — see `parser.ts`'s
- * `feed()`) tolerates the same way `windowCount` already does, instead of
- * flipping an unattached session to attached.
+ * `=== "1"` check.
  */
 export function parseSessionRecordLine(line: string): SessionRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 4) return null;
+  const fields = recordFields(line, 4);
+  if (fields === null) return null;
   const [sessionId, sessionName, windowCount, attached] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  const attachedCount = parseUint(attached);
+  return completeRecord<SessionRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowCount: Number(windowCount),
-    attached: Number(attached) !== 0,
-  };
+    windowCount: parseUint(windowCount),
+    attached: attachedCount === undefined ? undefined : attachedCount !== 0,
+  });
 }

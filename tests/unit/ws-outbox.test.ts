@@ -278,10 +278,8 @@ describe("Outbox — settle", () => {
     windowId: 2,
     windowName: "w",
     paneId: 3,
-    cwd: "/tmp",
-    pid: 42,
+    process: { state: "running", pid: 42, cwd: "/tmp", currentCommand: "zsh" },
     startCommand: "",
-    currentCommand: "zsh",
     width: 80,
     height: 24,
   };
@@ -302,6 +300,30 @@ describe("Outbox — settle", () => {
     await expect(p).resolves.toEqual([pane]);
   });
 
+  it("resolves each pane process state, a running one with no cwd included, with only its declared fields", async () => {
+    const outbox = new Outbox(() => true);
+    const p = outbox.enqueue("r1", "listPanes", "f", ms(1000));
+    const states = [
+      { state: "running", pid: 42, cwd: null, currentCommand: "zsh" },
+      { state: "dead" },
+      { state: "empty" },
+    ];
+    outbox.settle(
+      received({
+        k: "result",
+        id: "r1",
+        ok: true,
+        response: states.map((s) => ({ ...pane, process: { ...s, pid: 7 } })),
+      }),
+    );
+    await expect(p).resolves.toEqual(
+      states.map((s) => ({
+        ...pane,
+        process: s.state === "running" ? { ...s, pid: 7 } : s,
+      })),
+    );
+  });
+
   it.each([
     [
       "execute",
@@ -310,8 +332,18 @@ describe("Outbox — settle", () => {
     ],
     [
       "listPanes",
-      [pane, { ...pane, pid: undefined }],
-      "result(listPanes).response[1].pid must be a number",
+      [pane, { ...pane, process: { ...pane.process, pid: "42" } }],
+      "result(listPanes).response[1].process(running).pid must be a number",
+    ],
+    [
+      "listPanes",
+      [{ ...pane, process: { ...pane.process, cwd: 0 } }],
+      "result(listPanes).response[0].process(running).cwd must be a string or null",
+    ],
+    [
+      "listPanes",
+      [{ ...pane, process: { state: "exited" } }],
+      "result(listPanes).response[0].process.state",
     ],
     [
       "listWindows",

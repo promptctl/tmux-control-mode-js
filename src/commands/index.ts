@@ -77,35 +77,41 @@ export { PaneAction };
 export type { NewWindowPlacement, PaneProcess, SplitOptions };
 
 // [LAW:one-source-of-truth] The command string lives in encoder.ts, the line
-// grammar lives in pane-output.ts; this function is pure dispatch + filter,
-// same as every other free function here. Structured records, never a raw
+// grammar lives in pane-output.ts; this function is pure dispatch, same as
+// every other free function here. Structured records, never a raw
 // CommandResponse for the caller to parse — that parsing is exactly what
 // cc-tmux-lifeboat's founding doc forbids downstream.
-export async function listWindows(
+// [LAW:no-silent-failure] One line the parser cannot read rejects the whole
+// list: a skipped line would read as one record fewer, which the caller could
+// not tell from a correct list.
+async function listRecords<T>(
+  client: TmuxConnection,
+  command: string,
+  parseLine: (line: string) => T | null,
+): Promise<readonly T[]> {
+  const response = await client.execute(command);
+  const unreadable = (): never => {
+    throw new TmuxReplyFormatError(command, response.output);
+  };
+  return response.output.map((line) => parseLine(line) ?? unreadable());
+}
+
+export function listWindows(
   client: TmuxConnection,
 ): Promise<readonly WindowRecord[]> {
-  const response = await client.execute(listWindowsCommand());
-  return response.output
-    .map(parseWindowRecordLine)
-    .filter((record): record is WindowRecord => record !== null);
+  return listRecords(client, listWindowsCommand(), parseWindowRecordLine);
 }
 
-export async function listPanes(
+export function listPanes(
   client: TmuxConnection,
 ): Promise<readonly PaneRecord[]> {
-  const response = await client.execute(listPanesCommand());
-  return response.output
-    .map(parsePaneRecordLine)
-    .filter((record): record is PaneRecord => record !== null);
+  return listRecords(client, listPanesCommand(), parsePaneRecordLine);
 }
 
-export async function listSessions(
+export function listSessions(
   client: TmuxConnection,
 ): Promise<readonly SessionRecord[]> {
-  const response = await client.execute(listSessionsCommand());
-  return response.output
-    .map(parseSessionRecordLine)
-    .filter((record): record is SessionRecord => record !== null);
+  return listRecords(client, listSessionsCommand(), parseSessionRecordLine);
 }
 
 // [LAW:one-source-of-truth] `response.output` is already one latin1-container

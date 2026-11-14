@@ -6,6 +6,25 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
+  `currentCommand` move into `process`, a `PaneProcessState` (exported from
+  `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
+  currentCommand }`, `{ state: "dead" }` for a pane `remain-on-exit` kept
+  after its process exited, or `{ state: "empty" }` for a pane that never had
+  one (`newEmptyWindow()`). Before, a pane with no process read as `pid: 0`
+  and `cwd: ""`, its `currentCommand` the default shell's name or the exited
+  command, and on tmux 3.7 a dead pane kept the exited process's pid. A
+  running pane's `cwd` is `null` while tmux cannot read it yet, where it was
+  `""`. Read `p.process.pid` after checking `p.process.state === "running"`.
+  The bridge wire carries the new shape; upgrade server and client together.
+- `listWindows`, `listPanes` and `listSessions` reject with
+  `TmuxReplyFormatError` (carrying the command and the reply) when a reply
+  line does not parse, where 0.2.0 skipped the line and a pane list read as
+  one pane fewer. An id, size or count that is not an unsigned integer no
+  longer parses, where it was `NaN`.
+
 ### Fixed
 
 - `WebSocketTmuxClient` now receives `unsolicited-response` and

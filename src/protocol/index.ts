@@ -41,6 +41,7 @@ export type {
   TmuxMessage,
   CommandResponse,
   UnsolicitedResponseMessage,
+  PaneProcessState,
   PaneRecord,
   WindowRecord,
 } from "./types.js";

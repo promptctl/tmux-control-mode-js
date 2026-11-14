@@ -439,9 +439,35 @@ export interface WindowRecord {
 }
 
 /**
+ * What a pane's process is doing, as tmux reports it. Not `PaneProcess`,
+ * which is what a pane is asked to run.
+ *
+ * - `running`: the pane's process. `cwd` is null while tmux cannot read the
+ *   process's cwd (a new pane whose child has not yet taken its pty), the
+ *   same moment `paneCwd()` rejects with `PaneCwdUnavailableError`.
+ * - `dead`: its process exited and `remain-on-exit` kept the pane
+ *   (`#{pane_dead}`); `respawnPane()` starts a new one.
+ * - `empty`: the pane never had a process (`newEmptyWindow()`,
+ *   `split-window ''`, tmux 3.8+).
+ *
+ * Only `running` has a pid, cwd and command: for the other two tmux reports
+ * none, or the exited process's (a dead pane's pid on tmux 3.7, its command
+ * on every version), or the default shell's name for an empty pane.
+ */
+export type PaneProcessState =
+  | {
+      readonly state: "running";
+      readonly pid: number;
+      readonly cwd: string | null;
+      readonly currentCommand: string;
+    }
+  | { readonly state: "dead" }
+  | { readonly state: "empty" };
+
+/**
  * One pane from `listPanes()` — a structured record, decoded the same way as
- * {@link WindowRecord}. `cwd`, `startCommand`, `currentCommand` are already
- * decoded to real Unicode text.
+ * {@link WindowRecord}. `startCommand` and the running process's `cwd` and
+ * `currentCommand` are already decoded to real Unicode text.
  */
 export interface PaneRecord {
   readonly sessionId: number;
@@ -449,10 +475,8 @@ export interface PaneRecord {
   readonly windowId: number;
   readonly windowName: string;
   readonly paneId: number;
-  readonly cwd: string;
-  readonly pid: number;
+  readonly process: PaneProcessState;
   readonly startCommand: string;
-  readonly currentCommand: string;
   readonly width: number;
   readonly height: number;
 }

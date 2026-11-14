@@ -128,7 +128,8 @@ function escapeFreeTextField(expr: string): string {
 export function listPanesCommand(): string {
   return (
     "list-panes -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
-    `#{window_name}\t#{pane_id}\t${escapeFreeTextField("#{pane_current_path}")}\t` +
+    "#{window_name}\t#{pane_id}\t#{pane_dead}\t" +
+    `${escapeFreeTextField("#{pane_current_path}")}\t` +
     "#{pane_pid}\t#{pane_start_command}\t#{pane_current_command}\t" +
     "#{pane_width}\t#{pane_height}'"
   );
