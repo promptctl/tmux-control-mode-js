@@ -65,8 +65,20 @@ All notable changes to this project are documented here. Format follows
   without splitting a character. Both halves of the bridge use it; the
   server used to cut at 123 characters, which a non-ASCII reason could
   overrun.
+- A `shutdown-requested` bridge observability event, one per `shutdown`
+  call: the `drainMs` it asked for, the `deadlineMs` the drain enforces, and
+  whether it `joined` a drain already in flight.
 
 ### Fixed
+
+- `WebSocketBridge.shutdown` called while a drain is in flight joins that
+  drain: it settles with the first call, and peers are terminated at the
+  deadline their `draining` frame named. Before, a second call with a
+  shorter `drainMs` terminated every peer at its own, earlier bound. A peer
+  still in its handshake when the drain starts is refused with
+  `BRIDGE_CLOSED` and close code 1001, as a connection arriving during the
+  drain is; before, it was welcomed after the drain began, never sent a
+  deadline, and terminated at the drain's end.
 
 - Under `ws`, a socket `WebSocketTmuxClient` has let go no longer reaches
   the client. Before, `close()` followed by `connect()` let the first

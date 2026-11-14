@@ -113,6 +113,10 @@ const DEFAULTS = Object.freeze({
   maxInflight: 64,
 }) satisfies Record<string, number>;
 
+// The reason a draining bridge gives every peer it refuses, before or
+// mid-handshake.
+const SHUTTING_DOWN = "bridge is shutting down";
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -236,14 +240,16 @@ export function createWebSocketBridge(
   const connections = new Set<Connection>();
   // [LAW:one-source-of-truth] The drain in flight is the bridge's draining
   // state: set once, by the first shutdown, and never a second race.
-  let drain: Promise<void> | undefined;
+  let drain:
+    | { readonly deadlineMs: number; readonly settled: Promise<void> }
+    | undefined;
 
   async function handleConnection(
     ws: ServerWebSocketLike,
     request?: UpgradeRequest,
   ): Promise<void> {
     if (drain) {
-      sendFatal(ws, "BRIDGE_CLOSED", "bridge is shutting down");
+      sendFatal(ws, "BRIDGE_CLOSED", SHUTTING_DOWN);
       ws.close(GOING_AWAY, "shutting down");
       return;
     }
@@ -263,21 +269,36 @@ export function createWebSocketBridge(
   // left holding a deadline in the past.
   // [LAW:no-ambient-temporal-coupling] A later call joins the first call's
   // drain, so the deadline peers were told is the one the bridge enforces.
+  // The drain is recorded before any peer is told, so anything a peer's
+  // notice reaches synchronously (a socket's send, an onEvent hook) already
+  // sees the bridge draining. Telling peers is idempotent per connection, so
+  // every call tells them the same deadline.
   async function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
     const bound = parseDurationMs("drainMs", drainMs);
-    drain ??= drainWithin(bound);
-    return drain;
+    const joined = drain !== undefined;
+    drain ??= { deadlineMs: Date.now() + bound, settled: settleWithin(bound) };
+    // [LAW:nothing-unseen] A joined call's bound is set aside; the event says
+    // so, beside the deadline that does hold.
+    emitObservability(opts, {
+      kind: "shutdown-requested",
+      drainMs: bound,
+      deadlineMs: drain.deadlineMs,
+      joined,
+    });
+    for (const conn of connections) conn.beginDrain(drain.deadlineMs);
+    return drain.settled;
   }
 
-  async function drainWithin(bound: number): Promise<void> {
-    const deadlineMs = Date.now() + bound;
-    for (const conn of connections) {
-      conn.beginDrain(deadlineMs);
-    }
+  async function settleWithin(bound: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       allClosed(connections),
-      new Promise<void>((r) => setTimeout(r, bound).unref?.()),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, bound);
+        timer.unref?.();
+      }),
     ]);
+    clearTimeout(timer);
     for (const conn of connections) conn.terminate();
   }
 
@@ -1167,18 +1188,31 @@ class Connection {
   // Drain / terminate
   // -------------------------------------------------------------------------
   beginDrain(deadlineMs: number): void {
-    if (this.state.kind !== "running") return;
-    // Carry client/ctx/bridge/peer forward into the draining variant —
-    // they're still needed for in-flight calls and final disposal.
-    this.state = {
-      kind: "draining",
-      client: this.state.client,
-      ctx: this.state.ctx,
-      bridge: this.state.bridge,
-      peer: this.state.peer,
-      deadlineMs,
-    };
-    this.sendFrame({ k: "draining", deadlineMs });
+    switch (this.state.kind) {
+      // Never welcomed, so there is no work to drain and no deadline to
+      // keep: refused as a connection arriving now is. onHello's teardown
+      // check unwinds whatever it builds before it could commit to running.
+      case "pending-hello":
+      case "handshaking":
+        this.sendFatalAndClose("BRIDGE_CLOSED", SHUTTING_DOWN, GOING_AWAY);
+        return;
+      case "running":
+        // Carry client/ctx/bridge/peer forward into the draining variant —
+        // they're still needed for in-flight calls and final disposal.
+        this.state = {
+          kind: "draining",
+          client: this.state.client,
+          ctx: this.state.ctx,
+          bridge: this.state.bridge,
+          peer: this.state.peer,
+          deadlineMs,
+        };
+        this.sendFrame({ k: "draining", deadlineMs });
+        return;
+      case "draining":
+      case "closed":
+        return;
+    }
   }
 
   terminate(): void {
@@ -1348,12 +1382,7 @@ class Connection {
   }
 
   private emit(ev: BridgeObservabilityEvent): void {
-    if (this.opts.onEvent === undefined) return;
-    try {
-      this.opts.onEvent(ev);
-    } catch {
-      // Swallow — observability hooks must never break the connection.
-    }
+    emitObservability(this.opts, ev);
   }
 
   // [LAW:composability] [LAW:carrying-cost] Single place for "dispose the
@@ -1434,6 +1463,20 @@ function sendFatal(
     );
   } catch {
     // ignore
+  }
+}
+
+// [LAW:single-enforcer] The one place an onEvent hook is called, for the
+// bridge's own events and every connection's.
+function emitObservability(
+  opts: WebSocketBridgeOptions,
+  ev: BridgeObservabilityEvent,
+): void {
+  if (opts.onEvent === undefined) return;
+  try {
+    opts.onEvent(ev);
+  } catch {
+    // Swallow — observability hooks must never break the bridge.
   }
 }
 
