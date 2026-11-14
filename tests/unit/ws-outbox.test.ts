@@ -145,26 +145,6 @@ describe("Outbox — settle", () => {
     const outbox = new Outbox(() => true);
     expect(() => outbox.settle(okResult("ghost"))).not.toThrow();
   });
-
-  it("a result for a call never sent is a violation, and the call stays pending", async () => {
-    const sent: string[] = [];
-    let ready = false;
-    const outbox = new Outbox((frame) => {
-      if (!ready) return false;
-      sent.push(frame);
-      return true;
-    });
-    const p = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
-    const violation = outbox.settle(okResult("r1"));
-    expect(violation).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
-    expect(violation?.message).toContain("r1");
-    // Still queued: it transmits on flush and its real result settles it.
-    ready = true;
-    outbox.flush();
-    expect(sent).toEqual(["frame-1"]);
-    expect(outbox.settle(okResult("r1"))).toBeUndefined();
-    await expect(p).resolves.toMatchObject({ output: ["out-r1"] });
-  });
 });
 
 describe("Outbox — timeout", () => {

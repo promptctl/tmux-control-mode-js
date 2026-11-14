@@ -93,14 +93,6 @@ export class Outbox {
   settle(frame: ReceivedResultFrame): BridgeError | undefined {
     const p = this.pending.get(frame.id);
     if (p === undefined) return undefined;
-    // A call the server was never sent cannot be answered. The entry stays
-    // pending, to be sent or drained like any other.
-    if (!p.transmitted) {
-      return new BridgeError(
-        "BRIDGE_PROTOCOL_ERROR",
-        `result for call ${frame.id}, which was never sent`,
-      );
-    }
     this.pending.delete(frame.id);
     clearTimeout(p.timer);
     // [LAW:parse-dont-validate] The frame parser cannot see the method; this

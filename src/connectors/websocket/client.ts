@@ -549,10 +549,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
     // Every socket event is one step.
     ws.addEventListener("open", () => this.delivery.step(this.onOpen), opts);
+    // [LAW:single-enforcer] WHATWG WebSockets delivers a message only while
+    //   the socket is OPEN ("if ready state is not OPEN, then return"); ws
+    //   keeps delivering in CLOSING. This is the one place the client holds
+    //   every socket to the standard's rule, so a socket it has begun closing
+    //   says nothing more to it. A delivery rule, not a staleness check.
     ws.addEventListener(
       "message",
-      (event: { data: unknown }) =>
-        this.delivery.step(this.onMessage, event.data),
+      (event: { data: unknown }) => {
+        if (ws.readyState === WEBSOCKET_OPEN) {
+          this.delivery.step(this.onMessage, event.data);
+        }
+      },
       opts,
     );
     ws.addEventListener(
@@ -578,59 +586,21 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // [LAW:single-enforcer] The one place an inbound frame meets the connection
   //   phase. The welcome is the only frame that moves a connection out of
   //   "connecting", so until it lands the client reads a handshake, and after
-  //   it a stream.
+  //   it a stream; the phase's reader decides which frames it admits and what
+  //   a fault does.
   private readonly onMessage = (data: unknown): void => {
-    switch (this.currentConnectionState.status) {
-      case "connecting":
-        this.onHandshakeMessage(data);
-        return;
-      case "ready":
-      case "reconnecting":
-      case "closed":
-        this.onStreamMessage(data);
-        return;
-    }
-  };
-
-  // The server sends its welcome in the step that starts the connection and
-  // nothing before it but a fatal error (server.ts), so any other frame here
-  // is a protocol fault, and a fault in the handshake fails the connection.
-  private onHandshakeMessage(data: unknown): void {
-    if (typeof data !== "string") {
-      this.failHandshake(
-        new BridgeError(
-          "BRIDGE_PROTOCOL_ERROR",
-          `${Object.prototype.toString.call(data)} frame before welcome`,
-        ),
-      );
-      return;
-    }
-    let frame: ReceivedServerFrame;
+    const reader =
+      WebSocketTmuxClient.readers[this.currentConnectionState.status];
+    let frame: InboundFrame;
     try {
-      frame = parseServerFrame(data);
+      frame = decodeInbound(data);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.failHandshake(toBridgeProtocolError(err));
+      reader.fault(this, toBridgeProtocolError(err));
       return;
     }
-    switch (frame.k) {
-      case "welcome":
-      case "error":
-        this.handleFrame(frame);
-        return;
-      case "event":
-      case "result":
-      case "pong":
-      case "draining":
-        this.failHandshake(
-          new BridgeError(
-            "BRIDGE_PROTOCOL_ERROR",
-            `${frame.k} frame before welcome`,
-          ),
-        );
-        return;
-    }
-  }
+    reader.frames[frame.k](this, frame as never);
+  };
 
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
   //   lastError, and the close can run finalize synchronously, which reads it
@@ -645,87 +615,54 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.ws?.close(4002, truncateCloseReason(err.toPayload().message));
   }
 
-  // A bad frame on an open stream is reported, and the connection stays up.
-  private onStreamMessage(data: unknown): void {
-    if (data instanceof ArrayBuffer) {
-      this.onBinary(new Uint8Array(data));
-      return;
-    }
-    if (ArrayBuffer.isView(data)) {
-      this.onBinary(
-        new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-      );
-      return;
-    }
-    if (typeof data === "string") {
-      this.onText(data);
-      return;
-    }
-    this.emitError(
-      new BridgeError(
-        "BRIDGE_PROTOCOL_ERROR",
-        `unexpected frame type: ${Object.prototype.toString.call(data)}`,
-      ),
-    );
-  }
-
-  private onBinary(buf: Uint8Array): void {
-    if (!isPaneOutputFrame(buf)) {
-      this.emitError(
-        new BridgeError("BRIDGE_PROTOCOL_ERROR", "unknown binary frame magic"),
-      );
-      return;
-    }
-    let msg: TmuxMessage;
-    try {
-      msg = decodePaneOutput(buf);
-    } catch (err) {
-      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.emitError(toBridgeProtocolError(err));
-      return;
-    }
-    this.dispatchEvent(msg);
-  }
-
-  private onText(raw: string): void {
-    let frame: ReceivedServerFrame;
-    try {
-      frame = parseServerFrame(raw);
-    } catch (err) {
-      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.emitError(toBridgeProtocolError(err));
-      return;
-    }
-    this.handleFrame(frame);
-  }
-
-  // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
-  // ReceivedServerFrame is what decides which handler runs. Mapped-type table forces
-  // exhaustiveness — same shape as VALIDATORS in ../rpc.ts and the
-  // CLIENT_FRAME_HANDLERS table on the server side.
-  private handleFrame(frame: ReceivedServerFrame): void {
-    WebSocketTmuxClient.frameHandlers[frame.k](this, frame as never);
-  }
-
-  // [LAW:dataflow-not-control-flow] One entry per ServerFrame variant; the
-  //   mapped type forces exhaustiveness, so a new ServerFrame kind without a
-  //   handler is a compile-time error, not a runtime "unknown kind" branch.
-  // [LAW:single-enforcer] handleFrame is the only call site. Declared in the
-  //   class so the handlers it calls stay private: each runs inside a socket
+  // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
+  //   over every InboundFrame kind, so a new kind is a compile-time error in
+  //   both phases rather than a runtime "unknown kind" branch. Declared in the
+  //   class so the handlers they call stay private: each runs inside a socket
   //   event's step and posts to it.
-  private static readonly frameHandlers: ServerFrameHandlers = Object.assign(
-    Object.create(null) as ServerFrameHandlers,
-    {
-      welcome: (self, f: WelcomeFrame) => self.onWelcome(f),
+  // The handshake: the server sends its welcome in the step that starts the
+  //   connection and nothing before it but a fatal error (server.ts), so any
+  //   other frame is a protocol fault, and a fault fails the connection.
+  private static readonly handshake: PhaseReader = {
+    fault: (self, err) => self.failHandshake(err),
+    frames: {
+      welcome: (self, f) => self.onWelcome(f),
+      error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
+      event: (self, f) => self.failHandshake(outOfPhase(f.k, "before welcome")),
+      output: (self, f) =>
+        self.failHandshake(outOfPhase(f.k, "before welcome")),
+      result: (self, f) =>
+        self.failHandshake(outOfPhase(f.k, "before welcome")),
+      pong: (self, f) => self.failHandshake(outOfPhase(f.k, "before welcome")),
+      draining: (self, f) =>
+        self.failHandshake(outOfPhase(f.k, "before welcome")),
+    },
+  };
+
+  // The stream: a bad frame is reported, and the connection stays up.
+  private static readonly stream: PhaseReader = {
+    fault: (self, err) => self.emitError(err),
+    frames: {
+      welcome: (self, f) => self.emitError(outOfPhase(f.k, "after welcome")),
+      error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
       // Synthetic events carry no topology or bytes, so they bypass the router.
       event: (self, f) =>
         isTmuxMessage(f.msg) ? self.dispatchEvent(f.msg) : self.announce(f.msg),
-      result: (self, f: ReceivedResultFrame) => self.onResult(f),
+      output: (self, f) => self.dispatchEvent(f.msg),
+      result: (self, f) => self.onResult(f),
       pong: (self, f) => self.heartbeat?.onPong(f.id),
       draining: (self, f) => self.onDraining(f.deadlineMs),
-      error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
-    } satisfies ServerFrameHandlers,
-  );
+    },
+  };
+
+  private static readonly readers: Readonly<
+    Record<ConnectionState["status"], PhaseReader>
+  > = {
+    connecting: WebSocketTmuxClient.handshake,
+    ready: WebSocketTmuxClient.stream,
+    reconnecting: WebSocketTmuxClient.stream,
+    closed: WebSocketTmuxClient.stream,
+  };
 
   private onWelcome(frame: WelcomeFrame): void {
     this.serverLimits = frame.limits;
@@ -1021,10 +958,49 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 }
 
-// Per-kind ServerFrame handlers: WebSocketTmuxClient.frameHandlers.
-type ServerFrameHandlers = {
-  readonly [K in ReceivedServerFrame["k"]]: (
-    self: WebSocketTmuxClient,
-    frame: Extract<ReceivedServerFrame, { k: K }>,
-  ) => void;
-};
+/** One message the socket delivered, decoded: a text frame, or the pane
+ *  output a binary frame carries. */
+type InboundFrame =
+  | ReceivedServerFrame
+  | { readonly k: "output"; readonly msg: TmuxMessage };
+
+// [LAW:parse-dont-validate] The one decoder of what the socket delivers, for
+//   both phases. Anything that is not a frame throws a BridgeError.
+function decodeInbound(data: unknown): InboundFrame {
+  if (typeof data === "string") return parseServerFrame(data);
+  const buf =
+    data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        : undefined;
+  if (buf === undefined) {
+    throw new BridgeError(
+      "BRIDGE_PROTOCOL_ERROR",
+      `unexpected frame type: ${Object.prototype.toString.call(data)}`,
+    );
+  }
+  if (!isPaneOutputFrame(buf)) {
+    throw new BridgeError(
+      "BRIDGE_PROTOCOL_ERROR",
+      "unknown binary frame magic",
+    );
+  }
+  return { k: "output", msg: decodePaneOutput(buf) };
+}
+
+function outOfPhase(kind: InboundFrame["k"], when: string): BridgeError {
+  return new BridgeError("BRIDGE_PROTOCOL_ERROR", `${kind} frame ${when}`);
+}
+
+/** How one connection phase reads what the socket delivers: a handler for
+ *  every frame kind, and what a frame that cannot be decoded does. */
+interface PhaseReader {
+  readonly fault: (self: WebSocketTmuxClient, err: BridgeError) => void;
+  readonly frames: {
+    readonly [K in InboundFrame["k"]]: (
+      self: WebSocketTmuxClient,
+      frame: Extract<InboundFrame, { k: K }>,
+    ) => void;
+  };
+}

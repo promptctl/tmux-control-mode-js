@@ -1558,7 +1558,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     [
       "pane output",
       encodePaneOutput({ paneId: 1, data: new Uint8Array([104, 105]) }).buffer,
-      "ArrayBuffer] frame before welcome",
+      "output frame before welcome",
     ],
   ])(
     "%s before welcome fails the handshake and reaches no listener",
@@ -1623,6 +1623,54 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+    expect(close).not.toHaveBeenCalled();
+    expect(client.connectionState.status).toBe("ready");
+  });
+
+  it("a socket closing after a failed handshake delivers nothing more, so the fault stays the cause", async () => {
+    const { client, ws, errors } = started({ reconnect: true });
+    // ws's close handshake: close() moves to CLOSING, and the close event
+    // waits for the peer's close frame. Frames keep arriving meanwhile.
+    ws.close = () => {
+      ws.readyState = 2;
+    };
+    ws.fire("message", { data: JSON.stringify({ k: "welcome" }) });
+    ws.fire("message", {
+      data: encodeServerFrame({
+        k: "event",
+        msg: { type: "sessions-changed" },
+      }),
+    });
+    ws.fire("message", {
+      data: JSON.stringify({
+        k: "welcome",
+        limits: { ...LIMITS, heartbeatIntervalMs: 1_000 },
+      }),
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("welcome.limits");
+    expect(client.connectionState.status).toBe("connecting");
+
+    ws.readyState = 3;
+    ws.fire("close", { code: 4002, reason: "" });
+    expect(client.connectionState).toMatchObject({
+      status: "reconnecting",
+      lastError: errors[0],
+    });
+    await client.close();
+  });
+
+  it("a second welcome once ready is reported and does not re-run the handshake", () => {
+    const { client, hub, ws, close, errors } = started();
+    hub.welcome();
+    const sentBefore = ws.sent.length;
+    hub.welcome();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("welcome frame after welcome");
+    // No replayed enables, flushed calls or router bootstrap went out.
+    expect(ws.sent).toHaveLength(sentBefore);
     expect(close).not.toHaveBeenCalled();
     expect(client.connectionState.status).toBe("ready");
   });

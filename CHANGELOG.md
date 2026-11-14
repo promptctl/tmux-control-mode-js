@@ -73,8 +73,9 @@ All notable changes to this project are documented here. Format follows
   than a fatal `error` does the same: an event, pane output, a pong, a drain
   notice, or a result, which before could resolve a call the client had not
   yet sent. Once `ready`, a bad frame is still reported and the connection
-  stays up, and a result for a call the client never sent no longer settles
-  it.
+  stays up; a second welcome is reported and no longer re-runs the
+  handshake. Under `ws`, a socket the client has begun closing no longer
+  delivers messages, as a browser's does not.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or
