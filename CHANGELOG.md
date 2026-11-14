@@ -53,7 +53,9 @@ All notable changes to this project are documented here. Format follows
   before a call from outside the client returns, and after the current
   listener returns for a call made from one. Each message tmux sends is one
   transition, so a sink a listener attaches or disposes takes effect from the
-  next message, however the transport split its reads. Before, a
+  next message, however the transport split its reads. A reply a transport
+  delivers synchronously from within `send()`, as `./mock` does, is part of
+  the call that sent it. Before, a
   `WebSocketTmuxClient` callback that closed or reconnected mid-transition
   could leave a heartbeat timer or socket running on a closed client, or
   announce a connection the callback had ended. Listeners hear events in the

@@ -31,9 +31,7 @@ export interface TmuxTransport {
   /** Send a command string to tmux. Never throws; the result is the outcome. */
   send(command: string): SendResult;
 
-  /** Register callback for incoming data chunks. Data arrives on its own
-   *  turn, never from within `send()`: a listener that sends is heard
-   *  before the reply's messages commit. */
+  /** Register callback for incoming data chunks. */
   onData(callback: (chunk: string) => void): void;
 
   /** Register callback for transport close/error. */
