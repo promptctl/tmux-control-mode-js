@@ -83,7 +83,10 @@ All notable changes to this project are documented here. Format follows
   implements, must state whether it accepted the command. Update the
   `send()` return type of a custom transport; `TmuxClient.execute()` rejects
   with the new `TransportSendError` (carrying `reason`) when a send is
-  refused. `SendResult` is exported from `.`.
+  refused. `websocketTransport` refuses a send while its socket is not open,
+  where it used to call `ws.send()` regardless, which throws on a connecting
+  socket and drops the command on a closing one. `SendResult` is exported
+  from `.`.
 - `TmuxClient.detach()` likewise returns `SendResult` instead of `void`, for the
   same reason — a refused detach is now observable instead of silently dropped.
 - `queryTmuxVersion` — and so `requestReport` — rejects with typed errors
@@ -140,11 +143,9 @@ All notable changes to this project are documented here. Format follows
   query with the new `PANE_LIST_FORMAT` (unquoted) and parse a whole reply
   with `parsePaneList`.
 - `TopologyRouter`'s constructor takes a required `reportTopologyError` reporter
-  as its first argument (`new TopologyRouter(reportTopologyError, options?)`).
-  The router is a pure substrate with no emitter, so a failed topology bootstrap
-  is lifted to this seam and the transport adapter performs the emission. The
-  reporter is mandatory by design: a router that silently drops bootstrap
-  failures must not be constructible. External consumers constructing a
+  as its first argument (`new TopologyRouter(reportTopologyError, options?)`),
+  an `(error: Error) => void` the router calls with the `error` of each
+  `topology-error` event. External consumers constructing a
   `TopologyRouter` directly (an advanced path — building a custom transport
   adapter) must supply it. An adapter also calls the new
   `onTransportLost(run)` the moment its connection drops, before it rejects
@@ -157,7 +158,18 @@ All notable changes to this project are documented here. Format follows
   `RpcMethod` (`./websocket` and `./websocket/protocol`: `listSessions`,
   `enableCrossSessionLayoutChange`, `disableCrossSessionLayoutChange`) and
   `ResultFrame` (`./websocket/protocol`: the `ResultTmuxErrorFrame` arm, so
-  `!frame.ok` alone no longer narrows to the frame that has `error`).
+  `!frame.ok` alone no longer narrows to the frame that has `error`). Two
+  frame fields of `./websocket/protocol` are wider the same way:
+  `EventFrame.msg` also carries the `cross-session-layout-*` messages, and
+  `ResultOkFrame.response` is the result of the method that was called — a
+  `CommandResponse`, the records of `listWindows`/`listPanes`/`listSessions`,
+  or `null` for the two cross-session-layout calls — so code that reads
+  `frame.response.output` must narrow first.
+- Two types have new required fields, so code that builds one itself (a
+  fixture, a fake) must supply them: `LayoutChangeMessage` (`layout` and
+  `visibleLayout`; `windowLayoutFields`, from `./protocol`, builds them from
+  the raw strings) and the `connection-closed` `BridgeObservabilityEvent`
+  (`socketEnd`). Both are described under Added.
 
 ### Added
 
@@ -223,7 +235,8 @@ All notable changes to this project are documented here. Format follows
   far) and parsing resumes with the next line. `TmuxParser` exposes the same
   detection as `onProtocolError`; the `ProtocolErrorMessage` type is exported
   from `./protocol`. `'*'` listeners receive the event and `isTmuxMessage` is
-  false for it.
+  false for it. The Electron bridge forwards it to renderers; the WebSocket
+  bridge does not.
 - `topology-error` event (`{ type: "topology-error", error }`) on every
   `TmuxClient`-shaped connection, emitted when the pane table that session-
   and window-scoped sinks route by could not be kept true: a bootstrap
@@ -244,8 +257,7 @@ All notable changes to this project are documented here. Format follows
   for a layout string read any other way. Floating panes (tmux 3.8) are not
   in a layout string and so not in `panes`. The `WindowLayout`,
   `WindowLayoutFields` and `PaneGeometry` types are exported from `.`,
-  `./browser` and `./protocol`. Code that builds a `LayoutChangeMessage`
-  itself must now supply both fields;
+  `./browser` and `./protocol`.
   `windowLayoutFields(windowLayout, windowVisibleLayout, windowFlags)`, from
   `./protocol`, builds the group.
 - Cross-session layout coverage. After
@@ -295,9 +307,10 @@ All notable changes to this project are documented here. Format follows
   `PaneCwdUnavailableError`, `TransportClosedError`, `TransportSendError`,
   `UnrecognizedTmuxVersionError` — where it used to export only
   `UnsupportedTmuxVersionError`, so browser code can classify a rejection
-  with `instanceof`. It also adds `isConnectionGone(error)`, true for
-  `TransportClosedError` and `TransportSendError`: the connection went away,
-  as opposed to a live tmux saying no. Everything else added to `.` in this
+  with `instanceof`. `isConnectionGone(error)`, new on `.` and `./browser`,
+  is true for `TransportClosedError` and `TransportSendError`: the
+  connection went away, as opposed to a live tmux saying no. Everything else
+  added to `.` in this
   release is exported from `./browser` too, except `watchServerArgs`
   (arguments for the Node-only `spawnTmux`), the `SendResult` type and the
   `CrossSessionLayout*Message` types.
@@ -312,7 +325,8 @@ All notable changes to this project are documented here. Format follows
   `TmuxTransport` and drops, corrupts and delays the chunks it delivers to
   the client (`dropRate`, `corruptRate`, `latencyMs: { min, max }`,
   `corruptions`), reproducibly from a `seed`. Commands the client sends pass
-  through untouched. `ManualClock` makes the latency deterministic in tests;
+  through untouched. `ManualClock`, passed as the `clock` option, makes the
+  latency deterministic in tests;
   `planChunk`, `corruptChunk`, `ALL_CORRUPTIONS`, `mulberry32` and
   `randomInt` are exported for building other fuzzers.
 - `./conformance` subpath — `buildConformanceChecks()` returns a list of
@@ -437,14 +451,12 @@ All notable changes to this project are documented here. Format follows
   raises nothing). A hold that overflows is reported as a `topology-error`
   too.
 - A failed topology bootstrap no longer silently starves session/window-scoped
-  byte sinks. Previously the bootstrap's `list-panes -a` rejection was swallowed
-  by a `catch {}`, leaving an empty topology that routed every session/window
+  byte sinks. Previously the bootstrap's `list-panes -a` rejection was
+  swallowed, leaving an empty topology that routed every session/window
   consumer to zero bytes with no error — indistinguishable from a quiet tmux.
-  The failure now surfaces as a `topology-error` event, and the existing
-  event-driven bootstrap triggers make recovery non-terminal. A superseded or
-  post-close bootstrap rejection is suppressed (the newer bootstrap or the
-  `connection-state: closed` event owns that outcome) so the signal stays
-  truthful rather than crying wolf.
+  The failure now surfaces as a `topology-error` event, and the next
+  bootstrap trigger (`session-changed`, a window event, a new session- or
+  window-scoped sink) tries again.
 - The websocket transport reports how the socket really closed. An `error`
   event used to dispatch close at once with the generic `websocket error`,
   discarding the close code that followed (1006, 1001, …); the `close` event
@@ -466,7 +478,8 @@ All notable changes to this project are documented here. Format follows
   further arrived. It is now closed with `BRIDGE_CLOSED` (`upstream tmux
   connection closed (<reason>)`) and the host sees an `upstream-closed`
   event. A `createClient` that returns an already-closed client ends the
-  same way at hello.
+  same way at hello, so a `createClient` that hands one `TmuxClient` to
+  every connection must return a new one once that client has closed.
 - A WebSocket peer that never answers a fatal close is terminated. After
   sending a fatal error and a close frame the bridge used to wait for the
   peer's own close frame with no bound of its own, keeping the connection
@@ -497,19 +510,16 @@ All notable changes to this project are documented here. Format follows
   prefer the close frame's text, so an abnormal close with an empty reason
   blanked the reason the peer had been given.
 - A failed pane resume no longer strands the pane paused in tmux while the
-  bridge's ledger claims it resumed. Previously `bridge-connection`'s
-  `maybeResume` deleted the pane from its paused ledger _before_ the `continue`
-  command settled and swallowed every rejection, so a transient failure on a
-  live pane left it paused in tmux forever — no retry, no signal, the ledger
-  lying that it had resumed. The ledger transition now follows the command's
+  bridge's ledger claims it resumed. Previously the bridge deleted the pane
+  from its paused ledger _before_ the `continue` command settled and
+  swallowed every rejection, so a transient failure on a live pane left it
+  paused in tmux forever — no retry, no signal. The ledger transition now
+  follows the command's
   outcome: on success the pane leaves the ledger; on a connection-gone
   rejection (transport refused/closed — a moot pane on a dead connection) it is
   dropped quietly; on any live-tmux failure (`%error`, corrupted terminator) the
   pane stays paused so the next watermark crossing retries, and the failure is
   surfaced (see the `pane-resume-failed` / `onResumeFailure` additions above).
-  The in-flight resume is guarded by the pane's flow-record identity, so a
-  settling `continue` cannot disturb a re-paused pane from a newer episode
-  (ABA-safe).
 
 ## [0.1.0]
 

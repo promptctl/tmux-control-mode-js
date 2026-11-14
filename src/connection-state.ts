@@ -73,7 +73,9 @@ export interface ReconnectedMessage {
 }
 
 /**
- * Emitted when a topology bootstrap effect (`list-panes -a`) fails.
+ * Emitted when the pane table that session- and window-scoped sinks route by
+ * could not be kept true: a bootstrap (`list-panes -a`) or a window refresh
+ * failed, or output held for unplaced panes overflowed the hold.
  *
  * The pure topology substrate keeps computing — an empty topology table is a
  * representable value — but an empty table cannot silently stand in for a
@@ -94,7 +96,10 @@ export interface ReconnectedMessage {
  */
 export interface TopologyErrorMessage {
   readonly type: "topology-error";
-  /** The error the bootstrap command rejected with, normalized to `Error`. */
+  /**
+   * `message` says which of the three happened; for a failed query, `cause`
+   * is what its command rejected with.
+   */
   readonly error: Error;
 }
 
