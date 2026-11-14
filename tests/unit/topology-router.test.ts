@@ -392,6 +392,36 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     );
   });
 
+  it("reports a runner that throws synchronously, and holds nothing for it afterwards", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    let down = true;
+    router.onTransportReady((cmd) => {
+      if (down) throw new Error("runner down");
+      return Promise.resolve(
+        makeOkResponse(cmd.includes("list-panes -a") ? ["%1 @10 $100"] : []),
+      );
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology bootstrap failed: runner down",
+    ]);
+    // No query is outstanding, so early output for an unplaced pane is not
+    // held for a later bootstrap to replay.
+    router.dispatchBytes(makeChunk(1));
+    down = false;
+    router.handleNotification({ type: "sessions-changed" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sink.chunks).toHaveLength(0);
+  });
+
   it("does NOT report when the bootstrap succeeds (empty tmux is not a failure)", async () => {
     const errors: Error[] = [];
     const router = new TopologyRouter(new DeliveryQueue(), (e) =>

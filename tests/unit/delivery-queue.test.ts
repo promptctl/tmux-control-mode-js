@@ -106,6 +106,53 @@ describe("DeliveryQueue", () => {
     expect(log).toEqual(["committed part"]);
   });
 
+  it("delivers each step of a batch before the next commits, and rethrows the batch's errors once it has run", () => {
+    const q = new DeliveryQueue();
+    const log: string[] = [];
+    const a = new Error("a");
+    const b = new Error("b");
+    const heard = (s: string) => {
+      log.push(`heard ${s}`);
+      if (s !== "two") throw s === "one" ? a : b;
+    };
+    let caught: unknown;
+    try {
+      q.batch(
+        (items: readonly string[]) => {
+          for (const s of items)
+            q.step(() => {
+              log.push(`committed ${s}`);
+              q.post(heard, s);
+            });
+        },
+        ["one", "two", "three"],
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(log).toEqual([
+      "committed one",
+      "heard one",
+      "committed two",
+      "heard two",
+      "committed three",
+      "heard three",
+    ]);
+    expect((caught as AggregateError).errors).toEqual([a, b]);
+  });
+
+  it("settles a start that throws synchronously as a failed outcome", async () => {
+    const q = new DeliveryQueue();
+    const down = new Error("down");
+    const outcome = await q.settle(
+      () => {
+        throw down;
+      },
+      (o) => o,
+    );
+    expect(outcome).toEqual({ ok: false, error: down });
+  });
+
   it("returns the transition's value", () => {
     const q = new DeliveryQueue();
     expect(q.step(() => 42)).toBe(42);

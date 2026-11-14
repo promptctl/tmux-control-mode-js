@@ -21,7 +21,7 @@ import {
   TransportSendError,
 } from "../../src/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
-import { sessionScope } from "../../src/pane-output.js";
+import { paneScope, sessionScope } from "../../src/pane-output.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -689,6 +689,31 @@ describe("TmuxClient — listeners hear a transition once it has committed", () 
 
     expect(() => t.feed("%window-add @1\n%window-close @1\n")).toThrow(boom);
     expect(closes).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sink a listener attaches or disposes takes effect from the next message of the same read", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const decoder = new TextDecoder();
+    const heardBy = (log: string[]) => ({
+      write: (c: { data: Uint8Array }) => log.push(decoder.decode(c.data)),
+      end: () => {},
+    });
+    const old: string[] = [];
+    const fresh: string[] = [];
+    const disposeOld = client.attachBytesSink(heardBy(old), {
+      scope: paneScope(7),
+    });
+    client.on("window-add", () => {
+      disposeOld();
+      client.attachBytesSink(heardBy(fresh), { scope: paneScope(7) });
+    });
+
+    t.feed("%output %7 before\n%window-add @3\n%output %7 after\n");
+
+    expect(old).toEqual(["before"]);
+    expect(fresh).toEqual(["after"]);
   });
 
   it("'exit' is heard before 'closed'", () => {

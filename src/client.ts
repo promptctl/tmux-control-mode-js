@@ -200,9 +200,15 @@ export class TmuxClient implements TmuxConnection {
       (error) => this.emitter.emit({ type: "topology-error", error }),
       options,
     );
+    // [LAW:no-ambient-temporal-coupling] Each message tmux sends is one step,
+    //   heard before the next commits, so what a listener does about a
+    //   message — attach a sink, dispose one, close — holds from the next
+    //   message on, wherever the transport split its reads.
+    const handleMessage = this.handleMessage.bind(this);
+    const handleProtocolError = this.handleProtocolError.bind(this);
     this.parser = new TmuxParser(
-      (msg) => this.handleMessage(msg),
-      (error) => this.handleProtocolError(error),
+      (msg) => this.delivery.step(handleMessage, msg),
+      (error) => this.delivery.step(handleProtocolError, error),
     );
 
     this.parser.onOutputLine = (_commandNumber, line) => {
@@ -214,11 +220,10 @@ export class TmuxClient implements TmuxConnection {
       }
     };
 
-    // A chunk is parsed whole before anyone hears of it, so a listener's
-    // close() or throw cannot cut the rest of the chunk short.
-    transport.onData((chunk) => {
-      this.delivery.step(() => this.parser.feed(chunk));
-    });
+    // A read's messages are one batch, so a listener's throw cannot cut the
+    // rest of the read short.
+    const feed = this.parser.feed.bind(this.parser);
+    transport.onData((chunk) => this.delivery.batch(feed, chunk));
     transport.onClose((reason) => {
       // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
       // signal (`reason`, the raw parameter above) — independent of, and

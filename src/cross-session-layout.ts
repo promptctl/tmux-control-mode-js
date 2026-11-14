@@ -335,20 +335,23 @@ export class CrossSessionLayoutRelay {
     this.refCount += 1;
     return this.serialize(async () => {
       const joined = this.subscribed;
-      await this.delivery.settle(this.reconcile(), (reconciled) => {
-        if (!reconciled.ok) {
-          this.refCount -= 1;
-          throw reconciled.error;
-        }
-        // A listener joining a live subscription would otherwise never hear
-        // the current set: deliveries report only changes.
-        if (joined && this.reportedUncovered !== null) {
-          this.report({
-            type: "cross-session-layout-uncovered",
-            windowIds: this.reportedUncovered,
-          });
-        }
-      });
+      await this.delivery.settle(
+        () => this.reconcile(),
+        (reconciled) => {
+          if (!reconciled.ok) {
+            this.refCount -= 1;
+            throw reconciled.error;
+          }
+          // A listener joining a live subscription would otherwise never hear
+          // the current set: deliveries report only changes.
+          if (joined && this.reportedUncovered !== null) {
+            this.report({
+              type: "cross-session-layout-uncovered",
+              windowIds: this.reportedUncovered,
+            });
+          }
+        },
+      );
     });
   }
 
@@ -481,13 +484,16 @@ export class CrossSessionLayoutRelay {
   private async repair(generation: number): Promise<void> {
     this.repairQueued = false;
     if (generation !== this.generation) return;
-    await this.delivery.settle(this.ensureHook("if-missing"), (repaired) => {
-      if (repaired.ok || isConnectionGone(repaired.error)) return;
-      this.report({
-        type: "cross-session-layout-repair-failed",
-        reason: failureReason(repaired.error),
-      });
-    });
+    await this.delivery.settle(
+      () => this.ensureHook("if-missing"),
+      (repaired) => {
+        if (repaired.ok || isConnectionGone(repaired.error)) return;
+        this.report({
+          type: "cross-session-layout-repair-failed",
+          reason: failureReason(repaired.error),
+        });
+      },
+    );
   }
 
   /**
@@ -514,12 +520,15 @@ export class CrossSessionLayoutRelay {
     generation: number,
     windowId: number,
   ): Promise<void> {
-    await this.delivery.settle(this.fetch(windowId), (fetched) => {
-      if (!fetched.ok) throw fetched.error;
-      if (fetched.value !== null && generation === this.generation) {
-        this.report(fetched.value);
-      }
-    });
+    await this.delivery.settle(
+      () => this.fetch(windowId),
+      (fetched) => {
+        if (!fetched.ok) throw fetched.error;
+        if (fetched.value !== null && generation === this.generation) {
+          this.report(fetched.value);
+        }
+      },
+    );
   }
 
   /** `null` when the connection closed mid-fetch — see {@link CrossSessionLayoutFetchFailedMessage}. */

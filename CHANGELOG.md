@@ -12,6 +12,9 @@ All notable changes to this project are documented here. Format follows
   `new TopologyRouter(delivery, reportTopologyError, options)`. A transport
   adapter passes the queue its own entry points step through, so the
   router's sinks and error reports run after the adapter's transition.
+- `WebSocketTmuxClient`'s frame handlers (`onWelcome`, `onResult`,
+  `onPong`, `onDraining`, `dispatchEvent`, `emitSynthetic`, `emitError`) are
+  private. They were public only so a module-level table could call them.
 - `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
   `currentCommand` move into `process`, a `PaneProcessState` (exported from
   `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
@@ -45,15 +48,21 @@ All notable changes to this project are documented here. Format follows
 - A listener, a sink or `onError` may call `close()` or `connect()` at any
   transition, and the client ends in the state its last call asked for.
   `TmuxClient`, `WebSocketTmuxClient` and the Electron `TmuxClientProxy` now
-  call consumer code only once the transition that caused it has finished,
-  before the call that caused it returns. Before, a `WebSocketTmuxClient`
-  callback that closed or reconnected mid-transition could leave a heartbeat
-  timer or socket running on a closed client, or announce a connection the
-  callback had ended. Listeners hear events in the order the client reached them:
-  `exit` before `closed`, `ready` before `reconnected` before a `closed` its
-  listener caused. A listener that throws no longer stops the others: every
-  listener runs, and the throw — an `AggregateError` when several threw —
-  leaves through the call that delivered the event.
+  call consumer code only once the transition that caused it has finished:
+  before a call from outside the client returns, and after the current
+  listener returns for a call made from one. Each message tmux sends is one
+  transition, so a sink a listener attaches or disposes takes effect from the
+  next message, however the transport split its reads. Before, a
+  `WebSocketTmuxClient` callback that closed or reconnected mid-transition
+  could leave a heartbeat timer or socket running on a closed client, or
+  announce a connection the callback had ended. Listeners hear events in the
+  order the client reached them: `exit` before `closed`, `ready` before
+  `reconnected` before a `closed` its listener caused. A listener that
+  throws no longer interrupts the client's transition or cuts short the
+  events after it, though it still skips the rest of that one event's
+  listeners. The throw (an `AggregateError` when several threw) leaves
+  through the call that delivered the event. For an event caused by a
+  command's reply, such as a topology query, it is an unhandled rejection.
 - `execute()` rejects a command holding a NUL with `TmuxInvalidCommandError`,
   and nothing is sent. tmux ends a command line at a NUL, runs what precedes
   it and replies success, so `execute("new-window -e 'A=x<NUL>y' -- cmd")`

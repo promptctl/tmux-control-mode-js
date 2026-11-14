@@ -136,9 +136,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     // Each IPC event is one step: its listeners and sinks hear of it once
     // the proxy has committed it.
     this.eventHandler = (_event, ...args) =>
-      this.delivery.step(() => {
-        this.onEvent(args[0] as EmitterMessage | PaneOutputMessage);
-      });
+      this.delivery.step(
+        this.onEvent,
+        args[0] as EmitterMessage | PaneOutputMessage,
+      );
     this.ipc.on(IPC.event, this.eventHandler);
 
     // Register this renderer as an event subscriber. Fire-and-forget.
@@ -155,7 +156,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   //   on the renderer side.
   // [LAW:locality-or-seam] IPC wire format is the boundary type; widened to
   //   admit byte messages here, narrowed into the two channels below.
-  private onEvent(msg: EmitterMessage | PaneOutputMessage): void {
+  // Bound once: an IPC event steps with no closure.
+  private readonly onEvent = (
+    msg: EmitterMessage | PaneOutputMessage,
+  ): void => {
     if (isPaneOutput(msg)) {
       this.account(msg);
       // [LAW:single-enforcer] Byte dispatch routes through the router.
@@ -190,6 +194,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
       //   needed and none can smuggle a non-TmuxMessage into handleNotification.
       this.router.handleNotification(msg);
     }
+    this.announce(msg);
+  };
+
+  private announce(msg: EmitterMessage): void {
     this.delivery.post(this.emit, msg);
   }
 
@@ -345,7 +353,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
       this.currentConnectionState.reason === "disposed";
     if (!alreadyDisposed) {
       this.currentConnectionState = { status: "closed", reason: "disposed" };
-      this.delivery.post(this.emit, {
+      this.announce({
         type: "connection-state",
         state: this.currentConnectionState,
       });

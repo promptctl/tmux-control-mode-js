@@ -532,9 +532,12 @@ export class TopologyRouter {
     const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
     // [LAW:no-ambient-temporal-coupling] The reply is an entry point: it
     //   settles as one step, so no sink or listener runs mid-settle.
-    await this.delivery.settle(run(command), (reply) => {
-      this.settleBootstrap(run, gen, command, reply);
-    });
+    await this.delivery.settle(
+      () => run(command),
+      (reply) => {
+        this.settleBootstrap(run, gen, command, reply);
+      },
+    );
   }
 
   private settleBootstrap(
@@ -630,9 +633,12 @@ export class TopologyRouter {
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
-    await this.delivery.settle(run(command), (reply) => {
-      this.settleWindowRefresh(run, windowId, gen, command, reply);
-    });
+    await this.delivery.settle(
+      () => run(command),
+      (reply) => {
+        this.settleWindowRefresh(run, windowId, gen, command, reply);
+      },
+    );
   }
 
   private settleWindowRefresh(

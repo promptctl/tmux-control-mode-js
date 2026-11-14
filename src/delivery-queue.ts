@@ -31,6 +31,8 @@ export class DeliveryQueue {
   private tail = 0;
   private depth = 0;
   private draining = false;
+  // The errors of the batch running now, if one is.
+  private batchErrors: unknown[] | undefined;
 
   /** Run one entry point's transition, `transition(arg)`. Nested steps
    *  commit inside the outermost one, which drains the queue before it
@@ -51,20 +53,41 @@ export class DeliveryQueue {
     }
     this.depth -= 1;
     const errors = this.drainOuter();
-    if (errors.length > 0) throw combined(errors);
+    if (errors.length === 0) return value;
+    if (this.batchErrors === undefined) throw combined(errors);
+    this.batchErrors.push(...errors);
     return value;
   }
 
-  /** Run `settler` as one step once `pending` settles. Code resuming after an
-   *  await is an entry point like any other, so it commits before anyone
-   *  hears of it. */
+  /** Run `arrival(arg)`: entry points that arrive together, as the messages
+   *  of one transport read do, each stepping on its own so each is heard
+   *  before the next commits. A step whose deliveries throw does not cost
+   *  the steps after it theirs: every error leaves together once the batch
+   *  has run. */
+  batch<A>(arrival: (arg: A) => void, arg: A): void {
+    const outer = this.batchErrors;
+    const errors: unknown[] = [];
+    this.batchErrors = errors;
+    try {
+      arrival(arg);
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      this.batchErrors = outer;
+    }
+    if (errors.length > 0) throw combined(errors);
+  }
+
+  /** Run `settler` as one step once the promise `start` returns settles — or
+   *  once `start` throws. Code resuming after an await is an entry point like
+   *  any other, so it commits before anyone hears of it. */
   async settle<T, R>(
-    pending: Promise<T>,
+    start: () => Promise<T>,
     settler: (outcome: Outcome<T>) => R,
   ): Promise<R> {
     let outcome: Outcome<T>;
     try {
-      outcome = { ok: true, value: await pending };
+      outcome = { ok: true, value: await start() };
     } catch (error) {
       outcome = { ok: false, error };
     }
