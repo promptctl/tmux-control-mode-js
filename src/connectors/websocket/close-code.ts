@@ -11,10 +11,10 @@ import { parser, type ParserMaker } from "./limits.js";
 
 declare const serverCloseCode: unique symbol;
 
-/** A status code a WebSocket endpoint may send in a close frame: RFC 6455
+/** A status code a WebSocket server may send in a close frame: RFC 6455
  *  §7.4's registered codes less the reserved ones (1004, and 1005/1006/1015,
- *  which describe a close no frame carried), plus the 3000–4999 range for
- *  libraries and applications. Exactly the set `ws` accepts. */
+ *  which describe a close no frame carried) and 1010, which only a client
+ *  sends, plus the 3000–4999 range for libraries and applications. */
 export type ServerCloseCode = number & { readonly [serverCloseCode]: true };
 
 function isServerCloseCode(value: unknown): value is ServerCloseCode {
@@ -22,14 +22,15 @@ function isServerCloseCode(value: unknown): value is ServerCloseCode {
     typeof value === "number" &&
     Number.isInteger(value) &&
     ((value >= 1000 && value <= 1003) ||
-      (value >= 1007 && value <= 1014) ||
+      (value >= 1007 && value <= 1009) ||
+      (value >= 1011 && value <= 1014) ||
       (value >= 3000 && value <= 4999))
   );
 }
 
 export const serverCloseCodeParser: ParserMaker<ServerCloseCode> = parser(
   isServerCloseCode,
-  "an integer in 1000–1003, 1007–1014 or 3000–4999",
+  "an integer in 1000–1003, 1007–1009, 1011–1014 or 3000–4999",
 );
 
 /** The connection ended as intended: the bridge's goodbye. */

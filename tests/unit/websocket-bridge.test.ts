@@ -779,7 +779,20 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     return { ws, closed: closedEvents(events) };
   }
 
-  it.each([401, 999, 1004, 1005, 1006, 1015, 2999, 5000, 4401.5, NaN, "4001"])(
+  it.each([
+    401,
+    999,
+    1004,
+    1005,
+    1006,
+    1010,
+    1015,
+    2999,
+    5000,
+    4401.5,
+    NaN,
+    "4001",
+  ])(
     "an auth hook's illegal close code %s closes with 4401 and names the value",
     async (code) => {
       const { ws, closed } = await denyWith(code);
@@ -797,7 +810,7 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     },
   );
 
-  it.each([1000, 1003, 1007, 1008, 1014, 3000, 4003, 4999])(
+  it.each([1000, 1003, 1007, 1009, 1011, 1014, 3000, 4003, 4999])(
     "an auth hook's legal close code %s reaches the peer unchanged",
     async (code) => {
       const { ws, closed } = await denyWith(code);

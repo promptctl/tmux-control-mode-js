@@ -108,11 +108,11 @@ export interface ServerWebSocketLike {
    *  closing socket silently, which the bridge handles the same way. */
   ping(data?: unknown, mask?: boolean, cb?: (err?: Error) => void): void;
 
-  /** Does not throw for a code an endpoint may send (1000–1003, 1007–1014,
-   *  3000–4999 — the set `ws` accepts) with a reason of at most 123 UTF-8
-   *  bytes, in any readyState. The bridge closes only with those, and lets
-   *  anything this throws propagate. A WHATWG-style `close()`, which throws
-   *  for anything but 1000 and 3000–4999, needs an adapter. */
+  /** Does not throw for a `ServerCloseCode` with a reason of at most 123
+   *  UTF-8 bytes, in any readyState; `ws`'s meets this. The bridge closes
+   *  only with those, and lets anything this throws propagate. A WHATWG-style
+   *  `close()`, which throws for anything but 1000 and 3000–4999, needs an
+   *  adapter. */
   close(code?: ServerCloseCode, reason?: string): void;
   terminate(): void;
 
@@ -158,8 +158,8 @@ export type AuthResult =
   | { readonly ok: true; readonly identity?: ConnectionIdentity }
   | {
       readonly ok: false;
-      /** The code the denied socket closes with: one an endpoint may send
-       *  (see `ServerWebSocketLike.close`). Default 4401. Any other number is
+      /** The code the denied socket closes with: one a server may send
+       *  (see `ServerCloseCode`). Default 4401. Any other number is
        *  the hook's defect: the socket closes with 4401 and the denial's
        *  reason names the value. */
       readonly code?: number;

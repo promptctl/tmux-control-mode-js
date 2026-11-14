@@ -1256,8 +1256,7 @@ class Connection {
     // opens runs under the heartbeat's deadline (see onPongDeadline),
     // whatever state the connection was in: a fatal before hello has no
     // heartbeat running yet, and start() is idempotent for one that does.
-    // The deadline is set before the handshake opens, so it bounds the
-    // connection even when close() fails.
+    // Started before close(), so a close() that throws is under it too.
     this.heartbeat.start();
     // [LAW:no-silent-failure] A stamped code and a truncated reason are what
     // close() accepts, so a throw from it is a defect and propagates.

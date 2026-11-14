@@ -57,6 +57,8 @@ export {
   type ReconnectPolicy,
 } from "./types.js";
 
+export type { ServerCloseCode } from "./close-code.js";
+
 export {
   createWebSocketBridge,
   type WebSocketBridge,
