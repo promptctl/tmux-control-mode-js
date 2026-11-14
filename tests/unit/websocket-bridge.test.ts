@@ -13,7 +13,7 @@
 // server-side API: enough surface to satisfy ServerWebSocketLike, plus a
 // test hook to set bufferedAmount for the watermark probes.
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -2563,6 +2563,33 @@ describe("WebSocket bridge — shutdown", () => {
     );
   });
 
+  it("a socket refused during the drain holds it open for its close handshake after every earlier peer has closed", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const running = connectRunning(bridge);
+    await flush();
+
+    let settled = false;
+    const shutdown = bridge.shutdown(1_000).then(() => {
+      settled = true;
+    });
+    const refused = createFakeWs();
+    void bridge.handleConnection(refused);
+
+    running.fireClose(1001, "");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(false);
+    expect(refused.terminateCalls).toBe(0);
+
+    refused.fireClose(1001, "");
+    await shutdown;
+    expect(refused.terminateCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("a socket refused after the drain settled that never answers the close frame is terminated at the pong deadline", async () => {
     vi.useFakeTimers();
     const events: BridgeObservabilityEvent[] = [];
@@ -2599,6 +2626,15 @@ describe("WebSocket bridge — shutdown", () => {
 // ---------------------------------------------------------------------------
 
 describe("WebSocket bridge — frames after a pending fatal", () => {
+  // The fatal starts the heartbeat and the fake never fires `close`, so each
+  // test runs on fake timers that afterEach discards.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function countingBridge(): {
     bridge: ReturnType<typeof createWebSocketBridge>;
     counts: { authenticate: number; createClient: number };

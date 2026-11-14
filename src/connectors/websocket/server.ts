@@ -1477,6 +1477,17 @@ function emitObservability(
   }
 }
 
+// [LAW:one-source-of-truth] The drain waits on the live set, not a snapshot
+// taken when it began: a socket refused mid-drain joins the set, and its
+// close handshake holds the drain open like any other until the deadline.
+// A closed connection leaves the set a few microtasks after `whenClosed`
+// resolves, so each round awaits only connections no earlier round did.
 async function allClosed(conns: Set<Connection>): Promise<void> {
-  await Promise.all([...conns].map((c) => c.whenClosed));
+  const awaited = new Set<Connection>();
+  for (;;) {
+    const fresh = [...conns].filter((c) => !awaited.has(c));
+    if (fresh.length === 0) return;
+    for (const c of fresh) awaited.add(c);
+    await Promise.all(fresh.map((c) => c.whenClosed));
+  }
 }

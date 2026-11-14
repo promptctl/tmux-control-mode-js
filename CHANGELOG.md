@@ -81,8 +81,8 @@ All notable changes to this project are documented here. Format follows
   sent a `draining` frame with that deadline; before, it was welcomed as if
   no drain were running and terminated at the drain's end without notice.
 - A socket `WebSocketBridge` refuses because a drain is in flight is now
-  terminated when the drain settles if its peer never answers the close
-  frame, or at the heartbeat's pong deadline if it connected after the
+  terminated at the drain's deadline if its peer never answers the close
+  frame (its close handshake holds the drain open until then), or at the heartbeat's pong deadline if it connected after the
   drain settled. It also emits `connection-closed` (`BRIDGE_CLOSED`), and its
   close reason reads `bridge is shutting down`. Before, nothing in the bridge
   bounded that close handshake, `shutdown()` could resolve with the socket
