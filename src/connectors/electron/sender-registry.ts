@@ -266,7 +266,6 @@ export class SenderRegistry {
     // [LAW:single-enforcer] The bridge decides which events reach which peer;
     // the message is classified once, then checked per peer.
     const route = this.deps.bridge.routeEvent(msg);
-    if (route.kind === "none") return;
     for (const [wc, state] of snapshot) {
       // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
       // Electron may fire "destroyed" asynchronously, so a send could race a

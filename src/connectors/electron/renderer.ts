@@ -171,8 +171,8 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
       } else if (isTmuxMessage(msg)) {
         // [LAW:single-enforcer] All topology mutations route through the router.
         // [LAW:types-are-the-program] Only true wire messages enter the topology
-        //   path — `isTmuxMessage` keeps synthetic lifecycle events (reconnected,
-        //   protocol-error, topology-error) out by construction, so no cast is
+        //   path — `isTmuxMessage` keeps synthetic events (reconnected,
+        //   protocol-error, unsolicited-response) out by construction, so no cast is
         //   needed and none can smuggle a non-TmuxMessage into handleNotification.
         this.router.handleNotification(msg);
       }

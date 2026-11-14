@@ -1,13 +1,13 @@
 // src/cross-session-layout-messages.ts
 // The wire-facing half of the cross-session layout relay: the synthetic
-// event types, their runtime membership table, and the relay's reserved
-// subscription name. Zero runtime imports, so the Electron renderer and the
-// browser WebSocket client can reach it without bundling the relay itself
-// (src/cross-session-layout.ts).
+// event types and the relay's reserved subscription name. Zero runtime
+// imports, so the Electron renderer and the browser WebSocket client can
+// reach it without bundling the relay itself (src/cross-session-layout.ts).
+// `eventSubject` (src/emitter.ts) says which emitter events are these.
 //
-// [LAW:one-source-of-truth] The subscription name and the event type set are
-// defined here once; the relay, the bridge's event routing, and the RPC
-// validator all read them from this module.
+// [LAW:one-source-of-truth] The subscription name is defined here once; the
+// relay, the bridge's event routing, and the RPC validator all read it from
+// this module.
 
 import type {
   SubscriptionChangedMessage,
@@ -142,25 +142,6 @@ export type CrossSessionLayoutMessage =
  */
 export const CROSS_SESSION_LAYOUT_SUBSCRIPTION_NAME =
   "ttcmjs-cross-session-layout";
-
-const CROSS_SESSION_LAYOUT_MESSAGE_TYPES: Record<
-  CrossSessionLayoutMessage["type"],
-  true
-> = {
-  "cross-session-layout-change": true,
-  "cross-session-layout-decode-error": true,
-  "cross-session-layout-overrun": true,
-  "cross-session-layout-fetch-failed": true,
-  "cross-session-layout-hook-restored": true,
-  "cross-session-layout-repair-failed": true,
-  "cross-session-layout-uncovered": true,
-};
-
-export function isCrossSessionLayoutMessage(ev: {
-  readonly type: string;
-}): ev is CrossSessionLayoutMessage {
-  return Object.hasOwn(CROSS_SESSION_LAYOUT_MESSAGE_TYPES, ev.type);
-}
 
 /** The relay's raw `%subscription-changed` delivery — internal plumbing, never an event for a consumer. */
 export function isCrossSessionLayoutRelayFrame(ev: {

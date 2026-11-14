@@ -50,10 +50,10 @@ export type EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>;
  * `TmuxEventMap`'s synthetic arm, `isTmuxMessage`) derives from it instead of
  * re-listing the three variants.
  *
- * [LAW:one-source-of-truth] Adding a fourth synthetic event type only means
- * adding it to this union — `SYNTHETIC_MESSAGE_TYPES` below fails to compile
- * until its runtime table is updated to match, and `TmuxEventMap`'s synthetic
- * arm picks it up automatically via mapped type.
+ * [LAW:one-source-of-truth] Adding a synthetic event type only means adding
+ * it to this union — `SYNTHETIC_EVENT_SUBJECTS` below fails to compile until
+ * it says what the event is about, and `TmuxEventMap`'s synthetic arm picks
+ * it up automatically via mapped type.
  */
 export type SyntheticEmitterMessage =
   | ConnectionStateMessage
@@ -74,34 +74,64 @@ export type SyntheticEmitterMessage =
 export type EmitterMessage = EmitterTmuxMessage | SyntheticEmitterMessage;
 
 /**
- * Runtime membership table for `SyntheticEmitterMessage["type"]`. `Record`'s
- * exact-key requirement means this fails to compile if it's missing a
- * variant or lists one that no longer exists — the compiler keeps this table
- * in sync with `SyntheticEmitterMessage` instead of a human doing it by hand.
+ * What each synthetic event is a fact about:
+ * - `lifecycle` — this client's connection (`connection-state`, `reconnected`);
+ * - `reply-stream` — tmux's reply blocks no caller took: one tmux wrote for a
+ *   command no caller sent, or one whose terminator is malformed;
+ * - `pane-table` — this client's own pane routing table;
+ * - `cross-session-layout` — the relay's reports on other sessions' windows.
+ *
+ * [LAW:one-source-of-truth] The one answer to "what is this event about";
+ * `isTmuxMessage`, the bridges' routing and the stream projections all derive
+ * from it. `satisfies Record` makes a synthetic type added to (or removed
+ * from) `SyntheticEmitterMessage` a compile error until it is listed here.
  */
-const SYNTHETIC_MESSAGE_TYPES: Record<SyntheticEmitterMessage["type"], true> = {
-  "connection-state": true,
-  reconnected: true,
-  "protocol-error": true,
-  "unsolicited-response": true,
-  "topology-error": true,
-  "cross-session-layout-change": true,
-  "cross-session-layout-decode-error": true,
-  "cross-session-layout-overrun": true,
-  "cross-session-layout-fetch-failed": true,
-  "cross-session-layout-hook-restored": true,
-  "cross-session-layout-repair-failed": true,
-  "cross-session-layout-uncovered": true,
-};
+const SYNTHETIC_EVENT_SUBJECTS = {
+  "connection-state": "lifecycle",
+  reconnected: "lifecycle",
+  "protocol-error": "reply-stream",
+  "unsolicited-response": "reply-stream",
+  "topology-error": "pane-table",
+  "cross-session-layout-change": "cross-session-layout",
+  "cross-session-layout-decode-error": "cross-session-layout",
+  "cross-session-layout-overrun": "cross-session-layout",
+  "cross-session-layout-fetch-failed": "cross-session-layout",
+  "cross-session-layout-hook-restored": "cross-session-layout",
+  "cross-session-layout-repair-failed": "cross-session-layout",
+  "cross-session-layout-uncovered": "cross-session-layout",
+} as const satisfies Record<SyntheticEmitterMessage["type"], string>;
+
+type SyntheticSubjects = typeof SYNTHETIC_EVENT_SUBJECTS;
+
+/** What an emitter event is a fact about; `tmux` for a parsed tmux message. */
+export type EventSubject = "tmux" | SyntheticSubjects[keyof SyntheticSubjects];
+
+/** The emitter events about `S`. */
+export type MessageAbout<S extends EventSubject> =
+  | (S extends "tmux" ? EmitterTmuxMessage : never)
+  | Extract<
+      SyntheticEmitterMessage,
+      {
+        readonly type: {
+          [T in keyof SyntheticSubjects]: SyntheticSubjects[T] extends S
+            ? T
+            : never;
+        }[keyof SyntheticSubjects];
+      }
+    >;
+
+export function eventSubject(ev: EmitterMessage): EventSubject {
+  return Object.hasOwn(SYNTHETIC_EVENT_SUBJECTS, ev.type)
+    ? SYNTHETIC_EVENT_SUBJECTS[ev.type as keyof SyntheticSubjects]
+    : "tmux";
+}
 
 /**
- * Type guard separating parsed tmux messages from synthetic events (lifecycle
- * and parser-diagnosed protocol errors).
- * [LAW:single-enforcer] One discriminator check used by every emitter consumer
- * that needs to skip synthetic events (stream projections, wire forwarding).
+ * Type guard separating parsed tmux messages from synthetic events.
+ * [LAW:single-enforcer] Derived from `eventSubject`, the one classification.
  */
 export function isTmuxMessage(ev: EmitterMessage): ev is EmitterTmuxMessage {
-  return !(ev.type in SYNTHETIC_MESSAGE_TYPES);
+  return eventSubject(ev) === "tmux";
 }
 
 /**

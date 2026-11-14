@@ -180,6 +180,34 @@ describe("toEventEmitter", () => {
     expect(seen).toEqual([overrun]);
   });
 
+  it("re-emits a reply no caller sent, and leaves connection-state on the client", () => {
+    const transport = createFakeTransport();
+    const client = new TmuxClient(transport);
+    const ee = toEventEmitter(client);
+
+    const wildcard: { type: string }[] = [];
+    ee.on("*", (m: { type: string }) => wildcard.push(m));
+
+    // The startup command's reply, which also takes the client to 'ready'.
+    transport.feed("%begin 7 1 0\nhook ran\n%end 7 1 0\n");
+
+    // tmux's own %begin/%end messages are projected too, as always.
+    const synthetic = wildcard.filter(
+      (m) => m.type !== "begin" && m.type !== "end",
+    );
+    expect(synthetic).toEqual([
+      {
+        type: "unsolicited-response",
+        response: {
+          commandNumber: 1,
+          timestamp: 7,
+          output: ["hook ran"],
+          success: true,
+        },
+      },
+    ]);
+  });
+
   it("emits the synthetic exit message when the transport closes", () => {
     const transport = createFakeTransport();
     const client = new TmuxClient(transport);

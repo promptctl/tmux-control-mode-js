@@ -116,10 +116,17 @@ describe("BridgeConnection — cross-session layout coverage", () => {
     expect(enable.mock.calls.length).toBe(disable.mock.calls.length);
   });
 
-  it("routes lifecycle events only on transports that forward them, and topology-error nowhere", () => {
+  it("routes lifecycle events only on transports that forward them, reply-stream reports on every transport, and topology-error nowhere", () => {
     const lifecycle = [
       { type: "reconnected" },
-      { type: "unsolicited-response" },
+      { type: "connection-state", state: { status: "ready" } },
+    ] as EmitterMessage[];
+    const replyStream = [
+      { type: "protocol-error", commandNumber: 3, line: "%end 1" },
+      {
+        type: "unsolicited-response",
+        response: { commandNumber: 4, timestamp: 1, output: [], success: true },
+      },
     ] as EmitterMessage[];
     const topology = { type: "topology-error" } as EmitterMessage;
     for (const forwards of [false, true]) {
@@ -127,6 +134,8 @@ describe("BridgeConnection — cross-session layout coverage", () => {
       const peer = bridge.registerPeer();
       for (const msg of lifecycle)
         expect(delivers(bridge, peer, msg)).toBe(forwards);
+      for (const msg of replyStream)
+        expect(delivers(bridge, peer, msg)).toBe(true);
       expect(delivers(bridge, peer, topology)).toBe(false);
     }
   });

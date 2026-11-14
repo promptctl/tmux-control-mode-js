@@ -713,6 +713,38 @@ describe("WebSocketTmuxClient — cross-session layout coverage", () => {
   });
 });
 
+describe("WebSocketTmuxClient — reply-stream reports", () => {
+  it("emits the unsolicited-response and protocol-error events the server forwards", () => {
+    const { client, hub } = makeClient();
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    const ws = hub.latest();
+
+    const seen: unknown[] = [];
+    client.on("unsolicited-response", (ev) => seen.push(ev));
+    client.on("protocol-error", (ev) => seen.push(ev));
+    const unsolicited = {
+      type: "unsolicited-response",
+      response: {
+        commandNumber: 6,
+        timestamp: 7,
+        output: ["hook ran"],
+        success: true,
+      },
+    } as const;
+    const protocolError = {
+      type: "protocol-error",
+      commandNumber: 9,
+      line: "%end 7 9",
+    } as const;
+    for (const msg of [unsolicited, protocolError]) {
+      ws.fire("message", { data: encodeServerFrame({ k: "event", msg }) });
+    }
+    expect(seen).toEqual([unsolicited, protocolError]);
+  });
+});
+
 describe("WebSocketTmuxClient — cross-session layout coverage across reconnect", () => {
   // Answer every call frame on `ws` that has not been answered yet.
   function answerCalls(ws: MockWS, answered: Set<string>): void {

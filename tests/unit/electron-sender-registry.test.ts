@@ -11,10 +11,9 @@ import type {
   BridgeConnection,
   DeliveredRoute,
   EventRoute,
-  LifecycleMessage,
   Peer,
 } from "../../src/connectors/bridge-connection.js";
-import { isTmuxMessage, type EmitterMessage } from "../../src/emitter.js";
+import { eventSubject, type EmitterMessage } from "../../src/emitter.js";
 import type { TmuxClient } from "../../src/client.js";
 import type {
   AttachOptions,
@@ -114,9 +113,7 @@ function makeBridge(): BridgeSurface & {
     ackOutput: vi.fn(),
     routeEvent: vi.fn(
       (msg: EmitterMessage): EventRoute =>
-        isTmuxMessage(msg)
-          ? { kind: "tmux", msg }
-          : { kind: "lifecycle", msg: msg as LifecycleMessage },
+        ({ kind: eventSubject(msg), msg }) as EventRoute,
     ),
     deliversTo: (
       _peer: Peer,

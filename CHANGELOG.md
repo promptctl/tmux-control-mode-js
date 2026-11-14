@@ -6,6 +6,23 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `WebSocketTmuxClient` now receives `unsolicited-response` and
+  `protocol-error`. Its `on` accepted both names, but the WebSocket bridge
+  never forwarded the events, so a handler compiled and stayed silent. Both
+  bridges now deliver them to every connected peer; the README section
+  "Events over a bridge" says which events reach a peer. Upgrade server and
+  client together: an older `WebSocketTmuxClient` reports each such frame
+  through `onError` as a non-fatal `BRIDGE_PROTOCOL_ERROR`.
+- `toEventEmitter` now re-emits `unsolicited-response` and `protocol-error`,
+  like tmux's own notifications. `connection-state`, `reconnected` and
+  `topology-error` stay on the client's typed channels.
+- A WebSocket result frame whose `tmuxError` is not a well-formed
+  `CommandResponse` (`commandNumber`, `timestamp`, `output` as strings,
+  `success`) is now a `BRIDGE_PROTOCOL_ERROR` naming the field, instead of
+  reaching the caller's `TmuxCommandError` as whatever arrived.
+
 ## [0.2.0]
 
 ### Changed — breaking

@@ -9,8 +9,12 @@ import { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
 
 import type { TmuxClient } from "../../client.js";
-import { isCrossSessionLayoutMessage } from "../../cross-session-layout-messages.js";
-import { isTmuxMessage, type EmitterMessage } from "../../emitter.js";
+import {
+  eventSubject,
+  isTmuxMessage,
+  type EmitterMessage,
+  type EventSubject,
+} from "../../emitter.js";
 import type { TmuxMessage } from "../../protocol/types.js";
 
 /**
@@ -55,6 +59,16 @@ export function toNodeStream(client: TmuxClient): Readable {
   return stream;
 }
 
+// A `Record` over every subject, so a new subject does not compile until it
+// says whether it projects.
+const PROJECTED_ON_EVENT_EMITTER: Readonly<Record<EventSubject, boolean>> = {
+  tmux: true,
+  "reply-stream": true,
+  "cross-session-layout": true,
+  lifecycle: false,
+  "pane-table": false,
+};
+
 /**
  * Adapt a TmuxClient as a Node.js `EventEmitter`.
  *
@@ -68,16 +82,18 @@ export function toNodeStream(client: TmuxClient): Readable {
  * separate `dispose()` — Node EE consumers don't expect one, and the
  * `exit` event signals when no more events will arrive.
  *
+ * Events about tmux project onto the EE: its messages, the `reply-stream`
+ * reports, and the cross-session layout events (which a consumer opts into
+ * with `enableCrossSessionLayoutChange`). Events about this client — its
+ * connection and its pane table — stay on the client's typed channels.
+ *
  * [LAW:dataflow-not-control-flow] One subscriber on the client; every event
  * fans out the same way through `ee.emit`.
  */
 export function toEventEmitter(client: TmuxClient): EventEmitter {
   const ee = new EventEmitter();
   client.on("*", (event: EmitterMessage): void => {
-    // Parsed tmux events and the cross-session layout events (which a
-    // consumer opts into with enableCrossSessionLayoutChange) project onto
-    // the EE; lifecycle events stay on the client's typed channels.
-    if (!isTmuxMessage(event) && !isCrossSessionLayoutMessage(event)) return;
+    if (!PROJECTED_ON_EVENT_EMITTER[eventSubject(event)]) return;
     ee.emit(event.type, event);
     ee.emit("*", event);
   });
