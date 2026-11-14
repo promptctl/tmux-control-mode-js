@@ -205,6 +205,17 @@ export type SocketEnd =
 
 export type BridgeObservabilityEvent =
   | {
+      // One per `shutdown` call that parsed; the bridge's, so it carries no
+      // connection identity. `deadlineMs` is the drain's deadline: the first
+      // call's, which every peer is told. A call that found a drain already
+      // recorded is `joined`, and its `drainMs` moved nothing.
+      // [LAW:nothing-unseen]
+      readonly kind: "shutdown-requested";
+      readonly drainMs: number;
+      readonly deadlineMs: number;
+      readonly joined: boolean;
+    }
+  | {
       readonly kind: "connection-opened";
       readonly identity: ConnectionIdentity;
       readonly remoteAddress?: string;

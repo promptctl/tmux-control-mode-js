@@ -219,7 +219,9 @@ export interface WebSocketBridge {
    * `drainMs` elapses (after which sockets are force-terminated). `drainMs`
    * is an integer number of ms in [1, 2^31-1], or the returned promise
    * rejects with `BRIDGE_INVALID_ARG` before any connection is told anything.
-   * Default 10s.
+   * Default 10s. The first call owns the drain: a later call settles with it,
+   * and its `drainMs` does not move the deadline peers were told. A handshake
+   * in flight when the drain starts is welcomed and told the same deadline.
    */
   shutdown(drainMs?: number): Promise<void>;
 }
@@ -233,19 +235,24 @@ export function createWebSocketBridge(
 ): WebSocketBridge {
   const defaults = resolveDefaults(opts);
   const connections = new Set<Connection>();
-  let draining = false;
+  // [LAW:one-source-of-truth] The drain in flight: recorded once, by the
+  // first shutdown, and read by every later call and every welcome.
+  let drain:
+    | { readonly deadlineMs: number; readonly settled: Promise<void> }
+    | undefined;
+  const drainDeadlineMs = (): number | undefined => drain?.deadlineMs;
 
   async function handleConnection(
     ws: ServerWebSocketLike,
     request?: UpgradeRequest,
   ): Promise<void> {
-    if (draining) {
+    if (drain) {
       sendFatal(ws, "BRIDGE_CLOSED", "bridge is shutting down");
       ws.close(GOING_AWAY, "shutting down");
       return;
     }
 
-    const conn = new Connection(ws, request, opts, defaults);
+    const conn = new Connection(ws, request, opts, defaults, drainDeadlineMs);
     connections.add(conn);
     try {
       await conn.run();
@@ -258,17 +265,37 @@ export function createWebSocketBridge(
   // told anything, so a value no timer honors rejects the returned promise —
   // the one failure channel the signature declares — and no connection is
   // left holding a deadline in the past.
+  // [LAW:no-ambient-temporal-coupling] Parse, record, emit, tell: the drain is
+  // recorded before anything a call reaches synchronously (an onEvent hook, a
+  // socket's send) can call shutdown again, so a later call always joins it
+  // and the deadline peers were told is the one the bridge enforces. Telling
+  // a draining peer again is a no-op, so every call tells them all.
   async function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
     const bound = parseDurationMs("drainMs", drainMs);
-    draining = true;
-    const deadlineMs = Date.now() + bound;
-    for (const conn of connections) {
-      conn.beginDrain(deadlineMs);
-    }
+    const joined = drain !== undefined;
+    drain ??= { deadlineMs: Date.now() + bound, settled: settleWithin(bound) };
+    // [LAW:nothing-unseen] A joined call's bound is set aside; the event says
+    // so, beside the deadline that holds.
+    emitObservability(opts, {
+      kind: "shutdown-requested",
+      drainMs: bound,
+      deadlineMs: drain.deadlineMs,
+      joined,
+    });
+    for (const conn of connections) conn.beginDrain(drain.deadlineMs);
+    return drain.settled;
+  }
+
+  async function settleWithin(bound: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       allClosed(connections),
-      new Promise<void>((r) => setTimeout(r, bound).unref?.()),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, bound);
+        timer.unref?.();
+      }),
     ]);
+    clearTimeout(timer);
     for (const conn of connections) conn.terminate();
   }
 
@@ -413,6 +440,8 @@ class Connection {
     private readonly request: UpgradeRequest | undefined,
     private readonly opts: WebSocketBridgeOptions,
     private readonly defaults: ResolvedDefaults,
+    // The bridge's drain deadline, read at the welcome. [LAW:one-source-of-truth]
+    private readonly drainDeadlineMs: () => number | undefined,
   ) {
     this.onAnyEventRef = (msg: EmitterMessage): void => {
       this.onUpstreamEvent(msg);
@@ -855,6 +884,13 @@ class Connection {
         maxInflight: this.defaults.maxInflight,
       },
     });
+    // [LAW:no-ambient-temporal-coupling] A handshake the drain found in
+    // flight is welcomed into it: the commit and this read run in one
+    // synchronous stretch, so a peer welcomed during a drain is told its
+    // deadline here, and one welcomed before it is reached by shutdown's own
+    // notices.
+    const deadlineMs = this.drainDeadlineMs();
+    if (deadlineMs !== undefined) this.beginDrain(deadlineMs);
 
     this.heartbeat.start();
     this.emit({
@@ -1339,12 +1375,7 @@ class Connection {
   }
 
   private emit(ev: BridgeObservabilityEvent): void {
-    if (this.opts.onEvent === undefined) return;
-    try {
-      this.opts.onEvent(ev);
-    } catch {
-      // Swallow — observability hooks must never break the connection.
-    }
+    emitObservability(this.opts, ev);
   }
 
   // [LAW:composability] [LAW:carrying-cost] Single place for "dispose the
@@ -1425,6 +1456,20 @@ function sendFatal(
     );
   } catch {
     // ignore
+  }
+}
+
+// [LAW:single-enforcer] The one place an onEvent hook is called, for the
+// bridge's own events and every connection's.
+function emitObservability(
+  opts: WebSocketBridgeOptions,
+  ev: BridgeObservabilityEvent,
+): void {
+  if (opts.onEvent === undefined) return;
+  try {
+    opts.onEvent(ev);
+  } catch {
+    // Swallow — observability hooks must never break the bridge.
   }
 }
 

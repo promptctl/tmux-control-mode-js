@@ -2315,3 +2315,161 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
     expect(readJsonFrames(later).map((f) => f.k)).toEqual(["welcome"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Shutdown owns one drain. A later call joins it, and a peer is terminated
+// only at the deadline its `draining` frame named, whichever order shutdown
+// calls and handshakes land in.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — shutdown", () => {
+  function drainingDeadlines(ws: FakeWs): number[] {
+    return readJsonFrames(ws)
+      .filter((f) => f.k === "draining")
+      .map((f) => f.deadlineMs);
+  }
+
+  function shutdownEvents(
+    events: BridgeObservabilityEvent[],
+  ): BridgeObservabilityEvent[] {
+    return events.filter((e) => e.kind === "shutdown-requested");
+  }
+
+  it("a second shutdown with a shorter drain joins the first: the peer keeps the deadline it was told", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const startedAt = Date.now();
+    const first = bridge.shutdown(30_000);
+    const second = bridge.shutdown(1_000);
+    let settled = 0;
+    void first.then(() => settled++);
+    void second.then(() => settled++);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(ws.terminateCalls).toBe(0);
+    expect(settled).toBe(0);
+    expect(drainingDeadlines(ws)).toEqual([startedAt + 30_000]);
+    expect(shutdownEvents(events)).toEqual([
+      {
+        kind: "shutdown-requested",
+        drainMs: 30_000,
+        deadlineMs: startedAt + 30_000,
+        joined: false,
+      },
+      {
+        kind: "shutdown-requested",
+        drainMs: 1_000,
+        deadlineMs: startedAt + 30_000,
+        joined: true,
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(28_500);
+    await Promise.all([first, second]);
+    expect(ws.terminateCalls).toBe(1);
+    expect(settled).toBe(2);
+  });
+
+  it("a shutdown called from the first one's onEvent joins it", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    let reentered: Promise<void> | undefined;
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => {
+        events.push(ev);
+        if (ev.kind === "shutdown-requested" && !ev.joined) {
+          reentered = bridge.shutdown(1_000);
+        }
+      },
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const startedAt = Date.now();
+    const first = bridge.shutdown(30_000);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(ws.terminateCalls).toBe(0);
+    expect(shutdownEvents(events)).toEqual([
+      expect.objectContaining({
+        joined: false,
+        deadlineMs: startedAt + 30_000,
+      }),
+      expect.objectContaining({ joined: true, deadlineMs: startedAt + 30_000 }),
+    ]);
+    expect(drainingDeadlines(ws)).toEqual([startedAt + 30_000]);
+
+    await vi.advanceTimersByTimeAsync(28_500);
+    await Promise.all([first, reentered]);
+    expect(ws.terminateCalls).toBe(1);
+  });
+
+  it("an illegal drainMs rejects while a drain is in flight, and leaves that drain as it was", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const first = bridge.shutdown(30_000);
+    await expect(bridge.shutdown(0)).rejects.toThrow(/BRIDGE_INVALID_ARG/);
+    expect(shutdownEvents(events)).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(ws.terminateCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await first;
+    expect(ws.terminateCalls).toBe(1);
+  });
+
+  it("a peer whose handshake is in flight when the drain starts is welcomed, told the drain's deadline, and terminated at it", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let resolveAuth!: (r: { ok: true }) => void;
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      authenticate: () =>
+        new Promise<{ ok: true }>((res) => {
+          resolveAuth = res;
+        }),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const startedAt = Date.now();
+    const shutdown = bridge.shutdown(30_000);
+    resolveAuth({ ok: true });
+    await flush();
+
+    expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome", "draining"]);
+    expect(drainingDeadlines(ws)).toEqual([startedAt + 30_000]);
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(ws.terminateCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await shutdown;
+    expect(ws.terminateCalls).toBe(1);
+  });
+});
