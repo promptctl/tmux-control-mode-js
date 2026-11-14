@@ -179,8 +179,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // at every welcome or every call. `undefined` for the interval means "the
   // server's".
   private readonly heartbeatIntervalMs: HeartbeatInterval | undefined;
-  private readonly heartbeatTimeoutMs: DurationMs;
-  private readonly handshakeTimeoutMs: DurationMs;
+  // How long each deadline waits on the peer, keyed by the deadline it bounds.
+  private readonly peerTimeoutMs: Readonly<Record<PeerDeadline, DurationMs>>;
   private readonly requestTimeoutMs: DurationMs;
 
   // [LAW:one-source-of-truth] Everything scoped to one connection is this one
@@ -207,14 +207,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
             "heartbeatIntervalMs",
             opts.heartbeatIntervalMs,
           );
-    this.heartbeatTimeoutMs = parseDurationMs(
-      "heartbeatTimeoutMs",
-      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
-    );
-    this.handshakeTimeoutMs = parseDurationMs(
-      "handshakeTimeoutMs",
-      opts.handshakeTimeoutMs ?? DEFAULTS.handshakeTimeoutMs,
-    );
+    this.peerTimeoutMs = {
+      handshake: parseDurationMs(
+        "handshakeTimeoutMs",
+        opts.handshakeTimeoutMs ?? DEFAULTS.handshakeTimeoutMs,
+      ),
+      heartbeat: parseDurationMs(
+        "heartbeatTimeoutMs",
+        opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+      ),
+    };
     this.requestTimeoutMs = parseDurationMs(
       "requestTimeoutMs",
       opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
@@ -573,11 +575,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     //   leaves the client as 'connecting' as one that never hears a welcome.
     // No welcome in time: the peer has stopped answering, or never started.
     const deadline = setTimeout(
-      () =>
-        this.delivery.step(() =>
-          this.peerTimedOut("handshake", this.handshakeTimeoutMs),
-        ),
-      this.handshakeTimeoutMs,
+      () => this.delivery.step(() => this.peerTimedOut("handshake")),
+      this.peerTimeoutMs.handshake,
     );
     deadline.unref?.();
     // [LAW:no-ambient-temporal-coupling] The connection is built and current
@@ -663,10 +662,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   // [LAW:one-source-of-truth] Close code 4000 means one thing, a peer that
   //   did not answer in time; `what` names which deadline passed.
-  private peerTimedOut(what: "handshake" | "heartbeat", ms: DurationMs): void {
+  private peerTimedOut(what: PeerDeadline): void {
     this.failConnection(
       4000,
-      new BridgeError("BRIDGE_CLOSED", `${what} timeout after ${ms}ms`),
+      new BridgeError(
+        "BRIDGE_CLOSED",
+        `${what} timeout after ${this.peerTimeoutMs[what]}ms`,
+      ),
     );
   }
 
@@ -939,7 +941,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return new Heartbeat<string>(
       {
         intervalMs: this.heartbeatIntervalMs ?? limits.heartbeatIntervalMs,
-        timeoutMs: this.heartbeatTimeoutMs,
+        timeoutMs: this.peerTimeoutMs.heartbeat,
       },
       {
         // A timer's callback is an entry point: a socket whose send or close
@@ -953,9 +955,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         // No pong: the peer is gone. Release stops the heartbeat, so its
         // deadline only passes while its own connection is the current one.
         onTimeout: () =>
-          this.delivery.step(() =>
-            this.peerTimedOut("heartbeat", this.heartbeatTimeoutMs),
-          ),
+          this.delivery.step(() => this.peerTimedOut("heartbeat")),
       },
     );
   }
@@ -1050,6 +1050,9 @@ type CloseCode =
   | 1000 // client close
   | 4000 // peer timeout: no welcome, or no pong, in time
   | 4002; // protocol error
+
+/** The deadlines that wait on the peer; missing one closes with 4000. */
+type PeerDeadline = "handshake" | "heartbeat";
 
 type Phase = Handshake | Ready;
 

@@ -1854,10 +1854,15 @@ describe("WebSocketTmuxClient — a welcome that never comes ends the connection
       onError: (e) => errors.push(e),
     });
     void client.connect();
-    const close = vi.spyOn(hub.latest(), "close");
+    // An abort that never completes: the connection must end at the
+    // decision, not at a close event.
+    const ws = hub.latest();
+    ws.close = vi.fn(() => {
+      ws.readyState = 2;
+    });
     const queued = client.listWindows().catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(TIMEOUT);
-    expect(close).toHaveBeenCalledWith(
+    expect(ws.close).toHaveBeenCalledWith(
       4000,
       `handshake timeout after ${TIMEOUT}ms`,
     );
@@ -1872,6 +1877,24 @@ describe("WebSocketTmuxClient — a welcome that never comes ends the connection
       status: "closed",
       reason: "transport-error",
     });
+  });
+
+  it("defaults to 10000ms", async () => {
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: () => {},
+    });
+    void client.connect();
+    const close = vi.spyOn(hub.latest(), "close");
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(client.connectionState).toEqual({ status: "connecting" });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(close).toHaveBeenCalledWith(4000, "handshake timeout after 10000ms");
   });
 
   it("a welcome before the deadline disarms it", async () => {
