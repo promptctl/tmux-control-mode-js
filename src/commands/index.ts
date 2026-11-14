@@ -206,6 +206,11 @@ export async function newWindow(
  * holding the shell's message, where `newWindow` leaves nothing. The window
  * exists from the first call: when a later one rejects, the caller finishes
  * it or removes it (`kill-window -t @${windowId}`).
+ *
+ * While the pane has no process tmux refuses a new attach from a client with
+ * no terminal whose environment has `TMUX` set (`sessions should be nested
+ * with care`): any `spawnTmux` from a process started inside tmux. The README
+ * section "Opening a window in a session" says how to connect anyway.
  */
 export async function newEmptyWindow(
   client: TmuxConnection,

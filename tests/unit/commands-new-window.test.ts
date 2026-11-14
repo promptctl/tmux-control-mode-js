@@ -83,7 +83,7 @@ describe("newWindow", () => {
     expect(sent).toEqual([`${NEW_WINDOW} -c '/tmp/a##Sb' -- 'echo #S'`]);
   });
 
-  it("passes each environment entry as its own -e, in order, quoted and otherwise as written", async () => {
+  it("passes each environment entry as its own -e, quoted and otherwise as written", async () => {
     const { client, sent } = fakeConnection(["@3\t%7"]);
     await newWindow(client, {
       sessionId: 4,

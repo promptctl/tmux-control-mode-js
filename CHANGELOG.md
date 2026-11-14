@@ -136,7 +136,8 @@ All notable changes to this project are documented here. Format follows
   process, and `respawnPane(client, paneId, { command, environment, cwd })`
   starts one in it or in a dead pane. Between the two a caller sets what must
   hold before the process starts, such as `remain-on-exit failed`, which keeps
-  the pane of a command that cannot run. The README shows the three calls.
+  the pane of a command that cannot run. The README shows the three calls,
+  and which new connections tmux refuses while a pane has no process.
   `respawnPane` rejects with `UnsupportedTmuxVersionError` below
   `RESPAWN_PANE_MIN_VERSION` (tmux 3.8): older tmux can crash its server when
   a pane is respawned while a control client is attached.

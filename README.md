@@ -95,6 +95,16 @@ await respawnPane(client, paneId, { command, environment, cwd });
 The window exists from the first call. If a later one rejects, finish it or
 remove it with `kill-window -t @${windowId}`.
 
+While the pane has no process, tmux refuses an attach from a client that has
+no terminal and has `TMUX` in its environment, with `sessions should be nested
+with care, unset $TMUX to force`. That is every connection `spawnTmux` opens
+from a process started inside tmux, whichever server `TMUX` names. Connections
+already attached carry on, and the refusal ends when the pane is respawned or
+the window removed, so an empty window left behind keeps such a process from
+connecting again. A process that may connect in that interval passes
+`spawnTmux` an `env` without `TMUX` and names its socket (`socketPath`): with
+no `TMUX` and no socket, tmux looks for the default server.
+
 ## Watching a whole server
 
 One connection can follow every session on a server as an extra client that
