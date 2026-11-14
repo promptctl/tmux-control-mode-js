@@ -108,7 +108,9 @@ All notable changes to this project are documented here. Format follows
   4000 and that reason, rejects queued calls, and reads `transport-error`, or
   `reconnecting` with that error under a reconnect policy. Before, the
   connection stayed `connecting` with the socket open, every call timed out
-  and the reconnect policy never engaged.
+  and the reconnect policy never engaged. A handshake that legitimately takes
+  longer — an `authenticate` hook slower than about 10s — now fails every
+  attempt; raise `handshakeTimeoutMs` past it.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or

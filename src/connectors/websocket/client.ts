@@ -571,8 +571,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     //   and it only passes while its connection is current and unwelcomed.
     //   It runs from the socket's creation, since a socket stuck opening
     //   leaves the client as 'connecting' as one that never hears a welcome.
+    // No welcome in time: the peer has stopped answering, or never started.
     const deadline = setTimeout(
-      () => this.delivery.step(this.onHandshakeTimeout),
+      () =>
+        this.delivery.step(() =>
+          this.peerTimedOut("handshake", this.handshakeTimeoutMs),
+        ),
       this.handshakeTimeoutMs,
     );
     deadline.unref?.();
@@ -600,17 +604,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Socket listeners, bound once.
   private readonly onOpen = (ws: BrowserWebSocketLike): void => {
     sendOn(ws, encodeClientFrame({ k: "hello" }));
-  };
-
-  // No welcome in time: the peer has stopped answering, or never started.
-  private readonly onHandshakeTimeout = (): void => {
-    this.failConnection(
-      4000,
-      new BridgeError(
-        "BRIDGE_CLOSED",
-        `handshake timeout after ${this.handshakeTimeoutMs}ms`,
-      ),
-    );
   };
 
   // Error events in the browser are opaque. Treat as a connection error; the
@@ -666,6 +659,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private failConnection(code: CloseCode, err: BridgeError): void {
     this.emitError(err);
     this.end(code, err.toPayload().message);
+  }
+
+  // [LAW:one-source-of-truth] Close code 4000 means one thing, a peer that
+  //   did not answer in time; `what` names which deadline passed.
+  private peerTimedOut(what: "handshake" | "heartbeat", ms: DurationMs): void {
+    this.failConnection(
+      4000,
+      new BridgeError("BRIDGE_CLOSED", `${what} timeout after ${ms}ms`),
+    );
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -952,13 +954,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         // deadline only passes while its own connection is the current one.
         onTimeout: () =>
           this.delivery.step(() =>
-            this.failConnection(
-              4000,
-              new BridgeError(
-                "BRIDGE_CLOSED",
-                `heartbeat timeout after ${this.heartbeatTimeoutMs}ms`,
-              ),
-            ),
+            this.peerTimedOut("heartbeat", this.heartbeatTimeoutMs),
           ),
       },
     );
