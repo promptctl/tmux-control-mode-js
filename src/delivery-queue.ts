@@ -21,7 +21,8 @@ export type Outcome<T> =
   | { readonly ok: false; readonly error: unknown };
 
 /** Where a throwing delivery's error goes. An error the reporter itself
- *  throws propagates out of the step that drained, to that step's caller. */
+ *  throws is raised to the draining step's caller once the drain has
+ *  delivered everything the step committed. */
 export type ReportError = (error: unknown) => void;
 
 // The host's uncaught-error channel, as DOM event dispatch reports a
@@ -99,30 +100,37 @@ export class DeliveryQueue {
     // delivery leaves them to the drain already running.
     if (this.depth > 0 || this.draining) return;
     this.draining = true;
-    // A reporter that throws ends this drain, never the queue: the deliveries
-    // still waiting go out with the next step.
-    try {
-      while (this.head < this.tail) {
-        const deliver = this.queued[this.head] as (arg: unknown) => void;
-        const arg = this.queued[this.head + 1];
-        // Delivered slots hold nothing, so a drained queue retains no chunk.
-        this.queued[this.head] = undefined;
-        this.queued[this.head + 1] = undefined;
-        this.head += 2;
+    // A reporter that throws is itself a fault, raised once every delivery
+    // the step committed has run.
+    let reporterFaults: unknown[] | undefined;
+    while (this.head < this.tail) {
+      const deliver = this.queued[this.head] as (arg: unknown) => void;
+      const arg = this.queued[this.head + 1];
+      // Delivered slots hold nothing, so a drained queue retains no chunk.
+      this.queued[this.head] = undefined;
+      this.queued[this.head + 1] = undefined;
+      this.head += 2;
+      try {
+        deliver(arg);
+      } catch (error) {
         try {
-          deliver(arg);
-        } catch (error) {
           this.reportError(error);
-        }
-        // Caught up: rewind, so a drain kept busy by the steps its deliveries
-        // enter reuses its slots rather than growing the array.
-        if (this.head === this.tail) {
-          this.head = 0;
-          this.tail = 0;
+        } catch (fault) {
+          (reporterFaults ??= []).push(fault);
         }
       }
-    } finally {
-      this.draining = false;
+      // Caught up: rewind, so a drain kept busy by the steps its deliveries
+      // enter reuses its slots rather than growing the array.
+      if (this.head === this.tail) {
+        this.head = 0;
+        this.tail = 0;
+      }
+    }
+    this.draining = false;
+    if (reporterFaults !== undefined) {
+      throw reporterFaults.length === 1
+        ? reporterFaults[0]
+        : new AggregateError(reporterFaults, "DeliveryQueue reporter threw");
     }
   }
 }

@@ -402,14 +402,22 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.crossSessionLayoutEnables += 1;
   }
 
+  // [LAW:one-source-of-truth] The count is what the current peer holds: an
+  //   enable counts once the peer took it, a disable once the peer saw it.
+  //   A call queued during an outage is in neither yet, so the welcome's
+  //   replay rebuilds the old peer's coverage and the queue then lands on it
+  //   in the order the consumer made the calls.
   async disableCrossSessionLayoutChange(): Promise<void> {
-    // The server drops the peer's enable whatever tmux says about cleanup,
-    // so the local count follows the call, not its outcome.
-    this.crossSessionLayoutEnables = Math.max(
-      0,
-      this.crossSessionLayoutEnables - 1,
-    );
-    await this.call("disableCrossSessionLayoutChange", []);
+    try {
+      await this.call("disableCrossSessionLayoutChange", []);
+    } finally {
+      // The server drops the peer's enable whatever tmux says about cleanup,
+      // so the local count follows the call, not its outcome.
+      this.crossSessionLayoutEnables = Math.max(
+        0,
+        this.crossSessionLayoutEnables - 1,
+      );
+    }
   }
 
   // [LAW:no-silent-failure] A replay the new server refuses leaves coverage
@@ -663,17 +671,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // The runner names this connection, for the router and for the replay.
     const run: RunCommand = (cmd) => this.execute(cmd);
     this.routerRun = run;
-    // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
-    //   After "ready" is committed, so the bootstrap's execute() is transmitted.
-    // [LAW:no-ambient-temporal-coupling] The router holds this connection's
-    //   runner before anything is sent on it, so a send that ends the
-    //   connection retires the runner the router actually holds.
-    this.router.onTransportReady(run);
-    // Restore this client's coverage on the new peer after the calls queued
-    // during the outage: a queued disable has already lowered the count the
-    // replay sends, and on a fresh peer holding no enables it is a no-op.
-    this.outbox.flush();
+    // Restore this client's coverage on the new peer before anything queued
+    // during the outage, so a queued disable lands after the enables it undoes.
     this.replayCrossSessionLayoutEnables(run);
+    this.outbox.flush();
+    // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
+    //   After "ready" is committed, so the bootstrap's execute() is transmitted,
+    //   and after the queued calls, so the bootstrap sees what they changed.
+    // [LAW:no-ambient-temporal-coupling] A send above that ended this
+    //   connection already finalized it; the router takes only a live
+    //   connection's runner.
+    if (this.routerRun === run) this.router.onTransportReady(run);
   }
 
   private onResult(frame: ReceivedResultFrame): void {

@@ -78,7 +78,7 @@ describe("DeliveryQueue", () => {
     expect(reported).toEqual([boom]);
   });
 
-  it("a reporter that throws ends that drain; the next step delivers what was waiting", () => {
+  it("a reporter that throws is raised once the step's deliveries have all run", () => {
     const rethrow = new DeliveryQueue((e) => {
       throw e;
     });
@@ -89,12 +89,12 @@ describe("DeliveryQueue", () => {
         rethrow.post(() => {
           throw boom;
         }, undefined);
-        rethrow.post((s: string) => log.push(s), "waiting");
+        rethrow.post((s: string) => log.push(s), "still heard");
       }),
     ).toThrow(boom);
-    expect(log).toEqual([]);
+    expect(log).toEqual(["still heard"]);
     rethrow.step(() => rethrow.post((s: string) => log.push(s), "next"));
-    expect(log).toEqual(["waiting", "next"]);
+    expect(log).toEqual(["still heard", "next"]);
   });
 
   it("delivers what a throwing transition committed, then propagates its error", () => {
