@@ -122,6 +122,10 @@ export interface WebSocketTmuxClientOptions {
   /** Pong timeout ms: an integer number of ms in [1, 2^31-1] or the
    *  constructor throws `BRIDGE_INVALID_ARG`. Default: 10000. */
   readonly heartbeatTimeoutMs?: number;
+  /** Handshake timeout ms, from opening the socket to the server's welcome:
+   *  an integer number of ms in [1, 2^31-1] or the constructor throws
+   *  `BRIDGE_INVALID_ARG`. Default: 10000. */
+  readonly handshakeTimeoutMs?: number;
   /** Connect at construction. Default: true. */
   readonly autoConnect?: boolean;
   readonly onError?: (error: BridgeError) => void;
@@ -135,6 +139,7 @@ export interface WebSocketTmuxClientOptions {
 const DEFAULTS = Object.freeze({
   requestTimeoutMs: 30_000,
   heartbeatTimeoutMs: 10_000,
+  handshakeTimeoutMs: 10_000,
 }) satisfies Record<string, number>;
 
 // ---------------------------------------------------------------------------
@@ -174,7 +179,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // at every welcome or every call. `undefined` for the interval means "the
   // server's".
   private readonly heartbeatIntervalMs: HeartbeatInterval | undefined;
-  private readonly heartbeatTimeoutMs: DurationMs;
+  // How long each deadline waits on the peer, keyed by the deadline it bounds.
+  private readonly peerTimeoutMs: Readonly<Record<PeerDeadline, DurationMs>>;
   private readonly requestTimeoutMs: DurationMs;
 
   // [LAW:one-source-of-truth] Everything scoped to one connection is this one
@@ -201,10 +207,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
             "heartbeatIntervalMs",
             opts.heartbeatIntervalMs,
           );
-    this.heartbeatTimeoutMs = parseDurationMs(
-      "heartbeatTimeoutMs",
-      opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
-    );
+    this.peerTimeoutMs = {
+      handshake: parseDurationMs(
+        "handshakeTimeoutMs",
+        opts.handshakeTimeoutMs ?? DEFAULTS.handshakeTimeoutMs,
+      ),
+      heartbeat: parseDurationMs(
+        "heartbeatTimeoutMs",
+        opts.heartbeatTimeoutMs ?? DEFAULTS.heartbeatTimeoutMs,
+      ),
+    };
     this.requestTimeoutMs = parseDurationMs(
       "requestTimeoutMs",
       opts.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
@@ -281,9 +293,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // [LAW:single-enforcer] The one way the client ends a connection it has
-  //   decided is over — closed by the consumer, a failed handshake, a missed
-  //   pong. It ends at the decision, not when the peer answers the close
-  //   handshake: the peer may be the one that has stopped answering.
+  //   decided is over — closed by the consumer, a failed or overdue
+  //   handshake, a missed pong. It ends at the decision, not when the peer
+  //   answers the close handshake: the peer may be the one that has stopped
+  //   answering.
   // [LAW:no-ambient-temporal-coupling] Finalize first: it removes the
   //   socket's listeners and commits the state, so the close event — fired
   //   inside close() or long after it — reaches nothing. close() on a
@@ -555,6 +568,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     const onClose = (event: { code?: number; reason?: string }): void =>
       this.delivery.step(this.onClose, event);
     const onError = (): void => this.delivery.step(this.onError);
+    // [LAW:no-ambient-temporal-coupling] The handshake's deadline is its
+    //   phase's, so it cannot outlive it: the welcome and release() clear it,
+    //   and it only passes while its connection is current and unwelcomed.
+    //   It runs from the socket's creation, since a socket stuck opening
+    //   leaves the client as 'connecting' as one that never hears a welcome.
+    // No welcome in time: the peer has stopped answering, or never started.
+    const deadline = setTimeout(
+      () => this.delivery.step(() => this.peerTimedOut("handshake")),
+      this.peerTimeoutMs.handshake,
+    );
+    deadline.unref?.();
     // [LAW:no-ambient-temporal-coupling] The connection is built and current
     //   before any listener is attached, so no event can reach it unbuilt.
     const conn: Connection = {
@@ -565,7 +589,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         ws.removeEventListener("close", onClose);
         ws.removeEventListener("error", onError);
       },
-      phase: { kind: "handshake" },
+      phase: { kind: "handshake", deadline },
     };
     this.connection = conn;
     ws.addEventListener("open", onOpen);
@@ -594,14 +618,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   fault does. `conn` is the connection whose socket delivered the message:
   //   its listeners are removed when it ends, so it is the current one.
   // [LAW:types-are-the-program] Each reader is handed what its phase reads:
-  //   a handshake its connection, which the welcome advances and a fault
-  //   fails; a stream its Ready. The phase is narrowed once, here, so no
-  //   handler holds a type the welcome could falsify.
+  //   a handshake its connection and the Handshake the welcome ends; a
+  //   stream its Ready. The phase is narrowed once, here, so no handler
+  //   holds a type the welcome could falsify.
   private onMessage(conn: Connection, data: unknown): void {
     const { phase } = conn;
     switch (phase.kind) {
       case "handshake":
-        this.read(WebSocketTmuxClient.handshake, conn, data);
+        this.read(WebSocketTmuxClient.handshake, { conn, phase }, data);
         return;
       case "ready":
         this.read(WebSocketTmuxClient.stream, phase, data);
@@ -624,16 +648,28 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     else reader.output(this, ctx, inbound);
   }
 
-  // A connection the client has found broken — a failed handshake, a missed
-  //   pong. `err` is why it ended, and the close reason says the same; the
-  //   calls it drops reject BRIDGE_CLOSED, the connection having closed
-  //   under them.
+  // A connection the client has found broken — a failed or overdue
+  //   handshake, a missed pong. `err` is why it ended, and the close reason
+  //   says the same; the calls it drops reject BRIDGE_CLOSED, the connection
+  //   having closed under them.
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
   //   lastError, which the end reads to publish transport-error (or
   //   reconnecting with lastError).
   private failConnection(code: CloseCode, err: BridgeError): void {
     this.emitError(err);
     this.end(code, err.toPayload().message);
+  }
+
+  // [LAW:one-source-of-truth] Close code 4000 means one thing, a peer that
+  //   did not answer in time; `what` names which deadline passed.
+  private peerTimedOut(what: PeerDeadline): void {
+    this.failConnection(
+      4000,
+      new BridgeError(
+        "BRIDGE_CLOSED",
+        `${what} timeout after ${this.peerTimeoutMs[what]}ms`,
+      ),
+    );
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -646,18 +682,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   other frame is a protocol fault, and a fault fails the connection.
   private static readonly beforeWelcome = (
     self: WebSocketTmuxClient,
-    _conn: Connection,
+    _at: Handshaking,
     f: { readonly k: string },
   ): void => self.failConnection(4002, outOfPhase(f.k, "before welcome"));
 
-  private static readonly handshake: PhaseReader<Connection> = {
-    fault: (self, _conn, err) => self.failConnection(4002, err),
-    output: (self, conn) =>
-      WebSocketTmuxClient.beforeWelcome(self, conn, { k: "output" }),
+  private static readonly handshake: PhaseReader<Handshaking> = {
+    fault: (self, _at, err) => self.failConnection(4002, err),
+    output: (self, at) =>
+      WebSocketTmuxClient.beforeWelcome(self, at, { k: "output" }),
     frames: {
-      welcome: (self, conn, f) => self.onWelcome(conn, f),
-      error: (self, _conn, f) =>
-        self.emitError(BridgeError.fromPayload(f.error)),
+      welcome: (self, at, f) => self.onWelcome(at, f),
+      error: (self, _at, f) => self.emitError(BridgeError.fromPayload(f.error)),
       event: WebSocketTmuxClient.beforeWelcome,
       result: WebSocketTmuxClient.beforeWelcome,
       pong: WebSocketTmuxClient.beforeWelcome,
@@ -683,7 +718,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     },
   };
 
-  private onWelcome(conn: Connection, frame: WelcomeFrame): void {
+  private onWelcome({ conn, phase }: Handshaking, frame: WelcomeFrame): void {
     // Reaching ready is the success point: reset the retry budget for the next
     // episode. This is the single reset that covers both entry paths — it is
     // load-bearing for the retry-timer path (onRetry → openSocket → onWelcome,
@@ -706,6 +741,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       run: (cmd) => this.execute(cmd),
       draining: false,
     };
+    clearTimeout(phase.deadline);
     conn.phase = ready;
     this.setConnectionState({ status: "ready" });
     ready.heartbeat.start();
@@ -834,15 +870,23 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // What an ended connection still holds outside itself: its listeners on the
-  // socket — removed first, so no late event from it reaches the client — and,
-  // once welcomed, the heartbeat's timers and the runner the router holds.
+  // socket — removed first, so no late event from it reaches the client — and
+  // what its phase lent: a handshake its deadline; a ready connection the
+  // heartbeat's timers and the runner the router holds.
   // [LAW:no-ambient-temporal-coupling] The router retires the runner before
   //   finalize drains the outbox, so the rejections read as the drop they are.
   private release(conn: Connection): void {
     conn.detach();
-    if (conn.phase.kind === "handshake") return;
-    conn.phase.heartbeat.stop();
-    this.router.onTransportLost(conn.phase.run);
+    const { phase } = conn;
+    switch (phase.kind) {
+      case "handshake":
+        clearTimeout(phase.deadline);
+        return;
+      case "ready":
+        phase.heartbeat.stop();
+        this.router.onTransportLost(phase.run);
+        return;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -897,7 +941,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     return new Heartbeat<string>(
       {
         intervalMs: this.heartbeatIntervalMs ?? limits.heartbeatIntervalMs,
-        timeoutMs: this.heartbeatTimeoutMs,
+        timeoutMs: this.peerTimeoutMs.heartbeat,
       },
       {
         // A timer's callback is an entry point: a socket whose send or close
@@ -911,15 +955,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         // No pong: the peer is gone. Release stops the heartbeat, so its
         // deadline only passes while its own connection is the current one.
         onTimeout: () =>
-          this.delivery.step(() =>
-            this.failConnection(
-              4000,
-              new BridgeError(
-                "BRIDGE_CLOSED",
-                `heartbeat timeout after ${this.heartbeatTimeoutMs}ms`,
-              ),
-            ),
-          ),
+          this.delivery.step(() => this.peerTimedOut("heartbeat")),
       },
     );
   }
@@ -1012,14 +1048,25 @@ interface Connection {
  *  so RFC 6455's 1002 (protocol error) is not the client's to send. */
 type CloseCode =
   | 1000 // client close
-  | 4000 // heartbeat timeout
+  | 4000 // peer timeout: no welcome, or no pong, in time
   | 4002; // protocol error
 
+/** The deadlines that wait on the peer; missing one closes with 4000. */
+type PeerDeadline = "handshake" | "heartbeat";
+
 type Phase = Handshake | Ready;
+
+/** A connection still in its handshake, with that phase narrowed. */
+interface Handshaking {
+  readonly conn: Connection;
+  readonly phase: Handshake;
+}
 
 /** Before the welcome: the server's limits are not known yet. */
 interface Handshake {
   readonly kind: "handshake";
+  /** Fails the connection if the welcome has not landed by then. */
+  readonly deadline: ReturnType<typeof setTimeout>;
 }
 
 /** After the welcome: what the connection runs on until it ends. */

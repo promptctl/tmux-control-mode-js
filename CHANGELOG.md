@@ -99,6 +99,18 @@ All notable changes to this project are documented here. Format follows
   Nms", the socket closes with code 4000 and that reason, and the connection
   reads `transport-error`, or `reconnecting` with that error, where it read
   as a clean `exit`.
+- A `WebSocketTmuxClient` whose server never sends its welcome — an
+  `authenticate` hook that never resolves, a bridge that never answers hello,
+  a connection gone half-open after the upgrade, a socket that never opens —
+  now fails the connection when the new `handshakeTimeoutMs` option (default
+  10000) passes from the socket's creation: it reports `BRIDGE_CLOSED`
+  "handshake timeout after Nms" through `onError`, closes the socket with code
+  4000 and that reason, rejects queued calls, and reads `transport-error`, or
+  `reconnecting` with that error under a reconnect policy. Before, the
+  connection stayed `connecting` with the socket open, every call timed out
+  and the reconnect policy never engaged. A handshake that legitimately takes
+  longer — an `authenticate` hook slower than about 10s — now fails every
+  attempt; raise `handshakeTimeoutMs` past it.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or
