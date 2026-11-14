@@ -127,6 +127,16 @@ describe("TmuxClient — one command is one non-empty line", () => {
       await expect(next).resolves.toMatchObject({ success: true });
     },
   );
+
+  it("rejects a bad command with TmuxInvalidCommandError on a closed client too, as the bridge clients do", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.triggerClose();
+
+    await expect(client.execute("a\0b")).rejects.toBeInstanceOf(
+      TmuxInvalidCommandError,
+    );
+  });
 });
 
 describe("TmuxClient — exactly one 'exit' event", () => {

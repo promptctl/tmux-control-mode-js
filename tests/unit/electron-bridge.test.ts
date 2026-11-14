@@ -908,12 +908,12 @@ describe("Electron IPC bridge — method dispatch", () => {
   );
 
   it.each([
-    ["# comment only"],
-    ["new-window -c '/tmp/a\nb'"],
-    ["new-window -e 'TOKEN=s3cr3t\0' -- cmd"],
+    ["# comment only", "it is only a comment"],
+    ["# note\nkill-server", "it holds a newline or NUL"],
+    ["new-window -e 'TOKEN=s3cr3t\0' -- cmd", "it holds a newline or NUL"],
   ])(
-    "classifies the unsendable command %j from a raw RPC peer as BRIDGE_INVALID_ARG, sends nothing, and keeps the command out of the message",
-    async (bad) => {
+    "classifies the unsendable command %j from a raw RPC peer as BRIDGE_INVALID_ARG, sends nothing, and says only why: %s",
+    async (bad, fault) => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);
       t.feed(STARTUP_GREETING);
@@ -930,7 +930,10 @@ describe("Electron IPC bridge — method dispatch", () => {
         error: { code: "BRIDGE_INVALID_ARG" },
       });
       expect(t.sent).toEqual([]);
-      expect(JSON.stringify(outcome)).not.toContain("new-window");
+      if (outcome.kind !== "bridge-error") throw new Error("not refused");
+      expect(outcome.error.toPayload().message).toBe(
+        `command refused: ${fault}`,
+      );
     },
   );
 
