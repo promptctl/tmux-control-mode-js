@@ -10,11 +10,12 @@
 // agree would be an invariant the type cannot enforce, so there is only one.
 
 import { TmuxCommandError } from "../../errors.js";
-import { answersNull, type RpcResponseMap } from "../rpc.js";
+import type { RpcResponseMap } from "../rpc.js";
 import type { DurationMs } from "./limits.js";
 import {
   BridgeError,
-  BridgeProtocolError,
+  parseRpcResponse,
+  toBridgeProtocolError,
   type ResultFrame,
   type RpcMethod,
 } from "./protocol.js";
@@ -85,7 +86,7 @@ export class Outbox {
   // timed out (its entry is gone). Returns the protocol violation, if the
   // frame broke the wire contract, so the client reports it on its error
   // channel like every other malformed frame.
-  settle(frame: ResultFrame): BridgeProtocolError | undefined {
+  settle(frame: ResultFrame): BridgeError | undefined {
     const p = this.pending.get(frame.id);
     if (p === undefined) return undefined;
     this.pending.delete(frame.id);
@@ -93,14 +94,15 @@ export class Outbox {
     if (frame.ok) {
       // [LAW:parse-dont-validate] The frame parser cannot see the method; this
       // is the one place that pairs a response with the call it answers.
-      if ((frame.response === null) !== answersNull(p.method)) {
-        const violation = new BridgeProtocolError(
-          `result for '${p.method}' has ${frame.response === null ? "a null" : "a non-null"} response`,
-        );
+      let response: RpcResponseMap[RpcMethod];
+      try {
+        response = parseRpcResponse(p.method, frame.response);
+      } catch (err) {
+        const violation = toBridgeProtocolError(err);
         p.reject(violation);
         return violation;
       }
-      p.resolve(frame.response);
+      p.resolve(response);
     } else if ("tmuxError" in frame) {
       p.reject(new TmuxCommandError(frame.tmuxError));
     } else {

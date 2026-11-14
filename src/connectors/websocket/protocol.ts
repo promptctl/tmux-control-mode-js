@@ -18,10 +18,12 @@ import type { DeliveredRoute } from "../bridge-connection.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
+  PaneRecord,
+  SessionRecord,
   TmuxMessage,
   WindowLayoutFields,
+  WindowRecord,
 } from "../../protocol/types.js";
-import { SERIALIZED_EVENT_TYPES } from "../../protocol/types.js";
 import { windowLayoutFields } from "../../protocol/layout.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
@@ -50,6 +52,7 @@ export {
 } from "../errors.js";
 import {
   BridgeProtocolError,
+  isBridgeErrorCode,
   type BridgeErrorCode,
   type BridgeErrorPayload,
 } from "../errors.js";
@@ -180,9 +183,10 @@ export interface ResultOkFrame {
   readonly k: "result";
   readonly id: string;
   readonly ok: true;
-  // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
-  // structured records for listWindows/listPanes/listSessions (see rpc.ts).
-  readonly response: RpcResponseMap[RpcMethod];
+  // RpcResponseMap[<the call's method>]: which method a result answers is not
+  // on the frame, so the frame parser leaves this unread and the caller that
+  // holds the call parses it with `parseRpcResponse`.
+  readonly response: unknown;
 }
 
 export interface ResultErrFrame {
@@ -322,37 +326,32 @@ export function decodePaneOutput(buf: Uint8Array): PaneOutputMessage {
 //
 // [LAW:dataflow-not-control-flow] The parsers are an indexed lookup over the
 // frame discriminator — same shape as VALIDATORS in ../rpc.ts. The mapped
-// type forces one entry per union variant; `satisfies` makes drift between
-// the union and the parser table a compile-time error.
+// type forces one entry per union variant, so drift between the union and
+// the parser table is a compile-time error.
 // [LAW:single-enforcer] parseClientFrame / parseServerFrame are the only
-// validation sites for inbound frames. Downstream operates on typed unions.
+// validation sites for inbound frames, and `wireObject` is the one way any of
+// them reads a field. Downstream operates on typed unions.
 // ---------------------------------------------------------------------------
 
 type FrameParserTable<F extends { readonly k: string }> = {
-  readonly [K in F["k"]]: (raw: object) => Extract<F, { k: K }>;
+  readonly [K in F["k"]]: (raw: unknown) => Extract<F, { k: K }>;
 };
 
-const CLIENT_FRAME_PARSERS: FrameParserTable<ClientFrame> = Object.assign(
-  Object.create(null) as FrameParserTable<ClientFrame>,
-  {
-    hello: parseHello,
-    call: parseCall,
-    ping: parsePing,
-    bye: () => ({ k: "bye" }) as const,
-  } satisfies FrameParserTable<ClientFrame>,
-);
+const CLIENT_FRAME_PARSERS: FrameParserTable<ClientFrame> = {
+  hello: () => ({ k: "hello" }),
+  call: parseCall,
+  ping: parsePing,
+  bye: () => ({ k: "bye" }),
+};
 
-const SERVER_FRAME_PARSERS: FrameParserTable<ServerFrame> = Object.assign(
-  Object.create(null) as FrameParserTable<ServerFrame>,
-  {
-    welcome: parseWelcome,
-    event: parseEvent,
-    result: parseResult,
-    pong: parsePong,
-    draining: parseDraining,
-    error: parseFatal,
-  } satisfies FrameParserTable<ServerFrame>,
-);
+const SERVER_FRAME_PARSERS: FrameParserTable<ServerFrame> = {
+  welcome: parseWelcome,
+  event: parseEvent,
+  result: parseResult,
+  pong: parsePong,
+  draining: parseDraining,
+  error: parseFatal,
+};
 
 export function parseClientFrame(raw: string): ClientFrame {
   return parseFrame(raw, CLIENT_FRAME_PARSERS, "client");
@@ -367,16 +366,12 @@ function parseFrame<F extends { readonly k: string }>(
   parsers: FrameParserTable<F>,
   side: "client" | "server",
 ): F {
-  const parsed = safeJsonParse(raw);
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new BridgeProtocolError("frame must be a JSON object");
-  }
-  const k = (parsed as { k: unknown }).k as F["k"];
-  const fn = parsers[k];
-  if (fn === undefined) {
+  const frame = safeJsonParse(raw);
+  const k = wireObject<F>(frame, "frame").value("k");
+  if (!isKeyOf(parsers, k)) {
     throw new BridgeProtocolError(`unknown ${side} frame kind: ${String(k)}`);
   }
-  return fn(parsed as object);
+  return parsers[k](frame);
 }
 
 function safeJsonParse(raw: string): unknown {
@@ -389,68 +384,9 @@ function safeJsonParse(raw: string): unknown {
   }
 }
 
-function parseHello(_x: unknown): HelloFrame {
-  return { k: "hello" };
-}
-
-function parseCall(x: unknown): CallFrame {
-  const o = x as {
-    id?: unknown;
-    method?: unknown;
-    args?: unknown;
-  };
-  if (typeof o.id !== "string" || o.id.length === 0) {
-    throw new BridgeProtocolError("call.id must be a non-empty string");
-  }
-  if (typeof o.method !== "string") {
-    throw new BridgeProtocolError("call.method must be a string");
-  }
-  if (!Array.isArray(o.args)) {
-    throw new BridgeProtocolError("call.args must be an array");
-  }
-  // The method-name allowlist is enforced by parseRpcRequest in server.ts —
-  // it raises a per-call BRIDGE_UNKNOWN_METHOD reply (connection stays open).
-  // Validating here would close the connection on every unknown method,
-  // which over-reacts to client/server version skew.
-  return {
-    k: "call",
-    id: o.id,
-    method: o.method as RpcMethod,
-    args: o.args,
-  };
-}
-
-function parsePing(x: unknown): PingFrame {
-  const o = x as { id?: unknown };
-  if (typeof o.id !== "string" || o.id.length === 0) {
-    throw new BridgeProtocolError("ping.id must be a non-empty string");
-  }
-  return { k: "ping", id: o.id };
-}
-
-function parseWelcome(x: unknown): WelcomeFrame {
-  const o = x as { limits?: unknown };
-  if (typeof o.limits !== "object" || o.limits === null) {
-    throw new BridgeProtocolError("welcome.limits missing or malformed");
-  }
-  const l = o.limits as Record<keyof WelcomeLimits, unknown>;
-  // [LAW:parse-dont-validate] The wire border stamps the limits the client
-  // will run its own timers at; a value outside a field's shape (including a
-  // non-number) names the field, the value, and the shape.
-  return {
-    k: "welcome",
-    limits: {
-      requestTimeoutMs: wireDurationMs(
-        "welcome.limits.requestTimeoutMs",
-        l.requestTimeoutMs,
-      ),
-      heartbeatIntervalMs: wireHeartbeatInterval(
-        "welcome.limits.heartbeatIntervalMs",
-        l.heartbeatIntervalMs,
-      ),
-      maxInflight: wirePositiveInt("welcome.limits.maxInflight", l.maxInflight),
-    },
-  };
+// An own key only, so a peer's `k: "constructor"` names no parser.
+function isKeyOf<T extends object>(table: T, key: unknown): key is keyof T {
+  return typeof key === "string" && Object.hasOwn(table, key);
 }
 
 function wireValue<T>(
@@ -465,253 +401,477 @@ function wireValue<T>(
 
 const isNumber = (v: unknown): v is number => typeof v === "number";
 const isString = (v: unknown): v is string => typeof v === "string";
-const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
-const isNumberArray = (v: unknown): v is readonly number[] =>
-  Array.isArray(v) && v.every(isNumber);
-const isStringArray = (v: unknown): v is readonly string[] =>
-  Array.isArray(v) && v.every(isString);
 
-// [LAW:types-are-the-program] Each wire object's fields and their runtime
-// kinds. The mapped type makes a field added to (or removed from) a message
-// interface a compile error in its table, so the wire check cannot drift from
-// the type the client emits. Layout fields are excluded: every event that
-// carries them goes through `withDerivedLayout` instead.
-type FieldKind =
-  | "number"
-  | "number[]"
-  | "string"
-  | "string[]"
-  | "boolean"
-  | "CommandResponse";
-// A field shape with no kind here (an optional field included) is `never`, so
-// it fails to compile rather than being checked as the wrong kind.
-type FieldKinds<M> = {
-  readonly [F in Exclude<
-    keyof M,
-    "type" | keyof WindowLayoutFields
-  >]: M[F] extends number
-    ? "number"
-    : M[F] extends readonly number[]
-      ? "number[]"
-      : M[F] extends readonly string[]
-        ? "string[]"
-        : M[F] extends string
-          ? "string"
-          : M[F] extends boolean
-            ? "boolean"
-            : M[F] extends CommandResponse
-              ? "CommandResponse"
-              : never;
+/** A runtime check and the words its failure names the shape with. */
+interface WireKind<T> {
+  readonly is: (v: unknown) => v is T;
+  readonly shape: string;
+}
+
+const NUMBER: WireKind<number> = { is: isNumber, shape: "a number" };
+const STRING: WireKind<string> = { is: isString, shape: "a string" };
+const NON_EMPTY_STRING: WireKind<string> = {
+  is: (v): v is string => isString(v) && v.length > 0,
+  shape: "a non-empty string",
+};
+const BOOLEAN: WireKind<boolean> = {
+  is: (v): v is boolean => typeof v === "boolean",
+  shape: "a boolean",
+};
+const TRUE: WireKind<true> = {
+  is: (v): v is true => v === true,
+  shape: "true",
+};
+const NUMBERS: WireKind<readonly number[]> = {
+  is: (v): v is readonly number[] => Array.isArray(v) && v.every(isNumber),
+  shape: "a number[]",
+};
+const STRINGS: WireKind<readonly string[]> = {
+  is: (v): v is readonly string[] => Array.isArray(v) && v.every(isString),
+  shape: "a string[]",
+};
+const ARRAY: WireKind<readonly unknown[]> = {
+  is: (v): v is readonly unknown[] => Array.isArray(v),
+  shape: "an array",
+};
+const NULL: WireKind<null> = {
+  is: (v): v is null => v === null,
+  shape: "null",
+};
+const BRIDGE_ERROR_CODE: WireKind<BridgeErrorCode> = {
+  is: isBridgeErrorCode,
+  shape: "a BridgeErrorCode",
 };
 
-const COMMAND_RESPONSE_FIELDS: FieldKinds<CommandResponse> = {
-  commandNumber: "number",
-  timestamp: "number",
-  output: "string[]",
-  success: "boolean",
-};
+/**
+ * A wire object that is known to be an object, read field by field as the
+ * type `M` it is parsed into. `read` is keyed by `M`, so a builder names only
+ * fields `M` has and checks each against the kind `M` declares for it; a
+ * failure names the field's path.
+ */
+interface WireObject<M> {
+  read<F extends keyof M & string>(field: F, kind: WireKind<M[F]>): M[F];
+  optional<F extends keyof M & string>(
+    field: F,
+    kind: WireKind<Exclude<M[F], undefined>>,
+  ): M[F] | undefined;
+  object<N>(field: string): WireObject<N>;
+  /** The field unread, for a parser whose shape the frame cannot know. */
+  value(field: string): unknown;
+}
 
-// [LAW:single-enforcer] The one wire parser for a field table: an event's
-// synthetic fields and a tmux reply, wherever a frame carries one.
-function parseFields(
-  x: unknown,
-  kinds: Readonly<Record<string, FieldKind>>,
-  path: string,
-): Record<string, unknown> {
+function wireObject<M>(x: unknown, path: string): WireObject<M> {
   const o = wireValue(x, isObject, path, "an object");
-  const parsed: Record<string, unknown> = { ...o };
-  for (const [field, kind] of Object.entries(kinds)) {
-    parsed[field] = FIELD_PARSERS[kind](o[field], `${path}.${field}`);
-  }
-  return parsed;
+  const at = (field: string): string => `${path}.${field}`;
+  return {
+    read: (field, kind) => wireValue(o[field], kind.is, at(field), kind.shape),
+    optional: (field, kind) =>
+      o[field] === undefined
+        ? undefined
+        : wireValue(o[field], kind.is, at(field), kind.shape),
+    object: (field) => wireObject(o[field], at(field)),
+    value: (field) => o[field],
+  };
 }
 
-function parseCommandResponse(x: unknown, path: string): CommandResponse {
-  // [LAW:types-are-the-program] exception: the table is
-  // `FieldKinds<CommandResponse>`, so every field was just parsed, but TS
-  // cannot carry that through `parseFields`.
-  return parseFields(
-    x,
-    COMMAND_RESPONSE_FIELDS,
-    path,
-  ) as unknown as CommandResponse;
+function wireArray<T>(
+  x: unknown,
+  path: string,
+  item: (x: unknown, path: string) => T,
+): readonly T[] {
+  return wireValue(x, ARRAY.is, path, ARRAY.shape).map((v, i) =>
+    item(v, `${path}[${i}]`),
+  );
 }
 
-// [LAW:one-source-of-truth] Keyed by exactly the synthetic events the bridge
-// delivers to a WS peer, so this table is also what `parseEvent` admits.
-const SYNTHETIC_WIRE_FIELDS: {
-  readonly [K in WireSyntheticMessage["type"]]: FieldKinds<
-    Extract<WireSyntheticMessage, { type: K }>
-  >;
-} = {
-  "protocol-error": { commandNumber: "number", line: "string" },
-  "unsolicited-response": { response: "CommandResponse" },
-  "cross-session-layout-change": { sessionId: "number", windowId: "number" },
-  "cross-session-layout-decode-error": { skippedBytes: "number" },
-  "cross-session-layout-overrun": { lostEntries: "number" },
-  "cross-session-layout-fetch-failed": { windowId: "number", reason: "string" },
-  "cross-session-layout-hook-restored": {},
-  "cross-session-layout-repair-failed": { reason: "string" },
-  "cross-session-layout-uncovered": { windowIds: "number[]" },
-};
-
-const FIELD_PARSERS: Readonly<
-  Record<FieldKind, (value: unknown, path: string) => unknown>
-> = {
-  number: (v, path) => wireValue(v, isNumber, path, "a number"),
-  string: (v, path) => wireValue(v, isString, path, "a string"),
-  "number[]": (v, path) => wireValue(v, isNumberArray, path, "a number[]"),
-  "string[]": (v, path) => wireValue(v, isStringArray, path, "a string[]"),
-  boolean: (v, path) => wireValue(v, isBoolean, path, "a boolean"),
-  CommandResponse: parseCommandResponse,
-};
-
-function isWireSyntheticType(
-  type: string,
-): type is WireSyntheticMessage["type"] {
-  return Object.hasOwn(SYNTHETIC_WIRE_FIELDS, type);
+function parseCall(x: unknown): CallFrame {
+  const m = wireObject<CallFrame>(x, "call");
+  const method = wireValue(
+    m.value("method"),
+    isString,
+    "call.method",
+    "a string",
+  );
+  return {
+    k: "call",
+    id: m.read("id", NON_EMPTY_STRING),
+    // [LAW:types-are-the-program] exception: parseRpcRequest in server.ts owns
+    // the method allowlist and answers an unknown method per call
+    // (BRIDGE_UNKNOWN_METHOD, connection stays open); refusing it here would
+    // close the connection on client/server version skew.
+    method: method as RpcMethod,
+    args: m.read("args", ARRAY),
+  };
 }
 
-// [LAW:types-are-the-program] Keyed by every message type that carries
-// WindowLayoutFields, so a new one is a compile error until it is listed.
-const LAYOUT_EVENT_TYPES: ReadonlySet<string> = new Set(
-  Object.keys({
-    "layout-change": true,
-    "cross-session-layout-change": true,
-  } satisfies Record<
-    Extract<EventFrame["msg"], WindowLayoutFields>["type"],
-    true
-  >),
-);
+function parsePing(x: unknown): PingFrame {
+  return {
+    k: "ping",
+    id: wireObject<PingFrame>(x, "ping").read("id", NON_EMPTY_STRING),
+  };
+}
 
-const RAW_LAYOUT_FIELDS = [
-  "windowLayout",
-  "windowVisibleLayout",
-  "windowFlags",
-] as const satisfies readonly (keyof WindowLayoutFields)[];
+function parseWelcome(x: unknown): WelcomeFrame {
+  const l = wireObject<WelcomeFrame>(x, "welcome").object<WelcomeLimits>(
+    "limits",
+  );
+  // [LAW:parse-dont-validate] The wire border stamps the limits the client
+  // will run its own timers at; a value outside a field's shape (including a
+  // non-number) names the field, the value, and the shape.
+  return {
+    k: "welcome",
+    limits: {
+      requestTimeoutMs: wireDurationMs(
+        "welcome.limits.requestTimeoutMs",
+        l.value("requestTimeoutMs"),
+      ),
+      heartbeatIntervalMs: wireHeartbeatInterval(
+        "welcome.limits.heartbeatIntervalMs",
+        l.value("heartbeatIntervalMs"),
+      ),
+      maxInflight: wirePositiveInt(
+        "welcome.limits.maxInflight",
+        l.value("maxInflight"),
+      ),
+    },
+  };
+}
+
+function parseCommandResponse(m: WireObject<CommandResponse>): CommandResponse {
+  return {
+    commandNumber: m.read("commandNumber", NUMBER),
+    timestamp: m.read("timestamp", NUMBER),
+    output: m.read("output", STRINGS),
+    success: m.read("success", BOOLEAN),
+  };
+}
 
 // [LAW:one-source-of-truth] Geometry is never taken off the wire: the raw
-// layout strings are checked and `windowLayoutFields` re-derives `layout` and
+// layout strings are read and `windowLayoutFields` re-derives `layout` and
 // `visibleLayout`, so a bridge on another version cannot hand the browser
 // geometry that disagrees with its own strings.
-function withDerivedLayout(msg: Record<string, unknown>, type: string): object {
-  if (!LAYOUT_EVENT_TYPES.has(type)) return msg;
-  const [layout, visibleLayout, flags] = RAW_LAYOUT_FIELDS.map((field) =>
-    wireValue(msg[field], isString, `event.msg(${type}).${field}`, "a string"),
+function parseLayoutFields(
+  m: WireObject<WindowLayoutFields>,
+): WindowLayoutFields {
+  return windowLayoutFields(
+    m.read("windowLayout", STRING),
+    m.read("windowVisibleLayout", STRING),
+    m.read("windowFlags", STRING),
   );
-  return { ...msg, ...windowLayoutFields(layout, visibleLayout, flags) };
+}
+
+type EventMessage = EventFrame["msg"];
+type EventOf<K extends EventMessage["type"]> = Extract<
+  EventMessage,
+  { type: K }
+>;
+
+// [LAW:one-source-of-truth] Keyed by exactly the messages an event frame
+// carries, so this table is also what `parseEvent` admits. Each builder
+// returns a literal the compiler checks against its message type: a parsed
+// message holds its declared fields and nothing else.
+const EVENT_MESSAGE_PARSERS: {
+  readonly [K in EventMessage["type"]]: (
+    m: WireObject<EventOf<K>>,
+  ) => EventOf<K>;
+} = {
+  begin: (m) => ({
+    type: "begin",
+    timestamp: m.read("timestamp", NUMBER),
+    commandNumber: m.read("commandNumber", NUMBER),
+    flags: m.read("flags", NUMBER),
+  }),
+  end: (m) => ({
+    type: "end",
+    timestamp: m.read("timestamp", NUMBER),
+    commandNumber: m.read("commandNumber", NUMBER),
+    flags: m.read("flags", NUMBER),
+  }),
+  error: (m) => ({
+    type: "error",
+    timestamp: m.read("timestamp", NUMBER),
+    commandNumber: m.read("commandNumber", NUMBER),
+    flags: m.read("flags", NUMBER),
+  }),
+  pause: (m) => ({ type: "pause", paneId: m.read("paneId", NUMBER) }),
+  continue: (m) => ({ type: "continue", paneId: m.read("paneId", NUMBER) }),
+  "pane-mode-changed": (m) => ({
+    type: "pane-mode-changed",
+    paneId: m.read("paneId", NUMBER),
+  }),
+  "window-add": (m) => ({
+    type: "window-add",
+    windowId: m.read("windowId", NUMBER),
+  }),
+  "window-close": (m) => ({
+    type: "window-close",
+    windowId: m.read("windowId", NUMBER),
+  }),
+  "window-renamed": (m) => ({
+    type: "window-renamed",
+    windowId: m.read("windowId", NUMBER),
+    name: m.read("name", STRING),
+  }),
+  "window-pane-changed": (m) => ({
+    type: "window-pane-changed",
+    windowId: m.read("windowId", NUMBER),
+    paneId: m.read("paneId", NUMBER),
+  }),
+  "unlinked-window-add": (m) => ({
+    type: "unlinked-window-add",
+    windowId: m.read("windowId", NUMBER),
+  }),
+  "unlinked-window-close": (m) => ({
+    type: "unlinked-window-close",
+    windowId: m.read("windowId", NUMBER),
+  }),
+  "unlinked-window-renamed": (m) => ({
+    type: "unlinked-window-renamed",
+    windowId: m.read("windowId", NUMBER),
+    name: m.read("name", STRING),
+  }),
+  "layout-change": (m) => ({
+    type: "layout-change",
+    windowId: m.read("windowId", NUMBER),
+    ...parseLayoutFields(m),
+  }),
+  "session-changed": (m) => ({
+    type: "session-changed",
+    sessionId: m.read("sessionId", NUMBER),
+    name: m.read("name", STRING),
+  }),
+  "session-renamed": (m) => ({
+    type: "session-renamed",
+    sessionId: m.read("sessionId", NUMBER),
+    name: m.read("name", STRING),
+  }),
+  "sessions-changed": () => ({ type: "sessions-changed" }),
+  "session-window-changed": (m) => ({
+    type: "session-window-changed",
+    sessionId: m.read("sessionId", NUMBER),
+    windowId: m.read("windowId", NUMBER),
+  }),
+  "client-session-changed": (m) => ({
+    type: "client-session-changed",
+    clientName: m.read("clientName", STRING),
+    sessionId: m.read("sessionId", NUMBER),
+    name: m.read("name", STRING),
+  }),
+  "client-detached": (m) => ({
+    type: "client-detached",
+    clientName: m.read("clientName", STRING),
+  }),
+  "paste-buffer-changed": (m) => ({
+    type: "paste-buffer-changed",
+    name: m.read("name", STRING),
+  }),
+  "paste-buffer-deleted": (m) => ({
+    type: "paste-buffer-deleted",
+    name: m.read("name", STRING),
+  }),
+  "subscription-changed": (m) => ({
+    type: "subscription-changed",
+    name: m.read("name", STRING),
+    sessionId: m.read("sessionId", NUMBER),
+    windowId: m.read("windowId", NUMBER),
+    windowIndex: m.read("windowIndex", NUMBER),
+    paneId: m.read("paneId", NUMBER),
+    value: m.read("value", STRING),
+  }),
+  message: (m) => ({ type: "message", message: m.read("message", STRING) }),
+  "config-error": (m) => ({
+    type: "config-error",
+    error: m.read("error", STRING),
+  }),
+  exit: (m) => ({ type: "exit", reason: m.optional("reason", STRING) }),
+  "protocol-error": (m) => ({
+    type: "protocol-error",
+    commandNumber: m.read("commandNumber", NUMBER),
+    line: m.read("line", STRING),
+  }),
+  "unsolicited-response": (m) => ({
+    type: "unsolicited-response",
+    response: parseCommandResponse(m.object("response")),
+  }),
+  "cross-session-layout-change": (m) => ({
+    type: "cross-session-layout-change",
+    sessionId: m.read("sessionId", NUMBER),
+    windowId: m.read("windowId", NUMBER),
+    ...parseLayoutFields(m),
+  }),
+  "cross-session-layout-decode-error": (m) => ({
+    type: "cross-session-layout-decode-error",
+    skippedBytes: m.read("skippedBytes", NUMBER),
+  }),
+  "cross-session-layout-overrun": (m) => ({
+    type: "cross-session-layout-overrun",
+    lostEntries: m.read("lostEntries", NUMBER),
+  }),
+  "cross-session-layout-fetch-failed": (m) => ({
+    type: "cross-session-layout-fetch-failed",
+    windowId: m.read("windowId", NUMBER),
+    reason: m.read("reason", STRING),
+  }),
+  "cross-session-layout-hook-restored": () => ({
+    type: "cross-session-layout-hook-restored",
+  }),
+  "cross-session-layout-repair-failed": (m) => ({
+    type: "cross-session-layout-repair-failed",
+    reason: m.read("reason", STRING),
+  }),
+  "cross-session-layout-uncovered": (m) => ({
+    type: "cross-session-layout-uncovered",
+    windowIds: m.read("windowIds", NUMBERS),
+  }),
+};
+
+function parseEventMessage<K extends EventMessage["type"]>(
+  type: K,
+  m: WireObject<EventOf<K>>,
+): EventOf<K> {
+  return EVENT_MESSAGE_PARSERS[type](m);
 }
 
 function parseEvent(x: unknown): EventFrame {
-  const raw = wireValue(
-    (x as { msg?: unknown }).msg,
-    isObject,
-    "event.msg",
-    "an object",
-  );
-  const { type } = raw;
-  const unknownType = () =>
-    new BridgeProtocolError(
+  const raw = wireObject<EventFrame>(x, "event").value("msg");
+  const { type } = wireValue(raw, isObject, "event.msg", "an object");
+  if (!isKeyOf(EVENT_MESSAGE_PARSERS, type)) {
+    throw new BridgeProtocolError(
       `event.msg.type must be a known TmuxMessage discriminator or a synthetic event type the bridge delivers, got ${JSON.stringify(type)}`,
     );
-  if (typeof type !== "string") throw unknownType();
-  // Classify once: admission and the field check read the same verdict.
-  let msg = raw;
-  if (isWireSyntheticType(type)) {
-    // Several synthetic types share field names, so the path names the type.
-    msg = parseFields(raw, SYNTHETIC_WIRE_FIELDS[type], `event.msg(${type})`);
-  } else if (!SERIALIZED_EVENT_TYPES.has(type)) {
-    throw unknownType();
   }
+  // Several types share field names, so the path names the type.
   return {
     k: "event",
-    msg: withDerivedLayout(msg, type) as EventFrame["msg"],
+    msg: parseEventMessage(type, wireObject(raw, `event.msg(${type})`)),
   };
+}
+
+const records =
+  <T>(parse: (m: WireObject<T>) => T) =>
+  (x: unknown, path: string): readonly T[] =>
+    wireArray(x, path, (item, at) => parse(wireObject<T>(item, at)));
+
+const commandResponse = (x: unknown, path: string): CommandResponse =>
+  parseCommandResponse(wireObject(x, path));
+const nullResponse = (x: unknown, path: string): null =>
+  wireValue(x, NULL.is, path, NULL.shape);
+
+// [LAW:one-source-of-truth] Keyed by RpcMethod, each entry the shape RpcSpec
+// declares for that method's response, null included.
+const RESPONSE_PARSERS: {
+  readonly [M in RpcMethod]: (x: unknown, path: string) => RpcResponseMap[M];
+} = {
+  execute: commandResponse,
+  listWindows: records<WindowRecord>((m) => ({
+    sessionId: m.read("sessionId", NUMBER),
+    sessionName: m.read("sessionName", STRING),
+    windowId: m.read("windowId", NUMBER),
+    windowName: m.read("windowName", STRING),
+    width: m.read("width", NUMBER),
+    height: m.read("height", NUMBER),
+  })),
+  listPanes: records<PaneRecord>((m) => ({
+    sessionId: m.read("sessionId", NUMBER),
+    sessionName: m.read("sessionName", STRING),
+    windowId: m.read("windowId", NUMBER),
+    windowName: m.read("windowName", STRING),
+    paneId: m.read("paneId", NUMBER),
+    cwd: m.read("cwd", STRING),
+    pid: m.read("pid", NUMBER),
+    startCommand: m.read("startCommand", STRING),
+    currentCommand: m.read("currentCommand", STRING),
+    width: m.read("width", NUMBER),
+    height: m.read("height", NUMBER),
+  })),
+  listSessions: records<SessionRecord>((m) => ({
+    sessionId: m.read("sessionId", NUMBER),
+    sessionName: m.read("sessionName", STRING),
+    windowCount: m.read("windowCount", NUMBER),
+    attached: m.read("attached", BOOLEAN),
+  })),
+  sendKeys: commandResponse,
+  splitWindow: commandResponse,
+  setSize: commandResponse,
+  setPaneAction: commandResponse,
+  subscribeRaw: commandResponse,
+  unsubscribe: commandResponse,
+  setFlags: commandResponse,
+  clearFlags: commandResponse,
+  requestReport: commandResponse,
+  queryClipboard: commandResponse,
+  enableCrossSessionLayoutChange: nullResponse,
+  disableCrossSessionLayoutChange: nullResponse,
+};
+
+/**
+ * Parse an ok result's `response` as the shape `method` answers with. The
+ * frame alone cannot know which method a result answers; the caller that
+ * holds the call does. Throws `BridgeProtocolError` naming the field.
+ */
+export function parseRpcResponse<M extends RpcMethod>(
+  method: M,
+  response: unknown,
+): RpcResponseMap[M] {
+  return RESPONSE_PARSERS[method](response, `result(${method}).response`);
 }
 
 function parseResult(x: unknown): ResultFrame {
-  const o = x as {
-    id?: unknown;
-    ok?: unknown;
-    response?: unknown;
-    error?: unknown;
-    tmuxError?: unknown;
-  };
-  if (typeof o.id !== "string" || o.id.length === 0) {
-    throw new BridgeProtocolError("result.id must be a non-empty string");
+  const m = wireObject<ResultFrame>(x, "result");
+  const id = m.read("id", NON_EMPTY_STRING);
+  if (m.read("ok", BOOLEAN)) {
+    return { k: "result", id, ok: true, response: m.value("response") };
   }
-  if (o.ok === true) {
-    // `null` is legal only for the methods whose RpcSpec response is null;
-    // the outbox, which knows each call's method, enforces that pairing.
-    if (typeof o.response !== "object") {
-      throw new BridgeProtocolError(
-        "result.response must be an object or null",
-      );
-    }
-    return {
-      k: "result",
-      id: o.id,
-      ok: true,
-      response: o.response as RpcResponseMap[RpcMethod],
-    };
-  }
-  if (o.ok === false && "tmuxError" in o) {
-    return {
-      k: "result",
-      id: o.id,
-      ok: false,
-      tmuxError: parseCommandResponse(o.tmuxError, "result.tmuxError"),
-    };
-  }
-  if (o.ok === false) {
-    return {
-      k: "result",
-      id: o.id,
-      ok: false,
-      error: parseErrorPayload(o.error),
-    };
-  }
-  throw new BridgeProtocolError("result.ok must be a boolean");
+  return m.value("tmuxError") === undefined
+    ? {
+        k: "result",
+        id,
+        ok: false,
+        error: parseErrorPayload(m.object("error")),
+      }
+    : {
+        k: "result",
+        id,
+        ok: false,
+        tmuxError: parseCommandResponse(m.object("tmuxError")),
+      };
 }
 
 function parsePong(x: unknown): PongFrame {
-  const o = x as { id?: unknown };
-  if (typeof o.id !== "string" || o.id.length === 0) {
-    throw new BridgeProtocolError("pong.id must be a non-empty string");
-  }
-  return { k: "pong", id: o.id };
+  return {
+    k: "pong",
+    id: wireObject<PongFrame>(x, "pong").read("id", NON_EMPTY_STRING),
+  };
 }
 
 function parseDraining(x: unknown): DrainingFrame {
-  const o = x as { deadlineMs?: unknown };
-  if (typeof o.deadlineMs !== "number") {
-    throw new BridgeProtocolError("draining.deadlineMs must be a number");
-  }
-  return { k: "draining", deadlineMs: o.deadlineMs };
+  return {
+    k: "draining",
+    deadlineMs: wireObject<DrainingFrame>(x, "draining").read(
+      "deadlineMs",
+      NUMBER,
+    ),
+  };
 }
 
 function parseFatal(x: unknown): FatalErrorFrame {
-  const o = x as { fatal?: unknown; error?: unknown };
-  if (o.fatal !== true) {
-    throw new BridgeProtocolError("error.fatal must be true");
-  }
-  return { k: "error", fatal: true, error: parseErrorPayload(o.error) };
+  const m = wireObject<FatalErrorFrame>(x, "error");
+  return {
+    k: "error",
+    fatal: m.read("fatal", TRUE),
+    error: parseErrorPayload(m.object("error")),
+  };
 }
 
-function parseErrorPayload(x: unknown): BridgeErrorPayload {
-  if (typeof x !== "object" || x === null) {
-    throw new BridgeProtocolError("error payload must be an object");
-  }
-  const o = x as { code?: unknown; message?: unknown };
-  if (typeof o.code !== "string") {
-    throw new BridgeProtocolError("error.code must be a string");
-  }
-  if (typeof o.message !== "string") {
-    throw new BridgeProtocolError("error.message must be a string");
-  }
-  return { code: o.code as BridgeErrorCode, message: o.message };
+function parseErrorPayload(
+  m: WireObject<BridgeErrorPayload>,
+): BridgeErrorPayload {
+  return {
+    code: m.read("code", BRIDGE_ERROR_CODE),
+    message: m.read("message", STRING),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,17 @@ All notable changes to this project are documented here. Format follows
   `CommandResponse` (numbers `commandNumber` and `timestamp`, a string array
   `output`, a boolean `success`) is now a `BRIDGE_PROTOCOL_ERROR` naming the field, instead of
   reaching the caller's `TmuxCommandError` as whatever arrived.
+- `WebSocketTmuxClient` now checks every field of what a bridge sends against
+  its type. A result whose `response` is not the shape its method returns (a
+  `CommandResponse`, or the `listWindows`/`listPanes`/`listSessions` records,
+  or `null`), or whose `error.code` is not a `BridgeErrorCode`, rejects the call
+  with a `BRIDGE_PROTOCOL_ERROR` naming the field, for example
+  `result(listPanes).response[0].pid must be a number`. An event frame
+  carrying a tmux message with a missing or mistyped field is reported through
+  `onError` the same way, for example
+  `event.msg(window-renamed).name must be a string`, instead of reaching
+  listeners. Before, a bad value reached the caller unchecked, and the failure
+  came later, far from the wire. A field the type does not declare is dropped.
 
 ## [0.2.0]
 

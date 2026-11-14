@@ -77,6 +77,30 @@ export type BridgeErrorCode =
    */
   | "BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT";
 
+// [LAW:types-are-the-program] Keyed by the union, so a code added above is a
+// compile error here until listed; a wire peer's code is checked against it.
+const BRIDGE_ERROR_CODES: Readonly<Record<BridgeErrorCode, true>> = {
+  TMUX_ERROR: true,
+  BRIDGE_PROTOCOL_ERROR: true,
+  BRIDGE_INVALID_REQUEST: true,
+  BRIDGE_INVALID_ARG: true,
+  BRIDGE_UNKNOWN_METHOD: true,
+  BRIDGE_TIMEOUT: true,
+  BRIDGE_CLOSED: true,
+  BRIDGE_ABORTED: true,
+  BRIDGE_INTERNAL: true,
+  BRIDGE_AUTH_DENIED: true,
+  BRIDGE_COMMAND_DENIED: true,
+  BRIDGE_RATE_LIMITED: true,
+  BRIDGE_ALREADY_REGISTERED: true,
+  BRIDGE_UNKNOWN_SUBSCRIPTION: true,
+  BRIDGE_SUBSCRIPTION_FORMAT_CONFLICT: true,
+};
+
+export function isBridgeErrorCode(v: unknown): v is BridgeErrorCode {
+  return typeof v === "string" && Object.hasOwn(BRIDGE_ERROR_CODES, v);
+}
+
 // ---------------------------------------------------------------------------
 // BridgeErrorPayload — the wire shape used by BOTH transports to carry a
 // typed error across a serialization boundary that drops Error subclasses.

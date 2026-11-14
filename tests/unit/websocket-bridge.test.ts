@@ -35,6 +35,8 @@ import {
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
+import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
+import { isPaneOutput } from "../../src/protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -1339,6 +1341,75 @@ describe("WebSocket bridge — reply-stream reports", () => {
         /result\.tmuxError must be an object/,
       );
     }
+  });
+
+  it("rejects a result error whose code is not a BridgeErrorCode", () => {
+    const frame = (code: unknown) =>
+      JSON.stringify({
+        k: "result",
+        id: "x",
+        ok: false,
+        error: { code, message: "m" },
+      });
+    expect(parseServerFrame(frame("BRIDGE_TIMEOUT"))).toEqual({
+      k: "result",
+      id: "x",
+      ok: false,
+      error: { code: "BRIDGE_TIMEOUT", message: "m" },
+    });
+    for (const code of ["BRIDGE_NOPE", 7, "toString"]) {
+      expect(() => parseServerFrame(frame(code))).toThrow(
+        "result.error.code must be a BridgeErrorCode",
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tmux-message event frames (tmux-server-events-6sp.faa): every field of
+// every message is read off the wire against its type, not admitted by `type`.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket client — tmux-message event frames", () => {
+  const frame = (msg: object) => JSON.stringify({ k: "event", msg });
+  const samples = Object.values(MESSAGE_SAMPLES).filter(
+    (m) => !isPaneOutput(m),
+  );
+  // Derived from the raw layout strings, never read; `exit.reason` is optional.
+  const unread = new Set(["type", "layout", "visibleLayout", "reason"]);
+
+  it.each(samples.map((m) => [m.type, m] as const))(
+    "parses a %s frame to the message the bridge sent",
+    (_type, msg) => {
+      expect(parseServerFrame(frame(msg))).toEqual({ k: "event", msg });
+    },
+  );
+
+  it.each(samples.map((m) => [m.type, m] as const))(
+    "rejects a %s frame missing any field, naming it",
+    (type, msg) => {
+      const fields: Record<string, unknown> = { ...msg };
+      for (const field of Object.keys(fields).filter((f) => !unread.has(f))) {
+        const { [field]: _dropped, ...missing } = fields;
+        expect(() => parseServerFrame(frame(missing))).toThrow(
+          `event.msg(${type}).${field} must be`,
+        );
+      }
+    },
+  );
+
+  it("rejects a mistyped field and drops a field the type does not declare", () => {
+    expect(() =>
+      parseServerFrame(
+        frame({ ...MESSAGE_SAMPLES["subscription-changed"], paneId: "%3" }),
+      ),
+    ).toThrow("event.msg(subscription-changed).paneId must be a number");
+    expect(() => parseServerFrame(frame({ type: "exit", reason: 1 }))).toThrow(
+      "event.msg(exit).reason must be a string",
+    );
+    expect(
+      parseServerFrame(frame({ type: "window-add", windowId: 1, extra: 2 })),
+    ).toEqual({ k: "event", msg: { type: "window-add", windowId: 1 } });
   });
 });
 

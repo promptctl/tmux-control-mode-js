@@ -468,6 +468,6 @@ describe("parseServerFrame — welcome call limits", () => {
     const fn = (): unknown =>
       parseServerFrame(JSON.stringify({ k: "welcome" }));
     expect(fn).toThrow(BridgeProtocolError);
-    expect(fn).toThrow("welcome.limits missing or malformed");
+    expect(fn).toThrow("welcome.limits must be an object");
   });
 });
