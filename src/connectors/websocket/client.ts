@@ -861,8 +861,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //     to end.
   // -------------------------------------------------------------------------
 
-  // [LAW:effects-at-boundaries] The ready gate every frame after the welcome
-  //   goes through. True iff the current connection is ready and its socket
+  // [LAW:effects-at-boundaries] The ready gate for calls and bye, which act on
+  //   whichever connection is current. True iff it is ready and its socket
   //   took the frame.
   // [LAW:one-source-of-truth] The gate is the connection's phase, not the
   //   socket's readyState: the socket is OPEN between onOpen and onWelcome,
