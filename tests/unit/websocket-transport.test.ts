@@ -38,26 +38,19 @@ class FakeWebSocket implements BrowserWebSocketLike {
   close(): void {
     this.closed = true;
   }
-  addEventListener(
-    type: "open" | "error",
-    listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "message",
-    listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "close",
-    listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
   addEventListener<K extends keyof FakeWebSocketEvents>(
     type: K,
     listener: FakeWebSocketEvents[K],
   ): void {
     this.listeners[type].push(listener);
+  }
+  removeEventListener<K extends keyof FakeWebSocketEvents>(
+    type: K,
+    listener: FakeWebSocketEvents[K],
+  ): void {
+    const list = this.listeners[type];
+    const at = list.indexOf(listener);
+    if (at !== -1) list.splice(at, 1);
   }
   emitMessage(data: unknown): void {
     this.listeners.message.forEach((l) => l({ data }));

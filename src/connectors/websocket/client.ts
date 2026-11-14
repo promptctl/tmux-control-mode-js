@@ -179,11 +179,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly requestTimeoutMs: DurationMs;
 
   private ws: BrowserWebSocketLike | null = null;
-  // [LAW:single-enforcer] One controller per connection scopes the lifetime
-  // of every listener attached to its ws. finalizeConnection aborts it; the
-  // ws library removes all listeners in one operation. No per-listener
+  // [LAW:single-enforcer] Removes every listener openSocket attached to the
+  // current ws; finalizeConnection is its only caller. No per-listener
   // staleness check exists or is needed.
-  private connectionAbort: AbortController | null = null;
+  private detachListeners: (() => void) | null = null;
   private nextId = 0;
   private serverLimits: WelcomeLimits | null = null;
   // The runner this connection handed the router; null until welcome and
@@ -290,7 +289,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // initiative: close(), a failed handshake, a heartbeat timeout. Finalize
   // runs first so the outbox and the state see `err` whether the runtime
   // fires the close event inside ws.close() or later; by then the close
-  // listener is aborted, so the later event is inert. The socket is absent
+  // listener is detached, so the later event is inert. The socket is absent
   // during reconnect backoff, when close() has only the retry to cancel.
   // [LAW:no-silent-failure] No catch around ws.close(): the code is one of
   // the constants above and closeReason makes the reason legal, so a throw is
@@ -510,35 +509,29 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
-    // [LAW:locality-or-seam] AbortSignal IS the seam binding listener
-    // lifetime to connection lifetime. Aborted by finalizeConnection;
-    // the ws library removes every listener atomically.
+    // [LAW:locality-or-seam] Removal by reference IS the seam binding
+    // listener lifetime to connection lifetime (see BrowserWebSocketLike).
     // [LAW:dataflow-not-control-flow] No `if (stale) return` guard in any
-    // listener — the variability ("is this socket still attached") lives
-    // in the AbortSignal's state, not in branching inside each handler.
-    const abort = new AbortController();
-    this.connectionAbort = abort;
-    const opts = { signal: abort.signal };
-
-    ws.addEventListener("open", () => this.onOpen(), opts);
-    ws.addEventListener(
-      "message",
-      (event: { data: unknown }) => this.onMessage(event.data),
-      opts,
-    );
-    ws.addEventListener(
-      "close",
-      (event: { code?: number; reason?: string }) => this.onClose(event),
-      opts,
-    );
-    ws.addEventListener(
-      "error",
-      // Error events in the browser are opaque. Treat as a connection error;
-      // the 'close' that follows will drive the actual teardown.
-      () =>
-        this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error")),
-      opts,
-    );
+    // listener — a socket that is no longer current has no listeners left.
+    const onOpen = (): void => this.onOpen();
+    const onMessage = (event: { data: unknown }): void =>
+      this.onMessage(event.data);
+    const onClose = (event: { code?: number; reason?: string }): void =>
+      this.onClose(event);
+    // Error events in the browser are opaque. Treat as a connection error;
+    // the 'close' that follows will drive the actual teardown.
+    const onError = (): void =>
+      this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error"));
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+    this.detachListeners = () => {
+      ws.removeEventListener("open", onOpen);
+      ws.removeEventListener("message", onMessage);
+      ws.removeEventListener("close", onClose);
+      ws.removeEventListener("error", onError);
+    };
   }
 
   private onOpen(): void {
@@ -704,14 +697,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     if (this.currentConnectionState.status === "closed") return;
 
     // [LAW:single-enforcer] One operation tears down everything connection-
-    // scoped: listeners (via AbortController), timers, pending, ws ref.
-    // The abort happens first because it severs the inbound event stream
+    // scoped: listeners, timers, pending, ws ref.
+    // Detaching happens first because it severs the inbound event stream
     // — no late event can re-enter the client through the closure-bound
     // `this` after this line.
-    if (this.connectionAbort !== null) {
-      this.connectionAbort.abort();
-      this.connectionAbort = null;
-    }
+    this.detachListeners?.();
+    this.detachListeners = null;
     this.heartbeat?.stop();
     // [LAW:no-ambient-temporal-coupling] Null the socket BEFORE draining. A
     // rejection handler running synchronously inside drain() must never observe

@@ -1246,12 +1246,14 @@ class Connection {
     if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
-    this.ws.close(wsCode, closeReason(message));
     // [LAW:dataflow-not-control-flow] Every close handshake this connection
     // opens runs under the heartbeat's deadline (see onPongDeadline),
     // whatever state the connection was in: a fatal before hello has no
     // heartbeat running yet, and start() is idempotent for one that does.
+    // Armed before close() so a close() that throws still leaves the
+    // connection a deadline to finalize by.
     this.heartbeat.start();
+    this.ws.close(wsCode, closeReason(message));
   }
 
   // -------------------------------------------------------------------------

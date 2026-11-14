@@ -37,26 +37,19 @@ export class FakeWebSocket implements BrowserWebSocketLike {
   send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
   close(_code?: number, _reason?: string): void {}
 
-  addEventListener(
-    type: "open" | "error",
-    listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "message",
-    listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "close",
-    listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
   addEventListener<K extends keyof FakeEvents>(
     type: K,
     listener: FakeEvents[K],
   ): void {
     this.listeners[type].push(listener);
+  }
+  removeEventListener<K extends keyof FakeEvents>(
+    type: K,
+    listener: FakeEvents[K],
+  ): void {
+    const list = this.listeners[type];
+    const at = list.indexOf(listener);
+    if (at !== -1) list.splice(at, 1);
   }
 
   emitMessage(data: unknown): void {

@@ -36,6 +36,18 @@ import {
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import { sessionScope } from "../../src/pane-output.js";
 
+// [LAW:no-ambient-temporal-coupling] The client's timers run on a test-owned
+// clock: a reconnect backoff fires when a test advances it, not when the
+// runner gets round to it. setImmediate stays real so a test can still let
+// queued work drain. Describes that need the heartbeat's interval fake every
+// timer in their own beforeEach.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 // ---------------------------------------------------------------------------
 // Mock WebSocket hub. One hub per test; produces one MockWS per `openSocket`
 // call. Each MockWS records every frame the client tried to send so tests
@@ -50,16 +62,10 @@ interface MockWS {
   readonly sent: string[];
   send(data: string | ArrayBufferLike | Uint8Array): void;
   close(code?: number, reason?: string): void;
-  // Match the real DOM signature: when options.signal aborts, the
-  // listener is atomically removed from the EventTarget's registry.
-  // A mock that ignored `signal` would silently leak the staleness
-  // bug back in — defeating the whole point of binding listener
-  // lifetime to connection lifetime.
-  addEventListener(
-    event: string,
-    listener: Listener,
-    options?: { signal?: AbortSignal },
-  ): void;
+  // Like the `ws` package, options (`{ signal }` included) are ignored: only
+  // removeEventListener ends a listener's life, so a client that leaned on
+  // anything else would show its stale listeners here.
+  addEventListener(event: string, listener: Listener): void;
   removeEventListener(event: string, listener: Listener): void;
   fire(event: string, payload: unknown): void;
 }
@@ -81,29 +87,13 @@ class MockWebSocketHub {
         ws.readyState = 3; // CLOSED
         ws.fire("close", { code, reason });
       },
-      addEventListener(event, listener, options) {
+      addEventListener(event, listener) {
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
         set.add(listener);
-        // Honor the AbortSignal option exactly as the real DOM does:
-        // on abort, remove this listener from the registry.
-        if (options?.signal !== undefined) {
-          const signal = options.signal;
-          if (signal.aborted) {
-            set.delete(listener);
-            return;
-          }
-          signal.addEventListener(
-            "abort",
-            () => {
-              listeners.get(event)?.delete(listener);
-            },
-            { once: true },
-          );
-        }
       },
       removeEventListener(event, listener) {
         listeners.get(event)?.delete(listener);
@@ -226,14 +216,8 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         code: "BRIDGE_CLOSED",
       });
 
-      // [LAW:verifiable-goals] Poll until the reconnect timer has fired
-      // and openSocket created the second socket. A fixed sleep would be
-      // a guess about timer scheduling on the runner; this predicate is
-      // exact. Matches the pattern in connection-state.test.ts.
-      const deadline = Date.now() + 100;
-      while (hub.sockets.length < 2 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2));
-      }
+      // The 1ms backoff elapses; the retry opens the second socket.
+      await vi.advanceTimersByTimeAsync(1);
       expect(hub.sockets.length).toBe(2);
 
       // Drive the second connection to ready. The fix: flushOutbox iterates
@@ -409,11 +393,9 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect(client.connectionState.status).toBe("closed");
 
       // Now simulate the orphaned socket completing its handshake AFTER
-      // close(): open arrives first, then welcome. The AbortController
-      // bound to the connection was aborted in finalizeConnection, so
-      // the DOM/`ws`-library removed every listener atomically. The
-      // mock honors `{ signal }` the same way — these `fire` calls find
-      // an empty listener set and invoke nothing.
+      // close(): open arrives first, then welcome. finalizeConnection
+      // removed every listener the connection added, so these `fire`
+      // calls find an empty listener set and invoke nothing.
       hub.open();
       hub.welcome();
       await new Promise((r) => setImmediate(r));
@@ -486,10 +468,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect(hub.sockets.length).toBe(1);
 
       // The timer fires and opens exactly one new socket.
-      const deadline = Date.now() + 100;
-      while (hub.sockets.length < 2 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2));
-      }
+      await vi.advanceTimersByTimeAsync(1);
       expect(hub.sockets.length).toBe(2);
 
       hub.open(1);
@@ -513,19 +492,13 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         status: "reconnecting",
         attempt: 1,
       });
-      let deadline = Date.now() + 100;
-      while (hub.sockets.length < 2 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2));
-      }
+      await vi.advanceTimersByTimeAsync(1);
       hub.fireClose(1, 1006, "abnormal");
       expect(client.connectionState).toMatchObject({
         status: "reconnecting",
         attempt: 2,
       });
-      deadline = Date.now() + 100;
-      while (hub.sockets.length < 3 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2));
-      }
+      await vi.advanceTimersByTimeAsync(1);
 
       // Consumer ends the episode, then starts a new one. The stale count
       // (2) must not leak into the new episode's budget.
@@ -626,10 +599,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       // here is the regression under test.
       const callPromise = client.execute("list-windows");
 
-      const deadline = Date.now() + 100;
-      while (hub.sockets.length < 2 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 2));
-      }
+      await vi.advanceTimersByTimeAsync(1);
       hub.open(1);
       hub.welcome(1);
       await new Promise((r) => setImmediate(r));
@@ -791,10 +761,7 @@ describe("WebSocketTmuxClient — cross-session layout coverage across reconnect
     }
 
     hub.fireClose(0, 1006, "abnormal");
-    const deadline = Date.now() + 100;
-    while (hub.sockets.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await vi.advanceTimersByTimeAsync(1);
     hub.open(1);
     hub.welcome(1);
 
@@ -827,10 +794,7 @@ describe("topology across a reconnect", () => {
     await new Promise((r) => setImmediate(r));
     expect(errors).toEqual([]);
 
-    const deadline = Date.now() + 100;
-    while (hub.sockets.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await vi.advanceTimersByTimeAsync(1);
     hub.open(1);
     hub.welcome(1);
     await new Promise((r) => setImmediate(r));
@@ -1090,10 +1054,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       lastError: { code: "BRIDGE_PROTOCOL_ERROR" },
     });
 
-    const deadline = Date.now() + 100;
-    while (hub.sockets.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    await vi.advanceTimersByTimeAsync(1);
     expect(hub.sockets).toHaveLength(2);
     hub.open(1);
     hub.latest().fire("message", { data: BAD_WELCOMES[0]![1] });
@@ -1172,6 +1133,59 @@ describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when i
       status: "closed",
       reason: "transport-error",
     });
+  });
+
+  it("the timed-out socket's late frames and close reach nothing once the reconnect is ready", async () => {
+    const errors: BridgeError[] = [];
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      heartbeatTimeoutMs: 500,
+      reconnect: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        factor: 1,
+        jitterMs: 0,
+      },
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: (e) => errors.push(e),
+    });
+    const dead = hub.latest();
+    vi.spyOn(dead, "close").mockImplementation(() => {
+      dead.readyState = 2; // CLOSING: the peer never answers the handshake
+    });
+    hub.open();
+    hub.welcome(-1, parseDurationMs("heartbeatIntervalMs", 1_000));
+    void client.listSessions().catch(() => {});
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(client.connectionState.status).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hub.sockets).toHaveLength(2);
+    hub.open();
+    hub.welcome();
+    const before = errors.length;
+
+    // The answer to the call the timeout already rejected, then the close
+    // the runtime fires when it finally gives up on the dead socket.
+    const late: ResultFrame = {
+      k: "result",
+      id: "r1",
+      ok: true,
+      response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
+    };
+    dead.fire("message", {
+      data: encodeServerFrame(late satisfies ServerFrame),
+    });
+    dead.fire("close", { code: 1006, reason: "" });
+
+    expect(errors).toHaveLength(before);
+    expect(client.connectionState.status).toBe("ready");
+    expect(hub.latest().readyState).toBe(1);
+    await client.close();
   });
 });
 
