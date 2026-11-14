@@ -8,6 +8,17 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `TopologyRouter`'s constructor takes a `DeliveryQueue` first:
+  `new TopologyRouter(delivery, reportTopologyError, options)`. A transport
+  adapter passes the queue its own entry points step through, so the
+  router's sinks and error reports run after the adapter's transition. A
+  sink now receives a chunk when the outermost step drains, not inside
+  `dispatchBytes`, so an adapter must not reuse a chunk's buffer within
+  that step.
+- `WebSocketTmuxClient`'s frame handlers, public only so a module-level table
+  could call them, are gone from its surface: `onWelcome`, `onResult`,
+  `onDraining`, `dispatchEvent` and `emitError` are private, and `onPong`
+  and `emitSynthetic` are removed.
 - `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
   `currentCommand` move into `process`, a `PaneProcessState` (exported from
   `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
@@ -36,8 +47,40 @@ All notable changes to this project are documented here. Format follows
   prints raw, splitting the pane's line. 0.2.0 dropped both panes from the
   list.
 
+### Added
+
+- `DeliveryQueue` (exported from `.`): runs a transport adapter's entry
+  points as run-to-completion steps and delivers what they post to
+  listeners, sinks and error handlers once each step has committed. A
+  delivery that throws is reported to the host as an uncaught error, and
+  the deliveries after it still run.
+
 ### Fixed
 
+- A listener, a sink, `onError` or `onDraining` may call `close()` or
+  `connect()` at any transition, and the client ends in the state its last
+  call asked for. `TmuxClient`, `WebSocketTmuxClient` and the Electron
+  `TmuxClientProxy` call consumer code only once the transition that caused
+  it has finished. That is before a call from outside the client returns,
+  and after the current listener returns for a call made from one. Before,
+  a `WebSocketTmuxClient` callback that closed or reconnected mid-transition
+  could leave a heartbeat timer or socket running on a closed client, or
+  announce a connection the callback had ended.
+  - Listeners hear events in the order the client reached them: `exit`
+    before `closed`, and `ready` before `reconnected` before a `closed` its
+    listener caused.
+  - Each message tmux sends is one transition, so a sink a listener
+    attaches or disposes takes effect from the next message, however the
+    transport split its reads. A reply that a transport delivers
+    synchronously from within `send()`, as `./mock` does, is part of the call
+    that sent it.
+  - A sink receives no `write` once its disposer or the connection's close
+    has run, and `end` exactly once after its last write.
+  - A listener that throws no longer interrupts the client's transition, the
+    call that caused it, or the events after it, though it still skips the
+    rest of that one event's listeners. Its error is reported to the host as
+    an uncaught error, where before it left through whichever transport
+    callback or method happened to be running.
 - `execute()` rejects a command holding a NUL with `TmuxInvalidCommandError`,
   and nothing is sent. tmux ends a command line at a NUL, runs what precedes
   it and replies success, so `execute("new-window -e 'A=x<NUL>y' -- cmd")`

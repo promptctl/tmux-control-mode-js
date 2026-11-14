@@ -802,6 +802,52 @@ describe("WebSocketTmuxClient — cross-session layout coverage across reconnect
     answerCalls(hub.sockets[1], answered);
     await client.close();
   });
+
+  it("calls queued during the outage land on the replayed coverage in the order they were made", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    void client.connect();
+    hub.open(0);
+    hub.welcome(0);
+    const answered = new Set<string>();
+    const held = client.enableCrossSessionLayoutChange();
+    answerCalls(hub.sockets[0], answered);
+    await held;
+
+    hub.fireClose(0, 1006, "abnormal");
+    const enabled = client.enableCrossSessionLayoutChange();
+    const disabled = client.disableCrossSessionLayoutChange();
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(1);
+    hub.welcome(1);
+
+    // The replay rebuilds the old peer's one enable; the queued enable and
+    // disable then net to nothing, leaving the new peer the one the
+    // consumer still holds.
+    const calls = sentFrames(hub.sockets[1])
+      .filter((f) => f.k === "call")
+      .map((f) => (f as { method?: string }).method);
+    expect(calls).toEqual([
+      "enableCrossSessionLayoutChange",
+      "enableCrossSessionLayoutChange",
+      "disableCrossSessionLayoutChange",
+    ]);
+    answerCalls(hub.sockets[1], answered);
+    await Promise.all([enabled, disabled]);
+
+    // The count settled at one: the next connection replays exactly one.
+    hub.fireClose(1, 1006, "abnormal");
+    while (hub.sockets.length < 3 && Date.now() < deadline + 100) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(2);
+    hub.welcome(2);
+    expect(enableCalls(hub.sockets[2])).toBe(1);
+    answerCalls(hub.sockets[2], answered);
+    await client.close();
+  });
 });
 
 describe("topology across a reconnect", () => {
@@ -1097,4 +1143,322 @@ describe("WebSocketTmuxClient — one command is one non-empty line", () => {
       await client.close();
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// A callback may close() or connect() at any transition (6sp.9f7): the client
+// ends in the state its last call asked for, and nothing a transition did
+// after the callback's call survives it — no heartbeat, retry or socket runs
+// on a closed client.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — a callback may close() or connect() at any transition", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const HEARTBEAT = parseDurationMs("heartbeatIntervalMs", 1_000);
+
+  function harness() {
+    const hub = new MockWebSocketHub();
+    const slots: {
+      onError: (err: BridgeError) => void;
+      onDraining: (deadlineMs: number) => void;
+    } = { onError: () => {}, onDraining: () => {} };
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: (err) => slots.onError(err),
+      onDraining: (deadlineMs) => slots.onDraining(deadlineMs),
+      reconnect: {
+        maxAttempts: 3,
+        initialDelayMs: 1,
+        maxDelayMs: 1,
+        factor: 1,
+        jitterMs: 0,
+      },
+    });
+    const ready = (idx = -1) => {
+      hub.open(idx);
+      hub.welcome(idx, HEARTBEAT);
+    };
+    // A dropped first connection, retried and welcomed: a re-ready.
+    const reReady = async () => {
+      ready();
+      hub.fireClose();
+      await vi.advanceTimersByTimeAsync(1);
+      ready();
+    };
+    return { hub, client, slots, ready, reReady };
+  }
+
+  function pings(hub: MockWebSocketHub): number {
+    return hub.sockets
+      .flatMap((ws) => sentFrames(ws))
+      .filter((f) => f.k === "ping").length;
+  }
+
+  // Closed for good: no socket opens and no ping leaves after the close.
+  async function expectStaysClosed(
+    hub: MockWebSocketHub,
+    client: WebSocketTmuxClient,
+  ): Promise<void> {
+    expect(client.connectionState.status).toBe("closed");
+    const sockets = hub.sockets.length;
+    const sent = pings(hub);
+    await vi.advanceTimersByTimeAsync(HEARTBEAT * 5);
+    expect(client.connectionState.status).toBe("closed");
+    expect(hub.sockets.length).toBe(sockets);
+    expect(pings(hub)).toBe(sent);
+  }
+
+  // One-shot: the first time `status` is announced, run `act`.
+  function onFirst(
+    client: WebSocketTmuxClient,
+    status: string,
+    act: () => void,
+  ): void {
+    let done = false;
+    client.on("connection-state", (ev) => {
+      if (done || ev.state.status !== status) return;
+      done = true;
+      act();
+    });
+  }
+
+  it("close() from a ready listener", async () => {
+    const h = harness();
+    onFirst(h.client, "ready", () => void h.client.close());
+    void h.client.connect();
+    h.ready();
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from a ready listener on a re-ready", async () => {
+    const h = harness();
+    let readies = 0;
+    h.client.on("connection-state", (ev) => {
+      if (ev.state.status === "ready" && ++readies === 2) void h.client.close();
+    });
+    void h.client.connect();
+    await h.reReady();
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from a reconnected listener", async () => {
+    const h = harness();
+    h.client.on("reconnected", () => void h.client.close());
+    void h.client.connect();
+    await h.reReady();
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from a reconnecting listener", async () => {
+    const h = harness();
+    onFirst(h.client, "reconnecting", () => void h.client.close());
+    void h.client.connect();
+    h.ready();
+    h.hub.fireClose();
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from a connecting listener on the retry", async () => {
+    const h = harness();
+    // The client starts in connecting, so the retry's is the first announced.
+    onFirst(h.client, "connecting", () => void h.client.close());
+    void h.client.connect();
+    h.ready();
+    h.hub.fireClose();
+    await vi.advanceTimersByTimeAsync(1);
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from onError", async () => {
+    const h = harness();
+    h.slots.onError = () => void h.client.close();
+    void h.client.connect();
+    h.ready();
+    h.hub.latest().fire("message", { data: 42 });
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from onDraining", async () => {
+    const h = harness();
+    h.slots.onDraining = () => void h.client.close();
+    void h.client.connect();
+    h.ready();
+    h.hub.latest().fire("message", {
+      data: encodeServerFrame({ k: "draining", deadlineMs: 5_000 }),
+    });
+    await expectStaysClosed(h.hub, h.client);
+  });
+
+  it("close() from a ready listener ends with the closed it asked for, heard after ready and reconnected", async () => {
+    const h = harness();
+    const heard: string[] = [];
+    let readies = 0;
+    h.client.on("connection-state", (ev) => {
+      heard.push(ev.state.status);
+      if (ev.state.status === "ready" && ++readies === 2) void h.client.close();
+    });
+    h.client.on("reconnected", () => heard.push("reconnected"));
+    void h.client.connect();
+    await h.reReady();
+    expect(heard.slice(-3)).toEqual(["ready", "reconnected", "closed"]);
+  });
+
+  it("connect() from a closed listener after close() opens a new connection", async () => {
+    const h = harness();
+    onFirst(h.client, "closed", () => void h.client.connect());
+    void h.client.connect();
+    h.ready();
+    await h.client.close();
+    expect(h.hub.sockets).toHaveLength(2);
+    h.ready();
+    expect(h.client.connectionState.status).toBe("ready");
+  });
+
+  it("close() then connect() from a ready listener leaves one live connection", async () => {
+    const h = harness();
+    onFirst(h.client, "ready", () => {
+      void h.client.close();
+      void h.client.connect();
+    });
+    void h.client.connect();
+    h.ready(0);
+    expect(h.hub.sockets).toHaveLength(2);
+    expect(h.client.connectionState.status).toBe("connecting");
+    h.ready(1);
+    expect(h.client.connectionState.status).toBe("ready");
+    const before = sentFrames(h.hub.sockets[0]!).length;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT * 2);
+    // The first connection's heartbeat died with it.
+    expect(sentFrames(h.hub.sockets[0]!)).toHaveLength(before);
+    expect(sentFrames(h.hub.sockets[1]!).some((f) => f.k === "ping")).toBe(
+      true,
+    );
+  });
+
+  it("a re-ready listener's close() then connect() replays an outstanding enable once, with no onError", async () => {
+    const h = harness();
+    const errors: BridgeError[] = [];
+    h.slots.onError = (err) => errors.push(err);
+    void h.client.connect();
+    h.ready();
+    const enabled = h.client.enableCrossSessionLayoutChange();
+    const call = sentFrames(h.hub.latest()).find((f) => f.k === "call")!;
+    h.hub.latest().fire("message", {
+      data: encodeServerFrame({
+        k: "result",
+        id: call.id!,
+        ok: true,
+        response: null,
+      }),
+    });
+    await enabled;
+    let readies = 0;
+    h.client.on("connection-state", (ev) => {
+      if (ev.state.status === "ready" && ++readies === 1) {
+        void h.client.close();
+        void h.client.connect();
+      }
+    });
+    h.hub.fireClose();
+    await vi.advanceTimersByTimeAsync(1);
+    h.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    h.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    const replays = sentFrames(h.hub.latest()).filter(
+      (f) =>
+        f.k === "call" &&
+        (f as { method?: string }).method === "enableCrossSessionLayoutChange",
+    );
+    expect(replays).toHaveLength(1);
+    expect(errors).toEqual([]);
+    // The refused replay of the closed connection wrote no lastError, so a
+    // later clean drop reads as one.
+    h.hub.fireClose(-1, 1000, "");
+    expect(h.client.connectionState).toEqual({
+      status: "reconnecting",
+      attempt: 1,
+    });
+  });
+
+  it("a socket that closes inside the welcome's replay ends that welcome: the next one replays the count once", async () => {
+    const h = harness();
+    const errors: BridgeError[] = [];
+    h.slots.onError = (err) => errors.push(err);
+    void h.client.connect();
+    h.ready();
+    const enableOnce = async () => {
+      const enabled = h.client.enableCrossSessionLayoutChange();
+      const call = sentFrames(h.hub.latest()).at(-1)!;
+      h.hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "result",
+          id: call.id!,
+          ok: true,
+          response: null,
+        }),
+      });
+      await enabled;
+    };
+    await enableOnce();
+    await enableOnce();
+    h.hub.fireClose();
+    await vi.advanceTimersByTimeAsync(1);
+    // The second connection dies on its first replayed enable, synchronously
+    // inside send().
+    const dying = h.hub.latest();
+    const send = dying.send.bind(dying);
+    dying.send = (data) => {
+      send(data);
+      if (typeof data === "string" && data.includes('"call"')) {
+        h.hub.fireClose();
+      }
+    };
+    h.ready();
+    expect(h.client.connectionState.status).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1);
+    h.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    const replays = sentFrames(h.hub.latest()).filter(
+      (f) =>
+        f.k === "call" &&
+        (f as { method?: string }).method === "enableCrossSessionLayoutChange",
+    );
+    expect(replays).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
+  it("a ready listener that throws leaves the connection fully up, and its error is reported", async () => {
+    const reported: (() => void)[] = [];
+    vi.stubGlobal("queueMicrotask", (fn: () => void) => reported.push(fn));
+    const h = harness();
+    const boom = new Error("listener broke");
+    onFirst(h.client, "ready", () => {
+      throw boom;
+    });
+    void h.client.connect();
+    const queued = h.client.execute("list-windows");
+    void queued.catch(() => undefined);
+    h.hub.open();
+    expect(() => h.hub.welcome(-1, HEARTBEAT)).not.toThrow();
+    expect(h.client.connectionState.status).toBe("ready");
+    // The outbox flushed: the call queued before welcome was transmitted.
+    expect(sentFrames(h.hub.latest()).some((f) => f.k === "call")).toBe(true);
+    // The heartbeat started.
+    await vi.advanceTimersByTimeAsync(HEARTBEAT);
+    expect(pings(h.hub)).toBeGreaterThan(0);
+    expect(reported).toHaveLength(1);
+    expect(() => reported[0]?.()).toThrow(boom);
+  });
 });

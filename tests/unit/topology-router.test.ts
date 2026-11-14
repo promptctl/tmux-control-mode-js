@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import { DeliveryQueue } from "../../src/delivery-queue.js";
 import { HELD_BYTES_LIMIT, TopologyRouter } from "../../src/topology-router.js";
 import type { TopologyRouterOptions } from "../../src/topology-router.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
@@ -62,7 +63,7 @@ const noop: (cmd: string) => Promise<CommandResponse> = () =>
 // reporter. The failure/recovery suite below builds its own router with a
 // capturing reporter.
 function newRouter(options?: TopologyRouterOptions): TopologyRouter {
-  return new TopologyRouter(() => undefined, options);
+  return new TopologyRouter(new DeliveryQueue(), () => undefined, options);
 }
 
 // ---------------------------------------------------------------------------
@@ -349,7 +350,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
   // list-panes runCommand that can be flipped from rejecting to succeeding.
   function makeFailingSetup(firstOutcome: "reject" | "ok") {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     let listPanesShouldReject = firstOutcome === "reject";
     const run = (cmd: string): Promise<CommandResponse> => {
       if (cmd.includes("list-panes -a")) {
@@ -391,7 +394,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
 
   it("does NOT report when the bootstrap succeeds (empty tmux is not a failure)", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
 
     router.attachBytesSink(makeSink(), { scope: sessionScope(100) });
     // Succeeds with zero panes — a genuinely empty tmux, not a failure.
@@ -433,7 +438,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
   // concurrent-bootstrap scenario.
   it("suppresses a superseded bootstrap's failure — a newer bootstrap owns the outcome", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     let rejectA!: (e: Error) => void;
     let call = 0;
     const run = (cmd: string): Promise<CommandResponse> => {
@@ -472,7 +479,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
   // naive guard — the exact silent-starve this PR removes.
   it("reports a failure whose epoch was bumped only by a window-close (no successor bootstrap)", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     let rejectA!: (e: Error) => void;
     const run = (cmd: string): Promise<CommandResponse> => {
       if (cmd.includes("list-panes -a")) {
@@ -497,7 +506,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
 
   it("does NOT report a bootstrap failure that arrives after onTransportClose (shutdown artifact)", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     let rejectA!: (e: Error) => void;
     const run = (cmd: string): Promise<CommandResponse> => {
       if (cmd.includes("list-panes -a")) {
@@ -527,7 +538,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
   // on the healthy reconnected connection (runCommand is the new, non-null runner).
   it("does NOT report a stale bootstrap failure after the transport closed and reopened (reconnect/ABA)", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     let rejectA!: (e: Error) => void;
     const runA = (cmd: string): Promise<CommandResponse> =>
       cmd.includes("list-panes -a")
@@ -555,7 +568,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
 
   it("normalizes a non-Error, non-string-coercible rejection without itself throwing", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     // A null-prototype object: `String(value)` throws on it, so topologyError
     // must fall back rather than convert the rejection into an unhandled one.
     const weird = Object.create(null) as object;
@@ -789,7 +804,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
   it("refuses output past the hold cap and reports it", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     const sink = makeSink();
@@ -853,7 +870,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     layoutChanges: [number, string][],
     onError: (e: Error) => void = () => undefined,
   ) {
-    const router = new TopologyRouter(onError);
+    const router = new TopologyRouter(new DeliveryQueue(), onError);
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     const oldSession = makeSink();
@@ -982,7 +999,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
   it("reports a refresh failure other than the window being gone", async () => {
     const errors: Error[] = [];
-    const router = new TopologyRouter((e) => errors.push(e));
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
     const { run, replies } = controlledRun();
     router.onTransportReady(run);
     router.attachBytesSink(makeSink(), { scope: windowScope(3) });
@@ -1024,7 +1043,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     "neither reports nor re-queries a bootstrap its connection dropped (%s)",
     async (drop) => {
       const errors: Error[] = [];
-      const router = new TopologyRouter((e) => errors.push(e));
+      const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+        errors.push(e),
+      );
       const { run, replies } = controlledRun();
       router.onTransportReady(run);
       router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
@@ -1036,7 +1057,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   );
 
   it("routes nothing by the previous connection's rows after a reconnect", async () => {
-    const router = new TopologyRouter(() => undefined);
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
     const first = controlledRun();
     router.onTransportReady(first.run);
     const oldSession = makeSink();
@@ -1059,7 +1080,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   });
 
   it("ignores a late loss from an earlier connection", async () => {
-    const router = new TopologyRouter(() => undefined);
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
     const first = controlledRun();
     router.onTransportReady(first.run);
     const next = controlledRun();
@@ -1072,7 +1093,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   });
 
   it("queries nothing while the connection is lost, and re-seeds on the next", async () => {
-    const router = new TopologyRouter(() => undefined);
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
     const first = controlledRun();
     router.onTransportReady(first.run);
     router.onTransportLost(first.run);
@@ -1198,5 +1219,142 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     await settle();
     expect(oldSession.chunks).toHaveLength(0);
     expect(paneIdsOf(newSession)).toEqual([5]);
+  });
+});
+
+// A sink hears what was routed to it after the step that routed it, and
+// nothing once its disposer or the connection's close has run (6sp.9f7).
+describe("TopologyRouter — what a sink hears after a callback ends it", () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  // A router with a bootstrap in flight and three chunks of pane %1 held for
+  // it; `land()` answers the bootstrap so they replay to session $1's sinks.
+  function withHeldChunks(sinks: BytesSink[]) {
+    const router = newRouter();
+    let answer: (r: CommandResponse) => void = () => {};
+    router.onTransportReady(
+      () =>
+        new Promise<CommandResponse>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    for (const s of sinks)
+      router.attachBytesSink(s, { scope: sessionScope(1) });
+    for (let i = 0; i < 3; i++) router.dispatchBytes(makeChunk(1));
+    return {
+      router,
+      land: async () => {
+        answer(makeOkResponse(["%1 @10 $1"]));
+        await settle();
+      },
+    };
+  }
+
+  function recording(onWrite?: (n: number) => void) {
+    const log: string[] = [];
+    const sink: BytesSink = {
+      write() {
+        log.push("write");
+        onWrite?.(log.filter((e) => e === "write").length);
+      },
+      end() {
+        log.push("end");
+      },
+    };
+    return { sink, log };
+  }
+
+  it("a sink whose first replayed write closes the transport hears nothing more, then its end once", async () => {
+    const closer = recording((n) => {
+      if (n === 1) held.router.onTransportClose();
+    });
+    const other = recording();
+    const held = withHeldChunks([closer.sink, other.sink]);
+    const { router } = held;
+    await held.land();
+    expect(closer.log).toEqual(["write", "end"]);
+    // The close ran before the other sink's first write was delivered, so
+    // it hears only its end.
+    expect(other.log).toEqual(["end"]);
+    const late = recording();
+    router.attachBytesSink(late.sink, { scope: sessionScope(1) });
+    await settle();
+    expect(late.log).toEqual([]);
+  });
+
+  it("a sink disposed by another sink's replayed write hears nothing after its disposer", async () => {
+    let disposeVictim: () => void = () => {};
+    const victim = recording();
+    const killer = recording((n) => {
+      if (n === 1) disposeVictim();
+    });
+    const held = withHeldChunks([killer.sink]);
+    disposeVictim = held.router.attachBytesSink(victim.sink, {
+      scope: sessionScope(1),
+    });
+    await held.land();
+    expect(killer.log).toEqual(["write", "write", "write"]);
+    // The victim was attached after the chunks arrived, so replay never
+    // reaches it; its disposer ends it exactly once.
+    expect(victim.log).toEqual(["end"]);
+  });
+
+  it("a sink disposed by its own live write hears none of the chunks routed after", () => {
+    const router = newRouter();
+    let dispose: () => void = () => {};
+    const self = recording((n) => {
+      if (n === 1) dispose();
+    });
+    dispose = router.attachBytesSink(self.sink);
+    router.dispatchBytes(makeChunk(1));
+    router.dispatchBytes(makeChunk(2));
+    expect(self.log).toEqual(["write", "end"]);
+  });
+
+  it("reports a runner that throws synchronously, and holds nothing for it afterwards", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    let down = true;
+    router.onTransportReady((cmd) => {
+      if (down) throw new Error("runner down");
+      return Promise.resolve(
+        makeOkResponse(cmd.includes("list-panes -a") ? ["%1 @10 $100"] : []),
+      );
+    });
+    await settle();
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology bootstrap failed: runner down",
+    ]);
+    // No query is outstanding, so early output for an unplaced pane is not
+    // held for a later bootstrap to replay.
+    router.dispatchBytes(makeChunk(1));
+    down = false;
+    router.handleNotification({ type: "sessions-changed" });
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
+  });
+
+  it("attachBytesSink returns its disposer even when a delivery in its step throws", () => {
+    const reported: unknown[] = [];
+    const router = new TopologyRouter(
+      new DeliveryQueue((e) => reported.push(e)),
+      () => {
+        throw new Error("topology-error listener broke");
+      },
+    );
+    router.onTransportReady(() => {
+      throw new Error("runner down");
+    });
+    const sink = makeSink();
+    const dispose = router.attachBytesSink(sink, { scope: sessionScope(1) });
+    expect(reported).toHaveLength(1);
+    dispose();
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+    expect(sink.ended).toBe(1);
   });
 });

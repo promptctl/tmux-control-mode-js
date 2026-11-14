@@ -13,6 +13,7 @@ import {
 } from "../../src/cross-session-layout.js";
 import type { CrossSessionLayoutMessage } from "../../src/cross-session-layout.js";
 import type { TmuxConnection } from "../../src/client.js";
+import { DeliveryQueue } from "../../src/delivery-queue.js";
 import { TmuxCommandError, TransportClosedError } from "../../src/errors.js";
 import type {
   CommandResponse,
@@ -208,7 +209,11 @@ function fakeConnection(
 
 function relayOver(fake: ReturnType<typeof fakeConnection>) {
   const emitted: CrossSessionLayoutMessage[] = [];
-  const relay = new CrossSessionLayoutRelay(fake.conn, (m) => emitted.push(m));
+  const relay = new CrossSessionLayoutRelay(
+    fake.conn,
+    new DeliveryQueue(),
+    (m) => emitted.push(m),
+  );
   return { relay, emitted };
 }
 
@@ -607,6 +612,33 @@ describe("CrossSessionLayoutRelay coverage", () => {
       { type: "cross-session-layout-uncovered", windowIds: [4] },
       { type: "cross-session-layout-uncovered", windowIds: [4] },
     ]);
+  });
+
+  it("counts a joining enable whose re-report's listener throws, and reports the throw", async () => {
+    const fake = fakeConnection();
+    const reported: unknown[] = [];
+    let throwing = false;
+    const relay = new CrossSessionLayoutRelay(
+      fake.conn,
+      new DeliveryQueue((e) => reported.push(e)),
+      (m) => {
+        if (throwing && m.type === "cross-session-layout-uncovered")
+          throw new Error("listener broke");
+      },
+    );
+    await relay.enable();
+    fake.deliver("", "@4,");
+    await settle();
+    throwing = true;
+
+    await expect(relay.enable()).resolves.toBeUndefined();
+    expect(reported).toHaveLength(1);
+    // Counted: the first disable leaves the subscription up, the second
+    // takes it down.
+    await relay.disable();
+    expect(subscribes(fake.sent)).toBe(1);
+    await relay.disable();
+    expect(subscribes(fake.sent)).toBe(2);
   });
 
   it("reports full coverage after re-enabling, even when it was last reported uncovered", async () => {
