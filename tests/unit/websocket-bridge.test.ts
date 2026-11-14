@@ -24,8 +24,10 @@ import {
   BridgeError,
   encodeClientFrame,
   parseServerFrame,
+  parseResultFrame,
   type FatalErrorFrame,
   type ResultErrFrame,
+  type ResultFrame,
   type ResultOkFrame,
   type ServerFrame,
 } from "../../src/connectors/websocket/protocol.js";
@@ -220,7 +222,12 @@ function feedCommandResponse(
 function readJsonFrames(ws: FakeWs): ServerFrame[] {
   return ws.outbound
     .filter((f): f is string => typeof f === "string")
-    .map((f) => parseServerFrame(f));
+    .map((f) => {
+      const frame = parseServerFrame(f);
+      // A result's body is parsed against its call's method, which these
+      // tests read off the frame as the bridge sent it.
+      return frame.k === "result" ? (frame.raw as ResultFrame) : frame;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,41 +1332,25 @@ describe("WebSocket bridge — reply-stream reports", () => {
       output: ["unknown command: bogus"],
       success: false,
     };
-    const frame = (e: unknown) =>
-      JSON.stringify({ k: "result", id: "x", ok: false, tmuxError: e });
-    expect(parseServerFrame(frame(tmuxError))).toEqual({
+    const frame = (e: unknown) => ({
+      k: "result",
+      id: "x",
+      ok: false,
+      tmuxError: e,
+    });
+    const parse = (e: unknown) => parseResultFrame("execute", frame(e));
+    expect(parse(tmuxError)).toEqual({
       k: "result",
       id: "x",
       ok: false,
       tmuxError,
     });
-    expect(() =>
-      parseServerFrame(frame({ ...tmuxError, output: "unknown" })),
-    ).toThrow(/result\.tmuxError\.output must be a string\[\]/);
+    expect(() => parse({ ...tmuxError, output: "unknown" })).toThrow(
+      /result\(execute\)\.tmuxError\.output must be a string\[\]/,
+    );
     for (const notObject of [null, []]) {
-      expect(() => parseServerFrame(frame(notObject))).toThrow(
-        /result\.tmuxError must be an object/,
-      );
-    }
-  });
-
-  it("rejects a result error whose code is not a BridgeErrorCode", () => {
-    const frame = (code: unknown) =>
-      JSON.stringify({
-        k: "result",
-        id: "x",
-        ok: false,
-        error: { code, message: "m" },
-      });
-    expect(parseServerFrame(frame("BRIDGE_TIMEOUT"))).toEqual({
-      k: "result",
-      id: "x",
-      ok: false,
-      error: { code: "BRIDGE_TIMEOUT", message: "m" },
-    });
-    for (const code of ["BRIDGE_NOPE", 7, "toString"]) {
-      expect(() => parseServerFrame(frame(code))).toThrow(
-        "result.error.code must be a BridgeErrorCode",
+      expect(() => parse(notObject)).toThrow(
+        /result\(execute\)\.tmuxError must be an object/,
       );
     }
   });

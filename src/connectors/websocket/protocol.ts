@@ -183,10 +183,9 @@ export interface ResultOkFrame {
   readonly k: "result";
   readonly id: string;
   readonly ok: true;
-  // RpcResponseMap[<the call's method>]: which method a result answers is not
-  // on the frame, so the frame parser leaves this unread and the caller that
-  // holds the call parses it with `parseRpcResponse`.
-  readonly response: unknown;
+  // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
+  // structured records for listWindows/listPanes/listSessions (see rpc.ts).
+  readonly response: RpcResponseMap[RpcMethod];
 }
 
 export interface ResultErrFrame {
@@ -232,6 +231,22 @@ export type ServerFrame =
   | PongFrame
   | DrainingFrame
   | FatalErrorFrame;
+
+/**
+ * A result as `parseServerFrame` reads it: the id of the call it answers, the
+ * rest unread. Which method it answers is not on the frame, so the holder of
+ * the call parses `raw` with `parseResultFrame`, and a malformed result still
+ * settles the call it answers.
+ */
+export interface ReceivedResultFrame {
+  readonly k: "result";
+  readonly id: string;
+  readonly raw: unknown;
+}
+
+export type ReceivedServerFrame =
+  | Exclude<ServerFrame, ResultFrame>
+  | ReceivedResultFrame;
 
 // ---------------------------------------------------------------------------
 // Binary frame: pane output
@@ -344,10 +359,10 @@ const CLIENT_FRAME_PARSERS: FrameParserTable<ClientFrame> = {
   bye: () => ({ k: "bye" }),
 };
 
-const SERVER_FRAME_PARSERS: FrameParserTable<ServerFrame> = {
+const SERVER_FRAME_PARSERS: FrameParserTable<ReceivedServerFrame> = {
   welcome: parseWelcome,
   event: parseEvent,
-  result: parseResult,
+  result: parseReceivedResult,
   pong: parsePong,
   draining: parseDraining,
   error: parseFatal,
@@ -357,7 +372,7 @@ export function parseClientFrame(raw: string): ClientFrame {
   return parseFrame(raw, CLIENT_FRAME_PARSERS, "client");
 }
 
-export function parseServerFrame(raw: string): ServerFrame {
+export function parseServerFrame(raw: string): ReceivedServerFrame {
   return parseFrame(raw, SERVER_FRAME_PARSERS, "server");
 }
 
@@ -457,13 +472,19 @@ interface WireObject<M> {
     field: F,
     kind: WireKind<Exclude<M[F], undefined>>,
   ): M[F] | undefined;
-  object<N>(field: string): WireObject<N>;
-  /** The field unread, for a parser whose shape the frame cannot know. */
-  value(field: string): unknown;
+  object<F extends keyof M & string>(field: F): WireObject<M[F]>;
+  /** The field unread, for a parser that reads it as another shape. */
+  value(field: keyof M & string): unknown;
 }
 
 function wireObject<M>(x: unknown, path: string): WireObject<M> {
-  const o = wireValue(x, isObject, path, "an object");
+  return wireFields(wireValue(x, isObject, path, "an object"), path);
+}
+
+function wireFields<M>(
+  o: Record<string, unknown>,
+  path: string,
+): WireObject<M> {
   const at = (field: string): string => `${path}.${field}`;
   return {
     read: (field, kind) => wireValue(o[field], kind.is, at(field), kind.shape),
@@ -475,6 +496,11 @@ function wireObject<M>(x: unknown, path: string): WireObject<M> {
     value: (field) => o[field],
   };
 }
+
+// [LAW:types-are-the-program] A builder's return is checked against this, so
+// an optional field it leaves out is a compile error, not a field dropped at
+// the wire.
+type Complete<T> = { [K in keyof Required<T>]: T[K] };
 
 function wireArray<T>(
   x: unknown,
@@ -490,9 +516,9 @@ function parseCall(x: unknown): CallFrame {
   const m = wireObject<CallFrame>(x, "call");
   const method = wireValue(
     m.value("method"),
-    isString,
+    STRING.is,
     "call.method",
-    "a string",
+    STRING.shape,
   );
   return {
     k: "call",
@@ -514,9 +540,7 @@ function parsePing(x: unknown): PingFrame {
 }
 
 function parseWelcome(x: unknown): WelcomeFrame {
-  const l = wireObject<WelcomeFrame>(x, "welcome").object<WelcomeLimits>(
-    "limits",
-  );
+  const l = wireObject<WelcomeFrame>(x, "welcome").object("limits");
   // [LAW:parse-dont-validate] The wire border stamps the limits the client
   // will run its own timers at; a value outside a field's shape (including a
   // non-number) names the field, the value, and the shape.
@@ -571,7 +595,7 @@ type EventOf<K extends EventMessage["type"]> = Extract<
 // [LAW:one-source-of-truth] Keyed by exactly the messages an event frame
 // carries, so this table is also what `parseEvent` admits. Each builder
 // returns a literal the compiler checks against its message type: a parsed
-// message holds its declared fields and nothing else.
+// message holds every declared field and nothing else.
 const EVENT_MESSAGE_PARSERS: {
   readonly [K in EventMessage["type"]]: (
     m: WireObject<EventOf<K>>,
@@ -725,6 +749,10 @@ const EVENT_MESSAGE_PARSERS: {
     type: "cross-session-layout-uncovered",
     windowIds: m.read("windowIds", NUMBERS),
   }),
+} satisfies {
+  readonly [K in EventMessage["type"]]: (
+    m: WireObject<EventOf<K>>,
+  ) => Complete<EventOf<K>>;
 };
 
 function parseEventMessage<K extends EventMessage["type"]>(
@@ -735,8 +763,13 @@ function parseEventMessage<K extends EventMessage["type"]>(
 }
 
 function parseEvent(x: unknown): EventFrame {
-  const raw = wireObject<EventFrame>(x, "event").value("msg");
-  const { type } = wireValue(raw, isObject, "event.msg", "an object");
+  const msg = wireValue(
+    wireObject<EventFrame>(x, "event").value("msg"),
+    isObject,
+    "event.msg",
+    "an object",
+  );
+  const { type } = msg;
   if (!isKeyOf(EVENT_MESSAGE_PARSERS, type)) {
     throw new BridgeProtocolError(
       `event.msg.type must be a known TmuxMessage discriminator or a synthetic event type the bridge delivers, got ${JSON.stringify(type)}`,
@@ -745,12 +778,12 @@ function parseEvent(x: unknown): EventFrame {
   // Several types share field names, so the path names the type.
   return {
     k: "event",
-    msg: parseEventMessage(type, wireObject(raw, `event.msg(${type})`)),
+    msg: parseEventMessage(type, wireFields(msg, `event.msg(${type})`)),
   };
 }
 
 const records =
-  <T>(parse: (m: WireObject<T>) => T) =>
+  <T>(parse: (m: WireObject<T>) => Complete<T>) =>
   (x: unknown, path: string): readonly T[] =>
     wireArray(x, path, (item, at) => parse(wireObject<T>(item, at)));
 
@@ -806,36 +839,49 @@ const RESPONSE_PARSERS: {
   disableCrossSessionLayoutChange: nullResponse,
 };
 
-/**
- * Parse an ok result's `response` as the shape `method` answers with. The
- * frame alone cannot know which method a result answers; the caller that
- * holds the call does. Throws `BridgeProtocolError` naming the field.
- */
-export function parseRpcResponse<M extends RpcMethod>(
-  method: M,
-  response: unknown,
-): RpcResponseMap[M] {
-  return RESPONSE_PARSERS[method](response, `result(${method}).response`);
+function parseReceivedResult(x: unknown): ReceivedResultFrame {
+  return {
+    k: "result",
+    id: wireObject<ResultFrame>(x, "result").read("id", NON_EMPTY_STRING),
+    raw: x,
+  };
 }
 
-function parseResult(x: unknown): ResultFrame {
-  const m = wireObject<ResultFrame>(x, "result");
+/**
+ * Parse a received result as the answer to a call of `method`: an ok
+ * `response` as the shape `method` answers with, or the failure the bridge or
+ * tmux reported. Throws `BridgeProtocolError` naming the field.
+ */
+export function parseResultFrame(method: RpcMethod, x: unknown): ResultFrame {
+  const path = `result(${method})`;
+  const m = wireObject<ResultFrame>(x, path);
   const id = m.read("id", NON_EMPTY_STRING);
   if (m.read("ok", BOOLEAN)) {
-    return { k: "result", id, ok: true, response: m.value("response") };
+    return {
+      k: "result",
+      id,
+      ok: true,
+      response: RESPONSE_PARSERS[method](
+        wireObject<ResultOkFrame>(x, path).value("response"),
+        `${path}.response`,
+      ),
+    };
   }
-  return m.value("tmuxError") === undefined
+  const tmux = wireObject<ResultTmuxErrorFrame>(x, path);
+  return tmux.value("tmuxError") === undefined
     ? {
         k: "result",
         id,
         ok: false,
-        error: parseErrorPayload(m.object("error")),
+        error: parseErrorPayload(
+          wireObject<ResultErrFrame>(x, path).object("error"),
+        ),
       }
     : {
         k: "result",
         id,
         ok: false,
-        tmuxError: parseCommandResponse(m.object("tmuxError")),
+        tmuxError: parseCommandResponse(tmux.object("tmuxError")),
       };
 }
 

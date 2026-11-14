@@ -33,6 +33,10 @@ All notable changes to this project are documented here. Format follows
   `event.msg(window-renamed).name must be a string`, instead of reaching
   listeners. Before, a bad value reached the caller unchecked, and the failure
   came later, far from the wire. A field the type does not declare is dropped.
+- `parseServerFrame` returns a `ReceivedServerFrame`: a result frame comes back
+  as a `ReceivedResultFrame` holding its `id` and the frame unread, since what
+  a result holds depends on the call it answers. `parseResultFrame(method, raw)`
+  parses it as the answer to a call of `method`.
 
 ## [0.2.0]
 
