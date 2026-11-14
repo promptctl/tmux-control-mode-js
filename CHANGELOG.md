@@ -69,13 +69,14 @@ All notable changes to this project are documented here. Format follows
   error as the reason, and the connection reads `closed` / `transport-error`,
   or `reconnecting` with that error under a reconnect policy. Before, the
   connection stayed `connecting` with the socket open, every call timed out
-  and the reconnect policy never engaged. Every protocol fault before the
-  welcome does the same, including a result for a call the client never sent,
-  which before resolved that call; once `ready`, a bad frame is still reported
-  and the connection stays up.
+  and the reconnect policy never engaged. Any frame before the welcome other
+  than a fatal `error` does the same: an event, pane output, a pong, a drain
+  notice, or a result, which before could resolve a call the client had not
+  yet sent. Once `ready`, a bad frame is still reported and the connection
+  stays up, and a result for a call the client never sent no longer settles
+  it.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
-
 - A listener, a sink, `onError` or `onDraining` may call `close()` or
   `connect()` at any transition, and the client ends in the state its last
   call asked for. `TmuxClient`, `WebSocketTmuxClient` and the Electron

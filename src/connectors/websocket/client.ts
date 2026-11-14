@@ -575,7 +575,78 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.emitError(new BridgeError("BRIDGE_INTERNAL", "websocket error"));
   };
 
+  // [LAW:single-enforcer] The one place an inbound frame meets the connection
+  //   phase. The welcome is the only frame that moves a connection out of
+  //   "connecting", so until it lands the client reads a handshake, and after
+  //   it a stream.
   private readonly onMessage = (data: unknown): void => {
+    switch (this.currentConnectionState.status) {
+      case "connecting":
+        this.onHandshakeMessage(data);
+        return;
+      case "ready":
+      case "reconnecting":
+      case "closed":
+        this.onStreamMessage(data);
+        return;
+    }
+  };
+
+  // The server sends its welcome in the step that starts the connection and
+  // nothing before it but a fatal error (server.ts), so any other frame here
+  // is a protocol fault, and a fault in the handshake fails the connection.
+  private onHandshakeMessage(data: unknown): void {
+    if (typeof data !== "string") {
+      this.failHandshake(
+        new BridgeError(
+          "BRIDGE_PROTOCOL_ERROR",
+          `${Object.prototype.toString.call(data)} frame before welcome`,
+        ),
+      );
+      return;
+    }
+    let frame: ReceivedServerFrame;
+    try {
+      frame = parseServerFrame(data);
+    } catch (err) {
+      // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
+      this.failHandshake(toBridgeProtocolError(err));
+      return;
+    }
+    switch (frame.k) {
+      case "welcome":
+      case "error":
+        this.handleFrame(frame);
+        return;
+      case "event":
+      case "result":
+      case "pong":
+      case "draining":
+        this.failHandshake(
+          new BridgeError(
+            "BRIDGE_PROTOCOL_ERROR",
+            `${frame.k} frame before welcome`,
+          ),
+        );
+        return;
+    }
+  }
+
+  // [LAW:no-ambient-temporal-coupling] Report first: emitError records
+  //   lastError, and the close can run finalize synchronously, which reads it
+  //   to publish transport-error (or reconnecting with lastError).
+  private failHandshake(err: BridgeError): void {
+    this.emitError(err);
+    // 4002: protocol error in the application range. A browser's close()
+    //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
+    // [LAW:no-defensive-null-guards] exception: openSocket sets ws in the
+    //   step that enters "connecting", but the field's type does not say
+    //   so; 6sp.sak gives each socket its own lifetime.
+    this.ws?.close(4002, truncateCloseReason(err.toPayload().message));
+  }
+
+  // A bad frame on an open stream is reported, and the connection stays up.
+  private onStreamMessage(data: unknown): void {
     if (data instanceof ArrayBuffer) {
       this.onBinary(new Uint8Array(data));
       return;
@@ -590,17 +661,17 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       this.onText(data);
       return;
     }
-    this.onProtocolError(
+    this.emitError(
       new BridgeError(
         "BRIDGE_PROTOCOL_ERROR",
         `unexpected frame type: ${Object.prototype.toString.call(data)}`,
       ),
     );
-  };
+  }
 
   private onBinary(buf: Uint8Array): void {
     if (!isPaneOutputFrame(buf)) {
-      this.onProtocolError(
+      this.emitError(
         new BridgeError("BRIDGE_PROTOCOL_ERROR", "unknown binary frame magic"),
       );
       return;
@@ -610,7 +681,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       msg = decodePaneOutput(buf);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.onProtocolError(toBridgeProtocolError(err));
+      this.emitError(toBridgeProtocolError(err));
       return;
     }
     this.dispatchEvent(msg);
@@ -622,38 +693,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       frame = parseServerFrame(raw);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.onProtocolError(toBridgeProtocolError(err));
+      this.emitError(toBridgeProtocolError(err));
       return;
     }
     this.handleFrame(frame);
-  }
-
-  // [LAW:single-enforcer] What a protocol fault does to the connection is
-  //   decided here, for every fault the client detects in what the server sent.
-  //   The welcome is the only frame that moves a connection out of
-  //   "connecting", so a fault there is a failed handshake: the client closes
-  //   the socket and onClose → finalizeConnection ends the connection as for
-  //   any other close. In "ready" it is one bad frame, and the connection
-  //   stays up.
-  // [LAW:no-ambient-temporal-coupling] Report first: emitError records
-  //   lastError, and the close can run finalize synchronously, which reads it
-  //   to publish transport-error (or reconnecting with lastError).
-  private onProtocolError(err: BridgeError): void {
-    this.emitError(err);
-    switch (this.currentConnectionState.status) {
-      case "connecting":
-        // 4002: protocol error in the application range. A browser's close()
-        //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
-        // [LAW:no-defensive-null-guards] exception: openSocket sets ws in the
-        //   step that enters "connecting", but the field's type does not say
-        //   so; 6sp.sak gives each socket its own lifetime.
-        this.ws?.close(4002, truncateCloseReason(err.toPayload().message));
-        return;
-      case "ready":
-      case "reconnecting":
-      case "closed":
-        return;
-    }
   }
 
   // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
@@ -717,7 +760,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   private onResult(frame: ReceivedResultFrame): void {
     const violation = this.outbox.settle(frame);
-    if (violation !== undefined) this.onProtocolError(violation);
+    if (violation !== undefined) this.emitError(violation);
   }
 
   private onDraining(deadlineMs: number): void {

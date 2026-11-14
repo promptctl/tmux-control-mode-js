@@ -984,9 +984,10 @@ export function encodeClientFrame(frame: ClientFrame): string {
 // ws throws RangeError. encodeInto writes only whole code points, so `read`
 // is the longest prefix that fits without splitting a character.
 const CLOSE_REASON_MAX_BYTES = 123;
+const utf8 = new TextEncoder();
 
 export function truncateCloseReason(reason: string): string {
-  const { read } = new TextEncoder().encodeInto(
+  const { read } = utf8.encodeInto(
     reason,
     new Uint8Array(CLOSE_REASON_MAX_BYTES),
   );
