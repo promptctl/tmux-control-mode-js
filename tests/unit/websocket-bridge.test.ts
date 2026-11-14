@@ -2074,6 +2074,37 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
       }),
     ]);
   });
+
+  it("a second shutdown with a shorter drain joins the first: the peer keeps the deadline it was told", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    const startedAt = Date.now();
+    const first = bridge.shutdown(30_000);
+    const second = bridge.shutdown(1_000);
+    let settled = 0;
+    void first.then(() => settled++);
+    void second.then(() => settled++);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(ws.terminateCalls).toBe(0);
+    expect(settled).toBe(0);
+    expect(
+      readJsonFrames(ws)
+        .filter((f) => f.k === "draining")
+        .map((f) => f.deadlineMs),
+    ).toEqual([startedAt + 30_000]);
+
+    await vi.advanceTimersByTimeAsync(28_500);
+    await Promise.all([first, second]);
+    expect(ws.terminateCalls).toBe(1);
+    expect(settled).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

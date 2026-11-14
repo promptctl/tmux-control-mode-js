@@ -219,7 +219,8 @@ export interface WebSocketBridge {
    * `drainMs` elapses (after which sockets are force-terminated). `drainMs`
    * is an integer number of ms in [1, 2^31-1], or the returned promise
    * rejects with `BRIDGE_INVALID_ARG` before any connection is told anything.
-   * Default 10s.
+   * Default 10s. The first call owns the drain: a later call settles with it,
+   * and its `drainMs` does not move the deadline the peers were told.
    */
   shutdown(drainMs?: number): Promise<void>;
 }
@@ -233,13 +234,15 @@ export function createWebSocketBridge(
 ): WebSocketBridge {
   const defaults = resolveDefaults(opts);
   const connections = new Set<Connection>();
-  let draining = false;
+  // [LAW:one-source-of-truth] The drain in flight is the bridge's draining
+  // state: set once, by the first shutdown, and never a second race.
+  let drain: Promise<void> | undefined;
 
   async function handleConnection(
     ws: ServerWebSocketLike,
     request?: UpgradeRequest,
   ): Promise<void> {
-    if (draining) {
+    if (drain) {
       sendFatal(ws, "BRIDGE_CLOSED", "bridge is shutting down");
       ws.close(GOING_AWAY, "shutting down");
       return;
@@ -258,9 +261,15 @@ export function createWebSocketBridge(
   // told anything, so a value no timer honors rejects the returned promise —
   // the one failure channel the signature declares — and no connection is
   // left holding a deadline in the past.
+  // [LAW:no-ambient-temporal-coupling] A later call joins the first call's
+  // drain, so the deadline peers were told is the one the bridge enforces.
   async function shutdown(drainMs: number = DEFAULTS.drainMs): Promise<void> {
     const bound = parseDurationMs("drainMs", drainMs);
-    draining = true;
+    drain ??= drainWithin(bound);
+    return drain;
+  }
+
+  async function drainWithin(bound: number): Promise<void> {
     const deadlineMs = Date.now() + bound;
     for (const conn of connections) {
       conn.beginDrain(deadlineMs);
