@@ -69,6 +69,7 @@ import {
   type BridgeConnection,
   type Peer,
 } from "../bridge-connection.js";
+import { waitAtMost } from "../wait-at-most.js";
 
 import type {
   AuthResult,
@@ -287,15 +288,7 @@ export function createWebSocketBridge(
   }
 
   async function settleWithin(bound: number): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      allClosed(connections),
-      new Promise<void>((r) => {
-        timer = setTimeout(r, bound);
-        timer.unref?.();
-      }),
-    ]);
-    clearTimeout(timer);
+    await waitAtMost(allClosed(connections), bound);
     for (const conn of connections) conn.terminate();
   }
 

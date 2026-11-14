@@ -2323,6 +2323,10 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
 // ---------------------------------------------------------------------------
 
 describe("WebSocket bridge — shutdown", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function drainingDeadlines(ws: FakeWs): number[] {
     return readJsonFrames(ws)
       .filter((f) => f.k === "draining")
@@ -2471,5 +2475,50 @@ describe("WebSocket bridge — shutdown", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await shutdown;
     expect(ws.terminateCalls).toBe(1);
+  });
+
+  it("a socket whose hello arrives after the drain started is welcomed, told the drain's deadline, and terminated at it", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+
+    const startedAt = Date.now();
+    const shutdown = bridge.shutdown(30_000);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome", "draining"]);
+    expect(drainingDeadlines(ws)).toEqual([startedAt + 30_000]);
+
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(ws.terminateCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await shutdown;
+    expect(ws.terminateCalls).toBe(1);
+  });
+
+  it("a drain whose peers all close settles then, before the deadline, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    let settled = false;
+    void bridge.shutdown(30_000).then(() => {
+      settled = true;
+    });
+    ws.fireClose(1001);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled).toBe(true);
+    expect(ws.terminateCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
