@@ -15,6 +15,10 @@ import { createRendererBridge } from "../../src/connectors/electron/renderer.js"
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { MockWebSocketHub } from "./_helpers/websocket-hub.js";
+import { parseHeartbeatInterval } from "../../src/connectors/websocket/protocol.js";
+
+// These transitions run with the heartbeat armed, as a deployed bridge has it.
+const HEARTBEAT_ON = parseHeartbeatInterval("heartbeatIntervalMs", 30_000);
 
 // ---------------------------------------------------------------------------
 // Shared fake transport for spawn-style TmuxClient.
@@ -181,7 +185,7 @@ describe("WebSocketTmuxClient — connection state", () => {
     void client.connect();
 
     hub.open();
-    hub.welcome();
+    hub.welcome(-1, HEARTBEAT_ON);
     await new Promise((r) => setImmediate(r));
 
     expect(client.connectionState).toEqual({ status: "ready" });
@@ -196,7 +200,7 @@ describe("WebSocketTmuxClient — connection state", () => {
     client.on("reconnected", reconnects);
     void client.connect();
     hub.open();
-    hub.welcome();
+    hub.welcome(-1, HEARTBEAT_ON);
     await new Promise((r) => setImmediate(r));
     expect(reconnects).not.toHaveBeenCalled();
   });
@@ -210,15 +214,15 @@ describe("WebSocketTmuxClient — connection state", () => {
 
     void client.connect();
     hub.open();
-    hub.welcome();
+    hub.welcome(-1, HEARTBEAT_ON);
     await new Promise((r) => setImmediate(r));
     expect(reconnects).not.toHaveBeenCalled();
 
     hub.fireClose();
     // Wait for the reconnect timer to fire and openSocket to create the
     // SECOND socket — until then hub.latest() is still the closed first
-    // socket, and the per-socket stale guard in openSocket() would (correctly)
-    // drop any open/message events targeted at it.
+    // socket, whose listeners the client has removed, so open/message events
+    // targeted at it reach nothing.
     const deadline = Date.now() + 100;
     while (hub.sockets.length < 2 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 2));
@@ -231,7 +235,7 @@ describe("WebSocketTmuxClient — connection state", () => {
     expect(client.connectionState.status).not.toBe("ready");
 
     hub.open();
-    hub.welcome();
+    hub.welcome(-1, HEARTBEAT_ON);
     await new Promise((r) => setImmediate(r));
 
     expect(client.connectionState).toEqual({ status: "ready" });
@@ -242,7 +246,7 @@ describe("WebSocketTmuxClient — connection state", () => {
     const { client, hub } = makeClient();
     void client.connect();
     hub.open();
-    hub.welcome();
+    hub.welcome(-1, HEARTBEAT_ON);
     await new Promise((r) => setImmediate(r));
 
     void client.close();

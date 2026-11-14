@@ -70,10 +70,12 @@ All notable changes to this project are documented here. Format follows
 
 - Under `ws`, a socket `WebSocketTmuxClient` has let go no longer reaches
   the client. Before, `close()` followed by `connect()` let the first
-  socket's late close event end the second connection, and a socket closed
-  while connecting could throw its late `error` in the host. Now the client
-  removes its listeners when a connection ends, and only an inert `error`
-  listener stays on the old socket.
+  socket's late close event end the second connection, and the late `error`
+  `ws` emits for a socket closed while connecting reached `onError` as a
+  `BRIDGE_INTERNAL` "websocket error", so the next connection's clean exit
+  read as `transport-error`. Now the client removes its listeners when a
+  connection ends; an inert `error` listener stays on the old socket so its
+  late `error` does not throw in the host.
 - A `WebSocketTmuxClient` whose server sends a welcome it cannot parse
   (missing `limits`, a wrong type, or the negative `heartbeatIntervalMs` a
   previous release's bridge advertises) now fails the connection: it reports
