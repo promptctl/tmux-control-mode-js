@@ -115,6 +115,12 @@ reflects this constraint.
 on tmux 3.2, `refresh-client -l` makes the control client exit, dropping the
 connection, so the gate is what keeps the call from being fatal.
 
+`respawnPane()` is gated the same way with `RESPAWN_PANE_MIN_VERSION` (3.8), for
+what the command does to the server rather than to the connection: before 3.8 a
+respawn leaves each client's read offset pointing into the pane's discarded
+output buffer, and with a control client attached the server can crash on the
+pane's next read.
+
 ### 2.3 Synthetic events & connection lifecycle
 <!-- R5 (done): relocated from SPEC.md §23.1 "Synthetic Events (library)". -->
 
@@ -188,6 +194,9 @@ not a command-function because its bare-newline signal cannot be correlated.)
 | `queryTmuxVersion(client)` | `src/commands/index.ts` | `display-message -p "#{version}"` |
 | `requestReport(client, paneId, report)` | `src/commands/index.ts` | `refresh-client -r` (tmux 3.5+; version-gated — see §2.2) |
 | `queryClipboard(client)` | `src/commands/index.ts` | `refresh-client -l` |
+| `newWindow(client, options)` | `src/commands/index.ts` | `new-window -t '$<id>:' -P -F …` |
+| `newEmptyWindow(client, placement)` | `src/commands/index.ts` | `new-window … -E` (tmux 3.8+; version-gated) |
+| `respawnPane(client, paneId, process?)` | `src/commands/index.ts` | `respawn-pane -t %<pane>` (tmux 3.8+; version-gated — see §2.2) |
 
 ---
 

@@ -235,6 +235,58 @@ export async function withSecondClient(
   }
 }
 
+/**
+ * Resolve once one line of the pane's text contains `text`; reject, quoting
+ * the last capture, if none does within `ms`. Reads plain text with wrapped
+ * lines joined and history included (`capture-pane -p -J -S -`), so neither
+ * the pane's width nor a shell that colours its output can split `text`.
+ *
+ * [LAW:no-ambient-temporal-coupling] The pane's own text is the authority on
+ * "tmux has processed this", replacing a sleep that guesses how long the
+ * pty round-trip takes. tmux serves `%output` and command replies over one
+ * ordered stream: by the time this `capture-pane` reply parses, the `%output`
+ * carrying the same bytes has already been parsed and dispatched to the
+ * client's sinks.
+ */
+export async function waitForPaneText(
+  client: TmuxClient,
+  paneId: number,
+  text: string,
+  ms = 8000,
+): Promise<void> {
+  await readUntil(
+    async () =>
+      (await client.execute(`capture-pane -p -J -S - -t %${paneId}`)).output,
+    (output) => output.some((line) => line.includes(text)),
+    `waitForPaneText: %${paneId} never showed "${text}"`,
+    ms,
+  );
+}
+
+/**
+ * Call `read` until `done` holds for what it returns, and resolve with that;
+ * reject as `what`, quoting the last value read, if none does within `ms`. A
+ * rejection from `read` propagates.
+ */
+export async function readUntil<T>(
+  read: () => Promise<T>,
+  done: (value: T) => boolean,
+  what: string,
+  ms = 8000,
+): Promise<T> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const value = await read();
+    if (done(value)) return value;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${what} within ${ms}ms; last read: ${JSON.stringify(value)}`,
+      );
+    }
+    await new Promise<void>((r) => setTimeout(r, 10));
+  }
+}
+
 /** Poll `pred` until it holds; reject if it has not within `ms`. */
 export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
   return new Promise<void>((resolve, reject) => {

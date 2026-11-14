@@ -87,6 +87,8 @@ export {
   MESSAGE_NOTIFY_MIN_VERSION,
   REQUEST_REPORT_MIN_VERSION,
   PANE_CWD_MIN_VERSION,
+  EMPTY_WINDOW_MIN_VERSION,
+  RESPAWN_PANE_MIN_VERSION,
   missingCwdFallback,
   parseTmuxVersion,
   meetsTmuxVersion,
@@ -112,7 +114,13 @@ export {
   queryTmuxVersion,
   capturePane,
   newWindow,
+  newEmptyWindow,
+  respawnPane,
   paneCwd,
   getOwnClient,
 } from "./commands/index.js";
-export type { OwnClient } from "./commands/index.js";
+export type {
+  NewWindowPlacement,
+  OwnClient,
+  PaneProcess,
+} from "./commands/index.js";
