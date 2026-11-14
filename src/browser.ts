@@ -64,7 +64,7 @@ export type { TmuxConnection } from "./client.js";
 export { UnsupportedTmuxVersionError } from "./errors.js";
 // [LAW:one-source-of-truth] The whole typed-error taxonomy is pure (each class
 //   extends Error over type-only imports). A browser consumer driving commands
-//   over a TmuxConnection — e.g. pane-terminal's subscribe/seed seam — must be
+//   over a TmuxConnection — e.g. window-terminal's subscribe/seed seam — must be
 //   able to classify a rejection by CLASS (surface-vs-quiet) rather than by
 //   parsing tmux's English. `isConnectionGone` is the shared quiet-vs-surface
 //   predicate; the classes back consumer-side `instanceof` checks and tests.

@@ -1,3 +1,4 @@
+> Historical: this proposal produced `@promptctl/pane-terminal`, which has since been folded into the main package as the window-terminal engine (`src/window-terminal/`); paths and package names below are as originally proposed.
 
   Design Proposal — @promptctl/pane-terminal
 

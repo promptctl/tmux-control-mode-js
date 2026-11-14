@@ -313,7 +313,7 @@ export class PaneCwdUnavailableError extends Error {
  *
  * [LAW:single-enforcer] The connection-gone predicate lives once, here, beside
  *   the taxonomy it classifies. Both the bridge resume-strand seam and the
- *   pane-terminal subscribe/seed seam split quiet-vs-surface through this one
+ *   window-terminal subscribe/seed seam split quiet-vs-surface through this one
  *   check, so the two sites cannot drift on what "gone" means.
  */
 export const isConnectionGone = (err: unknown): boolean =>
