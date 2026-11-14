@@ -8,8 +8,8 @@ name: Publish
 # Authentication is npm trusted publishing: npm accepts this workflow's
 # GitHub OIDC identity (configured on the package's npm settings page:
 # promptctl/tmux-control-mode-js, workflow publish.yml), so there is no
-# token to expire or to answer a 2FA challenge. Provenance is attested
-# automatically by the same identity.
+# token to expire or to answer a 2FA challenge. The same identity signs the
+# provenance attestation the publish step requests.
 
 on:
   release:
