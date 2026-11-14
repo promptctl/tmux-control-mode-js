@@ -1,9 +1,11 @@
 // tests/unit/_helpers/websocket-fake.ts
-// Shared test infrastructure for websocket byte-faithfulness contract tests.
+// A fake WebSocket for websocketTransport, and the byte-faithfulness check
+// its contract tests share.
 //
 // [LAW:single-enforcer] assertByteFaithful and FakeWebSocket are defined once
-//   here and imported by both the Node and browser companion contract tests.
-//   Both test environments (Node, happy-dom) run the same helper code.
+//   here and imported by the Node and browser byte-faithfulness contract
+//   tests and by websocket-transport.test.ts. Both test environments (Node,
+//   happy-dom) run the same helper code.
 
 import type { BrowserWebSocketLike } from "../../../src/connectors/websocket/types.js";
 

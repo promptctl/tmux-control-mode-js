@@ -13,14 +13,8 @@ import type { ConnectionState } from "../../src/connection-state.js";
 import { createMainBridge } from "../../src/connectors/electron/main.js";
 import { createRendererBridge } from "../../src/connectors/electron/renderer.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
-import {
-  encodeServerFrame,
-  parseDurationMs,
-  parsePositiveInt,
-  type ServerFrame,
-  type WelcomeFrame,
-} from "../../src/connectors/websocket/protocol.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
+import { MockWebSocketHub } from "./_helpers/websocket-hub.js";
 
 // ---------------------------------------------------------------------------
 // Shared fake transport for spawn-style TmuxClient.
@@ -152,89 +146,6 @@ describe("TmuxClient — connection state", () => {
 // browser WebSocket and asserts the unified mapping.
 // ---------------------------------------------------------------------------
 
-type Listener = (ev: unknown) => void;
-
-interface MockWS {
-  url: string;
-  readyState: number;
-  send: (data: string | ArrayBufferLike | Uint8Array) => void;
-  close: (code?: number, reason?: string) => void;
-  // As `ws` implements it: removeEventListener is the only teardown.
-  addEventListener: (event: string, listener: Listener) => void;
-  removeEventListener: (event: string, listener: Listener) => void;
-  fire(event: string, payload: unknown): void;
-}
-
-class MockWebSocketHub {
-  readonly sockets: MockWS[] = [];
-
-  factory = (url: string): MockWS => {
-    const listeners = new Map<string, Set<Listener>>();
-    const ws: MockWS = {
-      url,
-      readyState: 0, // CONNECTING
-      send: () => {},
-      close: (code = 1000, reason = "") => {
-        ws.readyState = 3; // CLOSED
-        ws.fire("close", { code, reason });
-      },
-      addEventListener(event, listener) {
-        let set = listeners.get(event);
-        if (!set) {
-          set = new Set();
-          listeners.set(event, set);
-        }
-        set.add(listener);
-      },
-      removeEventListener(event, listener) {
-        listeners.get(event)?.delete(listener);
-      },
-      fire(event, payload) {
-        const set = listeners.get(event);
-        if (!set) return;
-        for (const cb of set) cb(payload);
-      },
-    };
-    this.sockets.push(ws);
-    return ws;
-  };
-
-  latest(): MockWS {
-    const ws = this.sockets.at(-1);
-    if (!ws) throw new Error("no socket created yet");
-    return ws;
-  }
-
-  open(idx = -1): void {
-    const ws = idx === -1 ? this.latest() : this.sockets[idx];
-    if (!ws) throw new Error("no socket at index " + idx);
-    ws.readyState = 1; // OPEN
-    ws.fire("open", {});
-  }
-
-  welcome(idx = -1): void {
-    const ws = idx === -1 ? this.latest() : this.sockets[idx];
-    if (!ws) return;
-    const welcome: WelcomeFrame = {
-      k: "welcome",
-      limits: {
-        requestTimeoutMs: parseDurationMs("requestTimeoutMs", 30_000),
-        heartbeatIntervalMs: parseDurationMs("heartbeatIntervalMs", 30_000),
-        maxInflight: parsePositiveInt("maxInflight", 16),
-      },
-    };
-    ws.fire("message", {
-      data: encodeServerFrame(welcome satisfies ServerFrame),
-    });
-  }
-
-  close(code = 1006, reason = "abnormal"): void {
-    const ws = this.latest();
-    ws.readyState = 3;
-    ws.fire("close", { code, reason });
-  }
-}
-
 describe("WebSocketTmuxClient — connection state", () => {
   function makeClient(reconnect = false): {
     client: WebSocketTmuxClient;
@@ -303,7 +214,7 @@ describe("WebSocketTmuxClient — connection state", () => {
     await new Promise((r) => setImmediate(r));
     expect(reconnects).not.toHaveBeenCalled();
 
-    hub.close(1006, "abnormal");
+    hub.fireClose();
     // Wait for the reconnect timer to fire and openSocket to create the
     // SECOND socket — until then hub.latest() is still the closed first
     // socket, and the per-socket stale guard in openSocket() would (correctly)

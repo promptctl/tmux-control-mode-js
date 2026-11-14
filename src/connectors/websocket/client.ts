@@ -758,7 +758,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // must never observe a logically-dead socket.
     this.socket?.detach();
     this.socket = null;
+    // The heartbeat's probes close over the socket; dropping it frees both.
     this.heartbeat?.stop();
+    this.heartbeat = null;
 
     // [LAW:one-source-of-truth] The outbox is the only structure holding
     // in-flight calls or queued frames; draining it rejects both. The

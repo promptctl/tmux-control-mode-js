@@ -46,6 +46,12 @@ All notable changes to this project are documented here. Format follows
   It also reads a pane whose cwd or process name holds a newline, which tmux
   prints raw, splitting the pane's line. 0.2.0 dropped both panes from the
   list.
+- `BrowserWebSocketLike` requires `removeEventListener` for the four event
+  types, and `addEventListener` no longer takes an `{ signal }` option.
+  `WebSocketTmuxClient` removes its listeners from a socket by handler
+  identity, the one teardown both browsers and `ws` honor; `ws` ignores
+  `signal`. A browser `WebSocket` or a `ws` socket satisfies the new shape
+  as before; a hand-written socket or fake must add `removeEventListener`.
 
 ### Added
 
@@ -62,6 +68,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- Under `ws`, a socket `WebSocketTmuxClient` has let go no longer reaches
+  the client. Before, `close()` followed by `connect()` let the first
+  socket's late close event end the second connection, and a socket closed
+  while connecting could throw its late `error` in the host. Now the client
+  removes its listeners when a connection ends, and only an inert `error`
+  listener stays on the old socket.
 - A `WebSocketTmuxClient` whose server sends a welcome it cannot parse
   (missing `limits`, a wrong type, or the negative `heartbeatIntervalMs` a
   previous release's bridge advertises) now fails the connection: it reports
