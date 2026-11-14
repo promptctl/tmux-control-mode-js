@@ -82,9 +82,8 @@ export class ElectronBridge implements TmuxBridge {
     //
     // [LAW:one-type-per-behavior] The lifecycle filter lives HERE, at the
     // emitter source — the one inbound path that can carry synthetic
-    // non-TmuxMessages (`connection-state`, `reconnected`). This mirrors the
-    // WebSocket server, which applies isTmuxMessage before sending JSON event
-    // frames, so `deliverEvent` downstream speaks one honest TmuxMessage shape.
+    // events. The demo consumes only tmux's own messages, so `deliverEvent`
+    // downstream speaks one honest TmuxMessage shape.
     this.proxyEventHandler = (msg) => {
       if (!isTmuxMessage(msg)) return;
       this.deliverEvent(msg);

@@ -1334,9 +1334,11 @@ describe("WebSocket bridge — reply-stream reports", () => {
     expect(() =>
       parseServerFrame(frame({ ...tmuxError, output: "unknown" })),
     ).toThrow(/result\.tmuxError\.output must be a string\[\]/);
-    expect(() => parseServerFrame(frame(null))).toThrow(
-      /result\.tmuxError must be an object/,
-    );
+    for (const notObject of [null, []]) {
+      expect(() => parseServerFrame(frame(notObject))).toThrow(
+        /result\.tmuxError must be an object/,
+      );
+    }
   });
 });
 

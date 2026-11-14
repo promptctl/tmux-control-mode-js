@@ -467,7 +467,7 @@ const isNumber = (v: unknown): v is number => typeof v === "number";
 const isString = (v: unknown): v is string => typeof v === "string";
 const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
 const isObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === "object" && v !== null;
+  typeof v === "object" && v !== null && !Array.isArray(v);
 const isNumberArray = (v: unknown): v is readonly number[] =>
   Array.isArray(v) && v.every(isNumber);
 const isStringArray = (v: unknown): v is readonly string[] =>
@@ -598,30 +598,19 @@ const RAW_LAYOUT_FIELDS = [
 // geometry that disagrees with its own strings.
 function withDerivedLayout(msg: Record<string, unknown>, type: string): object {
   if (!LAYOUT_EVENT_TYPES.has(type)) return msg;
-  for (const field of RAW_LAYOUT_FIELDS) {
-    if (typeof msg[field] !== "string") {
-      throw new BridgeProtocolError(
-        `event.msg.${field} must be a string for ${type}`,
-      );
-    }
-  }
-  const raw = msg as Record<(typeof RAW_LAYOUT_FIELDS)[number], string>;
-  return {
-    ...msg,
-    ...windowLayoutFields(
-      raw.windowLayout,
-      raw.windowVisibleLayout,
-      raw.windowFlags,
-    ),
-  };
+  const [layout, visibleLayout, flags] = RAW_LAYOUT_FIELDS.map((field) =>
+    wireValue(msg[field], isString, `event.msg(${type}).${field}`, "a string"),
+  );
+  return { ...msg, ...windowLayoutFields(layout, visibleLayout, flags) };
 }
 
 function parseEvent(x: unknown): EventFrame {
-  const o = x as { msg?: unknown };
-  if (typeof o.msg !== "object" || o.msg === null) {
-    throw new BridgeProtocolError("event.msg must be an object");
-  }
-  const raw = o.msg as Record<string, unknown>;
+  const raw = wireValue(
+    (x as { msg?: unknown }).msg,
+    isObject,
+    "event.msg",
+    "an object",
+  );
   const { type } = raw;
   const unknownType = () =>
     new BridgeProtocolError(
