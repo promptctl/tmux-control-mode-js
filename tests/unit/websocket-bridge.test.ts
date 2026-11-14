@@ -578,24 +578,12 @@ describe("WebSocket bridge — zng.5 handshake races", () => {
     expect(ws.outbound.length).toBe(before);
   });
 
-  it("duplicate hello during handshake is rejected; exactly one createClient call and one listener attachment", async () => {
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    t.feed(STARTUP_GREETING);
-
+  it("duplicate hello during handshake is rejected, and no client is created for the connection it ended", async () => {
     let createClientCalls = 0;
-    let resolveCreate!: (c: TmuxClient) => void;
-    const createClientPromise = new Promise<TmuxClient>((res) => {
-      resolveCreate = res;
-    });
-    let disposeCalls = 0;
     const bridge = createWebSocketBridge({
       createClient: () => {
         createClientCalls++;
-        return createClientPromise;
-      },
-      disposeClient: () => {
-        disposeCalls++;
+        return new TmuxClient(createFakeTransport().transport);
       },
     });
 
@@ -616,27 +604,10 @@ describe("WebSocket bridge — zng.5 handshake races", () => {
       (f): f is FatalErrorFrame => f.k === "error" && f.fatal === true,
     );
     expect(fatal?.error.message).toMatch(/duplicate hello/);
-    expect(createClientCalls).toBe(1);
     expect(ws.readyState).not.toBe(WEBSOCKET_OPEN);
-
-    // `sendFatalAndClose` called `ws.close()` above, but the fake — like a
-    // real socket — doesn't fire the `close` event synchronously; drive it
-    // explicitly so `finalize` actually runs and commits state to "closed"
-    // before createClient() resolves. Without this, the assertions below
-    // would pass only because `wsSend` gates on `readyState`, never
-    // exercising onHello's own `isClosed()` abort branch.
-    ws.fireClose(1011, "duplicate hello frame");
-
-    // createClient() resolves after finalize already ran. onHello must
-    // observe the closed state and dispose the client it built instead of
-    // wiring listeners onto it — the same abort path proven in the mid-
-    // handshake-close test above, reached here via the duplicate-hello path
-    // instead of a raw disconnect.
-    const before = ws.outbound.length;
-    resolveCreate(client);
-    await flush();
-    expect(disposeCalls).toBe(1);
-    expect(ws.outbound.length).toBe(before);
+    // The duplicate fixed the outcome while authenticate() was in flight, so
+    // the first hello stops before createClient().
+    expect(createClientCalls).toBe(0);
   });
 });
 
@@ -2155,14 +2126,18 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
     expect(ws.terminateCalls).toBe(1);
   });
 
-  it("a peer still in its handshake when shutdown runs is refused, never welcomed", async () => {
+  it("a peer still in its handshake when shutdown runs is refused, never welcomed, and no client is created for it", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     t.feed(STARTUP_GREETING);
     let resolveAuth!: (r: { ok: true }) => void;
+    let createClientCalls = 0;
     const events: BridgeObservabilityEvent[] = [];
     const bridge = createWebSocketBridge({
-      createClient: () => client,
+      createClient: () => {
+        createClientCalls++;
+        return client;
+      },
       authenticate: () =>
         new Promise<{ ok: true }>((res) => {
           resolveAuth = res;
@@ -2172,14 +2147,50 @@ describe("WebSocket bridge — close handshake under the heartbeat", () => {
     const ws = connectRunning(bridge);
     await flush();
 
-    void bridge.shutdown(30_000);
+    const shutdown = bridge.shutdown(30_000);
     resolveAuth({ ok: true });
     await flush();
 
     expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["error"]);
     expect(fatalFrames(ws).map((f) => f.error.code)).toEqual(["BRIDGE_CLOSED"]);
     expect(ws.closeCalls.map((c) => c.code)).toEqual([1001]);
+    expect(createClientCalls).toBe(0);
     expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+
+    ws.fireClose(1001, "");
+    await shutdown;
+    expect(ws.terminateCalls).toBe(0);
+  });
+
+  it("a peer that has not sent hello when shutdown runs is refused, and a hello after that opens nothing", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    let createClientCalls = 0;
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        createClientCalls++;
+        return client;
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+
+    const shutdown = bridge.shutdown(30_000);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["error"]);
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual(["BRIDGE_CLOSED"]);
+    expect(ws.closeCalls.map((c) => c.code)).toEqual([1001]);
+    expect(createClientCalls).toBe(0);
+    expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
+
+    ws.fireClose(1001, "");
+    await shutdown;
+    expect(ws.terminateCalls).toBe(0);
   });
 
   it("an illegal drainMs rejects while a drain is in flight, and leaves that drain as it was", async () => {

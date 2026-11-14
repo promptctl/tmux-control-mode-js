@@ -701,6 +701,10 @@ class Connection {
       );
       return;
     }
+    // An outcome fixed while authenticate() was in flight (a drain refusing
+    // this peer, a racing duplicate hello) stops the handshake before
+    // createClient() can spawn anything for a connection that is not opening.
+    if (this.isTearingDown()) return;
     this.identity = authResult.identity;
     const ctx: ConnectionContext = {
       identity: this.identity,

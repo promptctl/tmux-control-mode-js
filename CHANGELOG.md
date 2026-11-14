@@ -67,7 +67,8 @@ All notable changes to this project are documented here. Format follows
   overrun.
 - A `shutdown-requested` bridge observability event, one per `shutdown`
   call: the `drainMs` it asked for, the `deadlineMs` the drain enforces, and
-  whether it `joined` a drain already in flight.
+  whether it `joined` a drain already in flight. A switch over
+  `BridgeObservabilityEvent` needs this kind.
 
 ### Fixed
 
@@ -79,7 +80,6 @@ All notable changes to this project are documented here. Format follows
   `BRIDGE_CLOSED` and close code 1001, as a connection arriving during the
   drain is; before, it was welcomed after the drain began, never sent a
   deadline, and terminated at the drain's end.
-
 - Under `ws`, a socket `WebSocketTmuxClient` has let go no longer reaches
   the client. Before, `close()` followed by `connect()` let the first
   socket's late close event end the second connection, and the late `error`
