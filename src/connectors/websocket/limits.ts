@@ -9,10 +9,9 @@
 // only come from this module, so the units that own the timers and limits
 // (Heartbeat, CallPump, Outbox, Handshake, ReconnectController, RateLimiter)
 // demand them in their signatures and never check again. Without the stamp, a
-// `0` timeout
-// arms a deadline that fires on the next macrotask — before any reply, which
-// is always asynchronous — and every call fails for a "slow tmux" that was a
-// configuration error.
+// `0` timeout arms a deadline that fires on the next macrotask — before any
+// reply, which is always asynchronous — and every call fails for a "slow tmux"
+// that was a configuration error.
 // [LAW:single-enforcer] Both borders use it: consumer options (BridgeError
 // BRIDGE_INVALID_ARG) and the wire's welcome limits (BridgeProtocolError in
 // protocol.ts). [LAW:one-source-of-truth] The failure is a value the parser

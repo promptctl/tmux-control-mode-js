@@ -3,15 +3,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   RateLimiter,
-  type RateLimit,
+  parseRateLimit,
 } from "../../src/connectors/websocket/rate-limiter.js";
-import { parsePositiveInt } from "../../src/connectors/websocket/limits.js";
 
-function limit(maxCalls: number, windowMs: number): RateLimit {
-  return {
-    maxCalls: parsePositiveInt("maxCalls", maxCalls),
-    windowMs: parsePositiveInt("windowMs", windowMs),
-  };
+function limit(maxCalls: number, windowMs: number) {
+  return parseRateLimit({ maxCalls, windowMs });
 }
 
 afterEach(() => {

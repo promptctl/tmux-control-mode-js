@@ -1,9 +1,10 @@
 // src/connectors/websocket/rate-limiter.ts
 // [LAW:decomposition] Sliding-window call-rate enforcer extracted from
 // Connection. Owns `window`; Connection holds no rate state.
-import type { PositiveInt } from "./limits.js";
+import { parsePositiveInt, type PositiveInt } from "./limits.js";
+import type { RateLimitConfig } from "./types.js";
 
-/** A consumer's `RateLimitConfig` as `resolveDefaults` parsed it.
+/** A consumer's `RateLimitConfig` as `parseRateLimit` parsed it.
  *  [LAW:types-are-the-program] The stamps are why `check()` checks nothing: a
  *  negative or NaN window, or a cap of 0, cannot reach it. `windowMs` is a
  *  `PositiveInt`, not a `DurationMs`: it is subtracted from a clock reading and
@@ -11,6 +12,18 @@ import type { PositiveInt } from "./limits.js";
 export interface RateLimit {
   readonly maxCalls: PositiveInt;
   readonly windowMs: PositiveInt;
+}
+
+/** Throws `BRIDGE_INVALID_ARG` naming `rateLimit.<field>` and its value.
+ *  `undefined` is unlimited. */
+export function parseRateLimit(
+  cfg: RateLimitConfig | undefined,
+): RateLimit | undefined {
+  if (cfg === undefined) return undefined;
+  return {
+    maxCalls: parsePositiveInt("rateLimit.maxCalls", cfg.maxCalls),
+    windowMs: parsePositiveInt("rateLimit.windowMs", cfg.windowMs),
+  };
 }
 
 export class RateLimiter {

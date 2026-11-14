@@ -82,7 +82,7 @@ import type {
   UpgradeRequest,
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
-import { RateLimiter, type RateLimit } from "./rate-limiter.js";
+import { RateLimiter, parseRateLimit, type RateLimit } from "./rate-limiter.js";
 import { Heartbeat, type HeartbeatCadence } from "./heartbeat.js";
 import {
   parseDurationMs,
@@ -156,9 +156,9 @@ export interface WebSocketBridgeOptions {
   ) => Promise<AuthorizeResult> | AuthorizeResult;
 
   /** Sliding-window rate limit per connection: `maxCalls` and `windowMs`
-   *  each an integer >= 1, or
-   *  `createWebSocketBridge` throws `BRIDGE_INVALID_ARG` naming
-   *  `rateLimit.<field>` and the value. Default: unlimited. */
+   *  each an integer >= 1, or `createWebSocketBridge` throws
+   *  `BRIDGE_INVALID_ARG` naming `rateLimit.<field>` and the value.
+   *  Default: unlimited. */
   readonly rateLimit?: RateLimitConfig;
 
   /** Ping period. The heartbeat is the one liveness bound the bridge owns:
@@ -373,19 +373,7 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
       "maxInflight",
       opts.maxInflight ?? DEFAULTS.maxInflight,
     ),
-    rateLimit:
-      opts.rateLimit === undefined
-        ? undefined
-        : {
-            maxCalls: parsePositiveInt(
-              "rateLimit.maxCalls",
-              opts.rateLimit.maxCalls,
-            ),
-            windowMs: parsePositiveInt(
-              "rateLimit.windowMs",
-              opts.rateLimit.windowMs,
-            ),
-          },
+    rateLimit: parseRateLimit(opts.rateLimit),
   };
 }
 
