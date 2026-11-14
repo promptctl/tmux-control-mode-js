@@ -9,65 +9,7 @@ import {
   parseServerFrame,
   BridgeProtocolError,
 } from "../../src/connectors/websocket/protocol.js";
-import type { BrowserWebSocketLike } from "../../src/connectors/websocket/types.js";
-
-// Event shapes per addEventListener overload, mirroring BrowserWebSocketLike.
-// The generic implementation signature keys the listener type to the event
-// name, so storage and dispatch stay cast-free.
-interface FakeWebSocketEvents {
-  open: (event: unknown) => void;
-  error: (event: unknown) => void;
-  message: (event: { data: unknown }) => void;
-  close: (event: { code?: number; reason?: string }) => void;
-}
-
-class FakeWebSocket implements BrowserWebSocketLike {
-  readyState = 1;
-  binaryType: "blob" | "arraybuffer" = "blob";
-  readonly sent: string[] = [];
-  closed = false;
-  private readonly listeners: {
-    [K in keyof FakeWebSocketEvents]: FakeWebSocketEvents[K][];
-  } = { open: [], error: [], message: [], close: [] };
-
-  send(data: string | ArrayBufferLike | ArrayBufferView | Blob): void {
-    // The transport only ever sends strings. Tests assert that.
-    this.sent.push(data as string);
-  }
-  close(): void {
-    this.closed = true;
-  }
-  addEventListener(
-    type: "open" | "error",
-    listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "message",
-    listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener(
-    type: "close",
-    listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
-  ): void;
-  addEventListener<K extends keyof FakeWebSocketEvents>(
-    type: K,
-    listener: FakeWebSocketEvents[K],
-  ): void {
-    this.listeners[type].push(listener);
-  }
-  emitMessage(data: unknown): void {
-    this.listeners.message.forEach((l) => l({ data }));
-  }
-  emitClose(code?: number, reason?: string): void {
-    this.listeners.close.forEach((l) => l({ code, reason }));
-  }
-  emitError(): void {
-    this.listeners.error.forEach((l) => l({}));
-  }
-}
+import { FakeWebSocket } from "./_helpers/websocket-fake.js";
 
 function createFake(): FakeWebSocket {
   return new FakeWebSocket();
