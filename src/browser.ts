@@ -23,7 +23,6 @@ export {
   TopologyEpochTracker,
   parsePaneListLine,
   PANE_LIST_FORMAT,
-  parsePaneList,
 } from "./pane-output.js";
 export type {
   BytesSink,

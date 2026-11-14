@@ -25,7 +25,8 @@ import {
   TopologyEpochTracker,
   PANE_LIST_FORMAT,
   type Contradiction,
-  parsePaneList,
+  parsePaneListLine,
+  parseReply,
   serverScope,
   type AttachOptions,
   type BytesSink,
@@ -483,7 +484,8 @@ export class TopologyRouter {
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     try {
-      const r = await run(`list-panes -a -F '${PANE_LIST_FORMAT}'`);
+      const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
+      const r = await run(command);
       if (!this.epoch.isBootstrapCurrent(gen)) {
         // A window-close mid-flight makes this result stale without starting a
         // replacement. Still the latest bootstrap means nothing newer will
@@ -498,7 +500,7 @@ export class TopologyRouter {
           void this.bootstrap();
         return;
       }
-      this.topology.seed(parsePaneList(r.output));
+      this.topology.seed(parseReply(command, r.output, parsePaneListLine));
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
@@ -568,12 +570,14 @@ export class TopologyRouter {
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     try {
-      const r = await run(
-        `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`,
-      );
+      const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
+      const r = await run(command);
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.requery(
-        this.topology.updateWindow(windowId, parsePaneList(r.output)),
+        this.topology.updateWindow(
+          windowId,
+          parseReply(command, r.output, parsePaneListLine),
+        ),
       );
       this.interest?.recompute();
     } catch (err) {

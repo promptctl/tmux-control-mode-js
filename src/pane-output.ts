@@ -11,6 +11,7 @@ import type {
 } from "./protocol/types.js";
 import { latin1ToBytes } from "./protocol/byte-codec.js";
 import { parseUint } from "./protocol/uint.js";
+import { TmuxReplyFormatError } from "./errors.js";
 
 // [LAW:types-are-the-program] BytesSink is the byte contract; PaneScope
 //   encodes membership as a value (a discriminated union), not as a method.
@@ -893,29 +894,38 @@ export class TopologyEpochTracker {
  * Parse one line of `list-panes -F "$PANE_LIST_FORMAT"` output (`-a` or
  * `-t @W`). The three-field form without the floating flag parses too.
  *
- * Returns null for unparseable lines (trailing blank, unexpected format).
+ * Returns null for a line that does not match.
  *
  * This is response-block output, where `TmuxParser.processLine()` no longer
  * strips a trailing `\r` run (needed so raw `capture-pane -p` bytes
  * survive) — so on a CRLF transport, the last line of this list can
  * legitimately carry one, and (per a doubled-up CRLF) more than one. `\r*$`
- * tolerates any run of them, the same way `parseSessionRecordLine`'s
- * `Number()` comparison does for its own last field.
+ * tolerates any run of them, as `recordFields` does for the record lines.
  */
 export function parsePaneListLine(line: string): PaneListEntry | null {
   const m = line.match(/^%(\d+) @(\d+) \$(\d+)(?: ([01]?))?\r*$/);
   if (m === null) return null;
-  return {
-    paneId: Number(m[1]),
-    windowId: Number(m[2]),
-    sessionId: Number(m[3]),
+  return completeRecord<PaneListEntry>({
+    paneId: parseUint(m[1]),
+    windowId: parseUint(m[2]),
+    sessionId: parseUint(m[3]),
     floating: m[4] === "1",
-  };
+  });
 }
 
-/** Every pane in a `list-panes -F "$PANE_LIST_FORMAT"` reply, skipping lines that don't parse. */
-export function parsePaneList(output: readonly string[]): PaneListEntry[] {
-  return output.flatMap((line) => parsePaneListLine(line) ?? []);
+// [LAW:no-silent-failure] [LAW:single-enforcer] The one rule for a reply of
+// one item per line: a line the parser cannot read rejects the whole reply,
+// since a skipped line would read as one item fewer, which the caller could
+// not tell from a correct reply.
+export function parseReply<T>(
+  command: string,
+  output: readonly string[],
+  parseLine: (line: string) => T | null,
+): T[] {
+  const unreadable = (): never => {
+    throw new TmuxReplyFormatError(command, output);
+  };
+  return output.map((line) => parseLine(line) ?? unreadable());
 }
 
 // [LAW:one-source-of-truth] Decode a single latin1-container field to real

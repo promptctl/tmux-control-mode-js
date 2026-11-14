@@ -1131,10 +1131,13 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     sessionName = uniqueName("cmd-lp");
     client = await attachSession(socketName, sessionName);
 
-    const panes = await listPanes(client);
-
-    expect(panes.length).toBeGreaterThan(0);
-    const [p] = panes;
+    // A new pane's cwd is null until its child takes the pty.
+    const p = await waitForPane(
+      client,
+      (pane) =>
+        pane.sessionName === sessionName &&
+        typeof running(pane)?.cwd === "string",
+    );
     expect(Number.isInteger(p.sessionId)).toBe(true);
     expect(p.sessionName).toBe(sessionName);
     expect(Number.isInteger(p.windowId)).toBe(true);
@@ -1521,7 +1524,10 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       });
       const { process: before } = await waitForPane(
         client,
-        (p) => p.paneId === paneId && running(p)?.currentCommand === "sleep",
+        (p) =>
+          p.paneId === paneId &&
+          running(p)?.currentCommand === "sleep" &&
+          typeof running(p)?.cwd === "string",
       );
 
       for (const command of ["sleep 61", "-k"]) {

@@ -236,6 +236,10 @@ describe("parsePaneListLine", () => {
       floating: false,
     });
   });
+
+  it("does not parse an id past Number.MAX_SAFE_INTEGER", () => {
+    expect(parsePaneListLine("%9007199254740993 @2 $1")).toBeNull();
+  });
 });
 
 describe("listPanesCommand", () => {

@@ -11,6 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
+import { TmuxReplyFormatError } from "../../src/errors.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { paneScope, serverScope, sessionScope } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -462,5 +463,21 @@ describe("TmuxClient — topology bootstrap failure is observable", () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(Error);
+  });
+
+  it("emits topology-error when a bootstrap reply line does not parse, never a topology one pane short", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const errors: Error[] = [];
+    client.on("topology-error", (ev) => errors.push(ev.error));
+    client.attachBytesSink(createRecordingSink(), { scope: sessionScope(100) });
+    t.feed(STARTUP_GREETING);
+
+    t.feed("%begin 1 1 1\n%1 @1 $100\nnot a pane\n%end 1 1 1\n");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].cause).toBeInstanceOf(TmuxReplyFormatError);
   });
 });

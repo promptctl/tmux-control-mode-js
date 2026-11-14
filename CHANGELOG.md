@@ -24,6 +24,11 @@ All notable changes to this project are documented here. Format follows
   line does not parse, where 0.2.0 skipped the line and a pane list read as
   one pane fewer. An id, size or count that is not an unsigned integer no
   longer parses, where it was `NaN`.
+- `parsePaneList` is removed: it skipped a line it could not read. The
+  topology bootstrap and window refresh now reject such a reply, which
+  reaches `topology-error`, where a skipped line left that pane's output
+  unrouted. `parsePaneListLine` also rejects an id beyond
+  `Number.MAX_SAFE_INTEGER`.
 
 ### Fixed
 

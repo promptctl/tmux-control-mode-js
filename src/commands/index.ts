@@ -52,6 +52,7 @@ import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
+  parseReply,
   parseNewWindowReply,
   parsePaneCwdReply,
 } from "../pane-output.js";
@@ -81,19 +82,13 @@ export type { NewWindowPlacement, PaneProcess, SplitOptions };
 // every other free function here. Structured records, never a raw
 // CommandResponse for the caller to parse — that parsing is exactly what
 // cc-tmux-lifeboat's founding doc forbids downstream.
-// [LAW:no-silent-failure] One line the parser cannot read rejects the whole
-// list: a skipped line would read as one record fewer, which the caller could
-// not tell from a correct list.
 async function listRecords<T>(
   client: TmuxConnection,
   command: string,
   parseLine: (line: string) => T | null,
 ): Promise<readonly T[]> {
   const response = await client.execute(command);
-  const unreadable = (): never => {
-    throw new TmuxReplyFormatError(command, response.output);
-  };
-  return response.output.map((line) => parseLine(line) ?? unreadable());
+  return parseReply(command, response.output, parseLine);
 }
 
 export function listWindows(
