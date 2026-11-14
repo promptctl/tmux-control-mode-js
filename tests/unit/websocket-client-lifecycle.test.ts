@@ -23,6 +23,7 @@ import type {
 } from "../../src/connectors/websocket/types.js";
 import {
   BridgeError,
+  closeReason,
   encodeServerFrame,
   parseDurationMs,
   parsePositiveInt,
@@ -1011,9 +1012,166 @@ describe("WebSocketTmuxClient — the per-call deadline is the stricter of the c
     expect(errors[0]!.message).toContain(
       "welcome.limits.requestTimeoutMs (0) must be",
     );
-    // The malformed welcome did not make the connection ready.
-    expect(client.connectionState.status).toBe("connecting");
-    void client.close();
+    // The malformed welcome failed the handshake rather than hanging it.
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A welcome the client cannot parse is a failed connection, not a dropped
+// frame (6sp.i6z): the socket closes with 4002, finalize runs, and the
+// reconnect policy or the consumer sees a closed connection instead of one
+// stuck in "connecting" whose calls die by BRIDGE_TIMEOUT.
+// ---------------------------------------------------------------------------
+
+describe("WebSocketTmuxClient — a protocol fault before ready fails the handshake", () => {
+  function welcomeWith(limits: unknown): string {
+    return JSON.stringify({ k: "welcome", limits });
+  }
+  const BAD_WELCOMES: [string, string, string][] = [
+    [
+      "heartbeatIntervalMs: -1",
+      welcomeWith({
+        requestTimeoutMs: 30_000,
+        heartbeatIntervalMs: -1,
+        maxInflight: 16,
+      }),
+      "welcome.limits.heartbeatIntervalMs",
+    ],
+    ["no limits", JSON.stringify({ k: "welcome" }), "limits"],
+  ];
+
+  it.each(BAD_WELCOMES)(
+    "a welcome with %s closes the socket with 4002, rejects the queued call with the fault, and reads transport-error",
+    async (_label, frame, field) => {
+      const errors: BridgeError[] = [];
+      const hub = new MockWebSocketHub();
+      const client = new WebSocketTmuxClient({
+        url: "ws://test/",
+        createWebSocket: hub.factory as unknown as (
+          url: string,
+        ) => BrowserWebSocketLike,
+        onError: (e) => errors.push(e),
+      });
+      const ws = hub.latest();
+      const close = vi.spyOn(ws, "close");
+      const call = client.listSessions();
+      hub.open();
+      ws.fire("message", { data: frame });
+
+      expect(errors).toHaveLength(1);
+      const fault = errors[0]!;
+      expect(fault.code).toBe("BRIDGE_PROTOCOL_ERROR");
+      expect(fault.message).toContain(field);
+      expect(close).toHaveBeenCalledExactlyOnceWith(
+        4002,
+        closeReason(fault.toPayload().message),
+      );
+      expect(ws.readyState).toBe(3);
+      expect(client.connectionState).toEqual({
+        status: "closed",
+        reason: "transport-error",
+      });
+      await expect(call).rejects.toBe(fault);
+    },
+  );
+
+  it("with a reconnect policy the failed handshake retries, and an old bridge fails it again on every attempt", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    void client.connect();
+    hub.open();
+    hub.latest().fire("message", { data: BAD_WELCOMES[0]![1] });
+    expect(client.connectionState).toMatchObject({
+      status: "reconnecting",
+      attempt: 1,
+      lastError: { code: "BRIDGE_PROTOCOL_ERROR" },
+    });
+
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(hub.sockets).toHaveLength(2);
+    hub.open(1);
+    hub.latest().fire("message", { data: BAD_WELCOMES[0]![1] });
+    expect(client.connectionState).toMatchObject({
+      status: "reconnecting",
+      attempt: 2,
+    });
+    await client.close();
+  });
+
+  it("a malformed frame after a good welcome is reported and the connection stays up", async () => {
+    const errors: BridgeError[] = [];
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: (e) => errors.push(e),
+    });
+    hub.open();
+    hub.welcome();
+    hub.latest().fire("message", { data: "{not json" });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.code).toBe("BRIDGE_PROTOCOL_ERROR");
+    expect(client.connectionState.status).toBe("ready");
+    expect(hub.latest().readyState).toBe(1);
+    await client.close();
+  });
+});
+
+describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when it fires", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("settles pending calls and leaves ready at the deadline, though the browser's close event never arrives", async () => {
+    const errors: BridgeError[] = [];
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      heartbeatTimeoutMs: 500,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: (e) => errors.push(e),
+    });
+    const ws = hub.latest();
+    // A dead peer: the browser's close handshake has nobody to answer it, so
+    // no close event fires.
+    const close = vi.spyOn(ws, "close").mockImplementation(() => {
+      ws.readyState = 2; // CLOSING
+    });
+    hub.open();
+    hub.welcome(-1, parseDurationMs("heartbeatIntervalMs", 1_000));
+    let settled: unknown = null;
+    client.listSessions().catch((e: unknown) => {
+      settled = e;
+    });
+
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(settled).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled).toMatchObject({
+      code: "BRIDGE_CLOSED",
+      message: expect.stringContaining("heartbeat timeout"),
+    });
+    expect(close).toHaveBeenCalledExactlyOnceWith(4000, "heartbeat timeout");
+    expect(errors).toEqual([settled]);
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
   });
 });
 

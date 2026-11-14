@@ -42,6 +42,7 @@ import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
 import {
   BridgeError,
+  closeReason,
   toBridgeProtocolError,
   encodePaneOutput,
   encodeServerFrame,
@@ -1245,11 +1246,7 @@ class Connection {
     if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
-    try {
-      this.ws.close(wsCode, message.slice(0, 123));
-    } catch {
-      // ignore
-    }
+    this.ws.close(wsCode, closeReason(message));
     // [LAW:dataflow-not-control-flow] Every close handshake this connection
     // opens runs under the heartbeat's deadline (see onPongDeadline),
     // whatever state the connection was in: a fatal before hello has no

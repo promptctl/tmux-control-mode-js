@@ -976,3 +976,20 @@ export function encodeServerFrame(frame: ServerFrame): string {
 export function encodeClientFrame(frame: ClientFrame): string {
   return JSON.stringify(frame);
 }
+
+// RFC 6455 §5.5.1: a close frame's reason is at most 123 bytes of UTF-8 (the
+// 125-byte control payload less the 2-byte code). A browser's close() throws
+// SyntaxError and the ws library throws RangeError above it.
+const CLOSE_REASON_MAX_BYTES = 123;
+
+// [LAW:one-source-of-truth] The one encoder of a close reason, for both ends:
+// the longest prefix of `message` that fits. encodeInto stops before a code
+// point that would overflow the buffer, so the cut never splits one, and
+// `read` is that prefix's length in UTF-16 units.
+export function closeReason(message: string): string {
+  const { read } = new TextEncoder().encodeInto(
+    message,
+    new Uint8Array(CLOSE_REASON_MAX_BYTES),
+  );
+  return message.slice(0, read);
+}

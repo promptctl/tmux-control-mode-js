@@ -6,6 +6,7 @@
 
 import { websocketTransport } from "../../src/connectors/websocket/transport.js";
 import {
+  closeReason,
   parseServerFrame,
   BridgeProtocolError,
 } from "../../src/connectors/websocket/protocol.js";
@@ -469,5 +470,32 @@ describe("parseServerFrame — welcome call limits", () => {
       parseServerFrame(JSON.stringify({ k: "welcome" }));
     expect(fn).toThrow(BridgeProtocolError);
     expect(fn).toThrow("welcome.limits must be an object");
+  });
+});
+
+describe("closeReason — the longest prefix a close frame can carry", () => {
+  const utf8 = (s: string): number => new TextEncoder().encode(s).length;
+
+  it.each([
+    ["under the limit", "x".repeat(122), "x".repeat(122)],
+    ["at the limit", "x".repeat(123), "x".repeat(123)],
+    ["over the limit", "x".repeat(200), "x".repeat(123)],
+  ])("keeps ASCII %s whole or cuts it at 123 bytes", (_, input, out) => {
+    expect(closeReason(input)).toBe(out);
+  });
+
+  it.each([
+    // 'é' is 2 bytes: 61 make 122, a 62nd would make 124.
+    ["a 2-byte code point", "é".repeat(80), 122],
+    // '€' is 3 bytes: 41 make exactly 123.
+    ["a 3-byte code point", "€".repeat(80), 123],
+    // '😀' is 4 bytes, a surrogate pair: 30 make 120, a 31st would make 124.
+    ["an astral code point", "😀".repeat(40), 120],
+  ])("never splits %s at the boundary", (_, input, bytes) => {
+    const out = closeReason(input);
+    expect(input.startsWith(out)).toBe(true);
+    expect(utf8(out)).toBe(bytes);
+    // No half of a surrogate pair: one would round-trip as U+FFFD.
+    expect(new TextDecoder().decode(new TextEncoder().encode(out))).toBe(out);
   });
 });
