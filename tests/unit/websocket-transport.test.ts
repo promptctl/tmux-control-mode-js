@@ -345,21 +345,21 @@ describe("parseServerFrame — event type validation", () => {
     const fn = (): unknown =>
       parseServerFrame(JSON.stringify({ k: "event", msg: { type: "bogus" } }));
     expect(fn).toThrow(BridgeProtocolError);
-    expect(fn).toThrow(/known TmuxMessage discriminator/);
+    expect(fn).toThrow(/event\.msg\.type must be one of begin, .*, got /);
   });
 
   it("rejects event frame with non-string msg.type", () => {
     const fn = (): unknown =>
       parseServerFrame(JSON.stringify({ k: "event", msg: { type: 42 } }));
     expect(fn).toThrow(BridgeProtocolError);
-    expect(fn).toThrow(/known TmuxMessage discriminator/);
+    expect(fn).toThrow(/event\.msg\.type must be one of begin, .*, got /);
   });
 
   it("rejects event frame with missing msg.type", () => {
     const fn = (): unknown =>
       parseServerFrame(JSON.stringify({ k: "event", msg: {} }));
     expect(fn).toThrow(BridgeProtocolError);
-    expect(fn).toThrow(/known TmuxMessage discriminator/);
+    expect(fn).toThrow(/event\.msg\.type must be one of begin, .*, got /);
   });
 
   it("still parses non-event frames (welcome) without change", () => {

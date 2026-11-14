@@ -22,13 +22,17 @@
  * - `closed`        — no live connection, and no automatic transition leaves
  *                     this state. The `reason` distinguishes consumer-
  *                     initiated close (`disposed`) from clean transport exit
- *                     (`exit`) and from error-driven close (`transport-error`).
+ *                     (`exit`) and from error-driven close (`transport-error`:
+ *                     the transport failed, or the reply stream it carried
+ *                     became unreadable — `TmuxClient`'s `protocol-error`
+ *                     with kind `begin` says which line).
  *                     Connectors that expose an explicit `connect()` (the
  *                     WebSocket client) re-enter `connecting` when the
  *                     consumer calls it; nothing else exits `closed`.
  *
- *                     This `reason` classifies the TRANSPORT's own close
- *                     signal — it is independent of, and can disagree with,
+ *                     This `reason` classifies how the connection ended, not
+ *                     tmux's account of it — it is independent of, and can
+ *                     disagree with,
  *                     the `reason` on a client's `exit` event. `exit`'s
  *                     reason is tmux's own explanation: its text for a failed
  *                     startup command (`can't find session: main`), else what

@@ -1302,6 +1302,29 @@ describe("WebSocket bridge — reply-stream reports", () => {
     }
   });
 
+  it("delivers an unreadable %begin's report before the upstream's close", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    t.feed("%begin 7 x 1\n");
+
+    // The cause reaches the peer, then tmux's end, then the bridge's fatal.
+    const ending = readJsonFrames(ws).flatMap((f) =>
+      f.k === "event" ? [f.msg.type] : f.k === "error" ? [f.error.code] : [],
+    );
+    expect(ending).toEqual(["protocol-error", "exit", "BRIDGE_CLOSED"]);
+    expect(readJsonFrames(ws)).toContainEqual({
+      k: "event",
+      msg: { type: "protocol-error", kind: "begin", line: "%begin 7 x 1" },
+    });
+  });
+
   it("parses a reply-stream event frame field by field", () => {
     const frame = (msg: object) => JSON.stringify({ k: "event", msg });
     const response = {

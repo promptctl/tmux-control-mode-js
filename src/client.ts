@@ -10,6 +10,7 @@
 import {
   sameConnectionState,
   type ConnectionState,
+  type ConnectionStateMessage,
 } from "./connection-state.js";
 import { TmuxParser } from "./protocol/parser.js";
 import { detachClient } from "./protocol/encoder.js";
@@ -214,15 +215,15 @@ export class TmuxClient implements TmuxConnection {
       // signal (`reason`, the raw parameter above) — independent of, and
       // free to disagree with, whichever reason the 'exit' event carried.
       // See ConnectionState's doc comment in connection-state.ts for why.
-      this.endConnection(
+      const announced = this.endConnection(
         this.startupFailure ?? reason,
         this.userClosed
           ? "disposed"
           : reason === undefined
             ? "exit"
             : "transport-error",
-        [],
       );
+      for (const msg of announced) this.emitter.emit(msg);
     });
   }
 
@@ -238,7 +239,7 @@ export class TmuxClient implements TmuxConnection {
   // Plain command string in → response out. No sendRaw escape hatch for callers.
   execute(command: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
-      // [LAW:no-silent-failure] 'closed' is terminal (see setConnectionState)
+      // [LAW:no-silent-failure] 'closed' is terminal (see transition)
       // and settlePendingOnClose already ran once, for good, when it happened
       // — it will never run again. TmuxTransport is a public seam third
       // parties implement (a trust boundary, same reasoning as the throwing-
@@ -361,37 +362,34 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:single-enforcer] The one way a connection ends: the transport's
   // close, or a reply stream that can no longer be matched to its commands
-  // (handleProtocolError), whose report is `cause`.
-  // [LAW:no-ambient-temporal-coupling] The end is committed before any
-  // listener hears of it — 'closed' set, the exit recorded, every pending
-  // command rejected — so a command a listener issues meets execute's
-  // 'closed' refusal and never reaches tmux, and the transport's own close,
-  // arriving later, changes nothing. It is then announced in cause order:
-  // `cause`, 'exit' when tmux never sent its own %exit (a killed server),
-  // 'closed'.
+  // (handleProtocolError).
+  // [LAW:effects-at-boundaries] It commits the end and returns what the
+  // caller announces after its own cause: 'exit' when tmux never sent its own
+  // %exit (a killed server), then 'closed'.
+  // [LAW:no-ambient-temporal-coupling] Everything is committed before any
+  // listener hears of it — 'closed' set, the transport closed, the exit
+  // recorded, every pending command rejected — so a command a listener issues
+  // meets execute's 'closed' refusal and never reaches tmux, a throwing
+  // listener cannot leave the transport open, and the transport's own close,
+  // arriving later or from within close(), changes nothing.
   private endConnection(
     reason: string | undefined,
     closedReason: Extract<ConnectionState, { status: "closed" }>["reason"],
-    cause: readonly ProtocolErrorMessage[],
-  ): void {
-    if (this.currentConnectionState.status === "closed") return;
-    const closed: ConnectionState = { status: "closed", reason: closedReason };
-    this.currentConnectionState = closed;
+  ): readonly EmitterMessage[] {
+    const closed = this.transition({ status: "closed", reason: closedReason });
+    // Already closed: this end was committed and announced before.
+    if (closed.length === 0) return [];
+    this.transport.close();
     const { exit, unannounced } = this.recordExit(reason);
     this.router.onTransportClose();
     this.settlePendingOnClose(exit.reason);
-    const announced: readonly EmitterMessage[] = [
-      ...cause,
-      ...unannounced,
-      { type: "connection-state", state: closed },
-    ];
-    for (const msg of announced) this.emitter.emit(msg);
+    return [...unannounced, ...closed];
   }
 
   // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
   // ever arrive for these commands. Reject them now instead of leaving their
   // promises unsettled forever; clearing both collections first means a
-  // message that somehow arrives after close (see the setConnectionState
+  // message that somehow arrives after close (see the transition
   // terminal-state guard below) cannot double-settle an already-rejected entry.
   private settlePendingOnClose(reason: string | undefined): void {
     const inflight = this.inflight;
@@ -429,22 +427,24 @@ export class TmuxClient implements TmuxConnection {
   private startupReplied(failure: string | undefined): void {
     if (this.currentConnectionState.status !== "connecting") return;
     this.startupFailure = failure;
-    this.setConnectionState({ status: "ready" });
+    for (const msg of this.transition({ status: "ready" })) {
+      this.emitter.emit(msg);
+    }
+    this.router.onTransportReady((cmd) => this.execute(cmd));
   }
 
-  private setConnectionState(next: ConnectionState): void {
-    // [LAW:types-are-the-program] 'closed' is documented (connection-state.ts)
-    // as terminal for TmuxClient — no automatic transition leaves it. Enforced
-    // once, here, rather than at every caller that could otherwise resurrect a
-    // dead connection (e.g. a data chunk delivered after the transport already
-    // reported close).
-    if (this.currentConnectionState.status === "closed") return;
-    if (sameConnectionState(this.currentConnectionState, next)) return;
+  // [LAW:single-enforcer] The one writer of connectionState. It returns the
+  // 'connection-state' its caller announces: none when nothing changed.
+  // [LAW:types-are-the-program] 'closed' is documented (connection-state.ts)
+  // as terminal for TmuxClient — no automatic transition leaves it. Enforced
+  // once, here, rather than at every caller that could otherwise resurrect a
+  // dead connection (e.g. a data chunk delivered after the transport already
+  // reported close).
+  private transition(next: ConnectionState): readonly ConnectionStateMessage[] {
+    if (this.currentConnectionState.status === "closed") return [];
+    if (sameConnectionState(this.currentConnectionState, next)) return [];
     this.currentConnectionState = next;
-    this.emitter.emit({ type: "connection-state", state: next });
-    if (next.status === "ready") {
-      this.router.onTransportReady((cmd) => this.execute(cmd));
-    }
+    return [{ type: "connection-state", state: next }];
   }
 
   // ---------------------------------------------------------------------------
@@ -454,7 +454,7 @@ export class TmuxClient implements TmuxConnection {
   // [LAW:single-enforcer] All FIFO correlation transitions happen here only.
   private handleMessage(msg: TmuxMessage): void {
     // [LAW:no-ambient-temporal-coupling] 'closed' is terminal (see
-    // setConnectionState): once announced, nothing more should reach
+    // transition): once announced, nothing more should reach
     // consumers. Without this, a chunk delivered after the transport already
     // closed — a real race under delayed/chaotic delivery — could still
     // dispatch here: pending/inflight are already cleared and settled.
@@ -548,14 +548,18 @@ export class TmuxClient implements TmuxConnection {
       }
       case "begin":
         // No later reply can be matched to its command, so none is handed
-        // to a caller: the connection ends, the report its cause. Its reason
-        // is this line's — no startup failure explains it better.
-        this.endConnection(
-          `malformed %begin: ${error.line}`,
-          "transport-error",
-          [error],
-        );
-        this.transport.close();
+        // to a caller: the connection ends, and the report is announced
+        // first, as its cause. Its reason is this line's, quoted so a
+        // trailing \r stays visible — no startup failure explains it better.
+        for (const msg of [
+          error,
+          ...this.endConnection(
+            `malformed %begin: ${JSON.stringify(error.line)}`,
+            "transport-error",
+          ),
+        ]) {
+          this.emitter.emit(msg);
+        }
         return;
       case "line":
         this.emitter.emit(error);

@@ -595,7 +595,7 @@ describe("TmuxClient — a line the parser cannot read", () => {
     }
     expect(exits).toHaveBeenCalledWith({
       type: "exit",
-      reason: `malformed %begin: ${line}`,
+      reason: `malformed %begin: ${JSON.stringify(line)}`,
     });
     expect(client.connectionState).toEqual({
       status: "closed",
@@ -623,7 +623,7 @@ describe("TmuxClient — a line the parser cannot read", () => {
 
     expect(exits).toHaveBeenCalledWith({
       type: "exit",
-      reason: "malformed %begin: %begin 0 x 0",
+      reason: 'malformed %begin: "%begin 0 x 0"',
     });
   });
 });

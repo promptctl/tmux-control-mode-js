@@ -48,8 +48,8 @@ All notable changes to this project are documented here. Format follows
   to its command any more, so `TmuxParser` reads no further line until
   `reset()` and `TmuxClient` ends the connection, rejecting every pending
   command and refusing any a listener issues, with `exit` reason
-  `malformed %begin: <line>` and state `closed`/`transport-error`), or `line`
-  (anything else; dropped). `TmuxTransport.close()` must be idempotent.
+  `malformed %begin: "<line>"` (the line JSON-quoted) and state
+  `closed`/`transport-error`), or `line` (anything else; dropped). `TmuxTransport.close()` must be idempotent.
   `TmuxParser.onProtocolError` receives the `ProtocolErrorMessage`. Upgrade a
   WebSocket bridge and its clients together: an older `WebSocketTmuxClient`
   reports a `begin` or `line` `protocol-error` frame through `onError`.
