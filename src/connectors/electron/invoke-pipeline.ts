@@ -23,6 +23,7 @@ import {
   internalError,
 } from "../bridge-dispatch.js";
 import type { BridgeConnection } from "../bridge-connection.js";
+import { waitAtMost } from "../wait-at-most.js";
 import {
   BridgeError,
   type InvokeResultEnvelope,
@@ -149,15 +150,7 @@ export class InvokePipeline {
       await all;
       return;
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, timeoutMs);
-    });
-    try {
-      await Promise.race([all, timeout]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
+    await waitAtMost(all, timeoutMs);
   }
 
   private async run(
