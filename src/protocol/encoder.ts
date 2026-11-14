@@ -160,20 +160,33 @@ export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
 }
 
-// [LAW:one-source-of-truth] tmux reads a command line up to its first newline
-// or NUL. It takes what follows a newline as a second command, and drops what
-// follows a NUL while replying success: `-e 'A=x<NUL>y' -- cmd` opens the
-// window without cmd (verified on 3.7b and 3.8). execute()'s check and the
-// per-field refusal below both read this one rule.
-export function hasCommandLineTerminator(text: string): boolean {
-  return /[\n\0]/.test(text);
+// tmux reads a command line up to its first newline or NUL. It takes what
+// follows a newline as a second command, and drops what follows a NUL while
+// replying success: `-e 'A=x<NUL>y' -- cmd` opens the window without cmd
+// (verified on 3.7b and 3.8).
+const COMMAND_LINE_TERMINATOR = /[\n\0]/;
+
+/**
+ * Why tmux would not run `command` as one command with one reply, or `null`
+ * when it would. An empty line detaches the control client (SPEC §4.1); a
+ * blank or comment-only line gets no reply; a newline splits the line into
+ * several commands; a NUL ends it early.
+ */
+// [LAW:one-source-of-truth] The one rule for a command line; execute()'s
+// refusal and the per-field refusal below both read it.
+export function commandLineFault(command: string): string | null {
+  const trimmed = command.trim();
+  if (trimmed === "") return "it is empty or blank";
+  if (trimmed.startsWith("#")) return "it is only a comment";
+  return COMMAND_LINE_TERMINATOR.test(command)
+    ? "it holds a newline or NUL"
+    : null;
 }
 
 // The refusal names the field and leaves the value out: an environment value
-// is often a credential, and execute()'s own check would quote the whole
-// command line, every -e value in it.
+// is often a credential.
 function oneLine(field: string, value: string): string {
-  if (hasCommandLineTerminator(value)) {
+  if (COMMAND_LINE_TERMINATOR.test(value)) {
     throw new RangeError(`${field} must hold no newline or NUL`);
   }
   return value;

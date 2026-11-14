@@ -15,7 +15,7 @@
 // [LAW:single-enforcer] One class for command failures; downstream
 // `instanceof TmuxCommandError` is the authoritative check.
 
-import { hasCommandLineTerminator } from "./protocol/encoder.js";
+import { commandLineFault } from "./protocol/encoder.js";
 import type { CommandResponse } from "./protocol/types.js";
 import type { TmuxVersion } from "./tmux-compat.js";
 
@@ -233,20 +233,18 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
- * `execute()` refused a command tmux would not run as written. A newline
- * splits it into several commands, whose extra replies would answer the
- * commands queued after it; an empty line detaches the control client
- * (SPEC §4.1); a blank or comment-only line gets no reply at all; a NUL ends
- * the line there, and tmux runs what precedes it and replies success. Nothing
- * was sent.
+ * `execute()` refused a command tmux would not run as written; the message
+ * says why (see `commandLineFault`). A newline's extra replies would answer
+ * the commands queued after it, and a NUL makes tmux run only what precedes
+ * it and reply success. Nothing was sent.
  */
 export class TmuxInvalidCommandError extends Error {
   readonly command: string;
 
-  constructor(command: string) {
-    super(
-      `command must be one non-empty line with no NUL: ${JSON.stringify(command)}`,
-    );
+  // The message leaves the command out: an -e value in it is often a
+  // credential, and a bridge forwards this message to its peer.
+  constructor(command: string, fault: string) {
+    super(`command refused: ${fault}`);
     this.name = "TmuxInvalidCommandError";
     this.command = command;
   }
@@ -258,12 +256,8 @@ export class TmuxInvalidCommandError extends Error {
 export function invalidCommand(
   command: string,
 ): TmuxInvalidCommandError | null {
-  const trimmed = command.trim();
-  return trimmed === "" ||
-    trimmed.startsWith("#") ||
-    hasCommandLineTerminator(command)
-    ? new TmuxInvalidCommandError(command)
-    : null;
+  const fault = commandLineFault(command);
+  return fault === null ? null : new TmuxInvalidCommandError(command, fault);
 }
 
 /**
