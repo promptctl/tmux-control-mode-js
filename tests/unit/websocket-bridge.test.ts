@@ -2225,14 +2225,18 @@ describe("WebSocket bridge — heartbeat options are parsed at construction", ()
 // Call limits and the drain bound are parsed at the same border (6sp.1lh). A
 // request timeout no reply could meet used to fail every call with
 // BRIDGE_TIMEOUT one macrotask after dispatch, reading as a slow tmux; a cap of
-// 0 refused every call as "max in-flight exceeded". Both now fail when the
-// bridge is built, naming the option and its value.
+// 0 refused every call as "max in-flight exceeded". The rate limit is parsed
+// there too (6sp.lgw): a negative window evicted every entry so the limit never
+// fired, NaN refused every call once the window filled, and a cap of 0 refused
+// the first. All now fail when the bridge is built, naming the option and its
+// value.
 // ---------------------------------------------------------------------------
 
 describe("WebSocket bridge — call limits are parsed at construction", () => {
   function build(opts: {
     requestTimeoutMs?: number;
     maxInflight?: number;
+    rateLimit?: { maxCalls: number; windowMs: number };
   }): () => unknown {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -2257,6 +2261,36 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
     expect(fn).toThrow(BridgeError);
     expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
     expect(fn).toThrow("maxInflight (0) must be an integer >= 1");
+  });
+
+  it("rateLimit.maxCalls: 0 throws BRIDGE_INVALID_ARG naming the field and value", () => {
+    const fn = build({ rateLimit: { maxCalls: 0, windowMs: 1000 } });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("rateLimit.maxCalls (0) must be an integer >= 1");
+  });
+
+  it("a negative rateLimit.windowMs throws BRIDGE_INVALID_ARG naming the field and value", () => {
+    const fn = build({ rateLimit: { maxCalls: 10, windowMs: -1 } });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("rateLimit.windowMs (-1) must be an integer >= 1");
+  });
+
+  it("a rateLimit.windowMs past the timer range builds: the window is never a timer delay", () => {
+    const thirtyDaysMs = 30 * 24 * 3600 * 1000;
+    expect(
+      build({ rateLimit: { maxCalls: 1000, windowMs: thirtyDaysMs } }),
+    ).not.toThrow();
+  });
+
+  it("NaN in either rateLimit field throws naming the field", () => {
+    expect(build({ rateLimit: { maxCalls: NaN, windowMs: 1000 } })).toThrow(
+      "rateLimit.maxCalls (NaN) must be",
+    );
+    expect(build({ rateLimit: { maxCalls: 10, windowMs: NaN } })).toThrow(
+      "rateLimit.windowMs (NaN) must be",
+    );
   });
 
   it("shutdown(0) rejects with BRIDGE_INVALID_ARG naming drainMs, and tells no peer to drain", async () => {

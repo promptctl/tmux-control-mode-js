@@ -82,7 +82,7 @@ import type {
   UpgradeRequest,
 } from "./types.js";
 import { WEBSOCKET_OPEN } from "./types.js";
-import { RateLimiter } from "./rate-limiter.js";
+import { RateLimiter, parseRateLimit, type RateLimit } from "./rate-limiter.js";
 import { Heartbeat, type HeartbeatCadence } from "./heartbeat.js";
 import {
   parseDurationMs,
@@ -155,7 +155,10 @@ export interface WebSocketBridgeOptions {
     req: AuthorizeRequest,
   ) => Promise<AuthorizeResult> | AuthorizeResult;
 
-  /** Sliding-window rate limit per connection. Default: unlimited. */
+  /** Sliding-window rate limit per connection: `maxCalls` and `windowMs`
+   *  each an integer >= 1, or `createWebSocketBridge` throws
+   *  `BRIDGE_INVALID_ARG` naming `rateLimit.<field>` and the value.
+   *  Default: unlimited. */
   readonly rateLimit?: RateLimitConfig;
 
   /** Ping period. The heartbeat is the one liveness bound the bridge owns:
@@ -340,14 +343,15 @@ interface ResolvedDefaults {
   readonly requestTimeoutMs: DurationMs;
   readonly helloTimeoutMs: DurationMs;
   readonly maxInflight: PositiveInt;
+  readonly rateLimit: RateLimit | undefined;
 }
 
 // [LAW:parse-dont-validate] The consumer's timing and capacity options cross
 // the border once, here, at bridge construction: a timeout no reply could ever
 // meet, or a cap no call could ever fit under, fails with the option's name
 // and value instead of as a verdict against every peer. The results are in
-// the shapes Heartbeat, CallPump and Handshake take, so no caller re-packs
-// them and none checks again.
+// the shapes Heartbeat, CallPump, Handshake and RateLimiter take, so no caller
+// re-packs them and none checks again.
 function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
     heartbeat: {
@@ -369,6 +373,7 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
       "maxInflight",
       opts.maxInflight ?? DEFAULTS.maxInflight,
     ),
+    rateLimit: parseRateLimit(opts.rateLimit),
   };
 }
 
@@ -425,7 +430,7 @@ class Connection {
       },
     };
 
-    this.rateLimiter = new RateLimiter(opts.rateLimit);
+    this.rateLimiter = new RateLimiter(defaults.rateLimit);
 
     this.heartbeat = new Heartbeat(defaults.heartbeat, {
       onTick: () => this.maybeFlushBuffered(),

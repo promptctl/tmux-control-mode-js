@@ -1,7 +1,14 @@
 // tests/unit/ws-rate-limiter.test.ts
 // Unit tests for the RateLimiter collaborator extracted from Connection.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { RateLimiter } from "../../src/connectors/websocket/rate-limiter.js";
+import {
+  RateLimiter,
+  parseRateLimit,
+} from "../../src/connectors/websocket/rate-limiter.js";
+
+function limit(maxCalls: number, windowMs: number) {
+  return parseRateLimit({ maxCalls, windowMs });
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -23,7 +30,7 @@ describe("RateLimiter — no config", () => {
 describe("RateLimiter — with config", () => {
   it("allows up to maxCalls within the window", () => {
     vi.useFakeTimers();
-    const rl = new RateLimiter({ maxCalls: 3, windowMs: 1000 });
+    const rl = new RateLimiter(limit(3, 1000));
     expect(rl.check()).toBe(true);
     expect(rl.check()).toBe(true);
     expect(rl.check()).toBe(true);
@@ -31,7 +38,7 @@ describe("RateLimiter — with config", () => {
 
   it("rejects the call that exceeds maxCalls", () => {
     vi.useFakeTimers();
-    const rl = new RateLimiter({ maxCalls: 3, windowMs: 1000 });
+    const rl = new RateLimiter(limit(3, 1000));
     rl.check();
     rl.check();
     rl.check();
@@ -40,7 +47,7 @@ describe("RateLimiter — with config", () => {
 
   it("allows new calls after old ones slide out of the window", () => {
     vi.useFakeTimers();
-    const rl = new RateLimiter({ maxCalls: 2, windowMs: 500 });
+    const rl = new RateLimiter(limit(2, 500));
     rl.check(); // t=0
     rl.check(); // t=0 — window full
     expect(rl.check()).toBe(false);
@@ -49,8 +56,20 @@ describe("RateLimiter — with config", () => {
     expect(rl.check()).toBe(true);
   });
 
+  it("a wall-clock step back does not hold the window shut", () => {
+    vi.useFakeTimers();
+    const rl = new RateLimiter(limit(2, 500));
+    rl.check();
+    rl.check();
+    expect(rl.check()).toBe(false);
+
+    vi.setSystemTime(Date.now() - 3_600_000); // NTP steps the clock back 1h
+    vi.advanceTimersByTime(501);
+    expect(rl.check()).toBe(true);
+  });
+
   it("describe() returns the formatted limit string", () => {
-    const rl = new RateLimiter({ maxCalls: 10, windowMs: 2000 });
+    const rl = new RateLimiter(limit(10, 2000));
     expect(rl.describe()).toBe(" (10/2000ms)");
   });
 });
