@@ -16,7 +16,7 @@ All notable changes to this project are documented here. Format follows
   one (`newEmptyWindow()`). Before, a pane with no process read as `pid: 0`
   and `cwd: ""`, its `currentCommand` the default shell's name or the exited
   command, and on tmux 3.7 a dead pane kept the exited process's pid. A
-  running pane's `cwd` is `null` while tmux cannot read it yet, where it was
+  running pane's `cwd` is `null` when tmux cannot read it, where it was
   `""`. Read `p.process.pid` after checking `p.process.state === "running"`.
   The bridge wire carries the new shape; upgrade server and client together.
 - `listWindows`, `listPanes` and `listSessions` reject with
@@ -29,6 +29,9 @@ All notable changes to this project are documented here. Format follows
   reaches `topology-error`, where a skipped line left that pane's output
   unrouted. `parsePaneListLine` also rejects an id beyond
   `Number.MAX_SAFE_INTEGER`.
+- `listPanes` reads a pane whose process name holds a tab, as tmux on Linux
+  can report it: `pane_current_command` is escaped like `pane_current_path`.
+  0.2.0 dropped that pane from the list.
 
 ### Fixed
 

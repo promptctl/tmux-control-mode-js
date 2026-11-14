@@ -81,13 +81,12 @@ export function refreshClientSize(width: number, height: number): string {
 // as plain values. `pane_current_path`, by contrast, is a raw filesystem
 // path with no such restriction and tmux emits it byte-for-byte — a literal
 // tab in the cwd (confirmed live: `new-session -c $'/tmp/x\ty'`) desyncs a
-// flat split-by-tab. `pane_start_command`/`pane_current_command` need no
-// such treatment either: they come from tmux's own argv-reconstruction,
-// which already backslash-escapes (confirmed live: a literal backslash in
-// the command renders as `\\`, a literal tab as `\t`) before we ever see
-// them — escaping them again here would double-escape tmux's own encoding.
-// `escapeFreeTextField` below applies the equivalent treatment to
-// `pane_current_path`, which gets none of that protection natively.
+// flat split-by-tab. `pane_start_command` needs no such treatment: it is
+// tmux's own argv-reconstruction (`cmd_stringify_argv`), which already
+// renders a literal tab as `\t`. `pane_current_command` is the process's
+// name as the OS reports it (`osdep_get_name`, `/proc/<pid>/cmdline` on
+// Linux), which tmux passes through unescaped, so it gets
+// `escapeFreeTextField` below the same as `pane_current_path`.
 export function listWindowsCommand(): string {
   return (
     "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
@@ -130,7 +129,8 @@ export function listPanesCommand(): string {
     "list-panes -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
     "#{window_name}\t#{pane_id}\t#{pane_dead}\t" +
     `${escapeFreeTextField("#{pane_current_path}")}\t` +
-    "#{pane_pid}\t#{pane_start_command}\t#{pane_current_command}\t" +
+    "#{pane_pid}\t#{pane_start_command}\t" +
+    `${escapeFreeTextField("#{pane_current_command}")}\t` +
     "#{pane_width}\t#{pane_height}'"
   );
 }

@@ -917,7 +917,7 @@ export function parsePaneListLine(line: string): PaneListEntry | null {
 // one item per line: a line the parser cannot read rejects the whole reply,
 // since a skipped line would read as one item fewer, which the caller could
 // not tell from a correct reply.
-export function parseReply<T>(
+export function parseListReply<T>(
   command: string,
   output: readonly string[],
   parseLine: (line: string) => T | null,
@@ -966,9 +966,10 @@ function completeRecord<T extends object>(fields: {
 
 // Reverses protocol/encoder.ts's `escapeFreeTextField`: a backslash-prefixed
 // `t` is a literal tab, a backslash-prefixed backslash is a literal
-// backslash. Only `pane_current_path` in the tab-separated pane listing is
-// encoded this way (see that function's doc comment for why the other
-// free-text pane fields need no such treatment) — this is the sole reverse,
+// backslash. Only `pane_current_path` and `pane_current_command` in the
+// tab-separated pane listing are encoded this way (see that function's doc
+// comment for why the other free-text fields need no such treatment) — this
+// is the sole reverse,
 // and the two must only ever change together. `paneCwd()` reads the same
 // variable alone on its line, unescaped, so its parser does not use this.
 // Scanning left to right and consuming exactly one escape pair per backslash
@@ -1039,7 +1040,7 @@ function parsePaneProcess(
         state: "running",
         pid: runningPid,
         cwd: cwd === "" ? null : decodeField(unescapeFreeTextField(cwd)),
-        currentCommand: decodeField(currentCommand),
+        currentCommand: decodeField(unescapeFreeTextField(currentCommand)),
       };
 }
 
@@ -1049,9 +1050,9 @@ function parsePaneProcess(
  * `#{session_id} #{session_name} #{window_id} #{window_name} #{pane_id}
  * #{pane_dead} #{pane_current_path} #{pane_pid} #{pane_start_command}
  * #{pane_current_command} #{pane_width} #{pane_height}`, with
- * `pane_current_path` backslash-escaped by the encoder (see
- * `escapeFreeTextField` there) so a literal tab or backslash in the cwd
- * cannot desync this split.
+ * `pane_current_path` and `pane_current_command` backslash-escaped by the
+ * encoder (see `escapeFreeTextField` there) so a literal tab or backslash in
+ * either cannot desync this split.
  *
  * Returns null for a line it cannot read, as `parseWindowRecordLine` does,
  * and for a `#{pane_dead}`/`#{pane_pid}` pair that names no process state.

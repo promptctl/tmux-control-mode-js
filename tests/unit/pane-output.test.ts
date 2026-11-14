@@ -82,7 +82,7 @@ describe("parsePaneRecordLine", () => {
     }
   });
 
-  it("parses a running pane whose cwd tmux cannot read yet as cwd null", () => {
+  it("parses a running pane whose cwd tmux cannot read as cwd null", () => {
     expect(parsePaneRecordLine(paneLine({ cwd: "" }))?.process).toEqual({
       state: "running",
       pid: 123,
@@ -106,6 +106,17 @@ describe("parsePaneRecordLine", () => {
       pid: 123,
       cwd: originalCwd,
       currentCommand: "zsh",
+    });
+  });
+
+  it("decodes a current command escaped by escapeFreeTextField back to its literal tab/backslash", () => {
+    const encoded = `a${BACKSLASH}${BACKSLASH}b${BACKSLASH}tc`;
+    const record = parsePaneRecordLine(paneLine({ currentCommand: encoded }));
+    expect(record?.process).toEqual({
+      state: "running",
+      pid: 123,
+      cwd: "/tmp",
+      currentCommand: `a${BACKSLASH}b${TAB}c`,
     });
   });
 
@@ -243,13 +254,15 @@ describe("parsePaneListLine", () => {
 });
 
 describe("listPanesCommand", () => {
-  it("wraps only pane_current_path in the escape modifier", () => {
+  it("wraps pane_current_path and pane_current_command in the escape modifier", () => {
     const cmd = listPanesCommand();
-    expect(cmd).toContain("#{s/" + TAB + "/" + BACKSLASH + BACKSLASH + "t/:");
-    expect(cmd).toContain("#{pane_current_path}");
+    const escaped = (field: string) =>
+      `#{s/${TAB}/${BACKSLASH}${BACKSLASH}t/:#{s/${BACKSLASH}${BACKSLASH}/${BACKSLASH.repeat(4)}/:#{${field}}}}`;
+    expect(cmd).toContain(escaped("pane_current_path"));
+    expect(cmd).toContain(escaped("pane_current_command"));
     expect(cmd).toContain("\t#{pane_id}\t#{pane_dead}\t");
-    // pane_start_command/pane_current_command appear unwrapped — tmux
-    // already escapes them internally (see encoder.ts's doc comment).
-    expect(cmd).toContain("\t#{pane_start_command}\t#{pane_current_command}\t");
+    // pane_start_command appears unwrapped — tmux already escapes it (see
+    // encoder.ts's doc comment).
+    expect(cmd).toContain("\t#{pane_start_command}\t");
   });
 });

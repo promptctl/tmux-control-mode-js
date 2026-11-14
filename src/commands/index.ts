@@ -52,7 +52,7 @@ import {
   parseWindowRecordLine,
   parsePaneRecordLine,
   parseSessionRecordLine,
-  parseReply,
+  parseListReply,
   parseNewWindowReply,
   parsePaneCwdReply,
 } from "../pane-output.js";
@@ -88,7 +88,7 @@ async function listRecords<T>(
   parseLine: (line: string) => T | null,
 ): Promise<readonly T[]> {
   const response = await client.execute(command);
-  return parseReply(command, response.output, parseLine);
+  return parseListReply(command, response.output, parseLine);
 }
 
 export function listWindows(

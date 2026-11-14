@@ -26,7 +26,7 @@ import {
   PANE_LIST_FORMAT,
   type Contradiction,
   parsePaneListLine,
-  parseReply,
+  parseListReply,
   serverScope,
   type AttachOptions,
   type BytesSink,
@@ -500,7 +500,7 @@ export class TopologyRouter {
           void this.bootstrap();
         return;
       }
-      this.topology.seed(parseReply(command, r.output, parsePaneListLine));
+      this.topology.seed(parseListReply(command, r.output, parsePaneListLine));
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
@@ -576,7 +576,7 @@ export class TopologyRouter {
       this.requery(
         this.topology.updateWindow(
           windowId,
-          parseReply(command, r.output, parsePaneListLine),
+          parseListReply(command, r.output, parsePaneListLine),
         ),
       );
       this.interest?.recompute();

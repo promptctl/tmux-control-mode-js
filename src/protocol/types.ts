@@ -442,9 +442,9 @@ export interface WindowRecord {
  * What a pane's process is doing, as tmux reports it. Not `PaneProcess`,
  * which is what a pane is asked to run.
  *
- * - `running`: the pane's process. `cwd` is null while tmux cannot read the
- *   process's cwd (a new pane whose child has not yet taken its pty), the
- *   same moment `paneCwd()` rejects with `PaneCwdUnavailableError`.
+ * - `running`: the pane's process. `cwd` is null when tmux cannot read the
+ *   process's cwd (for one, a new pane whose child has not yet taken its
+ *   pty), whenever `paneCwd()` rejects with `PaneCwdUnavailableError`.
  * - `dead`: its process exited and `remain-on-exit` kept the pane
  *   (`#{pane_dead}`); `respawnPane()` starts a new one.
  * - `empty`: the pane never had a process (`newEmptyWindow()`,
