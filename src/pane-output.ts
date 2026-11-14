@@ -4,11 +4,14 @@
 
 import type {
   NewWindowResult,
+  PaneProcessState,
   PaneRecord,
   SessionRecord,
   WindowRecord,
 } from "./protocol/types.js";
 import { latin1ToBytes } from "./protocol/byte-codec.js";
+import { parseUint } from "./protocol/uint.js";
+import { TmuxReplyFormatError } from "./errors.js";
 
 // [LAW:types-are-the-program] BytesSink is the byte contract; PaneScope
 //   encodes membership as a value (a discriminated union), not as a method.
@@ -891,29 +894,75 @@ export class TopologyEpochTracker {
  * Parse one line of `list-panes -F "$PANE_LIST_FORMAT"` output (`-a` or
  * `-t @W`). The three-field form without the floating flag parses too.
  *
- * Returns null for unparseable lines (trailing blank, unexpected format).
+ * Returns null for a line that does not match.
  *
  * This is response-block output, where `TmuxParser.processLine()` no longer
  * strips a trailing `\r` run (needed so raw `capture-pane -p` bytes
  * survive) — so on a CRLF transport, the last line of this list can
  * legitimately carry one, and (per a doubled-up CRLF) more than one. `\r*$`
- * tolerates any run of them, the same way `parseSessionRecordLine`'s
- * `Number()` comparison does for its own last field.
+ * tolerates any run of them, as `recordFields` does for the record lines.
  */
 export function parsePaneListLine(line: string): PaneListEntry | null {
   const m = line.match(/^%(\d+) @(\d+) \$(\d+)(?: ([01]?))?\r*$/);
   if (m === null) return null;
-  return {
-    paneId: Number(m[1]),
-    windowId: Number(m[2]),
-    sessionId: Number(m[3]),
+  return completeRecord<PaneListEntry>({
+    paneId: parseUint(m[1]),
+    windowId: parseUint(m[2]),
+    sessionId: parseUint(m[3]),
     floating: m[4] === "1",
-  };
+  });
 }
 
-/** Every pane in a `list-panes -F "$PANE_LIST_FORMAT"` reply, skipping lines that don't parse. */
-export function parsePaneList(output: readonly string[]): PaneListEntry[] {
-  return output.flatMap((line) => parsePaneListLine(line) ?? []);
+// [LAW:no-silent-failure] [LAW:single-enforcer] The one rule for a reply of
+// one item per line: a line the parser cannot read rejects the whole reply,
+// since a skipped line would read as one item fewer, which the caller could
+// not tell from a correct reply.
+export function parseListReply<T>(
+  command: string,
+  output: readonly string[],
+  parseLine: (line: string) => T | null,
+): T[] {
+  return output.map(
+    (line) => parseLine(line) ?? unreadableReply(command, output),
+  );
+}
+
+function unreadableReply(command: string, output: readonly string[]): never {
+  throw new TmuxReplyFormatError(command, output);
+}
+
+/** A tab-separated record format: how many fields a record has, and how to read one. */
+export interface RecordFormat<T> {
+  readonly fieldCount: number;
+  readonly parseLine: (line: string) => T | null;
+}
+
+// [LAW:no-silent-failure] The rule for a reply of tab-separated records, as
+// `parseListReply`'s for one item per line, except that a record can span
+// lines: tmux prints a newline in a free-text field (a cwd, a process name)
+// raw, and no format escape exists for it (`#{s/\n/...}` matches a literal
+// `n`, probed on 3.7b and 3.8). So lines are rejoined until a record has its
+// fields; no field holds a tab (see `escapeFreeTextField` in
+// protocol/encoder.ts), so the count is exact.
+export function parseRecordReply<T>(
+  command: string,
+  output: readonly string[],
+  format: RecordFormat<T>,
+): T[] {
+  const records: string[] = [];
+  let pending: string | null = null;
+  for (const line of output) {
+    const text = line.replace(/\r*$/, "");
+    pending = pending === null ? text : `${pending}\n${text}`;
+    if (pending.split("\t").length >= format.fieldCount) {
+      records.push(pending);
+      pending = null;
+    }
+  }
+  if (pending !== null) records.push(pending);
+  return records.map(
+    (record) => format.parseLine(record) ?? unreadableReply(command, output),
+  );
 }
 
 // [LAW:one-source-of-truth] Decode a single latin1-container field to real
@@ -927,18 +976,41 @@ function decodeField(latin1Field: string): string {
 
 // tmux's #{session_id}/#{window_id}/#{pane_id} format variables are always
 // sigil-prefixed ($N / @N / %N respectively — see SPEC.md and
-// parsePaneListLine's regex below); Number() on the raw field is NaN.
-function parseSigilId(field: string): number {
-  return Number(field.slice(1));
+// parsePaneListLine's regex above).
+function parseSigilId(
+  sigil: "$" | "@" | "%",
+  field: string,
+): number | undefined {
+  return field.startsWith(sigil) ? parseUint(field.slice(1)) : undefined;
+}
+
+// The tab-separated fields of one record line, or null when it does not have
+// `count` of them. A reply line can keep a trailing `\r` (see `parser.ts`'s
+// `feed()`); it is dropped here, so no field parser meets it.
+// `parseRecordReply` also drops it from each line of a record split over
+// several, where it would otherwise sit inside a field.
+function recordFields(line: string, count: number): string[] | null {
+  const fields = line.replace(/\r*$/, "").split("\t");
+  return fields.length === count ? fields : null;
+}
+
+// [LAW:parse-dont-validate] A record whose every field parsed, or null: a
+// field parser answers undefined for a value it cannot read, and one such
+// field makes the whole line unreadable, never a record holding NaN.
+function completeRecord<T extends object>(fields: {
+  readonly [K in keyof T]: T[K] | undefined;
+}): T | null {
+  return Object.values(fields).includes(undefined) ? null : (fields as T);
 }
 
 // Reverses protocol/encoder.ts's `escapeFreeTextField`: a backslash-prefixed
 // `t` is a literal tab, a backslash-prefixed backslash is a literal
-// backslash. Only `pane_current_path` in the tab-separated pane listing is
-// encoded this way (see that function's doc comment for why the other
-// free-text pane fields need no such treatment) — this is the sole reverse,
-// and the two must only ever change together. `paneCwd()` reads the same
-// variable alone on its line, unescaped, so its parser does not use this.
+// backslash. Only `pane_current_path` and `pane_current_command` in the
+// tab-separated pane listing are encoded this way (see that function's doc
+// comment for why the other free-text fields need no such treatment) — this
+// is the sole reverse, and the two must only ever change together.
+// `paneCwd()` reads the same variable alone on its line, unescaped, so its
+// parser does not use this.
 // Scanning left to right and consuming exactly one escape pair per backslash
 // keeps a run of escapes unambiguous regardless of what precedes it in the
 // field.
@@ -970,45 +1042,74 @@ function unescapeFreeTextField(field: string): string {
  * `#{session_id} #{session_name} #{window_id} #{window_name}
  * #{window_width} #{window_height}`.
  *
- * Returns null for an unparseable line (trailing blank, unexpected field
- * count) — the caller filters, matching `parsePaneListLine`'s discipline.
+ * Returns null for a line it cannot read: a field count other than six, or
+ * an id or size that is not an unsigned integer.
  */
 export function parseWindowRecordLine(line: string): WindowRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 6) return null;
+  const fields = recordFields(line, WINDOW_RECORD.fieldCount);
+  if (fields === null) return null;
   const [sessionId, sessionName, windowId, windowName, width, height] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  return completeRecord<WindowRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowId: parseSigilId(windowId),
+    windowId: parseSigilId("@", windowId),
     windowName: decodeField(windowName),
-    width: Number(width),
-    height: Number(height),
-  };
+    width: parseUint(width),
+    height: parseUint(height),
+  });
+}
+
+// [LAW:types-are-the-program] The one place tmux's stand-ins for a pane with
+// no process (an empty pid and path, a dead pane's stale pid and command)
+// become a state. A pid of 0, which no process has, is what tmux before 3.8
+// renders for a pane that never had one, whether it calls the pane dead
+// (3.4) or not (3.7). Otherwise `#{pane_dead}` says dead, and with it unset
+// an empty pid (3.8) says the pane never had a process. Anything else is an
+// unreadable line.
+function parsePaneProcess(
+  dead: string,
+  pid: string,
+  cwd: string,
+  currentCommand: string,
+): PaneProcessState | undefined {
+  if (dead !== "0" && dead !== "1") return undefined;
+  if (pid === "0") return { state: "empty" };
+  if (dead === "1") return { state: "dead" };
+  if (pid === "") return { state: "empty" };
+  const runningPid = parseUint(pid);
+  return runningPid === undefined
+    ? undefined
+    : {
+        state: "running",
+        pid: runningPid,
+        cwd: cwd === "" ? null : decodeField(unescapeFreeTextField(cwd)),
+        currentCommand: decodeField(unescapeFreeTextField(currentCommand)),
+      };
 }
 
 /**
  * Parse one line from the fixed, library-owned `list-panes -a -F '...'`
  * format built by `listPanesCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{window_id} #{window_name} #{pane_id}
- * #{pane_current_path} #{pane_pid} #{pane_start_command}
+ * #{pane_dead} #{pane_current_path} #{pane_pid} #{pane_start_command}
  * #{pane_current_command} #{pane_width} #{pane_height}`, with
- * `pane_current_path` backslash-escaped by the encoder (see
- * `escapeFreeTextField` there) so a literal tab or backslash in the cwd
- * cannot desync this split.
+ * `pane_current_path` and `pane_current_command` backslash-escaped by the
+ * encoder (see `escapeFreeTextField` there) so a literal tab or backslash in
+ * either cannot desync this split.
  *
- * Returns null for an unparseable line, same discipline as
- * `parseWindowRecordLine`.
+ * Returns null for a line it cannot read, as `parseWindowRecordLine` does,
+ * and for a `#{pane_dead}`/`#{pane_pid}` pair that names no process state.
  */
 export function parsePaneRecordLine(line: string): PaneRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 11) return null;
+  const fields = recordFields(line, PANE_RECORD.fieldCount);
+  if (fields === null) return null;
   const [
     sessionId,
     sessionName,
     windowId,
     windowName,
     paneId,
+    dead,
     cwd,
     pid,
     startCommand,
@@ -1016,19 +1117,17 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     width,
     height,
   ] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  return completeRecord<PaneRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowId: parseSigilId(windowId),
+    windowId: parseSigilId("@", windowId),
     windowName: decodeField(windowName),
-    paneId: parseSigilId(paneId),
-    cwd: decodeField(unescapeFreeTextField(cwd)),
-    pid: Number(pid),
+    paneId: parseSigilId("%", paneId),
+    process: parsePaneProcess(dead, pid, cwd, currentCommand),
     startCommand: decodeField(startCommand),
-    currentCommand: decodeField(currentCommand),
-    width: Number(width),
-    height: Number(height),
-  };
+    width: parseUint(width),
+    height: parseUint(height),
+  });
 }
 
 /**
@@ -1041,10 +1140,13 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
 export function parseNewWindowReply(
   lines: readonly string[],
 ): NewWindowResult | null {
-  const match =
-    lines.length === 1 ? /^(@\d+)\t(%\d+)\r*$/.exec(lines[0]) : null;
-  if (match === null) return null;
-  return { windowId: parseSigilId(match[1]), paneId: parseSigilId(match[2]) };
+  const fields = lines.length === 1 ? recordFields(lines[0], 2) : null;
+  if (fields === null) return null;
+  const [windowId, paneId] = fields;
+  return completeRecord<NewWindowResult>({
+    windowId: parseSigilId("@", windowId),
+    paneId: parseSigilId("%", paneId),
+  });
 }
 
 /**
@@ -1064,25 +1166,34 @@ export function parsePaneCwdReply(lines: readonly string[]): string | null {
  * format built by `listSessionsCommand()` (protocol/encoder.ts): tab-separated
  * `#{session_id} #{session_name} #{session_windows} #{session_attached}`.
  *
- * Returns null for an unparseable line, same discipline as
- * `parseWindowRecordLine`/`parsePaneRecordLine`.
+ * Returns null for a line it cannot read, as `parseWindowRecordLine` does.
  *
  * `#{session_attached}` is tmux's count of attached clients (0/1/2/...), not
  * a boolean flag, so `attached` is any non-zero count rather than an
- * `=== "1"` check. Compared via `Number()`, not string equality, so a
- * trailing `\r` surviving on this field (response-block output no longer
- * strips it, since raw pane-capture bytes need it — see `parser.ts`'s
- * `feed()`) tolerates the same way `windowCount` already does, instead of
- * flipping an unattached session to attached.
+ * `=== "1"` check.
  */
 export function parseSessionRecordLine(line: string): SessionRecord | null {
-  const fields = line.split("\t");
-  if (fields.length !== 4) return null;
+  const fields = recordFields(line, SESSION_RECORD.fieldCount);
+  if (fields === null) return null;
   const [sessionId, sessionName, windowCount, attached] = fields;
-  return {
-    sessionId: parseSigilId(sessionId),
+  const attachedCount = parseUint(attached);
+  return completeRecord<SessionRecord>({
+    sessionId: parseSigilId("$", sessionId),
     sessionName: decodeField(sessionName),
-    windowCount: Number(windowCount),
-    attached: Number(attached) !== 0,
-  };
+    windowCount: parseUint(windowCount),
+    attached: attachedCount === undefined ? undefined : attachedCount !== 0,
+  });
 }
+
+export const WINDOW_RECORD: RecordFormat<WindowRecord> = {
+  fieldCount: 6,
+  parseLine: parseWindowRecordLine,
+};
+export const PANE_RECORD: RecordFormat<PaneRecord> = {
+  fieldCount: 12,
+  parseLine: parsePaneRecordLine,
+};
+export const SESSION_RECORD: RecordFormat<SessionRecord> = {
+  fieldCount: 4,
+  parseLine: parseSessionRecordLine,
+};

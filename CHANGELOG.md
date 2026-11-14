@@ -6,6 +6,36 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
+  `currentCommand` move into `process`, a `PaneProcessState` (exported from
+  `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
+  currentCommand }`, `{ state: "dead" }` for a pane `remain-on-exit` kept
+  after its process exited, or `{ state: "empty" }` for a pane that never had
+  one (`newEmptyWindow()`, `split-window -I`). Before, a pane with no
+  process read as `pid: 0` and `cwd: ""`, its `currentCommand` the default
+  shell's name or the exited command, and on tmux 3.7 a dead pane kept the
+  exited process's pid. A
+  running pane's `cwd` is `null` when tmux cannot read it, where it was
+  `""`. Read `p.process.pid` after checking `p.process.state === "running"`.
+  The bridge wire carries the new shape; upgrade server and client together.
+- `listWindows`, `listPanes` and `listSessions` reject with
+  `TmuxReplyFormatError` (carrying the command and the reply) when a reply
+  line does not parse, where 0.2.0 skipped the line and a pane list read as
+  one pane fewer. An id, size or count that is not an unsigned integer no
+  longer parses, where it was `NaN`.
+- `parsePaneList` is removed: it skipped a line it could not read. The
+  topology bootstrap and window refresh now reject such a reply, which
+  reaches `topology-error`, where a skipped line left that pane's output
+  unrouted. `parsePaneListLine` also rejects an id beyond
+  `Number.MAX_SAFE_INTEGER`.
+- `listPanes` reads a pane whose process name holds a tab, as tmux on Linux
+  can report it: `pane_current_command` is escaped like `pane_current_path`.
+  It also reads a pane whose cwd or process name holds a newline, which tmux
+  prints raw, splitting the pane's line. 0.2.0 dropped both panes from the
+  list.
+
 ### Fixed
 
 - `WebSocketTmuxClient` now receives `unsolicited-response` and

@@ -18,33 +18,90 @@ import { listPanesCommand } from "../../src/protocol/encoder.js";
 const BACKSLASH = "\\";
 const TAB = "\t";
 
+// One list-panes line in listPanesCommand()'s field order, any field
+// overridden by name.
+const PANE_FIELDS = {
+  sessionId: "$1",
+  sessionName: "main",
+  windowId: "@0",
+  windowName: "zsh",
+  paneId: "%0",
+  dead: "0",
+  cwd: "/tmp",
+  pid: "123",
+  startCommand: "zsh",
+  currentCommand: "zsh",
+  width: "80",
+  height: "24",
+};
+function paneLine(fields: Partial<typeof PANE_FIELDS> = {}): string {
+  return Object.values({ ...PANE_FIELDS, ...fields }).join("\t");
+}
+
 describe("parsePaneRecordLine", () => {
-  it("parses a plain line with no escapes", () => {
-    const line = [
-      "$1",
-      "main",
-      "@0",
-      "zsh",
-      "%0",
-      "/tmp",
-      "123",
-      "zsh",
-      "zsh",
-      "80",
-      "24",
-    ].join("\t");
-    expect(parsePaneRecordLine(line)).toEqual({
+  it("parses a running pane's line", () => {
+    expect(parsePaneRecordLine(paneLine())).toEqual({
       sessionId: 1,
       sessionName: "main",
       windowId: 0,
       windowName: "zsh",
       paneId: 0,
-      cwd: "/tmp",
-      pid: 123,
+      process: {
+        state: "running",
+        pid: 123,
+        cwd: "/tmp",
+        currentCommand: "zsh",
+      },
       startCommand: "zsh",
-      currentCommand: "zsh",
       width: 80,
       height: 24,
+    });
+  });
+
+  // What tmux 3.8 reports for `new-window -E`: no pid, no path, and the
+  // default shell's name as the current command.
+  it("parses an empty pane (no pid, not dead) as empty, with no pid, cwd or command", () => {
+    const line = paneLine({
+      cwd: "",
+      pid: "",
+      startCommand: "",
+      currentCommand: "bash",
+    });
+    expect(parsePaneRecordLine(line)?.process).toEqual({ state: "empty" });
+  });
+
+  // What tmux before 3.8 reports for `split-window -I`: pid 0, which no
+  // process has, with the pane not dead (3.7) or dead (3.4).
+  it("parses an empty pane whose pid tmux renders as 0 as empty, dead or not", () => {
+    for (const dead of ["0", "1"]) {
+      const line = paneLine({
+        dead,
+        cwd: "",
+        pid: "0",
+        currentCommand: "bash",
+      });
+      expect(parsePaneRecordLine(line)?.process).toEqual({ state: "empty" });
+    }
+  });
+
+  it("parses a dead pane as dead, whether tmux kept its pid (3.7) or not (3.8)", () => {
+    for (const pid of ["", "619"]) {
+      const line = paneLine({
+        dead: "1",
+        cwd: "",
+        pid,
+        currentCommand: "sleep",
+      });
+      expect(parsePaneRecordLine(line)?.process).toEqual({ state: "dead" });
+    }
+  });
+
+  it("parses a running pane whose cwd tmux cannot read as cwd null", () => {
+    expect(parsePaneRecordLine(paneLine({ cwd: "" }))?.process).toEqual({
+      state: "running",
+      pid: 123,
+      cwd: null,
+      currentCommand: "zsh",
     });
   });
 
@@ -54,51 +111,48 @@ describe("parsePaneRecordLine", () => {
     const originalCwd = `/tmp/a${BACKSLASH}b${TAB}c`;
     // What escapeFreeTextField's two-step substitution produces on the wire
     // (see protocol/encoder.ts): the backslash doubles first, then the real
-    // tab becomes the two-byte sequence backslash+t.
+    // tab becomes the two-byte sequence backslash+t, so the escaped cwd holds
+    // no literal tab to desync the split.
     const encodedCwd = `/tmp/a${BACKSLASH}${BACKSLASH}b${BACKSLASH}tc`;
-    const line = [
-      "$1",
-      "main",
-      "@0",
-      "zsh",
-      "%0",
-      encodedCwd,
-      "123",
-      "zsh",
-      "zsh",
-      "80",
-      "24",
-    ].join("\t");
-    const record = parsePaneRecordLine(line);
-    expect(record).not.toBeNull();
-    expect(record!.cwd).toBe(originalCwd);
-    // The record was not dropped: field count stayed exactly 11 because the
-    // escaped cwd contains no literal tab to desync the split.
-    expect(record!.sessionName).toBe("main");
-    expect(record!.pid).toBe(123);
+    const record = parsePaneRecordLine(paneLine({ cwd: encodedCwd }));
+    expect(record?.process).toEqual({
+      state: "running",
+      pid: 123,
+      cwd: originalCwd,
+      currentCommand: "zsh",
+    });
+  });
+
+  it("decodes a current command escaped by escapeFreeTextField back to its literal tab/backslash", () => {
+    const encoded = `a${BACKSLASH}${BACKSLASH}b${BACKSLASH}tc`;
+    const record = parsePaneRecordLine(paneLine({ currentCommand: encoded }));
+    expect(record?.process).toEqual({
+      state: "running",
+      pid: 123,
+      cwd: "/tmp",
+      currentCommand: `a${BACKSLASH}b${TAB}c`,
+    });
   });
 
   it("decodes a cwd with only a trailing escaped backslash (no tab) correctly", () => {
-    const originalCwd = `/tmp/x${BACKSLASH}`;
     const encodedCwd = `/tmp/x${BACKSLASH}${BACKSLASH}`;
-    const line = [
-      "$1",
-      "main",
-      "@0",
-      "zsh",
-      "%0",
-      encodedCwd,
-      "123",
-      "zsh",
-      "zsh",
-      "80",
-      "24",
-    ].join("\t");
-    expect(parsePaneRecordLine(line)!.cwd).toBe(originalCwd);
+    const record = parsePaneRecordLine(paneLine({ cwd: encodedCwd }));
+    expect(record?.process).toMatchObject({ cwd: `/tmp/x${BACKSLASH}` });
   });
 
-  it("still returns null for an unparseable line (wrong field count)", () => {
-    expect(parsePaneRecordLine("$1\tmain\t@0")).toBeNull();
+  it("reads a line that keeps a trailing \\r run (CRLF transport noise)", () => {
+    expect(parsePaneRecordLine(`${paneLine()}\r\r`)?.height).toBe(24);
+  });
+
+  it.each([
+    ["a wrong field count", "$1\tmain\t@0"],
+    ["a pane_dead other than 0 or 1", paneLine({ dead: "" })],
+    ["a pid that is not an unsigned integer", paneLine({ pid: "12abc" })],
+    ["an id without its sigil", paneLine({ paneId: "0" })],
+    ["an id with another id's sigil", paneLine({ windowId: "$0" })],
+    ["a size that is not an unsigned integer", paneLine({ width: "x" })],
+  ])("returns null for %s", (_, line) => {
+    expect(parsePaneRecordLine(line)).toBeNull();
   });
 });
 
@@ -114,9 +168,19 @@ describe("parseWindowRecordLine", () => {
       height: 24,
     });
   });
+
+  it("returns null for an id or size that is not an unsigned integer, never NaN", () => {
+    expect(parseWindowRecordLine("$1\tmain\t@x\tzsh\t80\t24")).toBeNull();
+    expect(parseWindowRecordLine("$1\tmain\t@0\tzsh\t80\t-1")).toBeNull();
+  });
 });
 
 describe("parseSessionRecordLine", () => {
+  it("returns null for a count that is not an unsigned integer, never NaN", () => {
+    expect(parseSessionRecordLine("$1\tmain\t3\tx")).toBeNull();
+    expect(parseSessionRecordLine("$1\tmain\t\t0")).toBeNull();
+  });
+
   it("parses an unattached session (count 0)", () => {
     const line = ["$1", "main", "3", "0"].join("\t");
     expect(parseSessionRecordLine(line)).toEqual({
@@ -197,15 +261,22 @@ describe("parsePaneListLine", () => {
       floating: false,
     });
   });
+
+  it("does not parse an id past Number.MAX_SAFE_INTEGER", () => {
+    expect(parsePaneListLine("%9007199254740993 @2 $1")).toBeNull();
+  });
 });
 
 describe("listPanesCommand", () => {
-  it("wraps only pane_current_path in the escape modifier", () => {
+  it("wraps pane_current_path and pane_current_command in the escape modifier", () => {
     const cmd = listPanesCommand();
-    expect(cmd).toContain("#{s/" + TAB + "/" + BACKSLASH + BACKSLASH + "t/:");
-    expect(cmd).toContain("#{pane_current_path}");
-    // pane_start_command/pane_current_command appear unwrapped — tmux
-    // already escapes them internally (see encoder.ts's doc comment).
-    expect(cmd).toContain("\t#{pane_start_command}\t#{pane_current_command}\t");
+    const escaped = (field: string) =>
+      `#{s/${TAB}/${BACKSLASH}${BACKSLASH}t/:#{s/${BACKSLASH}${BACKSLASH}/${BACKSLASH.repeat(4)}/:#{${field}}}}`;
+    expect(cmd).toContain(escaped("pane_current_path"));
+    expect(cmd).toContain(escaped("pane_current_command"));
+    expect(cmd).toContain("\t#{pane_id}\t#{pane_dead}\t");
+    // pane_start_command appears unwrapped — tmux already escapes it (see
+    // encoder.ts's doc comment).
+    expect(cmd).toContain("\t#{pane_start_command}\t");
   });
 });
