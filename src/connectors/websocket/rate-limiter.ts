@@ -1,12 +1,21 @@
 // src/connectors/websocket/rate-limiter.ts
 // [LAW:decomposition] Sliding-window call-rate enforcer extracted from
 // Connection. Owns `rateWindow`; Connection holds no rate state.
-import type { RateLimitConfig } from "./types.js";
+import type { DurationMs, PositiveInt } from "./limits.js";
+
+/** A consumer's `RateLimitConfig` as `resolveDefaults` parsed it.
+ *  [LAW:types-are-the-program] The stamps are why `check()` checks nothing: a
+ *  negative or NaN window, or a cap of 0, cannot reach it. */
+export interface RateLimit {
+  readonly maxCalls: PositiveInt;
+  readonly windowMs: DurationMs;
+}
 
 export class RateLimiter {
   private readonly window: number[] = [];
 
-  constructor(private readonly cfg: RateLimitConfig | undefined) {}
+  /** `undefined` is unlimited. */
+  constructor(private readonly cfg: RateLimit | undefined) {}
 
   // Returns true and records the call if within limits; false if exceeded.
   check(): boolean {
