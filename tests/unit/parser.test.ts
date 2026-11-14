@@ -886,15 +886,37 @@ describe("malformed input: a known-type line the parser cannot read", () => {
     ]);
   });
 
-  it("opens no block for a %begin it cannot read", () => {
-    // The parser cannot say whose block it would be; TmuxClient ends the
+  it("reads no line after a %begin it cannot read, until reset", () => {
+    // The block's lines cannot be tied to a command — its body line that
+    // looks like a notification must not become one. TmuxClient ends the
     // connection on this report (see client-lifecycle.test.ts).
-    const { messages, outputLines, protocolErrors } = collect(
-      "%begin 1699900000 x 1\n" + "%window-add @3\n",
+    const messages: TmuxMessage[] = [];
+    const outputLines: string[] = [];
+    const protocolErrors: ProtocolErrorMessage[] = [];
+    const parser = new TmuxParser((msg) => messages.push(msg));
+    parser.onOutputLine = (_n, line) => outputLines.push(line);
+    parser.onProtocolError = (error) => protocolErrors.push(error);
+
+    parser.feed(
+      "%begin 1699900000 x 1\n" +
+        "%window-add @3\n" +
+        "%end 1699900000 5 1\n" +
+        "%begin 1699900001 6 1\n%end 1699900001 6 1\n" +
+        "%end 1\n",
     );
-    expect(protocolErrors.map((e) => e.kind)).toEqual(["begin"]);
+    expect(protocolErrors).toEqual([
+      {
+        type: "protocol-error",
+        kind: "begin",
+        line: "%begin 1699900000 x 1",
+      },
+    ]);
     expect(outputLines).toEqual([]);
-    expect(messages).toEqual([{ type: "window-add", windowId: 3 }]);
+    expect(messages).toEqual([]);
+
+    parser.reset();
+    parser.feed("%window-add @4\n");
+    expect(messages).toEqual([{ type: "window-add", windowId: 4 }]);
   });
 });
 
@@ -1133,7 +1155,7 @@ describe("reset() clears state", () => {
     expect(messages[0]).toMatchObject({ type: "sessions-changed" });
   });
 
-  it("reset after partial response block clears activeCommandNumber", () => {
+  it("reset after partial response block closes the block", () => {
     const outputLines: { commandNumber: number; line: string }[] = [];
     const messages: TmuxMessage[] = [];
     const parser = new TmuxParser((msg) => messages.push(msg));

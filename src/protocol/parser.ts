@@ -307,6 +307,18 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  */
 export const WIRE_MESSAGE_TYPES: ReadonlySet<string> = new Set(PARSERS.keys());
 
+// [LAW:types-are-the-program] Where the stream stands: between response
+// blocks, inside the block a %begin opened, or past a %begin the parser could
+// not read. That block's lines cannot be tied to a command, nor told apart
+// from what follows it, so synchronization is lost until `reset()`.
+type StreamPosition =
+  | { readonly at: "between-blocks" }
+  | { readonly at: "in-block"; readonly commandNumber: number }
+  | { readonly at: "lost-sync" };
+
+const BETWEEN_BLOCKS: StreamPosition = { at: "between-blocks" };
+const LOST_SYNC: StreamPosition = { at: "lost-sync" };
+
 // What `tmux -CC` writes before any protocol output (SPEC.md §12).
 const DCS_INTRODUCER = "\x1bP1000p";
 
@@ -331,7 +343,7 @@ export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
   private readonly emit: (msg: TmuxMessage) => void;
   private buffer = "";
-  private activeCommandNumber = -1;
+  private position: StreamPosition = BETWEEN_BLOCKS;
 
   /**
    * Optional callback for command output lines — every non-terminator line
@@ -393,10 +405,13 @@ export class TmuxParser {
     }
   }
 
-  /** Reset all internal state (line buffer and response-block tracking). */
+  /**
+   * Reset all internal state: the line buffer and the stream position,
+   * including a lost synchronization (see `ProtocolErrorMessage`'s `begin`).
+   */
   reset(): void {
     this.buffer = "";
-    this.activeCommandNumber = -1;
+    this.position = BETWEEN_BLOCKS;
   }
 
   // -------------------------------------------------------------------------
@@ -423,7 +438,7 @@ export class TmuxParser {
    * transport noise. This also fixes a real wedge: a malformed, space-less
    * terminator (`%end\r`, or `%end\r\r` from a doubled-up CRLF) must still
    * compare equal to `"end"`, or the malformed-guard-terminator recovery
-   * below never fires, `activeCommandNumber` never resets, and every line
+   * below never fires, the block never closes, and every line
    * for the rest of the connection — notifications included — misroutes as
    * output for a command that will never settle.
    *
@@ -444,7 +459,11 @@ export class TmuxParser {
    * only the stream's first: a PTY can deliver a login banner before it.
    */
   private processLine(raw: string): void {
-    const inResponseBlock = this.activeCommandNumber !== -1;
+    const position = this.position;
+    // [LAW:no-silent-failure] The 'begin' report that lost synchronization
+    // already said every later line is unreadable; none is guessed at.
+    if (position.at === "lost-sync") return;
+    const inResponseBlock = position.at === "in-block";
     const line =
       !inResponseBlock && raw.startsWith(DCS_INTRODUCER)
         ? raw.slice(DCS_INTRODUCER.length)
@@ -481,7 +500,7 @@ export class TmuxParser {
       // terminal data the renderer decodes, and other command output (list-*,
       // display-message) is ASCII or consumer-decoded. One byte pipe, no lossy
       // decode.
-      this.onOutputLine?.(this.activeCommandNumber, line);
+      this.onOutputLine?.(position.commandNumber, line);
       return;
     }
 
@@ -507,28 +526,33 @@ export class TmuxParser {
       // [LAW:no-silent-failure] Every unreadable known-type line is reported.
       // One that was positionally the open block's terminator must not leave
       // the block open — that is the wedge (see this method's doc comment on
-      // malformed-guard-terminator tolerance) — so the block closes first.
-      const commandNumber = this.activeCommandNumber;
-      const closesBlock = inResponseBlock && isBlockTerminator;
-      if (closesBlock) this.activeCommandNumber = -1;
-      this.onProtocolError?.(
-        closesBlock
-          ? { type: "protocol-error", kind: "terminator", commandNumber, line }
-          : {
-              type: "protocol-error",
-              kind: typeStr === "begin" ? "begin" : "line",
-              line,
-            },
-      );
+      // malformed-guard-terminator tolerance) — so the block closes first. A
+      // %begin here is never inside a block: there it is output.
+      const [report, next]: readonly [ProtocolErrorMessage, StreamPosition] =
+        inResponseBlock && isBlockTerminator
+          ? [
+              {
+                type: "protocol-error",
+                kind: "terminator",
+                commandNumber: position.commandNumber,
+                line,
+              },
+              BETWEEN_BLOCKS,
+            ]
+          : typeStr === "begin"
+            ? [{ type: "protocol-error", kind: "begin", line }, LOST_SYNC]
+            : [{ type: "protocol-error", kind: "line", line }, position];
+      this.position = next;
+      this.onProtocolError?.(report);
       return;
     }
 
-    // Update response-block tracking state.
+    // Update the stream position.
     // [LAW:single-enforcer] Begin/end/error state transitions happen here only.
     if (msg.type === "begin") {
-      this.activeCommandNumber = msg.commandNumber;
+      this.position = { at: "in-block", commandNumber: msg.commandNumber };
     } else if (msg.type === "end" || msg.type === "error") {
-      this.activeCommandNumber = -1;
+      this.position = BETWEEN_BLOCKS;
     }
 
     this.emit(msg);

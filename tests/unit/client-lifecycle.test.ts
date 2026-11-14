@@ -555,13 +555,24 @@ describe("TmuxClient — a line the parser cannot read", () => {
     client.on("*", (msg) => {
       if (msg.type === "window-add") notifications(msg);
     });
+    // Every listener the end is announced to issues a command; none of them
+    // may reach tmux, whose replies no longer reach their callers.
     const later: Promise<CommandResponse>[] = [];
-    client.on("protocol-error", () => {
-      later.push(client.execute("list-sessions"));
+    const order: string[] = [];
+    client.on("*", (msg) => {
+      if (
+        msg.type === "protocol-error" ||
+        msg.type === "exit" ||
+        msg.type === "connection-state"
+      ) {
+        order.push(msg.type);
+        later.push(client.execute("list-sessions"));
+      }
     });
 
     const first = client.execute("list-windows");
     const second = client.execute("list-panes");
+    const send = vi.spyOn(t, "send");
     // One chunk: the unreadable %begin, its block's body (one line looks like
     // a notification), its %end, then the well-formed reply that answers
     // `second` — which must not be handed to anyone.
@@ -576,8 +587,12 @@ describe("TmuxClient — a line the parser cannot read", () => {
     const line = "%begin 5 x 1";
     await expect(first).rejects.toBeInstanceOf(TransportClosedError);
     await expect(second).rejects.toBeInstanceOf(TransportClosedError);
-    expect(later).toHaveLength(1);
-    await expect(later[0]).rejects.toThrow();
+    // The report comes first, so a bridge still forwards it before 'closed'.
+    expect(order).toEqual(["protocol-error", "exit", "connection-state"]);
+    expect(send).not.toHaveBeenCalled();
+    for (const refused of later) {
+      await expect(refused).rejects.toBeInstanceOf(TransportSendError);
+    }
     expect(exits).toHaveBeenCalledWith({
       type: "exit",
       reason: `malformed %begin: ${line}`,
@@ -595,6 +610,20 @@ describe("TmuxClient — a line the parser cannot read", () => {
     expect(client.connectionState).toEqual({
       status: "closed",
       reason: "transport-error",
+    });
+  });
+
+  it("an unreadable startup %begin is the exit's reason, not a line before it", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    t.feed("Last login: Thu Nov 12 09:00:00\n%begin 0 x 0\n");
+
+    expect(exits).toHaveBeenCalledWith({
+      type: "exit",
+      reason: "malformed %begin: %begin 0 x 0",
     });
   });
 });

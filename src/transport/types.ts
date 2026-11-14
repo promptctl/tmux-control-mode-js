@@ -37,7 +37,10 @@ export interface TmuxTransport {
   /** Register callback for transport close/error. */
   onClose(callback: (reason?: string) => void): void;
 
-  /** Disconnect from tmux. */
+  /**
+   * Disconnect from tmux. Idempotent: `TmuxClient` may call it after a
+   * listener's own `client.close()` already did.
+   */
   close(): void;
 }
 

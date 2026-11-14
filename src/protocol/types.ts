@@ -304,8 +304,8 @@ export interface ExitMessage {
  *   with `TmuxProtocolError` (errors.ts).
  * - `begin` — a `%begin`. Its flags say whose block it opens (a caller's
  *   command or a reply no caller sent), so once they cannot be read no reply
- *   can be matched to its command; the parser opens no block, and
- *   `TmuxClient` ends the connection.
+ *   can be matched to its command. The parser loses synchronization and
+ *   reads no further line until `reset()`; `TmuxClient` ends the connection.
  * - `line` — any other line: a notification, or a terminator outside any
  *   block. It is dropped.
  *

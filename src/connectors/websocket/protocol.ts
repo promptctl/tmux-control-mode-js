@@ -456,18 +456,6 @@ const NULL: WireKind<null> = {
   is: (v): v is null => v === null,
   shape: "null",
 };
-// [LAW:one-source-of-truth] `satisfies Record` makes a kind added to (or
-// removed from) `ProtocolErrorMessage` a compile error until it is listed here.
-const PROTOCOL_ERROR_KINDS = {
-  terminator: true,
-  begin: true,
-  line: true,
-} as const satisfies Record<ProtocolErrorMessage["kind"], true>;
-const PROTOCOL_ERROR_KIND: WireKind<ProtocolErrorMessage["kind"]> = {
-  is: (v): v is ProtocolErrorMessage["kind"] =>
-    isString(v) && Object.hasOwn(PROTOCOL_ERROR_KINDS, v),
-  shape: `one of ${Object.keys(PROTOCOL_ERROR_KINDS).join(", ")}`,
-};
 const BRIDGE_ERROR_CODE: WireKind<BridgeErrorCode> = {
   is: isBridgeErrorCode,
   shape: "a BridgeErrorCode",
@@ -489,12 +477,25 @@ interface WireObject<M> {
   /** The field unread, for a parser that reads it as another shape. */
   value(field: keyof M & string): unknown;
   /**
-   * The same object read as `V`, the member of the union `M` that a
-   * discriminant already read from it chose, so the fields only `V` has can
-   * be read. Every field is still checked as it is read.
+   * The object read as the member of the union `M` that its field `field`
+   * names, by that member's builder; any other value of `field` fails.
    */
-  variant<V extends M>(): WireObject<V>;
+  union<F extends keyof M & string>(field: F, builders: WireUnion<M, F>): M;
 }
+
+// The member of the union `M` whose field `F` is `K`: an intersection whose
+// `F` cannot be `K` reduces to never.
+type Member<M, F extends keyof M, K> = M extends unknown
+  ? M & Readonly<Record<F, K>>
+  : never;
+
+// [LAW:types-are-the-program] One builder per value of the discriminant `F`,
+// each reading the fields its own member has.
+type WireUnion<M, F extends keyof M> = {
+  readonly [K in M[F] & string]: (
+    m: WireObject<Member<M, F, K>>,
+  ) => Member<M, F, K>;
+};
 
 function wireObject<M>(x: unknown, path: string): WireObject<M> {
   return wireFields(wireValue(x, isObject, path, "an object"), path);
@@ -513,7 +514,17 @@ function wireFields<M>(
         : wireValue(o[field], kind.is, at(field), kind.shape),
     object: (field) => wireObject(o[field], at(field)),
     value: (field) => o[field],
-    variant: () => wireFields(o, path),
+    union: (field, builders) => {
+      const value = o[field];
+      if (!isKeyOf(builders, value)) {
+        throw new BridgeProtocolError(
+          `${at(field)} must be one of ${Object.keys(builders).join(", ")}`,
+        );
+      }
+      // The builder `value` keys reads the member `value` names.
+      const build = builders[value] as (m: WireObject<M>) => M;
+      return build(wireFields(o, path));
+    },
   };
 }
 
@@ -610,6 +621,27 @@ type EventOf<K extends EventMessage["type"]> = Extract<
   EventMessage,
   { type: K }
 >;
+
+// [LAW:one-source-of-truth] Keyed by `ProtocolErrorMessage["kind"]`: a kind
+// added to it is a compile error until its builder is here.
+const PROTOCOL_ERROR_BUILDERS: WireUnion<ProtocolErrorMessage, "kind"> = {
+  terminator: (m) => ({
+    type: "protocol-error",
+    kind: "terminator",
+    commandNumber: m.read("commandNumber", NUMBER),
+    line: m.read("line", STRING),
+  }),
+  begin: (m) => ({
+    type: "protocol-error",
+    kind: "begin",
+    line: m.read("line", STRING),
+  }),
+  line: (m) => ({
+    type: "protocol-error",
+    kind: "line",
+    line: m.read("line", STRING),
+  }),
+};
 
 // [LAW:one-source-of-truth] Keyed by exactly the messages an event frame
 // carries, so this table is also what `parseEvent` admits. Each builder
@@ -729,20 +761,7 @@ const EVENT_MESSAGE_PARSERS: {
     error: m.read("error", STRING),
   }),
   exit: (m) => ({ type: "exit", reason: m.optional("reason", STRING) }),
-  "protocol-error": (m) => {
-    const kind = m.read("kind", PROTOCOL_ERROR_KIND);
-    const line = m.read("line", STRING);
-    return kind === "terminator"
-      ? {
-          type: "protocol-error",
-          kind,
-          commandNumber: m
-            .variant<Extract<ProtocolErrorMessage, { kind: "terminator" }>>()
-            .read("commandNumber", NUMBER),
-          line,
-        }
-      : { type: "protocol-error", kind, line };
-  },
+  "protocol-error": (m) => m.union("kind", PROTOCOL_ERROR_BUILDERS),
   "unsolicited-response": (m) => ({
     type: "unsolicited-response",
     response: parseCommandResponse(m.object("response")),

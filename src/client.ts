@@ -215,12 +215,13 @@ export class TmuxClient implements TmuxConnection {
       // free to disagree with, whichever reason the 'exit' event carried.
       // See ConnectionState's doc comment in connection-state.ts for why.
       this.endConnection(
-        reason,
+        this.startupFailure ?? reason,
         this.userClosed
           ? "disposed"
           : reason === undefined
             ? "exit"
             : "transport-error",
+        [],
       );
     });
   }
@@ -360,19 +361,31 @@ export class TmuxClient implements TmuxConnection {
 
   // [LAW:single-enforcer] The one way a connection ends: the transport's
   // close, or a reply stream that can no longer be matched to its commands
-  // (handleProtocolError). It announces 'exit' when tmux never sent its own
-  // %exit (a killed server). [LAW:no-ambient-temporal-coupling] 'closed' is
-  // set before this returns, so every command and line after it meets the
-  // 'closed' checks; the transport's own close, arriving later, finds the
-  // connection already ended and changes nothing.
+  // (handleProtocolError), whose report is `cause`.
+  // [LAW:no-ambient-temporal-coupling] The end is committed before any
+  // listener hears of it — 'closed' set, the exit recorded, every pending
+  // command rejected — so a command a listener issues meets execute's
+  // 'closed' refusal and never reaches tmux, and the transport's own close,
+  // arriving later, changes nothing. It is then announced in cause order:
+  // `cause`, 'exit' when tmux never sent its own %exit (a killed server),
+  // 'closed'.
   private endConnection(
     reason: string | undefined,
     closedReason: Extract<ConnectionState, { status: "closed" }>["reason"],
+    cause: readonly ProtocolErrorMessage[],
   ): void {
     if (this.currentConnectionState.status === "closed") return;
+    const closed: ConnectionState = { status: "closed", reason: closedReason };
+    this.currentConnectionState = closed;
+    const { exit, unannounced } = this.recordExit(reason);
     this.router.onTransportClose();
-    this.settlePendingOnClose(this.announceExit(reason).reason);
-    this.setConnectionState({ status: "closed", reason: closedReason });
+    this.settlePendingOnClose(exit.reason);
+    const announced: readonly EmitterMessage[] = [
+      ...cause,
+      ...unannounced,
+      { type: "connection-state", state: closed },
+    ];
+    for (const msg of announced) this.emitter.emit(msg);
   }
 
   // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
@@ -391,20 +404,19 @@ export class TmuxClient implements TmuxConnection {
     }
   }
 
-  // [LAW:single-enforcer] The one place 'exit' is emitted; a second
-  // announcement for the same connection (the transport's close after a
-  // %exit, or a second %exit from a misbehaving transport) changes nothing.
-  // A failed startup command explains the end better than what follows it:
-  // tmux's %exit is then bare and the process's own word is `exit 1`.
-  private announceExit(given: string | undefined): ExitMessage {
-    if (this.announcedExit === undefined) {
-      this.announcedExit = {
-        type: "exit",
-        reason: this.startupFailure ?? given,
-      };
-      this.emitter.emit(this.announcedExit);
+  // [LAW:single-enforcer] The one place this connection's 'exit' is recorded.
+  // `unannounced` is what the caller still has to emit: nothing for a second
+  // exit (the transport's close after a %exit, or a second %exit from a
+  // misbehaving transport), which changes nothing.
+  private recordExit(reason: string | undefined): {
+    readonly exit: ExitMessage;
+    readonly unannounced: readonly ExitMessage[];
+  } {
+    if (this.announcedExit !== undefined) {
+      return { exit: this.announcedExit, unannounced: [] };
     }
-    return this.announcedExit;
+    this.announcedExit = { type: "exit", reason };
+    return { exit: this.announcedExit, unannounced: [this.announcedExit] };
   }
 
   // [LAW:no-ambient-temporal-coupling] The first reply tmux sends answers the
@@ -485,8 +497,13 @@ export class TmuxClient implements TmuxConnection {
       );
     } else if (msg.type === "exit") {
       // %exit is announced when tmux says it (SPEC §23 requires it observable
-      // on its own), not when the transport later closes.
-      this.announceExit(msg.reason);
+      // on its own), not when the transport later closes. A failed startup
+      // command explains the end better than tmux's bare %exit; the same
+      // holds for the transport's close (constructor).
+      const { unannounced } = this.recordExit(
+        this.startupFailure ?? msg.reason,
+      );
+      for (const exit of unannounced) this.emitter.emit(exit);
       return;
     }
 
@@ -517,7 +534,6 @@ export class TmuxClient implements TmuxConnection {
     // handleMessage's identical guard) — settlePendingOnClose already ran, so
     // there is nothing left to settle here for a message arriving this late.
     if (this.currentConnectionState.status === "closed") return;
-    this.emitter.emit(error);
     switch (error.kind) {
       case "terminator": {
         // Mirrors handleMessage's "error" branch, with TmuxProtocolError
@@ -527,18 +543,22 @@ export class TmuxClient implements TmuxConnection {
         entry?.reject(
           new TmuxProtocolError(error.commandNumber, error.line, entry.output),
         );
+        this.emitter.emit(error);
         return;
       }
       case "begin":
         // No later reply can be matched to its command, so none is handed
-        // to a caller: the connection ends before the next line is read.
+        // to a caller: the connection ends, the report its cause. Its reason
+        // is this line's — no startup failure explains it better.
         this.endConnection(
           `malformed %begin: ${error.line}`,
           "transport-error",
+          [error],
         );
         this.transport.close();
         return;
       case "line":
+        this.emitter.emit(error);
         return;
     }
   }
