@@ -164,6 +164,23 @@ has no name yet, such as one about to call `listSessions`.
 Events in other sessions that tmux does not send to a control client are relayed
 separately (`cross-session-layout-change`).
 
+## Events over a bridge
+
+The Electron bridge (`TmuxClientProxy`) and the WebSocket bridge
+(`WebSocketTmuxClient`) deliver what the shared `TmuxClient` hears from tmux to
+every connected peer: tmux's notifications, `unsolicited-response` (tmux's
+reply to a command no caller sent: the command line it was started with, a
+hook, an `if-shell -b`) and `protocol-error` (a reply block with a malformed
+terminator). A peer sees only those that arrive while it is connected, so the
+startup command's reply usually comes before any peer.
+
+- `cross-session-layout-*` events reach a peer once it calls
+  `enableCrossSessionLayoutChange`.
+- `connection-state` and `reconnected` describe each client's own connection.
+  An Electron renderer mirrors the main process's; a `WebSocketTmuxClient`
+  reports its own socket.
+- `topology-error` is each client's own: it reports that client's pane table.
+
 ## Idle pane suppression (opt-in)
 
 By default tmux streams output for **every** pane to a control-mode client,

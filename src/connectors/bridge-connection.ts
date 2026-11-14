@@ -36,15 +36,12 @@
 import type { CommandResponse } from "../protocol/types.js";
 
 import type { TmuxClient } from "../client.js";
+import { isCrossSessionLayoutRelayFrame } from "../cross-session-layout-messages.js";
 import {
-  isCrossSessionLayoutMessage,
-  isCrossSessionLayoutRelayFrame,
-  type CrossSessionLayoutMessage,
-} from "../cross-session-layout-messages.js";
-import {
-  isTmuxMessage,
+  eventSubject,
   type EmitterMessage,
-  type EmitterTmuxMessage,
+  type EventSubject,
+  type MessageAbout,
 } from "../emitter.js";
 
 import type { Peer } from "./bridge-peer.js";
@@ -82,10 +79,10 @@ export interface BridgeConnectionOptions<L extends boolean = boolean> {
    */
   readonly reportCoverageReleaseFailure: (error: BridgeError) => void;
   /**
-   * Whether the events the client synthesizes ({@link LifecycleMessage})
-   * cross to peers. A transport fact: the Electron renderer mirrors the main
-   * client from these events; the WS wire carries tmux's own messages only,
-   * and its peer learns connection state from its own welcome handshake.
+   * Whether the client's connection lifecycle ({@link LifecycleMessage})
+   * crosses to peers. A transport fact: the Electron renderer mirrors the
+   * main client's connection from these events; a WS peer has a connection of
+   * its own and learns its state from its own socket and welcome handshake.
    */
   readonly forwardsLifecycle: L;
 }
@@ -151,10 +148,12 @@ export interface BridgeConnection<L extends boolean = boolean> {
 
   /**
    * Who `msg` crosses the bridge to. Classify once per event, then ask
-   * `deliversTo` per peer. The relay's raw `%subscription-changed` frames and
-   * `topology-error` reach no peer; synthetic lifecycle events reach peers
-   * only on transports built with `forwardsLifecycle`; the decoded
-   * `cross-session-layout-*` events reach only peers with coverage enabled.
+   * `deliversTo` per peer. Facts about the shared tmux stream (its messages
+   * and the `reply-stream` reports) reach every peer; the decoded
+   * `cross-session-layout-*` events reach only peers with coverage enabled;
+   * lifecycle events reach peers only on transports built with
+   * `forwardsLifecycle`; `topology-error` and the relay's raw
+   * `%subscription-changed` frames reach no peer.
    * [LAW:single-enforcer] Both transports route every event through this.
    */
   routeEvent(msg: EmitterMessage): EventRoute;
@@ -210,24 +209,20 @@ export interface BridgeConnection<L extends boolean = boolean> {
   dispose(): void;
 }
 
-/**
- * Events the client synthesizes about its one connection (connection-state,
- * reconnected, protocol-error, unsolicited-response).
- */
-export type LifecycleMessage = Exclude<
-  EmitterMessage,
-  | EmitterTmuxMessage
-  | CrossSessionLayoutMessage
-  | { readonly type: "topology-error" }
->;
+/** Events about the client's one connection (connection-state, reconnected). */
+export type LifecycleMessage = MessageAbout<"lifecycle">;
 
-// [LAW:types-are-the-program] Each route carries its message already narrowed,
-// so a transport encodes `route.msg` with no runtime re-check.
+// [LAW:types-are-the-program] A route's kind is what its message is about, and
+// it carries the message already narrowed, so a transport encodes `route.msg`
+// with no runtime re-check.
 export type EventRoute =
   | { readonly kind: "none" }
-  | { readonly kind: "tmux"; readonly msg: EmitterTmuxMessage }
-  | { readonly kind: "cross-session"; readonly msg: CrossSessionLayoutMessage }
-  | { readonly kind: "lifecycle"; readonly msg: LifecycleMessage };
+  | {
+      [S in EventSubject]: {
+        readonly kind: S;
+        readonly msg: MessageAbout<S>;
+      };
+    }[EventSubject];
 
 /** The routes a bridge built with `forwardsLifecycle: L` can deliver. */
 export type DeliveredRoute<L extends boolean> = Extract<
@@ -235,7 +230,8 @@ export type DeliveredRoute<L extends boolean> = Extract<
   {
     readonly kind:
       | "tmux"
-      | "cross-session"
+      | "reply-stream"
+      | "cross-session-layout"
       | (L extends true ? "lifecycle" : never);
   }
 >;
@@ -307,20 +303,22 @@ export function createBridgeConnection<L extends boolean>(
 
     routeEvent(msg): EventRoute {
       if (isCrossSessionLayoutRelayFrame(msg)) return NO_ROUTE;
-      if (isCrossSessionLayoutMessage(msg))
-        return { kind: "cross-session", msg };
-      if (isTmuxMessage(msg)) return { kind: "tmux", msg };
-      if (msg.type === "topology-error") return NO_ROUTE;
-      return { kind: "lifecycle", msg };
+      // [LAW:types-are-the-program] exception: `eventSubject` is the one
+      // classification and `msg` is about the subject it returns, but TS
+      // cannot correlate the two, so the pairing is asserted here once.
+      return { kind: eventSubject(msg), msg } as EventRoute;
     },
 
+    // [LAW:single-enforcer] The one place a subject meets its delivery rule.
     deliversTo(peer, route): route is DeliveredRoute<L> {
       switch (route.kind) {
         case "none":
+        case "pane-table":
           return false;
         case "tmux":
+        case "reply-stream":
           return true;
-        case "cross-session":
+        case "cross-session-layout":
           return crossSessionLayout.isEnabled(peer);
         case "lifecycle":
           return opts.forwardsLifecycle;

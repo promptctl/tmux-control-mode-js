@@ -1011,9 +1011,10 @@ class Connection {
   //     terminal `connection-state` is this connection's own death notice
   //     and is consumed here; everything else goes to `onWireEvent`, which
   //     asks the bridge who it reaches. Built with `forwardsLifecycle:
-  //     false`, the bridge's delivered route can only be a tmux or
-  //     cross-session-layout message, so the JSON event frame never sees a
-  //     lifecycle or byte message — the route type enforces it.
+  //     false`, the bridge's delivered route can only be a tmux message, a
+  //     reply-stream report or a cross-session-layout event, so the JSON
+  //     event frame never sees a lifecycle or byte message — the route type
+  //     enforces it.
   //   - `onByteOutput` handles `PaneOutputMessage` via the binary
   //     side-channel. Bytes are routed here via
   //     `client.attachBytesSink`, not through `client.on('*', …)`,

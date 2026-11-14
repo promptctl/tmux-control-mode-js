@@ -1175,7 +1175,9 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       k: "event",
       msg: { type: "cross-session-layout-change", sessionId: 1 },
     });
-    expect(() => parseServerFrame(frame)).toThrow(/windowId must be a number/);
+    expect(() => parseServerFrame(frame)).toThrow(
+      "event.msg(cross-session-layout-change).windowId must be a number",
+    );
     const ok = JSON.stringify({
       k: "event",
       msg: {
@@ -1221,6 +1223,123 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       );
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Reply-stream reports (tmux-server-events-6sp.5z0): a reply block no caller
+// took is a fact about the shared tmux stream, so every connection gets it.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — reply-stream reports", () => {
+  it("delivers unsolicited-response and protocol-error to every connection", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const sockets = [createFakeWs(), createFakeWs()];
+    for (const ws of sockets) {
+      void bridge.handleConnection(ws);
+      ws.feedClient({ k: "hello" });
+    }
+    await flush();
+
+    // A hook's reply: tmux wrote it, no caller did (no flag 1).
+    t.feed("%begin 7 6 0\nhook ran\n%end 7 6 0\n");
+    // A block whose terminator is malformed.
+    t.feed("%begin 7 9 0\n%end 7 9\n");
+
+    for (const ws of sockets) {
+      // tmux's own %begin/%end messages ride along, as for any block.
+      const reports = readJsonFrames(ws).flatMap((f) =>
+        f.k === "event" && f.msg.type !== "begin" && f.msg.type !== "end"
+          ? [f.msg]
+          : [],
+      );
+      expect(reports).toEqual([
+        {
+          type: "unsolicited-response",
+          response: {
+            commandNumber: 6,
+            timestamp: 7,
+            output: ["hook ran"],
+            success: true,
+          },
+        },
+        { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
+      ]);
+    }
+  });
+
+  it("parses a reply-stream event frame field by field", () => {
+    const frame = (msg: object) => JSON.stringify({ k: "event", msg });
+    const response = {
+      commandNumber: 6,
+      timestamp: 7,
+      output: ["hook ran"],
+      success: false,
+    };
+    expect(
+      parseServerFrame(frame({ type: "unsolicited-response", response })),
+    ).toEqual({ k: "event", msg: { type: "unsolicited-response", response } });
+    expect(
+      parseServerFrame(
+        frame({ type: "protocol-error", commandNumber: 9, line: "%end 7 9" }),
+      ),
+    ).toEqual({
+      k: "event",
+      msg: { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
+    });
+
+    for (const [msg, error] of [
+      [{ type: "protocol-error", commandNumber: 9 }, /line must be a string/],
+      [
+        { type: "protocol-error", commandNumber: "9", line: "%end" },
+        /commandNumber must be a number/,
+      ],
+      [{ type: "unsolicited-response" }, /response must be an object/],
+      [
+        {
+          type: "unsolicited-response",
+          response: { ...response, output: [1] },
+        },
+        /response\.output must be a string\[\]/,
+      ],
+      [
+        {
+          type: "unsolicited-response",
+          response: { ...response, success: "yes" },
+        },
+        /response\.success must be a boolean/,
+      ],
+    ] as const) {
+      expect(() => parseServerFrame(frame(msg))).toThrow(error);
+    }
+  });
+
+  it("parses a result frame's tmuxError as a CommandResponse", () => {
+    const tmuxError = {
+      commandNumber: 1,
+      timestamp: 1,
+      output: ["unknown command: bogus"],
+      success: false,
+    };
+    const frame = (e: unknown) =>
+      JSON.stringify({ k: "result", id: "x", ok: false, tmuxError: e });
+    expect(parseServerFrame(frame(tmuxError))).toEqual({
+      k: "result",
+      id: "x",
+      ok: false,
+      tmuxError,
+    });
+    expect(() =>
+      parseServerFrame(frame({ ...tmuxError, output: "unknown" })),
+    ).toThrow(/result\.tmuxError\.output must be a string\[\]/);
+    for (const notObject of [null, []]) {
+      expect(() => parseServerFrame(frame(notObject))).toThrow(
+        /result\.tmuxError must be an object/,
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

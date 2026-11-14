@@ -14,10 +14,7 @@
 // [LAW:one-type-per-behavior] ClientFrame and ServerFrame are discriminated
 // unions — a single `k` field dispatches every receiver.
 
-import {
-  isCrossSessionLayoutMessage,
-  type CrossSessionLayoutMessage,
-} from "../../cross-session-layout-messages.js";
+import type { DeliveredRoute } from "../bridge-connection.js";
 import type {
   CommandResponse,
   PaneOutputMessage,
@@ -168,8 +165,16 @@ export interface WelcomeFrame {
 
 export interface EventFrame {
   readonly k: "event";
-  readonly msg: SerializedEventMessage | CrossSessionLayoutMessage;
+  // [LAW:one-source-of-truth] Exactly what the bridge delivers to a WS peer:
+  // tmux's messages, the reply-stream reports, and cross-session layout.
+  readonly msg: DeliveredRoute<false>["msg"];
 }
+
+/** The synthetic events an event frame carries beside tmux's own messages. */
+export type WireSyntheticMessage = Exclude<
+  EventFrame["msg"],
+  SerializedEventMessage
+>;
 
 export interface ResultOkFrame {
   readonly k: "result";
@@ -448,14 +453,40 @@ function parseWelcome(x: unknown): WelcomeFrame {
   };
 }
 
-// [LAW:types-are-the-program] Each cross-session layout event's fields and
-// their runtime kinds. The mapped type makes a field added to (or removed
-// from) a message interface a compile error here, so the wire check cannot
-// drift from the type the client emits. Layout fields are excluded: every
-// event that carries them goes through `withDerivedLayout` instead.
-type FieldKind = "number" | "number[]" | "string";
-// A field shape with no kind here is `never`, so it fails to compile rather
-// than being checked as the wrong kind.
+function wireValue<T>(
+  value: unknown,
+  is: (v: unknown) => v is T,
+  path: string,
+  shape: string,
+): T {
+  if (!is(value)) throw new BridgeProtocolError(`${path} must be ${shape}`);
+  return value;
+}
+
+const isNumber = (v: unknown): v is number => typeof v === "number";
+const isString = (v: unknown): v is string => typeof v === "string";
+const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const isNumberArray = (v: unknown): v is readonly number[] =>
+  Array.isArray(v) && v.every(isNumber);
+const isStringArray = (v: unknown): v is readonly string[] =>
+  Array.isArray(v) && v.every(isString);
+
+// [LAW:types-are-the-program] Each wire object's fields and their runtime
+// kinds. The mapped type makes a field added to (or removed from) a message
+// interface a compile error in its table, so the wire check cannot drift from
+// the type the client emits. Layout fields are excluded: every event that
+// carries them goes through `withDerivedLayout` instead.
+type FieldKind =
+  | "number"
+  | "number[]"
+  | "string"
+  | "string[]"
+  | "boolean"
+  | "CommandResponse";
+// A field shape with no kind here (an optional field included) is `never`, so
+// it fails to compile rather than being checked as the wrong kind.
 type FieldKinds<M> = {
   readonly [F in Exclude<
     keyof M,
@@ -464,16 +495,59 @@ type FieldKinds<M> = {
     ? "number"
     : M[F] extends readonly number[]
       ? "number[]"
-      : M[F] extends string
-        ? "string"
-        : never;
+      : M[F] extends readonly string[]
+        ? "string[]"
+        : M[F] extends string
+          ? "string"
+          : M[F] extends boolean
+            ? "boolean"
+            : M[F] extends CommandResponse
+              ? "CommandResponse"
+              : never;
 };
 
-const CROSS_SESSION_LAYOUT_FIELDS: {
-  readonly [K in CrossSessionLayoutMessage["type"]]: FieldKinds<
-    Extract<CrossSessionLayoutMessage, { type: K }>
+const COMMAND_RESPONSE_FIELDS: FieldKinds<CommandResponse> = {
+  commandNumber: "number",
+  timestamp: "number",
+  output: "string[]",
+  success: "boolean",
+};
+
+// [LAW:single-enforcer] The one wire parser for a field table: an event's
+// synthetic fields and a tmux reply, wherever a frame carries one.
+function parseFields(
+  x: unknown,
+  kinds: Readonly<Record<string, FieldKind>>,
+  path: string,
+): Record<string, unknown> {
+  const o = wireValue(x, isObject, path, "an object");
+  const parsed: Record<string, unknown> = { ...o };
+  for (const [field, kind] of Object.entries(kinds)) {
+    parsed[field] = FIELD_PARSERS[kind](o[field], `${path}.${field}`);
+  }
+  return parsed;
+}
+
+function parseCommandResponse(x: unknown, path: string): CommandResponse {
+  // [LAW:types-are-the-program] exception: the table is
+  // `FieldKinds<CommandResponse>`, so every field was just parsed, but TS
+  // cannot carry that through `parseFields`.
+  return parseFields(
+    x,
+    COMMAND_RESPONSE_FIELDS,
+    path,
+  ) as unknown as CommandResponse;
+}
+
+// [LAW:one-source-of-truth] Keyed by exactly the synthetic events the bridge
+// delivers to a WS peer, so this table is also what `parseEvent` admits.
+const SYNTHETIC_WIRE_FIELDS: {
+  readonly [K in WireSyntheticMessage["type"]]: FieldKinds<
+    Extract<WireSyntheticMessage, { type: K }>
   >;
 } = {
+  "protocol-error": { commandNumber: "number", line: "string" },
+  "unsolicited-response": { response: "CommandResponse" },
   "cross-session-layout-change": { sessionId: "number", windowId: "number" },
   "cross-session-layout-decode-error": { skippedBytes: "number" },
   "cross-session-layout-overrun": { lostEntries: "number" },
@@ -483,25 +557,21 @@ const CROSS_SESSION_LAYOUT_FIELDS: {
   "cross-session-layout-uncovered": { windowIds: "number[]" },
 };
 
-const KIND_CHECKS: Readonly<Record<FieldKind, (v: unknown) => boolean>> = {
-  number: (v) => typeof v === "number",
-  string: (v) => typeof v === "string",
-  "number[]": (v) => Array.isArray(v) && v.every((n) => typeof n === "number"),
+const FIELD_PARSERS: Readonly<
+  Record<FieldKind, (value: unknown, path: string) => unknown>
+> = {
+  number: (v, path) => wireValue(v, isNumber, path, "a number"),
+  string: (v, path) => wireValue(v, isString, path, "a string"),
+  "number[]": (v, path) => wireValue(v, isNumberArray, path, "a number[]"),
+  "string[]": (v, path) => wireValue(v, isStringArray, path, "a string[]"),
+  boolean: (v, path) => wireValue(v, isBoolean, path, "a boolean"),
+  CommandResponse: parseCommandResponse,
 };
 
-function checkCrossSessionLayoutFields(
-  msg: Record<string, unknown>,
-  type: CrossSessionLayoutMessage["type"],
-): void {
-  for (const [field, kind] of Object.entries(
-    CROSS_SESSION_LAYOUT_FIELDS[type],
-  ) as [string, FieldKind][]) {
-    if (!KIND_CHECKS[kind](msg[field])) {
-      throw new BridgeProtocolError(
-        `event.msg.${field} must be a ${kind} for ${type}`,
-      );
-    }
-  }
+function isWireSyntheticType(
+  type: string,
+): type is WireSyntheticMessage["type"] {
+  return Object.hasOwn(SYNTHETIC_WIRE_FIELDS, type);
 }
 
 // [LAW:types-are-the-program] Keyed by every message type that carries
@@ -511,10 +581,7 @@ const LAYOUT_EVENT_TYPES: ReadonlySet<string> = new Set(
     "layout-change": true,
     "cross-session-layout-change": true,
   } satisfies Record<
-    Extract<
-      TmuxMessage | CrossSessionLayoutMessage,
-      WindowLayoutFields
-    >["type"],
+    Extract<EventFrame["msg"], WindowLayoutFields>["type"],
     true
   >),
 );
@@ -531,40 +598,30 @@ const RAW_LAYOUT_FIELDS = [
 // geometry that disagrees with its own strings.
 function withDerivedLayout(msg: Record<string, unknown>, type: string): object {
   if (!LAYOUT_EVENT_TYPES.has(type)) return msg;
-  for (const field of RAW_LAYOUT_FIELDS) {
-    if (typeof msg[field] !== "string") {
-      throw new BridgeProtocolError(
-        `event.msg.${field} must be a string for ${type}`,
-      );
-    }
-  }
-  const raw = msg as Record<(typeof RAW_LAYOUT_FIELDS)[number], string>;
-  return {
-    ...msg,
-    ...windowLayoutFields(
-      raw.windowLayout,
-      raw.windowVisibleLayout,
-      raw.windowFlags,
-    ),
-  };
+  const [layout, visibleLayout, flags] = RAW_LAYOUT_FIELDS.map((field) =>
+    wireValue(msg[field], isString, `event.msg(${type}).${field}`, "a string"),
+  );
+  return { ...msg, ...windowLayoutFields(layout, visibleLayout, flags) };
 }
 
 function parseEvent(x: unknown): EventFrame {
-  const o = x as { msg?: unknown };
-  if (typeof o.msg !== "object" || o.msg === null) {
-    throw new BridgeProtocolError("event.msg must be an object");
-  }
-  const msg = o.msg as Record<string, unknown>;
-  const { type } = msg;
+  const raw = wireValue(
+    (x as { msg?: unknown }).msg,
+    isObject,
+    "event.msg",
+    "an object",
+  );
+  const { type } = raw;
   const unknownType = () =>
     new BridgeProtocolError(
-      `event.msg.type must be a known TmuxMessage discriminator or cross-session layout event type, got ${JSON.stringify(type)}`,
+      `event.msg.type must be a known TmuxMessage discriminator or a synthetic event type the bridge delivers, got ${JSON.stringify(type)}`,
     );
   if (typeof type !== "string") throw unknownType();
   // Classify once: admission and the field check read the same verdict.
-  const typed = { type };
-  if (isCrossSessionLayoutMessage(typed)) {
-    checkCrossSessionLayoutFields(msg, typed.type);
+  let msg = raw;
+  if (isWireSyntheticType(type)) {
+    // Several synthetic types share field names, so the path names the type.
+    msg = parseFields(raw, SYNTHETIC_WIRE_FIELDS[type], `event.msg(${type})`);
   } else if (!SERIALIZED_EVENT_TYPES.has(type)) {
     throw unknownType();
   }
@@ -601,14 +658,11 @@ function parseResult(x: unknown): ResultFrame {
     };
   }
   if (o.ok === false && "tmuxError" in o) {
-    if (typeof o.tmuxError !== "object" || o.tmuxError === null) {
-      throw new BridgeProtocolError("result.tmuxError must be an object");
-    }
     return {
       k: "result",
       id: o.id,
       ok: false,
-      tmuxError: o.tmuxError as CommandResponse,
+      tmuxError: parseCommandResponse(o.tmuxError, "result.tmuxError"),
     };
   }
   if (o.ok === false) {

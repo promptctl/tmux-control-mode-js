@@ -19,9 +19,10 @@ import {
   uniqueSocket,
   pollUntil,
   attachSession,
+  tmux,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
-import type { TmuxMessage } from "../../src/protocol/types.js";
+import type { CommandResponse, TmuxMessage } from "../../src/protocol/types.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
@@ -275,6 +276,29 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     }
     expect(windowAdds.length).toBeGreaterThanOrEqual(1);
     expect(windowAdds[0].type).toBe("window-add");
+
+    await client.close();
+  }, 10_000);
+
+  it("a hook's reply reaches the peer as unsolicited-response", async () => {
+    tmux(fx.socketName, [
+      "set-hook",
+      "-g",
+      "after-rename-window",
+      "display-message -p hook-ran",
+    ]);
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
+    const unsolicited: CommandResponse[] = [];
+    client.on("unsolicited-response", (ev) => unsolicited.push(ev.response));
+
+    const rename = await client.execute("rename-window renamed");
+
+    expect(rename.output).toEqual([]);
+    await pollUntil(() => unsolicited.length > 0, 3_000);
+    expect(
+      unsolicited.map(({ success, output }) => ({ success, output })),
+    ).toEqual([{ success: true, output: ["hook-ran"] }]);
 
     await client.close();
   }, 10_000);

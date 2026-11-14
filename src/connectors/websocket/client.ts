@@ -30,15 +30,12 @@
 // heartbeat together so callers cannot observe a half-closed client.
 
 import {
-  isCrossSessionLayoutMessage,
-  type CrossSessionLayoutMessage,
-} from "../../cross-session-layout-messages.js";
-import {
   sameConnectionState,
   type ConnectionState,
 } from "../../connection-state.js";
 import {
   TypedEmitter,
+  isTmuxMessage,
   type EmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
@@ -79,6 +76,7 @@ import {
   type ServerFrame,
   type WelcomeFrame,
   type WelcomeLimits,
+  type WireSyntheticMessage,
 } from "./protocol.js";
 
 import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
@@ -651,7 +649,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // Synthetic events carry no topology or bytes, so they bypass the router.
-  emitCrossSessionLayout(msg: CrossSessionLayoutMessage): void {
+  emitSynthetic(msg: WireSyntheticMessage): void {
     this.emitter.emit(msg);
   }
 
@@ -901,9 +899,9 @@ const SERVER_FRAME_HANDLERS: ServerFrameHandlers = Object.assign(
   {
     welcome: (self, f: WelcomeFrame) => self.onWelcome(f),
     event: (self, f) =>
-      isCrossSessionLayoutMessage(f.msg)
-        ? self.emitCrossSessionLayout(f.msg)
-        : self.dispatchEvent(f.msg as TmuxMessage),
+      isTmuxMessage(f.msg)
+        ? self.dispatchEvent(f.msg)
+        : self.emitSynthetic(f.msg),
     result: (self, f: ResultFrame) => self.onResult(f),
     pong: (self, f) => self.onPong(f.id),
     draining: (self, f) => self.onDraining(f.deadlineMs),
