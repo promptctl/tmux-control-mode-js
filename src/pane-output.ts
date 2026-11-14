@@ -1061,18 +1061,21 @@ export function parseWindowRecordLine(line: string): WindowRecord | null {
 
 // [LAW:types-are-the-program] The one place tmux's stand-ins for a pane with
 // no process (an empty pid and path, a dead pane's stale pid and command)
-// become a state: `#{pane_dead}` says dead, and with it unset a pid of ""
-// (tmux 3.8) or 0 (3.7, which no process has) says the pane never had a
-// process. Anything else is an unreadable line.
+// become a state. A pid of 0, which no process has, is what tmux before 3.8
+// renders for a pane that never had one, whether it calls the pane dead
+// (3.4) or not (3.7). Otherwise `#{pane_dead}` says dead, and with it unset
+// an empty pid (3.8) says the pane never had a process. Anything else is an
+// unreadable line.
 function parsePaneProcess(
   dead: string,
   pid: string,
   cwd: string,
   currentCommand: string,
 ): PaneProcessState | undefined {
+  if (dead !== "0" && dead !== "1") return undefined;
+  if (pid === "0") return { state: "empty" };
   if (dead === "1") return { state: "dead" };
-  if (dead !== "0") return undefined;
-  if (pid === "" || pid === "0") return { state: "empty" };
+  if (pid === "") return { state: "empty" };
   const runningPid = parseUint(pid);
   return runningPid === undefined
     ? undefined
