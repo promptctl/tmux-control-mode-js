@@ -1175,7 +1175,9 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
       k: "event",
       msg: { type: "cross-session-layout-change", sessionId: 1 },
     });
-    expect(() => parseServerFrame(frame)).toThrow(/windowId must be a number/);
+    expect(() => parseServerFrame(frame)).toThrow(
+      "event.msg(cross-session-layout-change).windowId must be a number",
+    );
     const ok = JSON.stringify({
       k: "event",
       msg: {
@@ -1277,12 +1279,7 @@ describe("WebSocket bridge — reply-stream reports", () => {
       success: false,
     };
     expect(
-      parseServerFrame(
-        frame({
-          type: "unsolicited-response",
-          response: { ...response, x: 1 },
-        }),
-      ),
+      parseServerFrame(frame({ type: "unsolicited-response", response })),
     ).toEqual({ k: "event", msg: { type: "unsolicited-response", response } });
     expect(
       parseServerFrame(

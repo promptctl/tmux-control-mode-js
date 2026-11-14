@@ -37,7 +37,6 @@ import {
   TypedEmitter,
   isTmuxMessage,
   type EmitterMessage,
-  type SyntheticEmitterMessage,
   type TmuxEventMap,
 } from "../../emitter.js";
 
@@ -77,6 +76,7 @@ import {
   type ServerFrame,
   type WelcomeFrame,
   type WelcomeLimits,
+  type WireSyntheticMessage,
 } from "./protocol.js";
 
 import type { BrowserWebSocketLike, ReconnectPolicy } from "./types.js";
@@ -649,7 +649,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // Synthetic events carry no topology or bytes, so they bypass the router.
-  emitSynthetic(msg: SyntheticEmitterMessage): void {
+  emitSynthetic(msg: WireSyntheticMessage): void {
     this.emitter.emit(msg);
   }
 

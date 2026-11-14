@@ -48,7 +48,7 @@ export type EmitterTmuxMessage = Exclude<TmuxMessage, PaneOutputMessage>;
  * tmux output. This is the one place that union is named; everything that
  * needs to distinguish synthetic events from wire messages (`EmitterMessage`,
  * `TmuxEventMap`'s synthetic arm, `isTmuxMessage`) derives from it instead of
- * re-listing the three variants.
+ * re-listing its variants.
  *
  * [LAW:one-source-of-truth] Adding a synthetic event type only means adding
  * it to this union — `SYNTHETIC_EVENT_SUBJECTS` below fails to compile until
@@ -167,8 +167,8 @@ type AnyHandler = (event: never) => void;
  *
  * Type-safe: `on("window-add", handler)` gives autocomplete on event names
  * and infers the handler argument type. Wildcard `"*"` listeners receive
- * the `EmitterMessage` union — every non-byte tmux message plus the
- * synthetic lifecycle events (`connection-state`, `reconnected`). Pane-
+ * the `EmitterMessage` union — every non-byte tmux message plus every
+ * `SyntheticEmitterMessage`. Pane-
  * byte messages (`OutputMessage` / `ExtendedOutputMessage`) are NOT
  * deliverable through any emitter overload; they flow through
  * `attachBytesSink` on `TmuxClient`.
