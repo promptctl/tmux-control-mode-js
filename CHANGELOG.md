@@ -90,6 +90,15 @@ All notable changes to this project are documented here. Format follows
   stays up; a second welcome is reported and no longer re-runs the
   handshake. Under `ws`, a socket the client has begun closing no longer
   delivers messages, as a browser's does not.
+- A connection `WebSocketTmuxClient` decides is over — `close()`, a failed
+  handshake, a missed pong — ends at the decision, not when the peer answers
+  the close handshake. Before, a failed handshake or a heartbeat timeout left
+  the connection `connecting` or `ready` until the socket's close event,
+  which a peer that has stopped answering never sends. A heartbeat timeout is
+  now reported through `onError` as `BRIDGE_CLOSED` "heartbeat timeout after
+  Nms", the socket closes with code 4000 and that reason, and the connection
+  reads `transport-error`, or `reconnecting` with that error, where it read
+  as a clean `exit`.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or

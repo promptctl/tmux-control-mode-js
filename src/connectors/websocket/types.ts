@@ -39,6 +39,9 @@ export interface BrowserWebSocketLike {
   binaryType: "blob" | "arraybuffer";
 
   send(data: string | ArrayBufferLike | ArrayBufferView | Blob): void;
+  /** Does not throw for code 1000 or 3000–4999 with a reason of at most 123
+   *  UTF-8 bytes, in any readyState — the WHATWG contract. The client closes
+   *  only with those, and lets anything this throws propagate. */
   close(code?: number, reason?: string): void;
 
   // [LAW:locality-or-seam] removeEventListener, matched by handler identity,

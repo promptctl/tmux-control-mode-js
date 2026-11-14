@@ -274,22 +274,28 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // timer's teardown; cancelling here guarantees no scheduled retry fires
     // after this close.
     this.reconnect.cancel();
-    // [LAW:single-enforcer] Close the socket regardless of readyState.
-    // ws.close() on a CONNECTING socket aborts the handshake per the
-    // WebSocket spec; finalize then removes the client's listeners, so
-    // nothing the socket does afterwards reaches the client.
-    if (this.connection !== null) {
-      const { ws } = this.connection;
-      // bye ends a running session, so it goes through the ready gate: the
-      // server reads one before its handshake ends as a protocol error.
-      this.transmitFrame(encodeClientFrame({ k: "bye" }));
-      try {
-        ws.close(1000, "client close");
-      } catch {
-        // ignore
-      }
-    }
-    this.finalizeConnection(new BridgeError("BRIDGE_CLOSED", "client close"));
+    // bye ends a running session, so it goes through the ready gate: the
+    // server reads one before its handshake ends as a protocol error.
+    this.transmitFrame(encodeClientFrame({ k: "bye" }));
+    this.end(1000, "client close");
+  }
+
+  // [LAW:single-enforcer] The one way the client ends a connection it has
+  //   decided is over — closed by the consumer, a failed handshake, a missed
+  //   pong. It ends at the decision, not when the peer answers the close
+  //   handshake: the peer may be the one that has stopped answering.
+  // [LAW:no-ambient-temporal-coupling] Finalize first: it removes the
+  //   socket's listeners and commits the state, so the close event — fired
+  //   inside close() or long after it — reaches nothing. close() on a
+  //   CONNECTING socket aborts its opening handshake.
+  // [LAW:no-silent-failure] close() throws only for a code outside 1000 and
+  //   3000–4999 or a reason over 123 bytes, which CloseCode and the
+  //   truncation rule out; a socket that throws anyway is a fault, raised
+  //   from a step whose state has already committed.
+  private end(code: CloseCode, reason: string): void {
+    const conn = this.connection;
+    this.finalizeConnection(new BridgeError("BRIDGE_CLOSED", reason));
+    conn?.ws.close(code, truncateCloseReason(reason));
   }
 
   // -------------------------------------------------------------------------
@@ -618,14 +624,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     else reader.output(this, ctx, inbound);
   }
 
+  // A connection the client has found broken — a failed handshake, a missed
+  //   pong. `err` is why it ended, and the close reason says the same; the
+  //   calls it drops reject BRIDGE_CLOSED, the connection having closed
+  //   under them.
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
-  //   lastError, and the close can run finalize synchronously, which reads it
-  //   to publish transport-error (or reconnecting with lastError).
-  private failHandshake(conn: Connection, err: BridgeError): void {
+  //   lastError, which the end reads to publish transport-error (or
+  //   reconnecting with lastError).
+  private failConnection(code: CloseCode, err: BridgeError): void {
     this.emitError(err);
-    // 4002: protocol error in the application range. A browser's close()
-    //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
-    conn.ws.close(4002, truncateCloseReason(err.toPayload().message));
+    this.end(code, err.toPayload().message);
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -638,26 +646,22 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   other frame is a protocol fault, and a fault fails the connection.
   private static readonly beforeWelcome = (
     self: WebSocketTmuxClient,
-    conn: Connection,
-    kind: string,
-  ): void => self.failHandshake(conn, outOfPhase(kind, "before welcome"));
+    _conn: Connection,
+    f: { readonly k: string },
+  ): void => self.failConnection(4002, outOfPhase(f.k, "before welcome"));
 
   private static readonly handshake: PhaseReader<Connection> = {
-    fault: (self, conn, err) => self.failHandshake(conn, err),
+    fault: (self, _conn, err) => self.failConnection(4002, err),
     output: (self, conn) =>
-      WebSocketTmuxClient.beforeWelcome(self, conn, "output"),
+      WebSocketTmuxClient.beforeWelcome(self, conn, { k: "output" }),
     frames: {
       welcome: (self, conn, f) => self.onWelcome(conn, f),
       error: (self, _conn, f) =>
         self.emitError(BridgeError.fromPayload(f.error)),
-      event: (self, conn, f) =>
-        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
-      result: (self, conn, f) =>
-        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
-      pong: (self, conn, f) =>
-        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
-      draining: (self, conn, f) =>
-        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
+      event: WebSocketTmuxClient.beforeWelcome,
+      result: WebSocketTmuxClient.beforeWelcome,
+      pong: WebSocketTmuxClient.beforeWelcome,
+      draining: WebSocketTmuxClient.beforeWelcome,
     },
   };
 
@@ -760,9 +764,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   private finalizeConnection(err: BridgeError): void {
     // [LAW:single-enforcer] Idempotency guard: a client already closed has
-    // nothing left to end — a close() once the client is closed, or a socket
-    // that fired close synchronously inside ws.close(). A released socket's
-    // later events never get here: release() removed its listeners.
+    // nothing left to end — a close() once the client is closed. A released
+    // socket's events never get here: release() removed its listeners.
     // [LAW:one-source-of-truth] The guard derives from the one state field:
     // "closed" is exactly the condition under which a second finalize must
     // be a no-op; openSocket() re-arms by entering "connecting".
@@ -905,15 +908,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
             sendOn(ws, encodeClientFrame({ k: "ping", id }));
             return id;
           }),
+        // No pong: the peer is gone. Release stops the heartbeat, so its
+        // deadline only passes while its own connection is the current one.
         onTimeout: () =>
-          this.delivery.step(() => {
-            // No pong — kill the socket and let the close/reconnect path run.
-            try {
-              ws.close(4000, "heartbeat timeout");
-            } catch {
-              // ignore
-            }
-          }),
+          this.delivery.step(() =>
+            this.failConnection(
+              4000,
+              new BridgeError(
+                "BRIDGE_CLOSED",
+                `heartbeat timeout after ${this.heartbeatTimeoutMs}ms`,
+              ),
+            ),
+          ),
       },
     );
   }
@@ -1000,6 +1006,14 @@ interface Connection {
   readonly detach: () => void;
   phase: Phase;
 }
+
+/** The close codes the client sends: a normal closure, and two in the
+ *  application range — a browser's close() accepts only 1000 and 3000–4999,
+ *  so RFC 6455's 1002 (protocol error) is not the client's to send. */
+type CloseCode =
+  | 1000 // client close
+  | 4000 // heartbeat timeout
+  | 4002; // protocol error
 
 type Phase = Handshake | Ready;
 

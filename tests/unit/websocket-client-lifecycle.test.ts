@@ -1437,7 +1437,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     ],
     ["missing limits", { k: "welcome" }, "welcome.limits"],
   ])(
-    "a welcome with %s closes the socket and leaves 'connecting'",
+    "a welcome with %s closes the socket and ends the connection",
     (_, welcome, field) => {
       const { client, ws, close, errors } = started();
       ws.fire("message", { data: JSON.stringify(welcome) });
@@ -1567,7 +1567,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     expect(client.connectionState.status).toBe("ready");
   });
 
-  it("a socket closing after a failed handshake delivers nothing more, so the fault stays the cause", async () => {
+  it("a failed handshake ends the connection before its close handshake does: frames and the close that follow change nothing", async () => {
     const { client, ws, errors } = started({ reconnect: true });
     // ws's close handshake: close() moves to CLOSING, and the close event
     // waits for the peer's close frame. Frames keep arriving meanwhile.
@@ -1575,6 +1575,13 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       ws.readyState = 2;
     };
     ws.fire("message", { data: JSON.stringify({ k: "welcome" }) });
+    const ended = {
+      status: "reconnecting",
+      attempt: 1,
+      lastError: errors[0],
+    };
+    expect(client.connectionState).toEqual(ended);
+
     ws.fire("message", {
       data: encodeServerFrame({
         k: "event",
@@ -1587,18 +1594,26 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
         limits: { ...LIMITS, heartbeatIntervalMs: 1_000 },
       }),
     });
+    ws.readyState = 3;
+    ws.fire("close", { code: 4002, reason: "" });
 
     expect(errors).toHaveLength(1);
     expect(errors[0]?.message).toContain("welcome.limits");
-    expect(client.connectionState.status).toBe("connecting");
-
-    ws.readyState = 3;
-    ws.fire("close", { code: 4002, reason: "" });
-    expect(client.connectionState).toMatchObject({
-      status: "reconnecting",
-      lastError: errors[0],
-    });
+    expect(client.connectionState).toEqual(ended);
     await client.close();
+  });
+
+  it("connect() from the onError a failed handshake raises opens a new socket", () => {
+    const { client, hub } = makeClient({
+      onError: () => void client.connect(),
+    });
+    void client.connect();
+    hub.open();
+    hub.latest().close = () => {};
+    hub.latest().fire("message", { data: JSON.stringify({ k: "welcome" }) });
+
+    expect(hub.sockets).toHaveLength(2);
+    expect(client.connectionState).toEqual({ status: "connecting" });
   });
 
   it("a second welcome once ready is reported and does not re-run the handshake", () => {
@@ -1634,5 +1649,112 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       status: "closed",
       reason: "transport-error",
     });
+  });
+});
+
+describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when the deadline passes", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const INTERVAL = parseDurationMs("heartbeatIntervalMs", 1_000);
+  const TIMEOUT = 100;
+
+  // A connection whose peer has gone silent: no pong ever comes, and its
+  // socket's close() starts a close handshake that never finishes.
+  function silentPeer(opts: {
+    reconnect?: ReconnectPolicy;
+    onError?: (err: BridgeError) => void;
+  }) {
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      heartbeatTimeoutMs: TIMEOUT,
+      ...opts,
+    });
+    void client.connect();
+    const ws = hub.latest();
+    ws.close = vi.fn(() => {
+      ws.readyState = 2;
+    });
+    hub.open();
+    hub.welcome(-1, INTERVAL);
+    return { client, hub, ws };
+  }
+
+  const RETRY: ReconnectPolicy = {
+    maxAttempts: 3,
+    initialDelayMs: 1,
+    maxDelayMs: 1,
+    factor: 1,
+    jitterMs: 0,
+  };
+
+  it("leaves ready, rejects pending calls, reports the timeout and reconnects; the dead socket's late close changes nothing", async () => {
+    const errors: BridgeError[] = [];
+    const { client, hub, ws } = silentPeer({
+      reconnect: RETRY,
+      onError: (e) => errors.push(e),
+    });
+    const pending = client.listWindows();
+    const settled = pending.catch((e: unknown) => e);
+
+    await vi.advanceTimersByTimeAsync(INTERVAL + TIMEOUT);
+
+    expect(ws.close).toHaveBeenCalledWith(
+      4000,
+      `heartbeat timeout after ${TIMEOUT}ms`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.toPayload()).toMatchObject({
+      code: "BRIDGE_CLOSED",
+      message: `heartbeat timeout after ${TIMEOUT}ms`,
+    });
+    expect(client.connectionState).toEqual({
+      status: "reconnecting",
+      attempt: 1,
+      lastError: errors[0],
+    });
+    expect(await settled).toMatchObject({ code: "BRIDGE_CLOSED" });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hub.sockets).toHaveLength(2);
+    hub.open();
+    hub.welcome();
+    expect(client.connectionState.status).toBe("ready");
+
+    hub.fireClose(0, 4000, "heartbeat timeout");
+    expect(client.connectionState.status).toBe("ready");
+    expect(errors).toHaveLength(1);
+    await client.close();
+  });
+
+  it("with no reconnect policy, reads transport-error", async () => {
+    const { client } = silentPeer({});
+    await vi.advanceTimersByTimeAsync(INTERVAL + TIMEOUT);
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+  });
+
+  it("connect() from the onError it raises opens a new socket", async () => {
+    const box: { client?: WebSocketTmuxClient } = {};
+    const { client, hub } = silentPeer({
+      onError: () => void box.client?.connect(),
+    });
+    box.client = client;
+    await vi.advanceTimersByTimeAsync(INTERVAL + TIMEOUT);
+
+    expect(hub.sockets).toHaveLength(2);
+    expect(client.connectionState).toEqual({ status: "connecting" });
+    await client.close();
   });
 });
