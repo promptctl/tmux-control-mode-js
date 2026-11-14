@@ -54,8 +54,27 @@ All notable changes to this project are documented here. Format follows
   listeners, sinks and error handlers once each step has committed. A
   delivery that throws is reported to the host as an uncaught error, and
   the deliveries after it still run.
+- `truncateCloseReason` (exported from `./websocket/protocol`): cuts a
+  WebSocket close reason to the 123 UTF-8 bytes a close frame carries,
+  without splitting a character. Both halves of the bridge use it; the
+  server used to cut at 123 characters, which a non-ASCII reason could
+  overrun.
 
 ### Fixed
+
+- A `WebSocketTmuxClient` whose server sends a welcome it cannot parse
+  (missing `limits`, a wrong type, or the negative `heartbeatIntervalMs` a
+  previous release's bridge advertises) now fails the connection: it reports
+  the `BRIDGE_PROTOCOL_ERROR`, closes the socket with code 4002 and the parse
+  error as the reason, and the connection reads `closed` / `transport-error`,
+  or `reconnecting` with that error under a reconnect policy. Before, the
+  connection stayed `connecting` with the socket open, every call timed out
+  and the reconnect policy never engaged. Every protocol fault before the
+  welcome does the same, including a result for a call the client never sent,
+  which before resolved that call; once `ready`, a bad frame is still reported
+  and the connection stays up.
+- A `createWebSocket` that throws is reported through `onError`, and the
+  connection reads `transport-error` instead of a clean `exit`.
 
 - A listener, a sink, `onError` or `onDraining` may call `close()` or
   `connect()` at any transition, and the client ends in the state its last

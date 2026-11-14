@@ -161,7 +161,11 @@ class MockWebSocketHub {
 }
 
 function makeClient(
-  opts: { reconnect?: boolean; onDraining?: (deadlineMs: number) => void } = {},
+  opts: {
+    reconnect?: boolean;
+    onDraining?: (deadlineMs: number) => void;
+    onError?: (error: BridgeError) => void;
+  } = {},
 ): {
   client: WebSocketTmuxClient;
   hub: MockWebSocketHub;
@@ -174,6 +178,7 @@ function makeClient(
       url: string,
     ) => BrowserWebSocketLike,
     onDraining: opts.onDraining,
+    onError: opts.onError,
     reconnect: opts.reconnect
       ? {
           maxAttempts: 3,
@@ -1057,8 +1062,12 @@ describe("WebSocketTmuxClient — the per-call deadline is the stricter of the c
     expect(errors[0]!.message).toContain(
       "welcome.limits.requestTimeoutMs (0) must be",
     );
-    // The malformed welcome did not make the connection ready.
-    expect(client.connectionState.status).toBe("connecting");
+    // The malformed welcome failed the handshake rather than making the
+    // connection ready.
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
     void client.close();
   });
 });
@@ -1460,5 +1469,117 @@ describe("WebSocketTmuxClient — a callback may close() or connect() at any tra
     expect(pings(h.hub)).toBeGreaterThan(0);
     expect(reported).toHaveLength(1);
     expect(() => reported[0]?.()).toThrow(boom);
+  });
+});
+
+describe("WebSocketTmuxClient — a protocol fault before ready fails the handshake", () => {
+  function started(opts: { reconnect?: boolean } = {}) {
+    const errors: BridgeError[] = [];
+    const { client, hub } = makeClient({
+      ...opts,
+      onError: (e) => errors.push(e),
+    });
+    void client.connect();
+    const ws = hub.latest();
+    const close = vi.spyOn(ws, "close");
+    hub.open();
+    return { client, hub, ws, close, errors };
+  }
+
+  const LIMITS = { requestTimeoutMs: 30_000, maxInflight: 16 };
+
+  it.each([
+    [
+      "a negative heartbeatIntervalMs (a previous release's bridge)",
+      { k: "welcome", limits: { ...LIMITS, heartbeatIntervalMs: -1 } },
+      "welcome.limits.heartbeatIntervalMs",
+    ],
+    ["missing limits", { k: "welcome" }, "welcome.limits"],
+  ])(
+    "a welcome with %s closes the socket and leaves 'connecting'",
+    (_, welcome, field) => {
+      const { client, ws, close, errors } = started();
+      ws.fire("message", { data: JSON.stringify(welcome) });
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+      expect(errors[0]?.message).toContain(field);
+      expect(close).toHaveBeenCalledWith(4002, expect.stringContaining(field));
+      expect(ws.readyState).toBe(3);
+      expect(client.connectionState).toEqual({
+        status: "closed",
+        reason: "transport-error",
+      });
+    },
+  );
+
+  it("a result for a queued call before welcome fails the handshake and does not settle the call", async () => {
+    const { client, ws, close, errors } = started();
+    const queued = client.execute("list-windows");
+    // Nothing transmitted: the client sends calls only once ready.
+    expect(sentFrames(ws).filter((f) => f.k === "call")).toEqual([]);
+    const result: ResultFrame = {
+      k: "result",
+      id: "r1",
+      ok: true,
+      response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
+    };
+    ws.fire("message", {
+      data: encodeServerFrame(result satisfies ServerFrame),
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("never sent");
+    expect(close).toHaveBeenCalledWith(4002, expect.any(String));
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+    await expect(queued).rejects.toMatchObject({ code: "BRIDGE_CLOSED" });
+  });
+
+  it("under a reconnect policy the failed handshake reads reconnecting, with the protocol error as lastError", async () => {
+    const { client, ws, errors } = started({ reconnect: true });
+    ws.fire("message", { data: JSON.stringify({ k: "welcome" }) });
+
+    expect(client.connectionState).toMatchObject({
+      status: "reconnecting",
+      attempt: 1,
+      lastError: errors[0],
+    });
+    expect(errors[0]).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+    await client.close();
+  });
+
+  it("a malformed frame once ready is reported and the connection stays up", () => {
+    const { client, hub, ws, close, errors } = started();
+    hub.welcome();
+    ws.fire("message", { data: "{not json" });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+    expect(close).not.toHaveBeenCalled();
+    expect(client.connectionState.status).toBe("ready");
+  });
+
+  it("a createWebSocket that throws is reported and reads transport-error", () => {
+    const errors: BridgeError[] = [];
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: () => {
+        throw new Error("no sockets here");
+      },
+      onError: (e) => errors.push(e),
+    });
+    void client.connect();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "BRIDGE_INTERNAL" });
+    expect(errors[0]?.message).toContain("no sockets here");
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
   });
 });

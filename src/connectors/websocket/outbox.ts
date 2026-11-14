@@ -4,8 +4,10 @@
 // call state.
 //
 // [LAW:one-source-of-truth] A Pending entry IS the queue entry. `frame` is the
-// encoded wire frame, re-sendable on reconnect; `transmitted` flips to true the
-// moment the socket accepts the frame. There is no second outbox structure that
+// encoded wire frame, held until a ready connection accepts it; `transmitted`
+// flips to true the moment the socket accepts the frame. drain() rejects every
+// entry when a connection ends, so `transmitted` always means "sent on the
+// current socket". There is no second outbox structure that
 // can drift out of sync with the correlation map — two structures that must
 // agree would be an invariant the type cannot enforce, so there is only one.
 
@@ -91,6 +93,14 @@ export class Outbox {
   settle(frame: ReceivedResultFrame): BridgeError | undefined {
     const p = this.pending.get(frame.id);
     if (p === undefined) return undefined;
+    // A call the server was never sent cannot be answered. The entry stays
+    // pending, to be sent or drained like any other.
+    if (!p.transmitted) {
+      return new BridgeError(
+        "BRIDGE_PROTOCOL_ERROR",
+        `result for call ${frame.id}, which was never sent`,
+      );
+    }
     this.pending.delete(frame.id);
     clearTimeout(p.timer);
     // [LAW:parse-dont-validate] The frame parser cannot see the method; this

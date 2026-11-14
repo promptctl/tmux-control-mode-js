@@ -71,6 +71,7 @@ import {
   isPaneOutputFrame,
   parseServerFrame,
   toBridgeProtocolError,
+  truncateCloseReason,
   type ReceivedResultFrame,
   type ReceivedServerFrame,
   type RpcMethod,
@@ -524,12 +525,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     try {
       ws = factory(this.opts.url, this.opts.subprotocol);
     } catch (err) {
-      this.finalizeConnection(
-        new BridgeError(
-          "BRIDGE_INTERNAL",
-          `failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`,
-        ),
+      const error = new BridgeError(
+        "BRIDGE_INTERNAL",
+        `failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`,
       );
+      // [LAW:no-silent-failure] Reported, and recorded as lastError so the
+      //   close reads transport-error rather than a clean exit.
+      this.emitError(error);
+      this.finalizeConnection(error);
       return;
     }
     ws.binaryType = "arraybuffer";
@@ -587,7 +590,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       this.onText(data);
       return;
     }
-    this.emitError(
+    this.onProtocolError(
       new BridgeError(
         "BRIDGE_PROTOCOL_ERROR",
         `unexpected frame type: ${Object.prototype.toString.call(data)}`,
@@ -597,7 +600,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   private onBinary(buf: Uint8Array): void {
     if (!isPaneOutputFrame(buf)) {
-      this.emitError(
+      this.onProtocolError(
         new BridgeError("BRIDGE_PROTOCOL_ERROR", "unknown binary frame magic"),
       );
       return;
@@ -607,7 +610,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       msg = decodePaneOutput(buf);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.emitError(toBridgeProtocolError(err));
+      this.onProtocolError(toBridgeProtocolError(err));
       return;
     }
     this.dispatchEvent(msg);
@@ -619,10 +622,38 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       frame = parseServerFrame(raw);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      this.emitError(toBridgeProtocolError(err));
+      this.onProtocolError(toBridgeProtocolError(err));
       return;
     }
     this.handleFrame(frame);
+  }
+
+  // [LAW:single-enforcer] What a protocol fault does to the connection is
+  //   decided here, for every fault the client detects in what the server sent.
+  //   The welcome is the only frame that moves a connection out of
+  //   "connecting", so a fault there is a failed handshake: the client closes
+  //   the socket and onClose → finalizeConnection ends the connection as for
+  //   any other close. In "ready" it is one bad frame, and the connection
+  //   stays up.
+  // [LAW:no-ambient-temporal-coupling] Report first: emitError records
+  //   lastError, and the close can run finalize synchronously, which reads it
+  //   to publish transport-error (or reconnecting with lastError).
+  private onProtocolError(err: BridgeError): void {
+    this.emitError(err);
+    switch (this.currentConnectionState.status) {
+      case "connecting":
+        // 4002: protocol error in the application range. A browser's close()
+        //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
+        // [LAW:no-defensive-null-guards] exception: openSocket sets ws in the
+        //   step that enters "connecting", but the field's type does not say
+        //   so; 6sp.sak gives each socket its own lifetime.
+        this.ws?.close(4002, truncateCloseReason(err.toPayload().message));
+        return;
+      case "ready":
+      case "reconnecting":
+      case "closed":
+        return;
+    }
   }
 
   // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
@@ -686,7 +717,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   private onResult(frame: ReceivedResultFrame): void {
     const violation = this.outbox.settle(frame);
-    if (violation !== undefined) this.emitError(violation);
+    if (violation !== undefined) this.onProtocolError(violation);
   }
 
   private onDraining(deadlineMs: number): void {
@@ -816,9 +847,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Internal: send paths
   //
   // Two send paths exist because frames have different lifecycles:
-  //   - Call frames carry a pending caller. They must persist across
-  //     reconnect attempts until either delivered or finalized. The Outbox
-  //     owns them and transmits through the `transmitFrame` gate below.
+  //   - Call frames carry a pending caller. A call made before "ready" (while
+  //     connecting, or during reconnect backoff) waits for the next ready
+  //     connection; finalize rejects every call still pending when a
+  //     connection ends. The Outbox owns them and transmits through the
+  //     `transmitFrame` gate below.
   //   - Hello / ping / bye are connection-scoped fire-and-forget. They
   //     make no sense across a connection boundary (a stale hello on a new
   //     socket would be a protocol error; a stale ping would corrupt the

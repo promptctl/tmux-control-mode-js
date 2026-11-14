@@ -46,6 +46,7 @@ import {
   encodePaneOutput,
   encodeServerFrame,
   parseClientFrame,
+  truncateCloseReason,
   type BridgeErrorCode,
   type CallFrame,
   type ClientFrame,
@@ -1246,7 +1247,7 @@ class Connection {
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
     try {
-      this.ws.close(wsCode, message.slice(0, 123));
+      this.ws.close(wsCode, truncateCloseReason(message));
     } catch {
       // ignore
     }
