@@ -1567,10 +1567,10 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     expect(client.connectionState.status).toBe("ready");
   });
 
-  it("a failed handshake ends the connection before its close handshake does: the close event that follows changes nothing", async () => {
+  it("a failed handshake ends the connection before its close handshake does: frames and the close that follow change nothing", async () => {
     const { client, ws, errors } = started({ reconnect: true });
     // ws's close handshake: close() moves to CLOSING, and the close event
-    // waits for the peer's close frame.
+    // waits for the peer's close frame. Frames keep arriving meanwhile.
     ws.close = () => {
       ws.readyState = 2;
     };
@@ -1582,6 +1582,18 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     };
     expect(client.connectionState).toEqual(ended);
 
+    ws.fire("message", {
+      data: encodeServerFrame({
+        k: "event",
+        msg: { type: "sessions-changed" },
+      }),
+    });
+    ws.fire("message", {
+      data: JSON.stringify({
+        k: "welcome",
+        limits: { ...LIMITS, heartbeatIntervalMs: 1_000 },
+      }),
+    });
     ws.readyState = 3;
     ws.fire("close", { code: 4002, reason: "" });
 
