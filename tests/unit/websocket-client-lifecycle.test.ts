@@ -23,7 +23,7 @@ import type {
 } from "../../src/connectors/websocket/types.js";
 import {
   BridgeError,
-  closeReason,
+  truncateCloseReason,
   encodeServerFrame,
   parseDurationMs,
   parsePositiveInt,
@@ -1066,7 +1066,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       limits({ requestTimeoutMs: 0 }),
       "welcome.limits.requestTimeoutMs (0) must be",
     ],
-    ["no limits", JSON.stringify({ k: "welcome" }), "limits"],
+    ["no limits", JSON.stringify({ k: "welcome" }), "welcome.limits"],
   ];
 
   it.each(BAD_WELCOMES)(
@@ -1093,7 +1093,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       expect(fault.message).toContain(field);
       expect(close).toHaveBeenCalledExactlyOnceWith(
         4002,
-        closeReason(fault.bareMessage()),
+        truncateCloseReason(fault.toPayload().message),
       );
       expect(ws.readyState).toBe(3);
       expect(client.connectionState).toEqual({
@@ -1124,6 +1124,74 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       attempt: 2,
     });
     await client.close();
+  });
+
+  it("an onError that closes and reconnects keeps the connection it opened", async () => {
+    const hub = new MockWebSocketHub();
+    let reentered = false;
+    const client: WebSocketTmuxClient = new WebSocketTmuxClient({
+      url: "ws://test/",
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      onError: () => {
+        if (reentered) return;
+        reentered = true;
+        void client.close();
+        void client.connect();
+      },
+    });
+    hub.open();
+    hub.latest().fire("message", { data: BAD_WELCOMES[0]![1] });
+
+    expect(hub.sockets).toHaveLength(2);
+    expect(hub.sockets[0]!.readyState).toBe(3);
+    expect(hub.latest().readyState).toBe(0);
+    expect(client.connectionState).toEqual({ status: "connecting" });
+    hub.open();
+    hub.welcome();
+    expect(client.connectionState.status).toBe("ready");
+    await client.close();
+  });
+
+  it("a connecting listener that closes the client ends the socket being opened", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    hub.fireClose();
+    expect(client.connectionState.status).toBe("reconnecting");
+    client.on("connection-state", ({ state }) => {
+      if (state.status === "connecting") void client.close();
+    });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hub.sockets).toHaveLength(2);
+    expect(hub.latest().readyState).toBe(3);
+    hub.latest().fire("open", {});
+    hub.welcome();
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+  });
+
+  it("a socket the factory cannot create is reported and reads transport-error", () => {
+    const errors: BridgeError[] = [];
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      createWebSocket: () => {
+        throw new Error("bad url");
+      },
+      onError: (e) => errors.push(e),
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.code).toBe("BRIDGE_INTERNAL");
+    expect(errors[0]!.message).toContain("bad url");
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
   });
 
   it("a malformed frame after a good welcome is reported and the connection stays up", async () => {
@@ -1207,7 +1275,7 @@ describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when i
     });
   });
 
-  it("the timed-out socket's late result and close reach nothing once the reconnect is ready", async () => {
+  it("the timed-out socket's late frame and close reach nothing once the reconnect is ready", async () => {
     const { client, hub, dead, errors } = deadPeerClient({
       maxAttempts: 3,
       initialDelayMs: 1,
@@ -1224,17 +1292,10 @@ describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when i
     hub.welcome();
     const reported = errors.length;
 
-    // The answer to the call the timeout already rejected, then the close
-    // event the runtime fires when it finally gives up on the dead socket.
-    const late: ResultFrame = {
-      k: "result",
-      id: "r1",
-      ok: true,
-      response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
-    };
-    dead.fire("message", {
-      data: encodeServerFrame(late satisfies ServerFrame),
-    });
+    // A frame the live connection would report as a protocol error, then the
+    // close event the runtime fires when it finally gives up on the dead
+    // socket.
+    dead.fire("message", { data: "{not json" });
     dead.fire("close", { code: 1006, reason: "" });
 
     expect(errors).toHaveLength(reported);

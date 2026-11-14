@@ -42,7 +42,7 @@ import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
 import {
   BridgeError,
-  closeReason,
+  truncateCloseReason,
   toBridgeProtocolError,
   encodePaneOutput,
   encodeServerFrame,
@@ -1247,7 +1247,7 @@ class Connection {
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
     try {
-      this.ws.close(wsCode, closeReason(message));
+      this.ws.close(wsCode, truncateCloseReason(message));
     } catch {
       // ignore
     }

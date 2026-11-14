@@ -987,7 +987,7 @@ const utf8 = new TextEncoder();
 // the longest prefix of `message` that fits. encodeInto stops before a code
 // point that would overflow the buffer, so the cut never splits one, and
 // `read` is that prefix's length in UTF-16 units.
-export function closeReason(message: string): string {
+export function truncateCloseReason(message: string): string {
   const { read } = utf8.encodeInto(
     message,
     new Uint8Array(CLOSE_REASON_MAX_BYTES),

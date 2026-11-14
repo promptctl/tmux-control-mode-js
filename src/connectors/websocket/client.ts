@@ -66,12 +66,12 @@ import { TopologyRouter, type RunCommand } from "../../topology-router.js";
 import { invalidCommand } from "../../errors.js";
 import {
   BridgeError,
-  closeReason,
   decodePaneOutput,
   encodeClientFrame,
   isPaneOutputFrame,
   parseServerFrame,
   toBridgeProtocolError,
+  truncateCloseReason,
   type ReceivedResultFrame,
   type ReceivedServerFrame,
   type RpcMethod,
@@ -322,18 +322,33 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // [LAW:single-enforcer] The one way the client ends a socket on its own
-  // initiative: close(), a failed handshake, a heartbeat timeout. Finalize
-  // runs first so the outbox and the state see `err` whether the runtime
-  // fires the close event inside ws.close() or later; by then the socket's
-  // route is retired, so that event reaches nothing. The socket is absent
-  // during reconnect backoff, when close() has only the retry to cancel.
+  // initiative: close(), or a fault (failConnection). Finalize runs first so
+  // the outbox and the state see `err` whether the runtime fires the close
+  // event inside ws.close() or later; by then the socket's route is retired,
+  // so that event reaches nothing. The socket is absent during reconnect
+  // backoff, when close() has only the retry to cancel.
   // [LAW:no-silent-failure] No catch around ws.close(): the code is one of
-  // the constants above and closeReason makes the reason legal, so a throw is
-  // a defect, and swallowing it would leave the socket open after finalize.
+  // the constants above and truncateCloseReason makes the reason legal, so a
+  // throw is a defect, and swallowing it would leave the socket open after
+  // finalize.
   private abortSocket(err: BridgeError, code: number): void {
     const ws = this.ws;
     this.finalizeConnection(err);
-    ws?.close(code, closeReason(err.bareMessage()));
+    ws?.close(code, truncateCloseReason(err.toPayload().message));
+  }
+
+  // [LAW:single-enforcer] The one way a fault the client finds ends the
+  // connection: a failed handshake, a heartbeat timeout, a socket the factory
+  // could not create. The fault is recorded first, so the state finalize
+  // publishes reads it ("transport-error", or reconnecting with lastError),
+  // and reported last.
+  // [LAW:no-ambient-temporal-coupling] onError may close() or connect(); the
+  // connection it acts on is already the next one, so nothing after the
+  // report touches the connection the fault ended.
+  private failConnection(err: BridgeError, code: number): void {
+    this.lastError = err;
+    this.abortSocket(err, code);
+    this.emitError(err);
   }
 
   // -------------------------------------------------------------------------
@@ -518,7 +533,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Internal: socket lifecycle
   // -------------------------------------------------------------------------
   private openSocket(): void {
-    this.setConnectionState({ status: "connecting" });
     const factory =
       this.opts.createWebSocket ??
       ((url: string, subprotocol?: string | string[]) =>
@@ -534,11 +548,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     try {
       ws = factory(this.opts.url, this.opts.subprotocol);
     } catch (err) {
-      this.finalizeConnection(
+      // The attempt was made and failed. No socket exists, so the close code
+      // is never sent.
+      this.setConnectionState({ status: "connecting" });
+      this.failConnection(
         new BridgeError(
           "BRIDGE_INTERNAL",
           `failed to create WebSocket: ${err instanceof Error ? err.message : String(err)}`,
         ),
+        CLOSE_NORMAL,
       );
       return;
     }
@@ -557,6 +575,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       route.handlers.close(event),
     );
     ws.addEventListener("error", () => route.handlers.error());
+    // Announced once the socket is routed: a listener that close()s on
+    // "connecting" ends this socket, not a client that would open one after.
+    this.setConnectionState({ status: "connecting" });
   }
 
   private onOpen(): void {
@@ -626,9 +647,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // "ready".
   // [LAW:dataflow-not-control-flow] The branch is the connection-state enum.
   private onProtocolError(err: BridgeError): void {
-    this.emitError(err);
-    if (this.currentConnectionState.status !== "ready") {
-      this.abortSocket(err, CLOSE_PROTOCOL_ERROR);
+    if (this.currentConnectionState.status === "ready") {
+      this.emitError(err);
+    } else {
+      this.failConnection(err, CLOSE_PROTOCOL_ERROR);
     }
   }
 
@@ -874,11 +896,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         // No pong: the peer is dead now, not when the runtime's close
         // handshake gives up on it, so pending calls settle here. It is a
         // fault, so it is reported and the close reads "transport-error".
-        onTimeout: () => {
-          const err = new BridgeError("BRIDGE_CLOSED", "heartbeat timeout");
-          this.emitError(err);
-          this.abortSocket(err, CLOSE_HEARTBEAT_TIMEOUT);
-        },
+        onTimeout: () =>
+          this.failConnection(
+            new BridgeError("BRIDGE_CLOSED", "heartbeat timeout"),
+            CLOSE_HEARTBEAT_TIMEOUT,
+          ),
       },
     );
     this.heartbeat = heartbeat;

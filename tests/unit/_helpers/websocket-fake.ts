@@ -40,17 +40,14 @@ export class FakeWebSocket implements BrowserWebSocketLike {
   addEventListener(
     type: "open" | "error",
     listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "message",
     listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "close",
     listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener<K extends keyof FakeEvents>(
     type: K,
