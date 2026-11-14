@@ -1628,9 +1628,14 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       command: "sleep 60",
     });
 
+    // tmux can report the running command before its path ("" = no path
+    // yet, as paneCwd's PaneCwdUnavailableError below), so wait past both.
     const pane = await waitForPane(
       client,
-      (p) => p.paneId === created.paneId && p.currentCommand === "sleep",
+      (p) =>
+        p.paneId === created.paneId &&
+        p.currentCommand === "sleep" &&
+        p.cwd !== "",
     );
     const fallback = realpathSync(
       RUNNING_TMUX_VERSION !== null &&
