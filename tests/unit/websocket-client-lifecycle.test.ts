@@ -802,6 +802,41 @@ describe("WebSocketTmuxClient — cross-session layout coverage across reconnect
     answerCalls(hub.sockets[1], answered);
     await client.close();
   });
+
+  it("a disable queued during the outage leaves the new peer the enable still held", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    void client.connect();
+    hub.open(0);
+    hub.welcome(0);
+    const answered = new Set<string>();
+    for (let i = 0; i < 2; i++) {
+      const p = client.enableCrossSessionLayoutChange();
+      answerCalls(hub.sockets[0], answered);
+      await p;
+    }
+
+    hub.fireClose(0, 1006, "abnormal");
+    const disabled = client.disableCrossSessionLayoutChange();
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(1);
+    hub.welcome(1);
+
+    // The peer starts with none: the disable is a no-op there, and the
+    // replayed enable that follows is the one the consumer still holds.
+    const calls = sentFrames(hub.sockets[1])
+      .filter((f) => f.k === "call")
+      .map((f) => (f as { method?: string }).method);
+    expect(calls).toEqual([
+      "disableCrossSessionLayoutChange",
+      "enableCrossSessionLayoutChange",
+    ]);
+    answerCalls(hub.sockets[1], answered);
+    await disabled;
+    await client.close();
+  });
 });
 
 describe("topology across a reconnect", () => {

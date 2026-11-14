@@ -158,7 +158,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   adapter performs the emission (emitter and queue are declared above, so
   //   their initializers have already run when this one does).
   private readonly router = new TopologyRouter(this.delivery, (error) =>
-    this.emitter.emit({ type: "topology-error", error }),
+    this.emit({ type: "topology-error", error }),
   );
   // [LAW:decomposition] Call correlation + timeout + the un-transmitted send
   // queue live in one collaborator; this shell holds no in-flight call state.
@@ -669,10 +669,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     //   runner before anything is sent on it, so a send that ends the
     //   connection retires the runner the router actually holds.
     this.router.onTransportReady(run);
-    // Restore this client's coverage on the new peer before anything queued
-    // during the outage, so a queued disable lands after the enables it undoes.
-    this.replayCrossSessionLayoutEnables(run);
+    // Restore this client's coverage on the new peer after the calls queued
+    // during the outage: a queued disable has already lowered the count the
+    // replay sends, and on a fresh peer holding no enables it is a no-op.
     this.outbox.flush();
+    this.replayCrossSessionLayoutEnables(run);
   }
 
   private onResult(frame: ReceivedResultFrame): void {

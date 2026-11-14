@@ -128,7 +128,7 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
     //   adapter owns the emitter and performs the emission.
     this.router = new TopologyRouter(this.delivery, (error) =>
-      this.emitter.emit({ type: "topology-error", error }),
+      this.emit({ type: "topology-error", error }),
     );
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;

@@ -196,7 +196,7 @@ export class TmuxClient implements TmuxConnection {
     //   adapter owns the emitter and performs the emission.
     this.router = new TopologyRouter(
       this.delivery,
-      (error) => this.emitter.emit({ type: "topology-error", error }),
+      (error) => this.emit({ type: "topology-error", error }),
       options,
     );
     // [LAW:no-ambient-temporal-coupling] Each message tmux sends is one step,

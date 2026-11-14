@@ -20,7 +20,8 @@ export type Outcome<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: unknown };
 
-/** Where a throwing delivery's error goes. */
+/** Where a throwing delivery's error goes. An error the reporter itself
+ *  throws propagates out of the step that drained, to that step's caller. */
 export type ReportError = (error: unknown) => void;
 
 // The host's uncaught-error channel, as DOM event dispatch reports a
