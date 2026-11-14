@@ -33,6 +33,7 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
+import type { DeliveryQueue, Outcome } from "./delivery-queue.js";
 import { TmuxCommandError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
@@ -85,6 +86,9 @@ function topologyError(query: string, value: unknown): Error {
   }
   return new Error(`topology ${query} failed: ${detail}`, { cause: value });
 }
+
+// Where a detached sink's still-queued writes go: nowhere.
+const DETACHED: BytesSink = { write: () => undefined, end: () => undefined };
 
 // tmux's %error answer to `list-panes -t @W` for a window that no longer exists.
 function isWindowGone(err: unknown): boolean {
@@ -146,6 +150,12 @@ export class TopologyRouter {
   //   the outside world. The router computes; this reports.
   private readonly reportTopologyError: ReportTopologyError;
 
+  // [LAW:single-enforcer] The connector's queue: every sink write and end and
+  //   every topology error the router produces is posted to it, and the
+  //   router's public methods and query replies run as its steps. Consumer
+  //   code never runs inside the router.
+  private readonly delivery: DeliveryQueue;
+
   // Chunks for panes topology did not know when they arrived, held while a
   // topology query that may place them is outstanding. Each carries the attach
   // seq at arrival so replay never reaches a sink attached afterwards.
@@ -162,9 +172,11 @@ export class TopologyRouter {
   private inFlight = 0;
 
   constructor(
+    delivery: DeliveryQueue,
     reportTopologyError: ReportTopologyError,
     options?: TopologyRouterOptions,
   ) {
+    this.delivery = delivery;
     this.reportTopologyError = reportTopologyError;
     if (options?.idlePaneSuppression === true) {
       // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
@@ -220,6 +232,10 @@ export class TopologyRouter {
    * connection context (e.g., on reconnect) triggers a fresh bootstrap.
    */
   onTransportReady(runCommand: RunCommand): void {
+    this.delivery.step(this.ready, runCommand);
+  }
+
+  private readonly ready = (runCommand: RunCommand): void => {
     this.runCommand = runCommand;
     this.queryRun = runCommand;
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
@@ -235,7 +251,7 @@ export class TopologyRouter {
     if (this.needsTopology()) {
       void this.bootstrap();
     }
-  }
+  };
 
   /**
    * Called by the transport adapter the moment the connection that `run`
@@ -244,6 +260,10 @@ export class TopologyRouter {
    * sinks stay attached.
    */
   onTransportLost(run: RunCommand): void {
+    this.delivery.step(this.lost, run);
+  }
+
+  private readonly lost = (run: RunCommand): void => {
     // [LAW:single-enforcer] The same identity rule as every query path: late
     //   evidence about an earlier connection says nothing about the current one.
     if (this.queryRun !== run) return;
@@ -251,16 +271,20 @@ export class TopologyRouter {
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.
     this.topology.seed([]);
-  }
+  };
 
   /**
    * Called by the transport adapter when the connection closes.
    *
    * Calls `end()` exactly once on every still-attached sink and clears all
-   * buckets. After this call `runCommand` is null; further `dispatchBytes`
-   * calls are no-ops.
+   * buckets; a write still queued for one of them is dropped. After this call
+   * `runCommand` is null; further `dispatchBytes` calls are no-ops.
    */
   onTransportClose(): void {
+    this.delivery.step(this.close);
+  }
+
+  private readonly close = (): void => {
     this.runCommand = null;
     this.queryRun = null;
     // [LAW:no-ambient-temporal-coupling] runCommand is already null, so the
@@ -271,7 +295,7 @@ export class TopologyRouter {
     this.heldBytes = 0;
     this.refusedBytes = 0;
     this.sinks.endAll();
-  }
+  };
 
   // ---------------------------------------------------------------------------
   // Sink registration
@@ -285,24 +309,50 @@ export class TopologyRouter {
    * ensures only the most-recent bootstrap result is applied).
    */
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    const scope = options?.scope ?? serverScope;
-    const dispose = this.sinks.attach(sink, scope);
-    // [LAW:dataflow-not-control-flow] Bootstrap trigger is driven by the data
-    //   of the scope value and the current queryRun state — not by a flag.
-    if (
-      (scope.kind === "session" || scope.kind === "window") &&
-      this.queryRun !== null
-    ) {
-      void this.bootstrap();
-    }
-    // Attaching changed this scope's admit count. Recompute against current
-    // topology (covers server/pane scope immediately); a session/window attach
-    // that triggered a bootstrap recomputes again when seed() lands.
-    this.interest?.recompute();
-    return () => {
-      dispose();
+    return this.delivery.step(() => {
+      const scope = options?.scope ?? serverScope;
+      const dispose = this.sinks.attach(this.posting(sink), scope);
+      // [LAW:dataflow-not-control-flow] Bootstrap trigger is driven by the data
+      //   of the scope value and the current queryRun state — not by a flag.
+      if (
+        (scope.kind === "session" || scope.kind === "window") &&
+        this.queryRun !== null
+      ) {
+        void this.bootstrap();
+      }
+      // Attaching changed this scope's admit count. Recompute against current
+      // topology (covers server/pane scope immediately); a session/window
+      // attach that triggered a bootstrap recomputes again when seed() lands.
       this.interest?.recompute();
+      return () =>
+        this.delivery.step(() => {
+          dispose();
+          this.interest?.recompute();
+        });
+    });
+  }
+
+  // The sink the registry holds for a consumer's: its writes and its end are
+  // posted, so they reach the consumer after the step that routed them. The
+  // deliverers are bound once here, not per chunk.
+  // [LAW:dataflow-not-control-flow] Ending swaps the sink the queued writes
+  //   go to, so none reaches the consumer once its disposer or the
+  //   connection's close has run; its end follows, exactly once.
+  private posting(sink: BytesSink): BytesSink {
+    let target = sink;
+    const write = (chunk: ChunkPayload): void => target.write(chunk);
+    const end = (): void => sink.end();
+    return {
+      write: (chunk) => this.delivery.post(write, chunk),
+      end: () => {
+        target = DETACHED;
+        this.delivery.post(end, undefined);
+      },
     };
+  }
+
+  private reportError(error: Error): void {
+    this.delivery.post(this.reportTopologyError, error);
   }
 
   // ---------------------------------------------------------------------------
@@ -314,9 +364,16 @@ export class TopologyRouter {
    *
    * Called by the transport adapter for every pane-output message. The topology
    * table is consulted per-chunk (dynamic membership — a scope added after
-   * attach still matches future chunks for matching panes).
+   * attach still matches future chunks for matching panes). The chunk's data
+   * must stay valid until the drain of the step that dispatched it has run:
+   * sinks receive it then.
    */
   dispatchBytes(payload: ChunkPayload): void {
+    this.delivery.step(this.route, payload);
+  }
+
+  // Bound once, as is every per-message transition: a step allocates no closure.
+  private readonly route = (payload: ChunkPayload): void => {
     const meta = this.topology.get(payload.paneId);
     this.sinks.dispatch(payload, meta);
     // A pane topology does not know yet matched no window/session scope. If a
@@ -331,7 +388,7 @@ export class TopologyRouter {
     ) {
       this.hold(payload);
     }
-  }
+  };
 
   // [LAW:no-silent-failure] A query can stall (tmux's command queue is serial:
   //   one `run-shell 'sleep 30'` delays every reply behind it), so the hold is
@@ -344,7 +401,8 @@ export class TopologyRouter {
       return;
     }
     this.heldBytes += size;
-    // ChunkPayload data may not be retained past dispatch; copy to hold.
+    // ChunkPayload data is valid only until its step's drain has run; a held
+    // chunk outlives the step, so it is copied.
     this.held.push({
       chunk: { ...payload, data: payload.data.slice() },
       attachedBy: this.sinks.attachSeq(),
@@ -361,11 +419,10 @@ export class TopologyRouter {
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
     const pending = this.held;
-    const run = this.queryRun;
     this.held = [];
     this.heldBytes = 0;
     if (this.refusedBytes > 0) {
-      this.reportTopologyError(
+      this.reportError(
         new Error(
           `topology hold overflow: ${this.refusedBytes} bytes of early output ` +
             `for unplaced panes were not delivered to session/window sinks`,
@@ -374,9 +431,6 @@ export class TopologyRouter {
       this.refusedBytes = 0;
     }
     for (const h of pending) {
-      // A replayed sink's write may close the transport; the rest of this
-      // episode's chunks go with it.
-      if (this.queryRun !== run) return;
       const meta = this.topology.get(h.chunk.paneId);
       if (meta !== undefined) {
         this.sinks.dispatch(h.chunk, meta, {
@@ -384,8 +438,6 @@ export class TopologyRouter {
           attachedBy: h.attachedBy,
         });
       } else if (this.inFlight > 0) {
-        // Read per chunk: a replayed sink's write may attach a topology sink,
-        // which starts a query that can still place the rest.
         // Already copied and counted once; re-holding cannot exceed the cap.
         this.held.push(h);
         this.heldBytes += h.chunk.data.byteLength;
@@ -408,6 +460,10 @@ export class TopologyRouter {
    *   adapters do not touch the topology table or the epoch tracker directly.
    */
   handleNotification(msg: TmuxMessage): void {
+    this.delivery.step(this.routeNotification, msg);
+  }
+
+  private readonly routeNotification = (msg: TmuxMessage): void => {
     switch (msg.type) {
       case "window-add":
       case "unlinked-window-add":
@@ -470,7 +526,7 @@ export class TopologyRouter {
         // All other message types: no topology side effect.
         break;
     }
-  }
+  };
 
   // ---------------------------------------------------------------------------
   // Private — bootstrap and per-window refresh
@@ -483,9 +539,25 @@ export class TopologyRouter {
     const run = this.queryRun;
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
+    const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
+    // [LAW:no-ambient-temporal-coupling] The reply is an entry point: it
+    //   settles as one step, so no sink or listener runs mid-settle.
+    await this.delivery.settle(
+      () => run(command),
+      (reply) => this.settleBootstrap(run, gen, command, reply),
+    );
+  }
+
+  private settleBootstrap(
+    run: RunCommand,
+    gen: number,
+    command: string,
+    reply: Outcome<CommandResponse>,
+  ): void {
     try {
-      const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
-      const r = await run(command);
+      // A failed reply takes the same path as a reply that does not parse.
+      if (!reply.ok) throw reply.error;
+      const r = reply.value;
       if (!this.epoch.isBootstrapCurrent(gen)) {
         // A window-close mid-flight makes this result stale without starting a
         // replacement. Still the latest bootstrap means nothing newer will
@@ -544,7 +616,7 @@ export class TopologyRouter {
       //   window events, a new topology-scoped attach) re-attempt this, so a
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
-      this.reportTopologyError(topologyError("bootstrap", err));
+      this.reportError(topologyError("bootstrap", err));
     } finally {
       this.inFlight--;
       this.releaseHeld();
@@ -569,9 +641,23 @@ export class TopologyRouter {
     const run = this.queryRun;
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
+    const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
+    await this.delivery.settle(
+      () => run(command),
+      (reply) => this.settleWindowRefresh(run, windowId, gen, command, reply),
+    );
+  }
+
+  private settleWindowRefresh(
+    run: RunCommand,
+    windowId: number,
+    gen: number,
+    command: string,
+    reply: Outcome<CommandResponse>,
+  ): void {
     try {
-      const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
-      const r = await run(command);
+      if (!reply.ok) throw reply.error;
+      const r = reply.value;
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       this.requery(
         this.topology.updateWindow(
@@ -595,7 +681,7 @@ export class TopologyRouter {
       // unplaced, so re-place them with the server-wide query and report it.
       if (!isWindowGone(err)) {
         if (this.needsTopology()) void this.bootstrap();
-        this.reportTopologyError(topologyError(`refresh of @${windowId}`, err));
+        this.reportError(topologyError(`refresh of @${windowId}`, err));
       }
     } finally {
       this.inFlight--;

@@ -96,6 +96,8 @@ export {
 } from "./pane-output.js";
 
 export { TopologyRouter } from "./topology-router.js";
+export { DeliveryQueue } from "./delivery-queue.js";
+export type { Outcome, ReportError } from "./delivery-queue.js";
 
 export { createTextStreamSink } from "./sinks/text-stream.js";
 

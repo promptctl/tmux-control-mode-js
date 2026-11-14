@@ -21,6 +21,8 @@ import {
   TransportSendError,
 } from "../../src/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { paneScope, sessionScope } from "../../src/pane-output.js";
+import { MockTmuxServer } from "../../src/mock/index.js";
 
 interface FakeTransport extends TmuxTransport {
   feed(chunk: string): void;
@@ -636,5 +638,146 @@ describe("TmuxClient — a line the parser cannot read", () => {
       type: "exit",
       reason: 'malformed %begin: "%begin 0 x 0"',
     });
+  });
+});
+
+// A listener or sink may close() at any transition, and runs only once the
+// message that caused it has committed (6sp.9f7).
+describe("TmuxClient — consumer code runs between messages", () => {
+  // A transport whose close() reports its close at once, recording what it
+  // was sent.
+  function closingTransport() {
+    const t = createFakeTransport();
+    const sent: string[] = [];
+    return {
+      ...t,
+      sent,
+      send(command: string) {
+        sent.push(command);
+        return { ok: true } as const;
+      },
+      close() {
+        t.triggerClose();
+      },
+    };
+  }
+
+  it("a ready listener's close() rejects the bootstrap sent before it, leaves nothing pending, and reports no topology-error", async () => {
+    const t = closingTransport();
+    const client = new TmuxClient(t);
+    const topologyErrors = vi.fn();
+    client.on("topology-error", topologyErrors);
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    client.on("connection-state", (ev) => {
+      if (ev.state.status === "ready") client.close();
+    });
+
+    t.feed(STARTUP_GREETING);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(t.sent.some((s) => s.startsWith("list-panes -a"))).toBe(true);
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+    expect(topologyErrors).not.toHaveBeenCalled();
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TransportSendError,
+    );
+  });
+
+  it("a listener that throws mid-read leaves the rest of the read delivered, and its error reported", () => {
+    const reported: (() => void)[] = [];
+    vi.stubGlobal("queueMicrotask", (fn: () => void) => reported.push(fn));
+    try {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t);
+      t.feed(STARTUP_GREETING);
+      const boom = new Error("listener broke");
+      client.on("window-add", () => {
+        throw boom;
+      });
+      const closes = vi.fn();
+      client.on("window-close", closes);
+
+      expect(() => t.feed("%window-add @1\n%window-close @1\n")).not.toThrow();
+      expect(closes).toHaveBeenCalledTimes(1);
+      expect(reported).toHaveLength(1);
+      expect(() => reported[0]?.()).toThrow(boom);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("'exit' is heard before 'closed'", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const heard: string[] = [];
+    client.on("*", (ev) =>
+      heard.push(
+        ev.type === "connection-state" ? `state:${ev.state.status}` : ev.type,
+      ),
+    );
+
+    t.triggerClose("killed");
+
+    expect(heard).toEqual(["exit", "state:closed"]);
+  });
+
+  it("a sink a listener attaches or disposes takes effect from the next message of the same read", () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const decoder = new TextDecoder();
+    const heardBy = (log: string[]) => ({
+      write: (c: { data: Uint8Array }) => log.push(decoder.decode(c.data)),
+      end: () => {},
+    });
+    const old: string[] = [];
+    const fresh: string[] = [];
+    const disposeOld = client.attachBytesSink(heardBy(old), {
+      scope: paneScope(7),
+    });
+    client.on("window-add", () => {
+      disposeOld();
+      client.attachBytesSink(heardBy(fresh), { scope: paneScope(7) });
+    });
+
+    t.feed("%output %7 before\n%window-add @3\n%output %7 after\n");
+
+    expect(old).toEqual(["before"]);
+    expect(fresh).toEqual(["after"]);
+  });
+
+  it("over ./mock, a command a throwing listener sends still resolves, and the mock keeps serving", async () => {
+    vi.stubGlobal("queueMicrotask", () => {});
+    try {
+      const server = new MockTmuxServer({
+        greeting: [{ type: "window-add", windowId: 2 }],
+        respond: (cmd) =>
+          cmd.startsWith("list-windows")
+            ? { kind: "ok", output: ["@2 editor"] }
+            : undefined,
+      });
+      const client = new TmuxClient(server);
+      let sent: Promise<CommandResponse> | undefined;
+      client.on("window-add", () => {
+        sent = client.execute("list-windows");
+        throw new Error("listener broke");
+      });
+
+      server.start();
+
+      await expect(sent).resolves.toMatchObject({ output: ["@2 editor"] });
+      await expect(client.execute("list-windows")).resolves.toMatchObject({
+        output: ["@2 editor"],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

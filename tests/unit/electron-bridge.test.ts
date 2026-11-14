@@ -565,6 +565,30 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(errors).toEqual([]);
   });
 
+  it("a listener that closes on main's closed hears one closed{disposed}, after it", () => {
+    let listener: IpcRendererOnListener | undefined;
+    const ipc: IpcRendererLike = {
+      on: (_c, l) => {
+        listener = l;
+      },
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: () => new Promise(() => {}),
+    };
+    const proxy = createRendererBridge(ipc);
+    const heard: string[] = [];
+    proxy.on("connection-state", (ev) => {
+      if (ev.state.status !== "closed") return;
+      heard.push(ev.state.reason);
+      proxy.close();
+    });
+    listener!(
+      {},
+      { type: "connection-state", state: { status: "closed", reason: "exit" } },
+    );
+    expect(heard).toEqual(["exit", "disposed"]);
+  });
+
   it("preserves Uint8Array contents through OutputMessage round-trip", () => {
     // Electron IPC uses structured clone, which preserves Uint8Array natively.
     // The hub now mirrors that with `cloneArgs` (structuredClone per arg) so

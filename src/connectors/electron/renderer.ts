@@ -17,6 +17,7 @@
 // protocol a compile error.
 
 import type { ConnectionState } from "../../connection-state.js";
+import { DeliveryQueue } from "../../delivery-queue.js";
 import {
   TypedEmitter,
   isTmuxMessage,
@@ -83,6 +84,10 @@ import {
 export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
+  // [LAW:single-enforcer] When listeners and sinks run: each IPC event and
+  //   close() is one step, delivered once it has committed.
+  private readonly delivery = new DeliveryQueue();
+  private readonly emit = (msg: EmitterMessage): void => this.emitter.emit(msg);
   // [LAW:one-source-of-truth] TopologyRouter is the shared substrate for byte
   //   routing. It owns the topology table, sink registry, and epoch tracker so
   //   none of them are duplicated here. Constructed in the body, after `emitter`,
@@ -122,66 +127,76 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
     this.emitter = new TypedEmitter();
     // [LAW:effects-at-boundaries] The router describes a bootstrap failure; this
     //   adapter owns the emitter and performs the emission.
-    this.router = new TopologyRouter((error) =>
+    this.router = new TopologyRouter(this.delivery, (error) =>
       this.emitter.emit({ type: "topology-error", error }),
     );
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
-    // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
-    //   registry; state events flow through the emitter. The IPC.event wire
-    //   format carries both — main sends state via `client.on('*', forward)`
-    //   and bytes via `client.attachBytesSink(sink)` — and the
-    //   renderer narrows here. The local emitter's type surface still
-    //   excludes `PaneOutputMessage`, so `this.emitter.emit(msg)` is a
-    //   compile error for byte messages, which is what enforces the split
-    //   on the renderer side.
-    this.eventHandler = (_event, ...args) => {
-      // [LAW:locality-or-seam] IPC wire format is the boundary type; widen
-      //   to admit byte messages here, narrow into the two channels below.
-      //   The local `EmitterMessage` does not include `PaneOutputMessage`,
-      //   so the `else` branch below carries an `EmitterMessage` correctly.
-      const msg = args[0] as EmitterMessage | PaneOutputMessage;
-      if (isPaneOutput(msg)) {
-        this.account(msg);
-        // [LAW:single-enforcer] Byte dispatch routes through the router.
-        this.router.dispatchBytes({ paneId: msg.paneId, data: msg.data });
-        return;
-      }
-      // [LAW:no-ambient-temporal-coupling] connection-state drives the router
-      //   lifecycle. onTransportReady wires the execute callback;
-      //   onTransportClose tears down all attached sinks.
-      if (msg.type === "connection-state") {
-        this.currentConnectionState = msg.state;
-        if (msg.state.status === "ready") {
-          // [LAW:no-ambient-temporal-coupling] A BRIDGE_CLOSED reply can beat
-          //   main's `closed` event over IPC; it is the renderer's first word
-          //   that this connection dropped. The runner names the connection,
-          //   so a late reply from an earlier one retires nothing.
-          const run: RunCommand = (cmd) =>
-            this.execute(cmd).catch((err: unknown) => {
-              if (err instanceof BridgeError && err.code === "BRIDGE_CLOSED")
-                this.router.onTransportLost(run);
-              throw err;
-            });
-          this.router.onTransportReady(run);
-        } else if (msg.state.status === "closed") {
-          this.router.onTransportClose();
-        }
-      } else if (isTmuxMessage(msg)) {
-        // [LAW:single-enforcer] All topology mutations route through the router.
-        // [LAW:types-are-the-program] Only true wire messages enter the topology
-        //   path — `isTmuxMessage` keeps synthetic events (reconnected,
-        //   protocol-error, unsolicited-response) out by construction, so no cast is
-        //   needed and none can smuggle a non-TmuxMessage into handleNotification.
-        this.router.handleNotification(msg);
-      }
-      this.emitter.emit(msg);
-    };
+    // [LAW:locality-or-seam] IPC wire format is the boundary type; widened
+    //   to admit byte messages here, narrowed into the two channels in
+    //   onEvent. Each IPC event is one step.
+    this.eventHandler = (_event, ...args) =>
+      this.delivery.step(
+        this.onEvent,
+        args[0] as EmitterMessage | PaneOutputMessage,
+      );
     this.ipc.on(IPC.event, this.eventHandler);
 
     // Register this renderer as an event subscriber. Fire-and-forget.
     this.ipc.send(IPC.register);
+  }
+
+  // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
+  //   registry; state events flow through the emitter. The IPC.event wire
+  //   format carries both — main sends state via `client.on('*', forward)`
+  //   and bytes via `client.attachBytesSink(sink)` — and the renderer
+  //   narrows here. The local emitter's type surface still excludes
+  //   `PaneOutputMessage`, so announcing a byte message is a compile error,
+  //   which is what enforces the split on the renderer side.
+  // Bound once: an IPC event steps with no closure.
+  private readonly onEvent = (
+    msg: EmitterMessage | PaneOutputMessage,
+  ): void => {
+    if (isPaneOutput(msg)) {
+      this.account(msg);
+      // [LAW:single-enforcer] Byte dispatch routes through the router.
+      this.router.dispatchBytes({ paneId: msg.paneId, data: msg.data });
+      return;
+    }
+    // [LAW:no-ambient-temporal-coupling] connection-state drives the router
+    //   lifecycle. onTransportReady wires the execute callback;
+    //   onTransportClose tears down all attached sinks.
+    if (msg.type === "connection-state") {
+      this.currentConnectionState = msg.state;
+      if (msg.state.status === "ready") {
+        // [LAW:no-ambient-temporal-coupling] A BRIDGE_CLOSED reply can beat
+        //   main's `closed` event over IPC; it is the renderer's first word
+        //   that this connection dropped. The runner names the connection,
+        //   so a late reply from an earlier one retires nothing.
+        const run: RunCommand = (cmd) =>
+          this.execute(cmd).catch((err: unknown) => {
+            if (err instanceof BridgeError && err.code === "BRIDGE_CLOSED")
+              this.router.onTransportLost(run);
+            throw err;
+          });
+        this.router.onTransportReady(run);
+      } else if (msg.state.status === "closed") {
+        this.router.onTransportClose();
+      }
+    } else if (isTmuxMessage(msg)) {
+      // [LAW:single-enforcer] All topology mutations route through the router.
+      // [LAW:types-are-the-program] Only true wire messages enter the topology
+      //   path — `isTmuxMessage` keeps synthetic events (reconnected,
+      //   protocol-error, unsolicited-response) out by construction, so no cast is
+      //   needed and none can smuggle a non-TmuxMessage into handleNotification.
+      this.router.handleNotification(msg);
+    }
+    this.announce(msg);
+  };
+
+  private announce(msg: EmitterMessage): void {
+    this.delivery.post(this.emit, msg);
   }
 
   // ---------------------------------------------------------------------------
@@ -313,6 +328,10 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
    * single party that may invoke `client.detach()` or `client.close()`.
    */
   close(): void {
+    this.delivery.step(this.dispose);
+  }
+
+  private readonly dispose = (): void => {
     if (this.closed) return;
     this.closed = true;
     this.ipc.removeListener(IPC.event, this.eventHandler);
@@ -332,12 +351,12 @@ export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
       this.currentConnectionState.reason === "disposed";
     if (!alreadyDisposed) {
       this.currentConnectionState = { status: "closed", reason: "disposed" };
-      this.emitter.emit({
+      this.announce({
         type: "connection-state",
         state: this.currentConnectionState,
       });
     }
-  }
+  };
 
   // ---------------------------------------------------------------------------
   // Private
