@@ -1252,14 +1252,16 @@ class Connection {
     if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
-    // [LAW:no-silent-failure] A stamped code and a truncated reason are what
-    // close() accepts, so a throw from it is a defect and propagates.
-    this.ws.close(wsCode, truncateCloseReason(message));
     // [LAW:dataflow-not-control-flow] Every close handshake this connection
     // opens runs under the heartbeat's deadline (see onPongDeadline),
     // whatever state the connection was in: a fatal before hello has no
     // heartbeat running yet, and start() is idempotent for one that does.
+    // The deadline is set before the handshake opens, so it bounds the
+    // connection even when close() fails.
     this.heartbeat.start();
+    // [LAW:no-silent-failure] A stamped code and a truncated reason are what
+    // close() accepts, so a throw from it is a defect and propagates.
+    this.ws.close(wsCode, truncateCloseReason(message));
   }
 
   // -------------------------------------------------------------------------

@@ -8,16 +8,12 @@ import {
   type ServerCloseCode,
 } from "./close-code.js";
 import type { DurationMs } from "./limits.js";
-import type {
-  AuthResult,
-  ConnectionIdentity,
-  UpgradeRequest,
-} from "./types.js";
+import type { AuthResult, UpgradeRequest } from "./types.js";
 
 /** An auth hook's result, parsed: a denial carries the code its close may
  *  send. */
 export type AuthVerdict =
-  | { readonly ok: true; readonly identity?: ConnectionIdentity }
+  | Extract<AuthResult, { ok: true }>
   | {
       readonly ok: false;
       readonly closeCode: ServerCloseCode;

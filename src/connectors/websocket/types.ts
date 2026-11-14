@@ -3,8 +3,9 @@
 //
 // We refuse to depend on @types/ws or lib.dom. Instead, the server and
 // client each describe the minimum surface they need, structurally typed,
-// so any environment (browser WebSocket, Node `ws` package, Node 22+
-// native WebSocket, Bun/Deno) satisfies the contract without an adapter.
+// so the environments that implement each surface satisfy it without an
+// adapter: the client's, any WebSocket (browser, Node 22+ native, Bun/Deno);
+// the server's, Node's `ws` (see `ServerWebSocketLike.close`).
 //
 // [LAW:one-source-of-truth] These interfaces are the single contract. If a
 // bridge implementation wants a new method on the underlying socket, it
@@ -12,6 +13,7 @@
 
 import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { BridgeErrorCode } from "../errors.js";
+import type { ServerCloseCode } from "./close-code.js";
 
 // ---------------------------------------------------------------------------
 // Common constants
@@ -109,8 +111,9 @@ export interface ServerWebSocketLike {
   /** Does not throw for a code an endpoint may send (1000–1003, 1007–1014,
    *  3000–4999 — the set `ws` accepts) with a reason of at most 123 UTF-8
    *  bytes, in any readyState. The bridge closes only with those, and lets
-   *  anything this throws propagate. */
-  close(code?: number, reason?: string): void;
+   *  anything this throws propagate. A WHATWG-style `close()`, which throws
+   *  for anything but 1000 and 3000–4999, needs an adapter. */
+  close(code?: ServerCloseCode, reason?: string): void;
   terminate(): void;
 
   on(
@@ -156,7 +159,7 @@ export type AuthResult =
   | {
       readonly ok: false;
       /** The code the denied socket closes with: one an endpoint may send
-       *  (see `ServerWebSocketLike.close`). Default 4401. Any other value is
+       *  (see `ServerWebSocketLike.close`). Default 4401. Any other number is
        *  the hook's defect: the socket closes with 4401 and the denial's
        *  reason names the value. */
       readonly code?: number;

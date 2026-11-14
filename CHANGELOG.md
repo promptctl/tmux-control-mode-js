@@ -117,7 +117,9 @@ All notable changes to this project are documented here. Format follows
   `connection-closed` reason, `BRIDGE_AUTH_DENIED`, names the value and the
   denial's reason. Before, `ws` refused the close, the bridge swallowed the
   refusal, and the denied socket stayed open until the heartbeat deadline.
-  A legal code still reaches the peer unchanged.
+  A legal code still reaches the peer unchanged. The reason for a denial
+  from a hook that throws, or returns such a code, now begins
+  `authenticate failed:` (was `authenticate threw:`).
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or
