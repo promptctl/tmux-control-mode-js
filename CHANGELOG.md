@@ -241,7 +241,8 @@ All notable changes to this project are documented here. Format follows
   `TmuxClient`-shaped connection, emitted when the pane table that session-
   and window-scoped sinks route by could not be kept true: a bootstrap
   (`list-panes -a`) or a window refresh failed, or output held for unplaced
-  panes overflowed the 4 MiB hold. `error.message` says which, and for the
+  panes overflowed the 4 MiB hold and the excess was dropped for those
+  sinks. `error.message` says which, and for the
   first two `error.cause` is the underlying rejection. It distinguishes "no
   output because routing failed" from "no output because tmux is quiet" — a
   session/window-scoped consumer is no longer starved with no signal. A
@@ -318,7 +319,8 @@ All notable changes to this project are documented here. Format follows
   speaks the control-mode wire format with no tmux and no Node dependency.
   Construct it with a `MockScenario` (`greeting` notifications and a
   `respond(command)` that returns a `CommandReply` — `{ kind: "ok" | "error",
-  output? }`), hand it to `TmuxClient`, call `start()`, then drive it with
+  output? }` — or `undefined` for an ok with no output), hand it to
+  `TmuxClient`, call `start()`, then drive it with
   `emit(message)` and `emitOutput(paneId, bytes)`; `sentCommands` lists what
   the client sent. For tests, demos and browser playgrounds.
 - `./chaos` subpath — `withChaos(transport, options)` wraps any
