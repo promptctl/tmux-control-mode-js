@@ -976,3 +976,20 @@ export function encodeServerFrame(frame: ServerFrame): string {
 export function encodeClientFrame(frame: ClientFrame): string {
   return JSON.stringify(frame);
 }
+
+// [LAW:one-source-of-truth] The one home of the close-reason limit, for both
+// halves of the bridge. A close frame is a control frame (RFC 6455 §5.5:
+// payload ≤ 125 bytes) whose first two bytes are the status code, leaving 123
+// bytes of UTF-8 reason; a browser's close() throws SyntaxError past that and
+// ws throws RangeError. encodeInto writes only whole code points, so `read`
+// is the longest prefix that fits without splitting a character.
+const CLOSE_REASON_MAX_BYTES = 123;
+const utf8 = new TextEncoder();
+
+export function truncateCloseReason(reason: string): string {
+  const { read } = utf8.encodeInto(
+    reason,
+    new Uint8Array(CLOSE_REASON_MAX_BYTES),
+  );
+  return reason.slice(0, read);
+}

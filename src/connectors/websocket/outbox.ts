@@ -4,8 +4,10 @@
 // call state.
 //
 // [LAW:one-source-of-truth] A Pending entry IS the queue entry. `frame` is the
-// encoded wire frame, re-sendable on reconnect; `transmitted` flips to true the
-// moment the socket accepts the frame. There is no second outbox structure that
+// encoded wire frame, held until a ready connection accepts it; `transmitted`
+// flips to true the moment the socket accepts the frame. drain() rejects every
+// entry when a connection ends, so `transmitted` always means "sent on the
+// current socket". There is no second outbox structure that
 // can drift out of sync with the correlation map — two structures that must
 // agree would be an invariant the type cannot enforce, so there is only one.
 

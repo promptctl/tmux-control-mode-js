@@ -196,8 +196,8 @@ export class BridgeProtocolError extends BridgeError {
 // toBridgeProtocolError — the single home for "an unknown value was thrown by
 // a wire decode/parse; give me the canonical typed error".
 //
-// [LAW:single-enforcer] Every catch around a wire parser (client onBinary /
-// onText, server onFrame) routes through here instead of re-deriving the
+// [LAW:single-enforcer] Every catch around a wire parser (client onMessage,
+// server onFrame) routes through here instead of re-deriving the
 // `err instanceof BridgeError ? … : new BridgeError(…)` narrowing inline.
 // [LAW:no-defensive-null-guards] The wire decoders (`decodePaneOutput`,
 // `parseServerFrame`/`parseClientFrame`) only ever throw `BridgeProtocolError`,
