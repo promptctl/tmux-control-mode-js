@@ -889,38 +889,53 @@ describe("Electron IPC bridge — method dispatch", () => {
     });
   });
 
-  it("refuses an unsendable command renderer-side with the same TmuxInvalidCommandError a local TmuxClient throws", async () => {
-    const hub = createIpcHub();
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    t.feed(STARTUP_GREETING);
-    createMainBridge(client, hub.ipcMain);
+  it.each([["new-window -c '/tmp/a\nb'"], ["new-window -e 'A=x\0y'"]])(
+    "refuses the unsendable command %j renderer-side with the same TmuxInvalidCommandError a local TmuxClient throws",
+    async (bad) => {
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      createMainBridge(client, hub.ipcMain);
 
-    const renderer = hub.createRenderer();
-    const proxy = createRendererBridge(renderer.ipcRenderer);
+      const renderer = hub.createRenderer();
+      const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    await expect(
-      proxy.execute("new-window -c '/tmp/a\nb'"),
-    ).rejects.toBeInstanceOf(TmuxInvalidCommandError);
-  });
+      await expect(proxy.execute(bad)).rejects.toBeInstanceOf(
+        TmuxInvalidCommandError,
+      );
+    },
+  );
 
-  it("classifies an unsendable command from a raw RPC peer as BRIDGE_INVALID_ARG, not BRIDGE_INTERNAL", async () => {
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    t.feed(STARTUP_GREETING);
+  it.each([
+    ["# comment only", "it is only a comment"],
+    ["# note\nkill-server", "it holds a newline or NUL"],
+    ["new-window -e 'TOKEN=s3cr3t\0' -- cmd", "it holds a newline or NUL"],
+  ])(
+    "classifies the unsendable command %j from a raw RPC peer as BRIDGE_INVALID_ARG, sends nothing, and says only why: %s",
+    async (bad, fault) => {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
 
-    // execute is not bridge-stateful, so dispatch never touches the bridge.
-    const outcome = await dispatchBridgeRequest(
-      {} as BridgeConnection,
-      client,
-      {} as Peer,
-      { method: "execute", args: ["# comment only"] },
-    );
-    expect(outcome).toMatchObject({
-      kind: "bridge-error",
-      error: { code: "BRIDGE_INVALID_ARG" },
-    });
-  });
+      // execute is not bridge-stateful, so dispatch never touches the bridge.
+      const outcome = await dispatchBridgeRequest(
+        {} as BridgeConnection,
+        client,
+        {} as Peer,
+        { method: "execute", args: [bad] },
+      );
+      expect(outcome).toMatchObject({
+        kind: "bridge-error",
+        error: { code: "BRIDGE_INVALID_ARG" },
+      });
+      expect(t.sent).toEqual([]);
+      if (outcome.kind !== "bridge-error") throw new Error("not refused");
+      expect(outcome.error.toPayload().message).toBe(
+        `command refused: ${fault}`,
+      );
+    },
+  );
 
   it("rejects the renderer promise when main-side execute fails", async () => {
     const hub = createIpcHub();

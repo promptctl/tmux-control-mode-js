@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import { TmuxInvalidCommandError } from "../../src/errors.js";
 import type {
   BrowserWebSocketLike,
   ReconnectPolicy,
@@ -1075,4 +1076,25 @@ describe("WebSocketTmuxClient — heartbeat cadence is the consumer's interval, 
     expect(pingsSent(hub.latest())).toBe(1);
     await client.close();
   });
+});
+
+describe("WebSocketTmuxClient — one command is one non-empty line", () => {
+  it.each([["new-window -c '/tmp/a\nb'"], ["new-window -e 'A=x\0y'"]])(
+    "refuses %j with the TmuxInvalidCommandError a local TmuxClient throws, and sends no call",
+    async (bad) => {
+      const { client, hub } = makeClient();
+      const ready = client.connect();
+      hub.open();
+      hub.welcome();
+      await ready;
+
+      await expect(client.execute(bad)).rejects.toBeInstanceOf(
+        TmuxInvalidCommandError,
+      );
+      expect(sentFrames(hub.latest()).filter((f) => f.k === "call")).toEqual(
+        [],
+      );
+      await client.close();
+    },
+  );
 });

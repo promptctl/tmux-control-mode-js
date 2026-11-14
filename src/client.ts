@@ -239,6 +239,14 @@ export class TmuxClient implements TmuxConnection {
   // Plain command string in → response out. No sendRaw escape hatch for callers.
   execute(command: string): Promise<CommandResponse> {
     return new Promise((resolve, reject) => {
+      // The command is judged before the connection, as the WebSocket client
+      // and the Electron renderer do, so a bad command gets one error type
+      // on every TmuxConnection, open or closed.
+      const invalid = invalidCommand(command);
+      if (invalid !== null) {
+        reject(invalid);
+        return;
+      }
       // [LAW:no-silent-failure] 'closed' is terminal (see transition)
       // and settlePendingOnClose already ran once, for good, when it happened
       // — it will never run again. TmuxTransport is a public seam third
@@ -253,11 +261,6 @@ export class TmuxClient implements TmuxConnection {
         reject(
           new TransportSendError(closedSendReason(this.announcedExit?.reason)),
         );
-        return;
-      }
-      const invalid = invalidCommand(command);
-      if (invalid !== null) {
-        reject(invalid);
         return;
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
