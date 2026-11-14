@@ -5,7 +5,7 @@
 //   - WebSocketTmuxClient (with optional reconnect; emits 'reconnected')
 //   - TmuxClientProxy (Electron renderer; mirrors main's lifecycle over IPC)
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -159,14 +159,8 @@ interface MockWS {
   readyState: number;
   send: (data: string | ArrayBufferLike | Uint8Array) => void;
   close: (code?: number, reason?: string) => void;
-  // Match the real DOM: addEventListener accepts `{ signal }`, and the
-  // listener is atomically removed when the signal aborts.
-  addEventListener: (
-    event: string,
-    listener: Listener,
-    options?: { signal?: AbortSignal },
-  ) => void;
-  removeEventListener: (event: string, listener: Listener) => void;
+  // Like the `ws` package, a listener once added stays for the socket's life.
+  addEventListener: (event: string, listener: Listener) => void;
   fire(event: string, payload: unknown): void;
 }
 
@@ -183,30 +177,13 @@ class MockWebSocketHub {
         ws.readyState = 3; // CLOSED
         ws.fire("close", { code, reason });
       },
-      addEventListener(event, listener, options) {
+      addEventListener(event, listener) {
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
         set.add(listener);
-        if (options?.signal !== undefined) {
-          const signal = options.signal;
-          if (signal.aborted) {
-            set.delete(listener);
-            return;
-          }
-          signal.addEventListener(
-            "abort",
-            () => {
-              listeners.get(event)?.delete(listener);
-            },
-            { once: true },
-          );
-        }
-      },
-      removeEventListener(event, listener) {
-        listeners.get(event)?.delete(listener);
       },
       fire(event, payload) {
         const set = listeners.get(event);
@@ -255,6 +232,15 @@ class MockWebSocketHub {
 }
 
 describe("WebSocketTmuxClient — connection state", () => {
+  // [LAW:no-ambient-temporal-coupling] The reconnect backoff runs on a
+  // test-owned clock; setImmediate stays real so queued work can drain.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   function makeClient(reconnect = false): {
     client: WebSocketTmuxClient;
     hub: MockWebSocketHub;
@@ -323,14 +309,10 @@ describe("WebSocketTmuxClient — connection state", () => {
     expect(reconnects).not.toHaveBeenCalled();
 
     hub.close(1006, "abnormal");
-    // Wait for the reconnect timer to fire and openSocket to create the
-    // SECOND socket — until then hub.latest() is still the closed first
-    // socket, and the per-socket stale guard in openSocket() would (correctly)
-    // drop any open/message events targeted at it.
-    const deadline = Date.now() + 100;
-    while (hub.sockets.length < 2 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2));
-    }
+    // The 1ms backoff elapses and openSocket creates the SECOND socket —
+    // until then hub.latest() is still the closed first socket, whose
+    // retired route drops any open/message events fired at it.
+    await vi.advanceTimersByTimeAsync(1);
     expect(hub.sockets.length).toBe(2);
     // Mid-reconnect-cycle: legacy state went reconnecting→connecting once
     // openSocket fired for attempt 2. The unified mapping projects either

@@ -215,6 +215,19 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     await client.close();
   }, 10_000);
 
+  // The `ws` package emits 'error' on the next tick when close() aborts a
+  // CONNECTING handshake, and throws it if the socket has no 'error'
+  // listener: an uncaught exception that fails this run.
+  it("close() while the ws handshake is CONNECTING ends the client without an uncaught error", async () => {
+    const { client } = createWsBackedClient(fx.url);
+    await client.close();
+    await new Promise((r) => setImmediate(r));
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "disposed",
+    });
+  }, 10_000);
+
   it("execute(list-windows) round-trips through the bridge", async () => {
     const { client } = createWsBackedClient(fx.url);
     await waitForState(client, "ready");

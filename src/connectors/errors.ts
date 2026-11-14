@@ -164,11 +164,12 @@ export class BridgeError extends Error {
   }
 
   /**
-   * Strip the `[CODE] ` prefix from `Error.message` for serialization. The
-   * payload carries `code` separately, so duplicating it inside `message`
-   * would round-trip as `[CODE] [CODE] ...` after `fromPayload` re-prepends.
+   * `Error.message` without its `[CODE] ` prefix: the form the wire carries
+   * wherever `code` travels separately (a payload, a close frame's code).
+   * Duplicating it inside `message` would round-trip as `[CODE] [CODE] ...`
+   * after `fromPayload` re-prepends.
    */
-  private bareMessage(): string {
+  bareMessage(): string {
     const expected = `[${this.code}] `;
     return this.message.startsWith(expected)
       ? this.message.slice(expected.length)

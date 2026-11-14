@@ -41,29 +41,20 @@ export interface BrowserWebSocketLike {
   send(data: string | ArrayBufferLike | ArrayBufferView | Blob): void;
   close(code?: number, reason?: string): void;
 
-  // [LAW:locality-or-seam] The `{ signal }` option is the seam between
-  // "register listener" and "tear listener down" — its lifetime IS the
-  // listener's lifetime. WebSocketTmuxClient passes an AbortSignal per
-  // connection; aborting the controller in finalizeConnection removes
-  // every listener atomically, so events from a no-longer-current socket
-  // simply find no listener to invoke (instead of requiring a runtime
-  // guard inside every listener). Both the standard browser WebSocket
-  // (inherited from EventTarget) and the `ws` package's WebSocket (8.x+)
-  // honor this option.
+  // A listener stays attached for the socket's whole life: the client never
+  // removes one (see "Socket routing" in client.ts), so an adapter needs no
+  // removal support.
   addEventListener(
     type: "open" | "error",
     listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "message",
     listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "close",
     listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
 }
 
