@@ -330,7 +330,7 @@ export type BridgeObservabilityEvent =
 export interface RateLimitConfig {
   /** Max calls permitted per `windowMs`: an integer >= 1. */
   readonly maxCalls: number;
-  /** Window size in ms (sliding): an integer in [1, 2^31-1]. */
+  /** Window size in ms (sliding): an integer >= 1. */
   readonly windowMs: number;
 }
 

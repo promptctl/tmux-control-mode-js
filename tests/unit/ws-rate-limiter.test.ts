@@ -5,15 +5,12 @@ import {
   RateLimiter,
   type RateLimit,
 } from "../../src/connectors/websocket/rate-limiter.js";
-import {
-  parseDurationMs,
-  parsePositiveInt,
-} from "../../src/connectors/websocket/limits.js";
+import { parsePositiveInt } from "../../src/connectors/websocket/limits.js";
 
 function limit(maxCalls: number, windowMs: number): RateLimit {
   return {
     maxCalls: parsePositiveInt("maxCalls", maxCalls),
-    windowMs: parseDurationMs("windowMs", windowMs),
+    windowMs: parsePositiveInt("windowMs", windowMs),
   };
 }
 
@@ -60,6 +57,18 @@ describe("RateLimiter — with config", () => {
     expect(rl.check()).toBe(false);
 
     vi.advanceTimersByTime(501); // the two calls at t=0 slide out
+    expect(rl.check()).toBe(true);
+  });
+
+  it("a wall-clock step back does not hold the window shut", () => {
+    vi.useFakeTimers();
+    const rl = new RateLimiter(limit(2, 500));
+    rl.check();
+    rl.check();
+    expect(rl.check()).toBe(false);
+
+    vi.setSystemTime(Date.now() - 3_600_000); // NTP steps the clock back 1h
+    vi.advanceTimersByTime(501);
     expect(rl.check()).toBe(true);
   });
 

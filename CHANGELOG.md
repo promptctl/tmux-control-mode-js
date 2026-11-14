@@ -317,6 +317,10 @@ All notable changes to this project are documented here. Format follows
   `maxInflight` (an integer >= 1); `bridge.shutdown(drainMs)` rejects with
   `BRIDGE_INVALID_ARG` for a `drainMs` outside [1, 2^31-1] before any peer is
   told to drain, so `shutdown(0)` is no longer a "terminate now" idiom.
+  It parses `rateLimit` too: `maxCalls` and `windowMs` must each be an
+  integer >= 1. A negative window used to disable the limit silently, `NaN`
+  refused every call once the window filled, and `maxCalls: Infinity` no
+  longer means unlimited — omit `rateLimit` instead.
   `WebSocketTmuxClient` parses `requestTimeoutMs` and every field of
   `reconnect` (`maxAttempts` must be `0`, a positive integer, or `Infinity`;
   `initialDelayMs` and `maxDelayMs` are durations; `factor` is finite and

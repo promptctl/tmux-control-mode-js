@@ -1,14 +1,16 @@
 // src/connectors/websocket/rate-limiter.ts
 // [LAW:decomposition] Sliding-window call-rate enforcer extracted from
-// Connection. Owns `rateWindow`; Connection holds no rate state.
-import type { DurationMs, PositiveInt } from "./limits.js";
+// Connection. Owns `window`; Connection holds no rate state.
+import type { PositiveInt } from "./limits.js";
 
 /** A consumer's `RateLimitConfig` as `resolveDefaults` parsed it.
  *  [LAW:types-are-the-program] The stamps are why `check()` checks nothing: a
- *  negative or NaN window, or a cap of 0, cannot reach it. */
+ *  negative or NaN window, or a cap of 0, cannot reach it. `windowMs` is a
+ *  `PositiveInt`, not a `DurationMs`: it is subtracted from a clock reading and
+ *  never handed to a timer, so the timer range does not bound it. */
 export interface RateLimit {
   readonly maxCalls: PositiveInt;
-  readonly windowMs: DurationMs;
+  readonly windowMs: PositiveInt;
 }
 
 export class RateLimiter {
@@ -18,9 +20,11 @@ export class RateLimiter {
   constructor(private readonly cfg: RateLimit | undefined) {}
 
   // Returns true and records the call if within limits; false if exceeded.
+  // The monotonic clock, so a wall-clock step back cannot hold entries "in
+  // the future" and refuse a peer until the clock catches up.
   check(): boolean {
     if (this.cfg === undefined) return true;
-    const now = Date.now();
+    const now = performance.now();
     const cutoff = now - this.cfg.windowMs;
     while (this.window.length > 0 && (this.window[0] as number) < cutoff) {
       this.window.shift();

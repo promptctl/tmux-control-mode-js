@@ -2274,9 +2274,14 @@ describe("WebSocket bridge — call limits are parsed at construction", () => {
     const fn = build({ rateLimit: { maxCalls: 10, windowMs: -1 } });
     expect(fn).toThrow(BridgeError);
     expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
-    expect(fn).toThrow(
-      "rateLimit.windowMs (-1) must be an integer number of ms",
-    );
+    expect(fn).toThrow("rateLimit.windowMs (-1) must be an integer >= 1");
+  });
+
+  it("a rateLimit.windowMs past the timer range builds: the window is never a timer delay", () => {
+    const thirtyDaysMs = 30 * 24 * 3600 * 1000;
+    expect(
+      build({ rateLimit: { maxCalls: 1000, windowMs: thirtyDaysMs } }),
+    ).not.toThrow();
   });
 
   it("NaN in either rateLimit field throws naming the field", () => {

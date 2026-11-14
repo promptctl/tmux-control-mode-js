@@ -4,11 +4,12 @@
 // heartbeat's off switch, and a count a limiter honors.
 //
 // [LAW:parse-dont-validate] The checkpoint for every ms option the bridge or
-// client hands to setTimeout/setInterval and every count it compares against.
-// The output types are the proof: a `DurationMs` or `PositiveInt` can only
-// come from this module, so the units that own the timers and limits
-// (Heartbeat, CallPump, Outbox, Handshake, ReconnectController) demand them
-// in their signatures and never check again. Without the stamp, a `0` timeout
+// client hands to setTimeout/setInterval and every count or window it compares
+// against. The output types are the proof: a `DurationMs` or `PositiveInt` can
+// only come from this module, so the units that own the timers and limits
+// (Heartbeat, CallPump, Outbox, Handshake, ReconnectController, RateLimiter)
+// demand them in their signatures and never check again. Without the stamp, a
+// `0` timeout
 // arms a deadline that fires on the next macrotask — before any reply, which
 // is always asynchronous — and every call fails for a "slow tmux" that was a
 // configuration error.

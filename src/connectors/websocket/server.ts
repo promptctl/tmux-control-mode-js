@@ -155,8 +155,8 @@ export interface WebSocketBridgeOptions {
     req: AuthorizeRequest,
   ) => Promise<AuthorizeResult> | AuthorizeResult;
 
-  /** Sliding-window rate limit per connection: `maxCalls` an integer >= 1
-   *  and `windowMs` an integer number of ms in [1, 2^31-1], or
+  /** Sliding-window rate limit per connection: `maxCalls` and `windowMs`
+   *  each an integer >= 1, or
    *  `createWebSocketBridge` throws `BRIDGE_INVALID_ARG` naming
    *  `rateLimit.<field>` and the value. Default: unlimited. */
   readonly rateLimit?: RateLimitConfig;
@@ -350,8 +350,8 @@ interface ResolvedDefaults {
 // the border once, here, at bridge construction: a timeout no reply could ever
 // meet, or a cap no call could ever fit under, fails with the option's name
 // and value instead of as a verdict against every peer. The results are in
-// the shapes Heartbeat, CallPump, Handshake and RateLimiter take, so no caller re-packs
-// them and none checks again.
+// the shapes Heartbeat, CallPump, Handshake and RateLimiter take, so no caller
+// re-packs them and none checks again.
 function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   return {
     heartbeat: {
@@ -381,7 +381,7 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
               "rateLimit.maxCalls",
               opts.rateLimit.maxCalls,
             ),
-            windowMs: parseDurationMs(
+            windowMs: parsePositiveInt(
               "rateLimit.windowMs",
               opts.rateLimit.windowMs,
             ),
