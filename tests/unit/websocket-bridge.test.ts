@@ -19,7 +19,10 @@ import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
-import type { BridgeObservabilityEvent } from "../../src/connectors/websocket/types.js";
+import type {
+  AuthResult,
+  BridgeObservabilityEvent,
+} from "../../src/connectors/websocket/types.js";
 import {
   BridgeError,
   encodeClientFrame,
@@ -749,6 +752,81 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     if (c.kind !== "connection-closed") throw new Error("unreachable");
     expect(c.errorCode).toBe("BRIDGE_AUTH_DENIED");
     expect(c.reason).toMatch(/no credentials/);
+  });
+
+  // A denial ends the connection with a close whatever code its hook named:
+  // `ws` throws on a code it may not send, so a code reaching close()
+  // unchecked would leave the socket open until the heartbeat deadline.
+  async function denyWith(code: unknown): Promise<{
+    ws: FakeWs;
+    closed: ReturnType<typeof closedEvents>;
+  }> {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      authenticate: () =>
+        ({ ok: false, reason: "no credentials", code }) as AuthResult,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.fireClose(ws.closeCalls[0]?.code, ws.closeCalls[0]?.reason);
+    return { ws, closed: closedEvents(events) };
+  }
+
+  it.each([
+    401,
+    999,
+    1004,
+    1005,
+    1006,
+    1010,
+    1015,
+    2999,
+    5000,
+    4401.5,
+    NaN,
+    "4001",
+  ])(
+    "an auth hook's illegal close code %s closes with 4401 and names the value",
+    async (code) => {
+      const { ws, closed } = await denyWith(code);
+      expect(ws.closeCalls).toEqual([
+        { code: 4401, reason: expect.any(String) },
+      ]);
+      expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+        "BRIDGE_AUTH_DENIED",
+      ]);
+      expect(closed).toEqual([
+        expect.objectContaining({ errorCode: "BRIDGE_AUTH_DENIED" }),
+      ]);
+      expect(closed[0]?.reason).toContain(`(${String(code)})`);
+      expect(closed[0]?.reason).toMatch(/no credentials/);
+    },
+  );
+
+  it.each([1000, 1003, 1007, 1009, 1011, 1014, 3000, 4003, 4999])(
+    "an auth hook's legal close code %s reaches the peer unchanged",
+    async (code) => {
+      const { ws, closed } = await denyWith(code);
+      expect(ws.closeCalls).toEqual([{ code, reason: "no credentials" }]);
+      expect(closed).toEqual([
+        expect.objectContaining({
+          errorCode: "BRIDGE_AUTH_DENIED",
+          reason: "[BRIDGE_AUTH_DENIED] no credentials",
+        }),
+      ]);
+    },
+  );
+
+  it("an auth denial naming no close code closes with 4401", async () => {
+    const { ws } = await denyWith(undefined);
+    expect(ws.closeCalls).toEqual([{ code: 4401, reason: "no credentials" }]);
   });
 
   it("createClient failure surfaces as connection-closed.errorCode BRIDGE_INTERNAL", async () => {

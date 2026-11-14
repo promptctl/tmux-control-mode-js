@@ -66,21 +66,35 @@ describe("Handshake — authenticate()", () => {
     expect(hook).toHaveBeenCalledWith({ headers: {} });
   });
 
-  it("maps an auth hook that returns ok:false straight through", async () => {
+  it("maps an auth hook's denial naming no code to close code 4401", async () => {
     const hook = vi
       .fn()
       .mockResolvedValue({ ok: false, reason: "token expired" });
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
-    expect(result).toEqual({ ok: false, reason: "token expired" });
+    expect(result).toEqual({
+      ok: false,
+      closeCode: 4401,
+      reason: "token expired",
+    });
   });
 
-  it("wraps a thrown error from the hook into ok:false", async () => {
+  it("keeps a sendable close code an auth hook's denial names", async () => {
+    const hook = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: "policy", code: 1008 });
+    const hs = new Handshake(ms(100), undefined, hook);
+    const result = await hs.authenticate();
+    expect(result).toEqual({ ok: false, closeCode: 1008, reason: "policy" });
+  });
+
+  it("wraps a thrown error from the hook into a 4401 denial", async () => {
     const hook = vi.fn().mockRejectedValue(new Error("db down"));
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
     expect(result).toMatchObject({
       ok: false,
+      closeCode: 4401,
       reason: expect.stringContaining("db down"),
     });
   });
