@@ -23,10 +23,13 @@ import type { BridgeObservabilityEvent } from "../../src/connectors/websocket/ty
 import {
   BridgeError,
   encodeClientFrame,
+  parseClientFrame,
   parseServerFrame,
+  parseResultFrame,
   type FatalErrorFrame,
   type ResultErrFrame,
   type ResultOkFrame,
+  type RpcMethod,
   type ServerFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import {
@@ -35,6 +38,8 @@ import {
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
+import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
+import { isPaneOutput } from "../../src/protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -56,6 +61,9 @@ interface FakeWs extends ServerWebSocketLike {
   // Drained on every `send` call — string for JSON frames, Uint8Array for
   // binary pane-output frames.
   readonly outbound: (string | Uint8Array)[];
+  // The method of every call fed in, by id, so a result is parsed as the
+  // answer to its call.
+  readonly calls: Map<string, RpcMethod>;
   // Every `close(code, reason)` the bridge issued, so the close reason it
   // hands the peer is assertable.
   readonly closeCalls: { code?: number; reason?: string }[];
@@ -82,6 +90,7 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
 
   const outbound: (string | Uint8Array)[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
+  const calls = new Map<string, RpcMethod>();
   let readyState: number = WEBSOCKET_OPEN;
 
   const ws: FakeWs = {
@@ -98,7 +107,13 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
       buffered = n;
     },
     feedClient(frame) {
-      listeners.message?.(encodeClientFrame(frame as never), false);
+      const raw = encodeClientFrame(frame as never);
+      // Some tests feed malformed frames on purpose; only a call is parsed.
+      if ("k" in frame && frame.k === "call") {
+        const call = parseClientFrame(raw);
+        if (call.k === "call") calls.set(call.id, call.method);
+      }
+      listeners.message?.(raw, false);
     },
     feedBinary(bytes) {
       listeners.message?.(bytes, true);
@@ -112,6 +127,7 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
     },
     answersPings: true,
     outbound,
+    calls,
     closeCalls,
     terminateCalls: 0,
 
@@ -218,7 +234,15 @@ function feedCommandResponse(
 function readJsonFrames(ws: FakeWs): ServerFrame[] {
   return ws.outbound
     .filter((f): f is string => typeof f === "string")
-    .map((f) => parseServerFrame(f));
+    .map((f) => {
+      const frame = parseServerFrame(f);
+      if (frame.k !== "result") return frame;
+      const method = ws.calls.get(frame.id);
+      if (method === undefined) {
+        throw new Error(`result for ${frame.id}, which no call was fed`);
+      }
+      return parseResultFrame(method, frame.raw);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,22 +1347,75 @@ describe("WebSocket bridge — reply-stream reports", () => {
       output: ["unknown command: bogus"],
       success: false,
     };
-    const frame = (e: unknown) =>
-      JSON.stringify({ k: "result", id: "x", ok: false, tmuxError: e });
-    expect(parseServerFrame(frame(tmuxError))).toEqual({
+    const frame = (e: unknown) => ({
+      k: "result",
+      id: "x",
+      ok: false,
+      tmuxError: e,
+    });
+    const parse = (e: unknown) => parseResultFrame("execute", frame(e));
+    expect(parse(tmuxError)).toEqual({
       k: "result",
       id: "x",
       ok: false,
       tmuxError,
     });
-    expect(() =>
-      parseServerFrame(frame({ ...tmuxError, output: "unknown" })),
-    ).toThrow(/result\.tmuxError\.output must be a string\[\]/);
+    expect(() => parse({ ...tmuxError, output: "unknown" })).toThrow(
+      /result\(execute\)\.tmuxError\.output must be a string\[\]/,
+    );
     for (const notObject of [null, []]) {
-      expect(() => parseServerFrame(frame(notObject))).toThrow(
-        /result\.tmuxError must be an object/,
+      expect(() => parse(notObject)).toThrow(
+        /result\(execute\)\.tmuxError must be an object/,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tmux-message event frames (tmux-server-events-6sp.faa): every field of
+// every message is read off the wire against its type, not admitted by `type`.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket client — tmux-message event frames", () => {
+  const frame = (msg: object) => JSON.stringify({ k: "event", msg });
+  const samples = Object.values(MESSAGE_SAMPLES).filter(
+    (m) => !isPaneOutput(m),
+  );
+  // Derived from the raw layout strings, never read; `exit.reason` is optional.
+  const unread = new Set(["type", "layout", "visibleLayout", "reason"]);
+
+  it.each(samples.map((m) => [m.type, m] as const))(
+    "parses a %s frame to the message the bridge sent",
+    (_type, msg) => {
+      expect(parseServerFrame(frame(msg))).toEqual({ k: "event", msg });
+    },
+  );
+
+  it.each(samples.map((m) => [m.type, m] as const))(
+    "rejects a %s frame missing any field, naming it",
+    (type, msg) => {
+      const fields: Record<string, unknown> = { ...msg };
+      for (const field of Object.keys(fields).filter((f) => !unread.has(f))) {
+        const { [field]: _dropped, ...missing } = fields;
+        expect(() => parseServerFrame(frame(missing))).toThrow(
+          `event.msg(${type}).${field} must be`,
+        );
+      }
+    },
+  );
+
+  it("rejects a mistyped field and drops a field the type does not declare", () => {
+    expect(() =>
+      parseServerFrame(
+        frame({ ...MESSAGE_SAMPLES["subscription-changed"], paneId: "%3" }),
+      ),
+    ).toThrow("event.msg(subscription-changed).paneId must be a number");
+    expect(() => parseServerFrame(frame({ type: "exit", reason: 1 }))).toThrow(
+      "event.msg(exit).reason must be a string",
+    );
+    expect(
+      parseServerFrame(frame({ type: "window-add", windowId: 1, extra: 2 })),
+    ).toEqual({ k: "event", msg: { type: "window-add", windowId: 1 } });
   });
 });
 

@@ -131,22 +131,6 @@ interface RpcSpec {
 
 export type RpcMethod = keyof RpcSpec;
 
-type NullResponseMethod = {
-  [M in RpcMethod]: RpcSpec[M]["response"] extends null ? M : never;
-}[RpcMethod];
-
-// [LAW:types-are-the-program] Derived from RpcSpec: the compiler rejects this
-// record if a method answering null is missing or one that does not is listed.
-const NULL_RESPONSE: Record<NullResponseMethod, true> = {
-  enableCrossSessionLayoutChange: true,
-  disableCrossSessionLayoutChange: true,
-};
-
-/** Whether `method`'s RpcSpec response is `null` (no tmux command answers it). */
-export function answersNull(method: RpcMethod): boolean {
-  return Object.hasOwn(NULL_RESPONSE, method);
-}
-
 // RpcRequest stays a discriminated union — every downstream consumer narrows
 // on `method` the same way it always did. Deriving it from RpcSpec is what
 // keeps a method's args tied to its own response at one declaration site.

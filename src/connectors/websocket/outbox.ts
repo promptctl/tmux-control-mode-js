@@ -10,11 +10,13 @@
 // agree would be an invariant the type cannot enforce, so there is only one.
 
 import { TmuxCommandError } from "../../errors.js";
-import { answersNull, type RpcResponseMap } from "../rpc.js";
+import type { RpcResponseMap } from "../rpc.js";
 import type { DurationMs } from "./limits.js";
 import {
   BridgeError,
-  BridgeProtocolError,
+  parseResultFrame,
+  toBridgeProtocolError,
+  type ReceivedResultFrame,
   type ResultFrame,
   type RpcMethod,
 } from "./protocol.js";
@@ -82,29 +84,31 @@ export class Outbox {
   }
 
   // Settle the pending call a result frame answers. No-op if the call already
-  // timed out (its entry is gone). Returns the protocol violation, if the
-  // frame broke the wire contract, so the client reports it on its error
-  // channel like every other malformed frame.
-  settle(frame: ResultFrame): BridgeProtocolError | undefined {
+  // timed out: its entry is gone, and with it the method the result's shape
+  // is checked against. Returns the protocol violation, if the frame broke
+  // the wire contract, so the client reports it on its error channel like
+  // every other malformed frame.
+  settle(frame: ReceivedResultFrame): BridgeError | undefined {
     const p = this.pending.get(frame.id);
     if (p === undefined) return undefined;
     this.pending.delete(frame.id);
     clearTimeout(p.timer);
-    if (frame.ok) {
-      // [LAW:parse-dont-validate] The frame parser cannot see the method; this
-      // is the one place that pairs a response with the call it answers.
-      if ((frame.response === null) !== answersNull(p.method)) {
-        const violation = new BridgeProtocolError(
-          `result for '${p.method}' has ${frame.response === null ? "a null" : "a non-null"} response`,
-        );
-        p.reject(violation);
-        return violation;
-      }
-      p.resolve(frame.response);
-    } else if ("tmuxError" in frame) {
-      p.reject(new TmuxCommandError(frame.tmuxError));
+    // [LAW:parse-dont-validate] The frame parser cannot see the method; this
+    // is the one place that pairs a result with the call it answers.
+    let result: ResultFrame;
+    try {
+      result = parseResultFrame(p.method, frame.raw);
+    } catch (err) {
+      const violation = toBridgeProtocolError(err);
+      p.reject(violation);
+      return violation;
+    }
+    if (result.ok) {
+      p.resolve(result.response);
+    } else if ("tmuxError" in result) {
+      p.reject(new TmuxCommandError(result.tmuxError));
     } else {
-      p.reject(BridgeError.fromPayload(frame.error));
+      p.reject(BridgeError.fromPayload(result.error));
     }
     return undefined;
   }

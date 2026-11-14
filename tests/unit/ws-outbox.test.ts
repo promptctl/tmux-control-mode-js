@@ -9,7 +9,7 @@ import { Outbox } from "../../src/connectors/websocket/outbox.js";
 import {
   BridgeError,
   parseDurationMs,
-  type ResultFrame,
+  type ReceivedResultFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import { TmuxCommandError } from "../../src/errors.js";
@@ -22,14 +22,24 @@ afterEach(() => {
 // parser the client does.
 const ms = (n: number) => parseDurationMs("requestTimeoutMs", n);
 
-function okResult(id: string): ResultFrame {
+// What the client's frame parser hands the outbox: the id, the rest unread.
+function received(
+  frame: { readonly k: "result"; readonly id: string } & Record<
+    string,
+    unknown
+  >,
+): ReceivedResultFrame {
+  return { k: "result", id: frame.id, raw: frame };
+}
+
+function okResult(id: string): ReceivedResultFrame {
   const response: CommandResponse = {
     commandNumber: 1,
     timestamp: 0,
     output: [`out-${id}`],
     success: true,
   };
-  return { k: "result", id, ok: true, response };
+  return received({ k: "result", id, ok: true, response });
 }
 
 describe("Outbox — transmit", () => {
@@ -100,14 +110,36 @@ describe("Outbox — settle", () => {
   it("rejects the matching pending on an error result", async () => {
     const outbox = new Outbox(() => true);
     const p = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
-    outbox.settle({
-      k: "result",
-      id: "r1",
-      ok: false,
-      error: { code: "BRIDGE_INTERNAL", message: "boom" },
-    });
+    outbox.settle(
+      received({
+        k: "result",
+        id: "r1",
+        ok: false,
+        error: { code: "BRIDGE_INTERNAL", message: "boom" },
+      }),
+    );
     await expect(p).rejects.toMatchObject({ code: "BRIDGE_INTERNAL" });
   });
+
+  it.each(["BRIDGE_NOPE", 7, "toString"])(
+    "rejects the call when an error result's code is %j, not a BridgeErrorCode",
+    async (code) => {
+      const outbox = new Outbox(() => true);
+      const p = outbox.enqueue("r1", "execute", "frame-1", ms(1000));
+      const violation = outbox.settle(
+        received({
+          k: "result",
+          id: "r1",
+          ok: false,
+          error: { code, message: "m" },
+        }),
+      );
+      expect(violation?.message).toContain(
+        "result(execute).error.code must be a BridgeErrorCode",
+      );
+      await expect(p).rejects.toBe(violation);
+    },
+  );
 
   it("settling an unknown id is a no-op", () => {
     const outbox = new Outbox(() => true);
@@ -199,7 +231,9 @@ describe("Outbox — settle", () => {
       "f",
       ms(1000),
     );
-    outbox.settle({ k: "result", id: "r1", ok: false, tmuxError: failed });
+    outbox.settle(
+      received({ k: "result", id: "r1", ok: false, tmuxError: failed }),
+    );
     await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
   });
 
@@ -221,10 +255,14 @@ describe("Outbox — settle", () => {
     // A mismatch is returned as a protocol violation for the client's error
     // channel, as well as rejecting the call it answered.
     expect(
-      outbox.settle({ k: "result", id: "r1", ok: true, response: null }),
+      outbox.settle(
+        received({ k: "result", id: "r1", ok: true, response: null }),
+      ),
     ).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
     expect(
-      outbox.settle({ k: "result", id: "r2", ok: true, response: null }),
+      outbox.settle(
+        received({ k: "result", id: "r2", ok: true, response: null }),
+      ),
     ).toBeUndefined();
     expect(outbox.settle(okResult("r3"))).toMatchObject({
       code: "BRIDGE_PROTOCOL_ERROR",
@@ -233,4 +271,74 @@ describe("Outbox — settle", () => {
     await expect(en).resolves.toBeNull();
     await expect(dis).rejects.toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
   });
+
+  const pane = {
+    sessionId: 1,
+    sessionName: "main",
+    windowId: 2,
+    windowName: "w",
+    paneId: 3,
+    cwd: "/tmp",
+    pid: 42,
+    startCommand: "",
+    currentCommand: "zsh",
+    width: 80,
+    height: 24,
+  };
+
+  it("resolves a response that has its method's shape, with only the declared fields", async () => {
+    const outbox = new Outbox(() => true);
+    const p = outbox.enqueue("r1", "listPanes", "f", ms(1000));
+    expect(
+      outbox.settle(
+        received({
+          k: "result",
+          id: "r1",
+          ok: true,
+          response: [{ ...pane, extra: true }],
+        }),
+      ),
+    ).toBeUndefined();
+    await expect(p).resolves.toEqual([pane]);
+  });
+
+  it.each([
+    [
+      "execute",
+      { commandNumber: 1, timestamp: 0, output: [1], success: true },
+      "result(execute).response.output must be a string[]",
+    ],
+    [
+      "listPanes",
+      [pane, { ...pane, pid: undefined }],
+      "result(listPanes).response[1].pid must be a number",
+    ],
+    [
+      "listWindows",
+      { sessionId: 1 },
+      "result(listWindows).response must be an array",
+    ],
+    [
+      "listSessions",
+      [{ sessionId: 1, sessionName: "s", windowCount: 1, attached: 1 }],
+      "result(listSessions).response[0].attached must be a boolean",
+    ],
+  ] as const)(
+    "rejects a %s response that breaks its shape, naming the field",
+    async (method, response, message) => {
+      const outbox = new Outbox(() => true);
+      const p = outbox.enqueue("r1", method, "f", ms(1000));
+      const violation = outbox.settle(
+        received({
+          k: "result",
+          id: "r1",
+          ok: true,
+          response,
+        }),
+      );
+      expect(violation).toMatchObject({ code: "BRIDGE_PROTOCOL_ERROR" });
+      expect(violation?.message).toContain(message);
+      await expect(p).rejects.toBe(violation);
+    },
+  );
 });

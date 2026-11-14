@@ -71,9 +71,9 @@ import {
   isPaneOutputFrame,
   parseServerFrame,
   toBridgeProtocolError,
-  type ResultFrame,
+  type ReceivedResultFrame,
+  type ReceivedServerFrame,
   type RpcMethod,
-  type ServerFrame,
   type WelcomeFrame,
   type WelcomeLimits,
   type WireSyntheticMessage,
@@ -570,7 +570,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   private onText(raw: string): void {
-    let frame: ServerFrame;
+    let frame: ReceivedServerFrame;
     try {
       frame = parseServerFrame(raw);
     } catch (err) {
@@ -582,10 +582,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // [LAW:dataflow-not-control-flow] One indexed lookup; the variant in
-  // ServerFrame is what decides which handler runs. Mapped-type table forces
+  // ReceivedServerFrame is what decides which handler runs. Mapped-type table forces
   // exhaustiveness — same shape as VALIDATORS in ../rpc.ts and the
   // CLIENT_FRAME_HANDLERS table on the server side.
-  private handleFrame(frame: ServerFrame): void {
+  private handleFrame(frame: ReceivedServerFrame): void {
     SERVER_FRAME_HANDLERS[frame.k](this, frame as never);
   }
 
@@ -614,11 +614,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     this.router.onTransportReady(this.routerRun);
   }
 
-  onResult(frame: ResultFrame): void {
+  onResult(frame: ReceivedResultFrame): void {
     const violation = this.outbox.settle(frame);
-    // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-    if (violation !== undefined)
-      this.emitError(toBridgeProtocolError(violation));
+    if (violation !== undefined) this.emitError(violation);
   }
 
   onPong(id: string): void {
@@ -888,9 +886,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 // ---------------------------------------------------------------------------
 
 type ServerFrameHandlers = {
-  readonly [K in ServerFrame["k"]]: (
+  readonly [K in ReceivedServerFrame["k"]]: (
     self: WebSocketTmuxClient,
-    frame: Extract<ServerFrame, { k: K }>,
+    frame: Extract<ReceivedServerFrame, { k: K }>,
   ) => void;
 };
 
@@ -902,7 +900,7 @@ const SERVER_FRAME_HANDLERS: ServerFrameHandlers = Object.assign(
       isTmuxMessage(f.msg)
         ? self.dispatchEvent(f.msg)
         : self.emitSynthetic(f.msg),
-    result: (self, f: ResultFrame) => self.onResult(f),
+    result: (self, f: ReceivedResultFrame) => self.onResult(f),
     pong: (self, f) => self.onPong(f.id),
     draining: (self, f) => self.onDraining(f.deadlineMs),
     error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
