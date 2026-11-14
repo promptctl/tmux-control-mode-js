@@ -17,6 +17,7 @@ function recordingTransport(): TmuxTransport & { readonly sent: string[] } {
       return { ok: true } as const;
     },
     onData(): void {},
+    onLost(): void {},
     onClose(): void {},
     close(): void {},
   };

@@ -1013,6 +1013,60 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(errors.map((e) => e.message)).toEqual([
       "topology refresh of @3 failed: server exited unexpectedly",
     ]);
+    // A refused query is not a lost connection: the runner stays live.
+    const asked = replies.length;
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    expect(replies.slice(asked).map((q) => q.cmd)).toEqual([
+      expect.stringContaining("-t @3 "),
+    ]);
+  });
+
+  it("does not seed from a bootstrap that resolves after its connection was lost", async () => {
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const session = makeSink();
+    router.attachBytesSink(session, { scope: sessionScope(1) });
+    router.onTransportLost(run);
+    replies[0]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(paneIdsOf(session)).toEqual([]);
+  });
+
+  it("does not place a pane from a refresh that resolves after its connection was lost", async () => {
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const session = makeSink();
+    router.attachBytesSink(session, { scope: sessionScope(1) });
+    replies[0]!.resolve(makeOkResponse([]));
+    await settle();
+    router.handleNotification({ type: "window-add", windowId: 3 });
+    router.onTransportLost(run);
+    replies[1]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(paneIdsOf(session)).toEqual([]);
+  });
+
+  it("does not seed the next connection from a bootstrap the closed one sent", async () => {
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
+    const first = controlledRun();
+    router.onTransportReady(first.run);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    router.onTransportClose();
+    const next = controlledRun();
+    router.onTransportReady(next.run);
+    const session = makeSink();
+    router.attachBytesSink(session, { scope: sessionScope(1) });
+    first.replies[0]!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(paneIdsOf(session)).toEqual([]);
+    next.replies.at(-1)!.resolve(makeOkResponse(["%7 @3 $1"]));
+    await settle();
+    expect(paneIdsOf(session)).toEqual([7]);
   });
 
   // Any error class: a reconnect backoff's queued query can also time out.

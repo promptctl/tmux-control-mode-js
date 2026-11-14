@@ -100,6 +100,7 @@ class FakeTransport implements TmuxTransport {
   onData(cb: (chunk: string) => void): void {
     this.dataCb = cb;
   }
+  onLost(): void {}
   onClose(cb: (reason?: string) => void): void {
     this.closeCb = cb;
   }

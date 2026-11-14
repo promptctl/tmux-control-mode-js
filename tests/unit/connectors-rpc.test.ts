@@ -43,6 +43,7 @@ function createFakeTransport(): {
     onData(cb) {
       dataCb = cb;
     },
+    onLost() {},
     onClose() {
       /* noop */
     },

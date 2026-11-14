@@ -64,19 +64,23 @@ describe("websocketTransport", () => {
     expect(ws.sent).toEqual([]);
   });
 
-  it("a synchronous throw from the socket's send becomes a typed refusal", () => {
+  it("a synchronous throw from the socket's send loses the transport: a typed refusal, onLost, and the socket closed so its close follows", () => {
     const ws = createFake();
     ws.send = () => {
       throw new Error("clone failure");
     };
     const t = websocketTransport(ws);
+    const lost: string[] = [];
+    t.onLost((r) => lost.push(r));
     expect(t.send("list-sessions")).toEqual({
       ok: false,
-      reason: "websocket send failed: clone failure",
+      reason: "transport lost: websocket send failed: clone failure",
     });
+    expect(lost).toEqual(["websocket send failed: clone failure"]);
+    expect(ws.closed).toBe(true);
   });
 
-  it("a caught send throw is remembered — a later send refuses without calling ws.send again", () => {
+  it("a lost transport refuses a later send without calling ws.send again", () => {
     const ws = createFake();
     let calls = 0;
     ws.send = () => {
@@ -87,9 +91,33 @@ describe("websocketTransport", () => {
     t.send("list-sessions");
     expect(t.send("list-sessions")).toEqual({
       ok: false,
-      reason: "websocket send failed: clone failure",
+      reason: "transport lost: websocket send failed: clone failure",
     });
     expect(calls).toBe(1);
+  });
+
+  it("a send on a CLOSING socket whose close event has not landed is a loss, not a plain refusal", () => {
+    const ws = createFake();
+    const t = websocketTransport(ws);
+    const lost: string[] = [];
+    t.onLost((r) => lost.push(r));
+    ws.readyState = 2;
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "transport lost: websocket closing (readyState 2)",
+    });
+    expect(lost).toEqual(["websocket closing (readyState 2)"]);
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("a send while CONNECTING announces no loss: nothing has been lost yet", () => {
+    const ws = createFake();
+    ws.readyState = 0;
+    const t = websocketTransport(ws);
+    const lost: string[] = [];
+    t.onLost((r) => lost.push(r));
+    t.send("list-sessions");
+    expect(lost).toEqual([]);
   });
 
   it("forwards string message frames verbatim to onData callbacks", () => {

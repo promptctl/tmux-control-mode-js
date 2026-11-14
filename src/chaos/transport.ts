@@ -250,6 +250,7 @@ export function withChaos(
     onData: (cb) => {
       consumers.push(cb);
     },
+    onLost: (cb) => inner.onLost(cb),
     onClose: (cb) => inner.onClose(cb),
     close: () => inner.close(),
   };

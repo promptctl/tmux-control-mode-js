@@ -49,6 +49,7 @@ function recordingTransport(
       return result;
     },
     onData: (cb) => inner.onData(cb),
+    onLost: (cb) => inner.onLost(cb),
     onClose: (cb) => inner.onClose(cb),
     close: () => inner.close(),
   };

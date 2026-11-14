@@ -38,6 +38,7 @@ function makeRig(): Rig {
     onData(cb) {
       dataCb = cb;
     },
+    onLost() {},
     onClose() {
       // No close handling needed — these tests never close the transport.
     },

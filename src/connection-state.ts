@@ -19,6 +19,12 @@
  *                     WebSocket connector this is "post-welcome".
  * - `reconnecting`  — connector is between attempts (only emitted by
  *                     transports that auto-reconnect, currently WebSocket).
+ * - `closing`       — the transport is lost: it refuses every command and
+ *                     `closed` follows, but output tmux sent before the loss
+ *                     may still arrive. `reason` is the transport's account of
+ *                     the loss (`stdin failed: EPIPE`). Only `TmuxClient`
+ *                     emits it, and only for a transport that announces loss
+ *                     before its close.
  * - `closed`        — no live connection, and no automatic transition leaves
  *                     this state. The `reason` distinguishes consumer-
  *                     initiated close (`disposed`) from clean transport exit
@@ -53,6 +59,7 @@ export type ConnectionState =
       readonly attempt: number;
       readonly lastError?: Error;
     }
+  | { readonly status: "closing"; readonly reason: string }
   | {
       readonly status: "closed";
       readonly reason: "exit" | "transport-error" | "disposed";
@@ -122,7 +129,10 @@ export function sameConnectionState(
   if (a.status === "reconnecting" && b.status === "reconnecting") {
     return a.attempt === b.attempt && a.lastError === b.lastError;
   }
-  if (a.status === "closed" && b.status === "closed") {
+  if (
+    (a.status === "closing" && b.status === "closing") ||
+    (a.status === "closed" && b.status === "closed")
+  ) {
     return a.reason === b.reason;
   }
   return true;

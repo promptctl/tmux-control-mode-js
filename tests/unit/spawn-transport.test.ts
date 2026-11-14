@@ -119,36 +119,35 @@ describe("spawnTmux lifecycle seam", () => {
     });
   });
 
-  it("(b) an EPIPE-window write does not crash the process and turns sends loud", async () => {
+  it("(b) an EPIPE-window write does not crash the process: the transport is lost, refuses sends, and its close follows on its own", async () => {
     // The child closes its stdin (the pipe's read end) but stays alive, so the
     // transport's `close` has NOT fired — writes land squarely in the window
     // where the old code let stdin emit an unlistened `error` and kill the host.
-    // `exec sleep` replaces sh, so transport.close() kills the pipe-holding
-    // process itself and the child's `close` event fires promptly.
     const transport = shTransport("exec 0<&-; echo ready; exec sleep 5");
     let sawReady = false;
     transport.onData((chunk) => {
       sawReady = sawReady || chunk.includes("ready");
     });
-    const reasons = collectCloses(transport);
+    const events: string[] = [];
+    transport.onLost((reason) => {
+      events.push(`lost ${reason}`);
+      // Every send after the loss is refused, naming it.
+      const refused = transport.send("list-windows");
+      events.push(refused.ok ? "accepted" : `refused ${refused.reason}`);
+    });
+    transport.onClose((reason) => events.push(`closed ${String(reason)}`));
 
     await until(() => sawReady, "child to close its stdin");
-    expect(reasons).toHaveLength(0);
 
     // Accepted for transmission — the transport cannot yet know the pipe is
     // dead. The EPIPE arrives asynchronously; surviving it IS the assertion.
     expect(transport.send("list-windows")).toEqual({ ok: true });
 
-    await until(() => !transport.send("list-windows").ok, "EPIPE to surface");
-    const refused = transport.send("list-windows");
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.reason).toMatch(/EPIPE/);
-    // The child never exited — the loud refusal came from the stdin failure,
-    // not from a close dispatch.
-    expect(reasons).toHaveLength(0);
-
-    transport.close();
-    await until(() => reasons.length > 0, "close after kill");
+    // No transport.close(): the loss alone ends the child.
+    await until(() => events.length === 3, "loss, then close");
+    expect(events[0]).toMatch(/^lost stdin failed: .*EPIPE/);
+    expect(events[1]).toMatch(/^refused transport lost: stdin failed: .*EPIPE/);
+    expect(events[2]).toMatch(/^closed /);
   });
 
   it("send on a live transport is accepted", async () => {

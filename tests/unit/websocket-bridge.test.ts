@@ -43,6 +43,7 @@ import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 import { isPaneOutput } from "../../src/protocol/types.js";
+import { createCloseGate } from "../../src/transport/close-gate.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -209,25 +210,27 @@ interface FakeTransport {
   readonly transport: TmuxTransport;
   readonly sent: string[];
   feed(chunk: string): void;
+  // tmux's stdin failed: every later send is refused until close().
+  lose(reason: string): void;
 }
 
 function createFakeTransport(): FakeTransport {
   let dataCb: ((chunk: string) => void) | null = null;
-  let closeCb: ((reason?: string) => void) | null = null;
+  const gate = createCloseGate();
   const sent: string[] = [];
   const transport: TmuxTransport = {
     send(cmd) {
-      sent.push(cmd);
-      return { ok: true };
+      const admitted = gate.admit();
+      if (admitted.ok) sent.push(cmd);
+      return admitted;
     },
     onData(cb) {
       dataCb = cb;
     },
-    onClose(cb) {
-      closeCb = cb;
-    },
+    onLost: gate.onLost,
+    onClose: gate.onClose,
     close() {
-      closeCb?.("closed");
+      gate.dispatch("closed");
     },
   };
   return {
@@ -236,6 +239,7 @@ function createFakeTransport(): FakeTransport {
     feed(chunk) {
       dataCb?.(chunk);
     },
+    lose: gate.lose,
   };
 }
 
@@ -1701,7 +1705,9 @@ describe("WebSocket bridge — upstream close", () => {
 
     // Synchronously, inside the upstream's connection-state emission.
     expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
-      expect.objectContaining({ reason: "transport-error" }),
+      expect.objectContaining({
+        state: { status: "closed", reason: "transport-error" },
+      }),
     ]);
     expect(fatalFrames(ws)).toEqual([
       {
@@ -1735,6 +1741,62 @@ describe("WebSocket bridge — upstream close", () => {
       expect.objectContaining({
         errorCode: "BRIDGE_CLOSED",
         reason: expect.stringMatching(/upstream/) as string,
+      }),
+    ]);
+  });
+
+  it("an upstream whose transport is lost closes the socket before any call it refuses can be answered, and dies once", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+    ws.feedClient({
+      k: "call",
+      id: "a",
+      method: "execute",
+      args: ["list-windows"],
+    });
+    await flush();
+    const framesBefore = ws.outbound.length;
+
+    t.lose("stdin failed: EPIPE");
+
+    expect(fatalFrames(ws)).toEqual([
+      {
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_CLOSED",
+          message: expect.stringContaining("stdin failed: EPIPE") as string,
+        },
+      },
+    ]);
+    expect(ws.closeCalls).toHaveLength(1);
+    // A call that arrives in the window is refused by the lost upstream; its
+    // BRIDGE_CLOSED result never reaches the peer as a reply on an open socket.
+    ws.feedClient({
+      k: "call",
+      id: "b",
+      method: "execute",
+      args: ["list-windows"],
+    });
+    await flush();
+    t.transport.close();
+    await flush();
+    expect(
+      readJsonFrames(ws)
+        .slice(framesBefore)
+        .filter((f) => f.k === "result"),
+    ).toEqual([]);
+    expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
+      expect.objectContaining({
+        state: { status: "closing", reason: "stdin failed: EPIPE" },
       }),
     ]);
   });
@@ -1829,7 +1891,9 @@ describe("WebSocket bridge — upstream close", () => {
     ]);
     // The wire keeps the first fatal; the upstream's death is still recorded.
     expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
-      expect.objectContaining({ reason: "transport-error" }),
+      expect.objectContaining({
+        state: { status: "closed", reason: "transport-error" },
+      }),
     ]);
 
     ws.fireClose(1011, "duplicate hello frame");
@@ -1877,7 +1941,9 @@ describe("WebSocket bridge — upstream close", () => {
     expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(false);
     expect(events.some((e) => e.kind === "connection-opened")).toBe(false);
     expect(events.filter((e) => e.kind === "upstream-closed")).toEqual([
-      expect.objectContaining({ reason: "transport-error" }),
+      expect.objectContaining({
+        state: { status: "closed", reason: "transport-error" },
+      }),
     ]);
     // The client createClient() handed over was released, not leaked.
     expect(disposeCalls).toBe(1);

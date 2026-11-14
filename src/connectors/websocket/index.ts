@@ -53,6 +53,7 @@ export {
   type ConnectionIdentity,
   type BridgeObservabilityEvent,
   type SocketEnd,
+  type UpstreamEnd,
   type RateLimitConfig,
   type ReconnectPolicy,
 } from "./types.js";

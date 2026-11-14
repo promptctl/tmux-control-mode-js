@@ -830,6 +830,90 @@ describe("topology across a reconnect", () => {
     expect(errors).toEqual([]);
     await client.close();
   });
+
+  it("a bridge whose tmux died: the fatal frame then the close is one drop, no topology-error, and the next connection re-seeds", async () => {
+    const { client, hub } = makeClient({ reconnect: true });
+    const errors: unknown[] = [];
+    const states: string[] = [];
+    client.on("topology-error", (ev) => errors.push(ev));
+    client.on("connection-state", (m) => states.push(m.state.status));
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    await new Promise((r) => setImmediate(r));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    const bootstraps = (ws: MockWS) =>
+      ws.sent.filter((s) => s.includes("list-panes -a")).length;
+
+    hub.latest().fire("message", {
+      data: encodeServerFrame({
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_CLOSED",
+          message: "upstream tmux connection lost (stdin failed: EPIPE)",
+        },
+      } satisfies ServerFrame),
+    });
+    hub.fireClose(0, 1011, "upstream lost");
+    await new Promise((r) => setImmediate(r));
+    expect(states.filter((s) => s === "reconnecting")).toEqual([
+      "reconnecting",
+    ]);
+    expect(errors).toEqual([]);
+
+    const deadline = Date.now() + 100;
+    while (hub.sockets.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    hub.open(1);
+    hub.welcome(1);
+    await new Promise((r) => setImmediate(r));
+    expect(bootstraps(hub.sockets[1]!)).toBe(1);
+    expect(errors).toEqual([]);
+    await client.close();
+  });
+
+  it("a refresh refused by a draining bridge is a topology-error, and the connection keeps querying", async () => {
+    const { client, hub } = makeClient();
+    const errors: string[] = [];
+    client.on("topology-error", (ev) => errors.push(ev.error.message));
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    await new Promise((r) => setImmediate(r));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    hub.latest().fire("message", {
+      data: encodeServerFrame({
+        k: "draining",
+        deadlineMs: 5_000,
+      } satisfies ServerFrame),
+    });
+    await new Promise((r) => setImmediate(r));
+    const windowAdd = (windowId: number) =>
+      hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "event",
+          msg: { type: "window-add", windowId },
+        }),
+      });
+    windowAdd(3);
+    await new Promise((r) => setImmediate(r));
+    windowAdd(4);
+    await new Promise((r) => setImmediate(r));
+    // Each refresh is sent and its refusal reported; the runner was not retired.
+    expect(errors.filter((m) => m.startsWith("topology refresh"))).toEqual([
+      expect.stringContaining("@3"),
+      expect.stringContaining("@4"),
+    ]);
+    await client.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -131,9 +131,8 @@ export class MockTmuxServer implements TmuxTransport {
   send(command: string): SendResult {
     // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
     // the seam's contract, not a test convenience.
-    if (this.closeGate.state().closed) {
-      return { ok: false, reason: this.closeGate.deniedSendReason() };
-    }
+    const admitted = this.closeGate.admit();
+    if (!admitted.ok) return admitted;
     this.inputBuffer += command;
 
     // [LAW:dataflow-not-control-flow] Every complete line runs the same handle
@@ -144,17 +143,22 @@ export class MockTmuxServer implements TmuxTransport {
     // the connection and no line after it was ever going to reach a live
     // tmux.
     let newlineIdx = this.inputBuffer.indexOf("\n");
-    while (newlineIdx !== -1 && !this.closeGate.state().closed) {
+    while (newlineIdx !== -1 && this.closeGate.state().phase !== "closed") {
       const line = this.inputBuffer.slice(0, newlineIdx);
       this.inputBuffer = this.inputBuffer.slice(newlineIdx + 1);
       this.handleCommandLine(line);
       newlineIdx = this.inputBuffer.indexOf("\n");
     }
-    return { ok: true };
+    return admitted;
   }
 
   onData(callback: (chunk: string) => void): void {
     this.dataCallbacks.push(callback);
+  }
+
+  // The mock dies only by close(), so it never announces a loss.
+  onLost(callback: (reason: string) => void): void {
+    this.closeGate.onLost(callback);
   }
 
   onClose(callback: (reason?: string) => void): void {
@@ -182,7 +186,7 @@ export class MockTmuxServer implements TmuxTransport {
    * without it, a client attached to this server would stay "connecting".
    */
   start(): void {
-    if (this.closeGate.state().closed || this.started) return;
+    if (this.closeGate.state().phase === "closed" || this.started) return;
     this.started = true;
     const number = ++this.commandNumber;
     const timestamp = this.now();
@@ -209,7 +213,7 @@ export class MockTmuxServer implements TmuxTransport {
    * (SPEC_MANIFEST §4.1) holds by construction. [LAW:single-enforcer]
    */
   emit(msg: TmuxMessage): void {
-    if (this.closeGate.state().closed) return;
+    if (this.closeGate.state().phase === "closed") return;
     this.enqueueMessage(msg);
     this.flush();
   }

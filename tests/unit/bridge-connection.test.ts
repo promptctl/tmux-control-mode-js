@@ -37,6 +37,7 @@ function createFakeTransport(): FakeTransport {
     onData(cb) {
       dataCb = cb;
     },
+    onLost() {},
     onClose(cb) {
       closeCb = cb;
     },

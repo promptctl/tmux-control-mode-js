@@ -35,7 +35,6 @@
 // down. Every error path funnels through it.
 
 import type { TmuxClient } from "../../client.js";
-import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { EmitterMessage } from "../../emitter.js";
 import type { BytesSink, ChunkPayload } from "../../pane-output.js";
 
@@ -80,8 +79,9 @@ import type {
   ServerWebSocketLike,
   SocketEnd,
   UpgradeRequest,
+  UpstreamEnd,
 } from "./types.js";
-import { WEBSOCKET_OPEN } from "./types.js";
+import { WEBSOCKET_OPEN, isUpstreamEnd } from "./types.js";
 import { RateLimiter, parseRateLimit, type RateLimit } from "./rate-limiter.js";
 import { Heartbeat, type HeartbeatCadence } from "./heartbeat.js";
 import {
@@ -408,6 +408,8 @@ class Connection {
   // carry the BridgeErrorCode a peer-initiated close never has.
   // [LAW:single-enforcer]
   private fatal: BridgeError | undefined = undefined;
+  // The upstream state that ended this connection, recorded once.
+  private upstreamEnd: UpstreamEnd | undefined = undefined;
 
   private readonly onAnyEventRef: (msg: EmitterMessage) => void;
   private readonly byteForwarder: BytesSink;
@@ -872,7 +874,7 @@ class Connection {
     // reaches the listener whatever runs in between, and this one read
     // covers everything before it. [LAW:no-ambient-temporal-coupling]
     const upstream = client.connectionState;
-    if (upstream.status === "closed") {
+    if (isUpstreamEnd(upstream)) {
       unwind();
       this.closeForUpstream(upstream);
       return;
@@ -1081,7 +1083,7 @@ class Connection {
   // and emitted once. `exit` is not consulted: it can precede the close and
   // already rides the wire as data for the browser to interpret.
   private onUpstreamEvent(msg: EmitterMessage): void {
-    if (msg.type === "connection-state" && msg.state.status === "closed") {
+    if (msg.type === "connection-state" && isUpstreamEnd(msg.state)) {
       this.closeForUpstream(msg.state);
       return;
     }
@@ -1097,21 +1099,24 @@ class Connection {
   // [LAW:no-silent-failure] Replaces a connection that stayed `ready` with
   // no events and every call answered BRIDGE_CLOSED, indistinguishable from
   // an idle tmux.
-  private closeForUpstream(
-    state: Extract<TmuxConnectionState, { status: "closed" }>,
-  ): void {
+  // A `closing` upstream refuses every call, so it ends the connection before
+  // any refusal can reach the peer as a result: the socket is closing by
+  // then, and wsSend drops what follows.
+  private closeForUpstream(state: UpstreamEnd): void {
+    // [LAW:single-enforcer] The upstream dies once: `closed` after `closing`
+    // is the same death.
+    if (this.upstreamEnd !== undefined) return;
+    this.upstreamEnd = state;
     // Emitted ahead of the fatal rather than behind its write-once guard:
     // when an earlier fatal already holds the wire, the upstream's death is
     // still a fact about this connection and still lands on its panel.
     // [LAW:nothing-unseen]
-    this.emit({
-      kind: "upstream-closed",
-      identity: this.identity,
-      reason: state.reason,
-    });
+    this.emit({ kind: "upstream-closed", identity: this.identity, state });
     this.sendFatalAndClose(
       "BRIDGE_CLOSED",
-      `upstream tmux connection closed (${state.reason})`,
+      state.status === "closing"
+        ? `upstream tmux connection lost (${state.reason})`
+        : `upstream tmux connection closed (${state.reason})`,
     );
   }
 

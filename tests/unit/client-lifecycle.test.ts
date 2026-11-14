@@ -23,32 +23,40 @@ import {
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { paneScope, sessionScope } from "../../src/pane-output.js";
 import { MockTmuxServer } from "../../src/mock/index.js";
+import { createCloseGate } from "../../src/transport/close-gate.js";
 
 interface FakeTransport extends TmuxTransport {
+  // Every command the transport accepted.
+  readonly sent: string[];
   feed(chunk: string): void;
+  triggerLost(reason: string): void;
   triggerClose(reason?: string): void;
 }
 
+// The lifecycle is the real transports' own gate, so a lost fake refuses
+// sends exactly as they do.
 function createFakeTransport(): FakeTransport {
   const dataCallbacks: ((chunk: string) => void)[] = [];
-  const closeCallbacks: ((reason?: string) => void)[] = [];
+  const gate = createCloseGate();
+  const sent: string[] = [];
   return {
-    send() {
-      return { ok: true } as const;
+    sent,
+    send(command) {
+      const admitted = gate.admit();
+      if (admitted.ok) sent.push(command);
+      return admitted;
     },
     onData(cb): void {
       dataCallbacks.push(cb);
     },
-    onClose(cb): void {
-      closeCallbacks.push(cb);
-    },
+    onLost: gate.onLost,
+    onClose: gate.onClose,
     close(): void {},
     feed(chunk): void {
       dataCallbacks.forEach((cb) => cb(chunk));
     },
-    triggerClose(reason): void {
-      closeCallbacks.forEach((cb) => cb(reason));
-    },
+    triggerLost: gate.lose,
+    triggerClose: gate.dispatch,
   };
 }
 
@@ -779,5 +787,55 @@ describe("TmuxClient — consumer code runs between messages", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("TmuxClient — a lost transport is the connection dying, not a topology fault", () => {
+  it("a window event after the loss sends no query and reports no topology-error; closing then closed", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    const topologyErrors: Error[] = [];
+    client.on("topology-error", (ev) => topologyErrors.push(ev.error));
+    const states: ConnectionState[] = [];
+    client.on("connection-state", (ev) => states.push(ev.state));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+
+    t.feed(STARTUP_GREETING);
+    // The bootstrap's reply: a server with no panes.
+    t.feed("%begin 1 1 1\n%end 1 1 1\n");
+    // A window refresh is in flight when the transport is lost.
+    t.feed("%window-add @2\n");
+    expect(t.sent.at(-1)).toMatch(/^list-panes -t @2 /);
+
+    t.triggerLost("stdin failed: EPIPE");
+    const sentAtLoss = t.sent.length;
+    // Buffered in stdout before tmux died, processed after the loss.
+    t.feed("%window-add @3\n");
+    await expect(client.execute("list-windows")).rejects.toThrow(
+      new TransportSendError("transport lost: stdin failed: EPIPE"),
+    );
+    t.triggerClose("exit 1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(t.sent.length).toBe(sentAtLoss);
+    expect(topologyErrors).toEqual([]);
+    expect(states).toEqual([
+      { status: "ready" },
+      { status: "closing", reason: "stdin failed: EPIPE" },
+      { status: "closed", reason: "transport-error" },
+    ]);
+  });
+
+  it("a reply tmux sent before the loss still settles its command while closing", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    const call = client.execute("display-message -p hi");
+    t.triggerLost("stdin failed: EPIPE");
+    t.feed("%begin 1 1 1\nhi\n%end 1 1 1\n");
+    await expect(call).resolves.toMatchObject({ output: ["hi"] });
   });
 });

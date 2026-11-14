@@ -196,6 +196,7 @@ describe("window model — phaseFor", () => {
     connecting: { status: "connecting" },
     ready: { status: "ready" },
     reconnecting: { status: "reconnecting", attempt: 2 },
+    closing: { status: "closing", reason: "stdin failed: EPIPE" },
     closed: { status: "closed", reason: "exit" },
   };
 
@@ -254,6 +255,17 @@ describe("window model — phaseFor", () => {
       phaseFor(s, { kind: "unsynced" }, view, connecting, 1),
     ).toMatchObject({
       reason: "reconnecting (attempt 1): ECONNREFUSED",
+    });
+  });
+
+  it("closing keeps the last picture, stale, with the loss as its reason", () => {
+    expect(
+      phaseFor(states.closing, { kind: "synced" }, view, connecting, 3),
+    ).toEqual({
+      phase: "stale",
+      window: view,
+      since: 3,
+      reason: "closing: stdin failed: EPIPE",
     });
   });
 

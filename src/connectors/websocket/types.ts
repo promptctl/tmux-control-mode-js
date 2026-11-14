@@ -209,6 +209,17 @@ export type SocketEnd =
    *  passed while the bridge's close handshake was pending. */
   | { readonly kind: "terminated"; readonly by: "shutdown" | "heartbeat" };
 
+/** The upstream `TmuxClient` states that end a bridge connection. */
+export type UpstreamEnd = Extract<
+  TmuxConnectionState,
+  { status: "closing" | "closed" }
+>;
+
+export const isUpstreamEnd = (
+  state: TmuxConnectionState,
+): state is UpstreamEnd =>
+  state.status === "closing" || state.status === "closed";
+
 export type BridgeObservabilityEvent =
   | {
       // One per `shutdown` call that parsed; the bridge's, so it carries no
@@ -265,19 +276,17 @@ export type BridgeObservabilityEvent =
       readonly message: string;
     }
   | {
-      // The TmuxClient behind this connection closed (tmux died, its
-      // transport failed, or it was disposed), so the bridge is closing the
-      // connection with BRIDGE_CLOSED. The upstream's typed close reason
-      // rides here; the `connection-closed` that follows shares its
-      // BRIDGE_CLOSED code with heartbeat timeout and shutdown, so this event
-      // is what tells a tmux death apart from a silent browser.
-      // [LAW:nothing-unseen]
+      // The TmuxClient behind this connection lost its transport or closed
+      // (tmux died, its transport failed, or it was disposed), so the bridge
+      // is closing the connection with BRIDGE_CLOSED. The upstream state
+      // that ended it rides here, once: `closing` with the transport's
+      // account of the loss, or `closed` with its typed close reason. The
+      // `connection-closed` that follows shares its BRIDGE_CLOSED code with
+      // heartbeat timeout and shutdown, so this event is what tells a tmux
+      // death apart from a silent browser. [LAW:nothing-unseen]
       readonly kind: "upstream-closed";
       readonly identity: ConnectionIdentity;
-      readonly reason: Extract<
-        TmuxConnectionState,
-        { status: "closed" }
-      >["reason"];
+      readonly state: UpstreamEnd;
     }
   | {
       // A pane's resume (Continue) was refused by a live tmux while the

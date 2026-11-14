@@ -68,6 +68,19 @@ export const HELD_BYTES_LIMIT = 4 * 1024 * 1024;
 
 export type ReportTopologyError = (error: Error) => void;
 
+// The connection the router issues commands through.
+// [LAW:no-ambient-temporal-coupling] none → live → (lost →) none. Queries run
+//   only on a live connection; pane actions also on a lost one, whose adapter
+//   may hold them for the next connection through a reconnect backoff.
+// [LAW:types-are-the-program] One value, so "queries may run" can never name
+//   a different runner from "commands may run".
+type Connection =
+  | { readonly phase: "none" }
+  | { readonly phase: "live"; readonly run: RunCommand }
+  | { readonly phase: "lost"; readonly run: RunCommand };
+
+const NO_CONNECTION: Connection = { phase: "none" };
+
 // [LAW:no-silent-failure] A rejected command can carry any thrown value; normalize
 //   to Error and give it a self-describing prefix so a consumer that logs only
 //   `ev.error.message` sees the bootstrap context (not a bare `close 1006`),
@@ -123,20 +136,9 @@ export class TopologyRouter {
   //   No second staleness guard co-exists with it.
   private readonly epoch = new TopologyEpochTracker();
 
-  // Injected by the transport adapter on connection-ready. Null before ready
-  // and after close. Non-null is the "can issue commands" invariant.
-  // [LAW:no-ambient-temporal-coupling] The state machine is: null → ready → null.
-  //   onTransportReady sets it; onTransportClose clears it.
-  private runCommand: RunCommand | null = null;
-
-  // The runner topology queries use: the live connection's only. An adapter
-  // may keep `runCommand` through a reconnect backoff so queued pane actions
-  // reach the next connection, but a query's answer must come from the
-  // connection it was asked on.
-  // [LAW:no-ambient-temporal-coupling] null → ready → (lost | close) → null.
-  //   onTransportLost retires it before the adapter rejects what was in flight,
-  //   so every failure path's identity check sees the drop, whatever the error.
-  private queryRun: RunCommand | null = null;
+  // Set by the transport adapter's onTransportReady / onTransportLost /
+  // onTransportClose; see Connection.
+  private connection: Connection = NO_CONNECTION;
 
   // Idle-pane suppression. Both null when the feature is off (the default), in
   // which case every `this.interest?.recompute()` is a genuine no-op and the
@@ -180,7 +182,7 @@ export class TopologyRouter {
     this.reportTopologyError = reportTopologyError;
     if (options?.idlePaneSuppression === true) {
       // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
-      //   sender, which the router gates on the live runCommand.
+      //   sender, which the router gates on its connection.
       this.suppressor = new IdlePaneSuppressor((paneId, action) =>
         this.sendPaneAction(paneId, action),
       );
@@ -207,12 +209,14 @@ export class TopologyRouter {
   //   Drops the action when no connection can carry it — a detached control-mode
   //   client's pauses are moot, so teardown-time continues simply do not fire.
   private sendPaneAction(paneId: number, action: PaneAction): void {
-    const run = this.runCommand;
-    if (run === null) return;
+    const conn = this.connection;
+    if (conn.phase === "none") return;
     // Fire-and-forget: a rejection means the pane already went away, which is
     // fine for a best-effort suppression action. [LAW:no-silent-failure] does
     // not apply — there is no downstream that depends on this succeeding.
-    void run(refreshClientPaneAction(paneId, action)).catch(() => undefined);
+    void conn
+      .run(refreshClientPaneAction(paneId, action))
+      .catch(() => undefined);
   }
 
   // ---------------------------------------------------------------------------
@@ -235,19 +239,18 @@ export class TopologyRouter {
     this.delivery.step(this.ready, runCommand);
   }
 
-  private readonly ready = (runCommand: RunCommand): void => {
-    this.runCommand = runCommand;
-    this.queryRun = runCommand;
+  private readonly ready = (run: RunCommand): void => {
+    this.connection = { phase: "live", run };
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
-    //   Before runCommand exists, sendPaneAction drops every action — but the
+    //   Before a connection exists, sendPaneAction drops every action — but the
     //   only panes the tracker can mark interesting pre-ready are pane-scope
     //   ones (topology is empty until bootstrap), so the dropped action is a
     //   Continue, and a control-mode client's panes default to RUNNING. A
     //   dropped pre-ready Continue therefore targets an already-running pane: a
     //   no-op, not lost state. Nothing is ever paused pre-ready, because pausing
-    //   requires a delivered Pause, which cannot happen while runCommand is null.
+    //   requires a delivered Pause, which cannot happen with no connection.
     //   The bootstrap below recomputes the full universe and pauses the
-    //   genuinely-idle panes with runCommand set.
+    //   genuinely-idle panes on the live connection.
     if (this.needsTopology()) {
       void this.bootstrap();
     }
@@ -256,18 +259,22 @@ export class TopologyRouter {
   /**
    * Called by the transport adapter the moment the connection that `run`
    * served drops, before it rejects the commands in flight. Topology queries
-   * stop until the next {@link onTransportReady}, whose bootstrap re-seeds;
-   * sinks stay attached.
+   * stop until the next {@link onTransportReady}, whose bootstrap re-seeds,
+   * and every query in flight is stale, so its answer — rows or a refusal —
+   * changes nothing and reports nothing; sinks stay attached.
    */
   onTransportLost(run: RunCommand): void {
     this.delivery.step(this.lost, run);
   }
 
   private readonly lost = (run: RunCommand): void => {
-    // [LAW:single-enforcer] The same identity rule as every query path: late
-    //   evidence about an earlier connection says nothing about the current one.
-    if (this.queryRun !== run) return;
-    this.queryRun = null;
+    // Late evidence about an earlier connection says nothing about the
+    // current one.
+    if (this.connection.phase !== "live" || this.connection.run !== run) return;
+    this.connection = { phase: "lost", run };
+    // [LAW:single-enforcer] The epoch is the one staleness authority: losing
+    //   the connection supersedes every query in flight on it.
+    this.epoch.connectionLost();
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.
     this.topology.seed([]);
@@ -278,16 +285,16 @@ export class TopologyRouter {
    *
    * Calls `end()` exactly once on every still-attached sink and clears all
    * buckets; a write still queued for one of them is dropped. After this call
-   * `runCommand` is null; further `dispatchBytes` calls are no-ops.
+   * no command is issued and every query in flight is stale.
    */
   onTransportClose(): void {
     this.delivery.step(this.close);
   }
 
   private readonly close = (): void => {
-    this.runCommand = null;
-    this.queryRun = null;
-    // [LAW:no-ambient-temporal-coupling] runCommand is already null, so the
+    this.connection = NO_CONNECTION;
+    this.epoch.connectionLost();
+    // [LAW:no-ambient-temporal-coupling] There is no connection now, so the
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
@@ -313,10 +320,10 @@ export class TopologyRouter {
       const scope = options?.scope ?? serverScope;
       const dispose = this.sinks.attach(this.posting(sink), scope);
       // [LAW:dataflow-not-control-flow] Bootstrap trigger is driven by the data
-      //   of the scope value and the current queryRun state — not by a flag.
+      //   of the scope value and the current connection — not by a flag.
       if (
         (scope.kind === "session" || scope.kind === "window") &&
-        this.queryRun !== null
+        this.connection.phase === "live"
       ) {
         void this.bootstrap();
       }
@@ -535,8 +542,8 @@ export class TopologyRouter {
   // [LAW:single-enforcer] One bootstrap implementation. No transport adapter
   //   re-implements it.
   private async bootstrap(): Promise<void> {
-    if (this.queryRun === null) return;
-    const run = this.queryRun;
+    if (this.connection.phase !== "live") return;
+    const { run } = this.connection;
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
@@ -544,12 +551,11 @@ export class TopologyRouter {
     //   settles as one step, so no sink or listener runs mid-settle.
     await this.delivery.settle(
       () => run(command),
-      (reply) => this.settleBootstrap(run, gen, command, reply),
+      (reply) => this.settleBootstrap(gen, command, reply),
     );
   }
 
   private settleBootstrap(
-    run: RunCommand,
     gen: number,
     command: string,
     reply: Outcome<CommandResponse>,
@@ -564,11 +570,7 @@ export class TopologyRouter {
         // seed, so re-query: otherwise the topology stays empty and every held
         // chunk is dropped. The re-run counts itself in flight before this
         // finally releases, so held chunks wait for it.
-        if (
-          this.queryRun === run &&
-          this.needsTopology() &&
-          this.epoch.isLatestBootstrap(gen)
-        )
+        if (this.needsTopology() && this.epoch.isLatestBootstrap(gen))
           void this.bootstrap();
         return;
       }
@@ -587,24 +589,15 @@ export class TopologyRouter {
       this.requery({ left, lostTrack });
       this.interest?.recompute();
     } catch (err) {
-      // [FRAMING:representation] A bootstrap that settles after its transport
-      //   episode ended is a shutdown/reconnect artifact, not a topology fault of
-      //   the CURRENT connection — `connection-state` already represents that,
-      //   so a follow-on topology-error would be a misleading second signal.
-      //   Compare IDENTITY, not a value: `run` is the exact runner this bootstrap
-      //   used, captured at entry. `this.queryRun !== run` is true both when the
-      //   transport dropped or closed (now null) AND when it reopened (now a new
-      //   runner) — the value-only `=== null` check misses the reconnect (ABA)
-      //   case, where a stale rejection would fire on a healthy new connection.
-      //   Not a silent drop: the current connection's own bootstrap still reports.
-      if (this.queryRun !== run) return;
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
-      //   path too: if a newer bootstrap has since started, it owns the outcome
-      //   (it will seed a healthy topology or report its own failure), so this
-      //   superseded rejection stays silent — reporting it would be a false alarm
-      //   on an already-repaired connection. A failure that is still the latest
-      //   bootstrap — including one whose gen was bumped only by a window-close —
-      //   IS the authoritative topology state and must surface.
+      //   path too: if a newer bootstrap has since started, or the connection
+      //   it ran on was lost, the next bootstrap owns the outcome (it will seed
+      //   a healthy topology or report its own failure), so this superseded
+      //   rejection stays silent — `connection-state` already represents a
+      //   drop, and reporting it would be a false alarm on an already-repaired
+      //   connection. A failure that is still the latest bootstrap — including
+      //   one whose gen was bumped only by a window-close — IS the
+      //   authoritative topology state and must surface.
       if (!this.epoch.isLatestBootstrap(gen)) return;
       // [LAW:no-silent-failure] The bootstrap effect failed. An empty topology
       //   is NOT a handled fallback here: with no topology, dispatch matches only
@@ -637,19 +630,18 @@ export class TopologyRouter {
   }
 
   private async refreshWindow(windowId: number): Promise<void> {
-    if (this.queryRun === null) return;
-    const run = this.queryRun;
+    if (this.connection.phase !== "live") return;
+    const { run } = this.connection;
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
     await this.delivery.settle(
       () => run(command),
-      (reply) => this.settleWindowRefresh(run, windowId, gen, command, reply),
+      (reply) => this.settleWindowRefresh(windowId, gen, command, reply),
     );
   }
 
   private settleWindowRefresh(
-    run: RunCommand,
     windowId: number,
     gen: number,
     command: string,
@@ -668,14 +660,13 @@ export class TopologyRouter {
       this.interest?.recompute();
     } catch (err) {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
-      //   newer refresh or a window-close owns this window now.
+      //   newer refresh, a window-close or the connection's loss owns this
+      //   window now.
       if (!this.epoch.isWindowRefreshCurrent(windowId, gen)) return;
       // A refresh is sent because the window's rows are suspect, so they go
       // whatever the failure; their panes are held, not misrouted.
       this.topology.removeWindow(windowId);
       this.interest?.recompute();
-      // [LAW:no-silent-failure] Same shutdown-artifact rule as bootstrap.
-      if (this.queryRun !== run) return;
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.

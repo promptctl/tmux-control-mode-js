@@ -333,6 +333,8 @@ function staleReason(
       return "connecting";
     case "ready":
       return "reconnected; resyncing the window";
+    case "closing":
+      return `closing: ${conn.reason}`;
   }
 }
 

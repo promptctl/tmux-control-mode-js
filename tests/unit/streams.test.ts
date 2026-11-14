@@ -37,6 +37,7 @@ function createFakeTransport(): FakeTransport {
     onData(cb): void {
       dataCallbacks.push(cb);
     },
+    onLost() {},
     onClose(cb): void {
       closeCallbacks.push(cb);
     },

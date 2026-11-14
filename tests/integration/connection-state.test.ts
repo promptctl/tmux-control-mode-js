@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
+import { sessionScope } from "../../src/pane-output.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
@@ -75,6 +76,46 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(["exit", "transport-error"]).toContain(
         finalState.status === "closed" ? finalState.reason : "",
       );
+    }, 15000);
+
+    it("a session-scoped sink sees tmux die as the connection closing, not as a topology fault", async () => {
+      const sessionName = uniqueName("connstate-lost");
+      tmux(socketName, ["new-session", "-d", "-s", sessionName]);
+      const sessionId = Number(
+        tmux(socketName, [
+          "display-message",
+          "-p",
+          "-t",
+          sessionName,
+          "#{session_id}",
+        ])
+          .trim()
+          .slice(1),
+      );
+      client = new TmuxClient(
+        spawnTmux(["attach-session", "-t", sessionName], {
+          socketPath: socketName,
+        }),
+      );
+      await waitReady(client);
+      const topologyErrors: Error[] = [];
+      client.on("topology-error", (e) => topologyErrors.push(e.error));
+      client.attachBytesSink(
+        { write() {}, end() {} },
+        { scope: sessionScope(sessionId) },
+      );
+      // A window event in flight as tmux dies is the window this pins: its
+      // refresh is refused by a lost transport, and that is the connection
+      // dying, reported by connection-state alone.
+      tmux(socketName, ["new-window", "-d", "-t", sessionName]);
+      const closed = waitForEvent(
+        client,
+        "connection-state",
+        (e) => e.state.status === "closed",
+      );
+      killTmuxServer(socketName);
+      await closed;
+      expect(topologyErrors).toEqual([]);
     }, 15000);
   },
 );

@@ -932,8 +932,19 @@ describe.skipIf(!RUN_INTEGRATION)(
       );
       expect(Number.isInteger(serverPid) && serverPid > 1).toBe(true);
       try {
+        const sessionId = Number(
+          (
+            await fx.tmux.execute("display-message -p '#{session_id}'")
+          ).output[0]!.slice(1),
+        );
         const { client, states, errors } = createWsBackedClient(fx.url);
         await waitForState(client, "ready");
+        const topologyErrors: Error[] = [];
+        client.on("topology-error", (e) => topologyErrors.push(e.error));
+        client.attachBytesSink(
+          { write() {}, end() {} },
+          { scope: sessionScope(sessionId) },
+        );
 
         // Frozen, tmux never reads the command: it is in flight at the bridge
         // and stays so until the kill. The bridge's `call` event and its
@@ -956,6 +967,9 @@ describe.skipIf(!RUN_INTEGRATION)(
           { status: "closed", reason: "transport-error" },
         ]);
         expect(states.some((s) => s.status === "reconnecting")).toBe(false);
+        // The death is the connection's to report; no query it took down is
+        // a topology fault.
+        expect(topologyErrors).toEqual([]);
         expect(errors).toContainEqual(
           expect.objectContaining({
             code: "BRIDGE_CLOSED",
@@ -977,7 +991,11 @@ describe.skipIf(!RUN_INTEGRATION)(
         ]);
         expect(
           fx.observabilityEvents.filter((e) => e.kind === "upstream-closed"),
-        ).toEqual([expect.objectContaining({ reason: "transport-error" })]);
+        ).toEqual([
+          expect.objectContaining({
+            state: { status: "closed", reason: "transport-error" },
+          }),
+        ]);
       } finally {
         // Between SIGSTOP and SIGKILL the server is frozen, and fx.shutdown()'s
         // synchronous kill-server would block forever on a socket nobody

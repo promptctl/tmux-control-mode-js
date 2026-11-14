@@ -29,6 +29,16 @@ All notable changes to this project are documented here. Format follows
 - A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the
   client's size methods clear the `ignore-size` flag `watchServerArgs` sets,
   and the watcher resizes windows.
+- `TmuxTransport` requires `onLost(callback)`: the transport announces that
+  it can deliver nothing more before its close reason is known, and a send it
+  refuses is never the first word of a dying connection. A transport that
+  learns of loss only at close registers the callback and never calls it.
+- `ConnectionState` gains `closing { reason }`: `TmuxClient` emits it when its
+  transport is lost, before `closed`. Queries a dying connection refuses are
+  no longer reported as `topology-error`.
+- The WebSocket bridge's `upstream-closed` observability event carries
+  `state` (the upstream's `closing` or `closed` state) in place of `reason`,
+  once per connection.
 
 ### Added
 

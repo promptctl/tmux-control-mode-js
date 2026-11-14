@@ -121,46 +121,45 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
 
   // [LAW:no-silent-failure] A Writable that emits `error` with no listener
   // crashes the host process. In the window between tmux dying and the child's
-  // `close` event, a write gets EPIPE — this listener absorbs the crash and
-  // records the failure so subsequent sends refuse loudly. It does NOT dispatch
-  // close: the child's own close event owns the true exit reason.
-  // [LAW:single-enforcer] First reason wins, mirroring the close gate: this
-  // listener and send()'s synchronous catch both write here, and whichever
-  // fires first is the truest cause — a later write's error must not
-  // overwrite it.
-  let stdinFailure: string | undefined;
-  child.stdin.on("error", (err: Error) => {
-    stdinFailure ??= err.message;
-  });
+  // `close` event, a write gets EPIPE: the connection is lost, so every later
+  // send refuses. It does NOT dispatch close: the child's own close event owns
+  // the true exit reason. The kill makes that close certain — a child that
+  // already exited ignores it, so its natural exit reason still wins.
+  const lose = (err: unknown): void => {
+    closeGate.lose(
+      `stdin failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    child.kill();
+  };
+  child.stdin.on("error", lose);
 
   const transport: TmuxTransport = {
     // [LAW:single-enforcer] LF-termination logic itself lives in
     // terminateLine(), shared with the websocket transport.
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
-      if (closeGate.state().closed) {
-        return { ok: false, reason: closeGate.deniedSendReason() };
-      }
-      if (stdinFailure !== undefined) {
-        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
-      }
-      const terminated = terminateLine(command);
+      const admitted = closeGate.admit();
+      if (!admitted.ok) return admitted;
       // [LAW:types-are-the-program] send is total by its own contract; Node
       // stream internals have changed synchronous-throw behavior across
       // majors (e.g. write-after-destroy), so a foreign exception is
-      // converted to the typed result at this boundary and recorded like an
+      // converted to the typed result at this boundary and is a loss like an
       // async stdin failure.
       try {
-        child.stdin.write(terminated);
+        child.stdin.write(terminateLine(command));
       } catch (err) {
-        stdinFailure ??= err instanceof Error ? err.message : String(err);
-        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
+        lose(err);
+        return closeGate.admit();
       }
-      return { ok: true };
+      return admitted;
     },
 
     onData(callback: (chunk: string) => void): void {
       dataCallbacks.push(callback);
+    },
+
+    onLost(callback: (reason: string) => void): void {
+      closeGate.onLost(callback);
     },
 
     onClose(callback: (reason?: string) => void): void {

@@ -32,7 +32,7 @@ import {
   type ChunkPayload,
 } from "./pane-output.js";
 import { TopologyRouter } from "./topology-router.js";
-import type { TopologyRouterOptions } from "./topology-router.js";
+import type { RunCommand, TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
 import {
   ClientSizeClaims,
@@ -218,6 +218,9 @@ export class TmuxClient
   // [LAW:one-source-of-truth] All byte routing, topology, and bootstrap logic
   //   lives in TopologyRouter. TmuxClient injects execute() as the command runner.
   private readonly router: TopologyRouter;
+  // [LAW:one-source-of-truth] This client has one connection ever, so one
+  // runner names it to the router: on ready, on loss and on close alike.
+  private readonly run: RunCommand = (cmd) => this.execute(cmd);
 
   // [LAW:effects-at-boundaries] The relay describes cross-session layout
   // events via this callback; TmuxClient performs the actual emission,
@@ -272,6 +275,9 @@ export class TmuxClient
 
     transport.onData((chunk) => {
       this.parser.feed(chunk);
+    });
+    transport.onLost((reason) => {
+      this.delivery.step(() => this.loseConnection(reason));
     });
     transport.onClose((reason) => {
       // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
@@ -491,6 +497,18 @@ export class TmuxClient
     this.transition({ status: "closed", reason: closedReason });
   }
 
+  // The transport can deliver nothing more and its close is on the way. Topology
+  // queries stop now, so a refusal in the meantime is not reported as a
+  // topology fault; commands already sent stay pending, since tmux's replies
+  // to them may still arrive, and the close rejects whatever is left with
+  // the true reason. 'closed' is terminal: a loss reported after it (a pipe
+  // error behind a protocol-error's close) changes nothing.
+  private loseConnection(reason: string): void {
+    if (this.currentConnectionState.status === "closed") return;
+    this.router.onTransportLost(this.run);
+    this.transition({ status: "closing", reason });
+  }
+
   // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
   // ever arrive for these commands. Reject them now instead of leaving their
   // promises unsettled forever; clearing both collections first means a
@@ -528,7 +546,7 @@ export class TmuxClient
     if (this.currentConnectionState.status !== "connecting") return;
     this.startupFailure = failure;
     this.transition({ status: "ready" });
-    this.router.onTransportReady((cmd) => this.execute(cmd));
+    this.router.onTransportReady(this.run);
   }
 
   // [LAW:single-enforcer] The one writer of connectionState, and the one

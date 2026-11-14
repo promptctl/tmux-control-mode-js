@@ -24,6 +24,7 @@ function makeBridge(forwardsLifecycle = false) {
   const transport: TmuxTransport = {
     send: () => ({ ok: true }),
     onData() {},
+    onLost() {},
     onClose() {},
     close() {},
   };

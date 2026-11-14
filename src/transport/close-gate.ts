@@ -1,21 +1,33 @@
 // src/transport/close-gate.ts
-// Shared end-of-life state machine for TmuxTransport implementations.
+// Shared lifecycle state machine for TmuxTransport implementations.
 //
-// [LAW:one-source-of-truth] Every transport answers "is it closed, and why"
-// from exactly one state value, dispatched exactly once. Both spawn.ts and
-// the websocket transport independently defined this same discriminated
-// union and guard-then-dispatch pattern; this is the single definition they
-// now derive from, so a change to close semantics (e.g. what "reason"
+// [LAW:one-source-of-truth] Every transport answers "can it still deliver,
+// and if not why" from exactly one state value, each transition dispatched
+// exactly once. Both spawn.ts and the websocket transport derive from this
+// single definition, so a change to lifecycle semantics (e.g. what "reason"
 // means) cannot drift between implementations without a compile error.
 
-/** Plain object contract — no EventEmitter, no Node streams. */
-export type TransportCloseState =
-  | { readonly closed: false }
-  | { readonly closed: true; readonly reason: string | undefined };
+import type { SendResult } from "./types.js";
+
+/**
+ * `open` → `lost` → `closed`, or `open` → `closed`. `lost` is a connection
+ * that can deliver nothing more whose close reason is not yet known.
+ * Plain object contract — no EventEmitter, no Node streams.
+ */
+export type TransportLifecycle =
+  | { readonly phase: "open" }
+  | { readonly phase: "lost"; readonly reason: string }
+  | { readonly phase: "closed"; readonly reason: string | undefined };
 
 export interface CloseGate {
-  /** Current end-of-life state. */
-  readonly state: () => TransportCloseState;
+  /** Current lifecycle state. */
+  readonly state: () => TransportLifecycle;
+  /**
+   * Record that nothing more can be delivered (`open` → `lost`). A no-op
+   * once lost or closed: the first failure is the truest one.
+   * [LAW:single-enforcer]
+   */
+  readonly lose: (reason: string) => void;
   /**
    * Dispatch a close with `reason` (`undefined` means a clean exit).
    * [LAW:single-enforcer] Exactly-once: once closed, later calls are a
@@ -23,15 +35,15 @@ export interface CloseGate {
    * by a subsequent, less specific dispatch for the same death.
    */
   readonly dispatch: (reason: string | undefined) => void;
+  /** Register a callback to run when the gate is lost. */
+  readonly onLost: (callback: (reason: string) => void) => void;
   /** Register a callback to run on dispatch. */
   readonly onClose: (callback: (reason?: string) => void) => void;
   /**
-   * The `SendResult.reason` string for a send refused because this gate is
-   * closed: {@link closedSendReason} of its recorded reason. Callers must
-   * check `state().closed` first — calling this on an open gate throws
-   * rather than silently claiming "transport closed" while it is not.
+   * Whether a send may proceed: `ok` while open, else the refusal a
+   * transport's `send()` returns.
    */
-  readonly deniedSendReason: () => string;
+  readonly admit: () => SendResult;
 }
 
 // [LAW:single-enforcer] The one formatting of "not sent, because the
@@ -41,40 +53,56 @@ export const closedSendReason = (reason: string | undefined): string =>
   reason === undefined ? "transport closed" : `transport closed: ${reason}`;
 
 export function createCloseGate(): CloseGate {
-  let state: TransportCloseState = { closed: false };
-  const callbacks: ((reason?: string) => void)[] = [];
+  let state: TransportLifecycle = { phase: "open" };
+  const lostCallbacks: ((reason: string) => void)[] = [];
+  const closeCallbacks: ((reason?: string) => void)[] = [];
 
   return {
     state: () => state,
+    lose(reason) {
+      if (state.phase !== "open") return;
+      state = { phase: "lost", reason };
+      lostCallbacks.forEach((cb) => cb(reason));
+    },
     dispatch(reason) {
-      if (state.closed) return;
-      state = { closed: true, reason };
-      callbacks.forEach((cb) => cb(reason));
+      if (state.phase === "closed") return;
+      state = { phase: "closed", reason };
+      closeCallbacks.forEach((cb) => cb(reason));
     },
     // [LAW:no-silent-failure] A callback registered after the gate has
-    // already closed — whether long after, or synchronously from within
-    // another onClose callback during dispatch (state.closed flips to true
-    // before the dispatch loop runs) — fires immediately with the recorded
-    // reason instead of being silently dropped into an array that will
-    // never be iterated again.
+    // already reached its state — long after, or synchronously from within
+    // another callback during dispatch (the state flips before the loop
+    // runs) — fires immediately with the recorded reason instead of being
+    // dropped into an array that will never be iterated again.
+    onLost(callback) {
+      switch (state.phase) {
+        case "open":
+          lostCallbacks.push(callback);
+          return;
+        case "lost":
+          callback(state.reason);
+          return;
+        case "closed":
+          // Past loss: its close says everything a lost callback would.
+          return;
+      }
+    },
     onClose(callback) {
-      if (state.closed) {
+      if (state.phase === "closed") {
         callback(state.reason);
         return;
       }
-      callbacks.push(callback);
+      closeCallbacks.push(callback);
     },
-    deniedSendReason() {
-      // [LAW:no-silent-failure] A caller that skipped the state().closed
-      // check would otherwise silently get "transport closed" back for a
-      // gate that is not, in fact, closed — a real answer to the wrong
-      // question. Fail loud instead of misrepresenting the state.
-      if (!state.closed) {
-        throw new Error(
-          "CloseGate.deniedSendReason() called on a gate that is not closed",
-        );
+    admit() {
+      switch (state.phase) {
+        case "open":
+          return { ok: true };
+        case "lost":
+          return { ok: false, reason: `transport lost: ${state.reason}` };
+        case "closed":
+          return { ok: false, reason: closedSendReason(state.reason) };
       }
-      return closedSendReason(state.reason);
     },
   };
 }

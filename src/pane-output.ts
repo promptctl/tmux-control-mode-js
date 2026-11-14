@@ -814,10 +814,23 @@ export class TopologyEpochTracker {
    * cannot alias any pre-clear token.
    */
   startBootstrap(): number {
+    this.supersedeAll();
+    return this.latestBootstrapStartGen;
+  }
+
+  /**
+   * Call when the connection queries ran on is gone. Every query in flight
+   * is stale on both paths, as if a bootstrap had started: the next
+   * connection's bootstrap owns the outcome.
+   */
+  connectionLost(): void {
+    this.supersedeAll();
+  }
+
+  private supersedeAll(): void {
     this.windowGens.clear();
     this.layoutsSinceBootstrap.clear();
     this.latestBootstrapStartGen = ++this.bootstrapGen;
-    return this.latestBootstrapStartGen;
   }
 
   /** Call before applying seed(). Returns false if a newer event superseded this query. */

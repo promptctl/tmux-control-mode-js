@@ -9,8 +9,10 @@
  *
  * `ok: true` means the transport ACCEPTED the bytes for transmission — it is
  * not a delivery guarantee; a transport that dies after acceptance reports
- * that through `onClose`. `ok: false` means the transport already knows it
- * cannot deliver (closed, dead pipe, socket not open) and `reason` says why.
+ * that through `onLost` or `onClose`. `ok: false` has exactly two causes, and
+ * `reason` says which: the transport is not open yet (no lifecycle callback
+ * has fired), or it has already announced `onLost` or `onClose`. A refusal is
+ * therefore never the first word about a dying connection.
  *
  * [LAW:types-are-the-program] Send failure is a representable outcome, not an
  * exception convention: the compiler forces every implementation to state a
@@ -33,6 +35,13 @@ export interface TmuxTransport {
 
   /** Register callback for incoming data chunks. */
   onData(callback: (chunk: string) => void): void;
+
+  /**
+   * Register callback for the connection being gone before its close reason
+   * is known: every later send is refused and `onClose` follows. A transport
+   * that learns of loss only at close never calls it.
+   */
+  onLost(callback: (reason: string) => void): void;
 
   /** Register callback for transport close/error. */
   onClose(callback: (reason?: string) => void): void;

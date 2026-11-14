@@ -21,6 +21,7 @@ import { createCloseGate } from "../../transport/close-gate.js";
 import { terminateLine } from "../../transport/line-termination.js";
 import {
   WEBSOCKET_OPEN,
+  WEBSOCKET_CLOSING,
   WEBSOCKET_CLOSED,
   type BrowserWebSocketLike,
 } from "./types.js";
@@ -60,11 +61,6 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
   // one disconnect; the gate's exactly-once dispatch means TmuxClient
   // observes that as one exit path.
   const closeGate = createCloseGate();
-
-  // [LAW:one-source-of-truth] Mirrors spawn.ts's stdinFailure: a caught send
-  // throw is remembered so every subsequent send refuses immediately instead
-  // of re-attempting `ws.send()` against a socket already known to reject.
-  let sendFailure: string | undefined;
 
   ws.addEventListener("message", (event: { data: unknown }) => {
     const chunk = decodeFrame(event.data);
@@ -125,37 +121,46 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // either throw (CONNECTING) or silently drop (CLOSING/CLOSED) inside
     // ws.send — both are refused here as a typed result instead.
     send(command: string): SendResult {
-      if (closeGate.state().closed) {
-        return { ok: false, reason: closeGate.deniedSendReason() };
+      // A socket past OPEN whose close event has not landed yet is lost: the
+      // spec guarantees that close follows.
+      if (
+        ws.readyState === WEBSOCKET_CLOSING ||
+        ws.readyState === WEBSOCKET_CLOSED
+      ) {
+        closeGate.lose(`websocket closing (readyState ${ws.readyState})`);
       }
+      const admitted = closeGate.admit();
+      if (!admitted.ok) return admitted;
+      // CONNECTING: nothing is lost, the socket just cannot carry bytes yet.
       if (ws.readyState !== WEBSOCKET_OPEN) {
         return {
           ok: false,
           reason: `websocket not open (readyState ${ws.readyState})`,
         };
       }
-      if (sendFailure !== undefined) {
-        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
-      }
-      const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; the
       // socket is a consumer-supplied structural object (polyfills included),
       // so a foreign synchronous throw is converted to the typed result at
-      // this boundary, mirroring the spawn transport's stdin wrap.
+      // this boundary, mirroring the spawn transport's stdin wrap. The socket
+      // given up on is closed, so the close that ends the loss arrives.
       try {
-        ws.send(terminated);
+        ws.send(terminateLine(command));
       } catch (err) {
-        // [LAW:single-enforcer] First reason wins, mirroring spawn.ts's
-        // stdinFailure — only meaningful today since there's one writer, but
-        // consistent with the sibling pattern if a second ever appears.
-        sendFailure ??= err instanceof Error ? err.message : String(err);
-        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
+        closeGate.lose(
+          `websocket send failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        ws.close();
+        return closeGate.admit();
       }
-      return { ok: true };
+      return admitted;
     },
 
     onData(callback: (chunk: string) => void): void {
       dataCallbacks.push(callback);
+    },
+
+    onLost(callback: (reason: string) => void): void {
+      closeGate.onLost(callback);
     },
 
     onClose(callback: (reason?: string) => void): void {
