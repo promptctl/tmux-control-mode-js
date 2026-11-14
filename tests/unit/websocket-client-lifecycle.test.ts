@@ -1758,3 +1758,149 @@ describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when t
     await client.close();
   });
 });
+
+describe("WebSocketTmuxClient — a welcome that never comes ends the connection at the handshake deadline", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const TIMEOUT = 100;
+  const RETRY: ReconnectPolicy = {
+    maxAttempts: 3,
+    initialDelayMs: 1,
+    maxDelayMs: 1,
+    factor: 1,
+    jitterMs: 0,
+  };
+
+  // A server that accepts the socket and then never answers hello; its
+  // socket's close() starts a close handshake that never finishes.
+  function silentServer(opts: { reconnect?: ReconnectPolicy } = {}) {
+    const errors: BridgeError[] = [];
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      handshakeTimeoutMs: TIMEOUT,
+      onError: (e) => errors.push(e),
+      ...opts,
+    });
+    void client.connect();
+    const ws = hub.latest();
+    ws.close = vi.fn(() => {
+      ws.readyState = 2;
+    });
+    hub.open();
+    return { client, hub, ws, errors };
+  }
+
+  it("leaves connecting, closes the socket, reports the timeout, rejects queued calls and reconnects", async () => {
+    const { client, hub, ws, errors } = silentServer({ reconnect: RETRY });
+    const queued = client.listWindows().catch((e: unknown) => e);
+
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    expect(client.connectionState).toEqual({ status: "connecting" });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ws.close).toHaveBeenCalledWith(
+      4000,
+      `handshake timeout after ${TIMEOUT}ms`,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.toPayload()).toMatchObject({
+      code: "BRIDGE_CLOSED",
+      message: `handshake timeout after ${TIMEOUT}ms`,
+    });
+    expect(client.connectionState).toEqual({
+      status: "reconnecting",
+      attempt: 1,
+      lastError: errors[0],
+    });
+    expect(await queued).toMatchObject({ code: "BRIDGE_CLOSED" });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(hub.sockets).toHaveLength(2);
+    hub.open();
+    hub.welcome();
+    expect(client.connectionState.status).toBe("ready");
+    await client.close();
+  });
+
+  it("with no reconnect policy, reads transport-error", async () => {
+    const { client } = silentServer();
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+  });
+
+  it("bounds a socket that never opens", async () => {
+    const hub = new MockWebSocketHub();
+    const client = new WebSocketTmuxClient({
+      url: "ws://test/",
+      autoConnect: false,
+      createWebSocket: hub.factory as unknown as (
+        url: string,
+      ) => BrowserWebSocketLike,
+      handshakeTimeoutMs: TIMEOUT,
+    });
+    void client.connect();
+    const close = vi.spyOn(hub.latest(), "close");
+    await vi.advanceTimersByTimeAsync(TIMEOUT);
+    expect(close).toHaveBeenCalledWith(4000, expect.any(String));
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+  });
+
+  it("a welcome before the deadline disarms it", async () => {
+    const { client, hub, ws, errors } = silentServer();
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    hub.welcome();
+    await vi.advanceTimersByTimeAsync(TIMEOUT * 10);
+
+    expect(client.connectionState.status).toBe("ready");
+    expect(ws.close).not.toHaveBeenCalled();
+    expect(errors).toEqual([]);
+    await client.close();
+  });
+
+  it("a connection that ends before the deadline leaves nothing armed", async () => {
+    const { client, hub, errors } = silentServer({ reconnect: RETRY });
+    await client.close();
+    void client.connect();
+    expect(hub.sockets).toHaveLength(2);
+    hub.open();
+    await vi.advanceTimersByTimeAsync(TIMEOUT - 1);
+    hub.welcome();
+    await vi.advanceTimersByTimeAsync(TIMEOUT * 10);
+
+    expect(client.connectionState.status).toBe("ready");
+    expect(errors).toEqual([]);
+    await client.close();
+  });
+
+  it("handshakeTimeoutMs: 0 throws BRIDGE_INVALID_ARG naming the option and value, and opens no socket", () => {
+    const hub = new MockWebSocketHub();
+    const fn = (): unknown =>
+      new WebSocketTmuxClient({
+        url: "ws://test/",
+        createWebSocket: hub.factory as unknown as (
+          url: string,
+        ) => BrowserWebSocketLike,
+        handshakeTimeoutMs: 0,
+      });
+    expect(fn).toThrow(BridgeError);
+    expect(fn).toThrow(/BRIDGE_INVALID_ARG/);
+    expect(fn).toThrow("handshakeTimeoutMs (0) must be");
+    expect(hub.sockets).toHaveLength(0);
+  });
+});
