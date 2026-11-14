@@ -624,12 +624,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     else reader.output(this, ctx, inbound);
   }
 
+  // A connection the client has found broken — a failed handshake, a missed
+  //   pong. `err` is why it ended, and the close reason says the same; the
+  //   calls it drops reject BRIDGE_CLOSED, the connection having closed
+  //   under them.
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
   //   lastError, which the end reads to publish transport-error (or
   //   reconnecting with lastError).
-  private failHandshake(err: BridgeError): void {
+  private failConnection(code: CloseCode, err: BridgeError): void {
     this.emitError(err);
-    this.end(4002, err.toPayload().message);
+    this.end(code, err.toPayload().message);
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -642,21 +646,22 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   other frame is a protocol fault, and a fault fails the connection.
   private static readonly beforeWelcome = (
     self: WebSocketTmuxClient,
-    kind: string,
-  ): void => self.failHandshake(outOfPhase(kind, "before welcome"));
+    _conn: Connection,
+    f: { readonly k: string },
+  ): void => self.failConnection(4002, outOfPhase(f.k, "before welcome"));
 
   private static readonly handshake: PhaseReader<Connection> = {
-    fault: (self, _conn, err) => self.failHandshake(err),
-    output: (self) => WebSocketTmuxClient.beforeWelcome(self, "output"),
+    fault: (self, _conn, err) => self.failConnection(4002, err),
+    output: (self, conn) =>
+      WebSocketTmuxClient.beforeWelcome(self, conn, { k: "output" }),
     frames: {
       welcome: (self, conn, f) => self.onWelcome(conn, f),
       error: (self, _conn, f) =>
         self.emitError(BridgeError.fromPayload(f.error)),
-      event: (self, _conn, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      result: (self, _conn, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      pong: (self, _conn, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      draining: (self, _conn, f) =>
-        WebSocketTmuxClient.beforeWelcome(self, f.k),
+      event: WebSocketTmuxClient.beforeWelcome,
+      result: WebSocketTmuxClient.beforeWelcome,
+      pong: WebSocketTmuxClient.beforeWelcome,
+      draining: WebSocketTmuxClient.beforeWelcome,
     },
   };
 
@@ -906,15 +911,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         // No pong: the peer is gone. Release stops the heartbeat, so its
         // deadline only passes while its own connection is the current one.
         onTimeout: () =>
-          this.delivery.step(() => {
-            this.emitError(
+          this.delivery.step(() =>
+            this.failConnection(
+              4000,
               new BridgeError(
                 "BRIDGE_CLOSED",
                 `heartbeat timeout after ${this.heartbeatTimeoutMs}ms`,
               ),
-            );
-            this.end(4000, "heartbeat timeout");
-          }),
+            ),
+          ),
       },
     );
   }

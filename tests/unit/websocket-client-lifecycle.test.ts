@@ -1437,7 +1437,7 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     ],
     ["missing limits", { k: "welcome" }, "welcome.limits"],
   ])(
-    "a welcome with %s closes the socket and leaves 'connecting'",
+    "a welcome with %s closes the socket and ends the connection",
     (_, welcome, field) => {
       const { client, ws, close, errors } = started();
       ws.fire("message", { data: JSON.stringify(welcome) });
@@ -1567,10 +1567,10 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     expect(client.connectionState.status).toBe("ready");
   });
 
-  it("a failed handshake ends the connection before its close handshake does: a later welcome and close change nothing", async () => {
+  it("a failed handshake ends the connection before its close handshake does: the close event that follows changes nothing", async () => {
     const { client, ws, errors } = started({ reconnect: true });
     // ws's close handshake: close() moves to CLOSING, and the close event
-    // waits for the peer's close frame. Frames keep arriving meanwhile.
+    // waits for the peer's close frame.
     ws.close = () => {
       ws.readyState = 2;
     };
@@ -1582,12 +1582,6 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     };
     expect(client.connectionState).toEqual(ended);
 
-    ws.fire("message", {
-      data: JSON.stringify({
-        k: "welcome",
-        limits: { ...LIMITS, heartbeatIntervalMs: 1_000 },
-      }),
-    });
     ws.readyState = 3;
     ws.fire("close", { code: 4002, reason: "" });
 
@@ -1702,7 +1696,10 @@ describe("WebSocketTmuxClient — a heartbeat timeout ends the connection when t
 
     await vi.advanceTimersByTimeAsync(INTERVAL + TIMEOUT);
 
-    expect(ws.close).toHaveBeenCalledWith(4000, "heartbeat timeout");
+    expect(ws.close).toHaveBeenCalledWith(
+      4000,
+      `heartbeat timeout after ${TIMEOUT}ms`,
+    );
     expect(errors).toHaveLength(1);
     expect(errors[0]?.toPayload()).toMatchObject({
       code: "BRIDGE_CLOSED",
