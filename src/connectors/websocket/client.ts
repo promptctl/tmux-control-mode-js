@@ -341,14 +341,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // connection: a failed handshake, a heartbeat timeout, a socket the factory
   // could not create. The fault is recorded first, so the state finalize
   // publishes reads it ("transport-error", or reconnecting with lastError),
-  // and reported last.
-  // [LAW:no-ambient-temporal-coupling] onError may close() or connect(); the
-  // connection it acts on is already the next one, so nothing after the
-  // report touches the connection the fault ended.
+  // and reported last, to onError alone: that state already holds it.
+  // [LAW:no-ambient-temporal-coupling] A listener of that state, or onError,
+  // may close() or connect(); whatever connection they leave is the next
+  // one, so nothing after finalize writes connection state.
   private failConnection(err: BridgeError, code: number): void {
     this.lastError = err;
     this.abortSocket(err, code);
-    this.emitError(err);
+    this.opts.onError?.(err);
   }
 
   // -------------------------------------------------------------------------

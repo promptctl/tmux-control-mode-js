@@ -1154,6 +1154,25 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     await client.close();
   });
 
+  it("a reconnect from the closed state's listener does not inherit the fault", () => {
+    const { client, hub } = makeClient();
+    client.on("connection-state", ({ state }) => {
+      if (state.status === "closed" && state.reason === "transport-error") {
+        void client.connect();
+      }
+    });
+    void client.connect();
+    hub.open();
+    hub.latest().fire("message", { data: BAD_WELCOMES[0]![1] });
+    expect(hub.sockets).toHaveLength(2);
+
+    hub.fireClose(-1, 1000, "");
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "exit",
+    });
+  });
+
   it("a connecting listener that closes the client ends the socket being opened", async () => {
     const { client, hub } = makeClient({ reconnect: true });
     void client.connect();

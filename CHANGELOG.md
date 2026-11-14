@@ -94,6 +94,36 @@ All notable changes to this project are documented here. Format follows
   `begin` report. Upgrade a WebSocket bridge and its clients together: an
   older `WebSocketTmuxClient`
   reports a `begin` or `line` `protocol-error` frame through `onError`.
+- A `WebSocketTmuxClient` that cannot parse the bridge's welcome no longer
+  sits in `connecting` with its calls queued forever. It reports the
+  `BRIDGE_PROTOCOL_ERROR` through `onError`, closes the socket with 4002 and
+  rejects queued calls with that error. Then it reconnects under its policy,
+  or reads `closed`/`transport-error` without one. Any other frame it cannot
+  read before the welcome fails the handshake the same way. After the
+  welcome, such a frame is still reported and the connection stays up.
+- A heartbeat timeout on `WebSocketTmuxClient` now rejects pending calls and
+  leaves `ready` when it fires, instead of when the runtime's close handshake
+  gives up on the dead peer. It is reported through `onError` and reads
+  `transport-error`, where it read `exit`.
+- A `createWebSocket` that throws is reported through `onError` and reads
+  `closed`/`transport-error`, where it read `exit` and reported nothing.
+- `close()` on a `WebSocketTmuxClient` whose `ws`-package socket is still
+  CONNECTING no longer throws an uncaught `error` event. A socket the client
+  is done with now keeps its listeners and reaches nothing, because the `ws`
+  package ignores `addEventListener`'s `{ signal }`.
+  `BrowserWebSocketLike.addEventListener` no longer takes that option.
+- `onError` and `connection-state` listeners may call `close()` or
+  `connect()`. A fault ends its connection before `onError` hears of it, and
+  `connecting` is announced once the socket exists, so the connection such a
+  call opens or ends is the one it meant.
+
+### Added
+
+- `truncateCloseReason(message)` on `./websocket/protocol`: the longest
+  prefix of `message` that fits a WebSocket close frame's 123-byte reason,
+  never splitting a code point. A browser's `close()` throws on a longer
+  reason. The bridge and the client use it for every close reason they send,
+  where the bridge used to cut at 123 UTF-16 units.
 
 ## [0.2.0]
 
