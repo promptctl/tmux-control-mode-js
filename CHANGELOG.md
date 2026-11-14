@@ -32,7 +32,9 @@ All notable changes to this project are documented here. Format follows
   `Number.MAX_SAFE_INTEGER`.
 - `listPanes` reads a pane whose process name holds a tab, as tmux on Linux
   can report it: `pane_current_command` is escaped like `pane_current_path`.
-  0.2.0 dropped that pane from the list.
+  It also reads a pane whose cwd or process name holds a newline, which tmux
+  prints raw, splitting the pane's line. 0.2.0 dropped both panes from the
+  list.
 
 ### Fixed
 

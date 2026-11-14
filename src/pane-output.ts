@@ -922,10 +922,47 @@ export function parseListReply<T>(
   output: readonly string[],
   parseLine: (line: string) => T | null,
 ): T[] {
-  const unreadable = (): never => {
-    throw new TmuxReplyFormatError(command, output);
-  };
-  return output.map((line) => parseLine(line) ?? unreadable());
+  return output.map(
+    (line) => parseLine(line) ?? unreadableReply(command, output),
+  );
+}
+
+function unreadableReply(command: string, output: readonly string[]): never {
+  throw new TmuxReplyFormatError(command, output);
+}
+
+/** A tab-separated record format: how many fields a record has, and how to read one. */
+export interface RecordFormat<T> {
+  readonly fieldCount: number;
+  readonly parseLine: (line: string) => T | null;
+}
+
+// [LAW:no-silent-failure] The rule for a reply of tab-separated records, as
+// `parseListReply`'s for one item per line, except that a record can span
+// lines: tmux prints a newline in a free-text field (a cwd, a process name)
+// raw, and no format escape exists for it (`#{s/\n/...}` matches a literal
+// `n`, probed on 3.7b and 3.8). So lines are rejoined until a record has its
+// fields; no field holds a tab (see `escapeFreeTextField` in
+// protocol/encoder.ts), so the count is exact.
+export function parseRecordReply<T>(
+  command: string,
+  output: readonly string[],
+  format: RecordFormat<T>,
+): T[] {
+  const records: string[] = [];
+  let pending: string | null = null;
+  for (const line of output) {
+    const text = line.replace(/\r*$/, "");
+    pending = pending === null ? text : `${pending}\n${text}`;
+    if (pending.split("\t").length >= format.fieldCount) {
+      records.push(pending);
+      pending = null;
+    }
+  }
+  if (pending !== null) records.push(pending);
+  return records.map(
+    (record) => format.parseLine(record) ?? unreadableReply(command, output),
+  );
 }
 
 // [LAW:one-source-of-truth] Decode a single latin1-container field to real
@@ -1007,7 +1044,7 @@ function unescapeFreeTextField(field: string): string {
  * an id or size that is not an unsigned integer.
  */
 export function parseWindowRecordLine(line: string): WindowRecord | null {
-  const fields = recordFields(line, 6);
+  const fields = recordFields(line, WINDOW_RECORD.fieldCount);
   if (fields === null) return null;
   const [sessionId, sessionName, windowId, windowName, width, height] = fields;
   return completeRecord<WindowRecord>({
@@ -1033,8 +1070,8 @@ function parsePaneProcess(
 ): PaneProcessState | undefined {
   if (dead === "1") return { state: "dead" };
   if (dead !== "0") return undefined;
-  const runningPid = pid === "" ? 0 : parseUint(pid);
-  if (runningPid === 0) return { state: "empty" };
+  if (pid === "" || pid === "0") return { state: "empty" };
+  const runningPid = parseUint(pid);
   return runningPid === undefined
     ? undefined
     : {
@@ -1059,7 +1096,7 @@ function parsePaneProcess(
  * and for a `#{pane_dead}`/`#{pane_pid}` pair that names no process state.
  */
 export function parsePaneRecordLine(line: string): PaneRecord | null {
-  const fields = recordFields(line, 12);
+  const fields = recordFields(line, PANE_RECORD.fieldCount);
   if (fields === null) return null;
   const [
     sessionId,
@@ -1131,7 +1168,7 @@ export function parsePaneCwdReply(lines: readonly string[]): string | null {
  * `=== "1"` check.
  */
 export function parseSessionRecordLine(line: string): SessionRecord | null {
-  const fields = recordFields(line, 4);
+  const fields = recordFields(line, SESSION_RECORD.fieldCount);
   if (fields === null) return null;
   const [sessionId, sessionName, windowCount, attached] = fields;
   const attachedCount = parseUint(attached);
@@ -1142,3 +1179,16 @@ export function parseSessionRecordLine(line: string): SessionRecord | null {
     attached: attachedCount === undefined ? undefined : attachedCount !== 0,
   });
 }
+
+export const WINDOW_RECORD: RecordFormat<WindowRecord> = {
+  fieldCount: 6,
+  parseLine: parseWindowRecordLine,
+};
+export const PANE_RECORD: RecordFormat<PaneRecord> = {
+  fieldCount: 12,
+  parseLine: parsePaneRecordLine,
+};
+export const SESSION_RECORD: RecordFormat<SessionRecord> = {
+  fieldCount: 4,
+  parseLine: parseSessionRecordLine,
+};

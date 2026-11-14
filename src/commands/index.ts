@@ -49,10 +49,11 @@ import {
   respawnPane as encodeRespawnPane,
 } from "../protocol/encoder.js";
 import {
-  parseWindowRecordLine,
-  parsePaneRecordLine,
-  parseSessionRecordLine,
-  parseListReply,
+  WINDOW_RECORD,
+  PANE_RECORD,
+  SESSION_RECORD,
+  type RecordFormat,
+  parseRecordReply,
   parseNewWindowReply,
   parsePaneCwdReply,
 } from "../pane-output.js";
@@ -85,28 +86,28 @@ export type { NewWindowPlacement, PaneProcess, SplitOptions };
 async function listRecords<T>(
   client: TmuxConnection,
   command: string,
-  parseLine: (line: string) => T | null,
+  format: RecordFormat<T>,
 ): Promise<readonly T[]> {
   const response = await client.execute(command);
-  return parseListReply(command, response.output, parseLine);
+  return parseRecordReply(command, response.output, format);
 }
 
 export function listWindows(
   client: TmuxConnection,
 ): Promise<readonly WindowRecord[]> {
-  return listRecords(client, listWindowsCommand(), parseWindowRecordLine);
+  return listRecords(client, listWindowsCommand(), WINDOW_RECORD);
 }
 
 export function listPanes(
   client: TmuxConnection,
 ): Promise<readonly PaneRecord[]> {
-  return listRecords(client, listPanesCommand(), parsePaneRecordLine);
+  return listRecords(client, listPanesCommand(), PANE_RECORD);
 }
 
 export function listSessions(
   client: TmuxConnection,
 ): Promise<readonly SessionRecord[]> {
-  return listRecords(client, listSessionsCommand(), parseSessionRecordLine);
+  return listRecords(client, listSessionsCommand(), SESSION_RECORD);
 }
 
 // [LAW:one-source-of-truth] `response.output` is already one latin1-container

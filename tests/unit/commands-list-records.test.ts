@@ -1,6 +1,6 @@
 // tests/unit/commands-list-records.test.ts
 // listWindows/listPanes/listSessions against a fake TmuxConnection: a reply
-// whose every line parses resolves its records, and one line the parser
+// whose every record parses resolves its records, and one record the parser
 // cannot read rejects the whole list. The line grammar itself is covered in
 // pane-output.test.ts; what real tmux sends, in tests/integration/client.test.ts.
 
@@ -64,5 +64,35 @@ describe.each(LISTS)("$command", ({ list, command, line }) => {
     const attempt = list(replying(output));
     await expect(attempt).rejects.toBeInstanceOf(TmuxReplyFormatError);
     await expect(attempt).rejects.toMatchObject({ command, output });
+  });
+});
+
+// tmux prints a newline in a pane's cwd or process name raw, so the pane's
+// record arrives over two reply lines.
+describe("listPanes, a record split by a newline in a free-text field", () => {
+  const before = "$1\tmain\t@0\tzsh\t%0\t0\t/tmp/a";
+  const after = "b\t123\tzsh\tzsh\t80\t24";
+
+  it("rejoins the record and keeps the newline in the field", async () => {
+    const panes = await listPanes(
+      replying([before, after, `${before}${after}`]),
+    );
+    expect(panes.map((p) => p.process)).toEqual([
+      { state: "running", pid: 123, cwd: "/tmp/a\nb", currentCommand: "zsh" },
+      { state: "running", pid: 123, cwd: "/tmp/ab", currentCommand: "zsh" },
+    ]);
+  });
+
+  it("rejects a reply that ends inside a record", async () => {
+    await expect(listPanes(replying([before]))).rejects.toBeInstanceOf(
+      TmuxReplyFormatError,
+    );
+  });
+
+  it("rejects a reply whose lines do not join into whole records", async () => {
+    const full = "$1\tmain\t@0\tzsh\t%0\t0\t/tmp\t123\tzsh\tzsh\t80\t24";
+    await expect(
+      listPanes(replying(["$1\tmain\t@0", full])),
+    ).rejects.toBeInstanceOf(TmuxReplyFormatError);
   });
 });

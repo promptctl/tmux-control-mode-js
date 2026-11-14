@@ -1231,6 +1231,34 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     }
   }, 15000);
 
+  // tmux prints the newline raw, so this pane's record spans two reply lines.
+  it("CMD-02: listPanes() reads a pane whose cwd contains a newline", async () => {
+    sessionName = uniqueName("cmd-lp-nl");
+    client = await attachSession(socketName, sessionName);
+
+    const weirdDir = `/tmp/tmux-js-test-nl-${Date.now()}-a\nb`;
+    mkdirSync(weirdDir, { recursive: true });
+    try {
+      tmux(socketName, [
+        "new-window",
+        "-t",
+        sessionName,
+        "-n",
+        "nltest",
+        "-c",
+        weirdDir,
+      ]);
+      await waitForPane(
+        client,
+        (p) =>
+          p.windowName === "nltest" &&
+          running(p)?.cwd?.endsWith("a\nb") === true,
+      );
+    } finally {
+      rmSync(weirdDir, { recursive: true, force: true });
+    }
+  }, 15000);
+
   it("CMD-03: listSessions() returns structured SessionRecords with at least one entry", async () => {
     sessionName = uniqueName("cmd-ls");
     client = await attachSession(socketName, sessionName);
