@@ -23,12 +23,13 @@ import type { BridgeObservabilityEvent } from "../../src/connectors/websocket/ty
 import {
   BridgeError,
   encodeClientFrame,
+  parseClientFrame,
   parseServerFrame,
   parseResultFrame,
   type FatalErrorFrame,
   type ResultErrFrame,
-  type ResultFrame,
   type ResultOkFrame,
+  type RpcMethod,
   type ServerFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import {
@@ -60,6 +61,9 @@ interface FakeWs extends ServerWebSocketLike {
   // Drained on every `send` call — string for JSON frames, Uint8Array for
   // binary pane-output frames.
   readonly outbound: (string | Uint8Array)[];
+  // The method of every call fed in, by id, so a result is parsed as the
+  // answer to its call.
+  readonly calls: Map<string, RpcMethod>;
   // Every `close(code, reason)` the bridge issued, so the close reason it
   // hands the peer is assertable.
   readonly closeCalls: { code?: number; reason?: string }[];
@@ -86,6 +90,7 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
 
   const outbound: (string | Uint8Array)[] = [];
   const closeCalls: { code?: number; reason?: string }[] = [];
+  const calls = new Map<string, RpcMethod>();
   let readyState: number = WEBSOCKET_OPEN;
 
   const ws: FakeWs = {
@@ -102,7 +107,13 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
       buffered = n;
     },
     feedClient(frame) {
-      listeners.message?.(encodeClientFrame(frame as never), false);
+      const raw = encodeClientFrame(frame as never);
+      // Some tests feed malformed frames on purpose; only a call is parsed.
+      if ("k" in frame && frame.k === "call") {
+        const call = parseClientFrame(raw);
+        if (call.k === "call") calls.set(call.id, call.method);
+      }
+      listeners.message?.(raw, false);
     },
     feedBinary(bytes) {
       listeners.message?.(bytes, true);
@@ -116,6 +127,7 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
     },
     answersPings: true,
     outbound,
+    calls,
     closeCalls,
     terminateCalls: 0,
 
@@ -224,9 +236,12 @@ function readJsonFrames(ws: FakeWs): ServerFrame[] {
     .filter((f): f is string => typeof f === "string")
     .map((f) => {
       const frame = parseServerFrame(f);
-      // A result's body is parsed against its call's method, which these
-      // tests read off the frame as the bridge sent it.
-      return frame.k === "result" ? (frame.raw as ResultFrame) : frame;
+      if (frame.k !== "result") return frame;
+      const method = ws.calls.get(frame.id);
+      if (method === undefined) {
+        throw new Error(`result for ${frame.id}, which no call was fed`);
+      }
+      return parseResultFrame(method, frame.raw);
     });
 }
 

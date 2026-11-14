@@ -512,14 +512,13 @@ function wireArray<T>(
   );
 }
 
+// A call as the wire carries it: `method` is any string until
+// parseRpcRequest checks it against the allowlist.
+type WireCall = Omit<CallFrame, "method"> & { readonly method: string };
+
 function parseCall(x: unknown): CallFrame {
-  const m = wireObject<CallFrame>(x, "call");
-  const method = wireValue(
-    m.value("method"),
-    STRING.is,
-    "call.method",
-    STRING.shape,
-  );
+  const m = wireObject<WireCall>(x, "call");
+  const method = m.read("method", STRING);
   return {
     k: "call",
     id: m.read("id", NON_EMPTY_STRING),
@@ -854,7 +853,7 @@ function parseReceivedResult(x: unknown): ReceivedResultFrame {
  */
 export function parseResultFrame(method: RpcMethod, x: unknown): ResultFrame {
   const path = `result(${method})`;
-  const m = wireObject<ResultFrame>(x, path);
+  const m = wireObject<WireResult>(x, path);
   const id = m.read("id", NON_EMPTY_STRING);
   if (m.read("ok", BOOLEAN)) {
     return {
@@ -862,28 +861,33 @@ export function parseResultFrame(method: RpcMethod, x: unknown): ResultFrame {
       id,
       ok: true,
       response: RESPONSE_PARSERS[method](
-        wireObject<ResultOkFrame>(x, path).value("response"),
+        m.value("response"),
         `${path}.response`,
       ),
     };
   }
-  const tmux = wireObject<ResultTmuxErrorFrame>(x, path);
-  return tmux.value("tmuxError") === undefined
+  return m.value("tmuxError") === undefined
     ? {
         k: "result",
         id,
         ok: false,
-        error: parseErrorPayload(
-          wireObject<ResultErrFrame>(x, path).object("error"),
-        ),
+        error: parseErrorPayload(m.object("error")),
       }
     : {
         k: "result",
         id,
         ok: false,
-        tmuxError: parseCommandResponse(tmux.object("tmuxError")),
+        tmuxError: parseCommandResponse(m.object("tmuxError")),
       };
 }
+
+// Every field a ResultFrame variant carries, so one view reads them all;
+// `response` stays unread until the call's method says what it holds.
+type WireResult = Pick<ResultFrame, "id"> & {
+  readonly ok: boolean;
+  readonly response: unknown;
+} & Pick<ResultTmuxErrorFrame, "tmuxError"> &
+  Pick<ResultErrFrame, "error">;
 
 function parsePong(x: unknown): PongFrame {
   return {

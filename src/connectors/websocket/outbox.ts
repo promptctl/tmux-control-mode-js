@@ -84,9 +84,10 @@ export class Outbox {
   }
 
   // Settle the pending call a result frame answers. No-op if the call already
-  // timed out (its entry is gone). Returns the protocol violation, if the
-  // frame broke the wire contract, so the client reports it on its error
-  // channel like every other malformed frame.
+  // timed out: its entry is gone, and with it the method the result's shape
+  // is checked against. Returns the protocol violation, if the frame broke
+  // the wire contract, so the client reports it on its error channel like
+  // every other malformed frame.
   settle(frame: ReceivedResultFrame): BridgeError | undefined {
     const p = this.pending.get(frame.id);
     if (p === undefined) return undefined;
