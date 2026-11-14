@@ -170,8 +170,8 @@ The Electron bridge (`TmuxClientProxy`) and the WebSocket bridge
 (`WebSocketTmuxClient`) deliver what the shared `TmuxClient` hears from tmux to
 every connected peer: tmux's notifications, `unsolicited-response` (tmux's
 reply to a command no caller sent: the command line it was started with, a
-hook, an `if-shell -b`) and `protocol-error` (a reply block with a malformed
-terminator). A peer sees only those that arrive while it is connected, so the
+hook, an `if-shell -b`) and `protocol-error` (a line from tmux the parser
+could not read). A peer sees only those that arrive while it is connected, so the
 startup command's reply usually comes before any peer.
 
 - `cross-session-layout-*` events reach a peer once it calls

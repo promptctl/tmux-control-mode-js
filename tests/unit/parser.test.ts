@@ -5,7 +5,10 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { join, dirname } from "path";
 import { TmuxParser } from "../../src/protocol/parser.js";
-import type { TmuxMessage } from "../../src/protocol/types.js";
+import type {
+  ProtocolErrorMessage,
+  TmuxMessage,
+} from "../../src/protocol/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -16,16 +19,15 @@ function fixtureContent(name: string): string {
 function collect(content: string): {
   messages: TmuxMessage[];
   outputLines: { commandNumber: number; line: string }[];
-  protocolErrors: { commandNumber: number; line: string }[];
+  protocolErrors: ProtocolErrorMessage[];
 } {
   const messages: TmuxMessage[] = [];
   const outputLines: { commandNumber: number; line: string }[] = [];
-  const protocolErrors: { commandNumber: number; line: string }[] = [];
+  const protocolErrors: ProtocolErrorMessage[] = [];
   const parser = new TmuxParser((msg) => messages.push(msg));
   parser.onOutputLine = (commandNumber, line) =>
     outputLines.push({ commandNumber, line });
-  parser.onProtocolError = (commandNumber, line) =>
-    protocolErrors.push({ commandNumber, line });
+  parser.onProtocolError = (error) => protocolErrors.push(error);
   parser.feed(content);
   return { messages, outputLines, protocolErrors };
 }
@@ -826,33 +828,73 @@ describe("chunked feeding (one byte at a time)", () => {
 // Malformed input / fuzz tests
 // ---------------------------------------------------------------------------
 
-describe("malformed input: %begin with too few fields", () => {
-  it("emits no message", () => {
-    const { messages } = collect("%begin 1699900000 0\n");
-    // parseGuard requires 3 parts; "1699900000 0" has only 2
-    expect(messages).toHaveLength(0);
+// 6sp.xih: a number field used to be read with parseInt, so `%x5` became
+// NaN and `%12abc` became 12 in a message typed `number`. Every unreadable
+// line of a known type now yields no message and one report.
+describe("malformed input: a known-type line the parser cannot read", () => {
+  const layout = "b25d,80x24,0,0,1";
+  it.each([
+    // too few fields
+    ["%output %1nospace", "line"],
+    ["%extended-output %1 100 value-no-colon", "line"],
+    ["%layout-change @1 4b5a", "line"],
+    ["%begin 1699900000 0", "begin"],
+    // pane / window / session ids
+    ["%output %x5 data", "line"],
+    ["%output %12abc data", "line"],
+    ["%output 5 data", "line"],
+    ["%pause %", "line"],
+    ["%window-add @NaN", "line"],
+    ["%window-close @1.5", "line"],
+    ["%window-pane-changed @1 %-2", "line"],
+    [`%layout-change @z ${layout} ${layout} *`, "line"],
+    ["%session-changed $abc main", "line"],
+    ["%session-window-changed $1 @", "line"],
+    ["%client-session-changed /dev/ttys001 $1e3 main", "line"],
+    // optional ids and the optional window index
+    ["%subscription-changed s $x @1 0 %1 : v", "line"],
+    ["%subscription-changed s $1 @1 one %1 : v", "line"],
+    ["%subscription-changed s $1 @1 0 %+1 : v", "line"],
+    // guard fields and %extended-output's age
+    ["%begin 1699900000 NaN 1", "begin"],
+    ["%begin 1699900000 7 one", "begin"],
+    ["%end 16999x 7 1", "line"],
+    ["%error 1699900000 7 99999999999999999999", "line"],
+    ["%extended-output %1 old : data", "line"],
+  ] as const)("%s reports kind %s and emits no message", (line, kind) => {
+    const { messages, outputLines, protocolErrors } = collect(`${line}\n`);
+    expect(messages).toEqual([]);
+    expect(outputLines).toEqual([]);
+    expect(protocolErrors).toEqual([{ type: "protocol-error", kind, line }]);
   });
-});
 
-describe("malformed input: %output with no space", () => {
-  it("emits no message", () => {
-    const { messages } = collect("%output %1nospace\n");
-    expect(messages).toHaveLength(0);
+  it("still reads the `-` of an optional id or index as -1", () => {
+    const { messages, protocolErrors } = collect(
+      "%subscription-changed s - - - - : v\n",
+    );
+    expect(protocolErrors).toEqual([]);
+    expect(messages).toEqual([
+      {
+        type: "subscription-changed",
+        name: "s",
+        sessionId: -1,
+        windowId: -1,
+        windowIndex: -1,
+        paneId: -1,
+        value: "v",
+      },
+    ]);
   });
-});
 
-describe("malformed input: %extended-output with no ' : '", () => {
-  it("emits no message", () => {
-    const { messages } = collect("%extended-output %1 100 value-no-colon\n");
-    expect(messages).toHaveLength(0);
-  });
-});
-
-describe("malformed input: %layout-change with too few parts", () => {
-  it("emits no message", () => {
-    // needs windowId + layout + visibleLayout + flags = 4 parts
-    const { messages } = collect("%layout-change @1 4b5a\n");
-    expect(messages).toHaveLength(0);
+  it("opens no block for a %begin it cannot read", () => {
+    // The parser cannot say whose block it would be; TmuxClient ends the
+    // connection on this report (see client-lifecycle.test.ts).
+    const { messages, outputLines, protocolErrors } = collect(
+      "%begin 1699900000 x 1\n" + "%window-add @3\n",
+    );
+    expect(protocolErrors.map((e) => e.kind)).toEqual(["begin"]);
+    expect(outputLines).toEqual([]);
+    expect(messages).toEqual([{ type: "window-add", windowId: 3 }]);
   });
 });
 
@@ -870,7 +912,12 @@ describe("malformed guard terminator mid-block (tmux-lifecycle-zng.4)", () => {
     const { messages, outputLines, protocolErrors } = collect(input);
 
     expect(protocolErrors).toEqual([
-      { commandNumber: 7, line: "%end 1699900000 7" },
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 7,
+        line: "%end 1699900000 7",
+      },
     ]);
     // The block is closed — no output line captured for the malformed
     // terminator or for anything after it.
@@ -887,18 +934,43 @@ describe("malformed guard terminator mid-block (tmux-lifecycle-zng.4)", () => {
     const { messages, outputLines, protocolErrors } = collect(input);
 
     expect(protocolErrors).toEqual([
-      { commandNumber: 3, line: "%error 1699900000" },
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 3,
+        line: "%error 1699900000",
+      },
     ]);
     expect(outputLines).toHaveLength(0);
     expect(messages).toContainEqual({ type: "sessions-changed" });
   });
 
-  it("a malformed %end outside any block is unchanged: dropped, no wedge to recover from", () => {
-    // No block was open, so there is nothing to force-close — this stays the
-    // pre-existing "malformed line for a known type, skip" behavior.
+  it("a malformed %end outside any block closes nothing: it is reported as a line", () => {
+    // No block was open, so there is nothing to force-close and no command
+    // number to report.
     const { messages, protocolErrors } = collect("%end 1699900000 0\n");
     expect(messages).toHaveLength(0);
-    expect(protocolErrors).toHaveLength(0);
+    expect(protocolErrors).toEqual([
+      { type: "protocol-error", kind: "line", line: "%end 1699900000 0" },
+    ]);
+  });
+
+  it("a terminator whose number is unreadable still closes its block", () => {
+    const { messages, outputLines, protocolErrors } = collect(
+      "%begin 1699900000 4 1\n" +
+        "%end 1699900000 four 1\n" +
+        "%window-add @2\n",
+    );
+    expect(protocolErrors).toEqual([
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 4,
+        line: "%end 1699900000 four 1",
+      },
+    ]);
+    expect(outputLines).toEqual([]);
+    expect(messages.map((m) => m.type)).toEqual(["begin", "window-add"]);
   });
 
   it("preserves block purity: no notification is observed while the block was still open", () => {
@@ -913,8 +985,10 @@ describe("malformed guard terminator mid-block (tmux-lifecycle-zng.4)", () => {
       "%begin 1699900000 2 0\n" + "%end 1699900000 2\n" + "%window-add @4\n";
     const seenTypes: string[] = [];
     const parser = new TmuxParser((msg) => seenTypes.push(msg.type));
-    parser.onProtocolError = (commandNumber) =>
-      seenTypes.push(`protocol-error:${commandNumber}`);
+    parser.onProtocolError = (error) =>
+      seenTypes.push(
+        `protocol-error:${error.kind === "terminator" ? error.commandNumber : error.kind}`,
+      );
     parser.feed(input);
     expect(seenTypes).toEqual(["begin", "protocol-error:2", "window-add"]);
   });
@@ -1181,7 +1255,14 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     const { messages, outputLines, protocolErrors } = collect(input);
     // `line` itself still carries the raw \r — only the internal `typeStr`
     // comparison is \r-tolerant; the surfaced error line is byte-faithful.
-    expect(protocolErrors).toEqual([{ commandNumber: 5, line: "%end\r" }]);
+    expect(protocolErrors).toEqual([
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 5,
+        line: "%end\r",
+      },
+    ]);
     expect(outputLines).toHaveLength(0);
     expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
   });
@@ -1193,7 +1274,14 @@ describe("trailing \\r scoping (tmux-parser-7zv.t1y)", () => {
     // trailing \r run, not just one.
     const input = "%begin 1699900000 6 0\r\n%end\r\r\n%sessions-changed\r\n";
     const { messages, outputLines, protocolErrors } = collect(input);
-    expect(protocolErrors).toEqual([{ commandNumber: 6, line: "%end\r\r" }]);
+    expect(protocolErrors).toEqual([
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 6,
+        line: "%end\r\r",
+      },
+    ]);
     expect(outputLines).toHaveLength(0);
     expect(messages.find((m) => m.type === "sessions-changed")).toBeDefined();
   });

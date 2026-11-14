@@ -37,6 +37,20 @@ All notable changes to this project are documented here. Format follows
   as a `ReceivedResultFrame` holding its `id` and the frame unread, since what
   a result holds depends on the call it answers. `parseResultFrame(method, raw)`
   parses it as the answer to a call of `method`.
+- A tmux line whose id or number field is not an unsigned decimal integer
+  (`%output %x5 …`, `%window-add @12abc`) is no longer delivered as a message
+  holding `NaN` (or `12`). Like a line with too few fields, it is now a
+  `protocol-error`, which reports every line of a known type that the parser
+  cannot read, not only a reply block's malformed terminator.
+  `ProtocolErrorMessage` gains `kind`: `terminator` (the block's command
+  rejects with `TmuxProtocolError`, as before, and only this kind carries
+  `commandNumber`), `begin` (an unreadable `%begin`: no reply can be matched
+  to its command any more, so `TmuxClient` ends the connection, rejecting
+  every pending command, with `exit` reason `malformed %begin: <line>` and
+  state `closed`/`transport-error`), or `line` (anything else; dropped).
+  `TmuxParser.onProtocolError` receives the `ProtocolErrorMessage`. Upgrade a
+  WebSocket bridge and its clients together: an older `WebSocketTmuxClient`
+  reports a `begin` or `line` `protocol-error` frame through `onError`.
 
 ## [0.2.0]
 

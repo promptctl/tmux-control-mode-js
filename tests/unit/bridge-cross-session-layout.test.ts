@@ -122,7 +122,12 @@ describe("BridgeConnection — cross-session layout coverage", () => {
       { type: "connection-state", state: { status: "ready" } },
     ] as EmitterMessage[];
     const replyStream = [
-      { type: "protocol-error", commandNumber: 3, line: "%end 1" },
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 3,
+        line: "%end 1",
+      },
       {
         type: "unsolicited-response",
         response: { commandNumber: 4, timestamp: 1, output: [], success: true },

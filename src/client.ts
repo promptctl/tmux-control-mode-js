@@ -16,6 +16,7 @@ import { detachClient } from "./protocol/encoder.js";
 import type {
   CommandResponse,
   ExitMessage,
+  ProtocolErrorMessage,
   TmuxMessage,
 } from "./protocol/types.js";
 import { TypedEmitter } from "./emitter.js";
@@ -196,8 +197,8 @@ export class TmuxClient implements TmuxConnection {
     this.parser.onOutputLine = (_commandNumber, line) => {
       this.inflight?.output.push(line);
     };
-    this.parser.onProtocolError = (commandNumber, line) => {
-      this.handleProtocolError(commandNumber, line);
+    this.parser.onProtocolError = (error) => {
+      this.handleProtocolError(error);
     };
     this.parser.onUnguardedLine = (line) => {
       if (this.currentConnectionState.status === "connecting" && line !== "") {
@@ -209,22 +210,18 @@ export class TmuxClient implements TmuxConnection {
       this.parser.feed(chunk);
     });
     transport.onClose((reason) => {
-      this.router.onTransportClose();
-      // Transport close is the one path every disconnection takes, so it
-      // announces 'exit' when tmux never sent its own %exit (a killed server).
-      this.settlePendingOnClose(this.announceExit(reason).reason);
       // [LAW:one-source-of-truth] This classifies the TRANSPORT's own close
       // signal (`reason`, the raw parameter above) — independent of, and
       // free to disagree with, whichever reason the 'exit' event carried.
       // See ConnectionState's doc comment in connection-state.ts for why.
-      this.setConnectionState({
-        status: "closed",
-        reason: this.userClosed
+      this.endConnection(
+        reason,
+        this.userClosed
           ? "disposed"
           : reason === undefined
             ? "exit"
             : "transport-error",
-      });
+      );
     });
   }
 
@@ -361,6 +358,23 @@ export class TmuxClient implements TmuxConnection {
     if (this.pending[this.pending.length - 1] === entry) this.pending.pop();
   }
 
+  // [LAW:single-enforcer] The one way a connection ends: the transport's
+  // close, or a reply stream that can no longer be matched to its commands
+  // (handleProtocolError). It announces 'exit' when tmux never sent its own
+  // %exit (a killed server). [LAW:no-ambient-temporal-coupling] 'closed' is
+  // set before this returns, so every command and line after it meets the
+  // 'closed' checks; the transport's own close, arriving later, finds the
+  // connection already ended and changes nothing.
+  private endConnection(
+    reason: string | undefined,
+    closedReason: Extract<ConnectionState, { status: "closed" }>["reason"],
+  ): void {
+    if (this.currentConnectionState.status === "closed") return;
+    this.router.onTransportClose();
+    this.settlePendingOnClose(this.announceExit(reason).reason);
+    this.setConnectionState({ status: "closed", reason: closedReason });
+  }
+
   // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
   // ever arrive for these commands. Reject them now instead of leaving their
   // promises unsettled forever; clearing both collections first means a
@@ -494,20 +508,38 @@ export class TmuxClient implements TmuxConnection {
     this.emitter.emit(msg);
   }
 
-  // [LAW:no-silent-failure] Mirrors handleMessage's "error" branch: a
-  // malformed guard terminator settles the block same as a real %error would,
-  // just with TmuxProtocolError instead of TmuxCommandError — the parser
-  // already recovered (activeCommandNumber reset) before calling this, so
-  // this method's only job is settling correlation state and making the
-  // failure observable, not further parser recovery.
-  private handleProtocolError(commandNumber: number, line: string): void {
+  // [LAW:no-silent-failure] Every line the parser could not read is observable
+  // as 'protocol-error'; its kind decides what else it settles (see
+  // ProtocolErrorMessage). The parser already recovered its own state before
+  // calling this, so this method settles correlation state only.
+  private handleProtocolError(error: ProtocolErrorMessage): void {
     // [LAW:no-ambient-temporal-coupling] 'closed' is terminal (see
     // handleMessage's identical guard) — settlePendingOnClose already ran, so
     // there is nothing left to settle here for a message arriving this late.
     if (this.currentConnectionState.status === "closed") return;
-    const entry = this.inflight;
-    this.inflight = null;
-    entry?.reject(new TmuxProtocolError(commandNumber, line, entry.output));
-    this.emitter.emit({ type: "protocol-error", commandNumber, line });
+    this.emitter.emit(error);
+    switch (error.kind) {
+      case "terminator": {
+        // Mirrors handleMessage's "error" branch, with TmuxProtocolError
+        // instead of TmuxCommandError.
+        const entry = this.inflight;
+        this.inflight = null;
+        entry?.reject(
+          new TmuxProtocolError(error.commandNumber, error.line, entry.output),
+        );
+        return;
+      }
+      case "begin":
+        // No later reply can be matched to its command, so none is handed
+        // to a caller: the connection ends before the next line is read.
+        this.endConnection(
+          `malformed %begin: ${error.line}`,
+          "transport-error",
+        );
+        this.transport.close();
+        return;
+      case "line":
+        return;
+    }
   }
 }

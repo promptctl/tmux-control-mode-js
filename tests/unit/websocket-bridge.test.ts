@@ -1271,6 +1271,8 @@ describe("WebSocket bridge — reply-stream reports", () => {
     t.feed("%begin 7 6 0\nhook ran\n%end 7 6 0\n");
     // A block whose terminator is malformed.
     t.feed("%begin 7 9 0\n%end 7 9\n");
+    // A notification whose window id is not a number.
+    t.feed("%window-add @x\n");
 
     for (const ws of sockets) {
       // tmux's own %begin/%end messages ride along, as for any block.
@@ -1289,7 +1291,13 @@ describe("WebSocket bridge — reply-stream reports", () => {
             success: true,
           },
         },
-        { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
+        {
+          type: "protocol-error",
+          kind: "terminator",
+          commandNumber: 9,
+          line: "%end 7 9",
+        },
+        { type: "protocol-error", kind: "line", line: "%window-add @x" },
       ]);
     }
   });
@@ -1305,20 +1313,41 @@ describe("WebSocket bridge — reply-stream reports", () => {
     expect(
       parseServerFrame(frame({ type: "unsolicited-response", response })),
     ).toEqual({ k: "event", msg: { type: "unsolicited-response", response } });
-    expect(
-      parseServerFrame(
-        frame({ type: "protocol-error", commandNumber: 9, line: "%end 7 9" }),
-      ),
-    ).toEqual({
-      k: "event",
-      msg: { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
-    });
+    for (const msg of [
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 9,
+        line: "%end 7 9",
+      },
+      { type: "protocol-error", kind: "begin", line: "%begin 7 x 1" },
+      { type: "protocol-error", kind: "line", line: "%window-add @x" },
+    ]) {
+      expect(parseServerFrame(frame(msg))).toEqual({ k: "event", msg });
+    }
 
     for (const [msg, error] of [
-      [{ type: "protocol-error", commandNumber: 9 }, /line must be a string/],
       [
-        { type: "protocol-error", commandNumber: "9", line: "%end" },
+        { type: "protocol-error", kind: "terminator", commandNumber: 9 },
+        /line must be a string/,
+      ],
+      [
+        {
+          type: "protocol-error",
+          kind: "terminator",
+          commandNumber: "9",
+          line: "%end",
+        },
         /commandNumber must be a number/,
+      ],
+      [
+        { type: "protocol-error", kind: "terminator", line: "%end" },
+        /commandNumber must be a number/,
+      ],
+      [{ type: "protocol-error", line: "%end" }, /kind must be one of/],
+      [
+        { type: "protocol-error", kind: "other", line: "%end" },
+        /kind must be one of/,
       ],
       [{ type: "unsolicited-response" }, /response must be an object/],
       [

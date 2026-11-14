@@ -17,6 +17,7 @@ import type {
   WindowLayout,
   WindowLayoutFields,
 } from "./types.js";
+import { parseUint } from "./uint.js";
 
 /** Thrown inside the parser only; `parseWindowLayout` turns it into the failure arm. */
 class LayoutSyntaxError extends Error {}
@@ -62,7 +63,11 @@ class LayoutReader {
         `expected a number at offset ${start}, found ${this.describeHere()}`,
       );
     }
-    return parseInt(this.src.slice(start, this.pos), 10);
+    const value = parseUint(this.src.slice(start, this.pos));
+    if (value === undefined) {
+      throw new LayoutSyntaxError(`number at offset ${start} is too large`);
+    }
+    return value;
   }
 
   private describeHere(): string {

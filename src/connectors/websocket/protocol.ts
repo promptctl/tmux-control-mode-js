@@ -19,6 +19,7 @@ import type {
   CommandResponse,
   PaneOutputMessage,
   PaneRecord,
+  ProtocolErrorMessage,
   SessionRecord,
   TmuxMessage,
   WindowLayoutFields,
@@ -455,6 +456,18 @@ const NULL: WireKind<null> = {
   is: (v): v is null => v === null,
   shape: "null",
 };
+// [LAW:one-source-of-truth] `satisfies Record` makes a kind added to (or
+// removed from) `ProtocolErrorMessage` a compile error until it is listed here.
+const PROTOCOL_ERROR_KINDS = {
+  terminator: true,
+  begin: true,
+  line: true,
+} as const satisfies Record<ProtocolErrorMessage["kind"], true>;
+const PROTOCOL_ERROR_KIND: WireKind<ProtocolErrorMessage["kind"]> = {
+  is: (v): v is ProtocolErrorMessage["kind"] =>
+    isString(v) && Object.hasOwn(PROTOCOL_ERROR_KINDS, v),
+  shape: `one of ${Object.keys(PROTOCOL_ERROR_KINDS).join(", ")}`,
+};
 const BRIDGE_ERROR_CODE: WireKind<BridgeErrorCode> = {
   is: isBridgeErrorCode,
   shape: "a BridgeErrorCode",
@@ -475,6 +488,12 @@ interface WireObject<M> {
   object<F extends keyof M & string>(field: F): WireObject<M[F]>;
   /** The field unread, for a parser that reads it as another shape. */
   value(field: keyof M & string): unknown;
+  /**
+   * The same object read as `V`, the member of the union `M` that a
+   * discriminant already read from it chose, so the fields only `V` has can
+   * be read. Every field is still checked as it is read.
+   */
+  variant<V extends M>(): WireObject<V>;
 }
 
 function wireObject<M>(x: unknown, path: string): WireObject<M> {
@@ -494,6 +513,7 @@ function wireFields<M>(
         : wireValue(o[field], kind.is, at(field), kind.shape),
     object: (field) => wireObject(o[field], at(field)),
     value: (field) => o[field],
+    variant: () => wireFields(o, path),
   };
 }
 
@@ -709,11 +729,20 @@ const EVENT_MESSAGE_PARSERS: {
     error: m.read("error", STRING),
   }),
   exit: (m) => ({ type: "exit", reason: m.optional("reason", STRING) }),
-  "protocol-error": (m) => ({
-    type: "protocol-error",
-    commandNumber: m.read("commandNumber", NUMBER),
-    line: m.read("line", STRING),
-  }),
+  "protocol-error": (m) => {
+    const kind = m.read("kind", PROTOCOL_ERROR_KIND);
+    const line = m.read("line", STRING);
+    return kind === "terminator"
+      ? {
+          type: "protocol-error",
+          kind,
+          commandNumber: m
+            .variant<Extract<ProtocolErrorMessage, { kind: "terminator" }>>()
+            .read("commandNumber", NUMBER),
+          line,
+        }
+      : { type: "protocol-error", kind, line };
+  },
   "unsolicited-response": (m) => ({
     type: "unsolicited-response",
     response: parseCommandResponse(m.object("response")),

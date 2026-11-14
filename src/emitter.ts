@@ -76,8 +76,8 @@ export type EmitterMessage = EmitterTmuxMessage | SyntheticEmitterMessage;
 /**
  * What each synthetic event is a fact about:
  * - `lifecycle` — this client's connection (`connection-state`, `reconnected`);
- * - `reply-stream` — tmux's reply blocks no caller took: one tmux wrote for a
- *   command no caller sent, or one whose terminator is malformed;
+ * - `reply-stream` — what tmux wrote that no caller took: a reply block for a
+ *   command no caller sent, or a line the parser could not read;
  * - `pane-table` — this client's own pane routing table;
  * - `cross-session-layout` — the relay's reports on other sessions' windows.
  *
