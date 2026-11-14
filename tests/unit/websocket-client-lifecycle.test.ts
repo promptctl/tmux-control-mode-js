@@ -189,7 +189,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       });
     });
 
-    it("a subsequent ws.onclose after close() is a no-op (finalize idempotent)", async () => {
+    it("a late close from the released socket after close() changes nothing", async () => {
       const { client, hub } = makeClient();
       void client.connect();
       hub.open();
@@ -200,15 +200,13 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       callPromise.catch(() => {});
 
       await client.close();
-      // close() called ws.close(), which inside the mock fires "close".
-      // The mock's close handler doesn't re-fire if already CLOSED, but
-      // call it explicitly to prove finalize's idempotency guard.
+      // close() released the socket, removing the client's listeners; fire
+      // one more close on it to show nothing it says reaches the client.
       hub.fireClose(0, 1006, "post-close");
       await new Promise((r) => setImmediate(r));
 
       // State stays closed; promise still rejected with the close()'s reason
-      // (NOT overwritten by the post-close event — finalize is idempotent so
-      // the later onClose with reason "post-close" was a no-op).
+      // (NOT overwritten by the post-close event, which reached no listener).
       expect(client.connectionState.status).toBe("closed");
       const err = await callPromise.catch((e: unknown) => e);
       expect(err).toMatchObject({ code: "BRIDGE_CLOSED" });
