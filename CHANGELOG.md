@@ -111,6 +111,13 @@ All notable changes to this project are documented here. Format follows
   and the reconnect policy never engaged. A handshake that legitimately takes
   longer — an `authenticate` hook slower than about 10s — now fails every
   attempt; raise `handshakeTimeoutMs` past it.
+- An `authenticate` hook's denial whose `code` a WebSocket endpoint may not
+  send (anything outside 1000–1003, 1007–1014 and 3000–4999, such as an HTTP
+  status like 401) now closes the socket at once with 4401. Its
+  `connection-closed` reason, `BRIDGE_AUTH_DENIED`, names the value and the
+  denial's reason. Before, `ws` refused the close, the bridge swallowed the
+  refusal, and the denied socket stayed open until the heartbeat deadline.
+  A legal code still reaches the peer unchanged.
 - A `createWebSocket` that throws is reported through `onError`, and the
   connection reads `transport-error` instead of a clean `exit`.
 - A listener, a sink, `onError` or `onDraining` may call `close()` or

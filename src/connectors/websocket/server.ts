@@ -93,6 +93,12 @@ import {
 } from "./limits.js";
 import { CallPump } from "./call-pump.js";
 import { Handshake } from "./handshake.js";
+import {
+  GOING_AWAY,
+  INTERNAL_ERROR,
+  NORMAL_CLOSURE,
+  type ServerCloseCode,
+} from "./close-code.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -232,7 +238,7 @@ export function createWebSocketBridge(
   ): Promise<void> {
     if (draining) {
       sendFatal(ws, "BRIDGE_CLOSED", "bridge is shutting down");
-      ws.close(1001, "shutting down");
+      ws.close(GOING_AWAY, "shutting down");
       return;
     }
 
@@ -584,7 +590,7 @@ class Connection {
   }
 
   closeBye(): void {
-    this.ws.close(1000, "bye");
+    this.ws.close(NORMAL_CLOSURE, "bye");
   }
 
   // -------------------------------------------------------------------------
@@ -656,7 +662,7 @@ class Connection {
       this.sendFatalAndClose(
         "BRIDGE_AUTH_DENIED",
         authResult.reason,
-        authResult.code ?? 4401,
+        authResult.closeCode,
       );
       return;
     }
@@ -1233,7 +1239,7 @@ class Connection {
   private sendFatalAndClose(
     code: BridgeErrorCode,
     message: string,
-    wsCode = 1011,
+    wsCode: ServerCloseCode = INTERNAL_ERROR,
   ): void {
     // write-once: `ws.close()` itself is one-shot at the wire — a second
     // call can't change the code/reason already sent to the peer — so a
@@ -1246,11 +1252,9 @@ class Connection {
     if (this.fatal !== undefined) return;
     sendFatal(this.ws, code, message);
     this.fatal = new BridgeError(code, message);
-    try {
-      this.ws.close(wsCode, truncateCloseReason(message));
-    } catch {
-      // ignore
-    }
+    // [LAW:no-silent-failure] A stamped code and a truncated reason are what
+    // close() accepts, so a throw from it is a defect and propagates.
+    this.ws.close(wsCode, truncateCloseReason(message));
     // [LAW:dataflow-not-control-flow] Every close handshake this connection
     // opens runs under the heartbeat's deadline (see onPongDeadline),
     // whatever state the connection was in: a fatal before hello has no

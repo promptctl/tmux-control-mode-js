@@ -27,7 +27,10 @@ import type { CommandResponse, TmuxMessage } from "../../src/protocol/types.js";
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import type { ConnectionState } from "../../src/connection-state.js";
-import { BridgeError } from "../../src/connectors/websocket/protocol.js";
+import {
+  BridgeError,
+  encodeClientFrame,
+} from "../../src/connectors/websocket/protocol.js";
 import type {
   BridgeObservabilityEvent,
   BrowserWebSocketLike,
@@ -63,6 +66,8 @@ interface Fixture {
 
 interface BridgeOptions {
   readonly authenticateToken?: string;
+  /** The close code the authenticate hook's denial names. */
+  readonly denialCloseCode?: number;
   readonly deniedMethods?: ReadonlySet<string>;
   readonly requestTimeoutMs?: number;
   readonly heartbeatIntervalMs?: number;
@@ -88,7 +93,11 @@ async function startFixture(
             (req.headers["x-auth-token"] as string | undefined) ?? "";
           return headerToken === options.authenticateToken
             ? { ok: true, identity: { token: headerToken } }
-            : { ok: false, reason: "bad token", code: 4401 };
+            : {
+                ok: false,
+                reason: "bad token",
+                code: options.denialCloseCode ?? 4401,
+              };
         }
       : undefined,
     authorize: options.deniedMethods
@@ -330,6 +339,41 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
       await fx.shutdown();
     }
   }, 10_000);
+
+  // A raw `ws` peer, which closes only when the bridge does: `ws` throws on a
+  // close code it may not send, so a hook's 401 reaching close() unchecked
+  // would leave this socket open until the heartbeat deadline.
+  it("authenticate() denial with an illegal close code: the bridge closes at once with 4401", async () => {
+    const fx = await startFixture("auth-badcode", {
+      authenticateToken: "secret",
+      denialCloseCode: 401,
+      heartbeatIntervalMs: 30_000,
+      heartbeatTimeoutMs: 30_000,
+    });
+    try {
+      const peer = new WsClient(fx.url, { headers: { "x-auth-token": "no" } });
+      const closed = new Promise<number>((resolve) =>
+        peer.on("close", (code) => resolve(code)),
+      );
+      await new Promise<void>((resolve) => peer.on("open", () => resolve()));
+      peer.send(encodeClientFrame({ k: "hello" }));
+      expect(await closed).toBe(4401);
+      await pollUntil(
+        () =>
+          fx.observabilityEvents.some((e) => e.kind === "connection-closed"),
+        2_000,
+      );
+      const ended = fx.observabilityEvents.find(
+        (e) => e.kind === "connection-closed",
+      );
+      expect(ended).toMatchObject({ errorCode: "BRIDGE_AUTH_DENIED" });
+      expect(ended?.kind === "connection-closed" && ended.reason).toMatch(
+        /"bad token" \(401\)/,
+      );
+    } finally {
+      await fx.shutdown();
+    }
+  }, 5_000);
 
   it("authenticate() acceptance: ready after matching token", async () => {
     const fx = await startFixture("auth-ok", { authenticateToken: "secret" });
