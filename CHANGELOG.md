@@ -12,9 +12,10 @@ All notable changes to this project are documented here. Format follows
   `new TopologyRouter(delivery, reportTopologyError, options)`. A transport
   adapter passes the queue its own entry points step through, so the
   router's sinks and error reports run after the adapter's transition.
-- `WebSocketTmuxClient`'s frame handlers (`onWelcome`, `onResult`,
-  `onPong`, `onDraining`, `dispatchEvent`, `emitSynthetic`, `emitError`) are
-  private. They were public only so a module-level table could call them.
+- `WebSocketTmuxClient`'s frame handlers, public only so a module-level table
+  could call them, are gone from its surface: `onWelcome`, `onResult`,
+  `onDraining`, `dispatchEvent` and `emitError` are private, and `onPong`
+  and `emitSynthetic` are removed.
 - `PaneRecord` says whether its pane has a process. `pid`, `cwd` and
   `currentCommand` move into `process`, a `PaneProcessState` (exported from
   `.`, `./browser` and `./protocol`): `{ state: "running", pid, cwd,
