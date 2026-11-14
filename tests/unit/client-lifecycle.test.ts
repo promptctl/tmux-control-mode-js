@@ -108,6 +108,7 @@ describe("TmuxClient — one command is one non-empty line", () => {
     [""],
     ["   "],
     ["# comment only"],
+    ["new-window -e 'A=x\0y' -- 'sleep 30'"],
   ])(
     "rejects %j without sending it, so correlation stays intact",
     async (bad) => {

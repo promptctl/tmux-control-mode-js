@@ -160,14 +160,20 @@ export function capturePane(paneId: number): string {
   return `capture-pane -p -e -J -S - -t ${tmuxEscape(`%${paneId}`)}`;
 }
 
-// tmux reads a command line up to its first newline or NUL. It takes what
-// follows a newline as a second command, and drops what follows a NUL while
-// replying success: `-e 'A=x<NUL>y' -- cmd` opens the window without cmd
-// (verified on 3.7b and 3.8). The refusal names the field and leaves the
-// value out: an environment value is often a credential, and execute()'s own
-// one-line check would quote the whole command line, every -e value in it.
+// [LAW:one-source-of-truth] tmux reads a command line up to its first newline
+// or NUL. It takes what follows a newline as a second command, and drops what
+// follows a NUL while replying success: `-e 'A=x<NUL>y' -- cmd` opens the
+// window without cmd (verified on 3.7b and 3.8). execute()'s check and the
+// per-field refusal below both read this one rule.
+export function hasCommandLineTerminator(text: string): boolean {
+  return /[\n\0]/.test(text);
+}
+
+// The refusal names the field and leaves the value out: an environment value
+// is often a credential, and execute()'s own check would quote the whole
+// command line, every -e value in it.
 function oneLine(field: string, value: string): string {
-  if (/[\n\0]/.test(value)) {
+  if (hasCommandLineTerminator(value)) {
     throw new RangeError(`${field} must hold no newline or NUL`);
   }
   return value;

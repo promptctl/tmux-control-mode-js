@@ -38,6 +38,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `execute()` rejects a command holding a NUL with `TmuxInvalidCommandError`,
+  and nothing is sent. tmux ends a command line at a NUL, runs what precedes
+  it and replies success, so `execute("new-window -e 'A=x<NUL>y' -- cmd")`
+  opened a window running the default shell and resolved. This holds on
+  `TmuxClient`, `WebSocketTmuxClient` and the Electron `TmuxClientProxy`.
+  `sendKeys` still sends a NUL key: it writes keys as hex.
 - `WebSocketTmuxClient` now receives `unsolicited-response` and
   `protocol-error`. Its `on` accepted both names, but the WebSocket bridge
   never forwarded the events, so a handler compiled and stayed silent. Both

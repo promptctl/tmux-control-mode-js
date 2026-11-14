@@ -889,20 +889,23 @@ describe("Electron IPC bridge — method dispatch", () => {
     });
   });
 
-  it("refuses an unsendable command renderer-side with the same TmuxInvalidCommandError a local TmuxClient throws", async () => {
-    const hub = createIpcHub();
-    const t = createFakeTransport();
-    const client = new TmuxClient(t.transport);
-    t.feed(STARTUP_GREETING);
-    createMainBridge(client, hub.ipcMain);
+  it.each([["new-window -c '/tmp/a\nb'"], ["new-window -e 'A=x\0y'"]])(
+    "refuses the unsendable command %j renderer-side with the same TmuxInvalidCommandError a local TmuxClient throws",
+    async (bad) => {
+      const hub = createIpcHub();
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      createMainBridge(client, hub.ipcMain);
 
-    const renderer = hub.createRenderer();
-    const proxy = createRendererBridge(renderer.ipcRenderer);
+      const renderer = hub.createRenderer();
+      const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    await expect(
-      proxy.execute("new-window -c '/tmp/a\nb'"),
-    ).rejects.toBeInstanceOf(TmuxInvalidCommandError);
-  });
+      await expect(proxy.execute(bad)).rejects.toBeInstanceOf(
+        TmuxInvalidCommandError,
+      );
+    },
+  );
 
   it("classifies an unsendable command from a raw RPC peer as BRIDGE_INVALID_ARG, not BRIDGE_INTERNAL", async () => {
     const t = createFakeTransport();
