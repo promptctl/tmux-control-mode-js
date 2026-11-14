@@ -193,13 +193,13 @@ export class TmuxClient implements TmuxConnection {
       (error) => this.emitter.emit({ type: "topology-error", error }),
       options,
     );
-    this.parser = new TmuxParser((msg) => this.handleMessage(msg));
+    this.parser = new TmuxParser(
+      (msg) => this.handleMessage(msg),
+      (error) => this.handleProtocolError(error),
+    );
 
     this.parser.onOutputLine = (_commandNumber, line) => {
       this.inflight?.output.push(line);
-    };
-    this.parser.onProtocolError = (error) => {
-      this.handleProtocolError(error);
     };
     this.parser.onUnguardedLine = (line) => {
       if (this.currentConnectionState.status === "connecting" && line !== "") {
@@ -367,11 +367,10 @@ export class TmuxClient implements TmuxConnection {
   // caller announces after its own cause: 'exit' when tmux never sent its own
   // %exit (a killed server), then 'closed'.
   // [LAW:no-ambient-temporal-coupling] Everything is committed before any
-  // listener hears of it — 'closed' set, the transport closed, the exit
-  // recorded, every pending command rejected — so a command a listener issues
-  // meets execute's 'closed' refusal and never reaches tmux, a throwing
-  // listener cannot leave the transport open, and the transport's own close,
-  // arriving later or from within close(), changes nothing.
+  // listener hears of it — 'closed' set, the exit recorded, every pending
+  // command rejected — so a command a listener issues meets execute's
+  // 'closed' refusal and never reaches tmux, and the transport's own close,
+  // arriving later, changes nothing.
   private endConnection(
     reason: string | undefined,
     closedReason: Extract<ConnectionState, { status: "closed" }>["reason"],
@@ -379,7 +378,6 @@ export class TmuxClient implements TmuxConnection {
     const closed = this.transition({ status: "closed", reason: closedReason });
     // Already closed: this end was committed and announced before.
     if (closed.length === 0) return [];
-    this.transport.close();
     const { exit, unannounced } = this.recordExit(reason);
     this.router.onTransportClose();
     this.settlePendingOnClose(exit.reason);
@@ -546,21 +544,25 @@ export class TmuxClient implements TmuxConnection {
         this.emitter.emit(error);
         return;
       }
-      case "begin":
+      case "begin": {
         // No later reply can be matched to its command, so none is handed
         // to a caller: the connection ends, and the report is announced
         // first, as its cause. Its reason is this line's, quoted so a
         // trailing \r stays visible — no startup failure explains it better.
-        for (const msg of [
+        // The transport closes after the end is committed (so its close
+        // signal, even a synchronous one, changes nothing) and before any
+        // listener runs (so a throwing listener cannot leave it open).
+        const announced = [
           error,
           ...this.endConnection(
             `malformed %begin: ${JSON.stringify(error.line)}`,
             "transport-error",
           ),
-        ]) {
-          this.emitter.emit(msg);
-        }
+        ];
+        this.transport.close();
+        for (const msg of announced) this.emitter.emit(msg);
         return;
+      }
       case "line":
         this.emitter.emit(error);
         return;

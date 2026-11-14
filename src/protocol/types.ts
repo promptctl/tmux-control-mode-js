@@ -315,7 +315,8 @@ export interface ExitMessage {
  * line alone. That is why it is deliberately NOT a member of the `TmuxMessage`
  * union: that union's contract (see `serializer.ts`, `conformance/samples.ts`)
  * is "real wire message, reproducible from one line," which this is not. It
- * is delivered via `TmuxParser.onProtocolError` and joins the emitter's
+ * is delivered to the `onProtocolError` handler `TmuxParser` is constructed
+ * with, and joins the emitter's
  * synthetic arm (`EmitterMessage`) the same way `ConnectionStateMessage` does.
  *
  * [LAW:types-are-the-program] Only a `terminator` carries a command number:

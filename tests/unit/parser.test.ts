@@ -16,6 +16,11 @@ function fixtureContent(name: string): string {
   return readFileSync(join(__dirname, "../fixtures", name), "utf8");
 }
 
+// For a test whose input is well-formed: a protocol-error fails it.
+function unexpected(error: ProtocolErrorMessage): never {
+  throw new Error(`unexpected protocol-error: ${JSON.stringify(error)}`);
+}
+
 function collect(content: string): {
   messages: TmuxMessage[];
   outputLines: { commandNumber: number; line: string }[];
@@ -24,10 +29,12 @@ function collect(content: string): {
   const messages: TmuxMessage[] = [];
   const outputLines: { commandNumber: number; line: string }[] = [];
   const protocolErrors: ProtocolErrorMessage[] = [];
-  const parser = new TmuxParser((msg) => messages.push(msg));
+  const parser = new TmuxParser(
+    (msg) => messages.push(msg),
+    (error) => protocolErrors.push(error),
+  );
   parser.onOutputLine = (commandNumber, line) =>
     outputLines.push({ commandNumber, line });
-  parser.onProtocolError = (error) => protocolErrors.push(error);
   parser.feed(content);
   return { messages, outputLines, protocolErrors };
 }
@@ -810,7 +817,7 @@ describe("chunked feeding (one byte at a time)", () => {
   it("startup.txt produces same messages as full feed", () => {
     const content = fixtureContent("startup.txt");
     const messages: TmuxMessage[] = [];
-    const parser = new TmuxParser((msg) => messages.push(msg));
+    const parser = new TmuxParser((msg) => messages.push(msg), unexpected);
     for (const char of content) {
       parser.feed(char);
     }
@@ -893,9 +900,11 @@ describe("malformed input: a known-type line the parser cannot read", () => {
     const messages: TmuxMessage[] = [];
     const outputLines: string[] = [];
     const protocolErrors: ProtocolErrorMessage[] = [];
-    const parser = new TmuxParser((msg) => messages.push(msg));
+    const parser = new TmuxParser(
+      (msg) => messages.push(msg),
+      (error) => protocolErrors.push(error),
+    );
     parser.onOutputLine = (_n, line) => outputLines.push(line);
-    parser.onProtocolError = (error) => protocolErrors.push(error);
 
     parser.feed(
       "%begin 1699900000 x 1\n" +
@@ -1006,11 +1015,13 @@ describe("malformed guard terminator mid-block (tmux-lifecycle-zng.4)", () => {
     const input =
       "%begin 1699900000 2 0\n" + "%end 1699900000 2\n" + "%window-add @4\n";
     const seenTypes: string[] = [];
-    const parser = new TmuxParser((msg) => seenTypes.push(msg.type));
-    parser.onProtocolError = (error) =>
-      seenTypes.push(
-        `protocol-error:${error.kind === "terminator" ? error.commandNumber : error.kind}`,
-      );
+    const parser = new TmuxParser(
+      (msg) => seenTypes.push(msg.type),
+      (error) =>
+        seenTypes.push(
+          `protocol-error:${error.kind === "terminator" ? error.commandNumber : error.kind}`,
+        ),
+    );
     parser.feed(input);
     expect(seenTypes).toEqual(["begin", "protocol-error:2", "window-add"]);
   });
@@ -1035,7 +1046,7 @@ describe("binary garbage lines outside response block", () => {
 describe("unguarded lines", () => {
   it("reports a non-% line outside a block, and never a block's own output", () => {
     const unguarded: string[] = [];
-    const parser = new TmuxParser(() => {});
+    const parser = new TmuxParser(() => {}, unexpected);
     parser.onUnguardedLine = (line) => unguarded.push(line);
     parser.feed(
       "command attach-session: unknown flag -Z\r\n" +
@@ -1059,7 +1070,7 @@ describe("-CC DCS introducer", () => {
     },
   ])("is dropped from $where, whose message is parsed", ({ before }) => {
     const messages: TmuxMessage[] = [];
-    const parser = new TmuxParser((msg) => messages.push(msg));
+    const parser = new TmuxParser((msg) => messages.push(msg), unexpected);
     parser.feed(
       before + "\x1bP1000p%begin 1794601662 315 0\r\n%end 1794601662 315 0\r\n",
     );
@@ -1068,7 +1079,7 @@ describe("-CC DCS introducer", () => {
 
   it("is a block's own output when it opens a line inside one", () => {
     const output: string[] = [];
-    const parser = new TmuxParser(() => {});
+    const parser = new TmuxParser(() => {}, unexpected);
     parser.onOutputLine = (_commandNumber, line) => output.push(line);
     parser.feed("%begin 1 7 1\n\x1bP1000p%end 1 7 1\n%end 1 7 1\n");
     expect(output).toEqual(["\x1bP1000p%end 1 7 1"]);
@@ -1144,7 +1155,7 @@ describe("empty feed", () => {
 describe("reset() clears state", () => {
   it("partial input then reset then valid input yields only valid messages", () => {
     const messages: TmuxMessage[] = [];
-    const parser = new TmuxParser((msg) => messages.push(msg));
+    const parser = new TmuxParser((msg) => messages.push(msg), unexpected);
     // Feed partial line (no newline yet, so nothing processed)
     parser.feed("%begin 1699900000 0 0");
     // reset clears the buffer
@@ -1158,7 +1169,7 @@ describe("reset() clears state", () => {
   it("reset after partial response block closes the block", () => {
     const outputLines: { commandNumber: number; line: string }[] = [];
     const messages: TmuxMessage[] = [];
-    const parser = new TmuxParser((msg) => messages.push(msg));
+    const parser = new TmuxParser((msg) => messages.push(msg), unexpected);
     parser.onOutputLine = (commandNumber, line) =>
       outputLines.push({ commandNumber, line });
     // Enter a response block

@@ -1367,10 +1367,13 @@ describe("WebSocket bridge — reply-stream reports", () => {
         { type: "protocol-error", kind: "terminator", line: "%end" },
         /commandNumber must be a number/,
       ],
-      [{ type: "protocol-error", line: "%end" }, /kind must be one of/],
+      [
+        { type: "protocol-error", line: "%end" },
+        /kind is not a kind this peer knows/,
+      ],
       [
         { type: "protocol-error", kind: "other", line: "%end" },
-        /kind must be one of/,
+        /kind is not a kind this peer knows/,
       ],
       [{ type: "unsolicited-response" }, /response must be an object/],
       [

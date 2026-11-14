@@ -342,6 +342,7 @@ const DCS_INTRODUCER = "\x1bP1000p";
 export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
   private readonly emit: (msg: TmuxMessage) => void;
+  private readonly reportProtocolError: (error: ProtocolErrorMessage) => void;
   private buffer = "";
   private position: StreamPosition = BETWEEN_BLOCKS;
 
@@ -354,16 +355,6 @@ export class TmuxParser {
   onOutputLine: ((commandNumber: number, line: string) => void) | null = null;
 
   /**
-   * Optional callback for every line of a known `%` type that the parser
-   * cannot read, its `kind` saying what the line was (see
-   * `ProtocolErrorMessage`). Distinct from `onMessage`/`emit` because this is
-   * not a `TmuxMessage` — see `ProtocolErrorMessage`'s doc for why. The client
-   * layer sets this to settle what the line leaves unanswerable and surface
-   * the failure as an observable event.
-   */
-  onProtocolError: ((error: ProtocolErrorMessage) => void) | null = null;
-
-  /**
    * Optional callback for a non-`%` line outside any response block, its
    * trailing `\r` run stripped. tmux writes one in place of a guard block
    * when it cannot parse the command it was started with (`command
@@ -373,8 +364,21 @@ export class TmuxParser {
    */
   onUnguardedLine: ((line: string) => void) | null = null;
 
-  constructor(onMessage: (msg: TmuxMessage) => void) {
+  /**
+   * `onProtocolError` receives every line of a known `%` type that the parser
+   * cannot read, its `kind` saying what the line was (see
+   * `ProtocolErrorMessage`). Distinct from `onMessage` because this is not a
+   * `TmuxMessage` — see `ProtocolErrorMessage`'s doc for why.
+   * [LAW:types-are-the-program] Required, not an optional field like the
+   * others: after a `begin` report the parser reads no further line, so a
+   * parser that could not hear it would fall silent with no signal.
+   */
+  constructor(
+    onMessage: (msg: TmuxMessage) => void,
+    onProtocolError: (error: ProtocolErrorMessage) => void,
+  ) {
     this.emit = onMessage;
+    this.reportProtocolError = onProtocolError;
   }
 
   /**
@@ -443,7 +447,7 @@ export class TmuxParser {
    * output for a command that will never settle.
    *
    * The output *payload* forwarded via `onOutputLine` and the line surfaced
-   * via `onProtocolError` both use the raw, un-stripped `line` instead:
+   * to `onProtocolError` both use the raw, un-stripped `line` instead:
    * SPEC.md §5.4 documents response-block output (e.g. `capture-pane -p`) as
    * delivered via `control_write()`, a path with no octal-escaping guarantee
    * (SPEC.md §10 is scoped to %output/%extended-output only), so a captured
@@ -543,7 +547,7 @@ export class TmuxParser {
             ? [{ type: "protocol-error", kind: "begin", line }, LOST_SYNC]
             : [{ type: "protocol-error", kind: "line", line }, position];
       this.position = next;
-      this.onProtocolError?.(report);
+      this.reportProtocolError(report);
       return;
     }
 

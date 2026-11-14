@@ -518,7 +518,7 @@ function wireFields<M>(
       const value = o[field];
       if (!isKeyOf(builders, value)) {
         throw new BridgeProtocolError(
-          `${at(field)} must be one of ${Object.keys(builders).join(", ")}, got ${JSON.stringify(value)}`,
+          `${at(field)} is not a ${field} this peer knows: ${JSON.stringify(value)}`,
         );
       }
       // The builder `value` keys reads the member `value` names. Members

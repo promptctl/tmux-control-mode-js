@@ -25,7 +25,10 @@ import { makeAutoObservable } from "mobx";
 import { MockTmuxServer } from "@promptctl/tmux-control-mode-js/mock";
 import { withChaos } from "@promptctl/tmux-control-mode-js/chaos";
 import { TmuxParser } from "@promptctl/tmux-control-mode-js/protocol";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
+import type {
+  ProtocolErrorMessage,
+  TmuxMessage,
+} from "@promptctl/tmux-control-mode-js/protocol";
 import {
   TUTORIAL_SCENARIOS,
   DEFAULT_SCENARIO_ID,
@@ -63,10 +66,13 @@ export interface WireLine {
   readonly fate?: WireFate;
 }
 
-/** One parsed message the client surfaces from the inbound wire. */
+/**
+ * One parsed message the client surfaces from the inbound wire, or the
+ * parser's report of a line it could not read.
+ */
 export interface EventEntry {
   readonly seq: number;
-  readonly message: TmuxMessage;
+  readonly message: TmuxMessage | ProtocolErrorMessage;
 }
 
 export class TutorialStore {
@@ -151,10 +157,12 @@ export class TutorialStore {
     this.pendingSent = new Map();
     const gen = ++this.epoch;
 
-    // The parser surfaces every message it decodes from the inbound wire.
-    this.parser = new TmuxParser((msg) => {
-      this._events.push({ seq: this.seq++, message: msg });
-    });
+    // The parser surfaces every message it decodes from the inbound wire, and
+    // every line chaos corrupted past reading.
+    const surface = (message: EventEntry["message"]): void => {
+      this._events.push({ seq: this.seq++, message });
+    };
+    this.parser = new TmuxParser(surface, surface);
 
     // A real wall clock for the guard timestamps — this is the browser, not a
     // determinism-sensitive test, so a real `now` makes the wire authentic.

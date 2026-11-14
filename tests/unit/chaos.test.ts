@@ -373,7 +373,11 @@ describe("withChaos — decorator over a fake transport", () => {
 describe("parser recovery under corruption", () => {
   it("a corrupted line does not poison a well-framed line that follows", () => {
     const seen: TmuxMessage[] = [];
-    const parser = new TmuxParser((m) => seen.push(m));
+    const protocolErrors: ProtocolErrorMessage[] = [];
+    const parser = new TmuxParser(
+      (m) => seen.push(m),
+      (error) => protocolErrors.push(error),
+    );
     const r = mulberry32(77);
 
     const clean1 = serializeMessage({
@@ -405,8 +409,10 @@ describe("parser recovery under corruption", () => {
   it("chaos regression (seed 30, truncate): a truncated %end guard terminator no longer wedges the block", () => {
     const seen: TmuxMessage[] = [];
     const protocolErrors: ProtocolErrorMessage[] = [];
-    const parser = new TmuxParser((m) => seen.push(m));
-    parser.onProtocolError = (error) => protocolErrors.push(error);
+    const parser = new TmuxParser(
+      (m) => seen.push(m),
+      (error) => protocolErrors.push(error),
+    );
 
     const begin = serializeMessage({
       type: "begin",

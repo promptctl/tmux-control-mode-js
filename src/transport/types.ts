@@ -38,8 +38,8 @@ export interface TmuxTransport {
   onClose(callback: (reason?: string) => void): void;
 
   /**
-   * Disconnect from tmux. Idempotent: `TmuxClient` may call it after a
-   * listener's own `client.close()` already did.
+   * Disconnect from tmux. Idempotent: `client.close()` may call it after the
+   * transport already closed, as it always could.
    */
   close(): void;
 }
