@@ -1346,6 +1346,53 @@ describe("WebSocketTmuxClient — a callback may close() or connect() at any tra
     });
   });
 
+  it("a socket that closes inside the welcome's replay ends that welcome: the next one replays the count once", async () => {
+    const h = harness();
+    const errors: BridgeError[] = [];
+    h.slots.onError = (err) => errors.push(err);
+    void h.client.connect();
+    h.ready();
+    const enableOnce = async () => {
+      const enabled = h.client.enableCrossSessionLayoutChange();
+      const call = sentFrames(h.hub.latest()).at(-1)!;
+      h.hub.latest().fire("message", {
+        data: encodeServerFrame({
+          k: "result",
+          id: call.id!,
+          ok: true,
+          response: null,
+        }),
+      });
+      await enabled;
+    };
+    await enableOnce();
+    await enableOnce();
+    h.hub.fireClose();
+    await vi.advanceTimersByTimeAsync(1);
+    // The second connection dies on its first replayed enable, synchronously
+    // inside send().
+    const dying = h.hub.latest();
+    const send = dying.send.bind(dying);
+    dying.send = (data) => {
+      send(data);
+      if (typeof data === "string" && data.includes('"call"')) {
+        h.hub.fireClose();
+      }
+    };
+    h.ready();
+    expect(h.client.connectionState.status).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1);
+    h.ready();
+    await vi.advanceTimersByTimeAsync(0);
+    const replays = sentFrames(h.hub.latest()).filter(
+      (f) =>
+        f.k === "call" &&
+        (f as { method?: string }).method === "enableCrossSessionLayoutChange",
+    );
+    expect(replays).toHaveLength(2);
+    expect(errors).toEqual([]);
+  });
+
   it("a ready listener that throws leaves the connection fully up, and its error is reported", async () => {
     const reported: (() => void)[] = [];
     vi.stubGlobal("queueMicrotask", (fn: () => void) => reported.push(fn));

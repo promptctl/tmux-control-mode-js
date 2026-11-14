@@ -418,8 +418,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   refused after that connection ended is its end, which `closed` or
   //   `reconnecting` already announced — the router's identity rule for late
   //   evidence about an earlier connection.
+  //   An enable sent after it ended would queue for the next connection, whose
+  //   welcome replays the full count again.
   private replayCrossSessionLayoutEnables(run: RunCommand): void {
-    for (let i = 0; i < this.crossSessionLayoutEnables; i++) {
+    for (
+      let i = 0;
+      i < this.crossSessionLayoutEnables && this.routerRun === run;
+      i++
+    ) {
       void this.delivery.settle(
         () => this.call("enableCrossSessionLayoutChange", []),
         (replayed) => {
@@ -657,13 +663,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // The runner names this connection, for the router and for the replay.
     const run: RunCommand = (cmd) => this.execute(cmd);
     this.routerRun = run;
+    // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
+    //   After "ready" is committed, so the bootstrap's execute() is transmitted.
+    // [LAW:no-ambient-temporal-coupling] The router holds this connection's
+    //   runner before anything is sent on it, so a send that ends the
+    //   connection retires the runner the router actually holds.
+    this.router.onTransportReady(run);
     // Restore this client's coverage on the new peer before anything queued
     // during the outage, so a queued disable lands after the enables it undoes.
     this.replayCrossSessionLayoutEnables(run);
     this.outbox.flush();
-    // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
-    //   After "ready" is committed, so the bootstrap's execute() is transmitted.
-    this.router.onTransportReady(run);
   }
 
   private onResult(frame: ReceivedResultFrame): void {

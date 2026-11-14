@@ -98,21 +98,30 @@ export class DeliveryQueue {
     // delivery leaves them to the drain already running.
     if (this.depth > 0 || this.draining) return;
     this.draining = true;
-    while (this.head < this.tail) {
-      const deliver = this.queued[this.head] as (arg: unknown) => void;
-      const arg = this.queued[this.head + 1];
-      // Delivered slots hold nothing, so a drained queue retains no chunk.
-      this.queued[this.head] = undefined;
-      this.queued[this.head + 1] = undefined;
-      this.head += 2;
-      try {
-        deliver(arg);
-      } catch (error) {
-        this.reportError(error);
+    // A reporter that throws ends this drain, never the queue: the deliveries
+    // still waiting go out with the next step.
+    try {
+      while (this.head < this.tail) {
+        const deliver = this.queued[this.head] as (arg: unknown) => void;
+        const arg = this.queued[this.head + 1];
+        // Delivered slots hold nothing, so a drained queue retains no chunk.
+        this.queued[this.head] = undefined;
+        this.queued[this.head + 1] = undefined;
+        this.head += 2;
+        try {
+          deliver(arg);
+        } catch (error) {
+          this.reportError(error);
+        }
+        // Caught up: rewind, so a drain kept busy by the steps its deliveries
+        // enter reuses its slots rather than growing the array.
+        if (this.head === this.tail) {
+          this.head = 0;
+          this.tail = 0;
+        }
       }
+    } finally {
+      this.draining = false;
     }
-    this.head = 0;
-    this.tail = 0;
-    this.draining = false;
   }
 }

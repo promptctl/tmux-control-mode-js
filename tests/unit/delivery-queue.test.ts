@@ -78,6 +78,25 @@ describe("DeliveryQueue", () => {
     expect(reported).toEqual([boom]);
   });
 
+  it("a reporter that throws ends that drain; the next step delivers what was waiting", () => {
+    const rethrow = new DeliveryQueue((e) => {
+      throw e;
+    });
+    const log: string[] = [];
+    const boom = new Error("boom");
+    expect(() =>
+      rethrow.step(() => {
+        rethrow.post(() => {
+          throw boom;
+        }, undefined);
+        rethrow.post((s: string) => log.push(s), "waiting");
+      }),
+    ).toThrow(boom);
+    expect(log).toEqual([]);
+    rethrow.step(() => rethrow.post((s: string) => log.push(s), "next"));
+    expect(log).toEqual(["waiting", "next"]);
+  });
+
   it("delivers what a throwing transition committed, then propagates its error", () => {
     const { q, reported } = collecting();
     const log: string[] = [];

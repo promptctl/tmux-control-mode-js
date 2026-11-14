@@ -260,7 +260,7 @@ export class TmuxClient implements TmuxConnection {
         reject(invalid);
         return;
       }
-      // [LAW:no-silent-failure] 'closed' is terminal (see transition)
+      // [LAW:no-silent-failure] 'closed' is terminal (see endConnection)
       // and settlePendingOnClose already ran once, for good, when it happened
       // — it will never run again. TmuxTransport is a public seam third
       // parties implement (a trust boundary, same reasoning as the throwing-

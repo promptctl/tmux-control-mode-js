@@ -11,7 +11,10 @@ All notable changes to this project are documented here. Format follows
 - `TopologyRouter`'s constructor takes a `DeliveryQueue` first:
   `new TopologyRouter(delivery, reportTopologyError, options)`. A transport
   adapter passes the queue its own entry points step through, so the
-  router's sinks and error reports run after the adapter's transition.
+  router's sinks and error reports run after the adapter's transition. A
+  sink now receives a chunk when the outermost step drains, not inside
+  `dispatchBytes`, so an adapter must not reuse a chunk's buffer within
+  that step.
 - `WebSocketTmuxClient`'s frame handlers, public only so a module-level table
   could call them, are gone from its surface: `onWelcome`, `onResult`,
   `onDraining`, `dispatchEvent` and `emitError` are private, and `onPong`
