@@ -169,10 +169,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly reconnect: ReconnectController;
   // Enables this client holds; the server-side peer forgets them on reconnect.
   private crossSessionLayoutEnables = 0;
-  // [LAW:decomposition] Ping/pong liveness. Connection-scoped: a fresh probe is
-  // built each welcome (its cadence is only known then, from the server limits)
-  // and stopped on finalize, so this shell holds no heartbeat/ping-id state.
-  private heartbeat: Heartbeat<string> | null = null;
   // [LAW:parse-dont-validate] The consumer's timing choices, stamped once in
   // the constructor so a bad value fails there with its option's name, not
   // at every welcome or every call. `undefined` for the interval means "the
@@ -181,26 +177,19 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly heartbeatTimeoutMs: DurationMs;
   private readonly requestTimeoutMs: DurationMs;
 
-  // [LAW:one-source-of-truth] The current socket and the teardown of the
-  //   listeners the client added to it are one value, so neither can outlive
-  //   the other. Null while no connection has a socket: closed, or in backoff.
-  private socket: SocketBinding | null = null;
+  // [LAW:one-source-of-truth] Everything scoped to one connection is this one
+  //   value — its socket, and once welcomed its limits, heartbeat and runner —
+  //   so ending the connection drops all of it in one assignment; release()
+  //   stops what it lent outside itself (listeners, timers, the router's
+  //   runner). Null while there is no connection: closed, or in backoff.
+  private connection: Connection | null = null;
   private nextId = 0;
-  private serverLimits: WelcomeLimits | null = null;
-  // The runner this connection handed the router; null until welcome and
-  // after the drop that retires it.
-  private routerRun: RunCommand | null = null;
   private userRequestedClose = false;
-  // [LAW:one-source-of-truth] Single ConnectionState field — sole authority
-  // for all connection state. setConnectionState() is the only writer.
+  // [LAW:one-source-of-truth] The published ConnectionState; setConnectionState()
+  //   is the only writer. Decisions about a connection read `connection`; the
+  //   client reads this only for what it is between connections — closed for
+  //   good, or reconnecting.
   private currentConnectionState: ConnectionState = { status: "connecting" };
-  // [LAW:one-source-of-truth] A server-announced drain is a fact about the
-  // server's intent, not a lifecycle phase of this connection — the unified
-  // ConnectionState deliberately has no draining variant. The socket stays
-  // open (status "ready") until the server actually closes it; this flag
-  // only gates new calls. Connection-scoped: finalizeConnection clears it,
-  // so a drain notice never outlives the connection that carried it.
-  private draining = false;
   private hasReachedReadyOnce = false;
   private lastError: Error | undefined = undefined;
 
@@ -255,7 +244,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // [LAW:no-ambient-temporal-coupling] During reconnect backoff the timer
     // owns the retry; the timer check keeps a manual connect() from opening
     // a second socket underneath it.
-    if (this.socket !== null || this.reconnect.isPending()) {
+    if (this.connection !== null || this.reconnect.isPending()) {
       return;
     }
     this.userRequestedClose = false;
@@ -278,8 +267,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // promise remains in flight. The pre-fix bug (M3) left pending alive
     // until the async ws.onclose fired, giving callers a window where
     // `await client.close()` returned but their promises were unsettled.
-    // Driving finalize inline closes that window; the later ws.onclose hits
-    // finalize's idempotency guard and returns.
+    // Driving finalize inline closes that window, and removes the socket's
+    // listeners, so its later close event never reaches the client.
     this.userRequestedClose = true;
     // [LAW:single-enforcer] The controller is the sole owner of the retry
     // timer's teardown; cancelling here guarantees no scheduled retry fires
@@ -289,10 +278,11 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // ws.close() on a CONNECTING socket aborts the handshake per the
     // WebSocket spec; finalize then removes the client's listeners, so
     // nothing the socket does afterwards reaches the client.
-    if (this.socket !== null) {
-      const { ws } = this.socket;
-      // rawSend gates on OPEN internally — bye only goes on a live socket.
-      this.rawSend(ws, encodeClientFrame({ k: "bye" }));
+    if (this.connection !== null) {
+      const { ws } = this.connection;
+      // bye ends a running session, so it goes through the ready gate: the
+      // server reads one before its handshake ends as a protocol error.
+      this.transmitFrame(encodeClientFrame({ k: "bye" }));
       try {
         ws.close(1000, "client close");
       } catch {
@@ -421,22 +411,22 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   // [LAW:no-silent-failure] A replay the new server refuses leaves coverage
   // off; the client's error channel says so.
-  // [LAW:single-enforcer] A replay belongs to the connection `run` names. One
+  // [LAW:single-enforcer] A replay belongs to the connection `conn`. One
   //   refused after that connection ended is its end, which `closed` or
   //   `reconnecting` already announced — the router's identity rule for late
   //   evidence about an earlier connection.
   //   An enable sent after it ended would queue for the next connection, whose
   //   welcome replays the full count again.
-  private replayCrossSessionLayoutEnables(run: RunCommand): void {
+  private replayCrossSessionLayoutEnables(conn: Connection): void {
     for (
       let i = 0;
-      i < this.crossSessionLayoutEnables && this.routerRun === run;
+      i < this.crossSessionLayoutEnables && this.connection === conn;
       i++
     ) {
       void this.delivery.settle(
         () => this.call("enableCrossSessionLayoutChange", []),
         (replayed) => {
-          if (replayed.ok || this.routerRun !== run) return;
+          if (replayed.ok || this.connection !== conn) return;
           const err = replayed.error;
           this.emitError(
             err instanceof BridgeError
@@ -476,7 +466,13 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         new BridgeError("BRIDGE_CLOSED", "client is closed"),
       );
     }
-    if (this.draining) {
+    // [LAW:one-source-of-truth] A server-announced drain is a fact about the
+    //   connection that carried it, not a lifecycle phase — ConnectionState
+    //   has no draining variant, and the connection stays "ready" until the
+    //   server closes it. It only refuses new calls, and ends with its
+    //   connection, so calls made during backoff queue for the next one.
+    const phase = this.connection?.phase;
+    if (phase?.kind === "ready" && phase.draining) {
       return Promise.reject(
         new BridgeError("BRIDGE_CLOSED", "server is draining"),
       );
@@ -493,14 +489,12 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   }
 
   // The consumer's bound until a welcome lands (calls queue in the outbox
-  // before then), and the stricter of the consumer's and the server's after.
+  // before then), and the connection's, set at its welcome, after.
   private effectiveTimeoutMs(): DurationMs {
-    return this.serverLimits === null
-      ? this.requestTimeoutMs
-      : minDurationMs(
-          this.requestTimeoutMs,
-          this.serverLimits.requestTimeoutMs,
-        );
+    const phase = this.connection?.phase;
+    return phase?.kind === "ready"
+      ? phase.requestTimeoutMs
+      : this.requestTimeoutMs;
   }
 
   // -------------------------------------------------------------------------
@@ -535,14 +529,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     ws.binaryType = "arraybuffer";
     // [LAW:dataflow-not-control-flow] No `if (stale) return` guard in any
-    // listener: finalizeConnection removes them, so a socket the client has
-    // let go finds no listener to invoke. The message listener's readyState
-    // check below is the WebSocket standard's delivery rule, which holds for
-    // the current socket too.
-    // Built once per socket, each acting on its own socket; every socket
+    // listener: release() removes them, so a socket the client has let go
+    // finds no listener to invoke. The message listener's readyState check
+    // below is the WebSocket standard's delivery rule, which holds for the
+    // current socket too.
+    // Built once per socket, each acting on its own connection; every socket
     // event is one step, and a message allocates no closure.
     const onOpen = (): void => this.delivery.step(this.onOpen, ws);
-    const read = (data: unknown): void => this.onMessage(data, ws);
+    const read = (data: unknown): void => this.onMessage(conn, data);
     // [LAW:single-enforcer] WHATWG WebSockets delivers a message only while
     //   the socket is OPEN ("if ready state is not OPEN, then return"); ws
     //   keeps delivering in CLOSING. This is the one place the client holds
@@ -555,13 +549,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     const onClose = (event: { code?: number; reason?: string }): void =>
       this.delivery.step(this.onClose, event);
     const onError = (): void => this.delivery.step(this.onError);
-    ws.addEventListener("open", onOpen);
-    ws.addEventListener("message", onMessage);
-    ws.addEventListener("close", onClose);
-    ws.addEventListener("error", onError);
-    // Stays for the socket's life (BrowserWebSocketLike): detach leaves it.
-    ws.addEventListener("error", ignoreLateError);
-    this.socket = {
+    // [LAW:no-ambient-temporal-coupling] The connection is built and current
+    //   before any listener is attached, so no event can reach it unbuilt.
+    const conn: Connection = {
       ws,
       detach: () => {
         ws.removeEventListener("open", onOpen);
@@ -569,12 +559,20 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         ws.removeEventListener("close", onClose);
         ws.removeEventListener("error", onError);
       },
+      phase: { kind: "handshake" },
     };
+    this.connection = conn;
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+    // Stays for the socket's life (BrowserWebSocketLike): detach leaves it.
+    ws.addEventListener("error", ignoreLateError);
   }
 
   // Socket listeners, bound once.
   private readonly onOpen = (ws: BrowserWebSocketLike): void => {
-    this.rawSend(ws, encodeClientFrame({ k: "hello" }));
+    sendOn(ws, encodeClientFrame({ k: "hello" }));
   };
 
   // Error events in the browser are opaque. Treat as a connection error; the
@@ -584,35 +582,50 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   };
 
   // [LAW:single-enforcer] The one place an inbound frame meets the connection
-  //   phase. The welcome is the only frame that moves a connection out of
-  //   "connecting", so until it lands the client reads a handshake, and after
-  //   it a stream; the phase's reader decides which frames it admits and what
-  //   a fault does.
-  private onMessage(data: unknown, ws: BrowserWebSocketLike): void {
-    const reader =
-      WebSocketTmuxClient.readers[this.currentConnectionState.status];
+  //   phase. The welcome is the only frame that moves a connection out of its
+  //   handshake, so until it lands the client reads a handshake, and after it
+  //   a stream; the phase's reader decides which frames it admits and what a
+  //   fault does. `conn` is the connection whose socket delivered the message:
+  //   its listeners are removed when it ends, so it is the current one.
+  // [LAW:types-are-the-program] Each reader is handed what its phase reads:
+  //   a handshake its connection, which the welcome advances and a fault
+  //   fails; a stream its Ready. The phase is narrowed once, here, so no
+  //   handler holds a type the welcome could falsify.
+  private onMessage(conn: Connection, data: unknown): void {
+    const { phase } = conn;
+    switch (phase.kind) {
+      case "handshake":
+        this.read(WebSocketTmuxClient.handshake, conn, data);
+        return;
+      case "ready":
+        this.read(WebSocketTmuxClient.stream, phase, data);
+        return;
+    }
+  }
+
+  private read<Ctx>(reader: PhaseReader<Ctx>, ctx: Ctx, data: unknown): void {
     let inbound: Inbound;
     try {
       inbound = decodeInbound(data);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      reader.fault(this, toBridgeProtocolError(err), ws);
+      reader.fault(this, ctx, toBridgeProtocolError(err));
       return;
     }
     // A text frame names its kind; pane output arrives unwrapped, so no chunk
     // on the hottest path allocates a frame around it.
-    if ("k" in inbound) reader.frames[inbound.k](this, inbound as never, ws);
-    else reader.output(this, inbound, ws);
+    if ("k" in inbound) readFrame(reader.frames, this, ctx, inbound);
+    else reader.output(this, ctx, inbound);
   }
 
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
   //   lastError, and the close can run finalize synchronously, which reads it
   //   to publish transport-error (or reconnecting with lastError).
-  private failHandshake(err: BridgeError, ws: BrowserWebSocketLike): void {
+  private failHandshake(conn: Connection, err: BridgeError): void {
     this.emitError(err);
     // 4002: protocol error in the application range. A browser's close()
     //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
-    ws.close(4002, truncateCloseReason(err.toPayload().message));
+    conn.ws.close(4002, truncateCloseReason(err.toPayload().message));
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -625,52 +638,48 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   other frame is a protocol fault, and a fault fails the connection.
   private static readonly beforeWelcome = (
     self: WebSocketTmuxClient,
+    conn: Connection,
     kind: string,
-    ws: BrowserWebSocketLike,
-  ): void => self.failHandshake(outOfPhase(kind, "before welcome"), ws);
+  ): void => self.failHandshake(conn, outOfPhase(kind, "before welcome"));
 
-  private static readonly handshake: PhaseReader = {
-    fault: (self, err, ws) => self.failHandshake(err, ws),
-    output: (self, _msg, ws) =>
-      WebSocketTmuxClient.beforeWelcome(self, "output", ws),
+  private static readonly handshake: PhaseReader<Connection> = {
+    fault: (self, conn, err) => self.failHandshake(conn, err),
+    output: (self, conn) =>
+      WebSocketTmuxClient.beforeWelcome(self, conn, "output"),
     frames: {
-      welcome: (self, f, ws) => self.onWelcome(f, ws),
-      error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
-      event: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
-      result: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
-      pong: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
-      draining: (self, f, ws) =>
-        WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
+      welcome: (self, conn, f) => self.onWelcome(conn, f),
+      error: (self, _conn, f) =>
+        self.emitError(BridgeError.fromPayload(f.error)),
+      event: (self, conn, f) =>
+        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
+      result: (self, conn, f) =>
+        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
+      pong: (self, conn, f) =>
+        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
+      draining: (self, conn, f) =>
+        WebSocketTmuxClient.beforeWelcome(self, conn, f.k),
     },
   };
 
   // The stream: a bad frame is reported, and the connection stays up.
-  private static readonly stream: PhaseReader = {
-    fault: (self, err) => self.emitError(err),
-    output: (self, msg) => self.dispatchEvent(msg),
+  private static readonly stream: PhaseReader<Ready> = {
+    fault: (self, _ready, err) => self.emitError(err),
+    output: (self, _ready, msg) => self.dispatchEvent(msg),
     frames: {
-      welcome: (self, f) => self.emitError(outOfPhase(f.k, "after welcome")),
-      error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
+      welcome: (self, _ready, f) =>
+        self.emitError(outOfPhase(f.k, "after welcome")),
+      error: (self, _ready, f) =>
+        self.emitError(BridgeError.fromPayload(f.error)),
       // Synthetic events carry no topology or bytes, so they bypass the router.
-      event: (self, f) =>
+      event: (self, _ready, f) =>
         isTmuxMessage(f.msg) ? self.dispatchEvent(f.msg) : self.announce(f.msg),
-      result: (self, f) => self.onResult(f),
-      pong: (self, f) => self.heartbeat?.onPong(f.id),
-      draining: (self, f) => self.onDraining(f.deadlineMs),
+      result: (self, _ready, f) => self.onResult(f),
+      pong: (_self, ready, f) => ready.heartbeat.onPong(f.id),
+      draining: (self, ready, f) => self.onDraining(ready, f.deadlineMs),
     },
   };
 
-  private static readonly readers: Readonly<
-    Record<ConnectionState["status"], PhaseReader>
-  > = {
-    connecting: WebSocketTmuxClient.handshake,
-    ready: WebSocketTmuxClient.stream,
-    reconnecting: WebSocketTmuxClient.stream,
-    closed: WebSocketTmuxClient.stream,
-  };
-
-  private onWelcome(frame: WelcomeFrame, ws: BrowserWebSocketLike): void {
-    this.serverLimits = frame.limits;
+  private onWelcome(conn: Connection, frame: WelcomeFrame): void {
     // Reaching ready is the success point: reset the retry budget for the next
     // episode. This is the single reset that covers both entry paths — it is
     // load-bearing for the retry-timer path (onRetry → openSocket → onWelcome,
@@ -682,22 +691,31 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // maps from a clean slate — a clean exit can't be misreported as
     // transport-error because of a stale error from before the last reconnect.
     this.lastError = undefined;
+    // The runner is this connection's, for the router to retire with it.
+    const ready: Ready = {
+      kind: "ready",
+      requestTimeoutMs: minDurationMs(
+        this.requestTimeoutMs,
+        frame.limits.requestTimeoutMs,
+      ),
+      heartbeat: this.heartbeatFor(conn.ws, frame.limits),
+      run: (cmd) => this.execute(cmd),
+      draining: false,
+    };
+    conn.phase = ready;
     this.setConnectionState({ status: "ready" });
-    this.startHeartbeat(frame.limits, ws);
-    // The runner names this connection, for the router and for the replay.
-    const run: RunCommand = (cmd) => this.execute(cmd);
-    this.routerRun = run;
+    ready.heartbeat.start();
     // Restore this client's coverage on the new peer before anything queued
     // during the outage, so a queued disable lands after the enables it undoes.
-    this.replayCrossSessionLayoutEnables(run);
+    this.replayCrossSessionLayoutEnables(conn);
     this.outbox.flush();
     // [LAW:one-source-of-truth] TopologyRouter owns bootstrap and sink-registry management.
-    //   After "ready" is committed, so the bootstrap's execute() is transmitted,
+    //   After the phase is ready, so the bootstrap's execute() is transmitted,
     //   and after the queued calls, so the bootstrap sees what they changed.
     // [LAW:no-ambient-temporal-coupling] A send above that ended this
     //   connection already finalized it; the router takes only a live
     //   connection's runner.
-    if (this.routerRun === run) this.router.onTransportReady(run);
+    if (this.connection === conn) this.router.onTransportReady(ready.run);
   }
 
   private onResult(frame: ReceivedResultFrame): void {
@@ -705,10 +723,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     if (violation !== undefined) this.emitError(violation);
   }
 
-  private onDraining(deadlineMs: number): void {
+  private onDraining(ready: Ready, deadlineMs: number): void {
     // The server keeps serving in-flight calls until the deadline, so the
     // connection stays "ready"; only new calls are refused (see call()).
-    this.draining = true;
+    ready.draining = true;
     this.delivery.post(this.notifyDraining, deadlineMs);
   }
 
@@ -741,41 +759,29 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   };
 
   private finalizeConnection(err: BridgeError): void {
-    // [LAW:single-enforcer] Idempotency guard. close() calls finalize
-    // synchronously to settle pending before returning; the async ws.onclose
-    // that follows hits this guard and returns.
+    // [LAW:single-enforcer] Idempotency guard: a client already closed has
+    // nothing left to end — a close() once the client is closed, or a socket
+    // that fired close synchronously inside ws.close(). A released socket's
+    // later events never get here: release() removed its listeners.
     // [LAW:one-source-of-truth] The guard derives from the one state field:
     // "closed" is exactly the condition under which a second finalize must
     // be a no-op; openSocket() re-arms by entering "connecting".
     if (this.currentConnectionState.status === "closed") return;
 
-    // [LAW:single-enforcer] One operation tears down everything connection-
-    // scoped: listeners, timers, pending, the socket ref. The listeners go
-    // first because that severs the inbound event stream — no late event
-    // from this socket can re-enter the client after this line.
-    // [LAW:no-ambient-temporal-coupling] And the socket ref goes BEFORE
-    // draining: a rejection handler running synchronously inside drain()
-    // must never observe a logically-dead socket.
-    this.socket?.detach();
-    this.socket = null;
-    // The heartbeat's probes close over the socket; dropping it frees both.
-    this.heartbeat?.stop();
-    this.heartbeat = null;
+    // [LAW:single-enforcer] The one place a connection ends: its value is
+    // dropped, and release() stops what it lent outside itself.
+    // [LAW:no-ambient-temporal-coupling] It goes BEFORE draining, so a
+    // rejection handler running synchronously inside drain() never observes
+    // a connection that has ended.
+    const conn = this.connection;
+    this.connection = null;
+    if (conn !== null) this.release(conn);
 
     // [LAW:one-source-of-truth] The outbox is the only structure holding
     // in-flight calls or queued frames; draining it rejects both. The
     // pre-fix bug (M2) was a separate outbox surviving teardown, then
     // re-sending frames whose caller was already rejected.
-    // [LAW:no-ambient-temporal-coupling] The router retires its query runner
-    //   first, so the rejections drain delivers read as the drop they are.
-    if (this.routerRun !== null) this.router.onTransportLost(this.routerRun);
-    this.routerRun = null;
     this.outbox.drain(err);
-    this.serverLimits = null;
-    // The drain notice was scoped to the connection that just ended; calls
-    // made during reconnect backoff must queue for the new connection, not
-    // be refused with a stale drain reason.
-    this.draining = false;
 
     if (this.userRequestedClose) {
       // [LAW:no-ambient-temporal-coupling] Permanent close: end all sinks and
@@ -824,6 +830,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
   }
 
+  // What an ended connection still holds outside itself: its listeners on the
+  // socket — removed first, so no late event from it reaches the client — and,
+  // once welcomed, the heartbeat's timers and the runner the router holds.
+  // [LAW:no-ambient-temporal-coupling] The router retires the runner before
+  //   finalize drains the outbox, so the rejections read as the drop they are.
+  private release(conn: Connection): void {
+    conn.detach();
+    if (conn.phase.kind === "handshake") return;
+    conn.phase.heartbeat.stop();
+    this.router.onTransportLost(conn.phase.run);
+  }
+
   // -------------------------------------------------------------------------
   // Internal: send paths
   //
@@ -836,44 +854,23 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   - Hello / ping / bye are connection-scoped fire-and-forget. They
   //     make no sense across a connection boundary (a stale hello on a new
   //     socket would be a protocol error; a stale ping would corrupt the
-  //     pong correlation). They go through `rawSend()` and are dropped if
-  //     the socket is not OPEN — the next reconnect emits fresh ones.
+  //     pong correlation). They are dropped if their socket cannot take them
+  //     — the next reconnect emits fresh ones. Hello and ping go through
+  //     `sendOn()` on their own connection's socket; bye through the
+  //     `transmitFrame` gate, since only a ready connection has a session
+  //     to end.
   // -------------------------------------------------------------------------
 
-  // [LAW:effects-at-boundaries] The ready/OPEN gate the outbox transmits
-  // through. Returns true iff the ws accepted the frame; never throws.
-  //
-  // [LAW:one-source-of-truth] The gate is `connectionState.status === "ready"`,
-  // not just `ws.readyState === OPEN`. The ws may be OPEN in the brief window
-  // between onOpen and onWelcome, but the server rejects any non-hello frame
-  // while it is pending-hello (server.ts) and would close the connection with
-  // a protocol error. "ready" is the canonical "handshake complete, server
-  // accepting calls" predicate; checking ws.readyState is a belt-and-
-  // suspenders sanity check after that.
+  // [LAW:effects-at-boundaries] The ready gate for calls and bye, which act on
+  //   whichever connection is current. True iff it is ready and its socket
+  //   took the frame.
+  // [LAW:one-source-of-truth] The gate is the connection's phase, not the
+  //   socket's readyState: the socket is OPEN between onOpen and onWelcome,
+  //   but the server rejects any non-hello frame before its handshake ends
+  //   (server.ts) and would close the connection with a protocol error.
   private transmitFrame(frame: string): boolean {
-    if (this.currentConnectionState.status !== "ready") return false;
-    if (this.socket === null) return false;
-    const { ws } = this.socket;
-    if (ws.readyState !== WEBSOCKET_OPEN) return false;
-    try {
-      ws.send(frame);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // Fire-and-forget for hello/ping/bye, on the socket the caller acts for.
-  // No retry, no queue — if the socket is not OPEN the frame is simply
-  // dropped. The caller (onOpen / the heartbeat's ping / close) treats
-  // success as best-effort.
-  private rawSend(ws: BrowserWebSocketLike, frame: string): void {
-    if (ws.readyState !== WEBSOCKET_OPEN) return;
-    try {
-      ws.send(frame);
-    } catch {
-      // ignore — connection-scoped failure surfaces via onClose.
-    }
+    const conn = this.connection;
+    return conn?.phase.kind === "ready" && sendOn(conn.ws, frame);
   }
 
   // -------------------------------------------------------------------------
@@ -882,20 +879,19 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // [LAW:no-ambient-temporal-coupling] A heartbeat is connection-scoped: its
   // cadence is only known once the server's welcome limits arrive, and its
   // outstanding ping must not survive the socket it was sent on. So a fresh
-  // Heartbeat is built per welcome and stopped in finalize — no probe state
-  // outlives its connection.
+  // Heartbeat is built per welcome, held by the ready phase, and stopped when
+  // the connection is released — no probe state outlives its connection.
   // -------------------------------------------------------------------------
-  private startHeartbeat(
-    limits: WelcomeLimits,
+  private heartbeatFor(
     ws: BrowserWebSocketLike,
-  ): void {
-    this.heartbeat?.stop();
+    limits: WelcomeLimits,
+  ): Heartbeat<string> {
     // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
     // (Token = string); ping() emits the frame and returns the id the matching
     // pong will carry, so the shell holds no ping-id state.
     // Cadence policy: the consumer's interval when given, else the server's
     // advertised one — both stamped at their borders (constructor, parseWelcome).
-    const heartbeat = new Heartbeat<string>(
+    return new Heartbeat<string>(
       {
         intervalMs: this.heartbeatIntervalMs ?? limits.heartbeatIntervalMs,
         timeoutMs: this.heartbeatTimeoutMs,
@@ -906,7 +902,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         ping: () =>
           this.delivery.step(() => {
             const id = this.id();
-            this.rawSend(ws, encodeClientFrame({ k: "ping", id }));
+            sendOn(ws, encodeClientFrame({ k: "ping", id }));
             return id;
           }),
         onTimeout: () =>
@@ -920,8 +916,6 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
           }),
       },
     );
-    this.heartbeat = heartbeat;
-    heartbeat.start();
   }
 
   // -------------------------------------------------------------------------
@@ -998,35 +992,86 @@ function outOfPhase(kind: string, when: string): BridgeError {
   return new BridgeError("BRIDGE_PROTOCOL_ERROR", `${kind} frame ${when}`);
 }
 
+/** One connection: its socket, the removal of the listeners the client added
+ *  to it, and the phase it has reached. A connection's phase only moves
+ *  forward, from its handshake to ready. */
+interface Connection {
+  readonly ws: BrowserWebSocketLike;
+  readonly detach: () => void;
+  phase: Phase;
+}
+
+type Phase = Handshake | Ready;
+
+/** Before the welcome: the server's limits are not known yet. */
+interface Handshake {
+  readonly kind: "handshake";
+}
+
+/** After the welcome: what the connection runs on until it ends. */
+interface Ready {
+  readonly kind: "ready";
+  /** The stricter of the consumer's bound and the server's. */
+  readonly requestTimeoutMs: DurationMs;
+  readonly heartbeat: Heartbeat<string>;
+  /** The runner this connection handed the router, retired with it. */
+  readonly run: RunCommand;
+  draining: boolean;
+}
+
 /** How one connection phase reads what the socket delivers: a handler for
  *  every frame kind and for pane output, and what a message that cannot be
- *  decoded does. Each is handed the socket that delivered it, for the
- *  handlers that act on that socket. */
-interface PhaseReader {
+ *  decoded does. Each is handed `Ctx`, what its phase reads. */
+interface PhaseReader<Ctx> {
   readonly fault: (
     self: WebSocketTmuxClient,
+    ctx: Ctx,
     err: BridgeError,
-    ws: BrowserWebSocketLike,
   ) => void;
   readonly output: (
     self: WebSocketTmuxClient,
+    ctx: Ctx,
     msg: PaneOutputMessage,
-    ws: BrowserWebSocketLike,
   ) => void;
-  readonly frames: {
-    readonly [K in ReceivedServerFrame["k"]]: (
-      self: WebSocketTmuxClient,
-      frame: Extract<ReceivedServerFrame, { k: K }>,
-      ws: BrowserWebSocketLike,
-    ) => void;
-  };
+  readonly frames: FrameHandlers<Ctx>;
 }
 
-/** The client's hold on one socket: the socket, and the removal of the
- *  listeners the client added to it. */
-interface SocketBinding {
-  readonly ws: BrowserWebSocketLike;
-  readonly detach: () => void;
+type FrameByKind = {
+  readonly [F in ReceivedServerFrame as F["k"]]: F;
+};
+
+type FrameHandlers<Ctx> = {
+  readonly [K in keyof FrameByKind]: (
+    self: WebSocketTmuxClient,
+    ctx: Ctx,
+    frame: FrameByKind[K],
+  ) => void;
+};
+
+// [LAW:types-are-the-program] The handler is looked up by the frame's own
+//   kind, and generic over it, so the compiler pairs each handler with its
+//   frame (a correlated union) and no cast does it.
+function readFrame<Ctx, K extends keyof FrameByKind>(
+  frames: FrameHandlers<Ctx>,
+  self: WebSocketTmuxClient,
+  ctx: Ctx,
+  frame: FrameByKind[K] & { readonly k: K },
+): void {
+  const kind: K = frame.k;
+  frames[kind](self, ctx, frame);
+}
+
+// [LAW:single-enforcer] The one way a frame reaches a socket. True iff the
+//   socket took it: a socket that is not OPEN, or whose send throws, takes
+//   nothing, and its connection's end surfaces through its close.
+function sendOn(ws: BrowserWebSocketLike, frame: string): boolean {
+  if (ws.readyState !== WEBSOCKET_OPEN) return false;
+  try {
+    ws.send(frame);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const ignoreLateError = (): void => {

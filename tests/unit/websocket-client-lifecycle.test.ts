@@ -189,7 +189,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       });
     });
 
-    it("a subsequent ws.onclose after close() is a no-op (finalize idempotent)", async () => {
+    it("a late close from the released socket after close() changes nothing", async () => {
       const { client, hub } = makeClient();
       void client.connect();
       hub.open();
@@ -200,15 +200,13 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       callPromise.catch(() => {});
 
       await client.close();
-      // close() called ws.close(), which inside the mock fires "close".
-      // The mock's close handler doesn't re-fire if already CLOSED, but
-      // call it explicitly to prove finalize's idempotency guard.
+      // close() released the socket, removing the client's listeners; fire
+      // one more close on it to show nothing it says reaches the client.
       hub.fireClose(0, 1006, "post-close");
       await new Promise((r) => setImmediate(r));
 
       // State stays closed; promise still rejected with the close()'s reason
-      // (NOT overwritten by the post-close event — finalize is idempotent so
-      // the later onClose with reason "post-close" was a no-op).
+      // (NOT overwritten by the post-close event, which reached no listener).
       expect(client.connectionState.status).toBe("closed");
       const err = await callPromise.catch((e: unknown) => e);
       expect(err).toMatchObject({ code: "BRIDGE_CLOSED" });
@@ -223,7 +221,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       void client.connect();
 
       // Open the socket but DO NOT send welcome yet. hello is sent via
-      // rawSend (immediate). The server in this state is pending-hello
+      // sendOn (immediate). The server in this state is pending-hello
       // and would reject any non-hello frame with a protocol error.
       // ConnectionState stays "connecting" until welcome arrives.
       hub.open();
@@ -269,6 +267,25 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         data: encodeServerFrame(result satisfies ServerFrame),
       });
       await expect(callPromise).resolves.toMatchObject({ success: true });
+    });
+
+    it("close() before the welcome sends no bye; after it, bye goes out", async () => {
+      // The server reads any frame but hello before its handshake ends as a
+      // protocol error, so a client that closes early has no session to end.
+      const { client, hub } = makeClient();
+      void client.connect();
+      hub.open();
+      await client.close();
+      expect(sentFrames(hub.latest()).map((f) => f.k)).toEqual(["hello"]);
+
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await client.close();
+      expect(sentFrames(hub.latest()).map((f) => f.k)).toEqual([
+        "hello",
+        "bye",
+      ]);
     });
   });
 
