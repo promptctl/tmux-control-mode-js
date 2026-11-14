@@ -1,4 +1,4 @@
-// packages/pane-terminal/eslint/no-allocation-in-hot-path.ts
+// eslint/rules/no-allocation-in-hot-path.ts
 //
 // Custom ESLint rule for Gate 3's static invariant: zero allocation in any
 // function body that begins with a `// [HOT-PATH]` comment. Pairs with the

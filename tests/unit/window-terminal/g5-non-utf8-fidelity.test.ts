@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/g5-non-utf8-fidelity.test.ts
+// tests/unit/window-terminal/g5-non-utf8-fidelity.test.ts
 //
 // GATE 5 — Non-UTF8 bytes round-trip byte-identical through the live path.
 //
@@ -15,9 +15,9 @@
 // surface here.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
-import { BufferingSink } from "../../src/sink/index.js";
+import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
+import { BufferingSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 
 const PANE_ID = 1;
 

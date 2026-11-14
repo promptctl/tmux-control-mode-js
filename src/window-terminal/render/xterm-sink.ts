@@ -1,7 +1,7 @@
-// packages/pane-terminal/src/xterm-sink/index.ts
+// src/window-terminal/render/xterm-sink.ts
 //
 // XtermSink — DOM-backed `TerminalSink` that drives an xterm.js `Terminal`.
-// The single entry point in this package that touches the DOM and the heavy
+// The single window-terminal module that touches the DOM and the heavy
 // xterm peer dependency. Everything else (PaneStream, BufferingSink) is
 // environment-agnostic.
 //
@@ -11,8 +11,7 @@
 //     buffer that spans the one-rAF first-resize defer.
 //   - VisibilityTracker (visibility-tracker.ts) — on-screen visibility.
 // The minimal `XtermBytesSink` adapter (a separate product) lives in
-// bytes-sink.ts and is re-exported below so the `./xterm-sink` subpath surface
-// is unchanged.
+// bytes-sink.ts.
 //
 // State invariants this class enforces:
 //
@@ -37,7 +36,7 @@
 //     `Terminal`. After dispose, every public method is a no-op.
 //
 // [LAW:locality-or-seam] PaneStream (the producer side of the seam) sees
-//   only the `TerminalSink` interface declared in ../sink/index.ts; it has
+//   only the `TerminalSink` interface declared in ../engine/terminal-sink.ts; it has
 //   no access to xterm or the DOM. Direct consumers of XtermSink — which
 //   already bundle `@xterm/xterm` and the DOM by virtue of choosing this
 //   sink — get an explicit escape hatch via the `terminal` field below
@@ -54,16 +53,10 @@
 
 import { Terminal } from "@xterm/xterm";
 import type { ITheme, IDisposable } from "@xterm/xterm";
-import type { TerminalSink, SeedCursor } from "../sink/index.js";
-import { fitFont as computeFitFont } from "./font-cache.js";
+import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
+import { fitFont as computeFitFont } from "../sizing/cell-metrics.js";
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
-
-export {
-  XtermBytesSink,
-  attachXtermSink,
-  type XtermTerminalLike,
-} from "./bytes-sink.js";
 
 /**
  * Default monospace stack. The list is platform-spanning so XtermSink is
@@ -229,7 +222,7 @@ export class XtermSink implements TerminalSink {
     if (cursor !== null) {
       this.terminal.write(captured);
       // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
-      // `SeedCursor.col`/`row` are 0-indexed (see ../sink/index.ts). Adding
+      // `SeedCursor.col`/`row` are 0-indexed (see ../engine/terminal-sink.ts). Adding
       // 1 here is the only translation; sinks that don't position a hardware
       // cursor (BufferingSink) ignore the cursor entirely.
       this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {

@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/bench/g6-dispose-reclaim.bench.ts
+// tests/bench/g6-dispose-reclaim.bench.ts
 //
 // GATE 6 — dispose() reclaim: one construct+dispose cycle returns the heap to
 // where it started.
@@ -70,8 +70,8 @@
 // @vitest-environment happy-dom
 
 import { describe, it, expect, vi } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
+import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 
 // Plain-function xterm mock. No vi.fn — see the header note on the spy-registry
 // artifact. Every method is a no-op; the gate asserts dispose reclaim, not any
@@ -98,7 +98,7 @@ vi.mock("@xterm/xterm", () => {
   return { Terminal: TerminalMock };
 });
 
-import { XtermSink } from "../../src/xterm-sink/index.js";
+import { XtermSink } from "../../src/window-terminal/render/xterm-sink.js";
 
 // Per-CYCLE net-retention budget. Measured no-leak MIN is single-digit KB; a
 // forgotten XtermSink listener (retains the terminal+DOM+observer graph) floors

@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/g4-remount-capture.test.ts
+// tests/unit/window-terminal/g4-remount-capture.test.ts
 //
 // GATE 4 — Re-mount the same stream's view 100 times:
 //          first mount issues exactly 1 capture-pane;
@@ -12,9 +12,9 @@
 // state across the hop — the only capture happens on the very first attach.
 
 import { describe, it, expect } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
-import { BufferingSink } from "../../src/sink/index.js";
+import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
+import { BufferingSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 
 const PANE_ID = 1;
 const REMOUNT_COUNT = 100;
@@ -55,7 +55,7 @@ describe("Gate 4 — re-mount on the same stream", () => {
     // re-issues capture only on first attach (idle → seeding). On every
     // subsequent attach from `detached`, PaneStream replays its cached
     // `lastSeed` synchronously — see the cache-and-reuse fast path in
-    // `src/stream/pane-stream.ts attach()`. The cache is invalidated by
+    // `src/window-terminal/engine/pane-stream.ts attach()`. The cache is invalidated by
     // 'reconnected' and by output arriving while detached (which would
     // make the cached screen stale); neither happens in this loop, so
     // the count stays at 1.

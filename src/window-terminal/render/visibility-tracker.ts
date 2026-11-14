@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/xterm-sink/visibility-tracker.ts
+// src/window-terminal/render/visibility-tracker.ts
 //
 // VisibilityTracker — "is this terminal's container actually on-screen right
 // now?", extracted from XtermSink as an independent collaborator.

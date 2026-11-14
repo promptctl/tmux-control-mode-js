@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/stream/seed-builder.ts
+// src/window-terminal/engine/seed-builder.ts
 //
 // `buildSeed` — the pure tmux capture-grid reconstruction. Given the raw
 // `capture-pane` output, the `display-message` state reply, and the requested
@@ -15,7 +15,7 @@
 //   (the RPCs that produce the inputs, the sink.seed() that consumes the
 //   output, the lastSeed cache) stays in PaneStream at the boundary.
 
-import type { SeedCursor } from "../sink/index.js";
+import type { SeedCursor } from "./terminal-sink.js";
 
 /**
  * The replayable snapshot of a pane: the raw seed bytes plus the cursor to home

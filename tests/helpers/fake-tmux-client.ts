@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/bench/fake-tmux-client.ts
+// tests/helpers/fake-tmux-client.ts
 //
 // Deterministic stand-in for `TmuxClient` used by benches and unit tests that
 // do not need a real tmux process. Structurally satisfies `TmuxConnection` —
@@ -27,16 +27,13 @@ import type {
   AttachOptions,
   BytesSink,
   TmuxEventMap,
-} from "@promptctl/tmux-control-mode-js/browser";
-import {
-  SinkRegistry,
-  serverScope,
-} from "@promptctl/tmux-control-mode-js/browser";
+} from "../../src/browser.js";
+import { SinkRegistry, serverScope } from "../../src/browser.js";
 import type {
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
-} from "@promptctl/tmux-control-mode-js/protocol";
+} from "../../src/protocol/index.js";
 
 // Ambient `setTimeout` — `tsconfig.core.json` deliberately ships no DOM or
 // Node types so core stays environment-agnostic. The fake's `execute()` needs

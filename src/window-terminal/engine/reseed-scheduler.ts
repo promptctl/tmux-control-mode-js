@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/stream/reseed-scheduler.ts
+// src/window-terminal/engine/reseed-scheduler.ts
 //
 // `ReseedScheduler` — one per `TmuxClient`, owns reconnect-driven re-seed
 // dispatch ordering across every `PaneStream` registered to that client.

@@ -17,19 +17,15 @@
 // Runs on prepublishOnly AFTER the build. Fails loudly, listing every missing
 // target, so a dangling export aborts the publish instead of shipping broken.
 //
-// One enforcer, many packages. The invariant "every published exports target
-// exists in dist" is a single behavior; the workspace has more than one
-// publishable package (root + packages/pane-terminal), each with its own
-// exports map. So this script takes the package root as argv[2] (resolved
-// from cwd, the package dir when pnpm runs prepublishOnly) and defaults to
-// the repo root when omitted. [LAW:one-type-per-behavior] [LAW:single-enforcer]
+// The repo publishes one package — the root — so the exports map checked is
+// the root package.json's.
 
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const root = process.argv[2] ? resolve(process.argv[2]) : join(here, "..");
+const root = join(here, "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 
 // An exports entry is a relative path string or a (possibly nested) object of

@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // [LAW:one-way-deps] [LAW:locality-or-seam] The engine is environment-
+  // agnostic: no DOM globals, no JSX. A stray `document.querySelector` here is
+  // a compile error, not a DOM type silently picked up from a wider lib.
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../../dist/window-terminal",
+    // [LAW:one-source-of-truth] keep the build cache out of the published dist/.
+    "tsBuildInfoFile": "./tsconfig.core.tsbuildinfo",
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "references": [{ "path": ".." }, { "path": "../protocol" }],
+  "include": ["engine/**/*.ts"]
+}

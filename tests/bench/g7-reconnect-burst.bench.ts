@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/bench/g7-reconnect-burst.bench.ts
+// tests/bench/g7-reconnect-burst.bench.ts
 //
 // GATE 7 — Reconnect with N attached streams, two enforced properties:
 //          (1) the visible stream reseeds first and paints in < 100ms;
@@ -37,9 +37,9 @@
 // gate cannot see.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
-import { BufferingSink } from "../../src/sink/index.js";
+import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
+import { BufferingSink } from "../../src/window-terminal/engine/terminal-sink.js";
 
 const FIRST_PAINT_BUDGET_MS = 100;
 const ATTACHED_STREAM_COUNT = 8;

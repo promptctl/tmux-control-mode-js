@@ -1,17 +1,16 @@
-// packages/pane-terminal/tests/unit/hot-path-rule.test.ts
+// tests/unit/window-terminal/hot-path-rule.test.ts
 //
-// Self-test for the no-allocation-in-hot-path ESLint rule. Pairs with Gate 3
+// Self-test for the `hot-path/no-allocation` ESLint rule. Pairs with Gate 3
 // in tests/bench/g3-heap-delta.bench.ts — the rule is the static half of
 // that gate's enforcement, and this test guarantees the rule itself works
 // before any production code depends on it.
 
 import { describe, it } from "vitest";
 import { RuleTester } from "eslint";
-import rule from "../../eslint/no-allocation-in-hot-path.js";
+import rule from "../../../eslint/rules/no-allocation-in-hot-path.js";
 
-// RuleTester drives its case-loop via `describe`/`it`. Vitest globals are
-// disabled in this package (deliberate — explicit imports), so hand the
-// imported helpers to RuleTester before any cases run.
+// RuleTester drives its case-loop via `describe`/`it`; hand it the imported
+// vitest helpers before any cases run.
 RuleTester.describe = describe;
 RuleTester.it = it;
 RuleTester.itOnly = it;
@@ -26,7 +25,7 @@ const tester = new RuleTester({
 // RuleTester.run() must be called at the top level (it spins up its own
 // describe/it tree internally). Wrapping it inside another it() throws
 // "Calling the suite function inside test function is not allowed".
-tester.run("no-allocation-in-hot-path", rule, {
+tester.run("hot-path/no-allocation", rule, {
   valid: [
     // No marker → rule does not apply.
     {

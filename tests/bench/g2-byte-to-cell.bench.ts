@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/bench/g2-byte-to-cell.bench.ts
+// tests/bench/g2-byte-to-cell.bench.ts
 //
 // GATE 2 — Live byte → cell on screen p99 < 16ms (one frame at 60fps).
 //
@@ -12,10 +12,10 @@
 // the budget so XtermSink has headroom.
 
 import { describe, it, expect } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
-import type { TerminalSink } from "../../src/sink/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
+import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
+import type { TerminalSink } from "../../src/window-terminal/engine/terminal-sink.js";
+import type { SeedCursor } from "../../src/window-terminal/engine/terminal-sink.js";
 
 const P99_BUDGET_MS = 16;
 const ITERATIONS = 1000;

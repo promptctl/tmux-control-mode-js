@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/buffering-sink.test.ts
+// tests/unit/window-terminal/buffering-sink.test.ts
 //
 // Unit coverage for `BufferingSink`. Pins the recorder behaviour every
 // other gate/test depends on:
@@ -11,7 +11,7 @@
 // - concatBytes() yields the byte-stream view tests use for snapshots.
 
 import { describe, it, expect } from "vitest";
-import { BufferingSink } from "../../src/sink/index.js";
+import { BufferingSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 
 // seed() carries raw bytes (same kind as write()); these fixtures are ASCII.
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);

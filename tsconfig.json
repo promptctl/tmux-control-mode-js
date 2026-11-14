@@ -8,7 +8,7 @@
     { "path": "src/conformance" },
     { "path": "src/keymap" },
     { "path": "src/connectors" },
-    { "path": "packages/pane-terminal" }
+    { "path": "src/window-terminal" }
   ],
   "files": []
 }

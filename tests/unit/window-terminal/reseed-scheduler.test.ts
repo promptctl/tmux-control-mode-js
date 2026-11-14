@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/reseed-scheduler.test.ts
+// tests/unit/window-terminal/reseed-scheduler.test.ts
 //
 // Unit coverage for `ReseedScheduler`. Asserts the [LAW:single-enforcer]
 // + [LAW:dataflow-not-control-flow] contracts: one scheduler per client,
@@ -6,13 +6,13 @@
 // 7 measures the same code from a timing angle; this file pins the order.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
+import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
 import {
   ReseedScheduler,
   getScheduler,
   type ReseedTarget,
   type ReseedPriority,
-} from "../../src/stream/index.js";
+} from "../../../src/window-terminal/engine/reseed-scheduler.js";
 
 class FakeTarget implements ReseedTarget {
   constructor(

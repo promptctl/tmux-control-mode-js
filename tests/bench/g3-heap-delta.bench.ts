@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/bench/g3-heap-delta.bench.ts
+// tests/bench/g3-heap-delta.bench.ts
 //
 // GATE 3 — 24 detached streams + 100KB/s aggregate output:
 //          heap delta over the simulated window < 2MB.
@@ -6,13 +6,13 @@
 // "Zero allocation in hot path" is the second clause of this requirement.
 // Heap-delta is the runtime check (this file). The static check — no
 // allocation expressions inside `// [HOT-PATH]`-marked function bodies — is
-// the ESLint rule `no-allocation-in-hot-path` (see ../unit/hot-path-rule.test.ts).
+// the ESLint rule `hot-path/no-allocation` (see ../unit/window-terminal/hot-path-rule.test.ts).
 // Two enforcements for one constraint because neither alone is sufficient:
 // V8 has no public allocation counter per function, and a long-running heap
 // trace cannot prove a *specific* function never allocates.
 //
 // Status: GREEN as of 8w9.4 — `bench:gate` sets `NODE_OPTIONS=--expose-gc`
-// in this package's package.json, so CI gets the explicit GC the heap-delta
+// in the root package.json, so CI gets the explicit GC the heap-delta
 // measurement needs. Manual `vitest run` against this file falls back to
 // "skip with reason" if --expose-gc is absent; without it, generational
 // behaviour makes the comparison too noisy to gate on.
@@ -30,8 +30,8 @@
 // estimator rather than widening the budget.
 
 import { describe, it, expect } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
+import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 
 const HEAP_BUDGET_BYTES = 2 * 1024 * 1024;
 const STREAM_COUNT = 24;

@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // [LAW:one-way-deps] The only project that may import `react`. It references
+  // dom and core; nothing references it, so a consumer of window-terminal
+  // without React never typechecks a `.d.ts` that names `react`.
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../../dist/window-terminal",
+    // [LAW:one-source-of-truth] keep the build cache out of the published dist/.
+    "tsBuildInfoFile": "./tsconfig.react.tsbuildinfo",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": []
+  },
+  "references": [
+    { "path": "./tsconfig.dom.json" },
+    { "path": "./tsconfig.core.json" }
+  ],
+  "include": ["react/**/*.ts", "react/**/*.tsx"]
+}

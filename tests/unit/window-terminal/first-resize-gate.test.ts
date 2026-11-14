@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/first-resize-gate.test.ts
+// tests/unit/window-terminal/first-resize-gate.test.ts
 //
 // Isolation tests for FirstResizeGate — the pure seed/live-byte ordering state
 // machine extracted from XtermSink (GM5 / tmux-complexity-lkg.7). The gate has
@@ -13,7 +13,7 @@ import { describe, it, expect } from "vitest";
 import {
   FirstResizeGate,
   DEFAULT_PENDING_WRITES_CAP_BYTES,
-} from "../../src/xterm-sink/first-resize-gate.js";
+} from "../../../src/window-terminal/render/first-resize-gate.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 

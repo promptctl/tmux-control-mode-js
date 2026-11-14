@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/font-cache.test.ts
+// tests/unit/window-terminal/font-cache.test.ts
 //
 // Unit tests for the module-scope font measurement cache. Covers:
 //   - getMetrics caches per (family, weight) — second call is a hit.
@@ -23,7 +23,7 @@ import {
   __resetCache,
   __cacheEntries,
   __awaitFontLoad,
-} from "../../src/xterm-sink/font-cache.js";
+} from "../../../src/window-terminal/sizing/cell-metrics.js";
 
 const FAMILY_A = '"Test Mono A", monospace';
 const FAMILY_B = '"Test Mono B", monospace';

@@ -1,8 +1,9 @@
-// Typecheck-only project for the root vitest suite (tests/unit + tests/integration).
+// Typecheck-only project for the root vitest suite (tests/unit, tests/integration,
+// tests/bench).
 //
 // [LAW:single-enforcer] vitest runs these files through esbuild, which strips
 // types without checking them, and the project-reference build under
-// tsconfig.json only covers src/ + packages. Without this config the test
+// tsconfig.json only covers src/. Without this config the test
 // suite sits outside every typecheck graph and silently drifts from the
 // library types it imports. `pnpm run typecheck:tests` is the single gate that
 // holds tests to the same contracts the source exposes.
@@ -20,11 +21,18 @@
     "declarationMap": false,
     "sourceMap": false,
     "noEmit": true,
+    // DOM is required by the window-terminal tests (document, HTMLElement,
+    // requestAnimationFrame, ResizeObserver, IntersectionObserver). Set
+    // explicitly so the DOM surface is intentional, not target-derived.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "types": ["node", "vitest/globals"]
   },
   "include": [
     "tests/unit/**/*.ts",
+    "tests/unit/**/*.tsx",
     "tests/integration/**/*.ts",
-    "tests/helpers/**/*.ts"
+    "tests/helpers/**/*.ts",
+    "tests/bench/**/*.ts"
   ]
 }

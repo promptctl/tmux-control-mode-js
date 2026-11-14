@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/stream/pane-stream.ts
+// src/window-terminal/engine/pane-stream.ts
 //
 // `PaneStream` — environment-agnostic pane data carrier. Owns the
 // idle→seeding→live↔detached→disposed state machine for a single tmux pane,
@@ -7,7 +7,7 @@
 // to a single timer per stream.
 //
 // No DOM. No xterm. No React. Sinks come in over the seam declared in
-// ../sink/index.ts; the renderer is the consumer's choice (BufferingSink for
+// ./terminal-sink.ts; the renderer is the consumer's choice (BufferingSink for
 // tests/buffering, XtermSink for the browser).
 //
 // [LAW:dataflow-not-control-flow] One BytesSink is attached ONCE in the
@@ -25,29 +25,25 @@
 // [LAW:one-source-of-truth] State transitions live in `setState` only.
 //   External views (`get state()`) read from `currentState` directly.
 
-import type { TerminalSink } from "../sink/index.js";
+import type { TerminalSink } from "./terminal-sink.js";
 import { buildSeed, type Seed } from "./seed-builder.js";
-// [LAW:one-way-deps] pane-terminal is a browser-rendering package; it imports
-// the pure pane-output core from the `/browser` subpath, never the root entry
+// [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
+// the pure pane-output core from `browser.ts`, never the root entry `index.ts`
 // (which pulls the Node-only transport and breaks browser bundlers).
-import type {
-  BytesSink,
-  TmuxConnection,
-  TmuxEventMap,
-} from "@promptctl/tmux-control-mode-js/browser";
+import type { BytesSink, TmuxConnection, TmuxEventMap } from "../../browser.js";
 import {
   paneScope,
   subscribeRaw,
   unsubscribe,
   isConnectionGone,
-} from "@promptctl/tmux-control-mode-js/browser";
+} from "../../browser.js";
 import {
   sendKeys as encodeSendKeys,
   emptyKeysResponse,
   type CommandResponse,
-} from "@promptctl/tmux-control-mode-js/protocol";
+} from "../../protocol/index.js";
 
-// Re-exported so `@promptctl/pane-terminal/stream` consumers don't have to
+// Re-exported so `PaneStream` consumers don't have to
 // dual-import `TmuxConnection` from the library separately.
 export type { TmuxConnection };
 import {

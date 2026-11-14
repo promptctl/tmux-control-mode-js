@@ -26,6 +26,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm run check:deps
       - run: pnpm run lint
       - run: pnpm run format:check
       - run: pnpm run typecheck
@@ -36,14 +37,14 @@ jobs:
         env:
           TMUX_INTEGRATION: "1"
 
-      # Blocking perf/unit gates for @promptctl/pane-terminal (bench:gate runs
-      # the package's unit tests plus the g1/g2/g3/g6/g7 *.bench.ts gates under
-      # --expose-gc). A regression here fails the required CI job. One flaky
-      # assertion — g7's aggregate total-burst budget — is `it.skip` at the
-      # source with a ticket ref (tmux-test-gates-e33.6), never masked here by
-      # a blanket continue-on-error over the whole package. [LAW:no-silent-failure]
-      - name: pane-terminal — bench/unit gates
-        run: pnpm --filter @promptctl/pane-terminal run bench:gate
+      # Blocking window-terminal perf gates (bench:gate runs the g1/g2/g3/g6/g7
+      # tests/bench/*.bench.ts gates under --expose-gc; the window-terminal unit
+      # tests run in `pnpm test` above). A regression here fails the required CI
+      # job. One flaky assertion — g7's aggregate total-burst budget — is
+      # `it.skip` at the source with a ticket ref (tmux-test-gates-e33.6), never
+      # masked here by a blanket continue-on-error. [LAW:no-silent-failure]
+      - name: window-terminal — bench gates
+        run: pnpm run bench:gate
         env:
           TMUX_INTEGRATION: "1"
 
@@ -103,9 +104,10 @@ jobs:
       # Playwright's _electron launcher, not a Playwright-managed browser.
       - run: pnpm exec playwright install-deps chromium
 
-      # The demo resolves @promptctl/{tmux-control-mode-js,pane-terminal} to
-      # their built dist/ (exports map → ./dist/*), so the library must be
-      # built before the demo's Vite/esbuild bundle (run by test:e2e itself).
+      # The demo resolves @promptctl/tmux-control-mode-js to its built dist/
+      # (exports map → ./dist/*) and imports dist/window-terminal directly
+      # (web/window-terminal-internals.ts), so the library must be built
+      # before the demo's Vite/esbuild bundle (run by test:e2e itself).
       - run: pnpm run build
 
       # xvfb-run -a picks a free display; test:e2e builds the demo's electron

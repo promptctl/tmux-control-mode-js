@@ -1,17 +1,13 @@
-// packages/pane-terminal/src/xterm-sink/bytes-sink.ts
+// src/window-terminal/render/bytes-sink.ts
 //
 // XtermBytesSink — minimal BytesSink adapter for any xterm-compatible terminal.
 //
-// The second, unrelated product that used to share xterm-sink/index.ts with
+// The second, unrelated product that used to share one file with
 // XtermSink. It shares NO code with XtermSink and imports from a different root
 // (the wire package's BytesSink contract, not xterm + the DOM), which is why it
 // lives in its own file. [LAW:decomposition], [LAW:one-way-deps].
 
-import type {
-  AttachOptions,
-  BytesSink,
-  ChunkPayload,
-} from "@promptctl/tmux-control-mode-js";
+import type { AttachOptions, BytesSink, ChunkPayload } from "../../browser.js";
 
 // [LAW:decomposition] Minimal slice — only the write method this sink needs.
 interface AttachBytesClient {

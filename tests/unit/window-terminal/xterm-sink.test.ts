@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/xterm-sink.test.ts
+// tests/unit/window-terminal/xterm-sink.test.ts
 //
 // Unit tests for XtermSink's TerminalSink contract — the mutations it
 // performs against a (mocked) xterm `Terminal`, and the lifecycle invariants
@@ -75,8 +75,8 @@ vi.mock("@xterm/xterm", () => {
 });
 
 // Import AFTER vi.mock so the mocked Terminal is used.
-import { XtermSink } from "../../src/xterm-sink/index.js";
-import { __resetCache } from "../../src/xterm-sink/font-cache.js";
+import { XtermSink } from "../../../src/window-terminal/render/xterm-sink.js";
+import { __resetCache } from "../../../src/window-terminal/sizing/cell-metrics.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

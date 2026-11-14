@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/bench/g1-attach-paint.bench.ts
+// tests/bench/g1-attach-paint.bench.ts
 //
 // GATE 1 — Visibility toggle → first paint p99 < 100ms.
 //
@@ -29,10 +29,13 @@
 
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { execSync } from "node:child_process";
-import { spawnTmux, TmuxClient } from "@promptctl/tmux-control-mode-js";
-import { PaneStream } from "../../src/stream/index.js";
-import type { TerminalSink, SeedCursor } from "../../src/sink/index.js";
-import { killTmuxServer } from "../../../../tests/helpers/reap-test-sockets.js";
+import { spawnTmux, TmuxClient } from "../../src/index.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
+import type {
+  TerminalSink,
+  SeedCursor,
+} from "../../src/window-terminal/engine/terminal-sink.js";
+import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 
 const P99_BUDGET_MS = 100;
 const ITERATIONS = 50; // Real tmux RTT × 50 keeps the bench under ~3 s wall time.

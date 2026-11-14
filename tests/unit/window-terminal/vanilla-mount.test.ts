@@ -1,7 +1,6 @@
-// packages/pane-terminal/tests/unit/vanilla-mount.test.ts
+// tests/unit/window-terminal/vanilla-mount.test.ts
 //
-// Unit tests for `mountPaneTerminal` — the vanilla mirror of the React
-// adapter. The adapter is intentionally tiny; the tests are correspondingly
+// Unit tests for `mountPaneTerminal` — the vanilla-DOM adapter. The adapter is intentionally tiny; the tests are correspondingly
 // behavioural, asserting only the wiring contract:
 //
 //   - construct calls `stream.attach(sink)` exactly once;
@@ -65,9 +64,9 @@ vi.mock("@xterm/xterm", () => {
 // adapter, so casting through `unknown` here is the local-trust seam.
 // ---------------------------------------------------------------------------
 
-import type { TerminalSink } from "../../src/sink/index.js";
-import type { PaneStream } from "../../src/stream/index.js";
-import { mountPaneTerminal } from "../../src/vanilla/index.js";
+import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
+import type { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
+import { mountPaneTerminal } from "../../../src/window-terminal/render/mount-pane-terminal.js";
 
 class StubStream {
   attach = vi.fn<(sink: TerminalSink) => void>();

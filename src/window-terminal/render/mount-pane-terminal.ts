@@ -1,22 +1,19 @@
-// packages/pane-terminal/src/vanilla/index.ts
+// src/window-terminal/render/mount-pane-terminal.ts
 //
-// `mountPaneTerminal` — vanilla-DOM mirror of the React `<PaneTerminal>`
-// adapter. Same wiring, no framework: construct an `XtermSink` against a
-// container, attach it to a `PaneStream`, and return a disposer that tears
-// down both. Consumers that aren't React still get the same lifetime
-// guarantees the React component provides.
+// `mountPaneTerminal` — vanilla-DOM adapter, no framework: construct an
+// `XtermSink` against a container, attach it to a `PaneStream`, and return a
+// disposer that tears down both.
 //
-// [LAW:one-source-of-truth] The wire between PaneStream and XtermSink is
-//   identical here and in the React adapter. Both consult the same
-//   TerminalSink seam (../sink/index.ts); neither layer adds policy.
+// [LAW:one-source-of-truth] The wire between PaneStream and XtermSink is the
+//   TerminalSink seam (../engine/terminal-sink.ts); this layer adds no policy.
 // [LAW:single-enforcer] One mount path, one dispose path. The `disposed`
 //   flag below is the only thing that makes `dispose()` idempotent — there
 //   is no separate "already torn down" state.
 // [LAW:no-mode-explosion] No flags. The function constructs, attaches, and
 //   returns; the only variability is the options forwarded to XtermSink.
 
-import type { PaneStream } from "../stream/index.js";
-import { XtermSink, type XtermSinkOptions } from "../xterm-sink/index.js";
+import type { PaneStream } from "../engine/pane-stream.js";
+import { XtermSink, type XtermSinkOptions } from "./xterm-sink.js";
 
 /**
  * Live handle returned by `mountPaneTerminal`. The `sink` is exposed for

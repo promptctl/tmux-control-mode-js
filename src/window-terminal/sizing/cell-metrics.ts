@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/xterm-sink/font-cache.ts
+// src/window-terminal/sizing/cell-metrics.ts
 //
 // Module-scope monospace-character measurement cache keyed by
 // `(fontFamily, fontWeight)`. One DOM probe per unique key — every subsequent
@@ -16,7 +16,7 @@
 // once, atomically, when the font's `load()` promise resolves; subsequent
 // `getMetrics` calls return the corrected numbers without re-measuring.
 //
-// [LAW:one-source-of-truth] Every fitFont() in the package reads from this
+// [LAW:one-source-of-truth] Every fitFont() in window-terminal reads from this
 //   cache. There is no second measurement path.
 // [LAW:single-enforcer] The fallback→real-font refresh happens at most once
 //   per `(family, weight)` — we track inflight loads in `inflightLoads`.

@@ -82,14 +82,26 @@
   },
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "!dist/window-terminal"
   ],
   "workspaces": [
-    "packages/*",
     "examples/web-multiplexer"
   ],
   "engines": {
     "node": ">=20"
+  },
+  "peerDependencies": {
+    "@xterm/xterm": "^5.5.0",
+    "react": ">=18 <20"
+  },
+  "peerDependenciesMeta": {
+    "@xterm/xterm": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "scripts": {
     "build": "tsc --build",
@@ -99,6 +111,7 @@
     "test:watch": "vitest",
     "test:integration": "TMUX_INTEGRATION=1 vitest run tests/integration/",
     "test:all": "TMUX_INTEGRATION=1 vitest run",
+    "bench:gate": "NODE_OPTIONS=\"--expose-gc\" vitest run --config vitest.bench.config.ts",
     "test:e2e": "pnpm --filter tmux-control-mode-js-demo-web-multiplexer run build:electron && playwright test --config tests/e2e/playwright.config.ts",
     "demo": "pnpm --filter tmux-control-mode-js-demo-web-multiplexer run dev",
     "lint": "eslint .",
@@ -106,7 +119,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "tsc --build && pnpm run typecheck:tests && tsc --noEmit -p tsconfig.e2e.json && pnpm -F tmux-control-mode-js-demo-web-multiplexer run typecheck",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json && pnpm -F @promptctl/pane-terminal run typecheck:tests",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "check:deps": "node scripts/check-no-deps.mjs",
     "check:exports": "node scripts/check-exports.mjs",
     "prepublishOnly": "pnpm run check:deps && pnpm run clean && pnpm run build && pnpm run check:exports"
@@ -125,14 +138,20 @@
     "@eslint/compat": "^2.1.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
+    "@types/estree": "^1.0.0",
     "@types/node": "^22.0.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "@types/ws": "^8.5.13",
+    "@xterm/xterm": "^5.5.0",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.14.0",
     "happy-dom": "^20.9.0",
     "jiti": "^2.6.1",
     "prettier": "^3.8.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.57.1",
     "vitest": "^4.1.0",

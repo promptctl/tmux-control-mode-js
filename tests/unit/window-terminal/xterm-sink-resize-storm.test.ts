@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/xterm-sink-resize-storm.test.ts
+// tests/unit/window-terminal/xterm-sink-resize-storm.test.ts
 //
 // O9 verification: 100 ResizeObserver entries dispatched in one tick must
 // coalesce into AT MOST ONE xterm-side mutation per rAF flush. The intent
@@ -53,8 +53,8 @@ vi.mock("@xterm/xterm", () => {
   return { Terminal: TerminalMock };
 });
 
-import { XtermSink } from "../../src/xterm-sink/index.js";
-import { __resetCache } from "../../src/xterm-sink/font-cache.js";
+import { XtermSink } from "../../../src/window-terminal/render/xterm-sink.js";
+import { __resetCache } from "../../../src/window-terminal/sizing/cell-metrics.js";
 
 // Stub ResizeObserver so we can capture the callback and dispatch entries
 // at will. happy-dom ships a noop ResizeObserver; we replace it for the

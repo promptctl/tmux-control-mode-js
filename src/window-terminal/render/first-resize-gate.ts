@@ -1,4 +1,4 @@
-// packages/pane-terminal/src/xterm-sink/first-resize-gate.ts
+// src/window-terminal/render/first-resize-gate.ts
 //
 // FirstResizeGate — the seed/first-resize ordering state machine, extracted
 // from XtermSink as a *pure* collaborator (no DOM, no xterm, no rAF).
@@ -28,7 +28,7 @@
 //   rAF that drives the first-resize defer stays in XtermSink (its single
 //   timing authority); the gate only reacts to `release()` being called.
 
-import type { SeedCursor } from "../sink/index.js";
+import type { SeedCursor } from "../engine/terminal-sink.js";
 
 /** A buffered seed snapshot: the captured bytes plus optional cursor position. */
 export interface SeedContent {

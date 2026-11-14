@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/seed-builder.test.ts
+// tests/unit/window-terminal/seed-builder.test.ts
 //
 // Isolation tests for buildSeed — the pure tmux capture-grid reconstruction
 // extracted from PaneStream.seed() (GM6 / tmux-complexity-lkg.8). It has NO
@@ -12,7 +12,7 @@
 //   both proves the extraction was behavior-preserving.
 
 import { describe, it, expect } from "vitest";
-import { buildSeed } from "../../src/stream/seed-builder.js";
+import { buildSeed } from "../../../src/window-terminal/engine/seed-builder.js";
 
 const ESC = "\x1b";
 // Seed bytes are raw (same kind as live write()); decode Latin-1 losslessly to

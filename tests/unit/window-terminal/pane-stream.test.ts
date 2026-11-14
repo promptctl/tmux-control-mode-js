@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/pane-stream.test.ts
+// tests/unit/window-terminal/pane-stream.test.ts
 //
 // Unit coverage for `PaneStream` — state machine transitions, paneId filter,
 // activity counter coalescing, and dispose teardown. Bench gates 2/3/5/7
@@ -6,17 +6,17 @@
 // behavioural contract directly.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { FakeTmuxClient } from "../../src/bench/index.js";
-import { PaneStream } from "../../src/stream/index.js";
-import type { PaneStreamError } from "../../src/stream/index.js";
-import type { TerminalSink } from "../../src/sink/index.js";
-import type { SeedCursor } from "../../src/sink/index.js";
+import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
+import type { PaneStreamError } from "../../../src/window-terminal/engine/pane-stream.js";
+import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
+import type { SeedCursor } from "../../../src/window-terminal/engine/terminal-sink.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
   TransportClosedError,
   TransportSendError,
-} from "@promptctl/tmux-control-mode-js/browser";
+} from "../../../src/browser.js";
 
 // A live-tmux command failure (tmux replied %error). `reportError` must SURFACE
 // this class — tmux was alive, so the blank pane is a real failure.

@@ -15,22 +15,19 @@ export default defineConfig({
     maxWorkers: 4,
     include: [
       "src/**/*.test.ts",
+      // window-terminal unit tests live under tests/unit/window-terminal. Node
+      // is the default env; the DOM-needing files opt in per-file via
+      // `// @vitest-environment happy-dom`, so no project split is needed.
       "tests/unit/**/*.test.ts",
+      "tests/unit/**/*.test.tsx",
       "tests/integration/**/*.test.ts",
       // Pure, package-independent demo logic (trigram index, ANSI→text).
       // These import no browser/DOM/React deps, so they run under the same
       // node test env and keep `test:all` the single canonical command.
       "examples/web-multiplexer/web/*.test.ts",
-      // @promptctl/pane-terminal correctness UNIT tests, folded into the one
-      // canonical run so breaking package source reddens `test:all`.
-      // [LAW:verifiable-goals] a gate that can't see a suite can't fail on it.
-      // Node is the default env here; the DOM-needing files opt in per-file
-      // via `// @vitest-environment happy-dom`, so no project split is needed.
-      // Only tests/unit is canonical: tests/bench are slow real-tmux +
-      // --expose-gc perf gates, invoked explicitly via the package's
-      // `bench:gate` script, deliberately kept off the default local path.
-      "packages/pane-terminal/tests/unit/**/*.test.ts",
-      "packages/pane-terminal/tests/unit/**/*.test.tsx",
+      // tests/bench (*.bench.ts) is not collected here: those are slow
+      // real-tmux + --expose-gc perf gates run by `bench:gate`
+      // (vitest.bench.config.ts), deliberately kept off the default local path.
     ],
   },
 });

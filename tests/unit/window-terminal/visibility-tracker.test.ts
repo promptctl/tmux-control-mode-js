@@ -1,4 +1,4 @@
-// packages/pane-terminal/tests/unit/visibility-tracker.test.ts
+// tests/unit/window-terminal/visibility-tracker.test.ts
 //
 // Isolation tests for VisibilityTracker — the IntersectionObserver + document-
 // visibility collaborator extracted from XtermSink (GM5 / tmux-complexity-lkg.7).
@@ -14,7 +14,7 @@
 // @vitest-environment happy-dom
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { VisibilityTracker } from "../../src/xterm-sink/visibility-tracker.js";
+import { VisibilityTracker } from "../../../src/window-terminal/render/visibility-tracker.js";
 
 // Controllable IntersectionObserver stub. The most-recently-constructed
 // instance is captured so a test can fire its callback with a chosen
