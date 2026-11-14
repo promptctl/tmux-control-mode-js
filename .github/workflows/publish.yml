@@ -1,31 +1,50 @@
 name: Publish
 
 # Publishes @promptctl/tmux-control-mode-js to npm when a GitHub Release
-# is published. prepublishOnly runs check:deps (guards against runtime
+# is published, or by hand for an existing tag (`gh workflow run publish.yml
+# -f tag=v0.2.0`). prepublishOnly runs check:deps (guards against runtime
 # dep leaks) + build, so the tarball is always built from a clean tree.
+#
+# Authentication is npm trusted publishing: npm accepts this workflow's
+# GitHub OIDC identity (configured on the package's npm settings page:
+# promptctl/tmux-control-mode-js, workflow publish.yml), so there is no
+# token to expire or to answer a 2FA challenge. The same identity signs the
+# provenance attestation the publish step requests.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.2.0)
+        required: true
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # OIDC token npm signs the provenance attestation with
+      id-token: write # the OIDC identity npm authenticates and attests with
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The release's tag, or the tag a manual run names. The workflow
+          # file itself always comes from the triggering ref.
+          ref: ${{ inputs.tag || github.ref }}
 
       - uses: pnpm/action-setup@v4
         with:
           version: 10
 
+      # No `registry-url`: it makes setup-node write an .npmrc that reads
+      # NODE_AUTH_TOKEN, and a token there is used instead of OIDC.
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: pnpm
+      # Trusted publishing needs npm >= 11.5.1; pnpm delegates publish to it.
+      - run: npm install -g npm@^11.5.1 && npm --version
 
       # Real tmux for the integration gate below. A release can be cut from
       # any tag/SHA and nothing forces that SHA to have passed CI first, so
@@ -73,7 +92,6 @@ jobs:
       # The verify step below fails the job if provenance still doesn't attach.
       - run: pnpm --filter @promptctl/tmux-control-mode-js publish --no-git-checks
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: 'true'
 
       # Provenance verification gate. The publish above can succeed while
