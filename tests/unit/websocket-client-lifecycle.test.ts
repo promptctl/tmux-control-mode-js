@@ -735,6 +735,7 @@ describe("WebSocketTmuxClient — reply-stream reports", () => {
     } as const;
     const protocolError = {
       type: "protocol-error",
+      kind: "terminator",
       commandNumber: 9,
       line: "%end 7 9",
     } as const;

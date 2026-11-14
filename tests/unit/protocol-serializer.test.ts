@@ -26,7 +26,12 @@ import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 // is line-driven, so we add it here.
 function parseOne(line: string): TmuxMessage {
   const out: TmuxMessage[] = [];
-  const parser = new TmuxParser((m) => out.push(m));
+  const parser = new TmuxParser(
+    (m) => out.push(m),
+    (error) => {
+      throw new Error(`unexpected protocol-error: ${error.line}`);
+    },
+  );
   parser.feed(line + "\n");
   expect(out).toHaveLength(1);
   return out[0];

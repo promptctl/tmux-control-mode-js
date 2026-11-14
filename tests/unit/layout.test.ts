@@ -82,6 +82,10 @@ describe("parseWindowLayout", () => {
     ["mismatched brackets", "81e5,80x24,0,0{40x24,0,0,0,39x24,41,0,1]"],
     ["trailing input", "595c,80x24,0,0,3,"],
     ["non-numeric field", "c861,80xab,0,0,3"],
+    [
+      "number past the safe-integer range",
+      "96b0,80x24,0,0,99999999999999999999",
+    ],
   ])("reports %s as a grammar failure", (_label, raw) => {
     const result = parseWindowLayout(raw);
     expect(result.kind).toBe("malformed");

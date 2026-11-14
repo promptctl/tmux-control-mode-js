@@ -244,7 +244,12 @@ describe("block-purity", () => {
   it("%output lines inside a %begin/%end block are response content, not notifications", () => {
     const notifications: string[] = [];
     const responseLines: string[] = [];
-    const parser = new TmuxParser((msg) => notifications.push(msg.type));
+    const parser = new TmuxParser(
+      (msg) => notifications.push(msg.type),
+      (error) => {
+        throw new Error(`unexpected protocol-error: ${error.line}`);
+      },
+    );
     parser.onOutputLine = (_n, line) => responseLines.push(line);
 
     // A %output notification that arrives inside a guard block must not escape

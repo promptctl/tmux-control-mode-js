@@ -33,7 +33,6 @@ import {
 } from "@mantine/core";
 import type { UiStore } from "../ui-store.ts";
 import type { TutorialStore, WireLine, EventEntry } from "../tutorial-store.ts";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js/protocol";
 import { TUTORIAL_SCENARIOS } from "../tutorial-scenarios.ts";
 
 interface Props {
@@ -362,7 +361,7 @@ const textDecoder = new TextDecoder();
  * [LAW:types-are-the-program] Exhaustive over the discriminant; the renderer
  * never inspects a field a given variant doesn't carry.
  */
-function describeMessage(msg: TmuxMessage): string {
+function describeMessage(msg: EventEntry["message"]): string {
   switch (msg.type) {
     case "begin":
     case "end":
@@ -410,5 +409,7 @@ function describeMessage(msg: TmuxMessage): string {
       return msg.error;
     case "exit":
       return msg.reason ?? "(clean)";
+    case "protocol-error":
+      return `${msg.kind}: ${JSON.stringify(msg.line)}`;
   }
 }

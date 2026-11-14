@@ -1271,6 +1271,8 @@ describe("WebSocket bridge — reply-stream reports", () => {
     t.feed("%begin 7 6 0\nhook ran\n%end 7 6 0\n");
     // A block whose terminator is malformed.
     t.feed("%begin 7 9 0\n%end 7 9\n");
+    // A notification whose window id is not a number.
+    t.feed("%window-add @x\n");
 
     for (const ws of sockets) {
       // tmux's own %begin/%end messages ride along, as for any block.
@@ -1289,9 +1291,38 @@ describe("WebSocket bridge — reply-stream reports", () => {
             success: true,
           },
         },
-        { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
+        {
+          type: "protocol-error",
+          kind: "terminator",
+          commandNumber: 9,
+          line: "%end 7 9",
+        },
+        { type: "protocol-error", kind: "line", line: "%window-add @x" },
       ]);
     }
+  });
+
+  it("delivers an unreadable %begin's report before the upstream's close", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    t.feed("%begin 7 x 1\n");
+
+    // The cause reaches the peer, then tmux's end, then the bridge's fatal.
+    const ending = readJsonFrames(ws).flatMap((f) =>
+      f.k === "event" ? [f.msg.type] : f.k === "error" ? [f.error.code] : [],
+    );
+    expect(ending).toEqual(["protocol-error", "exit", "BRIDGE_CLOSED"]);
+    expect(readJsonFrames(ws)).toContainEqual({
+      k: "event",
+      msg: { type: "protocol-error", kind: "begin", line: "%begin 7 x 1" },
+    });
   });
 
   it("parses a reply-stream event frame field by field", () => {
@@ -1305,20 +1336,44 @@ describe("WebSocket bridge — reply-stream reports", () => {
     expect(
       parseServerFrame(frame({ type: "unsolicited-response", response })),
     ).toEqual({ k: "event", msg: { type: "unsolicited-response", response } });
-    expect(
-      parseServerFrame(
-        frame({ type: "protocol-error", commandNumber: 9, line: "%end 7 9" }),
-      ),
-    ).toEqual({
-      k: "event",
-      msg: { type: "protocol-error", commandNumber: 9, line: "%end 7 9" },
-    });
+    for (const msg of [
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 9,
+        line: "%end 7 9",
+      },
+      { type: "protocol-error", kind: "begin", line: "%begin 7 x 1" },
+      { type: "protocol-error", kind: "line", line: "%window-add @x" },
+    ]) {
+      expect(parseServerFrame(frame(msg))).toEqual({ k: "event", msg });
+    }
 
     for (const [msg, error] of [
-      [{ type: "protocol-error", commandNumber: 9 }, /line must be a string/],
       [
-        { type: "protocol-error", commandNumber: "9", line: "%end" },
+        { type: "protocol-error", kind: "terminator", commandNumber: 9 },
+        /line must be a string/,
+      ],
+      [
+        {
+          type: "protocol-error",
+          kind: "terminator",
+          commandNumber: "9",
+          line: "%end",
+        },
         /commandNumber must be a number/,
+      ],
+      [
+        { type: "protocol-error", kind: "terminator", line: "%end" },
+        /commandNumber must be a number/,
+      ],
+      [
+        { type: "protocol-error", line: "%end" },
+        /kind is not a kind this peer knows/,
+      ],
+      [
+        { type: "protocol-error", kind: "other", line: "%end" },
+        /kind is not a kind this peer knows/,
       ],
       [{ type: "unsolicited-response" }, /response must be an object/],
       [

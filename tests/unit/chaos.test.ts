@@ -30,7 +30,10 @@ import {
   decodeOctalEscapes,
   encodeOctalEscapes,
 } from "../../src/protocol/index.js";
-import type { TmuxMessage } from "../../src/protocol/index.js";
+import type {
+  ProtocolErrorMessage,
+  TmuxMessage,
+} from "../../src/protocol/index.js";
 import type { TmuxTransport, SendResult } from "../../src/transport/types.js";
 import type { EmitterMessage } from "../../src/emitter.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
@@ -370,7 +373,11 @@ describe("withChaos — decorator over a fake transport", () => {
 describe("parser recovery under corruption", () => {
   it("a corrupted line does not poison a well-framed line that follows", () => {
     const seen: TmuxMessage[] = [];
-    const parser = new TmuxParser((m) => seen.push(m));
+    const protocolErrors: ProtocolErrorMessage[] = [];
+    const parser = new TmuxParser(
+      (m) => seen.push(m),
+      (error) => protocolErrors.push(error),
+    );
     const r = mulberry32(77);
 
     const clean1 = serializeMessage({
@@ -401,10 +408,11 @@ describe("parser recovery under corruption", () => {
   // with a fixed seed as a permanent regression case.
   it("chaos regression (seed 30, truncate): a truncated %end guard terminator no longer wedges the block", () => {
     const seen: TmuxMessage[] = [];
-    const protocolErrors: { commandNumber: number; line: string }[] = [];
-    const parser = new TmuxParser((m) => seen.push(m));
-    parser.onProtocolError = (commandNumber, line) =>
-      protocolErrors.push({ commandNumber, line });
+    const protocolErrors: ProtocolErrorMessage[] = [];
+    const parser = new TmuxParser(
+      (m) => seen.push(m),
+      (error) => protocolErrors.push(error),
+    );
 
     const begin = serializeMessage({
       type: "begin",
@@ -431,7 +439,14 @@ describe("parser recovery under corruption", () => {
     parser.feed(corruptedEnd + "\n");
     parser.feed(after + "\n");
 
-    expect(protocolErrors).toEqual([{ commandNumber: 5, line: corruptedEnd }]);
+    expect(protocolErrors).toEqual([
+      {
+        type: "protocol-error",
+        kind: "terminator",
+        commandNumber: 5,
+        line: corruptedEnd,
+      },
+    ]);
     // Recovery, not a wedge: the notification after the corrupted terminator
     // routes as a real notification, not as misrouted output for command 5.
     expect(seen).toContainEqual({ type: "window-add", windowId: 9 });

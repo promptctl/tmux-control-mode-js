@@ -19,6 +19,7 @@ import type {
   CommandResponse,
   PaneOutputMessage,
   PaneRecord,
+  ProtocolErrorMessage,
   SessionRecord,
   TmuxMessage,
   WindowLayoutFields,
@@ -475,7 +476,26 @@ interface WireObject<M> {
   object<F extends keyof M & string>(field: F): WireObject<M[F]>;
   /** The field unread, for a parser that reads it as another shape. */
   value(field: keyof M & string): unknown;
+  /**
+   * The object read as the member of the union `M` that its field `field`
+   * names, by that member's builder; any other value of `field` fails.
+   */
+  union<F extends keyof M & string>(field: F, builders: WireUnion<M, F>): M;
 }
+
+// The member of the union `M` whose field `F` is `K`: an intersection whose
+// `F` cannot be `K` reduces to never.
+type Member<M, F extends keyof M, K> = M extends unknown
+  ? M & Readonly<Record<F, K>>
+  : never;
+
+// [LAW:types-are-the-program] One builder per value of the discriminant `F`,
+// each reading the fields its own member has.
+type WireUnion<M, F extends keyof M> = {
+  readonly [K in M[F] & string]: (
+    m: WireObject<Member<M, F, K>>,
+  ) => Member<M, F, K>;
+};
 
 function wireObject<M>(x: unknown, path: string): WireObject<M> {
   return wireFields(wireValue(x, isObject, path, "an object"), path);
@@ -494,6 +514,18 @@ function wireFields<M>(
         : wireValue(o[field], kind.is, at(field), kind.shape),
     object: (field) => wireObject(o[field], at(field)),
     value: (field) => o[field],
+    union: (field, builders) => {
+      const value = o[field];
+      if (!isKeyOf(builders, value)) {
+        throw new BridgeProtocolError(
+          `${at(field)} is not a ${field} this peer knows: ${JSON.stringify(value)}`,
+        );
+      }
+      // The builder `value` keys reads the member `value` names. Members
+      // share field names, so the path names the member.
+      const build = builders[value] as (m: WireObject<M>) => M;
+      return build(wireFields(o, `${path}(${value})`));
+    },
   };
 }
 
@@ -591,15 +623,32 @@ type EventOf<K extends EventMessage["type"]> = Extract<
   { type: K }
 >;
 
+// [LAW:one-source-of-truth] Keyed by `ProtocolErrorMessage["kind"]`: a kind
+// added to it is a compile error until its builder is here.
+const PROTOCOL_ERROR_BUILDERS: WireUnion<ProtocolErrorMessage, "kind"> = {
+  terminator: (m) => ({
+    type: "protocol-error",
+    kind: "terminator",
+    commandNumber: m.read("commandNumber", NUMBER),
+    line: m.read("line", STRING),
+  }),
+  begin: (m) => ({
+    type: "protocol-error",
+    kind: "begin",
+    line: m.read("line", STRING),
+  }),
+  line: (m) => ({
+    type: "protocol-error",
+    kind: "line",
+    line: m.read("line", STRING),
+  }),
+};
+
 // [LAW:one-source-of-truth] Keyed by exactly the messages an event frame
 // carries, so this table is also what `parseEvent` admits. Each builder
 // returns a literal the compiler checks against its message type: a parsed
 // message holds every declared field and nothing else.
-const EVENT_MESSAGE_PARSERS: {
-  readonly [K in EventMessage["type"]]: (
-    m: WireObject<EventOf<K>>,
-  ) => EventOf<K>;
-} = {
+const EVENT_MESSAGE_PARSERS: WireUnion<EventMessage, "type"> = {
   begin: (m) => ({
     type: "begin",
     timestamp: m.read("timestamp", NUMBER),
@@ -709,11 +758,7 @@ const EVENT_MESSAGE_PARSERS: {
     error: m.read("error", STRING),
   }),
   exit: (m) => ({ type: "exit", reason: m.optional("reason", STRING) }),
-  "protocol-error": (m) => ({
-    type: "protocol-error",
-    commandNumber: m.read("commandNumber", NUMBER),
-    line: m.read("line", STRING),
-  }),
+  "protocol-error": (m) => m.union("kind", PROTOCOL_ERROR_BUILDERS),
   "unsolicited-response": (m) => ({
     type: "unsolicited-response",
     response: parseCommandResponse(m.object("response")),
@@ -754,30 +799,12 @@ const EVENT_MESSAGE_PARSERS: {
   ) => Complete<EventOf<K>>;
 };
 
-function parseEventMessage<K extends EventMessage["type"]>(
-  type: K,
-  m: WireObject<EventOf<K>>,
-): EventOf<K> {
-  return EVENT_MESSAGE_PARSERS[type](m);
-}
-
 function parseEvent(x: unknown): EventFrame {
-  const msg = wireValue(
-    wireObject<EventFrame>(x, "event").value("msg"),
-    isObject,
-    "event.msg",
-    "an object",
-  );
-  const { type } = msg;
-  if (!isKeyOf(EVENT_MESSAGE_PARSERS, type)) {
-    throw new BridgeProtocolError(
-      `event.msg.type must be a known TmuxMessage discriminator or a synthetic event type the bridge delivers, got ${JSON.stringify(type)}`,
-    );
-  }
-  // Several types share field names, so the path names the type.
   return {
     k: "event",
-    msg: parseEventMessage(type, wireFields(msg, `event.msg(${type})`)),
+    msg: wireObject<EventFrame>(x, "event")
+      .object("msg")
+      .union("type", EVENT_MESSAGE_PARSERS),
   };
 }
 

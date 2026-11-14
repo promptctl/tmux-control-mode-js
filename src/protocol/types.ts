@@ -294,28 +294,49 @@ export interface ExitMessage {
 // ---------------------------------------------------------------------------
 
 /**
- * Synthesized by `TmuxParser` when a `%end`/`%error` guard terminator fails
- * to parse (fewer than the three required fields — SPEC.md §5) while a
- * response block is open. tmux never sends this message, and unlike every
- * `TmuxMessage` variant it cannot round-trip through a standalone
- * `serializeMessage`/parse cycle — its meaning depends on parser state (a
- * block being open), not on the line's content alone. That is why it is
- * deliberately NOT a member of the `TmuxMessage` union: that union's contract
- * (see `serializer.ts`, `conformance/samples.ts`) is "real wire message,
- * reproducible from one line," which this is not. It is delivered via
- * `TmuxParser.onProtocolError`, a dedicated callback alongside `onOutputLine`,
- * and joins the emitter's synthetic arm (`EmitterMessage`) the same way
- * `ConnectionStateMessage` does. See `TmuxParser`'s class doc for the recovery
- * this signals, and `TmuxProtocolError` (errors.ts) for the client-side
- * rejection it produces.
+ * Synthesized by `TmuxParser` for a line of a known `%` type that it cannot
+ * read: too few fields (SPEC.md §5), or a number field that is not an
+ * unsigned decimal integer. `kind` says what the line was, which decides what
+ * the parse failure costs:
+ *
+ * - `terminator` — the `%end`/`%error` of the open response block. The parser
+ *   closes the block anyway, and `TmuxClient` rejects the command it answered
+ *   with `TmuxProtocolError` (errors.ts).
+ * - `begin` — a `%begin`. Its flags say whose block it opens (a caller's
+ *   command or a reply no caller sent), so once they cannot be read no reply
+ *   can be matched to its command. The parser loses synchronization and
+ *   reads no further line until `reset()`; `TmuxClient` ends the connection.
+ * - `line` — any other line: a notification, or a terminator outside any
+ *   block. It is dropped.
+ *
+ * tmux never sends this message, and unlike every `TmuxMessage` variant it
+ * cannot round-trip through a standalone `serializeMessage`/parse cycle —
+ * whether a terminator closes a block depends on parser state, not on the
+ * line alone. That is why it is deliberately NOT a member of the `TmuxMessage`
+ * union: that union's contract (see `serializer.ts`, `conformance/samples.ts`)
+ * is "real wire message, reproducible from one line," which this is not. It
+ * is delivered to the `onProtocolError` handler `TmuxParser` is constructed
+ * with, and joins the emitter's
+ * synthetic arm (`EmitterMessage`) the same way `ConnectionStateMessage` does.
+ *
+ * [LAW:types-are-the-program] Only a `terminator` carries a command number:
+ * it is the one kind whose block was open, with its owner in flight.
  */
-export interface ProtocolErrorMessage {
-  readonly type: "protocol-error";
-  /** The command number of the block that was force-closed. */
-  readonly commandNumber: number;
-  /** The malformed terminator line, verbatim. */
-  readonly line: string;
-}
+export type ProtocolErrorMessage =
+  | {
+      readonly type: "protocol-error";
+      readonly kind: "terminator";
+      /** The command number of the block that was force-closed. */
+      readonly commandNumber: number;
+      /** The unreadable line, verbatim. */
+      readonly line: string;
+    }
+  | {
+      readonly type: "protocol-error";
+      readonly kind: "begin" | "line";
+      /** The unreadable line, verbatim. */
+      readonly line: string;
+    };
 
 // ---------------------------------------------------------------------------
 // Discriminated Union — every server-to-client message type

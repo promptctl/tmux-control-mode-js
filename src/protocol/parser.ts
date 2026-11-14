@@ -2,28 +2,49 @@
 // Streaming, line-oriented, push-based parser for the tmux control mode protocol.
 // Pure TypeScript — no Node.js dependencies. Works in browser, Deno, Bun.
 
-import type { TmuxMessage } from "./types.js";
+import type { ProtocolErrorMessage, TmuxMessage } from "./types.js";
 import { decodeOctalEscapes } from "./decode.js";
 import { windowLayoutFields } from "./layout.js";
+import { parseUint } from "./uint.js";
 
 // ---------------------------------------------------------------------------
-// ID helpers — one parser per prefix convention
-// [LAW:one-source-of-truth] Canonical ID parsing lives here only.
+// Field readers — one per field convention
+// [LAW:one-source-of-truth] Canonical ID and number reading lives here only.
 // ---------------------------------------------------------------------------
 
-/** Parse `%N` → number. */
+/**
+ * Thrown by a per-type parser only, for a line it cannot read: too few fields
+ * or a number field that is not one. `processLine` turns it into the
+ * `protocol-error` report.
+ *
+ * [LAW:single-enforcer] The one way a per-type parser says "malformed".
+ */
+class MalformedLine extends Error {}
+
+function malformed(): never {
+  throw new MalformedLine();
+}
+
+/** Read an unsigned decimal field, or the line is malformed. */
+function readUint(raw: string): number {
+  return parseUint(raw) ?? malformed();
+}
+
+/** Read `<prefix>N` (`%N`, `@N`, `$N`) → N, or the line is malformed. */
+function readPrefixedId(prefix: "%" | "@" | "$", raw: string): number {
+  return raw.startsWith(prefix) ? readUint(raw.slice(1)) : malformed();
+}
+
 function parsePaneId(raw: string): number {
-  return parseInt(raw.slice(1), 10);
+  return readPrefixedId("%", raw);
 }
 
-/** Parse `@N` → number. */
 function parseWindowId(raw: string): number {
-  return parseInt(raw.slice(1), 10);
+  return readPrefixedId("@", raw);
 }
 
-/** Parse `$N` → number. */
 function parseSessionId(raw: string): number {
-  return parseInt(raw.slice(1), 10);
+  return readPrefixedId("$", raw);
 }
 
 /** Parse an optional-ID field: `-` → -1, otherwise delegate to `parse`. */
@@ -31,9 +52,9 @@ function parseOptionalId(raw: string, parse: (s: string) => number): number {
   return raw === "-" ? -1 : parse(raw);
 }
 
-/** Parse an optional integer field: `-` → -1, otherwise parseInt. */
+/** Parse an optional integer field: `-` → -1, otherwise an unsigned decimal. */
 function parseOptionalInt(raw: string): number {
-  return raw === "-" ? -1 : parseInt(raw, 10);
+  return raw === "-" ? -1 : readUint(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -43,25 +64,26 @@ function parseOptionalInt(raw: string): number {
 // wire type-string to parser function.
 // ---------------------------------------------------------------------------
 
-type LineParseFn = (args: string) => TmuxMessage | null;
+// A per-type parser returns its message or throws `MalformedLine`.
+type LineParseFn = (args: string) => TmuxMessage;
 
 function parseGuard(
   type: "begin" | "end" | "error",
   args: string,
-): TmuxMessage | null {
+): TmuxMessage {
   const parts = args.split(" ");
-  if (parts.length < 3) return null;
+  if (parts.length < 3) malformed();
   return {
     type,
-    timestamp: parseInt(parts[0], 10),
-    commandNumber: parseInt(parts[1], 10),
-    flags: parseInt(parts[2], 10),
+    timestamp: readUint(parts[0]),
+    commandNumber: readUint(parts[1]),
+    flags: readUint(parts[2]),
   };
 }
 
-function parseOutput(args: string): TmuxMessage | null {
+function parseOutput(args: string): TmuxMessage {
   const spaceIdx = args.indexOf(" ");
-  if (spaceIdx === -1) return null;
+  if (spaceIdx === -1) malformed();
   const paneRaw = args.slice(0, spaceIdx);
   const value = args.slice(spaceIdx + 1);
   return {
@@ -71,18 +93,18 @@ function parseOutput(args: string): TmuxMessage | null {
   };
 }
 
-function parseExtendedOutput(args: string): TmuxMessage | null {
+function parseExtendedOutput(args: string): TmuxMessage {
   // Format: %<paneId> <age> [reserved...] : <value>
   const colonIdx = args.indexOf(" : ");
-  if (colonIdx === -1) return null;
+  if (colonIdx === -1) malformed();
   const head = args.slice(0, colonIdx);
   const value = args.slice(colonIdx + 3);
   const parts = head.split(" ");
-  if (parts.length < 2) return null;
+  if (parts.length < 2) malformed();
   return {
     type: "extended-output",
     paneId: parsePaneId(parts[0]),
-    age: parseInt(parts[1], 10),
+    age: readUint(parts[1]),
     data: decodeOctalEscapes(value),
   };
 }
@@ -90,9 +112,9 @@ function parseExtendedOutput(args: string): TmuxMessage | null {
 function parsePaneIdOnly(
   type: "pause" | "continue" | "pane-mode-changed",
 ): LineParseFn {
-  return (args: string): TmuxMessage | null => {
+  return (args: string): TmuxMessage => {
     const paneRaw = args.split(" ")[0];
-    if (!paneRaw) return null;
+    if (!paneRaw) malformed();
     return { type, paneId: parsePaneId(paneRaw) } as TmuxMessage;
   };
 }
@@ -104,9 +126,9 @@ function parseWindowIdOnly(
     | "unlinked-window-add"
     | "unlinked-window-close",
 ): LineParseFn {
-  return (args: string): TmuxMessage | null => {
+  return (args: string): TmuxMessage => {
     const winRaw = args.split(" ")[0];
-    if (!winRaw) return null;
+    if (!winRaw) malformed();
     return { type, windowId: parseWindowId(winRaw) } as TmuxMessage;
   };
 }
@@ -114,9 +136,9 @@ function parseWindowIdOnly(
 function parseWindowRenamed(
   type: "window-renamed" | "unlinked-window-renamed",
 ): LineParseFn {
-  return (args: string): TmuxMessage | null => {
+  return (args: string): TmuxMessage => {
     const spaceIdx = args.indexOf(" ");
-    if (spaceIdx === -1) return null;
+    if (spaceIdx === -1) malformed();
     return {
       type,
       windowId: parseWindowId(args.slice(0, spaceIdx)),
@@ -125,9 +147,9 @@ function parseWindowRenamed(
   };
 }
 
-function parseWindowPaneChanged(args: string): TmuxMessage | null {
+function parseWindowPaneChanged(args: string): TmuxMessage {
   const parts = args.split(" ");
-  if (parts.length < 2) return null;
+  if (parts.length < 2) malformed();
   return {
     type: "window-pane-changed",
     windowId: parseWindowId(parts[0]),
@@ -135,9 +157,9 @@ function parseWindowPaneChanged(args: string): TmuxMessage | null {
   };
 }
 
-function parseLayoutChange(args: string): TmuxMessage | null {
+function parseLayoutChange(args: string): TmuxMessage {
   const parts = args.split(" ");
-  if (parts.length < 4) return null;
+  if (parts.length < 4) malformed();
   return {
     type: "layout-change",
     windowId: parseWindowId(parts[0]),
@@ -148,9 +170,9 @@ function parseLayoutChange(args: string): TmuxMessage | null {
 function parseSessionWithName(
   type: "session-changed" | "session-renamed",
 ): LineParseFn {
-  return (args: string): TmuxMessage | null => {
+  return (args: string): TmuxMessage => {
     const spaceIdx = args.indexOf(" ");
-    if (spaceIdx === -1) return null;
+    if (spaceIdx === -1) malformed();
     return {
       type,
       sessionId: parseSessionId(args.slice(0, spaceIdx)),
@@ -163,9 +185,9 @@ function parseSessionsChanged(_args: string): TmuxMessage {
   return { type: "sessions-changed" };
 }
 
-function parseSessionWindowChanged(args: string): TmuxMessage | null {
+function parseSessionWindowChanged(args: string): TmuxMessage {
   const parts = args.split(" ");
-  if (parts.length < 2) return null;
+  if (parts.length < 2) malformed();
   return {
     type: "session-window-changed",
     sessionId: parseSessionId(parts[0]),
@@ -173,12 +195,12 @@ function parseSessionWindowChanged(args: string): TmuxMessage | null {
   };
 }
 
-function parseClientSessionChanged(args: string): TmuxMessage | null {
+function parseClientSessionChanged(args: string): TmuxMessage {
   const spaceIdx = args.indexOf(" ");
-  if (spaceIdx === -1) return null;
+  if (spaceIdx === -1) malformed();
   const rest = args.slice(spaceIdx + 1);
   const spaceIdx2 = rest.indexOf(" ");
-  if (spaceIdx2 === -1) return null;
+  if (spaceIdx2 === -1) malformed();
   return {
     type: "client-session-changed",
     clientName: args.slice(0, spaceIdx),
@@ -187,30 +209,30 @@ function parseClientSessionChanged(args: string): TmuxMessage | null {
   };
 }
 
-function parseClientDetached(args: string): TmuxMessage | null {
+function parseClientDetached(args: string): TmuxMessage {
   const clientName = args.split(" ")[0];
-  if (!clientName) return null;
+  if (!clientName) malformed();
   return { type: "client-detached", clientName };
 }
 
 function parseNameOnly(
   type: "paste-buffer-changed" | "paste-buffer-deleted",
 ): LineParseFn {
-  return (args: string): TmuxMessage | null => {
+  return (args: string): TmuxMessage => {
     const name = args.split(" ")[0];
-    if (!name) return null;
+    if (!name) malformed();
     return { type, name } as TmuxMessage;
   };
 }
 
-function parseSubscriptionChanged(args: string): TmuxMessage | null {
+function parseSubscriptionChanged(args: string): TmuxMessage {
   // Format: <name> <session-id> <window-id> <window-index> <pane-id> [reserved...] : <value>
   const colonIdx = args.indexOf(" : ");
-  if (colonIdx === -1) return null;
+  if (colonIdx === -1) malformed();
   const head = args.slice(0, colonIdx);
   const value = args.slice(colonIdx + 3);
   const parts = head.split(" ");
-  if (parts.length < 5) return null;
+  if (parts.length < 5) malformed();
   return {
     type: "subscription-changed",
     name: parts[0],
@@ -285,6 +307,18 @@ const PARSERS: ReadonlyMap<string, LineParseFn> = new Map<string, LineParseFn>([
  */
 export const WIRE_MESSAGE_TYPES: ReadonlySet<string> = new Set(PARSERS.keys());
 
+// [LAW:types-are-the-program] Where the stream stands: between response
+// blocks, inside the block a %begin opened, or past a %begin the parser could
+// not read. That block's lines cannot be tied to a command, nor told apart
+// from what follows it, so synchronization is lost until `reset()`.
+type StreamPosition =
+  | { readonly at: "between-blocks" }
+  | { readonly at: "in-block"; readonly commandNumber: number }
+  | { readonly at: "lost-sync" };
+
+const BETWEEN_BLOCKS: StreamPosition = { at: "between-blocks" };
+const LOST_SYNC: StreamPosition = { at: "lost-sync" };
+
 // What `tmux -CC` writes before any protocol output (SPEC.md §12).
 const DCS_INTRODUCER = "\x1bP1000p";
 
@@ -308,8 +342,9 @@ const DCS_INTRODUCER = "\x1bP1000p";
 export class TmuxParser {
   // [LAW:single-enforcer] Response-block state is tracked exclusively here.
   private readonly emit: (msg: TmuxMessage) => void;
+  private readonly reportProtocolError: (error: ProtocolErrorMessage) => void;
   private buffer = "";
-  private activeCommandNumber = -1;
+  private position: StreamPosition = BETWEEN_BLOCKS;
 
   /**
    * Optional callback for command output lines — every non-terminator line
@@ -318,16 +353,6 @@ export class TmuxParser {
    * CommandResponse objects.
    */
   onOutputLine: ((commandNumber: number, line: string) => void) | null = null;
-
-  /**
-   * Optional callback for a malformed guard terminator recovered mid-block
-   * (see `feed()`'s tolerance doc). Distinct from `onMessage`/`emit` because
-   * this is not a `TmuxMessage` — see `ProtocolErrorMessage`'s doc for why.
-   * The client layer sets this to reject the inflight command and surface the
-   * failure as an observable event.
-   */
-  onProtocolError: ((commandNumber: number, line: string) => void) | null =
-    null;
 
   /**
    * Optional callback for a non-`%` line outside any response block, its
@@ -339,8 +364,21 @@ export class TmuxParser {
    */
   onUnguardedLine: ((line: string) => void) | null = null;
 
-  constructor(onMessage: (msg: TmuxMessage) => void) {
+  /**
+   * `onProtocolError` receives every line of a known `%` type that the parser
+   * cannot read, its `kind` saying what the line was (see
+   * `ProtocolErrorMessage`). Distinct from `onMessage` because this is not a
+   * `TmuxMessage` — see `ProtocolErrorMessage`'s doc for why.
+   * [LAW:types-are-the-program] Required, not an optional field like the
+   * others: after a `begin` report the parser reads no further line, so a
+   * parser that could not hear it would fall silent with no signal.
+   */
+  constructor(
+    onMessage: (msg: TmuxMessage) => void,
+    onProtocolError: (error: ProtocolErrorMessage) => void,
+  ) {
     this.emit = onMessage;
+    this.reportProtocolError = onProtocolError;
   }
 
   /**
@@ -371,10 +409,13 @@ export class TmuxParser {
     }
   }
 
-  /** Reset all internal state (line buffer and response-block tracking). */
+  /**
+   * Reset all internal state: the line buffer and the stream position,
+   * including a lost synchronization (see `ProtocolErrorMessage`'s `begin`).
+   */
   reset(): void {
     this.buffer = "";
-    this.activeCommandNumber = -1;
+    this.position = BETWEEN_BLOCKS;
   }
 
   // -------------------------------------------------------------------------
@@ -401,12 +442,12 @@ export class TmuxParser {
    * transport noise. This also fixes a real wedge: a malformed, space-less
    * terminator (`%end\r`, or `%end\r\r` from a doubled-up CRLF) must still
    * compare equal to `"end"`, or the malformed-guard-terminator recovery
-   * below never fires, `activeCommandNumber` never resets, and every line
+   * below never fires, the block never closes, and every line
    * for the rest of the connection — notifications included — misroutes as
    * output for a command that will never settle.
    *
    * The output *payload* forwarded via `onOutputLine` and the line surfaced
-   * via `onProtocolError` both use the raw, un-stripped `line` instead:
+   * to `onProtocolError` both use the raw, un-stripped `line` instead:
    * SPEC.md §5.4 documents response-block output (e.g. `capture-pane -p`) as
    * delivered via `control_write()`, a path with no octal-escaping guarantee
    * (SPEC.md §10 is scoped to %output/%extended-output only), so a captured
@@ -422,7 +463,11 @@ export class TmuxParser {
    * only the stream's first: a PTY can deliver a login banner before it.
    */
   private processLine(raw: string): void {
-    const inResponseBlock = this.activeCommandNumber !== -1;
+    const position = this.position;
+    // [LAW:no-silent-failure] The 'begin' report that lost synchronization
+    // already said every later line is unreadable; none is guessed at.
+    if (position.at === "lost-sync") return;
+    const inResponseBlock = position.at === "in-block";
     const line =
       !inResponseBlock && raw.startsWith(DCS_INTRODUCER)
         ? raw.slice(DCS_INTRODUCER.length)
@@ -459,7 +504,7 @@ export class TmuxParser {
       // terminal data the renderer decodes, and other command output (list-*,
       // display-message) is ASCII or consumer-decoded. One byte pipe, no lossy
       // decode.
-      this.onOutputLine?.(this.activeCommandNumber, line);
+      this.onOutputLine?.(position.commandNumber, line);
       return;
     }
 
@@ -477,27 +522,41 @@ export class TmuxParser {
       return;
     }
 
-    const msg = parser(argsStr);
-    if (msg === null) {
-      // [LAW:no-silent-failure] A malformed line that was positionally the
-      // open block's terminator must not leave the block open — that is the
-      // wedge (see this method's doc comment on malformed-guard-terminator
-      // tolerance). Force-close and surface it; every other malformed
-      // known-type line is still a silent skip, unchanged.
-      if (inResponseBlock && isBlockTerminator) {
-        const commandNumber = this.activeCommandNumber;
-        this.activeCommandNumber = -1;
-        this.onProtocolError?.(commandNumber, line);
-      }
+    let msg: TmuxMessage;
+    try {
+      msg = parser(argsStr);
+    } catch (err) {
+      if (!(err instanceof MalformedLine)) throw err;
+      // [LAW:no-silent-failure] Every unreadable known-type line is reported.
+      // One that was positionally the open block's terminator must not leave
+      // the block open — that is the wedge (see this method's doc comment on
+      // malformed-guard-terminator tolerance) — so the block closes first. A
+      // %begin here is never inside a block: there it is output.
+      const [report, next]: readonly [ProtocolErrorMessage, StreamPosition] =
+        inResponseBlock && isBlockTerminator
+          ? [
+              {
+                type: "protocol-error",
+                kind: "terminator",
+                commandNumber: position.commandNumber,
+                line,
+              },
+              BETWEEN_BLOCKS,
+            ]
+          : typeStr === "begin"
+            ? [{ type: "protocol-error", kind: "begin", line }, LOST_SYNC]
+            : [{ type: "protocol-error", kind: "line", line }, position];
+      this.position = next;
+      this.reportProtocolError(report);
       return;
     }
 
-    // Update response-block tracking state.
+    // Update the stream position.
     // [LAW:single-enforcer] Begin/end/error state transitions happen here only.
     if (msg.type === "begin") {
-      this.activeCommandNumber = msg.commandNumber;
+      this.position = { at: "in-block", commandNumber: msg.commandNumber };
     } else if (msg.type === "end" || msg.type === "error") {
-      this.activeCommandNumber = -1;
+      this.position = BETWEEN_BLOCKS;
     }
 
     this.emit(msg);

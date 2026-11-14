@@ -189,7 +189,8 @@ export class UnrecognizedTmuxVersionError extends Error {
 /**
  * Thrown via Promise rejection when a dispatched tmux command's `%end`/
  * `%error` guard terminator was malformed on the wire (fewer than the three
- * required fields — SPEC.md §5) while its response block was open. Distinct
+ * required fields — SPEC.md §5 — or a number field that is not an unsigned
+ * decimal integer) while its response block was open. Distinct
  * from {@link TmuxCommandError} (a well-formed `%error` reply): here tmux's
  * own response framing was unparseable, not merely negative, so whether the
  * command actually applied is unknown — only that the connection is corrupted
