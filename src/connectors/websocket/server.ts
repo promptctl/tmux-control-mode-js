@@ -248,12 +248,9 @@ export function createWebSocketBridge(
     ws: ServerWebSocketLike,
     request?: UpgradeRequest,
   ): Promise<void> {
-    if (drain) {
-      sendFatal(ws, "BRIDGE_CLOSED", "bridge is shutting down");
-      ws.close(GOING_AWAY, "shutting down");
-      return;
-    }
-
+    // [LAW:single-enforcer] Every socket is a Connection, a refused one too:
+    // its close handshake is then under the heartbeat's deadline and in the
+    // set the drain terminates, like every other close the bridge opens.
     const conn = new Connection(ws, request, opts, defaults, drainDeadlineMs);
     connections.add(conn);
     try {
@@ -492,12 +489,23 @@ class Connection {
 
   async run(): Promise<void> {
     this.installWsListeners();
-    this.handshake.arm(() =>
+    // [LAW:one-source-of-truth] Admission reads the bridge's one drain record,
+    // the same read the welcome makes: a socket that opens into a drain is
+    // refused.
+    if (this.drainDeadlineMs() === undefined) {
+      this.handshake.arm(() =>
+        this.sendFatalAndClose(
+          "BRIDGE_PROTOCOL_ERROR",
+          `no hello frame within ${this.defaults.helloTimeoutMs}ms`,
+        ),
+      );
+    } else {
       this.sendFatalAndClose(
-        "BRIDGE_PROTOCOL_ERROR",
-        `no hello frame within ${this.defaults.helloTimeoutMs}ms`,
-      ),
-    );
+        "BRIDGE_CLOSED",
+        "bridge is shutting down",
+        GOING_AWAY,
+      );
+    }
     await this.whenClosed;
   }
 
@@ -511,10 +519,12 @@ class Connection {
   // -------------------------------------------------------------------------
   private installWsListeners(): void {
     this.ws.on("message", (data: unknown, isBinary: boolean) => {
-      // [LAW:single-enforcer] A frame delivered after finalize meets the
-      // closed state here, before either branch can open a close handshake
-      // (sendFatalAndClose starts the heartbeat finalize already stopped).
-      if (this.state.kind === "closed") return;
+      // [LAW:single-enforcer] A connection whose close is decided reads no
+      // more frames. `ws` still emits `message` on a CLOSING socket, so
+      // without this a hello after a fatal would authenticate and build a
+      // client for a socket already told to go, and a frame after finalize
+      // would restart the heartbeat finalize stopped.
+      if (this.isTearingDown()) return;
       if (isBinary) {
         this.sendFatalAndClose(
           "BRIDGE_PROTOCOL_ERROR",
