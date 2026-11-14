@@ -215,6 +215,30 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect((err as Error).message).toContain("client close");
       expect((err as Error).message).not.toContain("post-close");
     });
+
+    it("a socket whose close() throws still leaves the client closed and nothing pending", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await new Promise((r) => setImmediate(r));
+
+      const callPromise = client.execute("list-windows");
+      callPromise.catch(() => {});
+      hub.latest().close = () => {
+        throw new Error("adapter close failed");
+      };
+
+      // The throw is heard by close()'s caller, from a client already closed.
+      await expect(client.close()).rejects.toThrow("adapter close failed");
+      expect(client.connectionState).toEqual({
+        status: "closed",
+        reason: "disposed",
+      });
+      await expect(callPromise).rejects.toMatchObject({
+        code: "BRIDGE_CLOSED",
+      });
+    });
   });
 
   describe("PR #29 review findings — post-open-pre-welcome window", () => {

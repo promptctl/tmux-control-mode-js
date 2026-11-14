@@ -273,17 +273,18 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // timer's teardown; cancelling here guarantees no scheduled retry fires
     // after this close.
     this.reconnect.cancel();
-    // [LAW:single-enforcer] Close the socket regardless of readyState.
-    // ws.close() on a CONNECTING socket aborts the handshake per the
-    // WebSocket spec; finalize then removes the client's listeners, so
-    // nothing the socket does afterwards reaches the client.
-    if (this.connection !== null) {
-      const { ws } = this.connection.socket;
-      // sendOn gates on OPEN internally — bye only goes on a live socket.
-      sendOn(ws, encodeClientFrame({ k: "bye" }));
-      ws.close(1000, "client close");
-    }
+    const ws = this.connection?.socket.ws;
+    // sendOn gates on OPEN internally — bye only goes on a live socket.
+    if (ws !== undefined) sendOn(ws, encodeClientFrame({ k: "bye" }));
     this.finalizeConnection(new BridgeError("BRIDGE_CLOSED", "client close"));
+    // [LAW:no-ambient-temporal-coupling] The client has ended the connection
+    //   before it closes the socket, so close()'s contract holds whatever the
+    //   socket does: its listeners are gone, and a close() that throws is
+    //   heard by the caller of a client already closed.
+    // [LAW:single-enforcer] Close the socket regardless of readyState:
+    //   ws.close() on a CONNECTING socket aborts the handshake per the
+    //   WebSocket spec.
+    ws?.close(1000, "client close");
   }
 
   // -------------------------------------------------------------------------
@@ -525,7 +526,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     ws.binaryType = "arraybuffer";
     // [LAW:dataflow-not-control-flow] No `if (stale) return` guard in any
-    // listener: finalizeConnection removes them, so a socket the client has
+    // listener: release() removes them, so a socket the client has
     // let go finds no listener to invoke. The message listener's readyState
     // check below is the WebSocket standard's delivery rule, which holds for
     // the current socket too.
@@ -613,7 +614,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     }
     // A text frame names its kind; pane output arrives unwrapped, so no chunk
     // on the hottest path allocates a frame around it.
-    if ("k" in inbound) readFrame(reader.frames, this, ctx, inbound.k, inbound);
+    if ("k" in inbound) readFrame(reader.frames, this, ctx, inbound);
     else reader.output(this, ctx, inbound);
   }
 
@@ -762,10 +763,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   private finalizeConnection(err: BridgeError): void {
     // [LAW:single-enforcer] Idempotency guard: a client already closed has
-    // nothing left to end — a repeated close(), or close() on a socket that
-    // fired its close event synchronously inside ws.close() and so finalized
-    // first. A socket's later events never get here: release() removed its
-    // listeners.
+    // nothing left to end — a repeated close(). A socket's later events never
+    // get here: release() removed its listeners.
     // [LAW:one-source-of-truth] The guard derives from the one state field:
     // "closed" is exactly the condition under which a second finalize must
     // be a no-op; openSocket() re-arms by entering "connecting".
@@ -1039,15 +1038,16 @@ type FrameHandlers<Ctx> = {
   ) => void;
 };
 
-// [LAW:types-are-the-program] Generic over the kind, so the compiler pairs
-//   the handler with its frame (a correlated union) and no cast does it.
+// [LAW:types-are-the-program] The handler is looked up by the frame's own
+//   kind, and generic over it, so the compiler pairs each handler with its
+//   frame (a correlated union) and no cast does it.
 function readFrame<Ctx, K extends keyof FrameByKind>(
   frames: FrameHandlers<Ctx>,
   self: WebSocketTmuxClient,
   ctx: Ctx,
-  kind: K,
-  frame: FrameByKind[K],
+  frame: FrameByKind[K] & { readonly k: K },
 ): void {
+  const kind: K = frame.k;
   frames[kind](self, ctx, frame);
 }
 
