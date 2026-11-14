@@ -2590,7 +2590,7 @@ describe("WebSocket bridge — shutdown", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a socket refused after the drain settled that never answers the close frame is terminated at the pong deadline", async () => {
+  it("a socket refused after the drain settled that never answers the close frame is terminated after one heartbeat cycle", async () => {
     vi.useFakeTimers();
     const events: BridgeObservabilityEvent[] = [];
     const bridge = createWebSocketBridge({

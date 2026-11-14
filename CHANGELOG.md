@@ -82,8 +82,9 @@ All notable changes to this project are documented here. Format follows
   no drain were running and terminated at the drain's end without notice.
 - A socket `WebSocketBridge` refuses because a drain is in flight is now
   terminated at the drain's deadline if its peer never answers the close
-  frame (its close handshake holds the drain open until then), or at the heartbeat's pong deadline if it connected after the
-  drain settled. It also emits `connection-closed` (`BRIDGE_CLOSED`), and its
+  frame (its close handshake holds the drain open until then). One refused
+  after the drain settled is terminated after one heartbeat cycle, interval
+  plus timeout, and is unbounded with the heartbeat off. It also emits `connection-closed` (`BRIDGE_CLOSED`), and its
   close reason reads `bridge is shutting down`. Before, nothing in the bridge
   bounded that close handshake, `shutdown()` could resolve with the socket
   still open, and the refusal emitted no event. Separately, once the bridge
