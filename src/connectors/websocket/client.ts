@@ -179,15 +179,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
 
   // [LAW:one-source-of-truth] Everything scoped to one connection is this one
   //   value — its socket, and once welcomed its limits, heartbeat and runner —
-  //   so ending the connection drops all of it in one assignment and nothing
-  //   can outlive it. Null while there is no connection: closed, or in backoff.
+  //   so ending the connection drops all of it in one assignment; release()
+  //   stops what it lent outside itself (listeners, timers, the router's
+  //   runner). Null while there is no connection: closed, or in backoff.
   private connection: Connection | null = null;
   private nextId = 0;
   private userRequestedClose = false;
   // [LAW:one-source-of-truth] The published ConnectionState; setConnectionState()
-  //   is the only writer. Decisions about a connection read `connection`; this
-  //   answers only what the client is between connections — closed for good,
-  //   or reconnecting.
+  //   is the only writer. Decisions about a connection read `connection`; the
+  //   client reads this only for what it is between connections — closed for
+  //   good, or reconnecting.
   private currentConnectionState: ConnectionState = { status: "connecting" };
   private hasReachedReadyOnce = false;
   private lastError: Error | undefined = undefined;
@@ -279,8 +280,9 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // nothing the socket does afterwards reaches the client.
     if (this.connection !== null) {
       const { ws } = this.connection;
-      // sendOn gates on OPEN internally — bye only goes on a live socket.
-      sendOn(ws, encodeClientFrame({ k: "bye" }));
+      // bye ends a running session, so it goes through the ready gate: the
+      // server reads one before its handshake ends as a protocol error.
+      this.transmitFrame(encodeClientFrame({ k: "bye" }));
       try {
         ws.close(1000, "client close");
       } catch {
@@ -766,8 +768,8 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // be a no-op; openSocket() re-arms by entering "connecting".
     if (this.currentConnectionState.status === "closed") return;
 
-    // [LAW:single-enforcer] One operation ends the connection: dropping its
-    // value drops everything scoped to it at once.
+    // [LAW:single-enforcer] The one place a connection ends: its value is
+    // dropped, and release() stops what it lent outside itself.
     // [LAW:no-ambient-temporal-coupling] It goes BEFORE draining, so a
     // rejection handler running synchronously inside drain() never observes
     // a connection that has ended.
@@ -852,17 +854,20 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   - Hello / ping / bye are connection-scoped fire-and-forget. They
   //     make no sense across a connection boundary (a stale hello on a new
   //     socket would be a protocol error; a stale ping would corrupt the
-  //     pong correlation). They go through `sendOn()` on their own
-  //     connection's socket and are dropped if it is not OPEN — the next
-  //     reconnect emits fresh ones.
+  //     pong correlation). They are dropped if their socket cannot take them
+  //     — the next reconnect emits fresh ones. Hello and ping go through
+  //     `sendOn()` on their own connection's socket; bye through the
+  //     `transmitFrame` gate, since only a ready connection has a session
+  //     to end.
   // -------------------------------------------------------------------------
 
-  // [LAW:effects-at-boundaries] The ready gate the outbox transmits through.
-  // Returns true iff the current connection's socket accepted the frame.
-  // The socket may be OPEN between onOpen and onWelcome, but the server
-  // rejects any non-hello frame while it is pending-hello (server.ts) and
-  // would close the connection with a protocol error, so calls wait for the
-  // welcome.
+  // [LAW:effects-at-boundaries] The ready gate every frame after the welcome
+  //   goes through. True iff the current connection is ready and its socket
+  //   took the frame.
+  // [LAW:one-source-of-truth] The gate is the connection's phase, not the
+  //   socket's readyState: the socket is OPEN between onOpen and onWelcome,
+  //   but the server rejects any non-hello frame before its handshake ends
+  //   (server.ts) and would close the connection with a protocol error.
   private transmitFrame(frame: string): boolean {
     const conn = this.connection;
     return conn?.phase.kind === "ready" && sendOn(conn.ws, frame);

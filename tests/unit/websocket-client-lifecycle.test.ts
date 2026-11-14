@@ -221,7 +221,7 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       void client.connect();
 
       // Open the socket but DO NOT send welcome yet. hello is sent via
-      // rawSend (immediate). The server in this state is pending-hello
+      // sendOn (immediate). The server in this state is pending-hello
       // and would reject any non-hello frame with a protocol error.
       // ConnectionState stays "connecting" until welcome arrives.
       hub.open();
@@ -267,6 +267,25 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
         data: encodeServerFrame(result satisfies ServerFrame),
       });
       await expect(callPromise).resolves.toMatchObject({ success: true });
+    });
+
+    it("close() before the welcome sends no bye; after it, bye goes out", async () => {
+      // The server reads any frame but hello before its handshake ends as a
+      // protocol error, so a client that closes early has no session to end.
+      const { client, hub } = makeClient();
+      void client.connect();
+      hub.open();
+      await client.close();
+      expect(sentFrames(hub.latest()).map((f) => f.k)).toEqual(["hello"]);
+
+      void client.connect();
+      hub.open();
+      hub.welcome();
+      await client.close();
+      expect(sentFrames(hub.latest()).map((f) => f.k)).toEqual([
+        "hello",
+        "bye",
+      ]);
     });
   });
 
