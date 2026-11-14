@@ -1,12 +1,12 @@
 // examples/web-multiplexer/web/webgl-grid-sink.ts
 //
-// WebGLGridSink — a `TerminalSink` (the pane-terminal data-out contract) that
+// WebGLGridSink — a `TerminalSink` (the window-terminal data-out contract) that
 // is NOT xterm. It is the whole thesis of this demo made concrete: the sink
 // interface is renderer-agnostic, so a `PaneStream` can drive a from-scratch
 // WebGL grid renderer exactly as it drives `XtermSink`. The sink turns raw pane
 // bytes into a screen of cells the WebGL renderer can paint.
 //
-// pane-terminal gives the renderer NO cell grid — it forwards opaque bytes and
+// The window-terminal engine gives the renderer NO cell grid — it forwards opaque bytes and
 // names xterm "the single decoding authority". A non-xterm renderer must own a
 // VT emulator; this sink reuses byte-attribution's `AttributionEngine` whole
 // (the repo's one tested VT-grid emulator) rather than minting a second.
@@ -15,7 +15,7 @@
 // [LAW:effects-at-boundaries] This sink is the boundary where bytes become a
 //   grid; it holds no GL and no clock. The grid it exposes is pure data.
 
-import type { SeedCursor, TerminalSink } from "@promptctl/pane-terminal/sink";
+import type { SeedCursor, TerminalSink } from "./window-terminal-internals.ts";
 import {
   AttributionEngine,
   type GridSize,

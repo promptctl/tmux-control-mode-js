@@ -5,7 +5,7 @@
 //
 // THE HEADLINE: `TerminalSink` is renderer-agnostic. Live mode drives a
 // from-scratch WebGL renderer through the SAME `PaneStream` that drives xterm
-// elsewhere in this app — proving the pane-terminal data-out contract is not
+// elsewhere in this app — proving the window-terminal data-out contract is not
 // bound to xterm. Synthetic mode then manufactures a controllable cell load and
 // auto-ramps it until the renderer drops below 60fps, reporting the breaking
 // point. One instanced draw paints every cell of every pane.

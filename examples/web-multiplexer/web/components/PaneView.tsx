@@ -1,6 +1,6 @@
 // examples/web-multiplexer/web/components/PaneView.tsx
 //
-// Thin view layer over the @promptctl/pane-terminal package.
+// Thin view layer over the window-terminal engine (`src/window-terminal/`).
 // PaneView lays out one cell per pane in the active window. Each PaneCell:
 //   1. Creates one `ObservablePaneStream` per pane id (stable across re-renders).
 //   2. Uses `mountPaneTerminal` (vanilla adapter) to wire `XtermSink` to the
@@ -16,8 +16,8 @@
 import { useEffect, useRef, useMemo } from "react";
 import { observer } from "mobx-react-lite";
 import { SimpleGrid, Paper } from "@mantine/core";
-import { mountPaneTerminal } from "@promptctl/pane-terminal/vanilla";
-import type { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
+import { mountPaneTerminal } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
 import { ObservablePaneStream } from "../pane-stream-bridge.ts";
 import type { DemoStore, PaneInfo } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";

@@ -14,7 +14,7 @@
 
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react-lite";
-import { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
+import { XtermSink } from "../window-terminal-internals.ts";
 import type { CollabBridge } from "../collab-bridge.ts";
 
 const FONT_FAMILY =
