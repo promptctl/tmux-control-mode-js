@@ -102,9 +102,10 @@ jobs:
       # Endpoint contract (verified live): a version WITH provenance returns
       # HTTP 200 + {"attestations":[...]} containing a predicateType of
       # https://slsa.dev/provenance/v1; a version WITHOUT returns HTTP 404
-      # {"error":"Not found"}. We poll because the endpoint lags publish by a
-      # few seconds, so a 404 may be propagation rather than absence — only a
-      # 404 that persists across the whole window is a real failure. Any other
+      # {"error":"Not found"}. We poll for ten minutes because npm processes a
+      # new version before serving it (about three minutes for 0.2.0), so a
+      # 404 may be processing rather than absence: only a 404 that persists
+      # across the whole window is a real failure. Any other
       # status is a registry/network fault and also fails loudly: this gate
       # never passes on an inconclusive result.
       - name: Verify provenance attestation attached
@@ -112,7 +113,7 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           url="https://registry.npmjs.org/-/npm/v1/attestations/@promptctl%2Ftmux-control-mode-js@${version}"
           echo "Checking SLSA provenance for @promptctl/tmux-control-mode-js@${version}"
-          for attempt in 1 2 3 4 5 6; do
+          for attempt in $(seq 1 40); do
             http="$(curl -sS -o /tmp/attestations.json -w '%{http_code}' "$url")" || http="000"
             if [ "$http" = "200" ]; then
               has_slsa="$(node -e "const d=require('/tmp/attestations.json');process.stdout.write(String((d.attestations||[]).some(a=>(a.predicateType||'').includes('slsa.dev/provenance'))))")"
@@ -124,7 +125,7 @@ jobs:
             else
               echo "attempt ${attempt}: HTTP ${http} (404 = not yet visible / absent)"
             fi
-            sleep 10
+            sleep 15
           done
           echo "::error::No SLSA provenance attestation for @promptctl/tmux-control-mode-js@${version} after publish (regression of tmux-release-5f2.1)"
           exit 1
