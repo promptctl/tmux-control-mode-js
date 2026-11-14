@@ -41,29 +41,36 @@ export interface BrowserWebSocketLike {
   send(data: string | ArrayBufferLike | ArrayBufferView | Blob): void;
   close(code?: number, reason?: string): void;
 
-  // [LAW:locality-or-seam] The `{ signal }` option is the seam between
-  // "register listener" and "tear listener down" — its lifetime IS the
-  // listener's lifetime. WebSocketTmuxClient passes an AbortSignal per
-  // connection; aborting the controller in finalizeConnection removes
-  // every listener atomically, so events from a no-longer-current socket
-  // simply find no listener to invoke (instead of requiring a runtime
-  // guard inside every listener). Both the standard browser WebSocket
-  // (inherited from EventTarget) and the `ws` package's WebSocket (8.x+)
-  // honor this option.
+  // [LAW:locality-or-seam] removeEventListener, matched by handler identity,
+  // is the one listener teardown both runtimes honor: `ws` ignores an
+  // addEventListener `{ signal }`. A socket may still emit 'error' after its
+  // consumer has removed its listeners (`ws` does on a handshake aborted by
+  // close()), and an EventEmitter-based socket throws in the host on an
+  // 'error' nobody hears — so a consumer that lets a socket go leaves an
+  // 'error' listener on it.
   addEventListener(
     type: "open" | "error",
     listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "message",
     listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "close",
     listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
+  ): void;
+  removeEventListener(
+    type: "open" | "error",
+    listener: (event: unknown) => void,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: { data: unknown }) => void,
+  ): void;
+  removeEventListener(
+    type: "close",
+    listener: (event: { code?: number; reason?: string }) => void,
   ): void;
 }
 

@@ -181,12 +181,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private readonly heartbeatTimeoutMs: DurationMs;
   private readonly requestTimeoutMs: DurationMs;
 
-  private ws: BrowserWebSocketLike | null = null;
-  // [LAW:single-enforcer] One controller per connection scopes the lifetime
-  // of every listener attached to its ws. finalizeConnection aborts it; the
-  // ws library removes all listeners in one operation. No per-listener
-  // staleness check exists or is needed.
-  private connectionAbort: AbortController | null = null;
+  // [LAW:one-source-of-truth] The current socket and the teardown of the
+  //   listeners the client added to it are one value, so neither can outlive
+  //   the other. Null while no connection has a socket: closed, or in backoff.
+  private socket: SocketBinding | null = null;
   private nextId = 0;
   private serverLimits: WelcomeLimits | null = null;
   // The runner this connection handed the router; null until welcome and
@@ -257,7 +255,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // [LAW:no-ambient-temporal-coupling] During reconnect backoff the timer
     // owns the retry; the timer check keeps a manual connect() from opening
     // a second socket underneath it.
-    if (this.ws !== null || this.reconnect.isPending()) {
+    if (this.socket !== null || this.reconnect.isPending()) {
       return;
     }
     this.userRequestedClose = false;
@@ -287,17 +285,16 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // timer's teardown; cancelling here guarantees no scheduled retry fires
     // after this close.
     this.reconnect.cancel();
-    // rawSend gates on OPEN internally — bye only goes on a live socket.
-    this.rawSend(encodeClientFrame({ k: "bye" }));
-    // [LAW:single-enforcer] Abort the underlying socket regardless of
-    // readyState. ws.close() on a CONNECTING socket aborts the handshake
-    // per the WebSocket spec; without this, a close() during CONNECTING
-    // left the underlying socket alive, and its eventual open event would
-    // still fire — the per-socket stale guard in openSocket() catches it
-    // defensively, but freeing the underlying resource is the right move.
-    if (this.ws !== null) {
+    // [LAW:single-enforcer] Close the socket regardless of readyState.
+    // ws.close() on a CONNECTING socket aborts the handshake per the
+    // WebSocket spec; finalize then removes the client's listeners, so
+    // nothing the socket does afterwards reaches the client.
+    if (this.socket !== null) {
+      const { ws } = this.socket;
+      // rawSend gates on OPEN internally — bye only goes on a live socket.
+      this.rawSend(ws, encodeClientFrame({ k: "bye" }));
       try {
-        this.ws.close(1000, "client close");
+        ws.close(1000, "client close");
       } catch {
         // ignore
       }
@@ -537,47 +534,47 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       return;
     }
     ws.binaryType = "arraybuffer";
-    this.ws = ws;
-    // [LAW:locality-or-seam] AbortSignal IS the seam binding listener
-    // lifetime to connection lifetime. Aborted by finalizeConnection;
-    // the ws library removes every listener atomically.
     // [LAW:dataflow-not-control-flow] No `if (stale) return` guard in any
-    // listener — the variability ("is this socket still attached") lives
-    // in the AbortSignal's state, not in branching inside each handler. The
-    // message listener's readyState check below is the WebSocket standard's
-    // delivery rule, which holds for the current socket too.
-    const abort = new AbortController();
-    this.connectionAbort = abort;
-    const opts = { signal: abort.signal };
-
-    // Every socket event is one step.
-    ws.addEventListener("open", () => this.delivery.step(this.onOpen), opts);
+    // listener: finalizeConnection removes them, so a socket the client has
+    // let go finds no listener to invoke. The message listener's readyState
+    // check below is the WebSocket standard's delivery rule, which holds for
+    // the current socket too.
+    // Built once per socket, each acting on its own socket; every socket
+    // event is one step, and a message allocates no closure.
+    const onOpen = (): void => this.delivery.step(this.onOpen, ws);
+    const read = (data: unknown): void => this.onMessage(data, ws);
     // [LAW:single-enforcer] WHATWG WebSockets delivers a message only while
     //   the socket is OPEN ("if ready state is not OPEN, then return"); ws
     //   keeps delivering in CLOSING. This is the one place the client holds
     //   every socket to the standard's rule, so a socket it has begun closing
     //   says nothing more to it. A delivery rule, not a staleness check.
-    ws.addEventListener(
-      "message",
-      (event: { data: unknown }) => {
-        if (ws.readyState === WEBSOCKET_OPEN) {
-          this.delivery.step(this.onMessage, event.data);
-        }
+    const onMessage = (event: { data: unknown }): void => {
+      if (ws.readyState === WEBSOCKET_OPEN)
+        this.delivery.step(read, event.data);
+    };
+    const onClose = (event: { code?: number; reason?: string }): void =>
+      this.delivery.step(this.onClose, event);
+    const onError = (): void => this.delivery.step(this.onError);
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("message", onMessage);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("error", onError);
+    // Stays for the socket's life (BrowserWebSocketLike): detach leaves it.
+    ws.addEventListener("error", ignoreLateError);
+    this.socket = {
+      ws,
+      detach: () => {
+        ws.removeEventListener("open", onOpen);
+        ws.removeEventListener("message", onMessage);
+        ws.removeEventListener("close", onClose);
+        ws.removeEventListener("error", onError);
       },
-      opts,
-    );
-    ws.addEventListener(
-      "close",
-      (event: { code?: number; reason?: string }) =>
-        this.delivery.step(this.onClose, event),
-      opts,
-    );
-    ws.addEventListener("error", () => this.delivery.step(this.onError), opts);
+    };
   }
 
-  // Socket listeners, bound once: a socket event steps with no closure.
-  private readonly onOpen = (): void => {
-    this.rawSend(encodeClientFrame({ k: "hello" }));
+  // Socket listeners, bound once.
+  private readonly onOpen = (ws: BrowserWebSocketLike): void => {
+    this.rawSend(ws, encodeClientFrame({ k: "hello" }));
   };
 
   // Error events in the browser are opaque. Treat as a connection error; the
@@ -591,7 +588,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   //   "connecting", so until it lands the client reads a handshake, and after
   //   it a stream; the phase's reader decides which frames it admits and what
   //   a fault does.
-  private readonly onMessage = (data: unknown): void => {
+  private onMessage(data: unknown, ws: BrowserWebSocketLike): void {
     const reader =
       WebSocketTmuxClient.readers[this.currentConnectionState.status];
     let inbound: Inbound;
@@ -599,26 +596,23 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
       inbound = decodeInbound(data);
     } catch (err) {
       // [LAW:single-enforcer] Normalization lives in toBridgeProtocolError.
-      reader.fault(this, toBridgeProtocolError(err));
+      reader.fault(this, toBridgeProtocolError(err), ws);
       return;
     }
     // A text frame names its kind; pane output arrives unwrapped, so no chunk
     // on the hottest path allocates a frame around it.
-    if ("k" in inbound) reader.frames[inbound.k](this, inbound as never);
-    else reader.output(this, inbound);
-  };
+    if ("k" in inbound) reader.frames[inbound.k](this, inbound as never, ws);
+    else reader.output(this, inbound, ws);
+  }
 
   // [LAW:no-ambient-temporal-coupling] Report first: emitError records
   //   lastError, and the close can run finalize synchronously, which reads it
   //   to publish transport-error (or reconnecting with lastError).
-  private failHandshake(err: BridgeError): void {
+  private failHandshake(err: BridgeError, ws: BrowserWebSocketLike): void {
     this.emitError(err);
     // 4002: protocol error in the application range. A browser's close()
     //   accepts only 1000 and 3000–4999, so RFC 6455's 1002 is not ours to send.
-    // [LAW:no-defensive-null-guards] exception: openSocket sets ws in the
-    //   step that enters "connecting", but the field's type does not say
-    //   so; 6sp.sak gives each socket its own lifetime.
-    this.ws?.close(4002, truncateCloseReason(err.toPayload().message));
+    ws.close(4002, truncateCloseReason(err.toPayload().message));
   }
 
   // [LAW:dataflow-not-control-flow] One reader per phase, each a mapped table
@@ -632,18 +626,21 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   private static readonly beforeWelcome = (
     self: WebSocketTmuxClient,
     kind: string,
-  ): void => self.failHandshake(outOfPhase(kind, "before welcome"));
+    ws: BrowserWebSocketLike,
+  ): void => self.failHandshake(outOfPhase(kind, "before welcome"), ws);
 
   private static readonly handshake: PhaseReader = {
-    fault: (self, err) => self.failHandshake(err),
-    output: (self) => WebSocketTmuxClient.beforeWelcome(self, "output"),
+    fault: (self, err, ws) => self.failHandshake(err, ws),
+    output: (self, _msg, ws) =>
+      WebSocketTmuxClient.beforeWelcome(self, "output", ws),
     frames: {
-      welcome: (self, f) => self.onWelcome(f),
+      welcome: (self, f, ws) => self.onWelcome(f, ws),
       error: (self, f) => self.emitError(BridgeError.fromPayload(f.error)),
-      event: (self, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      result: (self, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      pong: (self, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
-      draining: (self, f) => WebSocketTmuxClient.beforeWelcome(self, f.k),
+      event: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
+      result: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
+      pong: (self, f, ws) => WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
+      draining: (self, f, ws) =>
+        WebSocketTmuxClient.beforeWelcome(self, f.k, ws),
     },
   };
 
@@ -672,7 +669,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     closed: WebSocketTmuxClient.stream,
   };
 
-  private onWelcome(frame: WelcomeFrame): void {
+  private onWelcome(frame: WelcomeFrame, ws: BrowserWebSocketLike): void {
     this.serverLimits = frame.limits;
     // Reaching ready is the success point: reset the retry budget for the next
     // episode. This is the single reset that covers both entry paths — it is
@@ -686,7 +683,7 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     // transport-error because of a stale error from before the last reconnect.
     this.lastError = undefined;
     this.setConnectionState({ status: "ready" });
-    this.startHeartbeat(frame.limits);
+    this.startHeartbeat(frame.limits, ws);
     // The runner names this connection, for the router and for the replay.
     const run: RunCommand = (cmd) => this.execute(cmd);
     this.routerRun = run;
@@ -753,21 +750,15 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
     if (this.currentConnectionState.status === "closed") return;
 
     // [LAW:single-enforcer] One operation tears down everything connection-
-    // scoped: listeners (via AbortController), timers, pending, ws ref.
-    // The abort happens first because it severs the inbound event stream
-    // — no late event can re-enter the client through the closure-bound
-    // `this` after this line.
-    if (this.connectionAbort !== null) {
-      this.connectionAbort.abort();
-      this.connectionAbort = null;
-    }
+    // scoped: listeners, timers, pending, the socket ref. The listeners go
+    // first because that severs the inbound event stream — no late event
+    // from this socket can re-enter the client after this line.
+    // [LAW:no-ambient-temporal-coupling] And the socket ref goes BEFORE
+    // draining: a rejection handler running synchronously inside drain()
+    // must never observe a logically-dead socket.
+    this.socket?.detach();
+    this.socket = null;
     this.heartbeat?.stop();
-    // [LAW:no-ambient-temporal-coupling] Null the socket BEFORE draining. A
-    // rejection handler running synchronously inside drain() must never observe
-    // a logically-dead socket — with the reference already cleared, any code
-    // that reaches for this.ws sees null, not a zombie. drain() itself only
-    // rejects/clears the pending map, so the order is safe.
-    this.ws = null;
 
     // [LAW:one-source-of-truth] The outbox is the only structure holding
     // in-flight calls or queued frames; draining it rejects both. The
@@ -859,22 +850,25 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // suspenders sanity check after that.
   private transmitFrame(frame: string): boolean {
     if (this.currentConnectionState.status !== "ready") return false;
-    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return false;
+    if (this.socket === null) return false;
+    const { ws } = this.socket;
+    if (ws.readyState !== WEBSOCKET_OPEN) return false;
     try {
-      this.ws.send(frame);
+      ws.send(frame);
       return true;
     } catch {
       return false;
     }
   }
 
-  // Fire-and-forget for hello/ping/bye. No retry, no queue — if the socket
-  // is not OPEN the frame is simply dropped. The caller (onOpen / the
-  // heartbeat's ping / close) treats success as best-effort.
-  private rawSend(frame: string): void {
-    if (this.ws === null || this.ws.readyState !== WEBSOCKET_OPEN) return;
+  // Fire-and-forget for hello/ping/bye, on the socket the caller acts for.
+  // No retry, no queue — if the socket is not OPEN the frame is simply
+  // dropped. The caller (onOpen / the heartbeat's ping / close) treats
+  // success as best-effort.
+  private rawSend(ws: BrowserWebSocketLike, frame: string): void {
+    if (ws.readyState !== WEBSOCKET_OPEN) return;
     try {
-      this.ws.send(frame);
+      ws.send(frame);
     } catch {
       // ignore — connection-scoped failure surfaces via onClose.
     }
@@ -889,7 +883,10 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
   // Heartbeat is built per welcome and stopped in finalize — no probe state
   // outlives its connection.
   // -------------------------------------------------------------------------
-  private startHeartbeat(limits: WelcomeLimits): void {
+  private startHeartbeat(
+    limits: WelcomeLimits,
+    ws: BrowserWebSocketLike,
+  ): void {
     this.heartbeat?.stop();
     // [LAW:one-type-per-behavior] The client's ping correlates its pong by id
     // (Token = string); ping() emits the frame and returns the id the matching
@@ -907,14 +904,14 @@ export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
         ping: () =>
           this.delivery.step(() => {
             const id = this.id();
-            this.rawSend(encodeClientFrame({ k: "ping", id }));
+            this.rawSend(ws, encodeClientFrame({ k: "ping", id }));
             return id;
           }),
         onTimeout: () =>
           this.delivery.step(() => {
             // No pong — kill the socket and let the close/reconnect path run.
             try {
-              this.ws?.close(4000, "heartbeat timeout");
+              ws.close(4000, "heartbeat timeout");
             } catch {
               // ignore
             }
@@ -1001,14 +998,36 @@ function outOfPhase(kind: string, when: string): BridgeError {
 
 /** How one connection phase reads what the socket delivers: a handler for
  *  every frame kind and for pane output, and what a message that cannot be
- *  decoded does. */
+ *  decoded does. Each is handed the socket that delivered it, for the
+ *  handlers that act on that socket. */
 interface PhaseReader {
-  readonly fault: (self: WebSocketTmuxClient, err: BridgeError) => void;
-  readonly output: (self: WebSocketTmuxClient, msg: PaneOutputMessage) => void;
+  readonly fault: (
+    self: WebSocketTmuxClient,
+    err: BridgeError,
+    ws: BrowserWebSocketLike,
+  ) => void;
+  readonly output: (
+    self: WebSocketTmuxClient,
+    msg: PaneOutputMessage,
+    ws: BrowserWebSocketLike,
+  ) => void;
   readonly frames: {
     readonly [K in ReceivedServerFrame["k"]]: (
       self: WebSocketTmuxClient,
       frame: Extract<ReceivedServerFrame, { k: K }>,
+      ws: BrowserWebSocketLike,
     ) => void;
   };
 }
+
+/** The client's hold on one socket: the socket, and the removal of the
+ *  listeners the client added to it. */
+interface SocketBinding {
+  readonly ws: BrowserWebSocketLike;
+  readonly detach: () => void;
+}
+
+const ignoreLateError = (): void => {
+  // An 'error' from a socket the client has let go: its connection's end is
+  // already announced, and nothing live hears it.
+};

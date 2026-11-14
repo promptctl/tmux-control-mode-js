@@ -34,23 +34,28 @@ export class FakeWebSocket implements BrowserWebSocketLike {
     close: [],
   };
 
-  send(_data: string | ArrayBufferLike | ArrayBufferView | Blob): void {}
-  close(_code?: number, _reason?: string): void {}
+  readonly sent: string[] = [];
+  closed = false;
+
+  send(data: string | ArrayBufferLike | ArrayBufferView | Blob): void {
+    // The transport only ever sends strings; tests assert that.
+    this.sent.push(data as string);
+  }
+  close(_code?: number, _reason?: string): void {
+    this.closed = true;
+  }
 
   addEventListener(
     type: "open" | "error",
     listener: (event: unknown) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "message",
     listener: (event: { data: unknown }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener(
     type: "close",
     listener: (event: { code?: number; reason?: string }) => void,
-    options?: { signal?: AbortSignal },
   ): void;
   addEventListener<K extends keyof FakeEvents>(
     type: K,
@@ -59,7 +64,34 @@ export class FakeWebSocket implements BrowserWebSocketLike {
     this.listeners[type].push(listener);
   }
 
+  removeEventListener(
+    type: "open" | "error",
+    listener: (event: unknown) => void,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: { data: unknown }) => void,
+  ): void;
+  removeEventListener(
+    type: "close",
+    listener: (event: { code?: number; reason?: string }) => void,
+  ): void;
+  removeEventListener<K extends keyof FakeEvents>(
+    type: K,
+    listener: FakeEvents[K],
+  ): void {
+    const list: FakeEvents[K][] = this.listeners[type];
+    const i = list.indexOf(listener);
+    if (i !== -1) list.splice(i, 1);
+  }
+
   emitMessage(data: unknown): void {
     this.listeners.message.forEach((l) => l({ data }));
+  }
+  emitClose(code?: number, reason?: string): void {
+    this.listeners.close.forEach((l) => l({ code, reason }));
+  }
+  emitError(): void {
+    this.listeners.error.forEach((l) => l({}));
   }
 }

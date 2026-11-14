@@ -578,6 +578,69 @@ describe.skipIf(!RUN_INTEGRATION)(
         await client.close();
       }
     }, 10_000);
+
+    // 6sp.sak: `ws` ignores an addEventListener `{ signal }`, so only
+    // removeEventListener detaches the first socket from the client.
+    it("close() then connect(): the first socket's close handshake leaves the second connection up", async () => {
+      const sockets: WsClient[] = [];
+      const client = new WebSocketTmuxClient({
+        url: fx.url,
+        createWebSocket: (u) => {
+          const ws = new WsClient(u);
+          sockets.push(ws);
+          return ws as unknown as BrowserWebSocketLike;
+        },
+        heartbeatIntervalMs: 0,
+      });
+      try {
+        await waitForState(client, "ready");
+        const first = sockets[0];
+        const firstClosed = new Promise<void>((r) => first.once("close", r));
+
+        await client.close();
+        void client.connect();
+        await firstClosed;
+        expect(client.connectionState.status).not.toBe("closed");
+        await waitForState(client, "ready");
+
+        expect(sockets.length).toBe(2);
+        const response = await client.execute("list-windows");
+        expect(response.success).toBe(true);
+        expect(client.connectionState.status).toBe("ready");
+      } finally {
+        await client.close();
+      }
+    }, 10_000);
+
+    // A `ws` socket closed while CONNECTING emits 'error' on the next tick;
+    // with no listener left on it, that would throw in this process.
+    it("close() during CONNECTING then connect(): the aborted socket's error does not escape", async () => {
+      const sockets: WsClient[] = [];
+      const client = new WebSocketTmuxClient({
+        url: fx.url,
+        createWebSocket: (u) => {
+          const ws = new WsClient(u);
+          sockets.push(ws);
+          return ws as unknown as BrowserWebSocketLike;
+        },
+        heartbeatIntervalMs: 0,
+      });
+      try {
+        const first = sockets[0];
+        expect(first.readyState).toBe(WsClient.CONNECTING);
+        const firstClosed = new Promise<void>((r) => first.once("close", r));
+
+        await client.close();
+        void client.connect();
+        await firstClosed;
+        await waitForState(client, "ready");
+
+        const response = await client.execute("list-windows");
+        expect(response.success).toBe(true);
+      } finally {
+        await client.close();
+      }
+    }, 10_000);
   },
 );
 

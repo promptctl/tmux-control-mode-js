@@ -50,16 +50,11 @@ interface MockWS {
   readonly sent: string[];
   send(data: string | ArrayBufferLike | Uint8Array): void;
   close(code?: number, reason?: string): void;
-  // Match the real DOM signature: when options.signal aborts, the
-  // listener is atomically removed from the EventTarget's registry.
-  // A mock that ignored `signal` would silently leak the staleness
-  // bug back in — defeating the whole point of binding listener
-  // lifetime to connection lifetime.
-  addEventListener(
-    event: string,
-    listener: Listener,
-    options?: { signal?: AbortSignal },
-  ): void;
+  // Listener registry as `ws` implements it: removeEventListener is the
+  // only teardown. `ws` ignores an `{ signal }` option, so this mock does
+  // not take one — a client that relied on it would leak listeners here
+  // exactly as it does under `ws`.
+  addEventListener(event: string, listener: Listener): void;
   removeEventListener(event: string, listener: Listener): void;
   fire(event: string, payload: unknown): void;
 }
@@ -81,36 +76,24 @@ class MockWebSocketHub {
         ws.readyState = 3; // CLOSED
         ws.fire("close", { code, reason });
       },
-      addEventListener(event, listener, options) {
+      addEventListener(event, listener) {
         let set = listeners.get(event);
         if (!set) {
           set = new Set();
           listeners.set(event, set);
         }
         set.add(listener);
-        // Honor the AbortSignal option exactly as the real DOM does:
-        // on abort, remove this listener from the registry.
-        if (options?.signal !== undefined) {
-          const signal = options.signal;
-          if (signal.aborted) {
-            set.delete(listener);
-            return;
-          }
-          signal.addEventListener(
-            "abort",
-            () => {
-              listeners.get(event)?.delete(listener);
-            },
-            { once: true },
-          );
-        }
       },
       removeEventListener(event, listener) {
         listeners.get(event)?.delete(listener);
       },
       fire(event, payload) {
-        const set = listeners.get(event);
-        if (!set) return;
+        const set = listeners.get(event) ?? new Set();
+        // `ws`'s WebSocket is an EventEmitter: an 'error' nobody listens
+        // for throws in the host process.
+        if (event === "error" && set.size === 0) {
+          throw new Error("unhandled 'error' event");
+        }
         for (const cb of set) cb(payload);
       },
     };
@@ -414,11 +397,9 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       expect(client.connectionState.status).toBe("closed");
 
       // Now simulate the orphaned socket completing its handshake AFTER
-      // close(): open arrives first, then welcome. The AbortController
-      // bound to the connection was aborted in finalizeConnection, so
-      // the DOM/`ws`-library removed every listener atomically. The
-      // mock honors `{ signal }` the same way — these `fire` calls find
-      // an empty listener set and invoke nothing.
+      // close(): open arrives first, then welcome. finalizeConnection
+      // removed every listener the client added to that socket, so these
+      // `fire` calls find an empty listener set and invoke nothing.
       hub.open();
       hub.welcome();
       await new Promise((r) => setImmediate(r));
@@ -445,6 +426,59 @@ describe("WebSocketTmuxClient — lifecycle (qz5.4)", () => {
       // handshake, regardless of readyState. Pre-fix the OPEN-only guard
       // would have left a leaked socket alive.
       expect(closeCalled).toBe(true);
+    });
+  });
+
+  describe("6sp.sak: a finalized socket says nothing to the next connection", () => {
+    it("close() then connect(): the first socket's late close leaves the second connection up", async () => {
+      const { client, hub } = makeClient();
+      void client.connect();
+      hub.open(0);
+      hub.welcome(0);
+      await client.close();
+      void client.connect();
+      expect(hub.sockets.length).toBe(2);
+      expect(client.connectionState.status).toBe("connecting");
+
+      // The first socket's close handshake completes after the second
+      // socket exists — the order a real `ws` delivers it in.
+      hub.fireClose(0, 1000, "client close");
+      expect(client.connectionState.status).toBe("connecting");
+
+      hub.open(1);
+      hub.welcome(1);
+      expect(client.connectionState.status).toBe("ready");
+      const call = client.execute("list-windows");
+      const id = sentFrames(hub.sockets[1]).find((f) => f.k === "call")?.id;
+      const result: ResultFrame = {
+        k: "result",
+        id: id as string,
+        ok: true,
+        response: { commandNumber: 0, timestamp: 0, success: true, output: [] },
+      };
+      hub.sockets[1].fire("message", {
+        data: encodeServerFrame(result satisfies ServerFrame),
+      });
+      await expect(call).resolves.toMatchObject({ success: true });
+      expect(client.connectionState.status).toBe("ready");
+    });
+
+    it("close() during CONNECTING then connect(): the first socket's late error and close are absorbed", async () => {
+      const errors: BridgeError[] = [];
+      const { client, hub } = makeClient({ onError: (e) => errors.push(e) });
+      void client.connect();
+      await client.close();
+      void client.connect();
+
+      // `ws` aborts the handshake of a socket closed while CONNECTING and
+      // emits 'error' on the next tick, after the client has let it go.
+      expect(() => hub.sockets[0].fire("error", {})).not.toThrow();
+      hub.fireClose(0, 1006, "aborted");
+      expect(errors).toEqual([]);
+
+      hub.open(1);
+      hub.welcome(1);
+      expect(client.connectionState.status).toBe("ready");
     });
   });
 
