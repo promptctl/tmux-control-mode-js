@@ -80,6 +80,17 @@ All notable changes to this project are documented here. Format follows
   whose handshake was in flight when the drain started is now welcomed and
   sent a `draining` frame with that deadline; before, it was welcomed as if
   no drain were running and terminated at the drain's end without notice.
+- A socket `WebSocketBridge` refuses because a drain is in flight is now
+  terminated at the drain's deadline if its peer never answers the close
+  frame (its close handshake holds the drain open until then). One refused
+  after the drain settled is terminated after one heartbeat cycle, interval
+  plus timeout, and is unbounded with the heartbeat off. It also emits `connection-closed` (`BRIDGE_CLOSED`), and its
+  close reason reads `bridge is shutting down`. Before, nothing in the bridge
+  bounded that close handshake, `shutdown()` could resolve with the socket
+  still open, and the refusal emitted no event. Separately, once the bridge
+  has sent a connection a fatal error, it reads no more frames from that
+  connection. Before, a `hello` arriving on such a socket (`ws` still
+  delivers messages while closing) ran `authenticate` and `createClient`.
 - Under `ws`, a socket `WebSocketTmuxClient` has let go no longer reaches
   the client. Before, `close()` followed by `connect()` let the first
   socket's late close event end the second connection, and the late `error`

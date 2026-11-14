@@ -13,7 +13,7 @@
 // server-side API: enough surface to satisfy ServerWebSocketLike, plus a
 // test hook to set bufferedAmount for the watermark probes.
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -2520,5 +2520,167 @@ describe("WebSocket bridge — shutdown", () => {
     expect(settled).toBe(true);
     expect(ws.terminateCalls).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a socket refused during the drain that never answers the close frame is terminated at the drain's deadline", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    // A running peer holds the drain open until its deadline.
+    const running = connectRunning(bridge);
+    await flush();
+
+    const shutdown = bridge.shutdown(1_000);
+    // The fake's close() fires no close event: this peer never answers.
+    const refused = createFakeWs();
+    void bridge.handleConnection(refused);
+
+    expect(fatalFrames(refused).map((f) => f.error.code)).toEqual([
+      "BRIDGE_CLOSED",
+    ]);
+    expect(refused.closeCalls).toEqual([
+      { code: 1001, reason: "bridge is shutting down" },
+    ]);
+    expect(refused.terminateCalls).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await shutdown;
+
+    expect(running.terminateCalls).toBe(1);
+    expect(refused.terminateCalls).toBe(1);
+    expect(closedEvents(events)).toContainEqual(
+      expect.objectContaining({
+        errorCode: "BRIDGE_CLOSED",
+        reason: expect.stringMatching(/bridge is shutting down/) as string,
+        socketEnd: { kind: "terminated", by: "shutdown" },
+      }),
+    );
+  });
+
+  it("a socket refused during the drain holds it open for its close handshake after every earlier peer has closed", async () => {
+    vi.useFakeTimers();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const running = connectRunning(bridge);
+    await flush();
+
+    let settled = false;
+    const shutdown = bridge.shutdown(1_000).then(() => {
+      settled = true;
+    });
+    const refused = createFakeWs();
+    void bridge.handleConnection(refused);
+
+    running.fireClose(1001, "");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(settled).toBe(false);
+    expect(refused.terminateCalls).toBe(0);
+
+    refused.fireClose(1001, "");
+    await shutdown;
+    expect(refused.terminateCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a socket refused after the drain settled that never answers the close frame is terminated after one heartbeat cycle", async () => {
+    vi.useFakeTimers();
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        throw new Error("a refused socket builds no client");
+      },
+      onEvent: (ev) => events.push(ev),
+      heartbeatIntervalMs: 1_000,
+      heartbeatTimeoutMs: 500,
+    });
+    await bridge.shutdown(1_000);
+
+    const refused = createFakeWs();
+    void bridge.handleConnection(refused);
+    expect(refused.closeCalls).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(refused.terminateCalls).toBe(1);
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({
+        errorCode: "BRIDGE_CLOSED",
+        socketEnd: { kind: "terminated", by: "heartbeat" },
+      }),
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A connection whose close is decided reads no more frames. `ws` still emits
+// `message` on a CLOSING socket, so a hello that lands after the fatal would
+// otherwise authenticate and build a client for a socket already told to go.
+// ---------------------------------------------------------------------------
+
+describe("WebSocket bridge — frames after a pending fatal", () => {
+  // The fatal starts the heartbeat and the fake never fires `close`, so each
+  // test runs on fake timers that afterEach discards.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function countingBridge(): {
+    bridge: ReturnType<typeof createWebSocketBridge>;
+    counts: { authenticate: number; createClient: number };
+  } {
+    const counts = { authenticate: 0, createClient: 0 };
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({
+      authenticate: () => {
+        counts.authenticate++;
+        return { ok: true };
+      },
+      createClient: () => {
+        counts.createClient++;
+        return client;
+      },
+    });
+    return { bridge, counts };
+  }
+
+  it("a hello on a socket refused by the drain authenticates nothing and builds no client", async () => {
+    const { bridge, counts } = countingBridge();
+    void bridge.shutdown(1_000);
+    const refused = createFakeWs();
+    void bridge.handleConnection(refused);
+
+    refused.feedClient({ k: "hello" });
+    await flush();
+
+    expect(counts).toEqual({ authenticate: 0, createClient: 0 });
+    expect(readJsonFrames(refused).map((f) => f.k)).toEqual(["error"]);
+  });
+
+  it("a hello after a pre-hello fatal authenticates nothing and builds no client", async () => {
+    const { bridge, counts } = countingBridge();
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+
+    ws.feedBinary(new Uint8Array([1]));
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    expect(counts).toEqual({ authenticate: 0, createClient: 0 });
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
+      "BRIDGE_PROTOCOL_ERROR",
+    ]);
   });
 });
