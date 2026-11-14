@@ -18,6 +18,7 @@ export {
   TransportSendError,
   UnsupportedTmuxVersionError,
   UnrecognizedTmuxVersionError,
+  isConnectionGone,
 } from "./errors.js";
 
 // [LAW:one-source-of-truth] tmux version-compatibility contract. These are the

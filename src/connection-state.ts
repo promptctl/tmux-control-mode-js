@@ -73,28 +73,32 @@ export interface ReconnectedMessage {
 }
 
 /**
- * Emitted when a topology bootstrap effect (`list-panes -a`) fails.
+ * Emitted when the pane table that session- and window-scoped sinks route by
+ * could not be kept true: a bootstrap (`list-panes -a`) or a window refresh
+ * failed, or output held for unplaced panes overflowed the hold.
  *
- * The pure topology substrate keeps computing — an empty topology table is a
- * representable value — but an empty table cannot silently stand in for a
- * failed bootstrap: with no topology, byte dispatch matches only pane- and
- * server-scoped sinks, so every session/window-scoped consumer would receive
- * zero bytes, indistinguishable from a genuinely empty tmux. This event is the
- * observable distinction between "empty because bootstrap failed" and "empty
- * because tmux has no panes."
+ * A pane the table has not placed matches only pane- and server-scoped sinks,
+ * so in each of the three a session/window-scoped consumer misses output of
+ * the affected panes, indistinguishable from a quiet tmux. This event is
+ * the observable distinction between "no output because routing failed" and
+ * "no output because tmux wrote none."
  *
- * [LAW:no-silent-failure] The bootstrap effect's failure is surfaced, not
- *   swallowed. [LAW:effects-at-boundaries] The router (pure substrate) describes
- *   the failure through an injected seam; the transport adapter (which owns the
+ * [LAW:no-silent-failure] The failure is surfaced, not swallowed.
+ *   [LAW:effects-at-boundaries] The router (pure substrate) describes the
+ *   failure through an injected seam; the transport adapter (which owns the
  *   emitter) performs this emission.
  *
- * Non-terminal: the router's existing event-driven bootstrap triggers
+ * A failed query is non-terminal: the router's event-driven bootstrap triggers
  * (`session-changed`, window events, a new topology-scoped attach) re-attempt
- * the bootstrap, so a later success recovers a starved sink.
+ * the bootstrap, so a later success recovers a starved sink. Output an
+ * overflowing hold refused is never delivered to those sinks.
  */
 export interface TopologyErrorMessage {
   readonly type: "topology-error";
-  /** The error the bootstrap command rejected with, normalized to `Error`. */
+  /**
+   * `message` says which of the three happened; for a failed query, `cause`
+   * is what its command rejected with.
+   */
   readonly error: Error;
 }
 
