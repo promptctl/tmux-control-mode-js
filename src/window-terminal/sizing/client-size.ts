@@ -27,7 +27,7 @@ import {
   setSize,
   setWindowSize,
 } from "../../browser.js";
-import { rethrowUnlessGone } from "../engine/pane-stream.js";
+import { rethrowUnlessGone } from "../engine/teardown.js";
 import { windowNumber, type WindowId } from "../ids.js";
 import type { Grid, SizeClaim } from "./solve.js";
 

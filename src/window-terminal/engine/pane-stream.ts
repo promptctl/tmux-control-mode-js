@@ -28,6 +28,7 @@
 import type { TerminalSink } from "./terminal-sink.js";
 import { buildSeed, type Seed } from "./seed-builder.js";
 import { uniqueToken } from "./token.js";
+import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
 // the pure pane-output core from `browser.ts`, never the root entry `index.ts`
 // (which pulls the Node-only transport and breaks browser bundlers).
@@ -230,6 +231,9 @@ export class PaneStream implements ReseedTarget {
   // landing both attaches before the first capture-pane resolves. All writes
   // live in `startSeedCycle` (start / resolution) and `markSeedStale`.
   private seedCycle: SeedCycle = { phase: "idle" };
+  // tmux paused this pane's output (`%pause`) and drops what it writes until
+  // `%continue`, so no capture taken in between is the whole picture.
+  private paused = false;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -299,6 +303,8 @@ export class PaneStream implements ReseedTarget {
       // moved while we were disconnected. Drop it so the ReseedScheduler's
       // upcoming reseed() (or the next attach()) issues a fresh capture-pane.
       this.lastSeed = null;
+      // A pause belonged to the connection that carried it.
+      this.paused = false;
       // Any in-flight capture-pane is now fetching pre-reconnect data —
       // mark it stale so seed() drops the result on resolution. A no-op when
       // idle: with nothing in flight, the cache clear above is what forces the
@@ -355,6 +361,7 @@ export class PaneStream implements ReseedTarget {
     // that says so.
     this.onPause = (ev) => {
       if (ev.paneId !== this.paneId) return;
+      this.paused = true;
       this.lastSeed = null;
       if (this.sink === null) return;
       this.buffer = [];
@@ -362,6 +369,7 @@ export class PaneStream implements ReseedTarget {
     };
     this.onContinue = (ev) => {
       if (ev.paneId !== this.paneId) return;
+      this.paused = false;
       this.lastSeed = null;
       if (this.sink === null) return;
       if (this.seedCycle.phase !== "idle") {
@@ -544,12 +552,11 @@ export class PaneStream implements ReseedTarget {
     this.client.off("subscription-changed", this.onSubscriptionChanged);
     this.client.off("pause", this.onPause);
     this.client.off("continue", this.onContinue);
-    // A connection already gone took the subscription with it; any other
-    // failure has nobody left to report to here, so it surfaces as an
-    // unhandled rejection rather than vanishing.
+    // Any failure but an already-absent subscription has nobody left to
+    // report to here, so it surfaces as an unhandled rejection.
     void this.client
       .unsubscribe(this.subscriptionName)
-      .catch(rethrowUnlessGone);
+      .catch(rethrowUnlessUnsubscribed);
 
     if (this.flushTimerId !== null) {
       clearTimeout(this.flushTimerId);
@@ -772,6 +779,10 @@ export class PaneStream implements ReseedTarget {
     // meantime.
     if (this.currentState === "disposed") return;
 
+    // A capture taken while tmux has the pane paused misses what tmux dropped:
+    // drop it and stay seeding. `%continue` reseeds.
+    if (this.paused) return;
+
     // Stale mid-flight: a reconnect or a detached-mode byte arrived between
     // RPC issue and now, so the snapshot is older than the current pane
     // state. Drop it. If anyone is still attached, kick off a fresh seed —
@@ -918,11 +929,6 @@ export class PaneStream implements ReseedTarget {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-/** Rejection handler for teardown commands: a gone connection is the expected outcome. */
-export function rethrowUnlessGone(err: unknown): void {
-  if (!isConnectionGone(err)) throw err;
-}
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {
   const m = value.match(/^(\d+);(\d+)$/);

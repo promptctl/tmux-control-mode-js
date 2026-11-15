@@ -20,6 +20,7 @@ export {
   UnsupportedTmuxVersionError,
   UnrecognizedTmuxVersionError,
   isConnectionGone,
+  isAlreadyUnsubscribed,
 } from "./errors.js";
 
 // [LAW:one-source-of-truth] tmux version-compatibility contract. These are the

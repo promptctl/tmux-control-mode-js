@@ -323,3 +323,16 @@ export const isConnectionGone = (err: unknown): boolean =>
   err instanceof TransportClosedError ||
   err instanceof TransportSendError ||
   (err instanceof BridgeError && err.code === "BRIDGE_CLOSED");
+
+/**
+ * Classify an `unsubscribe` rejection as "the name already holds no
+ * subscription here": the connection is gone and took its subscriptions with
+ * it ({@link isConnectionGone}), or a bridge answered
+ * `BRIDGE_UNKNOWN_SUBSCRIPTION` because this connection never held the name —
+ * an unsubscribe made during a reconnect reaches the next connection. Either
+ * way the state the unsubscribe asked for already holds, as tmux itself
+ * answers an absent name with success.
+ */
+export const isAlreadyUnsubscribed = (err: unknown): boolean =>
+  isConnectionGone(err) ||
+  (err instanceof BridgeError && err.code === "BRIDGE_UNKNOWN_SUBSCRIPTION");

@@ -78,6 +78,7 @@ export {
   TransportSendError,
   UnrecognizedTmuxVersionError,
   isConnectionGone,
+  isAlreadyUnsubscribed,
 } from "./errors.js";
 export type { TmuxVersion } from "./tmux-compat.js";
 export {

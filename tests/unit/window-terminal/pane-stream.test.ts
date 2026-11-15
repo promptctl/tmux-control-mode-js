@@ -635,6 +635,38 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     stream.dispose();
   });
 
+  it("dispose's unsubscribe is done when the name holds no subscription; a live tmux refusal surfaces", async () => {
+    vi.useRealTimers();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const isUnsubscribe = (cmd: string): boolean =>
+        /^refresh-client -B '[^':]*'$/.test(cmd);
+      const absent = new FakeTmuxClient();
+      // An unsubscribe made during a reconnect reaches a bridge peer that
+      // never held the name.
+      absent.setExecuteFailure((cmd) =>
+        isUnsubscribe(cmd)
+          ? new BridgeError("BRIDGE_UNKNOWN_SUBSCRIPTION", "not owned")
+          : null,
+      );
+      new PaneStream({ client: absent, paneId: PANE_ID }).dispose();
+
+      const refused = new FakeTmuxClient();
+      const refusal = tmuxError("server exited unexpectedly");
+      refused.setExecuteFailure((cmd) => (isUnsubscribe(cmd) ? refusal : null));
+      new PaneStream({ client: refused, paneId: PANE_ID }).dispose();
+
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([refusal]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("a delivered pane size clears an outstanding subscribe failure", async () => {
     // The subscribe seam's recovery point: a subscription-changed carrying a
     // valid size proves the subscription is working, so lastError must clear.
@@ -867,6 +899,25 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(client.capturePaneCount()).toBe(captures + 1);
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(2);
+    stream.dispose();
+  });
+
+  it("a capture that lands while the pane is paused stays seeding; continue reseeds", async () => {
+    const { client, stream } = makeStream({ capture: "hello" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    // The arrival capture is in flight when tmux pauses the pane.
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    await flushTicks();
+    expect(stream.state).toBe("seeding");
+    expect(sink.seedTexts).toHaveLength(0);
+    const captures = client.capturePaneCount();
+
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    expect(stream.state).toBe("live");
+    expect(sink.seedTexts).toHaveLength(1);
     stream.dispose();
   });
 
