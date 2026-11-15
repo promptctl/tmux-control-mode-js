@@ -236,8 +236,9 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     async () => {
       const { c, window } = await start();
       const s = recorder();
-      engine = engineOver(c, window, s);
-      await untilLive(engine, (v) => v.panes.length === 1);
+      const e = engineOver(c, window, s);
+      engine = e;
+      await untilLive(e, (v) => v.panes.length === 1);
 
       // tmux reports a process by the name it ran under, up to its first
       // space (names.c parse_window_name), and writes a subscription value
@@ -260,14 +261,45 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
         "60",
       ]) as PaneId;
       try {
-        await untilLive(engine, (v) =>
-          v.panes.some((p) => p.id === added && p.command === "x?%exit"),
-        );
-        expect(liveView(engine.state)?.panes).toHaveLength(2);
+        // tmux's own reading is the oracle; the page shows it with each
+        // control byte as `?`.
+        const own = (): string =>
+          q(socket, [
+            "display-message",
+            "-p",
+            "-t",
+            added,
+            "#{pane_current_command}",
+          ]);
+        await pollUntil(() => own().includes("%exit"), 3000).catch(() => {
+          throw new Error(`tmux names the pane ${JSON.stringify(own())}`);
+        });
+        const expected = [...own()]
+          .map((ch) => (ch < " " || ch === "\x7f" ? "?" : ch))
+          .join("");
+        const seen = (): string =>
+          JSON.stringify({
+            phase: e.state.phase,
+            panes: liveView(e.state)?.panes.map((p) => [p.id, p.command]),
+          });
+        await pollUntil(
+          () =>
+            liveView(e.state)?.panes.some(
+              (p) => p.id === added && p.command === expected,
+            ) === true,
+          4000,
+        ).catch(() => {
+          throw new Error(
+            `expected ${JSON.stringify(expected)}; saw ${seen()}`,
+          );
+        });
+        expect(expected).toContain("?%exit");
+        expect(liveView(e.state)?.panes).toHaveLength(2);
       } finally {
         rmSync(dir, { recursive: true });
       }
     },
+    15_000,
   );
 
   it("keys typed into a pane land in that pane only, and tmux's active pane stays", async () => {
