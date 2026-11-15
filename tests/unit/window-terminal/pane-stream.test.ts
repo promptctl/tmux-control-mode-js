@@ -655,6 +655,13 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
       );
       new PaneStream({ client: absent, paneId: PANE_ID }).dispose();
 
+      // A dispose while the connection is down: the subscription went with it.
+      const gone = new FakeTmuxClient();
+      gone.setExecuteFailure((cmd) =>
+        isUnsubscribe(cmd) ? new TransportClosedError("socket closed") : null,
+      );
+      new PaneStream({ client: gone, paneId: PANE_ID }).dispose();
+
       const refused = new FakeTmuxClient();
       const refusal = tmuxError("server exited unexpectedly");
       refused.setExecuteFailure((cmd) => (isUnsubscribe(cmd) ? refusal : null));
