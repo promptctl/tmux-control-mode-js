@@ -34,7 +34,6 @@ interface Props {
 
 interface Seen {
   readonly window: string;
-  readonly active: string;
   readonly focus: string;
 }
 
@@ -50,21 +49,23 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   const onState = useCallback(
     (s: WindowTerminalState) => {
       if (s.phase !== "live") return;
-      const { id, active, focus } = s.window;
+      const { id, active, focus, panes } = s.window;
       const prev = seen.current;
-      seen.current = { window: id, active, focus };
-      if (prev === null || prev.window !== id) {
+      seen.current = { window: id, focus };
+      // tmux names a new pane active before the layout that holds it arrives.
+      const laidOut = panes.some((p) => p.id === active);
+      if (prev?.window !== id) {
         // A window arriving (a switch remounts the terminal): the keyboard
         // goes to tmux's active pane.
-        terminal.current?.focus(active);
-      } else if (active !== prev.active) {
-        if (focus !== active) terminal.current?.focus(active);
+        if (laidOut) terminal.current?.focus(active);
       } else if (focus !== prev.focus && focus !== active) {
-        void store.paneStreamClient
-          .execute(`select-pane -t ${focus}`)
-          .catch((err: unknown) =>
-            console.warn("[pane-view] select-pane failed", err),
-          );
+        // A click: tmux selects that pane.
+        const pane = store.currentWindow?.panes.find(
+          (p) => `%${p.id}` === focus,
+        );
+        if (pane !== undefined) store.selectPane(pane);
+      } else if (focus !== active && laidOut) {
+        terminal.current?.focus(active);
       }
     },
     [store],

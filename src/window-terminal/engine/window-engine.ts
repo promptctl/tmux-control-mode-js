@@ -230,8 +230,8 @@ export class WindowEngine {
   }
 
   dispose(): void {
-    if (this.ended) return;
-    this.end();
+    // A window that went gone has already ended; its listeners still go.
+    if (!this.ended) this.end();
     this.stateListeners.clear();
     this.errorListeners.clear();
   }

@@ -20,9 +20,19 @@ import type { CellAt, CellSize } from "./solve.js";
 
 const REPEAT = 32;
 
-function charSizeOnCanvas(family: string, px: number): CellSize | null {
-  if (typeof OffscreenCanvas === "undefined") return null;
-  const ctx = new OffscreenCanvas(100, 100).getContext("2d");
+// One context for the measure's life, as xterm keeps one; null where there
+// is no OffscreenCanvas 2D context.
+function canvasContext(): OffscreenCanvasRenderingContext2D | null {
+  return typeof OffscreenCanvas === "undefined"
+    ? null
+    : new OffscreenCanvas(100, 100).getContext("2d");
+}
+
+function charSizeOnCanvas(
+  ctx: OffscreenCanvasRenderingContext2D | null,
+  family: string,
+  px: number,
+): CellSize | null {
   if (ctx === null) return null;
   ctx.font = `${px}px ${family}`;
   const m = ctx.measureText("W");
@@ -36,6 +46,9 @@ function charSizeOnCanvas(family: string, px: number): CellSize | null {
 function charSizeInDom(doc: Document, family: string, px: number): CellSize {
   const span = doc.createElement("span");
   span.setAttribute("aria-hidden", "true");
+  // xterm.css gives its measure element these, rather than the page's.
+  span.style.display = "inline-block";
+  span.style.lineHeight = "normal";
   span.style.position = "absolute";
   span.style.visibility = "hidden";
   span.style.whiteSpace = "pre";
@@ -62,6 +75,7 @@ export interface CellMeasure {
 
 export function createCellMeasure(win: Window): CellMeasure {
   const doc = win.document;
+  const ctx = canvasContext();
   const cache = new Map<string, CellSize>();
   const listeners = new Set<() => void>();
   const changed = (): void => {
@@ -91,7 +105,7 @@ export function createCellMeasure(win: Window): CellMeasure {
         const hit = cache.get(key);
         if (hit !== undefined) return hit;
         const char =
-          charSizeOnCanvas(family, px) ?? charSizeInDom(doc, family, px);
+          charSizeOnCanvas(ctx, family, px) ?? charSizeInDom(doc, family, px);
         if (!(char.width > 0 && char.height > 0)) {
           throw new Error(
             `cannot measure ${px}px ${family}: the document measured it as ${char.width}x${char.height}`,

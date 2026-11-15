@@ -55,6 +55,9 @@ export class ClientSizeDeclarer {
   // What tmux holds from this terminal: the grid last declared (sent, or in
   // flight), or null when nothing is.
   private declared: Grid | null = null;
+  // The grid tmux last refused: every frame asks for it again, and it is not
+  // sent again until the connection comes back.
+  private refused: Grid | null = null;
   private inflight = false;
   private disposed = false;
   // Every declarer on this connection, this one included.
@@ -65,7 +68,10 @@ export class ClientSizeDeclarer {
   ): void => {
     // A connection that comes back may be a new tmux client (a bridge peer
     // re-joining), holding nothing this terminal declared before.
-    if (ev.state.status !== "ready") this.declared = null;
+    if (ev.state.status !== "ready") {
+      this.declared = null;
+      this.refused = null;
+    }
   };
 
   constructor(opts: ClientSizeDeclarerOptions) {
@@ -119,12 +125,14 @@ export class ClientSizeDeclarer {
     send.then(
       () => this.settled(),
       (err: unknown) => {
-        // What tmux holds is unknown after a failure: claim nothing, and drop
-        // the refused claim (unless a newer one replaced it) rather than
-        // resend it; the next claim is sent whatever it is.
+        // What tmux holds is unknown after a failure: claim nothing, and do
+        // not retry this claim (unless a newer one replaced it).
         this.declared = null;
         if (this.wanted === claim) this.wanted = { kind: "hold" };
-        if (!isConnectionGone(err)) this.onError(err);
+        if (!isConnectionGone(err)) {
+          if (claim.kind === "declare") this.refused = claim.grid;
+          this.onError(err);
+        }
         this.settled();
       },
     );
@@ -141,9 +149,9 @@ export class ClientSizeDeclarer {
         return null;
       case "declare": {
         const { cols, rows } = claim.grid;
-        if (this.declared?.cols === cols && this.declared.rows === rows) {
-          return null;
-        }
+        const same = (g: Grid | null): boolean =>
+          g?.cols === cols && g.rows === rows;
+        if (same(this.declared) || same(this.refused)) return null;
         this.declared = claim.grid;
         return Promise.all([
           setSize(this.connection, cols, rows),

@@ -158,6 +158,29 @@ describe("ClientSizeDeclarer", () => {
     ]);
   });
 
+  it("a refused size reaches onError once and is not sent again; another size is", async () => {
+    const { client, declarer, errors, sent } = setup();
+    const refusal = new TmuxCommandError({
+      commandNumber: 1,
+      timestamp: 0,
+      output: ["bad size argument"],
+      success: false,
+    });
+    client.setExecuteFailure(() => refusal);
+    for (let frame = 0; frame < 3; frame++) {
+      declarer.apply(declare(100, 30));
+      await settle();
+    }
+    expect(errors).toEqual([refusal]);
+    client.setExecuteFailure(() => null);
+    declarer.apply(declare(90, 30));
+    await settle();
+    expect(sent()).toEqual([
+      "refresh-client -C @3:100x30",
+      "refresh-client -C @3:90x30",
+    ]);
+  });
+
   it("a refusal reaches onError and the next claim is sent; a lost connection is not an error", async () => {
     const { client, declarer, errors, sent } = setup();
     const refusal = new TmuxCommandError({
@@ -171,7 +194,7 @@ describe("ClientSizeDeclarer", () => {
     await settle();
     expect(errors).toEqual([refusal]);
     client.setExecuteFailure(() => new TransportClosedError("gone"));
-    declarer.apply(declare(100, 30));
+    declarer.apply(declare(90, 30));
     await settle();
     expect(errors).toEqual([refusal]);
     expect(sent()).toHaveLength(2);

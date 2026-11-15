@@ -34,7 +34,8 @@ import {
   Loader,
 } from "@mantine/core";
 import { isConnectionGone } from "@promptctl/tmux-control-mode-js/browser";
-import { XtermSink } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
@@ -569,7 +570,7 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
     const container = containerRef.current;
     if (container === null) return undefined;
     const { stream } = obs;
-    const sink = new XtermSink({
+    const sink = new FittedXtermSink({
       container,
       appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,

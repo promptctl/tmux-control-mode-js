@@ -36,7 +36,8 @@ import {
   Slider,
   Tooltip,
 } from "@mantine/core";
-import { XtermSink } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import {
@@ -466,7 +467,7 @@ function SyncSurface({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    const sink = new XtermSink({
+    const sink = new FittedXtermSink({
       container,
       appearance: { fontFamily: FONT_FAMILY },
       fontSize: initial.current.fontSize,

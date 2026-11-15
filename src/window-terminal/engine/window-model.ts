@@ -52,7 +52,11 @@ export interface WindowView {
   readonly name: string;
   readonly size: { readonly cols: number; readonly rows: number };
   readonly flags: WindowFlags;
-  /** tmux's active pane: where a tmux client's keys go. */
+  /**
+   * tmux's active pane: where a tmux client's keys go. A new pane is named
+   * active before the layout holding it arrives, so for that moment it is in
+   * no entry of `panes`.
+   */
   readonly active: PaneId;
   /** This browser's focused pane: where this terminal's keys go. */
   readonly focus: PaneId;
