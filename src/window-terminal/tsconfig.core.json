@@ -12,5 +12,11 @@
     "types": []
   },
   "references": [{ "path": ".." }, { "path": "../protocol" }],
-  "include": ["engine/**/*.ts", "ids.ts"]
+  "include": [
+    "engine/**/*.ts",
+    "ids.ts",
+    "options.ts",
+    "sizing/solve.ts",
+    "sizing/client-size.ts"
+  ]
 }

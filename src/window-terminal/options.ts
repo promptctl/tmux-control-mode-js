@@ -11,8 +11,6 @@
 //   whose arm says who owns the window's size. `fit` exists only where tmux
 //   owns it, the floors only where the box does, so no field is ever dead.
 
-import type { ITerminalOptions } from "@xterm/xterm";
-
 /** One font size in CSS px, or the range the solver picks from. */
 export type FontRange = number | { readonly min: number; readonly max: number };
 
@@ -43,12 +41,6 @@ export type Sizing =
       readonly font: FontRange;
       readonly fit: "width" | "height" | "both" | "none";
     };
-
-/** The xterm.js look of every pane. Font size lives in `Sizing`. */
-export type Appearance = Pick<
-  ITerminalOptions,
-  "theme" | "fontFamily" | "lineHeight" | "cursorStyle"
->;
 
 export interface ResolvedFont {
   readonly min: number;

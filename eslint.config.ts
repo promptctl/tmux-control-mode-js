@@ -17,6 +17,10 @@ const hotPath = {
   },
 };
 
+const REACT_ONLY = "Only src/window-terminal/react/** may import React.";
+const XTERM_ONLY =
+  "Only src/window-terminal/render/** and react/** may import xterm.js.";
+
 export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.strict,
@@ -42,28 +46,39 @@ export default tseslint.config(
   // [LAW:one-way-deps] Only window-terminal/react may import React, so no
   // engine/render/sizing `.d.ts` can reach `react` and a consumer without
   // React still typechecks. Backstop to the separate react tsconfig project.
+  // Likewise only window-terminal's render/ and react/ may import xterm.js, so
+  // `.`, every other subpath and the window engine never need the peer.
   {
-    files: ["src/window-terminal/**"],
-    ignores: ["src/window-terminal/react/**"],
+    files: ["src/**"],
+    ignores: ["src/window-terminal/react/**", "src/window-terminal/render/**"],
     rules: {
       "no-restricted-imports": [
         "error",
         {
           paths: [
-            {
-              name: "react",
-              message: "Only src/window-terminal/react/** may import React.",
-            },
-            {
-              name: "react-dom",
-              message: "Only src/window-terminal/react/** may import React.",
-            },
+            { name: "react", message: REACT_ONLY },
+            { name: "react-dom", message: REACT_ONLY },
           ],
           patterns: [
-            {
-              group: ["react/*", "react-dom/*"],
-              message: "Only src/window-terminal/react/** may import React.",
-            },
+            { group: ["react/*", "react-dom/*"], message: REACT_ONLY },
+            { group: ["@xterm/*"], message: XTERM_ONLY },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/window-terminal/render/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            { name: "react", message: REACT_ONLY },
+            { name: "react-dom", message: REACT_ONLY },
+          ],
+          patterns: [
+            { group: ["react/*", "react-dom/*"], message: REACT_ONLY },
           ],
         },
       ],

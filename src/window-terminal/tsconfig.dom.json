@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  // [LAW:one-way-deps] DOM scope is confined to the renderer and sizing. These
+  // [LAW:one-way-deps] DOM scope is confined to the renderer and cell metrics. These
   // reference the engine — they may import it, it may not import them. No
   // JSX: React lives in its own project so no `.d.ts` here can reach `react`.
   "compilerOptions": {
@@ -16,5 +16,5 @@
     { "path": "../protocol" },
     { "path": "./tsconfig.core.json" }
   ],
-  "include": ["index.ts", "options.ts", "render/**/*.ts", "sizing/**/*.ts"]
+  "include": ["index.ts", "render/**/*.ts", "sizing/cell-metrics.ts"]
 }
