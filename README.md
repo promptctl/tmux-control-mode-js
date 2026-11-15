@@ -255,7 +255,11 @@ Things to know:
 - Behind a bridge, pages share one tmux client, and each page's sizes are a
   claim of its own on it. A page that closes, with or without `dispose()`,
   leaves the sizes the other pages declared; once no page declares one, the
-  client stops counting toward window sizes (`ignore-size`).
+  client stops counting toward window sizes (`ignore-size`), and the windows
+  read the other tmux clients' sizes. tmux counts an `ignore-size` client
+  when no other client counts, so with none the windows keep the last size.
+  A `WebSocketTmuxClient` that reconnects is a new page to the bridge, so it
+  declares its sizes again; a window terminal does.
 - With `pane-border-status` set, a pane's cell is taller than its terminal;
   the terminal sits at the top of its cell.
 - Floating panes (tmux 3.8) are not shown.
