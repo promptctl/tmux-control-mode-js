@@ -1152,6 +1152,37 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     expect(Number.isInteger(p.height)).toBe(true);
   }, 15000);
 
+  it("CMD-02: listPanes() reports the title a pane was given, backslash and all", async () => {
+    sessionName = uniqueName("cmd-lp-title");
+    // A process that never sets its own title, so no shell prompt can
+    // overwrite the one given below.
+    client = await attachSession(socketName, sessionName, {
+      newSessionFlags: ["sleep 600"],
+    });
+    tmux(socketName, [
+      "select-pane",
+      "-t",
+      `${sessionName}:`,
+      "-T",
+      "agent build \\ 1",
+    ]);
+    // From tmux 3.8 a title is stored vis(3)-encoded (the backslash doubled),
+    // before it as given; either way the record carries what tmux reads back.
+    const rendered = tmux(socketName, [
+      "display-message",
+      "-p",
+      "-t",
+      `${sessionName}:`,
+      "#{pane_title}",
+    ]);
+    expect(rendered).toContain("\\");
+    const p = await waitForPane(
+      client,
+      (pane) => pane.sessionName === sessionName && pane.title === rendered,
+    );
+    expect(p.title).toBe(rendered);
+  }, 15000);
+
   // tmux 3.7 still reports a dead pane's exited pid, 3.8 an empty one; on
   // both the record has no pid to read.
   it("CMD-02: listPanes() lists a pane whose process exited under remain-on-exit as dead", async () => {

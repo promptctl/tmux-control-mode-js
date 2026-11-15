@@ -9,7 +9,7 @@ import type {
   SessionRecord,
   WindowRecord,
 } from "./protocol/types.js";
-import { latin1ToBytes } from "./protocol/byte-codec.js";
+import { latin1ToText } from "./protocol/byte-codec.js";
 import { parseUint } from "./protocol/uint.js";
 import { TmuxReplyFormatError } from "./errors.js";
 
@@ -965,14 +965,9 @@ export function parseRecordReply<T>(
   );
 }
 
-// [LAW:one-source-of-truth] Decode a single latin1-container field to real
-// Unicode text, once, at this boundary — the exact idiom CommandResponse's
-// own doc comment names. Every text field on WindowRecord/PaneRecord passes
-// through here; no downstream consumer re-decodes.
-const fieldDecoder = new TextDecoder();
-function decodeField(latin1Field: string): string {
-  return fieldDecoder.decode(latin1ToBytes(latin1Field));
-}
+// [LAW:one-source-of-truth] Every text field on WindowRecord/PaneRecord is
+// decoded once, at this boundary; no downstream consumer re-decodes.
+const decodeField = latin1ToText;
 
 // tmux's #{session_id}/#{window_id}/#{pane_id} format variables are always
 // sigil-prefixed ($N / @N / %N respectively — see SPEC.md and
@@ -1116,6 +1111,7 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     currentCommand,
     width,
     height,
+    title,
   ] = fields;
   return completeRecord<PaneRecord>({
     sessionId: parseSigilId("$", sessionId),
@@ -1127,6 +1123,7 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     startCommand: decodeField(startCommand),
     width: parseUint(width),
     height: parseUint(height),
+    title: decodeField(title),
   });
 }
 
@@ -1190,7 +1187,7 @@ export const WINDOW_RECORD: RecordFormat<WindowRecord> = {
   parseLine: parseWindowRecordLine,
 };
 export const PANE_RECORD: RecordFormat<PaneRecord> = {
-  fieldCount: 12,
+  fieldCount: 13,
   parseLine: parsePaneRecordLine,
 };
 export const SESSION_RECORD: RecordFormat<SessionRecord> = {

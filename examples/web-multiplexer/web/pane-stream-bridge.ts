@@ -23,6 +23,7 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
+  SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js/browser";
@@ -32,6 +33,8 @@ import {
   TopologyEpochTracker,
   parsePaneListLine,
   serverScope,
+  subscribeRaw,
+  unsubscribe,
 } from "@promptctl/tmux-control-mode-js/browser";
 import { PaneStream } from "./window-terminal-internals.ts";
 import type {
@@ -39,14 +42,7 @@ import type {
   PaneActivity,
   PaneStreamState,
 } from "./window-terminal-internals.ts";
-import type {
-  SubscriptionChangedMessage,
-  CommandResponse,
-} from "@promptctl/tmux-control-mode-js/protocol";
-
-// `reconnected` event payload — derived from the library's TmuxEventMap so
-// any future shape change at the source propagates here automatically.
-type ReconnectedMessage = TmuxEventMap["reconnected"];
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
 
 function mapConnState(s: ConnState): ConnectionState {
@@ -68,16 +64,19 @@ function mapConnState(s: ConnState): ConnectionState {
  * constructor. These subscriptions live for the adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
-export class BridgePaneStreamClient implements TmuxConnection {
+export class BridgePaneStreamClient
+  implements TmuxConnection, SubscriptionSurface
+{
   private _connectionState: ConnectionState = { status: "connecting" };
   // Becomes true on the first `ready` transition; subsequent `ready`
   // transitions are reconnects and fire the registered handlers.
   private everReady = false;
 
-  private readonly reconnectedSet = new Set<(ev: ReconnectedMessage) => void>();
-  private readonly subChangedSet = new Set<
-    (ev: SubscriptionChangedMessage) => void
-  >();
+  // [LAW:one-source-of-truth] One registry keyed by event type: every
+  //   non-byte event the bridge carries, plus the synthetic `connection-state`
+  //   and `reconnected`, reaches whoever subscribed to it — the same surface a
+  //   `TmuxClient` offers, so the window terminal follows a bridged window.
+  private readonly handlers = new Map<string, Set<(ev: never) => void>>();
   // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager every
   //   `TmuxConnection` in the monorepo uses. `attachBytesSink` delegates to
   //   `sinks.attach`; the bridge.onEvent handler calls
@@ -130,24 +129,22 @@ export class BridgePaneStreamClient implements TmuxConnection {
           void this.bootstrapTopology();
         }
       }
-      // [LAW:types-are-the-program] `ev` is the canonical `TmuxMessage`
-      // discriminated union; narrowing on `ev.type` produces the exact
-      // variant the per-type handler set expects, with no cast needed.
-      // Pane bytes already returned above (sink channel); only non-byte
-      // subscriptions fan out here.
-      if (ev.type === "subscription-changed") {
-        for (const h of this.subChangedSet) h(ev);
-      }
+      // Pane bytes already returned above (sink channel); every other event
+      // fans out to its type's handlers.
+      this.emit(ev);
     });
 
     bridge.onState((state) => {
       const wasReady = this.everReady;
-      this._connectionState = mapConnState(state);
+      const next = mapConnState(state);
+      const changed = next.status !== this._connectionState.status;
+      this._connectionState = next;
+      if (changed) this.emit({ type: "connection-state", state: next });
       if (state === "ready") {
         if (wasReady) {
           // [LAW:single-enforcer] The only place that decides "this is a
           // reconnect" for all PaneStream instances on this bridge.
-          for (const h of this.reconnectedSet) h({ type: "reconnected" });
+          this.emit({ type: "reconnected" });
         }
         this.everReady = true;
         if (this.sinks.hasTopologyDependentSinks()) {
@@ -161,22 +158,23 @@ export class BridgePaneStreamClient implements TmuxConnection {
     return this._connectionState;
   }
 
-  // The generic `on`/`off` overloads accept any `keyof TmuxEventMap` so this
-  // adapter structurally satisfies `TmuxConnection`. Pane bytes never travel
-  // this surface (they flow through `attachBytesSink`), so only the non-byte
-  // events `PaneStream` subscribes to are routed; listeners registered for any
-  // other event type sit in no set and are correctly never fired.
+  private emit(ev: TmuxEventMap[keyof TmuxEventMap]): void {
+    const set = this.handlers.get(ev.type);
+    if (set === undefined) return;
+    for (const h of [...set]) (h as (e: typeof ev) => void)(ev);
+  }
+
   on<K extends keyof TmuxEventMap>(
     event: K,
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   on(event: string, handler: (ev: never) => void): void {
-    if (event === "reconnected")
-      this.reconnectedSet.add(handler as (ev: ReconnectedMessage) => void);
-    else if (event === "subscription-changed")
-      this.subChangedSet.add(
-        handler as (ev: SubscriptionChangedMessage) => void,
-      );
+    let set = this.handlers.get(event);
+    if (set === undefined) {
+      set = new Set();
+      this.handlers.set(event, set);
+    }
+    set.add(handler);
   }
 
   off<K extends keyof TmuxEventMap>(
@@ -184,16 +182,25 @@ export class BridgePaneStreamClient implements TmuxConnection {
     handler: (ev: TmuxEventMap[K]) => void,
   ): void;
   off(event: string, handler: (ev: never) => void): void {
-    if (event === "reconnected")
-      this.reconnectedSet.delete(handler as (ev: ReconnectedMessage) => void);
-    else if (event === "subscription-changed")
-      this.subChangedSet.delete(
-        handler as (ev: SubscriptionChangedMessage) => void,
-      );
+    this.handlers.get(event)?.delete(handler);
   }
 
   execute(command: string): Promise<CommandResponse> {
     return this.bridge.execute(command);
+  }
+
+  // The demo's own bridge server keeps no per-peer subscription ledger, so a
+  // subscription here is the plain `refresh-client -B` command.
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    return subscribeRaw(this, name, what, format);
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return unsubscribe(this, name);
   }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the

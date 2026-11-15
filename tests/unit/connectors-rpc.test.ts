@@ -181,6 +181,8 @@ describe("parseRpcRequest — arg shape", () => {
     [{ method: "subscribeRaw", args: ["a", "b"] }],
     [{ method: "subscribeRaw", args: ["", "b", "c"] }],
     [{ method: "unsubscribe", args: [""] }],
+    [{ method: "subscribeRaw", args: ["a:b", "%0", "#{pane_pid}"] }],
+    [{ method: "unsubscribe", args: ["a b"] }],
     [{ method: "requestReport", args: [-1, "report"] }],
     [{ method: "requestReport", args: [3.5, "report"] }],
     [{ method: "setFlags", args: [[1, 2]] }],

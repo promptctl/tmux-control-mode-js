@@ -4,6 +4,7 @@
 export { TmuxClient } from "./client.js";
 export type {
   TmuxConnection,
+  SubscriptionSurface,
   SplitOptions,
   TmuxClientOptions,
 } from "./client.js";
@@ -19,6 +20,7 @@ export {
   UnsupportedTmuxVersionError,
   UnrecognizedTmuxVersionError,
   isConnectionGone,
+  isAlreadyUnsubscribed,
 } from "./errors.js";
 
 // [LAW:one-source-of-truth] tmux version-compatibility contract. These are the
@@ -125,6 +127,8 @@ export {
   sendKeys,
   splitWindow,
   setSize,
+  setWindowSize,
+  clearWindowSize,
   setPaneAction,
   subscribeRaw,
   unsubscribe,

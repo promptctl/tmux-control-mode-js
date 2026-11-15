@@ -14,7 +14,8 @@
 
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react-lite";
-import { XtermSink } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { MirrorViewerBridge } from "../mirror-viewer-bridge.ts";
 
 const FONT_FAMILY =
@@ -35,9 +36,9 @@ export const MirrorScreen = observer(function MirrorScreen({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    const sink = new XtermSink({
+    const sink = new FittedXtermSink({
       container,
-      fontFamily: FONT_FAMILY,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
     // Read-only: the projection must not accept keystrokes. The escape hatch to
@@ -73,7 +74,7 @@ export const MirrorScreen = observer(function MirrorScreen({
   }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(fontSize);
+    sinkRef.current?.setFont(fontSize);
   }, [fontSize]);
 
   return (

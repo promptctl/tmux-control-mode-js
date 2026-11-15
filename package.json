@@ -78,12 +78,19 @@
     "./streams/node": {
       "types": "./dist/connectors/streams/node.d.ts",
       "default": "./dist/connectors/streams/node.js"
+    },
+    "./window-terminal": {
+      "types": "./dist/window-terminal/index.d.ts",
+      "default": "./dist/window-terminal/index.js"
+    },
+    "./window-terminal/react": {
+      "types": "./dist/window-terminal/react/index.d.ts",
+      "default": "./dist/window-terminal/react/index.js"
     }
   },
   "sideEffects": false,
   "files": [
-    "dist",
-    "!dist/window-terminal"
+    "dist"
   ],
   "engines": {
     "node": ">=20"

@@ -79,7 +79,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
   beforeAll(async () => {
     const client = new FakeTmuxClient();
     // Four lines per capture-pane response — non-trivial, won't skew timing.
-    client.setCapturePaneResponse(() => "row-0\nrow-1\nrow-2\nrow-3\n");
+    client.setExecuteResponse(() => "row-0\nrow-1\nrow-2\nrow-3\n");
 
     const sinks: TimedBufferingSink[] = [];
     for (let i = 0; i < ATTACHED_STREAM_COUNT; i++) {

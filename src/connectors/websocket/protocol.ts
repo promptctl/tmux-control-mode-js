@@ -858,6 +858,7 @@ const RESPONSE_PARSERS: {
     startCommand: m.read("startCommand", STRING),
     width: m.read("width", NUMBER),
     height: m.read("height", NUMBER),
+    title: m.read("title", STRING),
   })),
   listSessions: records<SessionRecord>((m) => ({
     sessionId: m.read("sessionId", NUMBER),

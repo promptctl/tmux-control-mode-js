@@ -55,6 +55,33 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `./window-terminal` renders one tmux window — every pane, laid out as tmux
+  lays it out, with the borders and the active pane marked — into one
+  container with xterm.js: `mountWindowTerminal(element, { connection,
+  window })`. Each pane arrives seeded with its history, follows splits,
+  closes and zoom, and takes the keys typed into it without changing tmux's
+  active pane. The terminal reports `connecting`, `live`, `stale` (connection
+  lost, last picture kept) or `gone`, and its size is a `Sizing` constraint:
+  the box declares the window's size, or tmux's size is given and the font
+  fits it. `./window-terminal/react` wraps it as `<WindowTerminal>`.
+  `@xterm/xterm` (and `react` for `/react`) are optional peer dependencies
+  needed only by those two subpaths; `.` and every other subpath still
+  install nothing.
+- `setWindowSize(connection, windowId, width, height)` and
+  `clearWindowSize(connection, windowId)` (exported from `.` and
+  `./browser`): the per-window forms of `refresh-client -C`, declaring this
+  client's size for one window or dropping it. After its first per-window
+  declaration a control client sizes every window of its session, using its
+  overall size (`setSize`, 80x24 if never set) for the windows it declared
+  nothing for (tmux 3.8). Set the overall size too.
+- `PaneRecord.title`: the pane's title (`#{pane_title}`), as tmux stores it.
+  The bridge wire carries it; upgrade server and client together.
+- `SubscriptionSurface` (exported from `.` and `./browser`):
+  `subscribeRaw(name, what, format)` and `unsubscribe(name)` as methods of a
+  connection. `TmuxClient` gains them; `WebSocketTmuxClient` and the Electron
+  renderer client already had them. Through a bridge they are the calls the
+  bridge tracks per peer and ends when the peer goes away, where the same
+  `refresh-client -B` sent with `execute()` outlives the page that sent it.
 - `DeliveryQueue` (exported from `.`): runs a transport adapter's entry
   points as run-to-completion steps and delivers what they post to
   listeners, sinks and error handlers once each step has committed. A
@@ -73,6 +100,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `subscribeRaw`, `unsubscribe`, `TmuxClient.subscribeRaw`/`unsubscribe` and
+  the `refreshClientSubscribe`/`refreshClientUnsubscribe` encoders throw
+  `RangeError` for a subscription name that is empty or holds `:` or
+  whitespace. tmux splits `-B name:what:format` at its colons, so such a name
+  was sent as a different subscription from the one asked for, and nothing
+  reported it.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
   drain: it settles with the first call, and peers are terminated at the
   deadline their `draining` frame named. Before, a second call with a

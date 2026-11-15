@@ -14,7 +14,8 @@
 
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react-lite";
-import { XtermSink } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { CollabBridge } from "../collab-bridge.ts";
 
 const FONT_FAMILY =
@@ -36,9 +37,9 @@ export const CollabScreen = observer(function CollabScreen({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    const sink = new XtermSink({
+    const sink = new FittedXtermSink({
       container,
-      fontFamily: FONT_FAMILY,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
     // Writable: stdin stays enabled (the XtermSink default). Unlike the mirror,
@@ -76,7 +77,7 @@ export const CollabScreen = observer(function CollabScreen({
   }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(fontSize);
+    sinkRef.current?.setFont(fontSize);
   }, [fontSize]);
 
   return (

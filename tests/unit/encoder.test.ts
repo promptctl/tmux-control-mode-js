@@ -4,6 +4,8 @@
 import {
   tmuxEscape,
   refreshClientSize,
+  refreshClientWindowSize,
+  refreshClientClearWindowSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
@@ -67,6 +69,20 @@ describe("refreshClientSize", () => {
   });
 });
 
+describe("refreshClientWindowSize", () => {
+  it("sets one window's size", () => {
+    expect(refreshClientWindowSize(3, 100, 30)).toBe(
+      "refresh-client -C @3:100x30",
+    );
+  });
+});
+
+describe("refreshClientClearWindowSize", () => {
+  it("clears one window's size", () => {
+    expect(refreshClientClearWindowSize(3)).toBe("refresh-client -C @3:");
+  });
+});
+
 describe("refreshClientPaneAction", () => {
   // tmux's command parser splits unquoted arguments on ':', so the
   // pane:action token must be quoted as a single argument.
@@ -115,6 +131,18 @@ describe("refreshClientSubscribe", () => {
     const result = refreshClientSubscribe("a", "b", "c");
     expect(result.endsWith("\n")).toBe(false);
   });
+
+  // tmux unquotes the argument, then splits it at the first two colons: the
+  // quoting cannot keep a colon inside the name.
+  it.each(["wt:size", "a b", "tab\there", ""])(
+    "refuses the name %j, which tmux would read as another subscription",
+    (name) => {
+      expect(() => refreshClientSubscribe(name, "%1", "#{pane_width}")).toThrow(
+        RangeError,
+      );
+      expect(() => refreshClientUnsubscribe(name)).toThrow(RangeError);
+    },
+  );
 });
 
 describe("refreshClientUnsubscribe", () => {

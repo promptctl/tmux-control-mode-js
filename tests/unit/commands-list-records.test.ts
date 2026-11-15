@@ -41,7 +41,7 @@ const LISTS = [
   {
     list: listPanes,
     command: listPanesCommand(),
-    line: "$1\tmain\t@0\tzsh\t%0\t0\t/tmp\t123\tzsh\tzsh\t80\t24",
+    line: "$1\tmain\t@0\tzsh\t%0\t0\t/tmp\t123\tzsh\tzsh\t80\t24\tbuild",
   },
   {
     list: listSessions,
@@ -71,7 +71,7 @@ describe.each(LISTS)("$command", ({ list, command, line }) => {
 // record arrives over two reply lines.
 describe("listPanes, a record split by a newline in a free-text field", () => {
   const before = "$1\tmain\t@0\tzsh\t%0\t0\t/tmp/a";
-  const after = "b\t123\tzsh\tzsh\t80\t24";
+  const after = "b\t123\tzsh\tzsh\t80\t24\tbuild";
 
   it("rejoins the record and keeps the newline in the field", async () => {
     const panes = await listPanes(
@@ -90,7 +90,7 @@ describe("listPanes, a record split by a newline in a free-text field", () => {
   });
 
   it("rejects a reply whose lines do not join into whole records", async () => {
-    const full = "$1\tmain\t@0\tzsh\t%0\t0\t/tmp\t123\tzsh\tzsh\t80\t24";
+    const full = "$1\tmain\t@0\tzsh\t%0\t0\t/tmp\t123\tzsh\tzsh\t80\t24\tbuild";
     await expect(
       listPanes(replying(["$1\tmain\t@0", full])),
     ).rejects.toBeInstanceOf(TmuxReplyFormatError);

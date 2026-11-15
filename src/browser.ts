@@ -55,7 +55,7 @@ export type {
 } from "./protocol/types.js";
 export { parseWindowLayout } from "./protocol/layout.js";
 export type { ConnectionState } from "./connection-state.js";
-export type { TmuxConnection } from "./client.js";
+export type { TmuxConnection, SubscriptionSurface } from "./client.js";
 
 // [LAW:one-source-of-truth] The tmux version-compatibility contract is pure
 //   (zero Node coupling), so it ships identically on the browser surface. A
@@ -78,6 +78,7 @@ export {
   TransportSendError,
   UnrecognizedTmuxVersionError,
   isConnectionGone,
+  isAlreadyUnsubscribed,
 } from "./errors.js";
 export type { TmuxVersion } from "./tmux-compat.js";
 export {
@@ -104,6 +105,8 @@ export {
   sendKeys,
   splitWindow,
   setSize,
+  setWindowSize,
+  clearWindowSize,
   setPaneAction,
   subscribeRaw,
   unsubscribe,

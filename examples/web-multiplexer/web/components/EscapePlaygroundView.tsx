@@ -33,8 +33,9 @@ import {
   Code,
   Loader,
 } from "@mantine/core";
-import { mountPaneTerminal } from "../window-terminal-internals.ts";
+import { isConnectionGone } from "@promptctl/tmux-control-mode-js/browser";
 import type { XtermSink } from "../window-terminal-internals.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
@@ -568,11 +569,21 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) return undefined;
-    const mount = mountPaneTerminal(obs.stream, container, {
-      fontFamily: FONT_FAMILY,
+    const { stream } = obs;
+    const sink = new FittedXtermSink({
+      container,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
-    sinkRef.current = mount.sink;
+    const offKeys = sink.onData((data) => {
+      stream.sendKeys(data).catch((err: unknown) => {
+        // A key sent as the connection drops has nowhere to go; anything else
+        // is a real failure.
+        if (!isConnectionGone(err)) console.error("send-keys failed", err);
+      });
+    });
+    stream.attach(sink);
+    sinkRef.current = sink;
     // Give the sink its first resize directly from the pane's known geometry.
     // This is what drains the buffered seed + live bytes and paints them — the
     // XtermSink holds everything until its first resize, and the per-pane size
@@ -580,15 +591,17 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
     // created window. [LAW:no-ambient-temporal-coupling] the first-resize owner
     // is explicit and local, not a race against a subscription that may never
     // emit.
-    mount.sink.resize(initialSize.current.cols, initialSize.current.rows);
+    sink.resize(initialSize.current.cols, initialSize.current.rows);
     return () => {
-      mount.dispose();
+      offKeys();
+      stream.detach();
+      sink.dispose();
       sinkRef.current = null;
     };
   }, [obs.stream]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(uiStore.terminalFontSize);
+    sinkRef.current?.setFont(uiStore.terminalFontSize);
   }, [uiStore.terminalFontSize]);
 
   return (

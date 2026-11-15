@@ -71,6 +71,21 @@ export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
 
+// [LAW:one-source-of-truth] The per-window forms of `refresh-client -C`
+// (cmd-refresh-client.c): `@W:WxH` sets this client's size for one window,
+// `@W:` drops it, so the window reads this client's overall size again.
+export function refreshClientWindowSize(
+  windowId: number,
+  width: number,
+  height: number,
+): string {
+  return `refresh-client -C @${windowId}:${width}x${height}`;
+}
+
+export function refreshClientClearWindowSize(windowId: number): string {
+  return `refresh-client -C @${windowId}:`;
+}
+
 // [LAW:one-source-of-truth] The fixed `-F` format strings behind the public
 // listWindows/listPanes records live here only; commands/index.ts just
 // executes them and pane-output.ts just parses their output. Tab-separated:
@@ -86,7 +101,11 @@ export function refreshClientSize(width: number, height: number): string {
 // renders a literal tab as `\t`. `pane_current_command` is the process's
 // name as the OS reports it (`osdep_get_name`, `/proc/<pid>/cmdline` on
 // Linux), which tmux passes through unescaped, so it gets
-// `escapeFreeTextField` below the same as `pane_current_path`.
+// `escapeFreeTextField` below the same as `pane_current_path`. `pane_title`
+// needs no treatment either: tmux refuses a title holding a control
+// character (`utf8_isvalid`, screen.c `screen_set_title`), so it never holds a
+// literal tab or newline; from tmux 3.8 it is also stored vis(3)-encoded, so a
+// backslash reads `\\`.
 export function listWindowsCommand(): string {
   return (
     "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
@@ -131,7 +150,7 @@ export function listPanesCommand(): string {
     `${escapeFreeTextField("#{pane_current_path}")}\t` +
     "#{pane_pid}\t#{pane_start_command}\t" +
     `${escapeFreeTextField("#{pane_current_command}")}\t` +
-    "#{pane_width}\t#{pane_height}'"
+    "#{pane_width}\t#{pane_height}\t#{pane_title}'"
   );
 }
 
@@ -282,16 +301,34 @@ export function respawnPane(paneId: number, paneProcess: PaneProcess): string {
   );
 }
 
+// [LAW:parse-dont-validate] tmux splits `-B name:what:format` at the first two
+//   colons (cmd-refresh-client.c), and `%subscription-changed` reports the name
+//   as one space-delimited field, so a name holding either is a different
+//   subscription than the one asked for. Refused here, the one place every
+//   subscription name reaches the wire; a bridge's RPC parser asks the same
+//   question so a peer's bad name is its invalid argument.
+export function subscriptionNameFault(name: string): string | null {
+  return /^[^:\s]+$/.test(name)
+    ? null
+    : `subscription name must be non-empty with no ':' or whitespace: ${JSON.stringify(name)}`;
+}
+
+function subscriptionName(name: string): string {
+  const fault = subscriptionNameFault(name);
+  if (fault !== null) throw new RangeError(fault);
+  return tmuxEscape(name);
+}
+
 export function refreshClientSubscribe(
   name: string,
   what: string,
   format: string,
 ): string {
-  return `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`;
+  return `refresh-client -B ${subscriptionName(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`;
 }
 
 export function refreshClientUnsubscribe(name: string): string {
-  return `refresh-client -B ${tmuxEscape(name)}`;
+  return `refresh-client -B ${subscriptionName(name)}`;
 }
 
 const utf8Encoder = new TextEncoder();

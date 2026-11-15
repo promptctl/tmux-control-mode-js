@@ -227,7 +227,7 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
 
     // Phase 2 + 3: type a sentinel into the active pane and watch it land
     // back in the rendered xterm grid. xterm forwards the keystrokes through
-    // its hidden helper textarea; mountPaneTerminal's sink.onData wiring calls
+    // its hidden helper textarea; the window terminal's onData wiring calls
     // stream.sendKeys → ElectronBridge.sendKeys → preload IPC → main → tmux
     // send-keys → shell, and the shell's printf output returns via %output →
     // IPC event → xterm.write. The unique sentinel rules out a stale echo.

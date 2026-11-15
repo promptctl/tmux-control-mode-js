@@ -15,6 +15,7 @@
 // [LAW:single-enforcer] One class for command failures; downstream
 // `instanceof TmuxCommandError` is the authoritative check.
 
+import { BridgeError } from "./bridge-error.js";
 import { commandLineFault } from "./protocol/encoder.js";
 import type { CommandResponse } from "./protocol/types.js";
 import type { TmuxVersion } from "./tmux-compat.js";
@@ -303,9 +304,11 @@ export class PaneCwdUnavailableError extends Error {
 /**
  * Classify a command rejection as "the connection is already gone" — the
  * transport refused the send ({@link TransportSendError}) or closed before
- * tmux replied ({@link TransportClosedError}). Both mean the command never got
- * a verdict from a live tmux, so the operation it drove is *moot*: the pane /
- * subscription it targeted is being torn down and, on reconnect, re-driven.
+ * tmux replied ({@link TransportClosedError}), or, for a bridged connection,
+ * the bridge closed with the call in flight (`BridgeError` `BRIDGE_CLOSED`).
+ * Each means the command never got a verdict from a live tmux, so the
+ * operation it drove is *moot*: the pane / subscription it targeted is being
+ * torn down and, on reconnect, re-driven.
  *
  * Any other rejection class ({@link TmuxCommandError}, {@link TmuxProtocolError},
  * anything else) means tmux was ALIVE and the effect's real outcome matters —
@@ -317,4 +320,19 @@ export class PaneCwdUnavailableError extends Error {
  *   check, so the two sites cannot drift on what "gone" means.
  */
 export const isConnectionGone = (err: unknown): boolean =>
-  err instanceof TransportClosedError || err instanceof TransportSendError;
+  err instanceof TransportClosedError ||
+  err instanceof TransportSendError ||
+  (err instanceof BridgeError && err.code === "BRIDGE_CLOSED");
+
+/**
+ * Classify an `unsubscribe` rejection as "the name already holds no
+ * subscription here": the connection is gone and took its subscriptions with
+ * it ({@link isConnectionGone}), or a bridge answered
+ * `BRIDGE_UNKNOWN_SUBSCRIPTION` because this connection never held the name —
+ * an unsubscribe made during a reconnect reaches the next connection. Either
+ * way the state the unsubscribe asked for already holds, as tmux itself
+ * answers an absent name with success.
+ */
+export const isAlreadyUnsubscribed = (err: unknown): boolean =>
+  isConnectionGone(err) ||
+  (err instanceof BridgeError && err.code === "BRIDGE_UNKNOWN_SUBSCRIPTION");
