@@ -10,7 +10,7 @@
 //   - resize(cols, rows): first call is deferred by one rAF; subsequent
 //     calls are synchronous. (Demo's "Cannot read properties of undefined
 //     (reading 'dimensions')" lesson.)
-//   - setFontSize / setTheme / clear: in-place; never reconstruct Terminal
+//   - setFont / setAppearance / remeasure / clear: in-place; never reconstruct Terminal
 //     and never call terminal.dispose(). (O10.)
 //   - dispose(): tears down once; idempotent; subsequent ops are no-ops.
 //   - isVisible: reflects IntersectionObserver + document.visibilityState.
@@ -75,8 +75,11 @@ vi.mock("@xterm/xterm", () => {
 });
 
 // Import AFTER vi.mock so the mocked Terminal is used.
-import { XtermSink } from "../../../src/window-terminal/render/xterm-sink.js";
-import { __resetCache } from "../../../src/window-terminal/sizing/cell-metrics.js";
+import {
+  DEFAULT_FONT_FAMILY,
+  DEFAULT_LINE_HEIGHT,
+  XtermSink,
+} from "../../../src/window-terminal/render/xterm-sink.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,22 +87,23 @@ import { __resetCache } from "../../../src/window-terminal/sizing/cell-metrics.j
 
 function makeContainer(): HTMLElement {
   const el = document.createElement("div");
-  // Give it a non-zero box so fitFont() returns something meaningful.
-  Object.defineProperty(el, "getBoundingClientRect", {
-    value: () => ({
-      width: 800,
-      height: 240,
-      top: 0,
-      left: 0,
-      bottom: 240,
-      right: 800,
-      x: 0,
-      y: 0,
-      toJSON: () => ({}),
-    }),
-  });
   document.body.appendChild(el);
   return el;
+}
+
+// Records every value assigned to `obj[key]` from now on.
+function countWrites(obj: object, key: string): () => unknown[] {
+  const seen: unknown[] = [];
+  let backing = (obj as Record<string, unknown>)[key];
+  Object.defineProperty(obj, key, {
+    configurable: true,
+    get: () => backing,
+    set: (v) => {
+      seen.push(v);
+      backing = v;
+    },
+  });
+  return () => seen;
 }
 
 function newSink(): {
@@ -138,7 +142,6 @@ function flushRaf(): void {
 }
 
 beforeEach(() => {
-  __resetCache();
   lastTerm = null;
   installFakeRaf();
 });
@@ -465,51 +468,57 @@ describe("XtermSink: pre-resize write buffer is bounded (kwv.3)", () => {
 });
 
 describe("XtermSink: in-place option setters (O10)", () => {
-  it("setFontSize writes options.fontSize without disposing the Terminal", () => {
+  it("setFont writes options.fontSize without disposing the Terminal", () => {
     const { sink, term } = newSink();
-    sink.setFontSize(20);
+    sink.setFont(20);
     expect(term.options.fontSize).toBe(20);
     expect(term.dispose).not.toHaveBeenCalled();
     sink.dispose();
   });
 
-  it("setFontSize is idempotent — same value does not re-write options", () => {
+  it("setFont with the current size writes nothing (no xterm re-measure)", () => {
     const { sink, term } = newSink();
-    sink.setFontSize(20);
-    // Reset the watcher so we can detect further writes. Vitest mocks don't
-    // detect property writes directly, so we use Object.defineProperty to
-    // count assignments.
-    let writes = 0;
-    let backing = term.options.fontSize;
-    Object.defineProperty(term.options, "fontSize", {
-      configurable: true,
-      get: () => backing,
-      set: (v) => {
-        writes += 1;
-        backing = v as number;
-      },
-    });
-    sink.setFontSize(20);
-    expect(writes).toBe(0); // same value: no write
-    sink.setFontSize(22);
-    expect(writes).toBe(1); // different value: one write
+    sink.setFont(20);
+    const writes = countWrites(term.options, "fontSize");
+    sink.setFont(20);
+    expect(writes()).toEqual([]);
+    sink.setFont(22);
+    expect(writes()).toEqual([22]);
     sink.dispose();
   });
 
-  it("setTheme merges into the existing theme without reconstructing", () => {
+  it("setAppearance replaces the look in place; a field left out returns to its default", () => {
     const { sink, term } = newSink();
-    sink.setTheme({ background: "#000" });
+    sink.setAppearance({
+      fontFamily: "Iosevka",
+      lineHeight: 1.2,
+      theme: { background: "#000" },
+      cursorStyle: "bar",
+    });
+    expect(term.options).toMatchObject({
+      fontFamily: "Iosevka",
+      lineHeight: 1.2,
+      theme: { background: "#000" },
+      cursorStyle: "bar",
+    });
+    sink.setAppearance({ theme: { foreground: "#fff" } });
+    expect(term.options).toMatchObject({
+      fontFamily: DEFAULT_FONT_FAMILY,
+      lineHeight: DEFAULT_LINE_HEIGHT,
+      theme: { foreground: "#fff" },
+      cursorStyle: "block",
+    });
     expect(term.dispose).not.toHaveBeenCalled();
-    expect((term.options.theme as { background?: string }).background).toBe(
-      "#000",
-    );
-    sink.setTheme({ foreground: "#fff" });
-    expect((term.options.theme as { background?: string }).background).toBe(
-      "#000",
-    );
-    expect((term.options.theme as { foreground?: string }).foreground).toBe(
-      "#fff",
-    );
+    sink.dispose();
+  });
+
+  it("remeasure changes the font size and back, so xterm measures again", () => {
+    const { sink, term } = newSink();
+    sink.setFont(16);
+    const writes = countWrites(term.options, "fontSize");
+    sink.remeasure();
+    expect(writes()).toEqual([17, 16]);
+    expect(term.options.fontSize).toBe(16);
     sink.dispose();
   });
 
@@ -532,15 +541,16 @@ describe("XtermSink: dispose lifecycle", () => {
     expect(term.dispose).toHaveBeenCalledOnce();
   });
 
-  it("post-dispose: write, seed, resize, setFontSize all no-op", () => {
+  it("post-dispose: write, seed, resize, setFont, setAppearance, remeasure all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
     sink.seed(enc("x"), null, []);
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     flushRaf();
-    sink.setFontSize(99);
-    sink.setTheme({ background: "#abc" });
+    sink.setFont(99);
+    sink.setAppearance({ theme: { background: "#abc" } });
+    sink.remeasure();
     sink.clear();
     sink.focus();
     expect(term.write).not.toHaveBeenCalled();

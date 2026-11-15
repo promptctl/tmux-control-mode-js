@@ -1,39 +1,33 @@
 // src/window-terminal/render/xterm-sink.ts
 //
 // XtermSink — DOM-backed `TerminalSink` that drives an xterm.js `Terminal`.
-// The only window-terminal module that touches the heavy xterm peer
-// dependency. Which modules may touch the DOM at all is stated by
-// tsconfig.dom.json's includes; the engine (PaneStream, BufferingSink) is
-// environment-agnostic.
+// Which modules may touch the DOM at all is stated by tsconfig.dom.json's
+// includes; the engine (PaneStream, BufferingSink) is environment-agnostic.
 //
-// This file owns the Terminal lifecycle and the container-size → font-size fit
-// loop. Two orthogonal concerns are delegated to collaborators:
+// This file owns the Terminal lifecycle. Two orthogonal concerns are delegated
+// to collaborators:
 //   - FirstResizeGate (first-resize-gate.ts) — the seed/live-byte ordering
 //     buffer that spans the one-rAF first-resize defer.
 //   - VisibilityTracker (visibility-tracker.ts) — on-screen visibility.
-// The minimal `XtermBytesSink` adapter (a separate product) lives in
-// bytes-sink.ts.
+// The sink never sizes itself: cols/rows come from tmux through `resize()`,
+// and the font size from whoever owns the layout through `setFont()`.
 //
 // State invariants this class enforces:
 //
 //  1. The `Terminal` is constructed once in the constructor and disposed
-//     once in `dispose()`. Style changes (font size, theme) flow through
-//     xterm's in-place option setters; we never tear-down-and-rebuild
-//     (O10).
-//  2. Container resize never calls xterm directly. A `ResizeObserver`
-//     writes the new container box into `boxW`/`boxH`, queues at most one
-//     rAF, and the rAF runs `fitFont()` + the font-size update once per
-//     frame regardless of how many resize events fired (O9).
-//  3. The very first `term.resize()` is deferred by one rAF. Xterm's
+//     once in `dispose()`. Style changes (font, theme, line height, cursor)
+//     flow through xterm's in-place option setters; we never
+//     tear-down-and-rebuild (O10).
+//  2. The very first `term.resize()` is deferred by one rAF. Xterm's
 //     `Viewport.syncScrollArea` dereferences a renderer-`dimensions` object
 //     that is only instantiated on the first render tick — calling
 //     `term.resize()` synchronously inside `term.open()` throws
 //     "Cannot read properties of undefined (reading 'dimensions')".
 //     This is the demo's hard-won lesson and stays load-bearing here.
-//  4. `write(Uint8Array)` forwards directly to `term.write()` — no
+//  3. `write(Uint8Array)` forwards directly to `term.write()` — no
 //     `TextDecoder` in the live path. The byte-fidelity guarantee
 //     comes from this single line.
-//  5. `dispose()` releases every observer/listener/timer and disposes the
+//  4. `dispose()` releases every observer/listener/timer and disposes the
 //     `Terminal`. After dispose, every public method is a no-op.
 //
 // [LAW:locality-or-seam] PaneStream (the producer side of the seam) sees
@@ -44,45 +38,31 @@
 //   (xterm-addon mounting, custom decorators, viewport queries). The seam
 //   that matters for the architecture is producer↔renderer, not
 //   consumer↔renderer; the latter is intentionally permeable.
-// [LAW:single-enforcer] One ResizeObserver per sink, one rAF coalescing
-//   pending font fits; the FirstResizeGate owns the pre-resize byte buffer and
-//   the VisibilityTracker owns the intersection/visibility observers.
-// [LAW:dataflow-not-control-flow] The constructor wires up the observer
-//   unconditionally; its callback updates plain values; the rAF flush reads
-//   those values and applies them. The same code path runs every resize event
-//   regardless of count.
 
 import { Terminal } from "@xterm/xterm";
-import type { ITheme, IDisposable } from "@xterm/xterm";
+import type { IDisposable } from "@xterm/xterm";
 import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
-import { fitFont as computeFitFont } from "../sizing/cell-metrics.js";
+import type { Appearance } from "./appearance.js";
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 
 /**
  * Default monospace stack. The list is platform-spanning so XtermSink is
- * usable out of the box; consumers that bundle a custom font (e.g. the
- * demo's "JetBrainsMono Nerd Font Mono") pass it via `fontFamily`.
+ * usable out of the box; consumers that bundle a custom font pass it as
+ * `appearance.fontFamily`.
  */
-const DEFAULT_FONT_FAMILY =
+export const DEFAULT_FONT_FAMILY =
   '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace';
+/** xterm.js's own default `lineHeight`. */
+export const DEFAULT_LINE_HEIGHT = 1;
 const DEFAULT_FONT_SIZE = 14;
-const DEFAULT_FONT_MIN = 6;
-const DEFAULT_FONT_MAX = 16;
 const DEFAULT_SCROLLBACK = 10000;
-const FONT_WEIGHT = "normal";
 
 export interface XtermSinkOptions {
   readonly container: HTMLElement;
-  readonly fontFamily?: string;
   readonly fontSize?: number;
-  readonly fontMin?: number;
-  readonly fontMax?: number;
   readonly scrollback?: number;
-  readonly theme?: {
-    readonly background?: string;
-    readonly foreground?: string;
-  };
+  readonly appearance?: Appearance;
 }
 
 export class XtermSink implements TerminalSink {
@@ -91,28 +71,20 @@ export class XtermSink implements TerminalSink {
    * (`@xterm/addon-search`, custom decorators), viewport queries, theme
    * inspection. The producer-side seam is `TerminalSink`; PaneStream never
    * sees this field. Touching it bypasses the wrapper's invariants
-   * (rAF-coalesced resize, in-place option mutation), so reach for it
+   * (deferred first resize, in-place option mutation), so reach for it
    * only when the wrapper genuinely doesn't expose what you need.
    */
   readonly terminal: Terminal;
 
   private readonly container: HTMLElement;
-  private readonly fontFamily: string;
-  private readonly fontMin: number;
-  private readonly fontMax: number;
 
   // Tmux-reported pane geometry. Updated only by `resize()`.
   private cols = 0;
   private rows = 0;
-  // Container-pixel box. Updated by the ResizeObserver.
-  private boxW = 0;
-  private boxH = 0;
 
   private isDisposed = false;
   private firstResizeDone = false;
   private firstResizeQueued = false;
-  private rafResizePending = false;
-  private rafResizeId: number | null = null;
   private rafFirstResizeId: number | null = null;
 
   // Seed / live-byte ordering across the one-rAF first-resize defer.
@@ -120,19 +92,9 @@ export class XtermSink implements TerminalSink {
   // On-screen visibility (IntersectionObserver + document visibility).
   private readonly visibility: VisibilityTracker;
 
-  private ro: ResizeObserver | null = null;
-
-  private readonly onContainerResize: ResizeObserverCallback;
-  private readonly flushBoundResize: () => void;
-
   constructor(opts: XtermSinkOptions) {
     this.container = opts.container;
-    this.fontFamily = opts.fontFamily ?? DEFAULT_FONT_FAMILY;
-    this.fontMin = opts.fontMin ?? DEFAULT_FONT_MIN;
-    this.fontMax = opts.fontMax ?? DEFAULT_FONT_MAX;
-    const fontSize = opts.fontSize ?? DEFAULT_FONT_SIZE;
-    const scrollback = opts.scrollback ?? DEFAULT_SCROLLBACK;
-    const theme = themeFor(opts.theme);
+    const a = opts.appearance ?? {};
 
     // [LAW:single-enforcer] Terminal constructed once, disposed once. Style
     // mutations go through `terminal.options` setters below — never another
@@ -140,38 +102,20 @@ export class XtermSink implements TerminalSink {
     this.terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
-      fontFamily: this.fontFamily,
-      fontSize,
-      scrollback,
-      theme,
+      fontFamily: a.fontFamily ?? DEFAULT_FONT_FAMILY,
+      fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
+      lineHeight: a.lineHeight ?? DEFAULT_LINE_HEIGHT,
+      scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
+      theme: a.theme ?? {},
+      ...(a.cursorStyle === undefined ? {} : { cursorStyle: a.cursorStyle }),
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
-      // `resize()`; the container only drives font fit.
+      // `resize()`.
     });
     this.terminal.open(this.container);
 
     this.visibility = new VisibilityTracker(this.container);
-
-    // Pre-bound callbacks so we can `disconnect` with the same reference on
-    // dispose.
-    this.flushBoundResize = () => this.flushRafResize();
-    this.onContainerResize = (entries) => {
-      if (this.isDisposed) return;
-      const r = entries[0]?.contentRect;
-      if (r === undefined) return;
-      this.boxW = r.width;
-      this.boxH = r.height;
-      this.queueRafResize();
-    };
-
-    // [LAW:dataflow-not-control-flow] The observer always runs; its callback
-    // writes into instance fields; the rAF reads those fields. There is no
-    // "if container is large enough" branch — the same code path runs.
-    if (typeof ResizeObserver !== "undefined") {
-      this.ro = new ResizeObserver(this.onContainerResize);
-      this.ro.observe(this.container);
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -263,7 +207,7 @@ export class XtermSink implements TerminalSink {
   private performDrain(batch: DrainBatch): void {
     // [LAW:composability] Self-guard the disposed state rather than trust each
     //   caller to have checked it — this helper writes to the terminal, so it
-    //   owns the "no writes after dispose" invariant (invariant #5) locally and
+    //   owns the "no writes after dispose" invariant (invariant #4) locally and
     //   asks nothing of its callers. A disposed terminal must never be written.
     if (this.isDisposed) return;
     if (batch.seed !== null) {
@@ -317,8 +261,7 @@ export class XtermSink implements TerminalSink {
     if (this.isDisposed) return;
     // `terminal.clear()` empties the screen + scrollback to a single row;
     // `terminal.reset()` would also reset modes/state, which is more than
-    // the contract calls for. PaneStream uses this only when re-attaching
-    // to a cleared view.
+    // the contract calls for.
     this.terminal.clear();
   }
 
@@ -334,20 +277,10 @@ export class XtermSink implements TerminalSink {
     this.isDisposed = true;
     this.gate.dispose();
     this.visibility.dispose();
-
-    if (this.ro !== null) {
-      this.ro.disconnect();
-      this.ro = null;
-    }
-    if (this.rafResizeId !== null) {
-      cancelAnimationFrame(this.rafResizeId);
-      this.rafResizeId = null;
-    }
     if (this.rafFirstResizeId !== null) {
       cancelAnimationFrame(this.rafFirstResizeId);
       this.rafFirstResizeId = null;
     }
-    this.rafResizePending = false;
     this.firstResizeQueued = false;
 
     // xterm.dispose() detaches DOM nodes and releases its internal listeners.
@@ -375,41 +308,38 @@ export class XtermSink implements TerminalSink {
     return () => d.dispose();
   }
 
-  /**
-   * Compute the largest integer font size in `[fontMin, fontMax]` that lets
-   * the current `(cols, rows)` fit inside the current container box. Pure
-   * arithmetic against the module-scope font cache — no DOM measurement.
-   * Public so consumers (e.g. a "Resize to fit" toolbar action) can preview
-   * the answer without forcing the rAF.
-   */
-  fitFont(): number {
-    return computeFitFont({
-      cols: this.cols,
-      rows: this.rows,
-      containerW: this.boxW,
-      containerH: this.boxH,
-      fontFamily: this.fontFamily,
-      fontWeight: FONT_WEIGHT,
-      fontMin: this.fontMin,
-      fontMax: this.fontMax,
-    });
-  }
-
   /** In-place font-size set. NEVER reconstructs the Terminal. */
-  setFontSize(px: number): void {
+  setFont(px: number): void {
     if (this.isDisposed) return;
     if (this.terminal.options.fontSize === px) return;
     this.terminal.options.fontSize = px;
   }
 
-  /** In-place theme merge. NEVER reconstructs the Terminal. */
-  setTheme(theme: { background?: string; foreground?: string }): void {
+  /**
+   * In-place look. NEVER reconstructs the Terminal. Each option is written
+   * as given (a field left out returns to its default), and xterm re-measures
+   * itself when the family changes.
+   */
+  setAppearance(a: Appearance): void {
     if (this.isDisposed) return;
-    const merged: ITheme = {
-      ...(this.terminal.options.theme ?? {}),
-      ...themeFor(theme),
-    };
-    this.terminal.options.theme = merged;
+    const o = this.terminal.options;
+    o.fontFamily = a.fontFamily ?? DEFAULT_FONT_FAMILY;
+    o.lineHeight = a.lineHeight ?? DEFAULT_LINE_HEIGHT;
+    o.theme = a.theme ?? {};
+    o.cursorStyle = a.cursorStyle ?? "block";
+  }
+
+  /**
+   * Make xterm measure its font again. xterm measures only when `fontFamily`
+   * or `fontSize` changes value, so a webfont that finished loading after the
+   * terminal opened leaves it on the fallback font's cell size; nudging the
+   * size and back runs its own measurement twice and paints once.
+   */
+  remeasure(): void {
+    if (this.isDisposed) return;
+    const px = this.terminal.options.fontSize ?? DEFAULT_FONT_SIZE;
+    this.terminal.options.fontSize = px + 1;
+    this.terminal.options.fontSize = px;
   }
 
   /** Focus the underlying xterm. Safe after dispose (no-op). */
@@ -417,39 +347,4 @@ export class XtermSink implements TerminalSink {
     if (this.isDisposed) return;
     this.terminal.focus();
   }
-
-  // ---------------------------------------------------------------------------
-  // Internals
-  // ---------------------------------------------------------------------------
-
-  private queueRafResize(): void {
-    if (this.rafResizePending) return;
-    this.rafResizePending = true;
-    this.rafResizeId = requestAnimationFrame(this.flushBoundResize);
-  }
-
-  private flushRafResize(): void {
-    this.rafResizeId = null;
-    this.rafResizePending = false;
-    if (this.isDisposed) return;
-    if (this.boxW <= 0 || this.boxH <= 0) return;
-    if (this.cols <= 0 || this.rows <= 0) return;
-    const px = this.fitFont();
-    // Avoid touching xterm's options if the answer hasn't changed — a resize
-    // storm must not trigger redundant font-size writes.
-    if (this.terminal.options.fontSize === px) return;
-    this.terminal.options.fontSize = px;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function themeFor(t?: { background?: string; foreground?: string }): ITheme {
-  if (t === undefined) return {};
-  const out: ITheme = {};
-  if (t.background !== undefined) out.background = t.background;
-  if (t.foreground !== undefined) out.foreground = t.foreground;
-  return out;
 }

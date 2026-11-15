@@ -16,5 +16,10 @@
     { "path": "../protocol" },
     { "path": "./tsconfig.core.json" }
   ],
-  "include": ["index.ts", "render/**/*.ts", "sizing/cell-metrics.ts"]
+  "include": [
+    "index.ts",
+    "terminal.ts",
+    "render/**/*.ts",
+    "sizing/cell-metrics.ts"
+  ]
 }
