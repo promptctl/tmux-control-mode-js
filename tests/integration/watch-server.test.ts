@@ -20,7 +20,7 @@ import {
   tmux,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
-import { getOwnClient, setSize } from "../../src/commands/index.js";
+import { getOwnClient } from "../../src/commands/index.js";
 import { watchServerArgs } from "../../src/watch-server.js";
 import {
   NO_DETACH_ON_DESTROY_MIN_VERSION,
@@ -71,7 +71,7 @@ describe.skipIf(!RUN_INTEGRATION)(
           socketPath: socketName,
           env: WATCHER_ENV,
         }),
-        { idlePaneSuppression: true },
+        { idlePaneSuppression: true, ignoreSize: true },
       );
 
     // The session the server's own client list has `client` attached to.
@@ -193,8 +193,8 @@ describe.skipIf(!RUN_INTEGRATION)(
       // it to the watcher's 50x20 — that is what ignore-size must prevent.
       tmux(socketName, ["set", "-g", "window-size", "smallest"]);
       await withSecondClient(socketName, "a", async (user) => {
-        await setSize(user, 120, 40);
-        await setSize(watcher, 50, 20);
+        await user.setSize(120, 40);
+        await watcher.setSize(50, 20);
         await getOwnClient(watcher);
         expect(
           tmux(socketName, [

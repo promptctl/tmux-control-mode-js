@@ -23,7 +23,7 @@ const ok: CommandResponse = {
   success: true,
 };
 
-function setup() {
+function setup(ignoreSize = false) {
   const sent: string[] = [];
   let refused: string | null = null;
   const claims = new ClientSizeClaims((command) => {
@@ -31,7 +31,7 @@ function setup() {
     return command === refused
       ? Promise.reject(new TmuxCommandError({ ...ok, success: false }))
       : Promise.resolve(ok);
-  });
+  }, ignoreSize);
   return {
     claims,
     take: () => sent.splice(0),
@@ -134,5 +134,51 @@ describe("ClientSizeClaims", () => {
     // b holds nothing on the window, so a's release clears it.
     await a.release();
     expect(take()).toEqual([refreshClientClearWindowSize(3), OUT_OF_SIZING]);
+  });
+
+  it("a refused size keeps the claim's earlier size, which tmux still holds", async () => {
+    const { claims, take, refuse } = setup();
+    const a = claims.claim();
+    await a.setSize(100, 30);
+    take();
+    refuse(refreshClientSize(0, 0));
+    await expect(a.setSize(0, 0)).rejects.toThrow(TmuxCommandError);
+    expect(take()).toEqual([
+      refreshClientSize(0, 0),
+      refreshClientSize(100, 30),
+    ]);
+  });
+
+  it("a refused size leaves a newer claim the latest", async () => {
+    const { claims, take, refuse } = setup();
+    const a = claims.claim();
+    const b = claims.claim();
+    await a.setWindowSize(3, 100, 30);
+    await b.setWindowSize(3, 120, 40);
+    take();
+    refuse(refreshClientWindowSize(3, 0, 0));
+    await expect(a.setWindowSize(3, 0, 0)).rejects.toThrow(TmuxCommandError);
+    expect(take()).toEqual([
+      refreshClientWindowSize(3, 0, 0),
+      refreshClientWindowSize(3, 120, 40),
+    ]);
+    // a still holds 100x30 behind b, so b's release sends it.
+    await b.release();
+    expect(take()).toEqual([refreshClientWindowSize(3, 100, 30)]);
+  });
+
+  it("a client spawned with ignore-size never leaves it", async () => {
+    const { claims, take } = setup(true);
+    const a = claims.claim();
+    await a.setSize(100, 30);
+    await a.setWindowSize(3, 100, 30);
+    await a.release();
+    await claims.claim().setSize(90, 20);
+    expect(take()).toEqual([
+      refreshClientSize(100, 30),
+      refreshClientWindowSize(3, 100, 30),
+      refreshClientClearWindowSize(3),
+      refreshClientSize(90, 20),
+    ]);
   });
 });

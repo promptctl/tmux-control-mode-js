@@ -12,7 +12,9 @@
 // - `-E`: tmux's `update-environment` is not applied, so the connecting
 //   process's SSH_AUTH_SOCK, DISPLAY, … are not copied into the attached
 //   session for every window the user opens there afterwards to inherit.
-// - ignore-size: the client's size never takes part in window sizing.
+// - ignore-size: the client's size never takes part in window sizing. The
+//   TmuxClient is constructed with `{ ignoreSize: true }` so its size claims
+//   (src/client-size.ts) leave the flag on.
 // - no-detach-on-destroy: when the attached session ends, the client moves to
 //   another session instead of exiting, so one connection outlives any one
 //   session. When the last session ends the server exits and the connection

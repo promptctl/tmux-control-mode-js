@@ -9,6 +9,10 @@
 // and the client counts toward window sizes exactly while some claim
 // declares a size. A claim released — by a terminal that clears, or a page
 // that left without clearing — leaves the sizes the other claims declared.
+// tmux has no command that withdraws an overall size, so a released overall
+// size stays until another claim sets one or no claim declares anything.
+// A client spawned with `ignore-size` (watchServerArgs) never counts: its
+// claims are recorded and sent, and the flag is never cleared.
 //
 // Measured on tmux 3.8: clearing `-C @W:` gives a window back to the other
 // clients under `window-size latest`, but under `smallest` the client's
@@ -39,7 +43,10 @@ import { emptyKeysResponse, type CommandResponse } from "./protocol/types.js";
  * them and outlives whoever sent it.
  */
 export interface ClientSizeSurface {
-  /** Declare the overall size, which every window this claim did not size reads. */
+  /**
+   * Declare the overall size. tmux holds the latest claim's, and every window
+   * no claim sized reads it.
+   */
   setSize(width: number, height: number): Promise<CommandResponse>;
   /** Declare the size of window `@windowId`. */
   setWindowSize(
@@ -62,17 +69,18 @@ interface Size {
   readonly height: number;
 }
 
-/** What tmux is asked to hold: `client` null when no claim set an overall size. */
+/**
+ * What tmux is asked to hold: `client` null when no claim set an overall
+ * size; `counts` whether the client takes part in window sizing.
+ */
 export interface SizeState {
+  readonly counts: boolean;
   readonly client: Size | null;
   readonly windows: ReadonlyMap<number, Size>;
 }
 
-const NO_SIZE: SizeState = { client: null, windows: new Map() };
+const NO_SIZE: SizeState = { counts: false, client: null, windows: new Map() };
 const IGNORE_SIZE = ["ignore-size"] as const;
-
-const counts = (s: SizeState): boolean =>
-  s.client !== null || s.windows.size > 0;
 
 const same = (a: Size, b: Size | null | undefined): boolean =>
   a.width === b?.width && a.height === b.height;
@@ -85,7 +93,7 @@ const same = (a: Size, b: Size | null | undefined): boolean =>
  */
 export function sizeCommands(sent: SizeState, wanted: SizeState): string[] {
   const commands: string[] = [];
-  if (counts(wanted) && !counts(sent)) {
+  if (wanted.counts && !sent.counts) {
     commands.push(refreshClientClearFlags(IGNORE_SIZE));
   }
   if (wanted.client !== null && !same(wanted.client, sent.client)) {
@@ -101,68 +109,84 @@ export function sizeCommands(sent: SizeState, wanted: SizeState): string[] {
       commands.push(refreshClientClearWindowSize(window));
     }
   }
-  if (!counts(wanted) && counts(sent)) {
+  if (!wanted.counts && sent.counts) {
     commands.push(refreshClientSetFlags(IGNORE_SIZE));
   }
   return commands;
 }
 
-// Each claim's token keys its entries. A Map keeps insertion order and a
-// declaration re-inserts, so a slot's last entry is its latest live claim.
+// The overall size or one window's. Each claim's token keys its entry in a
+// target's slot, and a slot's entry with the highest `seq` is its latest
+// live claim. A slot with no entries is deleted, so every slot holds one.
+type Target = "client" | number;
 type Token = object;
-type Slot = Map<Token, Size>;
-
-function latest(slot: Slot): Size | null {
-  let last: Size | null = null;
-  for (const size of slot.values()) last = size;
-  return last;
+interface Entry {
+  readonly size: Size;
+  readonly seq: number;
 }
+type Slot = Map<Token, Entry>;
+
+const latest = (slot: Slot): Size =>
+  [...slot.values()].reduce((a, b) => (b.seq > a.seq ? b : a)).size;
 
 export class ClientSizeClaims {
-  private readonly overall: Slot = new Map();
-  private readonly windows = new Map<number, Slot>();
+  private readonly slots = new Map<Target, Slot>();
+  private seq = 0;
   private sent: SizeState = NO_SIZE;
 
+  /**
+   * @param ignoreSize the client was spawned with the `ignore-size` flag, so
+   *   it never counts toward window sizing and the claims never clear it.
+   */
   constructor(
     private readonly run: (command: string) => Promise<CommandResponse>,
+    private readonly ignoreSize: boolean,
   ) {}
 
   claim(): ClientSizeClaim {
     const token: Token = {};
     return {
       setSize: (width, height) =>
-        this.declare(this.overall, token, { width, height }),
+        this.declare("client", token, { width, height }),
       setWindowSize: (windowId, width, height) =>
-        this.declare(this.window(windowId), token, { width, height }),
+        this.declare(windowId, token, { width, height }),
       clearWindowSize: (windowId) => {
-        this.windows.get(windowId)?.delete(token);
+        this.put(windowId, token, undefined);
         return this.reconcile();
       },
       release: () => {
-        this.overall.delete(token);
-        for (const slot of this.windows.values()) slot.delete(token);
+        for (const target of [...this.slots.keys()]) {
+          this.put(target, token, undefined);
+        }
         return this.reconcile();
       },
     };
   }
 
-  private window(windowId: number): Slot {
-    const slot = this.windows.get(windowId) ?? new Map<Token, Size>();
-    this.windows.set(windowId, slot);
-    return slot;
+  /** Set `token`'s entry for `target`, or delete it (and an emptied slot). */
+  private put(target: Target, token: Token, entry: Entry | undefined): void {
+    const slot = this.slots.get(target) ?? new Map<Token, Entry>();
+    if (entry === undefined) slot.delete(token);
+    else slot.set(token, entry);
+    if (slot.size === 0) this.slots.delete(target);
+    else this.slots.set(target, slot);
   }
 
   private declare(
-    slot: Slot,
+    target: Target,
     token: Token,
     size: Size,
   ): Promise<CommandResponse> {
-    slot.delete(token);
-    slot.set(token, size);
+    const before = this.slots.get(target)?.get(token);
+    const entry: Entry = { size, seq: this.seq++ };
+    this.put(target, token, entry);
     return this.reconcile().catch((err: unknown) => {
-      // tmux refused the claim, so it holds nothing from it: drop it (unless
-      // a newer one replaced it) and send what the other claims say again.
-      if (slot.get(token) === size) slot.delete(token);
+      // tmux refused the size, so it still holds what it held before: put
+      // back this claim's earlier entry (unless a newer one replaced it) and
+      // send what the claims say again.
+      if (this.slots.get(target)?.get(token) === entry) {
+        this.put(target, token, before);
+      }
       // [LAW:no-silent-failure] exception: `err` is the failure, and it
       // reaches the caller below; a refusal of the re-send is that same
       // refusal again, or a connection already gone.
@@ -182,13 +206,14 @@ export class ClientSizeClaims {
 
   private wanted(): SizeState {
     const windows = new Map<number, Size>();
-    for (const [windowId, slot] of this.windows) {
-      const size = latest(slot);
-      // Every change reconciles, so this is the one place a window nobody
-      // claims any more is forgotten.
-      if (size === null) this.windows.delete(windowId);
-      else windows.set(windowId, size);
+    for (const [target, slot] of this.slots) {
+      if (target !== "client") windows.set(target, latest(slot));
     }
-    return { client: latest(this.overall), windows };
+    const overall = this.slots.get("client");
+    return {
+      counts: !this.ignoreSize && this.slots.size > 0,
+      client: overall === undefined ? null : latest(overall),
+      windows,
+    };
   }
 }

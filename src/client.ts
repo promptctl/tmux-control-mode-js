@@ -52,10 +52,18 @@ import {
 
 // Re-export for consumers that need it
 export type { SplitOptions } from "./protocol/encoder.js";
+export type { ClientSizeClaim, ClientSizeSurface } from "./client-size.js";
 
-// [LAW:one-source-of-truth] The router owns the option's meaning and default;
-//   the client's public option type is that same shape, not a second copy.
-export type TmuxClientOptions = TopologyRouterOptions;
+// [LAW:one-source-of-truth] The router owns its option's meaning and default;
+//   the client's public option type extends that same shape, not a copy.
+export interface TmuxClientOptions extends TopologyRouterOptions {
+  /**
+   * The client was spawned with the `ignore-size` flag (`watchServerArgs`
+   * sets it). Its sizes never count toward window sizing: `setSize` and the
+   * other size claims are sent, and the flag is never cleared. Default off.
+   */
+  readonly ignoreSize?: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // TmuxConnection — the minimal 5-method interface
@@ -95,8 +103,6 @@ export interface TmuxConnection {
  *   ledger is the one owner of a subscription's lifetime; a `refresh-client -B`
  *   sent with `execute()` bypasses it and outlives the page that sent it.
  */
-export type { ClientSizeClaim, ClientSizeSurface } from "./client-size.js";
-
 export interface SubscriptionSurface {
   subscribeRaw(
     name: string,
@@ -216,14 +222,17 @@ export class TmuxClient
   // mirroring how TopologyRouter's bootstrap-failure callback works above.
   private readonly crossSessionLayoutRelay: CrossSessionLayoutRelay;
 
-  private readonly sizes = new ClientSizeClaims((command) =>
-    this.execute(command),
-  );
-  private readonly ownSize = this.sizes.claim();
+  private readonly sizes: ClientSizeClaims;
+  private readonly ownSize: ClientSizeClaim;
 
   constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
     this.emitter = new TypedEmitter();
+    this.sizes = new ClientSizeClaims(
+      (command) => this.execute(command),
+      options?.ignoreSize === true,
+    );
+    this.ownSize = this.sizes.claim();
     // The relay and the router post what they report to this client's queue.
     this.crossSessionLayoutRelay = new CrossSessionLayoutRelay(
       this,

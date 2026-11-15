@@ -311,6 +311,11 @@ export function splitWindow(
  * Set the overall client size, mapping to `refresh-client -C <width>x<height>`
  * (the encoder is `refreshClientSize` in `../protocol/encoder.ts`). The
  * per-window forms are {@link setWindowSize} and {@link clearWindowSize}.
+ *
+ * These three send the plain command through `execute()`, for a connection
+ * with no `ClientSizeSurface` of its own. On a `TmuxClient` or a bridge
+ * connection, call its `setSize`, `setWindowSize` and `clearWindowSize`
+ * methods instead: those are the client's size claims, which this bypasses.
  */
 export function setSize(
   client: TmuxConnection,

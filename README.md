@@ -118,6 +118,7 @@ import {
 
 const client = new TmuxClient(spawnTmux(watchServerArgs("main")), {
   idlePaneSuppression: true, // no pane output unless a sink asks for it
+  ignoreSize: true, // its size methods leave the ignore-size flag on
 });
 const self = await getOwnClient(client);
 ```
@@ -138,7 +139,9 @@ has no name yet, such as one about to call `listSessions`.
   only: a `switch-client` the watcher sends later copies them into the session
   it switches to unless it carries `-E` too.
 - **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
-  it sets a size of its own.
+  it sets a size of its own. Construct its `TmuxClient` with `ignoreSize: true`:
+  without it, the client's size methods clear the flag to put the client into
+  sizing.
 - **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher
   to another session when its own one ends (`session-changed`). When the last
   session ends, tmux exits as usual and the watcher gets `exit`.

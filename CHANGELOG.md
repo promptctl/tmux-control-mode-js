@@ -25,14 +25,20 @@ All notable changes to this project are documented here. Format follows
   holds the latest live claim's overall and per-window sizes, and the client
   counts toward window sizes (`ignore-size` off) only while some claim
   declares one. `TmuxClient`'s own size methods are one such claim.
+- `TmuxClientOptions.ignoreSize`: the client was spawned with `ignore-size`
+  (as `watchServerArgs` does), so its size claims never clear the flag. A
+  watcher passes it to keep out of window sizing when it sets a size.
 
 ### Fixed
 
 - A page that closes without `dispose()` no longer leaves its window size on
   the bridge's tmux client. Each bridge peer's sizes are a claim on the
-  client the pages share, so a departed page's window reads the other
-  pages' size, or the other tmux clients' once no page declares one, under
-  `window-size latest` and `smallest` alike.
+  client the pages share, withdrawn when its socket closes or its Electron
+  renderer is destroyed, so a departed page's window reads the other pages'
+  size, or the other tmux clients' once no page declares one, under
+  `window-size latest` and `smallest` alike. tmux cannot withdraw an overall
+  size, so a departed page's overall size stays until another page sets one
+  or no page declares any size; a window terminal always sets both.
 
 ## [0.3.0] - 2026-11-15
 
