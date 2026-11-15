@@ -8,7 +8,11 @@
 // reseeded once. Panes run `cat`, so what is typed is what the pane shows.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
@@ -224,6 +228,47 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     q(socket, ["resize-pane", "-t", added, "-x", "30"]);
     await pollUntil(() => s.sinks.get(added)?.resizeCalls.at(-1)?.cols === 30);
   });
+
+  // Linux names a process by its argv[0], which a symlink sets; macOS names
+  // it by the binary it ran.
+  it.skipIf(process.platform !== "linux")(
+    "a process named with a newline and a protocol line reads as one command, and fakes no event",
+    async () => {
+      const { c, window } = await start();
+      const s = recorder();
+      engine = engineOver(c, window, s);
+      await untilLive(engine, (v) => v.panes.length === 1);
+
+      // tmux reports a process by the name it ran under, and writes a
+      // subscription value into the control stream raw.
+      const dir = mkdtempSync(join(tmpdir(), "wt-name-"));
+      const name = `x\n%window-close ${window}`;
+      symlinkSync(
+        execFileSync("which", ["sleep"], { encoding: "utf8" }).trim(),
+        join(dir, name),
+      );
+      const added = q(socket, [
+        "split-window",
+        "-t",
+        window,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        join(dir, name),
+        "60",
+      ]) as PaneId;
+      try {
+        await untilLive(engine, (v) =>
+          v.panes.some(
+            (p) => p.id === added && p.command === `x?%window-close ${window}`,
+          ),
+        );
+        expect(liveView(engine.state)?.panes).toHaveLength(2);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    },
+  );
 
   it("keys typed into a pane land in that pane only, and tmux's active pane stays", async () => {
     const { c, window } = await start();

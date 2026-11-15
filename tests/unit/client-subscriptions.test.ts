@@ -40,4 +40,19 @@ describe("TmuxClient — subscriptions are methods of the connection", () => {
       "refresh-client -B 'wt-x'\n",
     ]);
   });
+
+  it("a name tmux would split rejects, from the methods and the free functions alike", async () => {
+    const sent = recordingTransport();
+    const c = new TmuxClient(sent);
+    const attempts = [
+      () => c.subscribeRaw("a:b", "%3", "#{pane_width}"),
+      () => c.unsubscribe("a b"),
+      () => subscribeRaw(c, "a:b", "%3", "#{pane_width}"),
+      () => unsubscribe(c, "a b"),
+    ];
+    for (const attempt of attempts) {
+      await expect(attempt()).rejects.toBeInstanceOf(RangeError);
+    }
+    expect(sent.sent).toEqual([]);
+  });
 });

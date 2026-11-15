@@ -25,7 +25,10 @@
 // [LAW:dataflow-not-control-flow] One indexed lookup for parsing; control
 // flow is a straight pipe per request, the variance rides in the union.
 
-import type { SplitOptions } from "../protocol/encoder.js";
+import {
+  subscriptionNameFault,
+  type SplitOptions,
+} from "../protocol/encoder.js";
 import {
   PaneAction,
   type CommandResponse,
@@ -452,24 +455,6 @@ function requireNonNegativeInteger(
   return v;
 }
 
-// Rejects empty subscription names at the RPC argument boundary — an empty
-// name is meaningless to tmux. This is ordinary input validation for this
-// argument, alongside the sibling `require*` guards above.
-function requireNonEmptyString(
-  args: readonly unknown[],
-  index: number,
-  name: string,
-): string {
-  const v = requireString(args, index, name);
-  if (v.length === 0) {
-    throw new RpcError(
-      "INVALID_ARG",
-      `arg ${index} (${name}) must be a non-empty string`,
-    );
-  }
-  return v;
-}
-
 // The cross-session layout relay's subscription shares the bridge's one tmux
 // client; a peer binding the same name would replace the relay's binding and
 // silence coverage for every peer, so the name is not a peer's to take.
@@ -477,7 +462,11 @@ function requireSubscriptionName(
   args: readonly unknown[],
   index: number,
 ): string {
-  const v = requireNonEmptyString(args, index, "name");
+  const v = requireString(args, index, "name");
+  const fault = subscriptionNameFault(v);
+  if (fault !== null) {
+    throw new RpcError("INVALID_ARG", `arg ${index} (name): ${fault}`);
+  }
   if (v === CROSS_SESSION_LAYOUT_SUBSCRIPTION_NAME) {
     throw new RpcError(
       "INVALID_ARG",

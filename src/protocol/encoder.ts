@@ -102,10 +102,10 @@ export function refreshClientClearWindowSize(windowId: number): string {
 // name as the OS reports it (`osdep_get_name`, `/proc/<pid>/cmdline` on
 // Linux), which tmux passes through unescaped, so it gets
 // `escapeFreeTextField` below the same as `pane_current_path`. `pane_title`
-// needs no treatment either: tmux stores a title through `utf8_stravis`
-// (VIS_CSTYLE|VIS_TAB|VIS_NL, screen.c `screen_set_title`), so it never holds
-// a literal tab or newline, and a backslash already reads `\\` (confirmed
-// live on tmux 3.8).
+// needs no treatment either: tmux refuses a title holding a control
+// character (`utf8_isvalid`, screen.c `screen_set_title`), so it never holds a
+// literal tab or newline; from tmux 3.8 it is also stored vis(3)-encoded, so a
+// backslash reads `\\`.
 export function listWindowsCommand(): string {
   return (
     "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
@@ -305,13 +305,17 @@ export function respawnPane(paneId: number, paneProcess: PaneProcess): string {
 //   colons (cmd-refresh-client.c), and `%subscription-changed` reports the name
 //   as one space-delimited field, so a name holding either is a different
 //   subscription than the one asked for. Refused here, the one place every
-//   subscription name reaches the wire.
+//   subscription name reaches the wire; a bridge's RPC parser asks the same
+//   question so a peer's bad name is its invalid argument.
+export function subscriptionNameFault(name: string): string | null {
+  return /^[^:\s]+$/.test(name)
+    ? null
+    : `subscription name must be non-empty with no ':' or whitespace: ${JSON.stringify(name)}`;
+}
+
 function subscriptionName(name: string): string {
-  if (!/^[^:\s]+$/.test(name)) {
-    throw new RangeError(
-      `subscription name must be non-empty with no ':' or whitespace: ${JSON.stringify(name)}`,
-    );
-  }
+  const fault = subscriptionNameFault(name);
+  if (fault !== null) throw new RangeError(fault);
   return tmuxEscape(name);
 }
 

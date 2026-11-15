@@ -362,7 +362,7 @@ export function setPaneAction(
   return client.execute(refreshClientPaneAction(paneId, action));
 }
 
-export function subscribeRaw(
+export async function subscribeRaw(
   client: TmuxConnection,
   name: string,
   what: string,
@@ -371,7 +371,7 @@ export function subscribeRaw(
   return client.execute(refreshClientSubscribe(name, what, format));
 }
 
-export function unsubscribe(
+export async function unsubscribe(
   client: TmuxConnection,
   name: string,
 ): Promise<CommandResponse> {

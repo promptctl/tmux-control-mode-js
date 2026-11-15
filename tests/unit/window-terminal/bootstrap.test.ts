@@ -77,6 +77,18 @@ describe("bootstrap — snapshot", () => {
     ]);
   });
 
+  it("a command's control bytes read ?, as the meta subscription delivers them", () => {
+    const reply = [`${TWO_PANES}\t${TWO_PANES}\t*\tw\t%0\t000`];
+    const named = pane(1, 0, "t");
+    const snap = parseSnapshot("@1", reply, [
+      {
+        ...named,
+        process: { ...named.process, currentCommand: "x\n%exit\t\x7f" },
+      } as PaneRecord,
+    ]);
+    expect(snap.meta.get("%0")?.command).toBe("x?%exit??");
+  });
+
   it("a reply of the wrong shape throws, carrying the command", () => {
     for (const reply of [[], ["a\tb"], [`x\tx\t*\tn\tnot-a-pane\t000`]]) {
       expect(() => parseSnapshot("@1", reply, [])).toThrow(

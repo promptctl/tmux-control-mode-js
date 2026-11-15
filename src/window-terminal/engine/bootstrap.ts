@@ -63,12 +63,24 @@ export function parseFlags(value: string): WindowFlags | null {
     : { bell: m[1] === "1", activity: m[2] === "1", silence: m[3] === "1" };
 }
 
+// A process names itself (Linux reads its argv[0]), and tmux writes a
+// subscription value into the control stream raw, so a newline in the name
+// would end the `%subscription-changed` line and the rest would read as
+// protocol. Its control bytes read `?`, as ps(1) prints them, in both places
+// a command reaches the view. A range of the two end bytes, since a newline
+// cannot appear in a command line and `[[:cntrl:]]`'s colons end tmux's
+// modifier.
+const CONTROL_BYTES = "[\x01-\x1f\x7f]";
+const controlBytes = new RegExp(CONTROL_BYTES, "g");
+const printableCommand = (name: string): string =>
+  name.replace(controlBytes, "?");
+
 /**
  * A pane's title, then its current command. tmux refuses a title holding a
- * control character, so the first tab is the separator even when the
- * command's OS-reported name holds one.
+ * control character, and the command's are replaced, so the one tab is the
+ * separator.
  */
-export const PANE_META_FORMAT = "#{pane_title}\t#{pane_current_command}";
+export const PANE_META_FORMAT = `#{pane_title}\t#{s/${CONTROL_BYTES}/?/:pane_current_command}`;
 
 export function parsePaneMeta(value: string): PaneMeta | null {
   const tab = value.indexOf("\t");
@@ -96,7 +108,10 @@ export function snapshotCommand(id: WindowId): string {
 function metaOf(p: PaneRecord): PaneMeta {
   return {
     title: p.title,
-    command: p.process.state === "running" ? p.process.currentCommand : "",
+    command:
+      p.process.state === "running"
+        ? printableCommand(p.process.currentCommand)
+        : "",
   };
 }
 

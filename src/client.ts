@@ -351,7 +351,8 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
     return this.router.attachBytesSink(sink, options);
   }
 
-  subscribeRaw(
+  // async: a name the encoder refuses rejects, as execute() does.
+  async subscribeRaw(
     name: string,
     what: string,
     format: string,
@@ -359,7 +360,7 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
     return this.execute(refreshClientSubscribe(name, what, format));
   }
 
-  unsubscribe(name: string): Promise<CommandResponse> {
+  async unsubscribe(name: string): Promise<CommandResponse> {
     return this.execute(refreshClientUnsubscribe(name));
   }
 
