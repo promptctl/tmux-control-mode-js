@@ -37,7 +37,7 @@ export const MirrorScreen = observer(function MirrorScreen({
     if (container === null) return undefined;
     const sink = new XtermSink({
       container,
-      fontFamily: FONT_FAMILY,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
     // Read-only: the projection must not accept keystrokes. The escape hatch to
@@ -73,7 +73,7 @@ export const MirrorScreen = observer(function MirrorScreen({
   }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(fontSize);
+    sinkRef.current?.setFont(fontSize);
   }, [fontSize]);
 
   return (

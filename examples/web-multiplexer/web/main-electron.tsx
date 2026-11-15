@@ -12,6 +12,7 @@ import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "@xterm/xterm/css/xterm.css";
 import "./fonts.css";
+import "./window-terminal.css";
 import { App } from "./App.tsx";
 import { ElectronBridge } from "./electron-bridge.ts";
 import { getDemoIpc } from "./demo-ipc.ts";

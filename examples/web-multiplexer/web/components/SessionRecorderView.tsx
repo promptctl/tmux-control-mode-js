@@ -354,7 +354,7 @@ function ReplaySurface({
     if (container === null) return undefined;
     const sink = new XtermSink({
       container,
-      fontFamily: FONT_FAMILY,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initial.current.fontSize,
     });
     sinkRef.current = sink;
@@ -383,7 +383,7 @@ function ReplaySurface({
   }, [scrubMs, recording, paneId]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(fontSize);
+    sinkRef.current?.setFont(fontSize);
   }, [fontSize]);
 
   return (

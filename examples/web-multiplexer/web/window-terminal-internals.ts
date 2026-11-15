@@ -26,4 +26,3 @@ export type {
   TerminalSink,
 } from "../../../dist/window-terminal/engine/terminal-sink.js";
 export { XtermSink } from "../../../dist/window-terminal/render/xterm-sink.js";
-export { mountPaneTerminal } from "../../../dist/window-terminal/render/mount-pane-terminal.js";

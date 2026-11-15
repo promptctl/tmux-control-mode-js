@@ -38,7 +38,7 @@ export const CollabScreen = observer(function CollabScreen({
     if (container === null) return undefined;
     const sink = new XtermSink({
       container,
-      fontFamily: FONT_FAMILY,
+      appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
     // Writable: stdin stays enabled (the XtermSink default). Unlike the mirror,
@@ -76,7 +76,7 @@ export const CollabScreen = observer(function CollabScreen({
   }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
-    sinkRef.current?.setFontSize(fontSize);
+    sinkRef.current?.setFont(fontSize);
   }, [fontSize]);
 
   return (

@@ -3,6 +3,7 @@ import { MantineProvider, createTheme } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "@xterm/xterm/css/xterm.css";
 import "./fonts.css";
+import "./window-terminal.css";
 import { App } from "./App.tsx";
 import { WebSocketBridge } from "./ws-client.ts";
 

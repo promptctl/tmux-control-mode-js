@@ -1,0 +1,7 @@
+/* The window terminal draws in the box its host gives it, so the host needs a
+   definite size: here, whatever is left of the main column. */
+.demo-window-terminal {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
