@@ -16,5 +16,5 @@
     { "path": "../protocol" },
     { "path": "./tsconfig.core.json" }
   ],
-  "include": ["./*.ts", "render/**/*.ts", "sizing/**/*.ts"]
+  "include": ["index.ts", "options.ts", "render/**/*.ts", "sizing/**/*.ts"]
 }

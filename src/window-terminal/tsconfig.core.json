@@ -12,5 +12,5 @@
     "types": []
   },
   "references": [{ "path": ".." }, { "path": "../protocol" }],
-  "include": ["engine/**/*.ts"]
+  "include": ["engine/**/*.ts", "ids.ts"]
 }
