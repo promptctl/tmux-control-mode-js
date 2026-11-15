@@ -27,9 +27,6 @@ import type {
   SplitOptions,
 } from "../protocol/encoder.js";
 import {
-  refreshClientSize,
-  refreshClientWindowSize,
-  refreshClientClearWindowSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
@@ -305,53 +302,6 @@ export function splitWindow(
   options?: SplitOptions,
 ): Promise<CommandResponse> {
   return client.execute(encodeSplitWindow(options));
-}
-
-/**
- * Set the overall client size, mapping to `refresh-client -C <width>x<height>`
- * (the encoder is `refreshClientSize` in `../protocol/encoder.ts`). The
- * per-window forms are {@link setWindowSize} and {@link clearWindowSize}.
- */
-export function setSize(
-  client: TmuxConnection,
-  width: number,
-  height: number,
-): Promise<CommandResponse> {
-  return client.execute(refreshClientSize(width, height));
-}
-
-/**
- * Declare this client's size for window `@windowId` only, mapping to
- * `refresh-client -C @<id>:<width>x<height>`. When this is the window's only
- * client the window takes that size; with other clients attached tmux's
- * `window-size` option arbitrates and this size is one input to it.
- *
- * The first declaration makes a control client count toward the size of
- * every window of its session from then on (tmux keeps the flag for the
- * client's lifetime), and a window it declared nothing for reads its overall
- * size, 80x24 unless {@link setSize} set one. Set the overall size too.
- */
-export function setWindowSize(
-  client: TmuxConnection,
-  windowId: number,
-  width: number,
-  height: number,
-): Promise<CommandResponse> {
-  return client.execute(refreshClientWindowSize(windowId, width, height));
-}
-
-/**
- * Drop this client's size for window `@windowId` (`refresh-client -C @<id>:`).
- * A client that has declared any size still counts toward the window's size,
- * now at its overall size ({@link setSize}): tmux keeps a control client in
- * window sizing for its lifetime, and only the client's `ignore-size` flag
- * takes it out.
- */
-export function clearWindowSize(
-  client: TmuxConnection,
-  windowId: number,
-): Promise<CommandResponse> {
-  return client.execute(refreshClientClearWindowSize(windowId));
 }
 
 export function setPaneAction(

@@ -44,8 +44,11 @@ import type {
   SessionChangedMessage,
 } from "../../src/protocol/index.js";
 import {
+  refreshClientClearWindowSize,
+  refreshClientSize,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
+  refreshClientWindowSize,
   windowLayoutFields,
 } from "../../src/protocol/index.js";
 
@@ -248,6 +251,24 @@ export class FakeTmuxClient {
 
   unsubscribe(name: string): Promise<CommandResponse> {
     return this.execute(refreshClientUnsubscribe(name));
+  }
+
+  // The size methods are the plain commands, as on a connection with one
+  // consumer: no claims to share between.
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.execute(refreshClientSize(width, height));
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.execute(refreshClientWindowSize(windowId, width, height));
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.execute(refreshClientClearWindowSize(windowId));
   }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside

@@ -33,6 +33,11 @@ import type {
   CommandResponse,
   TmuxMessage,
 } from "@promptctl/tmux-control-mode-js/protocol";
+import {
+  refreshClientClearWindowSize,
+  refreshClientSize,
+  refreshClientWindowSize,
+} from "@promptctl/tmux-control-mode-js/protocol";
 import type { ClientToServer } from "../shared/protocol.ts";
 import type { DemoIpc } from "./demo-ipc.ts";
 import type {
@@ -101,6 +106,46 @@ export class ElectronBridge implements TmuxBridge {
       command,
     };
     return this.invokeWithWire(request, (proxy) => proxy.execute(command));
+  }
+
+  // Every renderer shares the main process's tmux client, so a size goes
+  // through the library bridge's claim for this renderer, which the bridge
+  // withdraws when the renderer goes. The wire log shows the tmux command.
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.invokeWithWire(
+      {
+        kind: "execute",
+        id: this.allocId(),
+        command: refreshClientSize(width, height),
+      },
+      (proxy) => proxy.setSize(width, height),
+    );
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.invokeWithWire(
+      {
+        kind: "execute",
+        id: this.allocId(),
+        command: refreshClientWindowSize(windowId, width, height),
+      },
+      (proxy) => proxy.setWindowSize(windowId, width, height),
+    );
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.invokeWithWire(
+      {
+        kind: "execute",
+        id: this.allocId(),
+        command: refreshClientClearWindowSize(windowId),
+      },
+      (proxy) => proxy.clearWindowSize(windowId),
+    );
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {

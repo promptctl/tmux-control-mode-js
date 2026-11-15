@@ -113,12 +113,15 @@ creates, resizes and reconfigures nothing:
 
 ```ts
 import {
-  TmuxClient, spawnTmux, watchServerArgs, getOwnClient,
+  TmuxClient, spawnTmux, watchServerArgs, watchServerOptions, getOwnClient,
 } from "@promptctl/tmux-control-mode-js";
 
-const client = new TmuxClient(spawnTmux(watchServerArgs("main")), {
-  idlePaneSuppression: true, // no pane output unless a sink asks for it
-});
+// watchServerOptions: no pane output unless a sink asks for it, and the
+// client's sizes kept out of window sizing.
+const client = new TmuxClient(
+  spawnTmux(watchServerArgs("main")),
+  watchServerOptions,
+);
 const self = await getOwnClient(client);
 ```
 
@@ -138,7 +141,9 @@ has no name yet, such as one about to call `listSessions`.
   only: a `switch-client` the watcher sends later copies them into the session
   it switches to unless it carries `-E` too.
 - **Never resizes.** `ignore-size` keeps the watcher out of window sizing, even if
-  it sets a size of its own.
+  it sets a size of its own. Construct the client with `watchServerOptions`:
+  without its `ignoreSize`, the client's size methods clear the flag to put it
+  into sizing.
 - **Outlives sessions, not the server.** `no-detach-on-destroy` moves the watcher
   to another session when its own one ends (`session-changed`). When the last
   session ends, tmux exits as usual and the watcher gets `exit`.
@@ -247,8 +252,10 @@ Things to know:
   the connection's overall size, which keeps the last size declared. Only the
   connection's `ignore-size` client flag, or closing it, takes the connection
   out of window sizing.
-- Through a WebSocket bridge every page shares the bridge's one tmux client, so
-  a declared size outlives a page that closes without `dispose()`.
+- Behind a bridge, pages share one tmux client, and each page's sizes are a
+  claim of its own on it. A page that closes, with or without `dispose()`,
+  leaves the sizes the other pages declared; once no page declares one, the
+  client stops counting toward window sizes (`ignore-size`).
 - With `pane-border-status` set, a pane's cell is taller than its terminal;
   the terminal sits at the top of its cell.
 - Floating panes (tmux 3.8) are not shown.

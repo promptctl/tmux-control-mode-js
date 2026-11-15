@@ -20,7 +20,7 @@ import {
   attachSession,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
-import { sendKeys, setSize } from "../../src/commands/index.js";
+import { sendKeys } from "../../src/commands/index.js";
 import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import type {
   TerminalSink,
@@ -173,7 +173,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
-      await setSize(client, 120, 30);
+      await client.setSize(120, 30);
       for (
         let i = 0;
         i < 30 &&

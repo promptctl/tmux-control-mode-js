@@ -35,7 +35,6 @@ import {
   listPanes,
   listSessions,
   sendKeys,
-  setSize,
   setPaneAction,
   subscribeRaw,
   unsubscribe,
@@ -233,7 +232,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   it("setSize accepts a non-default size", async () => {
     sessionName = uniqueName("test-size");
     client = await attachSession(socketName, sessionName);
-    const r = await setSize(client, 120, 40);
+    const r = await client.setSize(120, 40);
     expect(r.success).toBe(true);
   }, 15000);
 

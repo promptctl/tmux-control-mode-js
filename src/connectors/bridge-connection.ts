@@ -47,6 +47,8 @@ import {
 import type { Peer } from "./bridge-peer.js";
 import type { BridgeError } from "./errors.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
+import { ClientSizeLedger } from "./client-size-ledger.js";
+import type { ClientSizeSurface } from "../client-size.js";
 import { CrossSessionLayoutLedger } from "./cross-session-layout-ledger.js";
 import {
   BackpressureLedger,
@@ -145,6 +147,14 @@ export interface BridgeConnection<L extends boolean = boolean> {
 
   /** Undo one of this peer's enables. A no-op for a peer with none outstanding. */
   disableCrossSessionLayoutForPeer(peer: Peer): Promise<void>;
+
+  /**
+   * The claim this peer's sizes (`setSize`, `setWindowSize`,
+   * `clearWindowSize`) go through. The claim is on the client, so every
+   * page sharing it sees the others' sizes, and `removePeer` withdraws this
+   * peer's.
+   */
+  sizeOf(peer: Peer): ClientSizeSurface;
 
   /**
    * Who `msg` crosses the bridge to. Classify once per event, then ask
@@ -258,6 +268,7 @@ export function createBridgeConnection<L extends boolean>(
     client,
     reportReleaseFailure: opts.reportCoverageReleaseFailure,
   });
+  const size = new ClientSizeLedger({ client });
 
   // [LAW:one-source-of-truth] The façade holds NO peer roster of its own — each
   // ledger is the single source of truth for its own peers (keyed by the shared
@@ -271,6 +282,7 @@ export function createBridgeConnection<L extends boolean>(
       subscription.register(peer);
       backpressure.register(peer);
       crossSessionLayout.register(peer);
+      size.register(peer);
       return peer;
     },
 
@@ -283,6 +295,7 @@ export function createBridgeConnection<L extends boolean>(
       backpressure.releasePeer(peer);
       subscription.releasePeer(peer);
       crossSessionLayout.releasePeer(peer);
+      size.releasePeer(peer);
     },
 
     subscribeForPeer(peer, name, what, format) {
@@ -299,6 +312,10 @@ export function createBridgeConnection<L extends boolean>(
 
     disableCrossSessionLayoutForPeer(peer) {
       return crossSessionLayout.disable(peer);
+    },
+
+    sizeOf(peer) {
+      return size.sizeOf(peer);
     },
 
     routeEvent(msg): EventRoute {
@@ -347,6 +364,7 @@ export function createBridgeConnection<L extends boolean>(
       backpressure.dispose();
       subscription.dispose();
       crossSessionLayout.dispose();
+      size.dispose();
     },
   };
 }

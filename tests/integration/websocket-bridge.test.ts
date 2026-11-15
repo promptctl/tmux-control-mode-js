@@ -19,6 +19,7 @@ import {
   uniqueSocket,
   pollUntil,
   attachSession,
+  withSecondClient,
   tmux,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -984,3 +985,84 @@ describe.skipIf(!RUN_INTEGRATION)(
     }, 15_000);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Client size: every page behind the bridge shares one tmux client, and each
+// page's sizes are a claim of its own on it, so a page that leaves without
+// clearing takes only its own sizes (tmux-terminal-444.3bi).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await startFixture("client-size");
+  });
+  afterEach(async () => {
+    await fx.shutdown();
+  });
+
+  const windowSize = (): string =>
+    tmux(fx.socketName, [
+      "display",
+      "-p",
+      "-t",
+      fx.sessionName,
+      "#{window_width}x#{window_height}",
+    ]);
+  const windowId = (): number =>
+    Number(
+      tmux(fx.socketName, [
+        "display",
+        "-p",
+        "-t",
+        fx.sessionName,
+        "#{window_id}",
+      ]).slice(1),
+    );
+
+  async function page(): Promise<WebSocketTmuxClient> {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
+    return client;
+  }
+
+  // A page sizes its window the way a window terminal does: the overall size
+  // and the window's, together.
+  async function declare(
+    client: WebSocketTmuxClient,
+    width: number,
+    height: number,
+  ): Promise<void> {
+    await client.setSize(width, height);
+    await client.setWindowSize(windowId(), width, height);
+  }
+
+  it.each(["latest", "smallest"])(
+    "window-size %s: a page that closes without clearing leaves the window at the other page's size",
+    async (policy) => {
+      tmux(fx.socketName, ["set", "-g", "window-size", policy]);
+      const b = await page();
+      await declare(b, 110, 35);
+      const a = await page();
+      await declare(a, 100, 30);
+      await pollUntil(() => windowSize() === "100x30");
+      a.close();
+      await pollUntil(() => windowSize() === "110x35");
+      b.close();
+    },
+    15_000,
+  );
+
+  it("the last page to close without clearing gives the window back to the other tmux clients", async () => {
+    tmux(fx.socketName, ["set", "-g", "window-size", "smallest"]);
+    await withSecondClient(fx.socketName, fx.sessionName, async (user) => {
+      await user.setSize(120, 40);
+      const a = await page();
+      await declare(a, 100, 30);
+      await pollUntil(() => windowSize() === "100x30");
+      a.close();
+      await pollUntil(() => windowSize() === "120x40");
+    });
+  }, 15_000);
+});

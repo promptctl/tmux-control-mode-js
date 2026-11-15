@@ -92,6 +92,14 @@ interface RpcSpec {
     readonly args: readonly [width: number, height: number];
     readonly response: CommandResponse;
   };
+  readonly setWindowSize: {
+    readonly args: readonly [windowId: number, width: number, height: number];
+    readonly response: CommandResponse;
+  };
+  readonly clearWindowSize: {
+    readonly args: readonly [windowId: number];
+    readonly response: CommandResponse;
+  };
   readonly setPaneAction: {
     readonly args: readonly [paneId: number, action: PaneAction];
     readonly response: CommandResponse;
@@ -309,6 +317,14 @@ const VALIDATORS: Validators = Object.assign(
         requireNonNegativeInteger(args, 0, "width"),
         requireNonNegativeInteger(args, 1, "height"),
       ] as const,
+    setWindowSize: (args) =>
+      [
+        requireNonNegativeInteger(args, 0, "windowId"),
+        requireNonNegativeInteger(args, 1, "width"),
+        requireNonNegativeInteger(args, 2, "height"),
+      ] as const,
+    clearWindowSize: (args) =>
+      [requireNonNegativeInteger(args, 0, "windowId")] as const,
     setPaneAction: (args) =>
       [
         requireNonNegativeInteger(args, 0, "paneId"),

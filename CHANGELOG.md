@@ -6,6 +6,46 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
+  gone: call the connection's methods of the same names (`ClientSizeSurface`).
+  They sent `refresh-client -C` through `execute()`, past the client's size
+  claims. A connection of your own sends the `./protocol` encoders
+  (`refreshClientSize`, …) through `execute()`.
+- `TerminalConnection` (`./window-terminal`) also requires
+  `ClientSizeSurface`. `TmuxClient`, `WebSocketTmuxClient` and the Electron
+  renderer client have it.
+- The bridge wire gains `setWindowSize` and `clearWindowSize`; upgrade server
+  and client together.
+- A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the
+  client's size methods clear the `ignore-size` flag `watchServerArgs` sets,
+  and the watcher resizes windows.
+
+### Added
+
+- `ClientSizeSurface` (exported from `.` and `./browser`): `setSize`,
+  `setWindowSize` and `clearWindowSize` as methods of a connection.
+- `TmuxClient.claimSize()` returns a `ClientSizeClaim` (exported from `.`):
+  one consumer's share of the client's size, withdrawn by `release()`. tmux
+  holds the latest live claim's overall and per-window sizes, and the client
+  counts toward window sizes (`ignore-size` off) only while some claim
+  declares one. `TmuxClient`'s own size methods are one such claim. A size
+  outside 1..10000 is refused before it is sent.
+- `TmuxClientOptions.ignoreSize` and `watchServerOptions`: a client spawned
+  with `ignore-size` keeps it whatever sizes it sets.
+
+### Fixed
+
+- A page that closes without `dispose()` no longer leaves its window size on
+  the bridge's tmux client. Each bridge peer's sizes are a claim on the
+  client the pages share, withdrawn when its socket closes or its Electron
+  renderer is destroyed, so a departed page's window reads the other pages'
+  size, or the other tmux clients' once no page declares one, under
+  `window-size latest` and `smallest` alike. tmux cannot withdraw an overall
+  size, so a departed page's overall size stays until another page sets one
+  or no page declares any; a window terminal always sets both.
+
 ## [0.3.0] - 2026-11-15
 
 ### Changed — breaking

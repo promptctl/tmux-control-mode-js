@@ -34,6 +34,11 @@ import {
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
+import {
+  ClientSizeClaims,
+  type ClientSizeClaim,
+  type ClientSizeSurface,
+} from "./client-size.js";
 import { CONTROL_FLAGS, isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import { closedSendReason } from "./transport/close-gate.js";
@@ -47,10 +52,20 @@ import {
 
 // Re-export for consumers that need it
 export type { SplitOptions } from "./protocol/encoder.js";
+export type { ClientSizeClaim, ClientSizeSurface } from "./client-size.js";
 
-// [LAW:one-source-of-truth] The router owns the option's meaning and default;
-//   the client's public option type is that same shape, not a second copy.
-export type TmuxClientOptions = TopologyRouterOptions;
+// [LAW:one-source-of-truth] The router owns its option's meaning and default;
+//   the client's public option type extends that same shape, not a copy.
+export interface TmuxClientOptions extends TopologyRouterOptions {
+  /**
+   * The client was spawned with the `ignore-size` flag, as
+   * `watchServerArgs` does (`watchServerOptions` sets this). Its sizes never
+   * count toward window sizing: they are sent, and the flag is never
+   * cleared. Default off: the client's size claims clear the flag to put the
+   * client into window sizing.
+   */
+  readonly ignoreSize?: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // TmuxConnection — the minimal 5-method interface
@@ -143,7 +158,9 @@ type BlockOwner = Pick<InflightEntry, "resolve" | "reject">;
 // TmuxClient
 // ---------------------------------------------------------------------------
 
-export class TmuxClient implements TmuxConnection, SubscriptionSurface {
+export class TmuxClient
+  implements TmuxConnection, SubscriptionSurface, ClientSizeSurface
+{
   private readonly transport: TmuxTransport;
   private readonly parser: TmuxParser;
   private readonly emitter: TypedEmitter;
@@ -207,9 +224,19 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
   // mirroring how TopologyRouter's bootstrap-failure callback works above.
   private readonly crossSessionLayoutRelay: CrossSessionLayoutRelay;
 
+  // [LAW:single-enforcer] Every size this client sends goes through a claim:
+  //   its own methods hold one, and a bridge takes one per peer.
+  private readonly sizes: ClientSizeClaims;
+  private readonly ownSize: ClientSizeClaim;
+
   constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
     this.emitter = new TypedEmitter();
+    this.sizes = new ClientSizeClaims(
+      (command) => this.execute(command),
+      options?.ignoreSize === true,
+    );
+    this.ownSize = this.sizes.claim();
     // The relay and the router post what they report to this client's queue.
     this.crossSessionLayoutRelay = new CrossSessionLayoutRelay(
       this,
@@ -362,6 +389,32 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
 
   async unsubscribe(name: string): Promise<CommandResponse> {
     return this.execute(refreshClientUnsubscribe(name));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Client size (`refresh-client -C`). This client's own methods are one claim
+  // among those a bridge takes for its peers; see src/client-size.ts.
+  // ---------------------------------------------------------------------------
+
+  /** A share of this client's size for one consumer, withdrawn by `release()`. */
+  claimSize(): ClientSizeClaim {
+    return this.sizes.claim();
+  }
+
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.ownSize.setSize(width, height);
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.ownSize.setWindowSize(windowId, width, height);
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.ownSize.clearWindowSize(windowId);
   }
 
   // ---------------------------------------------------------------------------
