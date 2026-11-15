@@ -341,8 +341,11 @@ export function setWindowSize(
 }
 
 /**
- * Drop this client's size for window `@windowId` (`refresh-client -C @<id>:`),
- * so tmux sizes the window from its other clients again.
+ * Drop this client's size for window `@windowId` (`refresh-client -C @<id>:`).
+ * A client that has declared any size still counts toward the window's size,
+ * now at its overall size ({@link setSize}): tmux keeps a control client in
+ * window sizing for its lifetime, and only the client's `ignore-size` flag
+ * takes it out.
  */
 export function clearWindowSize(
   client: TmuxConnection,

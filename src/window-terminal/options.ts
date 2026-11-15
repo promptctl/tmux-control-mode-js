@@ -68,7 +68,8 @@ export type ResolvedSizing =
 
 export const DEFAULT_SIZING: Sizing = { window: "box", font: 14 };
 
-const FLOOR_MAX = 10000;
+// tmux's WINDOW_MAXIMUM: `refresh-client -C` refuses a larger side.
+export const WINDOW_MAXIMUM = 10000;
 
 const FIT: Readonly<Record<string, ResolvedFit>> = {
   width: { width: true, height: false },
@@ -103,9 +104,9 @@ function parseFont(raw: FontRange): ResolvedFont {
 
 function floor(raw: number | undefined, what: string): number {
   const n = raw ?? 1;
-  if (!Number.isInteger(n) || n < 1 || n > FLOOR_MAX) {
+  if (!Number.isInteger(n) || n < 1 || n > WINDOW_MAXIMUM) {
     throw new RangeError(
-      `${what} must be an integer in 1..${FLOOR_MAX}; got ${String(raw)}`,
+      `${what} must be an integer in 1..${WINDOW_MAXIMUM}; got ${String(raw)}`,
     );
   }
   return n;

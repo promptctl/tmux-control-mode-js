@@ -11,7 +11,7 @@
 //   holds, else min. The arms differ only in what "fits" means and in the
 //   claim, which are values.
 
-import type { ResolvedSizing } from "../options.js";
+import { WINDOW_MAXIMUM, type ResolvedSizing } from "../options.js";
 
 export interface Grid {
   readonly cols: number;
@@ -38,8 +38,9 @@ export type CellAt = (fontPx: number) => CellSize;
  * - `hold` — keep whatever is declared: the box has no area to measure (not
  *   laid out yet, or hidden), and declaring from it would shrink the window
  *   for every client to nothing.
- * - `release` — I make no claim (`refresh-client -C @W:`); tmux sizes the
- *   window from its other clients.
+ * - `release` — I make no claim for the window (`refresh-client -C @W:`).
+ *   A control client that has declared any size stays one of the window's
+ *   sizing clients at its overall size (see `clearWindowSize`).
  */
 export type SizeClaim =
   | { readonly kind: "declare"; readonly grid: Grid }
@@ -95,8 +96,14 @@ export function solve(
           : {
               kind: "declare",
               grid: {
-                cols: Math.max(sizing.minCols, g.cols),
-                rows: Math.max(sizing.minRows, g.rows),
+                cols: Math.min(
+                  WINDOW_MAXIMUM,
+                  Math.max(sizing.minCols, g.cols),
+                ),
+                rows: Math.min(
+                  WINDOW_MAXIMUM,
+                  Math.max(sizing.minRows, g.rows),
+                ),
               },
             },
       };

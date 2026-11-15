@@ -112,6 +112,7 @@ export class WindowEngine {
   // snapshot: each carries a whole value, so replaying from any point before
   // the snapshot ends at tmux's latest. `null` when no bootstrap runs.
   private queue: WindowEvent[] | null = null;
+  private subscribed = false;
   private ended = false;
 
   private readonly stateListeners = new Set<Listener<WindowTerminalState>>();
@@ -308,6 +309,7 @@ export class WindowEngine {
       if (!isConnectionGone(err))
         this.report({ seam: "subscribe", cause: err });
     };
+    this.subscribed = true;
     void this.connection
       .subscribeRaw(this.flagsName, this.windowId, FLAGS_FORMAT)
       .catch(onFail);
@@ -443,7 +445,9 @@ export class WindowEngine {
     c.off("session-changed", this.onSessionChanged);
     c.off("subscription-changed", this.onSubscription);
     for (const id of [...this.panes.keys()]) this.disposePane(id);
-    void c.unsubscribe(this.flagsName).catch(rethrowUnlessUnsubscribed);
-    void c.unsubscribe(this.metaName).catch(rethrowUnlessUnsubscribed);
+    if (this.subscribed && c.connectionState.status !== "closed") {
+      void c.unsubscribe(this.flagsName).catch(rethrowUnlessUnsubscribed);
+      void c.unsubscribe(this.metaName).catch(rethrowUnlessUnsubscribed);
+    }
   }
 }

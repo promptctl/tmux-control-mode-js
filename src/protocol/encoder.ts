@@ -73,7 +73,7 @@ export function refreshClientSize(width: number, height: number): string {
 
 // [LAW:one-source-of-truth] The per-window forms of `refresh-client -C`
 // (cmd-refresh-client.c): `@W:WxH` sets this client's size for one window,
-// `@W:` drops it so tmux sizes that window from its other clients again.
+// `@W:` drops it, so the window reads this client's overall size again.
 export function refreshClientWindowSize(
   windowId: number,
   width: number,

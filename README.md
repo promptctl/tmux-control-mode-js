@@ -241,6 +241,11 @@ Things to know:
 - One connection has one size. Two terminals on it showing different
   windows both declare it, and the last declaration wins; after its first
   per-window declaration, tmux sizes the session's other windows to it too.
+- Nothing withdraws a declared size. `dispose()`, or switching to
+  `{ window: "tmux" }`, clears this window's size, and the window then reads
+  the connection's overall size, which keeps the last size declared. Only the
+  connection's `ignore-size` client flag, or closing it, takes the connection
+  out of window sizing.
 - Through a WebSocket bridge every page shares the bridge's one tmux client, so
   a declared size outlives a page that closes without `dispose()`.
 - With `pane-border-status` set, a pane's cell is taller than its terminal;

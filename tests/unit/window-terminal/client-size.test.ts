@@ -43,6 +43,40 @@ describe("ClientSizeDeclarer", () => {
     ]);
   });
 
+  it("when a terminal on the connection releases, the others send their claims again", async () => {
+    const { client, declarer: a } = setup();
+    const b = new ClientSizeDeclarer({
+      connection: client,
+      windowId: "@3",
+      onError: () => undefined,
+    });
+    const elsewhere = new ClientSizeDeclarer({
+      connection: new FakeTmuxClient(),
+      windowId: "@3",
+      onError: () => undefined,
+    });
+    a.apply(declare(100, 30));
+    b.apply(declare(90, 28));
+    elsewhere.apply(declare(70, 20));
+    await settle();
+    const before = client.commands().length;
+
+    // A's clear empties the slot B's claim was in; B fills it again.
+    a.dispose();
+    await settle();
+    expect(client.commands().slice(before)).toEqual([
+      "refresh-client -C @3:",
+      "refresh-client -C 90x28",
+      "refresh-client -C @3:90x28",
+    ]);
+    // B's own next frame finds tmux holding its claim and sends nothing.
+    b.apply(declare(90, 28));
+    await settle();
+    expect(client.commands()).toHaveLength(before + 3);
+    b.dispose();
+    elsewhere.dispose();
+  });
+
   it("declares, and does not repeat a size tmux already has", async () => {
     const { declarer, sent } = setup();
     declarer.apply(declare(100, 30));

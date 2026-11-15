@@ -19,6 +19,13 @@
 // The overall size is the connection's: two terminals on one connection
 // share it, and the last declaration wins, as it does for two terminals of
 // one window.
+//
+// [LAW:one-source-of-truth] What tmux holds is per connection, not per
+//   terminal, so a terminal's `declared` is only true until another terminal
+//   on the connection writes the slot. A release (or dispose) clears a slot
+//   others may hold, so it tells every other declarer on the connection to
+//   forget what it declared and send its claim again. A declaration needs no
+//   such word: the last one wins.
 
 import type { TmuxConnection, TmuxEventMap } from "../../browser.js";
 import {
@@ -30,6 +37,8 @@ import {
 import { rethrowUnlessGone } from "../engine/teardown.js";
 import { windowNumber, type WindowId } from "../ids.js";
 import type { Grid, SizeClaim } from "./solve.js";
+
+const declarers = new WeakMap<TmuxConnection, Set<ClientSizeDeclarer>>();
 
 export interface ClientSizeDeclarerOptions {
   readonly connection: TmuxConnection;
@@ -48,6 +57,8 @@ export class ClientSizeDeclarer {
   private declared: Grid | null = null;
   private inflight = false;
   private disposed = false;
+  // Every declarer on this connection, this one included.
+  private readonly peers: Set<ClientSizeDeclarer>;
 
   private readonly onConnectionState = (
     ev: TmuxEventMap["connection-state"],
@@ -62,6 +73,8 @@ export class ClientSizeDeclarer {
     this.window = windowNumber(opts.windowId);
     this.onError = opts.onError;
     this.connection.on("connection-state", this.onConnectionState);
+    this.peers = declarers.get(this.connection) ?? new Set();
+    declarers.set(this.connection, this.peers.add(this));
   }
 
   apply(claim: SizeClaim): void {
@@ -75,11 +88,25 @@ export class ClientSizeDeclarer {
     if (this.disposed) return;
     this.disposed = true;
     this.connection.off("connection-state", this.onConnectionState);
+    this.peers.delete(this);
     if (this.declared !== null) {
       this.declared = null;
       void clearWindowSize(this.connection, this.window).catch(
         rethrowUnlessGone,
       );
+      this.reassertPeers();
+    }
+  }
+
+  /** Another terminal on this connection cleared a slot: send the claim again. */
+  private reassert(): void {
+    this.declared = null;
+    this.pump();
+  }
+
+  private reassertPeers(): void {
+    for (const peer of this.peers) {
+      if (peer !== this) peer.reassert();
     }
   }
 
@@ -123,10 +150,13 @@ export class ClientSizeDeclarer {
           setWindowSize(this.connection, this.window, cols, rows),
         ]);
       }
-      case "release":
+      case "release": {
         if (this.declared === null) return null;
         this.declared = null;
-        return clearWindowSize(this.connection, this.window);
+        const cleared = clearWindowSize(this.connection, this.window);
+        this.reassertPeers();
+        return cleared;
+      }
     }
   }
 }

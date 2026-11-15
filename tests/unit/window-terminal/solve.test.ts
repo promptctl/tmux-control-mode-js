@@ -29,6 +29,14 @@ describe("solve, the box owns the window's size", () => {
     });
   });
 
+  it("never declares more than tmux's 10000 cells a side", () => {
+    // 1px: cell 0.6 × 1.2 → 9000/0.6 = 15000, 18000/1.2 = 15000.
+    expect(run({ window: "box", font: 1 }, 9000, 18000).claim).toEqual({
+      kind: "declare",
+      grid: { cols: 10000, rows: 10000 },
+    });
+  });
+
   it("sole-client phone: the largest font at which 80 columns still fit", () => {
     // 80 cols in 600px → cell ≤ 7.5 → font ≤ 12.5 → 12.
     const s = run(
