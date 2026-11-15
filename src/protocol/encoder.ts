@@ -301,16 +301,30 @@ export function respawnPane(paneId: number, paneProcess: PaneProcess): string {
   );
 }
 
+// [LAW:parse-dont-validate] tmux splits `-B name:what:format` at the first two
+//   colons (cmd-refresh-client.c), and `%subscription-changed` reports the name
+//   as one space-delimited field, so a name holding either is a different
+//   subscription than the one asked for. Refused here, the one place every
+//   subscription name reaches the wire.
+function subscriptionName(name: string): string {
+  if (!/^[^:\s]+$/.test(name)) {
+    throw new RangeError(
+      `subscription name must be non-empty with no ':' or whitespace: ${JSON.stringify(name)}`,
+    );
+  }
+  return tmuxEscape(name);
+}
+
 export function refreshClientSubscribe(
   name: string,
   what: string,
   format: string,
 ): string {
-  return `refresh-client -B ${tmuxEscape(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`;
+  return `refresh-client -B ${subscriptionName(name)}:${tmuxEscape(what)}:${tmuxEscape(format)}`;
 }
 
 export function refreshClientUnsubscribe(name: string): string {
-  return `refresh-client -B ${tmuxEscape(name)}`;
+  return `refresh-client -B ${subscriptionName(name)}`;
 }
 
 const utf8Encoder = new TextEncoder();

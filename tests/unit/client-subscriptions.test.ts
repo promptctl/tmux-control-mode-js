@@ -26,18 +26,18 @@ describe("TmuxClient — subscriptions are methods of the connection", () => {
   it("subscribeRaw and unsubscribe send what the free functions send", () => {
     const viaMethods = recordingTransport();
     const a = new TmuxClient(viaMethods);
-    void a.subscribeRaw("wt:x", "%3", "#{pane_width}");
-    void a.unsubscribe("wt:x");
+    void a.subscribeRaw("wt-x", "%3", "#{pane_width}");
+    void a.unsubscribe("wt-x");
 
     const viaFunctions = recordingTransport();
     const b = new TmuxClient(viaFunctions);
-    void subscribeRaw(b, "wt:x", "%3", "#{pane_width}");
-    void unsubscribe(b, "wt:x");
+    void subscribeRaw(b, "wt-x", "%3", "#{pane_width}");
+    void unsubscribe(b, "wt-x");
 
     expect(viaMethods.sent).toEqual(viaFunctions.sent);
     expect(viaMethods.sent).toEqual([
-      "refresh-client -B 'wt:x':'%3':'#{pane_width}'\n",
-      "refresh-client -B 'wt:x'\n",
+      "refresh-client -B 'wt-x':'%3':'#{pane_width}'\n",
+      "refresh-client -B 'wt-x'\n",
     ]);
   });
 });

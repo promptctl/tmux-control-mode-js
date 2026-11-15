@@ -100,6 +100,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `subscribeRaw`, `unsubscribe`, `TmuxClient.subscribeRaw`/`unsubscribe` and
+  the `refreshClientSubscribe`/`refreshClientUnsubscribe` encoders throw
+  `RangeError` for a subscription name that is empty or holds `:` or
+  whitespace. tmux splits `-B name:what:format` at its colons, so such a name
+  was sent as a different subscription from the one asked for, and nothing
+  reported it.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
   drain: it settles with the first call, and peers are terminated at the
   deadline their `draining` frame named. Before, a second call with a

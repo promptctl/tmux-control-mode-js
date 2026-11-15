@@ -131,6 +131,18 @@ describe("refreshClientSubscribe", () => {
     const result = refreshClientSubscribe("a", "b", "c");
     expect(result.endsWith("\n")).toBe(false);
   });
+
+  // tmux unquotes the argument, then splits it at the first two colons: the
+  // quoting cannot keep a colon inside the name.
+  it.each(["wt:size", "a b", "tab\there", ""])(
+    "refuses the name %j, which tmux would read as another subscription",
+    (name) => {
+      expect(() => refreshClientSubscribe(name, "%1", "#{pane_width}")).toThrow(
+        RangeError,
+      );
+      expect(() => refreshClientUnsubscribe(name)).toThrow(RangeError);
+    },
+  );
 });
 
 describe("refreshClientUnsubscribe", () => {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import {
+  NullSink,
+  scriptedTmux,
+  world,
+  type World,
+} from "../../helpers/scripted-window.js";
 import {
   ONE_PANE,
   THREE_PANES,
@@ -14,76 +19,11 @@ import {
   WindowEngine,
   type PaneSurfaces,
 } from "../../../src/window-terminal/engine/window-engine.js";
-import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 import type {
   WindowTerminalError,
   WindowTerminalState,
 } from "../../../src/window-terminal/engine/window-model.js";
 import type { PaneId } from "../../../src/window-terminal/ids.js";
-
-// ---------------------------------------------------------------------------
-// A scripted tmux: one window @1 in the attached session, its layout, and the
-// pane records `list-panes -a` reports.
-// ---------------------------------------------------------------------------
-
-interface World {
-  attached: string[];
-  all: string[];
-  layout: string;
-  visible: string;
-  flags: string;
-  active: string;
-}
-
-function paneLine(pane: number, title: string): string {
-  return `$1\tmain\t@1\teditor\t%${pane}\t0\t/tmp\t10${pane}\tzsh\tzsh\t40\t24\t${title}`;
-}
-
-function scriptedTmux(world: World): FakeTmuxClient {
-  const client = new FakeTmuxClient();
-  client.setExecuteResponse((cmd) => {
-    if (cmd === "list-windows -F '#{window_id}'")
-      return world.attached.join("\n");
-    if (cmd === "list-windows -a -F '#{window_id}'")
-      return world.all.join("\n");
-    if (cmd.startsWith("display-message -p -t @1")) {
-      return `${world.layout}\t${world.visible}\t${world.flags}\teditor\t${world.active}\t000`;
-    }
-    if (cmd.startsWith("list-panes -a")) {
-      return [
-        paneLine(0, "left"),
-        paneLine(1, "right"),
-        paneLine(2, "new"),
-      ].join("\n");
-    }
-    if (cmd.startsWith("display-message -p -t %")) return "0;0";
-    return "";
-  });
-  return client;
-}
-
-function world(over: Partial<World> = {}): World {
-  return {
-    attached: ["@1"],
-    all: ["@1", "@2"],
-    layout: TWO_PANES,
-    visible: TWO_PANES,
-    flags: "*",
-    active: "%1",
-    ...over,
-  };
-}
-
-class NullSink implements TerminalSink {
-  seed(): void {}
-  write(): void {}
-  resize(): void {}
-  clear(): void {}
-  isVisible(): boolean {
-    return true;
-  }
-  dispose(): void {}
-}
 
 interface Surfaces extends PaneSurfaces {
   readonly live: Map<PaneId, (data: string) => void>;
@@ -172,8 +112,8 @@ describe("WindowEngine — arrival", () => {
       "capture-pane -peqN -S -50 -t %0",
       "capture-pane -peqN -S -50 -t %1",
     ]);
-    expect(client.subscriptionNamed("@1")).toMatch(/^wt:.*:flags:@1$/);
-    expect(client.subscriptionNamed("%*")).toMatch(/^wt:.*:panes:@1$/);
+    expect(client.subscriptionNamed("@1")).toMatch(/^wt-.*-flags-@1$/);
+    expect(client.subscriptionNamed("%*")).toMatch(/^wt-.*-panes-@1$/);
     engine.dispose();
   });
 

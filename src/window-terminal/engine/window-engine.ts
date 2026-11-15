@@ -186,8 +186,8 @@ export class WindowEngine {
     //   subscriptions by name per control client, and every page behind one
     //   bridge shares that client.
     const token = uniqueToken();
-    this.flagsName = `wt:${token}:flags:${opts.windowId}`;
-    this.metaName = `wt:${token}:panes:${opts.windowId}`;
+    this.flagsName = `wt-${token}-flags-${opts.windowId}`;
+    this.metaName = `wt-${token}-panes-${opts.windowId}`;
 
     const c = this.connection;
     c.on("connection-state", this.onConnectionState);

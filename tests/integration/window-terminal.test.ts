@@ -198,6 +198,33 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     expect(s.disposed).toEqual([added]);
   });
 
+  // Arrival reads every fact once; from then on they reach the view only
+  // through the terminal's format subscriptions.
+  it("after arrival, a pane retitled and resized in tmux reaches the view and the pane's surface", async () => {
+    const { c, window } = await start();
+    const added = q(socket, [
+      "split-window",
+      "-h",
+      "-t",
+      window,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "cat",
+    ]) as PaneId;
+    const s = recorder();
+    engine = engineOver(c, window, s);
+    await untilLive(engine, (v) => v.panes.length === 2);
+
+    q(socket, ["select-pane", "-t", added, "-T", "retitled"]);
+    await untilLive(engine, (v) =>
+      v.panes.some((p) => p.id === added && p.title === "retitled"),
+    );
+
+    q(socket, ["resize-pane", "-t", added, "-x", "30"]);
+    await pollUntil(() => s.sinks.get(added)?.resizeCalls.at(-1)?.cols === 30);
+  });
+
   it("keys typed into a pane land in that pane only, and tmux's active pane stays", async () => {
     const { c, window } = await start();
     const first = q(socket, [

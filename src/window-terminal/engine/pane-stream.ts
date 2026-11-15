@@ -292,7 +292,7 @@ export class PaneStream implements ReseedTarget {
     //   subscriptions by name per control client, so a name shared by two
     //   streams of one pane (two views, or two pages through one bridge) let
     //   the first dispose end the other's subscription.
-    this.subscriptionName = `wt:${uniqueToken()}:size:%${opts.paneId}`;
+    this.subscriptionName = `wt-${uniqueToken()}-size-%${opts.paneId}`;
 
     this.onReconnected = () => {
       // The cached seed is now stale — the underlying pane state has
