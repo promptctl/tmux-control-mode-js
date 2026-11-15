@@ -18,7 +18,7 @@
 // → detached. Detached streams need nothing (tmux re-emits live bytes once
 // reconnected; the next attach will trigger a fresh capture-pane).
 
-import type { TmuxConnection } from "./pane-stream.js";
+import type { TmuxConnection } from "../../browser.js";
 
 // Ambient `Promise` is part of ES2022 lib (already in tsconfig.core.json).
 // Nothing else here needs DOM/Node globals.

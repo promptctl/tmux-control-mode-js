@@ -28,6 +28,11 @@ const tmuxError = (line: string): TmuxCommandError =>
     success: false,
   });
 
+// `refresh-client -B 'name':'what':'format'` subscribes; the bare
+// `refresh-client -B 'name'` form unsubscribes.
+const isSubscribe = (cmd: string): boolean =>
+  /^refresh-client -B '[^']*':/.test(cmd);
+
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
   readonly writes: Uint8Array[] = [];
@@ -84,7 +89,7 @@ function makeStream(
   stream: PaneStream;
 } {
   const client = opts.client ?? new FakeTmuxClient();
-  client.setCapturePaneResponse((cmd) => {
+  client.setExecuteResponse((cmd) => {
     if (cmd.startsWith("display-message")) return opts.cursor ?? "0;0";
     return opts.capture ?? "";
   });
@@ -183,7 +188,7 @@ describe("PaneStream — state machine", () => {
   it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
     const { client, stream } = makeStream();
     // Make execute() reject so the seed Promise.all throws.
-    client.setCapturePaneResponse(() => {
+    client.setExecuteResponse(() => {
       throw new Error("simulated capture failure");
     });
 
@@ -196,7 +201,7 @@ describe("PaneStream — state machine", () => {
 
     // Now wire a working capture, re-attach. The cache must be empty so
     // attach takes the slow path and recovers.
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message") ? "0;0" : "recovered",
     );
     const baselineCaptures = client.capturePaneCount();
@@ -315,7 +320,7 @@ describe("PaneStream — state machine", () => {
     // reseed for a main-screen pane must emit ?1049l + CUP so the seed
     // content lands on the main screen at row 0, not mid-alt-screen.
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message")
         ? "0;0;1;1;0;0;0;1;3;0" // alt=1
         : "alt-content",
@@ -331,7 +336,7 @@ describe("PaneStream — state machine", () => {
     stream.detach();
 
     // Reconnect: pane is now on main screen.
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message")
         ? "0;0;0;1;0;0;0;1;3;0" // alt=0
         : "main-content",
@@ -465,7 +470,7 @@ describe("PaneStream — state machine", () => {
     // session outright. Assert the exact, untruncated wire reaches execute().
     const { client, stream } = makeStream();
     const seen: string[] = [];
-    client.setCapturePaneResponse((cmd) => {
+    client.setExecuteResponse((cmd) => {
       seen.push(cmd);
       return cmd.startsWith("display-message") ? "0;0" : "";
     });
@@ -557,7 +562,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("refresh-client -B") ? tmuxError("no such pane") : null,
+      isSubscribe(cmd) ? tmuxError("no such pane") : null,
     );
     const errors: PaneStreamError[] = [];
     // The subscribe fires in the constructor; a listener attached synchronously
@@ -577,9 +582,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("refresh-client -B")
-        ? new TransportClosedError("socket closed")
-        : null,
+      isSubscribe(cmd) ? new TransportClosedError("socket closed") : null,
     );
     const errors: PaneStreamError[] = [];
     const stream = new PaneStream({ client, paneId: PANE_ID });
@@ -598,7 +601,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("refresh-client -B")
+      isSubscribe(cmd)
         ? new TransportSendError("transport refused the send")
         : null,
     );
@@ -617,11 +620,11 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     // valid size proves the subscription is working, so lastError must clear.
     vi.useRealTimers();
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message") ? "0;0" : "",
     );
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("refresh-client -B") ? tmuxError("no such pane") : null,
+      isSubscribe(cmd) ? tmuxError("no such pane") : null,
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
     stream.attach(new RecordingSink());
@@ -630,7 +633,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
 
     // tmux later reports the pane size on the same subscription name.
     client.injectSubscriptionChanged(
-      `pane-terminal-size-${PANE_ID}`,
+      client.subscriptionNamed(`%${PANE_ID}`),
       PANE_ID,
       "80;24",
     );
@@ -702,7 +705,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     let failCapture = true;
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message") ? "0;0" : "recovered-screen",
     );
     client.setExecuteFailure((cmd) =>
@@ -738,12 +741,12 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     let failCapture = true;
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message") ? "0;0" : "screen",
     );
     client.setExecuteFailure((cmd) => {
       // subscribe fails permanently (no pane geometry will ever arrive)...
-      if (cmd.startsWith("refresh-client -B")) return tmuxError("no such pane");
+      if (isSubscribe(cmd)) return tmuxError("no such pane");
       // ...seed fails only transiently.
       if (failCapture && cmd.startsWith("capture-pane")) {
         return tmuxError("transient");
@@ -765,5 +768,113 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     // dispose() drops the retained error chain.
     stream.dispose();
     expect(stream.lastError).toBeNull();
+  });
+});
+
+describe("PaneStream — pane-size subscription lifecycle", () => {
+  it("two streams of one pane keep separate subscriptions: disposing one leaves the other's", async () => {
+    const client = new FakeTmuxClient();
+    client.setExecuteResponse(() => "");
+    const a = new PaneStream({ client, paneId: PANE_ID });
+    const nameA = client.subscriptionNamed(`%${PANE_ID}`);
+    const b = new PaneStream({ client, paneId: PANE_ID });
+    const nameB = client.subscriptionNamed(`%${PANE_ID}`);
+    expect(nameA).not.toBe(nameB);
+
+    const sink = new RecordingSink();
+    b.attach(sink);
+    a.dispose();
+    await flushTicks();
+    const unsubscribes = client
+      .commands()
+      .filter((c) => /^refresh-client -B '[^']*'$/.test(c));
+    expect(unsubscribes).toEqual([`refresh-client -B '${nameA}'`]);
+
+    // b still follows its pane's size.
+    client.injectSubscriptionChanged(nameB, PANE_ID, "100;30");
+    expect(sink.events).toContain("resize(100x30)");
+    b.dispose();
+  });
+
+  it("subscribes through the connection's subscription methods", () => {
+    const client = new FakeTmuxClient();
+    const spy = vi.spyOn(client, "subscribeRaw");
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    expect(spy).toHaveBeenCalledWith(
+      client.subscriptionNamed(`%${PANE_ID}`),
+      `%${PANE_ID}`,
+      "#{pane_width};#{pane_height}",
+    );
+    stream.dispose();
+  });
+
+  it("re-issues its subscription on 'reconnected'", async () => {
+    const client = new FakeTmuxClient();
+    client.setExecuteResponse(() => "");
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    const subscribes = () =>
+      client
+        .commands()
+        .filter((c) => c.startsWith(`refresh-client -B '${name}':`));
+    expect(subscribes()).toHaveLength(1);
+    client.setConnectionState({ status: "ready" });
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    expect(subscribes()).toHaveLength(2);
+    stream.dispose();
+    await flushTicks();
+  });
+});
+
+describe("PaneStream — floods (pause/continue)", () => {
+  it("a paused pane reads as seeding until continue, then reseeds once", async () => {
+    const { client, stream } = makeStream({ capture: "hello" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    const captures = client.capturePaneCount();
+
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    expect(stream.state).toBe("live");
+    expect(sink.seedTexts).toHaveLength(2);
+    stream.dispose();
+  });
+
+  it("ignores another pane's pause and continue", async () => {
+    const { client, stream } = makeStream();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectNotification({ type: "pause", paneId: PANE_ID + 1 });
+    client.injectNotification({ type: "continue", paneId: PANE_ID + 1 });
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(captures);
+    stream.dispose();
+  });
+
+  it("a detached stream recaptures on its next attach after a flood", async () => {
+    const { client, stream } = makeStream();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    const captures = client.capturePaneCount();
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    expect(stream.state).toBe("detached");
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
   });
 });

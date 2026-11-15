@@ -33,6 +33,20 @@ import type {
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
+  LayoutChangeMessage,
+  WindowPaneChangedMessage,
+  WindowCloseMessage,
+  UnlinkedWindowCloseMessage,
+  WindowRenamedMessage,
+  UnlinkedWindowRenamedMessage,
+  PauseMessage,
+  ContinueMessage,
+  SessionChangedMessage,
+} from "../../src/protocol/index.js";
+import {
+  refreshClientSubscribe,
+  refreshClientUnsubscribe,
+  windowLayoutFields,
 } from "../../src/protocol/index.js";
 
 // The fake emits the subset of events PaneStream subscribes to. Pane-output
@@ -49,11 +63,24 @@ interface FakeReconnectedMessage {
   readonly type: "reconnected";
 }
 
+/** The tmux notifications a window terminal follows, beyond pane bytes and sizes. */
+export type FakeNotification =
+  | LayoutChangeMessage
+  | WindowPaneChangedMessage
+  | WindowCloseMessage
+  | UnlinkedWindowCloseMessage
+  | WindowRenamedMessage
+  | UnlinkedWindowRenamedMessage
+  | SessionChangedMessage
+  | PauseMessage
+  | ContinueMessage;
+
 export type FakeMessage =
   | FakeOutputMessage
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
-  | SubscriptionChangedMessage;
+  | SubscriptionChangedMessage
+  | FakeNotification;
 
 export type FakeMessageType = FakeMessage["type"];
 
@@ -99,6 +126,8 @@ export class FakeTmuxClient {
   // consumer assert re-mount churn on one stream issues exactly one capture;
   // the handler scripts the response payload.
   private readonly captureLog: string[] = [];
+  // Every command `execute()` was called with, in order.
+  private readonly commandLog: string[] = [];
   private captureHandler: (target: string) => string = () => "";
   // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
   // (modelling tmux's `%error`/transport failures), or `null` to resolve
@@ -164,6 +193,7 @@ export class FakeTmuxClient {
    * macrotask boundary between the call site and the response.
    */
   execute(command: string): Promise<CommandResponse> {
+    this.commandLog.push(command);
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
@@ -205,14 +235,20 @@ export class FakeTmuxClient {
     });
   }
 
-  // [LAW:single-enforcer] No `subscribeRaw`/`unsubscribe` methods: `execute()`
-  //   is the fake's ONE command path, matching production, where PaneStream's
-  //   subscribe/unsubscribe flow through the free `subscribeRaw(client, …)` /
-  //   `unsubscribe(client, …)` helpers → `client.execute(refresh-client …)`. A
-  //   second method here would be a divergent path that bypasses the
-  //   `executeFailure` failure-scripting hook (and it went unused). A test that
-  //   wants to assert subscribe wiring asserts against the execute() command —
-  //   the path PaneStream actually uses.
+  // [LAW:single-enforcer] `execute()` is the fake's ONE command path, as it is
+  //   `TmuxClient`'s: the subscription methods encode and go through it, so the
+  //   command log and `setExecuteFailure` see subscriptions like any command.
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    return this.execute(refreshClientSubscribe(name, what, format));
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return this.execute(refreshClientUnsubscribe(name));
+  }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` inside
   //   the fake's internal `dispatch` path — same shape as every other
@@ -279,7 +315,7 @@ export class FakeTmuxClient {
    * persistent shape is intentional. To change the response mid-bench, call
    * this method again.
    */
-  setCapturePaneResponse(handler: (target: string) => string): void {
+  setExecuteResponse(handler: (target: string) => string): void {
     this.captureHandler = handler;
   }
 
@@ -288,10 +324,48 @@ export class FakeTmuxClient {
    * receives the full command string and returns an `Error` to reject with, or
    * `null` to resolve normally. Match on the command prefix to target a seam —
    * `refresh-client -B` for the pane-size subscription, `capture-pane` /
-   * `display-message` for the seed. Persistent, like `setCapturePaneResponse`.
+   * `display-message` for the seed. Persistent, like `setExecuteResponse`.
    */
   setExecuteFailure(handler: (command: string) => Error | null): void {
     this.executeFailure = handler;
+  }
+
+  /** Every command `execute()` has been called with, in call order. */
+  commands(): readonly string[] {
+    return this.commandLog;
+  }
+
+  /**
+   * The name of the most recent `refresh-client -B` subscription on `what`
+   * (`%3`, `@1`, `%*`) — so a test can deliver `subscription-changed` under the
+   * name the code under test chose, the way tmux matches it.
+   */
+  subscriptionNamed(what: string): string {
+    const re = /^refresh-client -B '([^']*)':'([^']*)':/;
+    for (let i = this.commandLog.length - 1; i >= 0; i--) {
+      const m = re.exec(this.commandLog[i]);
+      if (m !== null && m[2] === what) return m[1];
+    }
+    throw new Error(`no subscription on ${what} was issued`);
+  }
+
+  /** Deliver a tmux notification as tmux would. */
+  injectNotification(msg: FakeNotification): void {
+    this.dispatch(msg);
+  }
+
+  /** Deliver `%layout-change` for `windowId`, layout fields derived as the parser derives them. */
+  injectLayoutChange(
+    windowId: number,
+    windowLayout: string,
+    windowVisibleLayout: string,
+    windowFlags: string,
+  ): void {
+    this.dispatch({
+      type: "layout-change",
+      windowId,
+      ...windowLayoutFields(windowLayout, windowVisibleLayout, windowFlags),
+    });
   }
 
   capturePaneCount(): number {

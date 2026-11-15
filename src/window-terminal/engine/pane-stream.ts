@@ -27,25 +27,30 @@
 
 import type { TerminalSink } from "./terminal-sink.js";
 import { buildSeed, type Seed } from "./seed-builder.js";
+import { uniqueToken } from "./token.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
 // the pure pane-output core from `browser.ts`, never the root entry `index.ts`
 // (which pulls the Node-only transport and breaks browser bundlers).
-import type { BytesSink, TmuxConnection, TmuxEventMap } from "../../browser.js";
-import {
-  paneScope,
-  subscribeRaw,
-  unsubscribe,
-  isConnectionGone,
+import type {
+  BytesSink,
+  SubscriptionSurface,
+  TmuxConnection,
+  TmuxEventMap,
 } from "../../browser.js";
+import { paneScope, isConnectionGone } from "../../browser.js";
 import {
   sendKeys as encodeSendKeys,
   emptyKeysResponse,
   type CommandResponse,
 } from "../../protocol/index.js";
 
-// Re-exported so `PaneStream` consumers don't have to
-// dual-import `TmuxConnection` from the library separately.
-export type { TmuxConnection };
+/**
+ * What a window terminal runs over: a connection whose format subscriptions
+ * are its own methods, so a bridge can end them when the page goes away.
+ * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client are all
+ * one.
+ */
+export type TerminalConnection = TmuxConnection & SubscriptionSurface;
 import {
   getScheduler,
   type ReseedPriority,
@@ -116,7 +121,7 @@ export interface PaneStreamError {
 // priority. There is no stream-side `Visibility` type or setter.
 
 export interface PaneStreamOptions {
-  readonly client: TmuxConnection;
+  readonly client: TerminalConnection;
   readonly paneId: number;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
@@ -201,7 +206,7 @@ type SeedCycle =
 export class PaneStream implements ReseedTarget {
   readonly paneId: number;
 
-  private readonly client: TmuxConnection;
+  private readonly client: TerminalConnection;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
   private readonly subscriptionName: string;
@@ -268,6 +273,8 @@ export class PaneStream implements ReseedTarget {
   private readonly onSubscriptionChanged: (
     ev: TmuxEventMap["subscription-changed"],
   ) => void;
+  private readonly onPause: (ev: TmuxEventMap["pause"]) => void;
+  private readonly onContinue: (ev: TmuxEventMap["continue"]) => void;
 
   // [LAW:one-source-of-truth] The byte path's only attach point. Set once in
   //   the constructor by `client.attachBytesSink(...)`; called exactly once
@@ -281,7 +288,11 @@ export class PaneStream implements ReseedTarget {
     this.paneId = opts.paneId;
     this.historyLines = opts.historyLines ?? 2000;
     this.activityThrottleMs = opts.activityThrottleMs ?? 100;
-    this.subscriptionName = `pane-terminal-size-${opts.paneId}`;
+    // [LAW:one-source-of-truth] One name per stream instance: tmux keys
+    //   subscriptions by name per control client, so a name shared by two
+    //   streams of one pane (two views, or two pages through one bridge) let
+    //   the first dispose end the other's subscription.
+    this.subscriptionName = `wt:${uniqueToken()}:size:%${opts.paneId}`;
 
     this.onReconnected = () => {
       // The cached seed is now stale — the underlying pane state has
@@ -293,6 +304,11 @@ export class PaneStream implements ReseedTarget {
       // idle: with nothing in flight, the cache clear above is what forces the
       // next attach/reseed to recapture.
       this.markSeedStale();
+      // A reconnect can be a new control client (a browser re-joining a
+      // bridge is a new peer), which holds none of the old one's
+      // subscriptions; re-issuing under the same name replaces, so this is
+      // right whether or not the old one survived.
+      this.subscribeSize();
       // ReseedScheduler owns dispatch; we just notify our own listeners
       // so consumers (e.g. status badges) can react.
       for (const h of this.reconnectedListeners) h();
@@ -325,32 +341,65 @@ export class PaneStream implements ReseedTarget {
 
     this.client.on("reconnected", this.onReconnected);
 
-    // [LAW:dataflow-not-control-flow] subscribeRaw/unsubscribe are free
-    // functions over TmuxConnection; the subscription path always runs.
+    // [LAW:dataflow-not-control-flow] The subscription path always runs; it
+    // goes through the connection's own subscription methods (see
+    // `TerminalConnection`) so a bridge owns its lifetime.
     this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
     this.client.on("subscription-changed", this.onSubscriptionChanged);
-    // Per-pane width;height in one subscription (single message,
-    // semicolon-separated) so tmux performs the layout walk for us.
-    // [LAW:no-silent-failure] A failed subscribe means tmux will never report
-    //   this pane's geometry, so the sink never gets a resize() — for a
-    //   defer-until-resize renderer that is a permanently blank, unboundedly
-    //   buffering pane. `reportError` lifts the failure to the 'error' seam
-    //   (classifying connection-gone as the quiet, reconnect-re-driven case).
-    //   The memory bound on the no-resize path is the sink's own concern
-    //   (XtermSink caps its pre-resize buffer), independent of WHY resize is
-    //   late — [LAW:decomposition].
-    void subscribeRaw(
-      this.client,
-      this.subscriptionName,
-      `%${this.paneId}`,
-      "#{pane_width};#{pane_height}",
-    ).catch((err: unknown) => this.reportError("subscribe", err));
+    this.subscribeSize();
+
+    // A flood: something (a bridge's backpressure, `pause-after`) paused this
+    // pane's output. tmux drops what the pane writes while paused, so the
+    // picture is known to be behind from the pause on, and only a fresh
+    // capture after `%continue` makes it whole again. `seeding` is the state
+    // that says so.
+    this.onPause = (ev) => {
+      if (ev.paneId !== this.paneId) return;
+      this.lastSeed = null;
+      if (this.sink === null) return;
+      this.buffer = [];
+      this.setState("seeding");
+    };
+    this.onContinue = (ev) => {
+      if (ev.paneId !== this.paneId) return;
+      this.lastSeed = null;
+      if (this.sink === null) return;
+      if (this.seedCycle.phase !== "idle") {
+        this.markSeedStale();
+        return;
+      }
+      this.buffer = [];
+      this.setState("seeding");
+      void this.startSeedCycle();
+    };
+    this.client.on("pause", this.onPause);
+    this.client.on("continue", this.onContinue);
 
     // [LAW:one-source-of-truth] Per-client reseed scheduler. Registering at
     // construction means the scheduler can include this stream in its very
     // first reconnect dispatch — even if the consumer hasn't called
     // attach() yet (priority() will tag it 'detached', so dispatch skips it).
     getScheduler(this.client).register(this);
+  }
+
+  // Per-pane width;height in one subscription (single message,
+  // semicolon-separated) so tmux performs the layout walk for us.
+  // [LAW:no-silent-failure] A failed subscribe means tmux will never report
+  //   this pane's geometry, so the sink never gets a resize() — for a
+  //   defer-until-resize renderer that is a permanently blank, unboundedly
+  //   buffering pane. `reportError` lifts the failure to the 'error' seam
+  //   (classifying connection-gone as the quiet, reconnect-re-driven case).
+  //   The memory bound on the no-resize path is the sink's own concern
+  //   (XtermSink caps its pre-resize buffer), independent of WHY resize is
+  //   late — [LAW:decomposition].
+  private subscribeSize(): void {
+    void this.client
+      .subscribeRaw(
+        this.subscriptionName,
+        `%${this.paneId}`,
+        "#{pane_width};#{pane_height}",
+      )
+      .catch((err: unknown) => this.reportError("subscribe", err));
   }
 
   // -------------------------------------------------------------------------
@@ -493,9 +542,14 @@ export class PaneStream implements ReseedTarget {
     this.client.off("reconnected", this.onReconnected);
 
     this.client.off("subscription-changed", this.onSubscriptionChanged);
-    // Best-effort unsubscribe — if the client is already closed, this
-    // rejects; we swallow because dispose() must not throw.
-    void unsubscribe(this.client, this.subscriptionName).catch(() => undefined);
+    this.client.off("pause", this.onPause);
+    this.client.off("continue", this.onContinue);
+    // A connection already gone took the subscription with it; any other
+    // failure has nobody left to report to here, so it surfaces as an
+    // unhandled rejection rather than vanishing.
+    void this.client
+      .unsubscribe(this.subscriptionName)
+      .catch(rethrowUnlessGone);
 
     if (this.flushTimerId !== null) {
       clearTimeout(this.flushTimerId);
@@ -841,8 +895,8 @@ export class PaneStream implements ReseedTarget {
   //   the "subscribe" phase. Clearing then (and only then) keeps the pull-model
   //   value honest instead of stranding a stale error after recovery. Phase-
   //   gated so a seed success never wipes an outstanding subscribe failure, and
-  //   vice versa. (Reconnect is NOT a clear point: it re-drives only the seed,
-  //   not the subscription, so it cannot vouch for the subscribe seam.)
+  //   vice versa. (Reconnect is NOT a clear point: it re-issues the seed and
+  //   the subscription, but only a delivered size vouches for the latter.)
   private clearError(phase: PaneStreamErrorPhase): void {
     this.seamErrors.delete(phase);
   }
@@ -864,6 +918,11 @@ export class PaneStream implements ReseedTarget {
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/** Rejection handler for teardown commands: a gone connection is the expected outcome. */
+export function rethrowUnlessGone(err: unknown): void {
+  if (!isConnectionGone(err)) throw err;
+}
 
 function parseDimensions(value: string): { cols: number; rows: number } | null {
   const m = value.match(/^(\d+);(\d+)$/);

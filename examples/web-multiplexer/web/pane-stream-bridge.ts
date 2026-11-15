@@ -23,6 +23,7 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
+  SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js/browser";
@@ -32,6 +33,8 @@ import {
   TopologyEpochTracker,
   parsePaneListLine,
   serverScope,
+  subscribeRaw,
+  unsubscribe,
 } from "@promptctl/tmux-control-mode-js/browser";
 import { PaneStream } from "./window-terminal-internals.ts";
 import type {
@@ -68,7 +71,9 @@ function mapConnState(s: ConnState): ConnectionState {
  * constructor. These subscriptions live for the adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
-export class BridgePaneStreamClient implements TmuxConnection {
+export class BridgePaneStreamClient
+  implements TmuxConnection, SubscriptionSurface
+{
   private _connectionState: ConnectionState = { status: "connecting" };
   // Becomes true on the first `ready` transition; subsequent `ready`
   // transitions are reconnects and fire the registered handlers.
@@ -194,6 +199,20 @@ export class BridgePaneStreamClient implements TmuxConnection {
 
   execute(command: string): Promise<CommandResponse> {
     return this.bridge.execute(command);
+  }
+
+  // The demo's own bridge server keeps no per-peer subscription ledger, so a
+  // subscription here is the plain `refresh-client -B` command.
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    return subscribeRaw(this, name, what, format);
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return unsubscribe(this, name);
   }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the

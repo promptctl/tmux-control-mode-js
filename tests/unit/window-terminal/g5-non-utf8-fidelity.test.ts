@@ -28,7 +28,7 @@ function attachLiveStream(
   // Empty capture-pane response so seed completes immediately. After
   // attach, the stream flushes the buffer and flips to live; subsequent
   // injectOutput chunks land in sink.write directly.
-  client.setCapturePaneResponse(() => "");
+  client.setExecuteResponse(() => "");
   const stream = new PaneStream({
     client,
     paneId: PANE_ID,

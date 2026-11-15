@@ -29,7 +29,7 @@ async function flushSeed(): Promise<void> {
 describe("Gate 4 — re-mount on the same stream", () => {
   it(`first mount = 1 capture-pane; mounts 2..${REMOUNT_COUNT} = 0 (re-attach reuses stream state)`, async () => {
     const client = new FakeTmuxClient();
-    client.setCapturePaneResponse((cmd) =>
+    client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
     );
     const stream = new PaneStream({
