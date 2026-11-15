@@ -55,6 +55,13 @@ All notable changes to this project are documented here. Format follows
   `signal`. A browser `WebSocket` or a `ws` socket satisfies the new shape
   as before; a hand-written socket or fake must add `removeEventListener`.
 
+- `createWebSocketBridge` parses `rateLimit`: `maxCalls` and `windowMs`
+  must each be an integer >= 1, and anything else throws
+  `BRIDGE_INVALID_ARG` naming `rateLimit.<field>` and the value. A negative
+  window used to disable the limit silently, `NaN` refused every call once
+  the window filled, and `maxCalls: Infinity` no longer means unlimited —
+  omit `rateLimit` instead.
+
 ### Added
 
 - `./window-terminal` renders one tmux window — every pane, laid out as tmux
@@ -65,7 +72,8 @@ All notable changes to this project are documented here. Format follows
   active pane. The terminal reports `connecting`, `live`, `stale` (connection
   lost, last picture kept) or `gone`, and its size is a `Sizing` constraint:
   the box declares the window's size, or tmux's size is given and the font
-  fits it. `./window-terminal/react` wraps it as `<WindowTerminal>`.
+  fits it; the box form needs tmux 3.3+ (on 3.2 use `{ window: "tmux" }`).
+  `./window-terminal/react` wraps it as `<WindowTerminal>`.
   `@xterm/xterm` (and `react` for `/react`) are optional peer dependencies
   needed only by those two subpaths; `.` and every other subpath still
   install nothing.
@@ -112,14 +120,18 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A bridge's `rateLimit` window reads a monotonic clock, so a wall-clock
+  step back no longer refuses a peer until the clock catches up, and a
+  `windowMs` longer than a timer can hold (a 30-day window) is accepted.
 - `WebSocketTmuxClient.close()` before the bridge's welcome sends no `bye`.
   0.2.0 sent it on any open socket, and the bridge read a `bye` before its
   welcome as a protocol error.
 - `subscribeRaw`, `unsubscribe` and `TmuxClient.subscribeRaw`/`unsubscribe`
   reject, and the `refreshClientSubscribe`/`refreshClientUnsubscribe`
   encoders throw, `RangeError` for a subscription name that is empty or
-  holds `:` or whitespace; a bridge answers such a name from a peer with
-  `BRIDGE_INVALID_ARG`. tmux splits `-B name:what:format` at its colons, so such a name
+  holds `:` or whitespace. Through a bridge (`WebSocketTmuxClient`, the
+  Electron renderer client) the bridge refuses such a name, and the call
+  rejects with a `BridgeError` whose code is `BRIDGE_INVALID_ARG`. tmux splits `-B name:what:format` at its colons, so such a name
   was sent as a different subscription from the one asked for, and nothing
   reported it.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
@@ -389,10 +401,6 @@ All notable changes to this project are documented here. Format follows
   `maxInflight` (an integer >= 1); `bridge.shutdown(drainMs)` rejects with
   `BRIDGE_INVALID_ARG` for a `drainMs` outside [1, 2^31-1] before any peer is
   told to drain, so `shutdown(0)` is no longer a "terminate now" idiom.
-  It parses `rateLimit` too: `maxCalls` and `windowMs` must each be an
-  integer >= 1. A negative window used to disable the limit silently, `NaN`
-  refused every call once the window filled, and `maxCalls: Infinity` no
-  longer means unlimited — omit `rateLimit` instead.
   `WebSocketTmuxClient` parses `requestTimeoutMs` and every field of
   `reconnect` (`maxAttempts` must be `0`, a positive integer, or `Infinity`;
   `initialDelayMs` and `maxDelayMs` are durations; `factor` is finite and
