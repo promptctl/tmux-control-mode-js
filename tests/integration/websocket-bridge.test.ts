@@ -15,6 +15,8 @@ import {
 } from "ws";
 
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { ClientSizeDeclarer } from "../../src/window-terminal/sizing/client-size.js";
+import type { WindowId } from "../../src/window-terminal/ids.js";
 import {
   uniqueSocket,
   pollUntil,
@@ -1066,3 +1068,82 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
     });
   }, 15_000);
 });
+
+// ---------------------------------------------------------------------------
+// N windows on one page: each window terminal on a page declares its own
+// window through the page's claim (tmux-terminal-444.3bi).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — N windows on one page",
+  () => {
+    let fx: Fixture;
+
+    beforeEach(async () => {
+      fx = await startFixture("n-windows");
+    });
+    afterEach(async () => {
+      await fx.shutdown();
+    });
+
+    const sizeOf = (windowId: string): string =>
+      tmux(fx.socketName, [
+        "display",
+        "-p",
+        "-t",
+        windowId,
+        "#{window_width}x#{window_height}",
+      ]);
+
+    // Window ids of the session, growing it to `count` windows first.
+    function windowIds(count: number): string[] {
+      const list = (): string[] =>
+        tmux(fx.socketName, [
+          "list-windows",
+          "-t",
+          fx.sessionName,
+          "-F",
+          "#{window_id}",
+        ])
+          .split("\n")
+          .filter((line) => line !== "");
+      while (list().length < count) {
+        tmux(fx.socketName, ["new-window", "-d", "-t", fx.sessionName]);
+      }
+      return list().slice(0, count);
+    }
+
+    it("N terminals on one page each read their own declared size; disposing one leaves the rest", async () => {
+      const ids = windowIds(4);
+      const grids = [
+        { cols: 100, rows: 30 },
+        { cols: 60, rows: 20 },
+        { cols: 80, rows: 24 },
+      ];
+      const { client: page } = createWsBackedClient(fx.url);
+      await waitForState(page, "ready");
+
+      const errors: unknown[] = [];
+      const declarers = grids.map(
+        (_, i) =>
+          new ClientSizeDeclarer({
+            connection: page,
+            windowId: ids[i] as WindowId,
+            onError: (e) => errors.push(e),
+          }),
+      );
+      declarers.forEach((d, i) => d.apply({ kind: "declare", grid: grids[i] }));
+      await pollUntil(() =>
+        grids.every((g, i) => sizeOf(ids[i]) === `${g.cols}x${g.rows}`),
+      );
+
+      declarers[1].dispose();
+      await pollUntil(() => sizeOf(ids[1]) !== "60x20");
+      expect(sizeOf(ids[0])).toBe("100x30");
+      expect(sizeOf(ids[2])).toBe("80x24");
+      expect(errors).toEqual([]);
+
+      page.close();
+    }, 20_000);
+  },
+);
