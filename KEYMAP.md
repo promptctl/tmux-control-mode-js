@@ -686,4 +686,4 @@ const INITIAL_STATE: KeymapState;   // { mode: "root" }
 - `tests/unit/keymap/*.test.ts` — engine + dispatcher unit tests (pure, no tmux)
 - `tests/integration/keymap.test.ts` — end-to-end against a real tmux server
 - `examples/web-multiplexer/web/store.ts` — demo: creates the shared binding
-- `examples/web-multiplexer/web/pane-terminal.ts` — demo: wires xterm's `attachCustomKeyEventHandler`
+- `examples/web-multiplexer/web/App.tsx` — demo: routes document-level `keydown` (capture phase, ahead of xterm's own handler) into the keymap via `keymap-controller.ts`

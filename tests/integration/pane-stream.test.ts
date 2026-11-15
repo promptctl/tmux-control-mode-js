@@ -21,11 +21,11 @@ import {
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys, setSize } from "../../src/commands/index.js";
-import { PaneStream } from "../../packages/pane-terminal/src/stream/index.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import type {
   TerminalSink,
   SeedCursor,
-} from "../../packages/pane-terminal/src/sink/index.js";
+} from "../../src/window-terminal/engine/terminal-sink.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 

@@ -68,7 +68,7 @@ export interface ResumeFailure {
 //     and surface it.
 // ---------------------------------------------------------------------------
 // [LAW:single-enforcer] `isConnectionGone` is the shared taxonomy predicate
-//   from ../errors.js — the pane-terminal subscribe/seed seam splits
+//   from ../errors.js — the window-terminal subscribe/seed seam splits
 //   quiet-vs-surface through the same check, so the two sites cannot drift.
 
 // [LAW:types-are-the-program] Map each rejection class onto the existing

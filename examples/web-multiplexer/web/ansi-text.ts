@@ -13,7 +13,7 @@
 // terminal emulation. A `\r`-driven in-place redraw (progress bars) or a
 // cursor-addressed TUI will not reproduce byte-for-byte what `capture-pane`
 // renders, because faithfully reconstructing the *screen* requires a grid
-// model. Neither `@promptctl/pane-terminal` nor the protocol package exposes
+// model. Neither the window-terminal engine (`src/window-terminal/`) nor the protocol package exposes
 // a plain-text extraction primitive today (only byte sinks, the xterm
 // renderer, and `bytesToLatin1` / `decodeOctalEscapes`) — see SHOWCASE.md.
 // For full-text scrollback search, line-granular stripping is the right

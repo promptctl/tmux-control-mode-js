@@ -36,7 +36,7 @@ import {
   Slider,
   Tooltip,
 } from "@mantine/core";
-import { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
+import { XtermSink } from "../window-terminal-internals.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import {

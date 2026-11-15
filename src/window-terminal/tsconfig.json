@@ -1,0 +1,11 @@
+{
+  // [LAW:one-way-deps] Solution-style tsconfig. window-terminal is split into
+  // composite projects with disjoint includes so a lib or jsx setting can
+  // never bleed from a UI layer down into the environment-agnostic engine.
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.core.json" },
+    { "path": "./tsconfig.dom.json" },
+    { "path": "./tsconfig.react.json" }
+  ]
+}

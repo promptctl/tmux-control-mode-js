@@ -30,7 +30,7 @@ import type { WebContentsLike } from "../../src/connectors/electron/types.js";
 import {
   attachXtermSink,
   XtermBytesSink,
-} from "../../packages/pane-terminal/src/xterm-sink/index.js";
+} from "../../src/window-terminal/render/bytes-sink.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 

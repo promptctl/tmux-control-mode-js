@@ -1,7 +1,7 @@
 // examples/web-multiplexer/web/pane-stream-bridge.ts
 //
 // Two adapters that wire the demo's `TmuxBridge` pub/sub API to the
-// `@promptctl/pane-terminal` package's `TmuxConnection` surface, plus a MobX
+// window-terminal engine's `TmuxConnection` surface, plus a MobX
 // observable wrapper around `PaneStream`.
 //
 // [LAW:locality-or-seam] The seam is here — not scattered across every
@@ -33,12 +33,12 @@ import {
   parsePaneListLine,
   serverScope,
 } from "@promptctl/tmux-control-mode-js/browser";
-import { PaneStream } from "@promptctl/pane-terminal/stream";
+import { PaneStream } from "./window-terminal-internals.ts";
 import type {
   PaneStreamOptions,
   PaneActivity,
   PaneStreamState,
-} from "@promptctl/pane-terminal/stream";
+} from "./window-terminal-internals.ts";
 import type {
   SubscriptionChangedMessage,
   CommandResponse,

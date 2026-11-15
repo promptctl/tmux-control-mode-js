@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // [LAW:one-way-deps] DOM scope is confined to the renderer and sizing. These
+  // reference the engine — they may import it, it may not import them. No
+  // JSX: React lives in its own project so no `.d.ts` here can reach `react`.
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../../dist/window-terminal",
+    // [LAW:one-source-of-truth] keep the build cache out of the published dist/.
+    "tsBuildInfoFile": "./tsconfig.dom.tsbuildinfo",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "references": [
+    { "path": ".." },
+    { "path": "../protocol" },
+    { "path": "./tsconfig.core.json" }
+  ],
+  "include": ["./*.ts", "render/**/*.ts", "sizing/**/*.ts"]
+}

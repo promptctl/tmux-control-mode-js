@@ -4,16 +4,16 @@ import eslint from "@eslint/js";
 import tseslint from "typescript-eslint";
 import eslintConfigPrettier from "eslint-config-prettier";
 import globals from "globals";
-import noAllocationInHotPath from "./packages/pane-terminal/eslint/no-allocation-in-hot-path.js";
+import noAllocationInHotPath from "./eslint/rules/no-allocation-in-hot-path.js";
 
 // [LAW:single-enforcer] One ESLint config registers every cross-cutting
 // invariant we mechanically enforce. The hot-path rule pairs with Gate 3 in
-// `packages/pane-terminal/tests/bench/g3-heap-delta.bench.ts` — runtime heap
-// delta is the dynamic check; this rule is the static check on
-// `// [HOT-PATH]`-marked function bodies.
-const paneTerminal = {
+// `tests/bench/g3-heap-delta.bench.ts` — runtime heap delta is the dynamic
+// check; this rule is the static check on `// [HOT-PATH]`-marked function
+// bodies.
+const hotPath = {
   rules: {
-    "no-allocation-in-hot-path": noAllocationInHotPath,
+    "no-allocation": noAllocationInHotPath,
   },
 };
 
@@ -26,17 +26,47 @@ export default tseslint.config(
   // does for prettier; ESLint does not read it on its own.
   includeIgnoreFile(fileURLToPath(new URL(".gitignore", import.meta.url))),
   {
-    ignores: ["packages/pane-terminal/eslint/**"],
+    ignores: ["eslint/**"],
   },
   {
-    plugins: { "pane-terminal": paneTerminal },
+    plugins: { "hot-path": hotPath },
     rules: {
       "@typescript-eslint/consistent-type-imports": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", ignoreRestSiblings: true },
       ],
-      "pane-terminal/no-allocation-in-hot-path": "error",
+      "hot-path/no-allocation": "error",
+    },
+  },
+  // [LAW:one-way-deps] Only window-terminal/react may import React, so no
+  // engine/render/sizing `.d.ts` can reach `react` and a consumer without
+  // React still typechecks. Backstop to the separate react tsconfig project.
+  {
+    files: ["src/window-terminal/**"],
+    ignores: ["src/window-terminal/react/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "react",
+              message: "Only src/window-terminal/react/** may import React.",
+            },
+            {
+              name: "react-dom",
+              message: "Only src/window-terminal/react/** may import React.",
+            },
+          ],
+          patterns: [
+            {
+              group: ["react/*", "react-dom/*"],
+              message: "Only src/window-terminal/react/** may import React.",
+            },
+          ],
+        },
+      ],
     },
   },
   {

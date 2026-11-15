@@ -20,7 +20,7 @@
 //   atlas/stress engines and the grid it exposes are pure.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import { PaneStream } from "@promptctl/pane-terminal/stream";
+import { PaneStream } from "./window-terminal-internals.ts";
 import type { DemoStore, PaneInfo } from "./store.ts";
 import { WebGLGridSink } from "./webgl-grid-sink.ts";
 import type { RenderGrid } from "./webgl-atlas-engine.ts";

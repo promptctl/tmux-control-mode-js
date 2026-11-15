@@ -33,8 +33,8 @@ import {
   Code,
   Loader,
 } from "@mantine/core";
-import { mountPaneTerminal } from "@promptctl/pane-terminal/vanilla";
-import type { XtermSink } from "@promptctl/pane-terminal/xterm-sink";
+import { mountPaneTerminal } from "../window-terminal-internals.ts";
+import type { XtermSink } from "../window-terminal-internals.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
