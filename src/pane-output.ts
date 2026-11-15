@@ -9,7 +9,7 @@ import type {
   SessionRecord,
   WindowRecord,
 } from "./protocol/types.js";
-import { latin1ToBytes, latin1ToText } from "./protocol/byte-codec.js";
+import { latin1ToText } from "./protocol/byte-codec.js";
 import { parseUint } from "./protocol/uint.js";
 import { TmuxReplyFormatError } from "./errors.js";
 
