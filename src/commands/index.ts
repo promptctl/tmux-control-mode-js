@@ -324,8 +324,12 @@ export function setSize(
  * Declare this client's size for window `@windowId` only, mapping to
  * `refresh-client -C @<id>:<width>x<height>`. When this is the window's only
  * client the window takes that size; with other clients attached tmux's
- * `window-size` option arbitrates and this size is one input to it. The
- * session's other windows keep their own sizes.
+ * `window-size` option arbitrates and this size is one input to it.
+ *
+ * The first declaration makes a control client count toward the size of
+ * every window of its session from then on (tmux keeps the flag for the
+ * client's lifetime), and a window it declared nothing for reads its overall
+ * size, 80x24 unless {@link setSize} set one. Set the overall size too.
  */
 export function setWindowSize(
   client: TmuxConnection,

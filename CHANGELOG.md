@@ -70,8 +70,10 @@ All notable changes to this project are documented here. Format follows
 - `setWindowSize(connection, windowId, width, height)` and
   `clearWindowSize(connection, windowId)` (exported from `.` and
   `./browser`): the per-window forms of `refresh-client -C`, declaring this
-  client's size for one window or dropping it. The session's other windows
-  keep their sizes (confirmed on tmux 3.8).
+  client's size for one window or dropping it. After its first per-window
+  declaration a control client sizes every window of its session, using its
+  overall size (`setSize`, 80x24 if never set) for the windows it declared
+  nothing for (tmux 3.8). Set the overall size too.
 - `PaneRecord.title`: the pane's title (`#{pane_title}`), as tmux stores it.
   The bridge wire carries it; upgrade server and client together.
 - `SubscriptionSurface` (exported from `.` and `./browser`):
