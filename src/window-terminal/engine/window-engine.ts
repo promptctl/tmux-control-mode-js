@@ -207,7 +207,7 @@ export class WindowEngine {
   /** Calls `cb` with the current state now, then on every change. */
   onState(cb: Listener<WindowTerminalState>): () => void {
     this.stateListeners.add(cb);
-    cb(this.current);
+    deliver([cb], this.current);
     return () => this.stateListeners.delete(cb);
   }
 

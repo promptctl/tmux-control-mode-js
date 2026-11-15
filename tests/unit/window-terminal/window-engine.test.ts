@@ -257,6 +257,29 @@ describe("WindowEngine — arrival", () => {
     }
   });
 
+  it("a listener that throws on its first state still gets its unsubscribe", async () => {
+    const microtask = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation(() => undefined);
+    try {
+      const { client, engine } = mount(world(), false);
+      let calls = 0;
+      const off = engine.onState(() => {
+        calls++;
+        throw new Error("host bug");
+      });
+      expect(microtask).toHaveBeenCalledTimes(1);
+      off();
+      client.setConnectionState({ status: "ready" });
+      await settle();
+      expect(engine.state.phase).toBe("live");
+      expect(calls).toBe(1);
+      engine.dispose();
+    } finally {
+      microtask.mockRestore();
+    }
+  });
+
   it("disposed before any reply, it issues nothing more", async () => {
     const { client, engine, s } = mount();
     engine.dispose();

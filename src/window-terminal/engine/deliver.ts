@@ -14,10 +14,7 @@ declare const queueMicrotask: (cb: () => void) => void;
 
 export type Listener<T> = (value: T) => void;
 
-export function deliver<T>(
-  listeners: ReadonlySet<Listener<T>>,
-  value: T,
-): void {
+export function deliver<T>(listeners: Iterable<Listener<T>>, value: T): void {
   for (const cb of listeners) {
     try {
       cb(value);
