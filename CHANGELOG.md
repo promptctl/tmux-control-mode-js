@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Changed — breaking
 
 - `TopologyRouter`'s constructor takes a `DeliveryQueue` first:
@@ -73,7 +75,13 @@ All notable changes to this project are documented here. Format follows
   client's size for one window or dropping it. After its first per-window
   declaration a control client sizes every window of its session, using its
   overall size (`setSize`, 80x24 if never set) for the windows it declared
-  nothing for (tmux 3.8). Set the overall size too.
+  nothing for (tmux 3.8). Set the overall size too. Needs tmux 3.3+; tmux
+  3.2 reads `-C` only as the overall size and answers `bad size argument`.
+- `isAlreadyUnsubscribed(err)` (exported from `.` and `./browser`): whether
+  an `unsubscribe` that rejected left the name holding no subscription —
+  the connection is gone, or a bridge answers that this peer never held the
+  name (`BRIDGE_UNKNOWN_SUBSCRIPTION`), as it does for an unsubscribe made
+  during a reconnect.
 - `PaneRecord.title`: the pane's title (`#{pane_title}`), as tmux stores it.
   The bridge wire carries it; upgrade server and client together.
 - `SubscriptionSurface` (exported from `.` and `./browser`):
@@ -100,10 +108,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
-- `subscribeRaw`, `unsubscribe`, `TmuxClient.subscribeRaw`/`unsubscribe` and
-  the `refreshClientSubscribe`/`refreshClientUnsubscribe` encoders throw
-  `RangeError` for a subscription name that is empty or holds `:` or
-  whitespace. tmux splits `-B name:what:format` at its colons, so such a name
+- `WebSocketTmuxClient.close()` before the bridge's welcome sends no `bye`.
+  0.2.0 sent it on any open socket, and the bridge read a `bye` before its
+  welcome as a protocol error.
+- `subscribeRaw`, `unsubscribe` and `TmuxClient.subscribeRaw`/`unsubscribe`
+  reject, and the `refreshClientSubscribe`/`refreshClientUnsubscribe`
+  encoders throw, `RangeError` for a subscription name that is empty or
+  holds `:` or whitespace; a bridge answers such a name from a peer with
+  `INVALID_ARG`. tmux splits `-B name:what:format` at its colons, so such a name
   was sent as a different subscription from the one asked for, and nothing
   reported it.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
@@ -866,6 +878,7 @@ Zero runtime dependencies (enforced at publish time). Ships `dist/` only.
 - tmux ≥ 3.2. The 3.2 floor is load-bearing; see the Compatibility section of
   [`README.md`](./README.md) for details.
 
-[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/promptctl/tmux-control-mode-js/releases/tag/v0.1.0
