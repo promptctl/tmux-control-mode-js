@@ -75,8 +75,11 @@ All notable changes to this project are documented here. Format follows
   client's size for one window or dropping it. After its first per-window
   declaration a control client sizes every window of its session, using its
   overall size (`setSize`, 80x24 if never set) for the windows it declared
-  nothing for (tmux 3.8). Set the overall size too. Needs tmux 3.3+; tmux
-  3.2 reads `-C` only as the overall size and answers `bad size argument`.
+  nothing for (measured on tmux 3.8). Set the overall size too. Both need
+  tmux 3.3+: tmux 3.2 reads `-C` only as the overall size and answers `bad
+  size argument`. Their encoders, `refreshClientWindowSize(windowId, width,
+  height)` and `refreshClientClearWindowSize(windowId)`, are exported from
+  `./protocol`.
 - `isAlreadyUnsubscribed(err)` (exported from `.` and `./browser`): whether
   an `unsubscribe` that rejected left the name holding no subscription —
   the connection is gone, or a bridge answers that this peer never held the
@@ -90,7 +93,8 @@ All notable changes to this project are documented here. Format follows
   renderer client already had them. Through a bridge they are the calls the
   bridge tracks per peer and ends when the peer goes away, where the same
   `refresh-client -B` sent with `execute()` outlives the page that sent it.
-- `DeliveryQueue` (exported from `.`): runs a transport adapter's entry
+- `DeliveryQueue`, with its `Outcome` and `ReportError` types (exported
+  from `.`): runs a transport adapter's entry
   points as run-to-completion steps and delivers what they post to
   listeners, sinks and error handlers once each step has committed. A
   delivery that throws is reported to the host as an uncaught error, and
@@ -115,7 +119,7 @@ All notable changes to this project are documented here. Format follows
   reject, and the `refreshClientSubscribe`/`refreshClientUnsubscribe`
   encoders throw, `RangeError` for a subscription name that is empty or
   holds `:` or whitespace; a bridge answers such a name from a peer with
-  `INVALID_ARG`. tmux splits `-B name:what:format` at its colons, so such a name
+  `BRIDGE_INVALID_ARG`. tmux splits `-B name:what:format` at its colons, so such a name
   was sent as a different subscription from the one asked for, and nothing
   reported it.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
