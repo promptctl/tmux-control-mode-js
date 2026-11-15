@@ -45,6 +45,7 @@ import { renderPlan } from "./render/render-plan.js";
 import { WindowRenderer } from "./render/window-renderer.js";
 import { cellFont } from "./render/xterm-sink.js";
 import type { CellMeasure } from "./sizing/cell-metrics.js";
+import { deliver, type Listener } from "./engine/deliver.js";
 import { ClientSizeDeclarer } from "./sizing/client-size.js";
 import { solve, type Box } from "./sizing/solve.js";
 
@@ -97,10 +98,9 @@ export function createWindowTerminal(
   let cancelFrame: (() => void) | null = null;
   let disposed = false;
 
-  const errorListeners = new Set<(e: WindowTerminalError) => void>();
-  const reportError = (e: WindowTerminalError): void => {
-    for (const cb of errorListeners) cb(e);
-  };
+  const errorListeners = new Set<Listener<WindowTerminalError>>();
+  const reportError = (e: WindowTerminalError): void =>
+    deliver(errorListeners, e);
 
   const renderer = new WindowRenderer(element, {
     history,

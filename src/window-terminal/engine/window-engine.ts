@@ -42,6 +42,7 @@ import {
 import { PaneStream, type TerminalConnection } from "./pane-stream.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
 import type { TerminalSink } from "./terminal-sink.js";
+import { deliver, type Listener } from "./deliver.js";
 import { uniqueToken } from "./token.js";
 import {
   deriveView,
@@ -85,27 +86,6 @@ interface PaneSlot {
   readonly stream: PaneStream;
   readonly surface: PaneSurface;
   readonly offState: () => void;
-}
-
-type Listener<T> = (value: T) => void;
-
-// Every host the engine runs in (browsers, Node, Deno, Bun) has it; the
-// engine's lib carries neither DOM nor Node types.
-declare const queueMicrotask: (cb: () => void) => void;
-
-// A listener's throw is the host's bug, not the window's: it reaches the page
-// as an uncaught error, as a DOM event listener's does, and the engine and
-// the other listeners carry on.
-function deliver<T>(listeners: ReadonlySet<Listener<T>>, value: T): void {
-  for (const cb of listeners) {
-    try {
-      cb(value);
-    } catch (err) {
-      queueMicrotask(() => {
-        throw err;
-      });
-    }
-  }
 }
 
 export class WindowEngine {

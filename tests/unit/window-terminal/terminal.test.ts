@@ -55,6 +55,7 @@ import {
   createWindowTerminal,
   type WindowTerminalPorts,
 } from "../../../src/window-terminal/terminal.js";
+import { TmuxCommandError } from "../../../src/browser.js";
 import type { Sizing } from "../../../src/window-terminal/options.js";
 import type { WindowTerminalError } from "../../../src/window-terminal/engine/window-model.js";
 
@@ -247,6 +248,48 @@ describe("window terminal — the size claim", () => {
       "refresh-client -C 114x34",
       "refresh-client -C @1:114x34",
     ]);
+  });
+
+  it("an onError listener that throws on a refused size does not stop the next size", async () => {
+    const thrown: unknown[] = [];
+    const microtask = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((cb) => {
+        try {
+          cb();
+        } catch (err) {
+          thrown.push(err);
+        }
+      });
+    try {
+      const m = mount({ window: "box", font: 14 });
+      const bug = new Error("host bug");
+      m.terminal.onError(() => {
+        throw bug;
+      });
+      m.client.setExecuteFailure((c) =>
+        c.startsWith("refresh-client -C @1:114x34")
+          ? new TmuxCommandError({
+              commandNumber: 1,
+              timestamp: 0,
+              output: ["size too small or too big"],
+              success: false,
+            })
+          : null,
+      );
+      await settle();
+      observed?.(800, 480);
+      m.flush();
+      await settle();
+      expect(thrown).toContain(bug);
+      observed?.(700, 480);
+      m.flush();
+      await settle();
+      expect(m.sizeCommands()).toContain("refresh-client -C @1:100x34");
+      m.terminal.dispose();
+    } finally {
+      microtask.mockRestore();
+    }
   });
 
   it("tmux owns the window: nothing is declared", async () => {
