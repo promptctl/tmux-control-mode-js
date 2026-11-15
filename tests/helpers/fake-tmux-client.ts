@@ -35,13 +35,6 @@ import type {
   CommandResponse,
 } from "../../src/protocol/index.js";
 
-// Ambient `setTimeout` — `tsconfig.core.json` deliberately ships no DOM or
-// Node types so core stays environment-agnostic. The fake's `execute()` needs
-// timer semantics that exist in both runtimes; declaring the minimal shape
-// here keeps the env-agnostic invariant ([LAW:locality-or-seam]) intact
-// without dragging in `@types/node` or `lib.dom`.
-declare const setTimeout: (handler: () => void, ms?: number) => unknown;
-
 // The fake emits the subset of events PaneStream subscribes to. Pane-output
 // events use the library's exact shape (paneId + `data: Uint8Array`) so
 // PaneStream does not need a real-vs-fake adapter.

@@ -137,7 +137,7 @@
   - `@promptctl/tmux-control-mode-js/protocol` → parser, encoder, types
   - `@promptctl/tmux-control-mode-js/keymap` → key-event engine and default bindings
   - explicit connector entry points under `@promptctl/tmux-control-mode-js/websocket/...`, `.../electron/main`, `.../electron/renderer`, `.../streams/web`, `.../streams/node` (no pattern exports — each subpath is enumerated in package.json's `exports` map)
-  - (Terminal rendering lives in the separate `@promptctl/pane-terminal` package.)
+  - (Terminal rendering lives in `src/window-terminal/`, not yet exported.)
 
 **Application Entry Points:**
 - User code: `import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js"`

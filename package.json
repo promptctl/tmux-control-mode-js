@@ -85,9 +85,6 @@
     "dist",
     "!dist/window-terminal"
   ],
-  "workspaces": [
-    "examples/web-multiplexer"
-  ],
   "engines": {
     "node": ">=20"
   },

@@ -1,8 +1,9 @@
 // src/window-terminal/render/xterm-sink.ts
 //
 // XtermSink — DOM-backed `TerminalSink` that drives an xterm.js `Terminal`.
-// The single window-terminal module that touches the DOM and the heavy
-// xterm peer dependency. Everything else (PaneStream, BufferingSink) is
+// The only window-terminal module that touches the heavy xterm peer
+// dependency. Which modules may touch the DOM at all is stated by
+// tsconfig.dom.json's includes; the engine (PaneStream, BufferingSink) is
 // environment-agnostic.
 //
 // This file owns the Terminal lifecycle and the container-size → font-size fit

@@ -54,10 +54,14 @@ export default tseslint.config(
               name: "react",
               message: "Only src/window-terminal/react/** may import React.",
             },
+            {
+              name: "react-dom",
+              message: "Only src/window-terminal/react/** may import React.",
+            },
           ],
           patterns: [
             {
-              group: ["react/*"],
+              group: ["react/*", "react-dom/*"],
               message: "Only src/window-terminal/react/** may import React.",
             },
           ],
