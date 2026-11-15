@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
 ### Changed — breaking
 
 - `TopologyRouter`'s constructor takes a `DeliveryQueue` first:
@@ -52,6 +54,17 @@ All notable changes to this project are documented here. Format follows
   identity, the one teardown both browsers and `ws` honor; `ws` ignores
   `signal`. A browser `WebSocket` or a `ws` socket satisfies the new shape
   as before; a hand-written socket or fake must add `removeEventListener`.
+- `createWebSocketBridge` parses `rateLimit`: `maxCalls` and `windowMs`
+  must each be an integer >= 1, and anything else throws
+  `BRIDGE_INVALID_ARG` naming `rateLimit.<field>` and the value. A negative
+  window used to disable the limit silently, `NaN` refused every call once
+  the window filled, and `maxCalls: Infinity` no longer means unlimited —
+  omit `rateLimit` instead.
+- `ServerWebSocketLike.close` takes a `ServerCloseCode`, where it took any
+  `number`: a number branded by the bridge as a code a server may send (the
+  type is exported from `./websocket`). Calling `close(4000)` on a
+  `ServerWebSocketLike` no longer compiles; an adapter whose `close` takes a
+  `number` still satisfies the interface.
 
 ### Added
 
@@ -63,7 +76,11 @@ All notable changes to this project are documented here. Format follows
   active pane. The terminal reports `connecting`, `live`, `stale` (connection
   lost, last picture kept) or `gone`, and its size is a `Sizing` constraint:
   the box declares the window's size, or tmux's size is given and the font
-  fits it. `./window-terminal/react` wraps it as `<WindowTerminal>`.
+  fits it. The box form, the default, needs tmux 3.3+: tmux 3.2 refuses the
+  per-window size and applies the overall size that goes with it, so every
+  box size resizes the session's windows. On 3.2 pass `{ window: "tmux",
+  font: 14, fit: "both" }`.
+  `./window-terminal/react` wraps it as `<WindowTerminal>`.
   `@xterm/xterm` (and `react` for `/react`) are optional peer dependencies
   needed only by those two subpaths; `.` and every other subpath still
   install nothing.
@@ -73,7 +90,16 @@ All notable changes to this project are documented here. Format follows
   client's size for one window or dropping it. After its first per-window
   declaration a control client sizes every window of its session, using its
   overall size (`setSize`, 80x24 if never set) for the windows it declared
-  nothing for (tmux 3.8). Set the overall size too.
+  nothing for (measured on tmux 3.8). Set the overall size too. Both need
+  tmux 3.3+: tmux 3.2 reads `-C` only as the overall size and answers `bad
+  size argument`. Their encoders, `refreshClientWindowSize(windowId, width,
+  height)` and `refreshClientClearWindowSize(windowId)`, are exported from
+  `./protocol`.
+- `isAlreadyUnsubscribed(err)` (exported from `.` and `./browser`): whether
+  an `unsubscribe` that rejected left the name holding no subscription —
+  the connection is gone, or a bridge answers that this peer never held the
+  name (`BRIDGE_UNKNOWN_SUBSCRIPTION`), as it does for an unsubscribe made
+  during a reconnect.
 - `PaneRecord.title`: the pane's title (`#{pane_title}`), as tmux stores it.
   The bridge wire carries it; upgrade server and client together.
 - `SubscriptionSurface` (exported from `.` and `./browser`):
@@ -82,11 +108,15 @@ All notable changes to this project are documented here. Format follows
   renderer client already had them. Through a bridge they are the calls the
   bridge tracks per peer and ends when the peer goes away, where the same
   `refresh-client -B` sent with `execute()` outlives the page that sent it.
-- `DeliveryQueue` (exported from `.`): runs a transport adapter's entry
+- `DeliveryQueue`, with its `Outcome` and `ReportError` types (exported
+  from `.`): runs a transport adapter's entry
   points as run-to-completion steps and delivers what they post to
   listeners, sinks and error handlers once each step has committed. A
   delivery that throws is reported to the host as an uncaught error, and
   the deliveries after it still run.
+- `WireSyntheticMessage` (exported from `./websocket/protocol`): the
+  events a bridge's event frame carries beside tmux's own messages
+  (`unsolicited-response`, `protocol-error` and cross-session layout).
 - `truncateCloseReason` (exported from `./websocket/protocol`): cuts a
   WebSocket close reason to the 123 UTF-8 bytes a close frame carries,
   without splitting a character. Both halves of the bridge use it; the
@@ -100,12 +130,20 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
-- `subscribeRaw`, `unsubscribe`, `TmuxClient.subscribeRaw`/`unsubscribe` and
-  the `refreshClientSubscribe`/`refreshClientUnsubscribe` encoders throw
-  `RangeError` for a subscription name that is empty or holds `:` or
-  whitespace. tmux splits `-B name:what:format` at its colons, so such a name
-  was sent as a different subscription from the one asked for, and nothing
-  reported it.
+- A bridge's `rateLimit` window reads a monotonic clock, so a wall-clock
+  step back no longer refuses a peer until the clock catches up.
+- `WebSocketTmuxClient.close()` before the bridge's welcome sends no `bye`.
+  0.2.0 sent it on any open socket, and the bridge read a `bye` before its
+  welcome as a protocol error.
+- A subscription name that is empty or holds `:` or whitespace is refused.
+  tmux splits `-B name:what:format` at its colons, so such a name was sent
+  as a different subscription from the one asked for, and nothing reported
+  it. The `refreshClientSubscribe`/`refreshClientUnsubscribe` encoders
+  throw `RangeError`, so `subscribeRaw(connection, ...)` and
+  `unsubscribe(connection, ...)` reject with it on any connection, and so do
+  `TmuxClient`'s new methods. A bridge refuses such a name from a peer:
+  `WebSocketTmuxClient`'s and the Electron renderer client's methods reject
+  with a `BridgeError` whose code is `BRIDGE_INVALID_ARG`.
 - `WebSocketBridge.shutdown` called while a drain is in flight joins that
   drain: it settles with the first call, and peers are terminated at the
   deadline their `draining` frame named. Before, a second call with a
@@ -259,7 +297,7 @@ All notable changes to this project are documented here. Format follows
   older `WebSocketTmuxClient`
   reports a `begin` or `line` `protocol-error` frame through `onError`.
 
-## [0.2.0]
+## [0.2.0] - 2026-11-13
 
 ### Changed — breaking
 
@@ -373,10 +411,6 @@ All notable changes to this project are documented here. Format follows
   `maxInflight` (an integer >= 1); `bridge.shutdown(drainMs)` rejects with
   `BRIDGE_INVALID_ARG` for a `drainMs` outside [1, 2^31-1] before any peer is
   told to drain, so `shutdown(0)` is no longer a "terminate now" idiom.
-  It parses `rateLimit` too: `maxCalls` and `windowMs` must each be an
-  integer >= 1. A negative window used to disable the limit silently, `NaN`
-  refused every call once the window filled, and `maxCalls: Infinity` no
-  longer means unlimited — omit `rateLimit` instead.
   `WebSocketTmuxClient` parses `requestTimeoutMs` and every field of
   `reconnect` (`maxAttempts` must be `0`, a positive integer, or `Infinity`;
   `initialDelayMs` and `maxDelayMs` are durations; `factor` is finite and
@@ -866,6 +900,7 @@ Zero runtime dependencies (enforced at publish time). Ships `dist/` only.
 - tmux ≥ 3.2. The 3.2 floor is load-bearing; see the Compatibility section of
   [`README.md`](./README.md) for details.
 
-[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/promptctl/tmux-control-mode-js/releases/tag/v0.1.0
