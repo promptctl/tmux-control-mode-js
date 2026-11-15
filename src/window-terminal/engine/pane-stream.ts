@@ -34,6 +34,7 @@ import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // (which pulls the Node-only transport and breaks browser bundlers).
 import type {
   BytesSink,
+  ClientSizeSurface,
   SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
@@ -51,7 +52,9 @@ import {
  * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client are all
  * one.
  */
-export type TerminalConnection = TmuxConnection & SubscriptionSurface;
+export type TerminalConnection = TmuxConnection &
+  SubscriptionSurface &
+  ClientSizeSurface;
 import {
   getScheduler,
   type ReseedPriority,

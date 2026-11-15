@@ -5,6 +5,8 @@ export { TmuxClient } from "./client.js";
 export type {
   TmuxConnection,
   SubscriptionSurface,
+  ClientSizeSurface,
+  ClientSizeClaim,
   SplitOptions,
   TmuxClientOptions,
 } from "./client.js";
@@ -126,9 +128,6 @@ export {
   listSessions,
   sendKeys,
   splitWindow,
-  setSize,
-  setWindowSize,
-  clearWindowSize,
   setPaneAction,
   subscribeRaw,
   unsubscribe,
@@ -149,4 +148,4 @@ export type {
   OwnClient,
   PaneProcess,
 } from "./commands/index.js";
-export { watchServerArgs } from "./watch-server.js";
+export { watchServerArgs, watchServerOptions } from "./watch-server.js";

@@ -19,7 +19,6 @@ import {
   uniqueSocket,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
-import { clearWindowSize, setWindowSize } from "../../src/commands/index.js";
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import type {
@@ -373,11 +372,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
   it("F1: a per-window declaration alone squashes the session's other windows to 80x24", async () => {
     const { c, a, b, size, visit } = await twoWindows();
     expect(size(b)).toBe("120x40");
-    await setWindowSize(c, Number(a.slice(1)), 100, 30);
+    await c.setWindowSize(Number(a.slice(1)), 100, 30);
     await pollUntil(() => size(a) === "100x30");
     await visit(b);
     expect(size(b)).toBe("80x24");
-    await clearWindowSize(c, Number(a.slice(1)));
+    await c.clearWindowSize(Number(a.slice(1)));
   });
 
   it("F1 mitigation: with the declarer, the other windows read the declared size, and A keeps its own", async () => {

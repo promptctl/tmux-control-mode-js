@@ -15,10 +15,14 @@ import {
 } from "ws";
 
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { ClientSizeDeclarer } from "../../src/window-terminal/sizing/client-size.js";
+import type { WindowId } from "../../src/window-terminal/ids.js";
 import {
   uniqueSocket,
   pollUntil,
   attachSession,
+  readUntil,
+  withSecondClient,
   tmux,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -982,5 +986,181 @@ describe.skipIf(!RUN_INTEGRATION)(
         await fx.shutdown();
       }
     }, 15_000);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Client size: every page behind the bridge shares one tmux client, and each
+// page's sizes are a claim of its own on it, so a page that leaves without
+// clearing takes only its own sizes (tmux-terminal-444.3bi).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
+  let fx: Fixture;
+
+  beforeEach(async () => {
+    fx = await startFixture("client-size");
+  });
+  afterEach(async () => {
+    await fx.shutdown();
+  });
+
+  // Read through the bridge's own tmux client: a `tmux display` command
+  // client makes tmux recompute window sizes as it exits, which would hide a
+  // size change tmux never made.
+  const untilWindowSize = (size: string): Promise<unknown> =>
+    readUntil(
+      () =>
+        fx.tmux.execute(
+          `display -p -t ${fx.sessionName} "#{window_width}x#{window_height}"`,
+        ),
+      (r) => r.output[0] === size,
+      `window size ${size}`,
+    );
+  const windowId = (): number =>
+    Number(
+      tmux(fx.socketName, [
+        "display",
+        "-p",
+        "-t",
+        fx.sessionName,
+        "#{window_id}",
+      ]).slice(1),
+    );
+
+  async function page(): Promise<WebSocketTmuxClient> {
+    const { client } = createWsBackedClient(fx.url);
+    await waitForState(client, "ready");
+    return client;
+  }
+
+  // A page sizes its window the way a window terminal does: the overall size
+  // and the window's, together.
+  async function declare(
+    client: WebSocketTmuxClient,
+    width: number,
+    height: number,
+  ): Promise<void> {
+    await client.setSize(width, height);
+    await client.setWindowSize(windowId(), width, height);
+  }
+
+  it.each(["latest", "smallest"])(
+    "window-size %s: a page that closes without clearing leaves the window at the other page's size",
+    async (policy) => {
+      tmux(fx.socketName, ["set", "-g", "window-size", policy]);
+      const b = await page();
+      await declare(b, 110, 35);
+      const a = await page();
+      await declare(a, 100, 30);
+      await untilWindowSize("100x30");
+      a.close();
+      await untilWindowSize("110x35");
+      b.close();
+    },
+    15_000,
+  );
+
+  it("the last page to close without clearing gives the window back to the other tmux clients", async () => {
+    tmux(fx.socketName, ["set", "-g", "window-size", "smallest"]);
+    await withSecondClient(fx.socketName, fx.sessionName, async (user) => {
+      await user.setSize(120, 40);
+      const a = await page();
+      await declare(a, 100, 30);
+      await untilWindowSize("100x30");
+      a.close();
+      await untilWindowSize("120x40");
+    });
+  }, 15_000);
+
+  it("a lone page that declared only the overall size gives the window back when it closes", async () => {
+    tmux(fx.socketName, ["set", "-g", "window-size", "smallest"]);
+    await withSecondClient(fx.socketName, fx.sessionName, async (user) => {
+      await user.setSize(120, 40);
+      const a = await page();
+      await a.setSize(100, 30);
+      await untilWindowSize("100x30");
+      a.close();
+      await untilWindowSize("120x40");
+    });
+  }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// N windows on one page: each window terminal on a page declares its own
+// window through the page's claim (tmux-terminal-444.3bi).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — N windows on one page",
+  () => {
+    let fx: Fixture;
+
+    beforeEach(async () => {
+      fx = await startFixture("n-windows");
+    });
+    afterEach(async () => {
+      await fx.shutdown();
+    });
+
+    const sizeOf = (windowId: string): string =>
+      tmux(fx.socketName, [
+        "display",
+        "-p",
+        "-t",
+        windowId,
+        "#{window_width}x#{window_height}",
+      ]);
+
+    // Window ids of the session, growing it to `count` windows first.
+    function windowIds(count: number): string[] {
+      const list = (): string[] =>
+        tmux(fx.socketName, [
+          "list-windows",
+          "-t",
+          fx.sessionName,
+          "-F",
+          "#{window_id}",
+        ])
+          .split("\n")
+          .filter((line) => line !== "");
+      while (list().length < count) {
+        tmux(fx.socketName, ["new-window", "-d", "-t", fx.sessionName]);
+      }
+      return list().slice(0, count);
+    }
+
+    it("N terminals on one page each read their own declared size; disposing one leaves the rest", async () => {
+      const ids = windowIds(4);
+      const grids = [
+        { cols: 100, rows: 30 },
+        { cols: 60, rows: 20 },
+        { cols: 80, rows: 24 },
+      ];
+      const { client: page } = createWsBackedClient(fx.url);
+      await waitForState(page, "ready");
+
+      const errors: unknown[] = [];
+      const declarers = grids.map(
+        (_, i) =>
+          new ClientSizeDeclarer({
+            connection: page,
+            windowId: ids[i] as WindowId,
+            onError: (e) => errors.push(e),
+          }),
+      );
+      declarers.forEach((d, i) => d.apply({ kind: "declare", grid: grids[i] }));
+      await pollUntil(() =>
+        grids.every((g, i) => sizeOf(ids[i]) === `${g.cols}x${g.rows}`),
+      );
+
+      declarers[1].dispose();
+      await pollUntil(() => sizeOf(ids[1]) !== "60x20");
+      expect(sizeOf(ids[0])).toBe("100x30");
+      expect(sizeOf(ids[2])).toBe("80x24");
+      expect(errors).toEqual([]);
+
+      page.close();
+    }, 20_000);
   },
 );

@@ -1638,12 +1638,6 @@ describe("Electron IPC bridge — renderer import graph", () => {
     "zlib",
   ]);
 
-  const BANNED_RELATIVE = [
-    // Anything inside these trees is Node-only.
-    "src/client",
-    "src/transport/",
-  ];
-
   async function walk(entry: string): Promise<{
     files: Set<string>;
     allImports: { from: string; spec: string }[];
@@ -1689,15 +1683,11 @@ describe("Electron IPC bridge — renderer import graph", () => {
       __dirname,
       "../../src/connectors/electron/renderer.ts",
     );
-    const { allImports, files } = await walk(entry);
+    const { files } = await walk(entry);
 
-    // No import specifier may resolve into client.ts or anything under transport/.
-    const bad = allImports.filter(({ spec }) =>
-      BANNED_RELATIVE.some((seg) => spec.includes(seg.replace("src/", ""))),
-    );
-    expect(bad).toEqual([]);
-
-    // And no visited file may live in src/transport/ or be src/client.ts.
+    // [LAW:single-enforcer] The walk resolves every runtime edge to the file
+    // it reaches, so the visited files are the one exact test: none may live
+    // in src/transport/ or be src/client.ts.
     for (const f of files) {
       expect(f).not.toMatch(/\/src\/transport\//);
       expect(f).not.toMatch(/\/src\/client\.ts$/);

@@ -12,6 +12,7 @@
 // compile time — there is no second consumption shape to drift from.
 
 import type { ClientToServer } from "../shared/protocol.ts";
+import type { ClientSizeSurface } from "@promptctl/tmux-control-mode-js/browser";
 import type {
   CommandResponse,
   TmuxMessage,
@@ -94,7 +95,7 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
  * construction time (Electron IPC) treat `connect()` as a no-op and ignore
  * the URL argument.
  */
-export interface TmuxBridge {
+export interface TmuxBridge extends ClientSizeSurface {
   execute(command: string): Promise<CommandResponse>;
   sendKeys(target: string, keys: string): Promise<CommandResponse>;
   detach(): void;

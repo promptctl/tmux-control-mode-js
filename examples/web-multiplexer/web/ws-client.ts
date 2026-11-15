@@ -25,6 +25,11 @@ import type {
   TmuxMessage,
 } from "@promptctl/tmux-control-mode-js/protocol";
 import {
+  refreshClientClearWindowSize,
+  refreshClientSize,
+  refreshClientWindowSize,
+} from "@promptctl/tmux-control-mode-js/protocol";
+import {
   isPaneOutputFrame,
   decodePaneOutput,
   BridgeError,
@@ -342,6 +347,24 @@ export class WebSocketBridge implements TmuxBridge {
 
   execute(command: string): Promise<CommandResponse> {
     return this.send({ kind: "execute", id: this.id(), command });
+  }
+
+  // The demo server spawns a tmux client per socket, so this page is its one
+  // consumer and its sizes end with the socket: the plain commands.
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.execute(refreshClientSize(width, height));
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.execute(refreshClientWindowSize(windowId, width, height));
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.execute(refreshClientClearWindowSize(windowId));
   }
 
   sendKeys(target: string, keys: string): Promise<CommandResponse> {

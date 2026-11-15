@@ -203,6 +203,22 @@ export class BridgePaneStreamClient
     return unsubscribe(this, name);
   }
 
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.bridge.setSize(width, height);
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.bridge.setWindowSize(windowId, width, height);
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.bridge.clearWindowSize(windowId);
+  }
+
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the
   //   bridge.onEvent handler above — same shape as every other
   //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.

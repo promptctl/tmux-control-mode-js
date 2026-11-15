@@ -43,6 +43,11 @@ function recordingBridge(sent: SentKeys[]): TmuxBridge {
     startFirehose: () => {},
     stopFirehose: () => {},
     onFirehose: () => noopUnsub,
+    setSize: () => Promise.reject(new Error("setSize: not modeled")),
+    setWindowSize: () =>
+      Promise.reject(new Error("setWindowSize: not modeled")),
+    clearWindowSize: () =>
+      Promise.reject(new Error("clearWindowSize: not modeled")),
   };
 }
 

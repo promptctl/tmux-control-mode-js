@@ -869,6 +869,8 @@ const RESPONSE_PARSERS: {
   sendKeys: commandResponse,
   splitWindow: commandResponse,
   setSize: commandResponse,
+  setWindowSize: commandResponse,
+  clearWindowSize: commandResponse,
   setPaneAction: commandResponse,
   subscribeRaw: commandResponse,
   unsubscribe: commandResponse,

@@ -1,6 +1,9 @@
 // src/watch-server.ts
-// Spawn arguments for a connection that watches a whole tmux server without
-// disturbing it — tmux-server-events-6sp.s3u, 6sp.6fc.
+// Spawn arguments and client options for a connection that watches a whole
+// tmux server without disturbing it — tmux-server-events-6sp.s3u, 6sp.6fc.
+
+import type { TmuxClientOptions } from "./client.js";
+
 //
 // [LAW:one-source-of-truth] The watcher's arguments are defined here only.
 // Each one answers a way a control client would otherwise change the server
@@ -13,6 +16,8 @@
 //   process's SSH_AUTH_SOCK, DISPLAY, … are not copied into the attached
 //   session for every window the user opens there afterwards to inherit.
 // - ignore-size: the client's size never takes part in window sizing.
+//   `watchServerOptions` tells the TmuxClient so, and its size claims
+//   (src/client-size.ts) leave the flag on.
 // - no-detach-on-destroy: when the attached session ends, the client moves to
 //   another session instead of exiting, so one connection outlives any one
 //   session. When the last session ends the server exits and the connection
@@ -20,8 +25,8 @@
 //   NO_DETACH_ON_DESTROY_MIN_VERSION (src/tmux-compat.ts); older tmux ignores it.
 // Two flags are deliberately absent. `no-output` also blocks `refresh-client
 // -A %N:on`, so no sink could ever receive output; a watcher keeps out pane
-// output nobody asked for by constructing its TmuxClient with
-// `{ idlePaneSuppression: true }`, which pauses per pane. `read-only` makes tmux
+// output nobody asked for with `idlePaneSuppression` in
+// `watchServerOptions`, which pauses per pane. `read-only` makes tmux
 // refuse the consumer's own deliberate commands (`send-keys` → "client is
 // read-only"); the watcher's presence is what must not disturb, not its use.
 // No argument hides the attach itself: tmux counts the watcher as a client of
@@ -32,6 +37,16 @@
 // session the user can see; it is also why a server with no sessions cannot
 // be watched — there is nothing to attach to.
 const WATCH_CLIENT_FLAGS = "ignore-size,no-detach-on-destroy";
+
+/**
+ * The `TmuxClient` options a watcher spawned with {@link watchServerArgs} is
+ * constructed with: no pane output unless a sink asks for it, and its sizes
+ * kept out of window sizing (the `ignore-size` flag those arguments set).
+ */
+export const watchServerOptions: TmuxClientOptions = {
+  idlePaneSuppression: true,
+  ignoreSize: true,
+};
 
 /**
  * Arguments for `spawnTmux` that attach a watcher. With `targetSession`, to

@@ -4,8 +4,9 @@
 // A bridge server turns a parsed `RpcRequest` into one of three logical
 // outcomes, and that classification is identical for every transport:
 //   1. intercept the bridge-stateful methods (subscribeRaw / unsubscribe /
-//      enableCrossSessionLayoutChange / disableCrossSessionLayoutChange) so
-//      ownership + refcount stay enforced by the shared BridgeConnection,
+//      enableCrossSessionLayoutChange / disableCrossSessionLayoutChange /
+//      setSize / setWindowSize / clearWindowSize) so ownership + refcount
+//      stay enforced by the shared BridgeConnection,
 //      dispatching everything else through `dispatchRpcRequest`;
 //   2. a tmux `%error` reply (TmuxCommandError) is a SUCCESSFUL bridge call
 //      carrying a failed CommandResponse — the client rethrows it as a
@@ -124,6 +125,15 @@ function runBridgeDispatch(
   }
   if (req.method === "disableCrossSessionLayoutChange") {
     return bridge.disableCrossSessionLayoutForPeer(peer).then(() => null);
+  }
+  if (req.method === "setSize") {
+    return bridge.sizeOf(peer).setSize(...req.args);
+  }
+  if (req.method === "setWindowSize") {
+    return bridge.sizeOf(peer).setWindowSize(...req.args);
+  }
+  if (req.method === "clearWindowSize") {
+    return bridge.sizeOf(peer).clearWindowSize(...req.args);
   }
   return dispatchRpcRequest(client, req);
 }
