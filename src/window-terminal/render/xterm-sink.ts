@@ -55,6 +55,17 @@ export const DEFAULT_FONT_FAMILY =
   '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace';
 /** xterm.js's own default `lineHeight`. */
 export const DEFAULT_LINE_HEIGHT = 1;
+
+/** The font a cell is drawn in: what xterm draws and the solver measures. */
+export function cellFont(a: Appearance): {
+  readonly fontFamily: string;
+  readonly lineHeight: number;
+} {
+  return {
+    fontFamily: a.fontFamily ?? DEFAULT_FONT_FAMILY,
+    lineHeight: a.lineHeight ?? DEFAULT_LINE_HEIGHT,
+  };
+}
 const DEFAULT_FONT_SIZE = 14;
 const DEFAULT_SCROLLBACK = 10000;
 
@@ -102,9 +113,8 @@ export class XtermSink implements TerminalSink {
     this.terminal = new Terminal({
       convertEol: false,
       cursorBlink: true,
-      fontFamily: a.fontFamily ?? DEFAULT_FONT_FAMILY,
+      ...cellFont(a),
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
-      lineHeight: a.lineHeight ?? DEFAULT_LINE_HEIGHT,
       scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
       theme: a.theme ?? {},
       ...(a.cursorStyle === undefined ? {} : { cursorStyle: a.cursorStyle }),
@@ -323,8 +333,9 @@ export class XtermSink implements TerminalSink {
   setAppearance(a: Appearance): void {
     if (this.isDisposed) return;
     const o = this.terminal.options;
-    o.fontFamily = a.fontFamily ?? DEFAULT_FONT_FAMILY;
-    o.lineHeight = a.lineHeight ?? DEFAULT_LINE_HEIGHT;
+    const font = cellFont(a);
+    o.fontFamily = font.fontFamily;
+    o.lineHeight = font.lineHeight;
     o.theme = a.theme ?? {};
     o.cursorStyle = a.cursorStyle ?? "block";
   }

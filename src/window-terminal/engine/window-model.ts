@@ -320,7 +320,10 @@ export type Sync =
       readonly detail?: string;
     };
 
-function staleReason(conn: ConnectionState): string {
+// A closed connection is gone, never stale.
+function staleReason(
+  conn: Exclude<ConnectionState, { readonly status: "closed" }>,
+): string {
   switch (conn.status) {
     case "reconnecting":
       return conn.lastError === undefined
@@ -330,8 +333,6 @@ function staleReason(conn: ConnectionState): string {
       return "connecting";
     case "ready":
       return "reconnected; resyncing the window";
-    case "closed":
-      return `closed: ${conn.reason}`;
   }
 }
 

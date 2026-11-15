@@ -8,7 +8,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ZOOMED_0, TWO_PANES } from "../../helpers/layout.js";
+import { layoutString, ZOOMED_0, TWO_PANES } from "../../helpers/layout.js";
 import { scriptedTmux, world } from "../../helpers/scripted-window.js";
 
 // One mock Terminal per pane. `open` puts xterm's helper textarea in the pane,
@@ -351,6 +351,17 @@ describe("window terminal — where keys go", () => {
     await settle();
     flush();
     expect(pane("%0")?.contains(document.activeElement)).toBe(true);
+  });
+
+  it("a swap that reorders the panes keeps the keyboard in its pane", async () => {
+    const { client, pane, terminal, flush } = await live();
+    terminal.focus("%1");
+    // swap-pane: %1 now left, %0 right, so %1's element moves before %0's.
+    const swapped = layoutString("80x24,0,0{40x24,0,0,1,39x24,41,0,0}");
+    client.injectLayoutChange(1, swapped, swapped, "*");
+    await settle();
+    flush();
+    expect(pane("%1")?.contains(document.activeElement)).toBe(true);
   });
 
   it("the plan never takes the keyboard from the rest of the page", async () => {

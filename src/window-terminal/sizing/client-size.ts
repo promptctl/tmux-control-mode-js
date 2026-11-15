@@ -23,9 +23,9 @@
 // [LAW:one-source-of-truth] What tmux holds is per connection, not per
 //   terminal, so a terminal's `declared` is only true until another terminal
 //   on the connection writes the slot. A release (or dispose) clears a slot
-//   others may hold, so it tells every other declarer on the connection to
-//   forget what it declared and send its claim again. A declaration needs no
-//   such word: the last one wins.
+//   others may hold, so it tells every other declarer of that window on the
+//   connection to forget what it declared and send its claim again. A
+//   declaration needs no such word: the last one wins.
 
 import type { TmuxConnection, TmuxEventMap } from "../../browser.js";
 import {
@@ -38,6 +38,9 @@ import { rethrowUnlessGone } from "../engine/teardown.js";
 import { windowNumber, type WindowId } from "../ids.js";
 import type { Grid, SizeClaim } from "./solve.js";
 
+// [LAW:no-shared-mutable-globals] exception: the slots belong to the tmux
+//   client behind a connection, which every terminal on it shares, so the
+//   registry is keyed by the connection and holds nothing past it.
 const declarers = new WeakMap<TmuxConnection, Set<ClientSizeDeclarer>>();
 
 export interface ClientSizeDeclarerOptions {
@@ -112,7 +115,7 @@ export class ClientSizeDeclarer {
 
   private reassertPeers(): void {
     for (const peer of this.peers) {
-      if (peer !== this) peer.reassert();
+      if (peer !== this && peer.window === this.window) peer.reassert();
     }
   }
 

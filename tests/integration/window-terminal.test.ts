@@ -248,6 +248,30 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     expect(q(socket, ["display-message", "-p", "-t", pane, format])).toBe(
       "t\tx?%exit",
     );
+
+    // A dead pane has no command, as the bootstrap's snapshot reads it.
+    q(socket, ["set-option", "-w", "-t", window, "remain-on-exit", "on"]);
+    const dead = q(socket, [
+      "split-window",
+      "-t",
+      window,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "true",
+    ]);
+    await pollUntil(
+      () =>
+        q(socket, ["display-message", "-p", "-t", dead, "#{pane_dead}"]) ===
+        "1",
+      3000,
+    );
+    q(socket, ["set-option", "-p", "-t", dead, "@hostile", "x"]);
+    q(socket, ["select-pane", "-t", dead, "-T", "t"]);
+    // The `|` keeps the empty command from being trimmed off the reply.
+    expect(q(socket, ["display-message", "-p", "-t", dead, `${format}|`])).toBe(
+      "t\t|",
+    );
   });
 
   it("keys typed into a pane land in that pane only, and tmux's active pane stays", async () => {

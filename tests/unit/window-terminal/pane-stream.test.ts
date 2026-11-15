@@ -921,6 +921,45 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
+  it("a pane whose size changes is captured again; its first size and a repeat are not", async () => {
+    const { client, stream } = makeStream({ capture: "hello" });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    const captures = client.capturePaneCount();
+
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+
+    // The program redrew for 100x30 before tmux said so; tmux's screen wins.
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    expect(stream.state).toBe("live");
+    expect(sink.events).toContain("resize(100x30)");
+    stream.dispose();
+  });
+
+  it("a continue for a pane with no sink drops a capture still in flight", async () => {
+    const { client, stream } = makeStream({ capture: "hello" });
+    stream.attach(new RecordingSink());
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    stream.detach();
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    await flushTicks();
+    // The capture missed what tmux dropped while paused, so it is not cached:
+    // the next attach captures again.
+    const captures = client.capturePaneCount();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
   it("ignores another pane's pause and continue", async () => {
     const { client, stream } = makeStream();
     stream.attach(new RecordingSink());

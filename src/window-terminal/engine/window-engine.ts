@@ -89,6 +89,25 @@ interface PaneSlot {
 
 type Listener<T> = (value: T) => void;
 
+// Every host the engine runs in (browsers, Node, Deno, Bun) has it; the
+// engine's lib carries neither DOM nor Node types.
+declare const queueMicrotask: (cb: () => void) => void;
+
+// A listener's throw is the host's bug, not the window's: it reaches the page
+// as an uncaught error, as a DOM event listener's does, and the engine and
+// the other listeners carry on.
+function deliver<T>(listeners: ReadonlySet<Listener<T>>, value: T): void {
+  for (const cb of listeners) {
+    try {
+      cb(value);
+    } catch (err) {
+      queueMicrotask(() => {
+        throw err;
+      });
+    }
+  }
+}
+
 export class WindowEngine {
   private readonly connection: TerminalConnection;
   private readonly windowId: WindowId;
@@ -425,14 +444,13 @@ export class WindowEngine {
       this.now(),
     );
     const final = this.current.phase === "gone";
-    for (const cb of this.stateListeners) cb(this.current);
+    deliver(this.stateListeners, this.current);
     if (final) this.end();
   }
 
   private report(e: Omit<WindowTerminalError, "windowId">): void {
     if (this.ended) return;
-    const error: WindowTerminalError = { windowId: this.windowId, ...e };
-    for (const cb of this.errorListeners) cb(error);
+    deliver(this.errorListeners, { windowId: this.windowId, ...e });
   }
 
   /** The one teardown: `gone` and `dispose` both end here. */

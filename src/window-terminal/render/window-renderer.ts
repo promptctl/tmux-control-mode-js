@@ -150,6 +150,9 @@ export class WindowRenderer implements PaneSurfaces {
     s.setProperty("--wt-cols", String(plan.grid.cols));
     s.setProperty("--wt-rows", String(plan.grid.rows));
     this.font = plan.font;
+    // Read before reordering: moving the focused pane's element blurs it.
+    const doc = this.root.ownerDocument;
+    const keyboardHere = this.root.contains(doc.activeElement);
 
     plan.panes.forEach((p, i) => {
       const pane = this.panes.get(p.id);
@@ -177,11 +180,9 @@ export class WindowRenderer implements PaneSurfaces {
     // DOM focus follows the plan only while the keyboard is in this terminal
     // and not already in the planned pane: a zoom, or a focused pane closing.
     // It is never taken from the rest of the page.
-    const active = this.root.ownerDocument.activeElement;
     if (
-      active !== null &&
-      this.root.contains(active) &&
-      !(this.panes.get(plan.focus)?.el.contains(active) ?? false)
+      keyboardHere &&
+      !(this.panes.get(plan.focus)?.el.contains(doc.activeElement) ?? false)
     ) {
       this.moveFocus(plan.focus);
     }

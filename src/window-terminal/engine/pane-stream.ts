@@ -234,6 +234,9 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
+  // The pane's size as tmux last reported it (`cols;rows`), null before the
+  // first report.
+  private size: string | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -370,15 +373,7 @@ export class PaneStream implements ReseedTarget {
     this.onContinue = (ev) => {
       if (ev.paneId !== this.paneId) return;
       this.paused = false;
-      this.lastSeed = null;
-      if (this.sink === null) return;
-      if (this.seedCycle.phase !== "idle") {
-        this.markSeedStale();
-        return;
-      }
-      this.buffer = [];
-      this.setState("seeding");
-      void this.startSeedCycle();
+      this.recapture();
     };
     this.client.on("pause", this.onPause);
     this.client.on("continue", this.onContinue);
@@ -598,6 +593,18 @@ export class PaneStream implements ReseedTarget {
     // buffered, not interleaved with the previous live frame.
     this.setState("seeding");
     await this.startSeedCycle();
+  }
+
+  /**
+   * The pane changed under the picture (`%continue`, a new size): drop the
+   * cache, and capture again; a capture already in flight began before the
+   * change, so its result is dropped and it re-issues while a sink is
+   * attached.
+   */
+  private recapture(): void {
+    this.lastSeed = null;
+    if (this.seedCycle.phase === "idle") void this.reseed();
+    else this.markSeedStale();
   }
 
   // -------------------------------------------------------------------------
@@ -868,6 +875,11 @@ export class PaneStream implements ReseedTarget {
     // demonstrably working — clear any outstanding subscribe failure.
     this.clearError("subscribe");
     this.sink.resize(dims.cols, dims.rows);
+    // The pane's program redraws for the new size as soon as tmux resizes it,
+    // up to a second before this value arrives, and those bytes reached the
+    // sink at the old size. tmux's screen is right: take it again.
+    if (this.size !== null && this.size !== ev.value) this.recapture();
+    this.size = ev.value;
   }
 
   private setState(next: PaneStreamState): void {

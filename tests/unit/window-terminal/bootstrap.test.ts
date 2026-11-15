@@ -37,6 +37,10 @@ describe("bootstrap — membership", () => {
     expect(() => parseMembership("@1", ["1"], [])).toThrow(
       TmuxReplyFormatError,
     );
+    // tmux never pads an id; "@03" is a bad reply, not some other window.
+    expect(() => parseMembership("@3", ["@03"], ["@03"])).toThrow(
+      TmuxReplyFormatError,
+    );
   });
 });
 

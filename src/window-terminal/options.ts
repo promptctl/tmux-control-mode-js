@@ -23,9 +23,11 @@ export type FontRange = number | { readonly min: number; readonly max: number };
  *   font (never fewer than the floors) as this client's size for the window.
  *   With other clients attached tmux's `window-size` option decides, and the
  *   declared size is one input to it.
- * - `window: "tmux"` — tmux's size is given and nothing is declared: the
- *   solver picks the largest font in range at which the fitted axes fit the
- *   box (`"none"`: the largest font).
+ * - `window: "tmux"` — tmux's size is given and this terminal declares no
+ *   size for the window: the solver picks the largest font in range at which
+ *   the fitted axes fit the box (`"none"`: the largest font). A terminal that
+ *   declared one before clears it, but tmux keeps sizing the session's
+ *   windows by the connection's last declared overall size (see README).
  *
  * Whatever does not fit the box scrolls inside it.
  */

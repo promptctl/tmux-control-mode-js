@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   NullSink,
   scriptedTmux,
@@ -228,6 +228,33 @@ describe("WindowEngine — arrival", () => {
       detail: "can't find window",
     });
     engine.dispose();
+  });
+
+  it("a listener that throws reaches the page as an uncaught error; the window stays live", async () => {
+    const thrown: unknown[] = [];
+    const microtask = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((cb) => {
+        try {
+          cb();
+        } catch (err) {
+          thrown.push(err);
+        }
+      });
+    try {
+      const { engine, states } = mount();
+      const bug = new Error("host bug");
+      engine.onState((st) => {
+        if (st.phase === "live") throw bug;
+      });
+      await settle();
+      expect(engine.state.phase).toBe("live");
+      expect(states.at(-1)?.phase).toBe("live");
+      expect(thrown).toContain(bug);
+      engine.dispose();
+    } finally {
+      microtask.mockRestore();
+    }
   });
 
   it("disposed before any reply, it issues nothing more", async () => {

@@ -43,10 +43,7 @@ import {
 } from "./render/appearance.js";
 import { renderPlan } from "./render/render-plan.js";
 import { WindowRenderer } from "./render/window-renderer.js";
-import {
-  DEFAULT_FONT_FAMILY,
-  DEFAULT_LINE_HEIGHT,
-} from "./render/xterm-sink.js";
+import { cellFont } from "./render/xterm-sink.js";
 import type { CellMeasure } from "./sizing/cell-metrics.js";
 import { ClientSizeDeclarer } from "./sizing/client-size.js";
 import { solve, type Box } from "./sizing/solve.js";
@@ -145,10 +142,8 @@ export function createWindowTerminal(
   function render(): void {
     const state = engine.state;
     if (state.phase !== "live" && state.phase !== "stale") return;
-    const cell = measure.cellAt(
-      appearance.fontFamily ?? DEFAULT_FONT_FAMILY,
-      appearance.lineHeight ?? DEFAULT_LINE_HEIGHT,
-    );
+    const font = cellFont(appearance);
+    const cell = measure.cellAt(font.fontFamily, font.lineHeight);
     const solution = solve(sizing, box, cell, state.window.size);
     renderer.apply(renderPlan(state.window, solution));
     declarer.apply(state.phase === "live" ? solution.claim : { kind: "hold" });

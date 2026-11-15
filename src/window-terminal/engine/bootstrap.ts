@@ -14,7 +14,14 @@ import type { PaneRecord } from "../../browser.js";
 import { TmuxReplyFormatError } from "../../browser.js";
 import { latin1ToText } from "../../protocol/byte-codec.js";
 import { tmuxEscape, windowLayoutFields } from "../../protocol/index.js";
-import { paneIdOf, windowNumber, type PaneId, type WindowId } from "../ids.js";
+import {
+  paneIdOf,
+  parsePaneId,
+  parseWindowId,
+  windowNumber,
+  type PaneId,
+  type WindowId,
+} from "../ids.js";
 import type { PaneMeta, WindowFlags, WindowSnapshot } from "./window-model.js";
 
 /** The windows of the session this control client is attached to. */
@@ -29,14 +36,28 @@ export const ALL_WINDOWS_COMMAND = "list-windows -a -F '#{window_id}'";
  */
 export type Membership = "attached" | "window-unreachable" | "window-closed";
 
+// [LAW:one-source-of-truth] ids.ts owns the id grammar; a reply line that is
+//   not an id is a reply tmux should not have sent.
+function replyId<T>(
+  parse: (raw: string) => T,
+  raw: string,
+  command: string,
+  output: readonly string[],
+): T {
+  try {
+    return parse(raw);
+  } catch {
+    throw new TmuxReplyFormatError(command, output);
+  }
+}
+
 function parseWindowIds(
   command: string,
   output: readonly string[],
-): ReadonlySet<string> {
-  for (const line of output) {
-    if (!/^@\d+$/.test(line)) throw new TmuxReplyFormatError(command, output);
-  }
-  return new Set(output);
+): ReadonlySet<WindowId> {
+  return new Set(
+    output.map((line) => replyId(parseWindowId, line, command, output)),
+  );
 }
 
 export function parseMembership(
@@ -76,11 +97,11 @@ const printableCommand = (name: string): string =>
   name.replace(controlBytes, "?");
 
 /**
- * A pane's title, then its current command. tmux refuses a title holding a
- * control character, and the command's are replaced, so the one tab is the
- * separator.
+ * A pane's title, then its current command, empty for a dead pane as in the
+ * snapshot. tmux refuses a title holding a control character, and the
+ * command's are replaced, so the one tab is the separator.
  */
-export const PANE_META_FORMAT = `#{pane_title}\t#{s/${CONTROL_BYTES}/?/:pane_current_command}`;
+export const PANE_META_FORMAT = `#{pane_title}\t#{?pane_dead,,#{s/${CONTROL_BYTES}/?/:pane_current_command}}`;
 
 export function parsePaneMeta(value: string): PaneMeta | null {
   const tab = value.indexOf("\t");
@@ -131,9 +152,9 @@ export function parseSnapshot(
   const fields = output.length === 1 ? output[0].split("\t") : [];
   if (fields.length !== 6) return fail();
   const [layout, visible, rawFlags, name, pane, flagBits] = fields;
-  const active = /^%(\d+)$/.exec(pane);
+  const active = replyId(parsePaneId, pane, snapshotCommand(id), output);
   const flags = parseFlags(flagBits);
-  if (active === null || flags === null) return fail();
+  if (flags === null) return fail();
   const n = windowNumber(id);
   const meta = new Map<PaneId, PaneMeta>(
     panes
@@ -143,7 +164,7 @@ export function parseSnapshot(
   return {
     id,
     name: latin1ToText(name),
-    active: paneIdOf(Number(active[1])),
+    active,
     flags,
     layout: windowLayoutFields(layout, visible, rawFlags),
     meta,

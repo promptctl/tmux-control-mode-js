@@ -55,13 +55,20 @@ describe("ClientSizeDeclarer", () => {
       windowId: "@3",
       onError: () => undefined,
     });
+    const otherWindow = new ClientSizeDeclarer({
+      connection: client,
+      windowId: "@4",
+      onError: () => undefined,
+    });
     a.apply(declare(100, 30));
     b.apply(declare(90, 28));
+    otherWindow.apply(declare(60, 20));
     elsewhere.apply(declare(70, 20));
     await settle();
     const before = client.commands().length;
 
-    // A's clear empties the slot B's claim was in; B fills it again.
+    // A's clear empties the slot B's claim was in; B fills it again. @4's
+    // slot is untouched, so its declarer sends nothing.
     a.dispose();
     await settle();
     expect(client.commands().slice(before)).toEqual([
@@ -74,6 +81,7 @@ describe("ClientSizeDeclarer", () => {
     await settle();
     expect(client.commands()).toHaveLength(before + 3);
     b.dispose();
+    otherWindow.dispose();
     elsewhere.dispose();
   });
 
