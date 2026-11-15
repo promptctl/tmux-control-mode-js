@@ -21,6 +21,7 @@ import {
   uniqueSocket,
   pollUntil,
   attachSession,
+  readUntil,
   withSecondClient,
   tmux,
 } from "../helpers/integration.js";
@@ -1004,14 +1005,18 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
     await fx.shutdown();
   });
 
-  const windowSize = (): string =>
-    tmux(fx.socketName, [
-      "display",
-      "-p",
-      "-t",
-      fx.sessionName,
-      "#{window_width}x#{window_height}",
-    ]);
+  // Read through the bridge's own tmux client: a `tmux display` command
+  // client makes tmux recompute window sizes as it exits, which would hide a
+  // size change tmux never made.
+  const untilWindowSize = (size: string): Promise<unknown> =>
+    readUntil(
+      () =>
+        fx.tmux.execute(
+          `display -p -t ${fx.sessionName} "#{window_width}x#{window_height}"`,
+        ),
+      (r) => r.output[0] === size,
+      `window size ${size}`,
+    );
   const windowId = (): number =>
     Number(
       tmux(fx.socketName, [
@@ -1048,9 +1053,9 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
       await declare(b, 110, 35);
       const a = await page();
       await declare(a, 100, 30);
-      await pollUntil(() => windowSize() === "100x30");
+      await untilWindowSize("100x30");
       a.close();
-      await pollUntil(() => windowSize() === "110x35");
+      await untilWindowSize("110x35");
       b.close();
     },
     15_000,
@@ -1062,9 +1067,21 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — client size", () => {
       await user.setSize(120, 40);
       const a = await page();
       await declare(a, 100, 30);
-      await pollUntil(() => windowSize() === "100x30");
+      await untilWindowSize("100x30");
       a.close();
-      await pollUntil(() => windowSize() === "120x40");
+      await untilWindowSize("120x40");
+    });
+  }, 15_000);
+
+  it("a lone page that declared only the overall size gives the window back when it closes", async () => {
+    tmux(fx.socketName, ["set", "-g", "window-size", "smallest"]);
+    await withSecondClient(fx.socketName, fx.sessionName, async (user) => {
+      await user.setSize(120, 40);
+      const a = await page();
+      await a.setSize(100, 30);
+      await untilWindowSize("100x30");
+      a.close();
+      await untilWindowSize("120x40");
     });
   }, 15_000);
 });

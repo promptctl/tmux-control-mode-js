@@ -68,7 +68,8 @@ describe("ClientSizeClaims", () => {
     expect(take()).toEqual([]);
   });
 
-  it("releasing the last claim clears its windows, then takes the client out of sizing", async () => {
+  // tmux recomputes window sizes on a size command, never on a flag change.
+  it("releasing the last claim takes the client out of sizing, then sends sizes so tmux applies it", async () => {
     const { claims, take } = setup();
     const a = claims.claim();
     await a.setSize(100, 30);
@@ -77,10 +78,20 @@ describe("ClientSizeClaims", () => {
     take();
     await a.release();
     expect(take()).toEqual([
+      OUT_OF_SIZING,
       refreshClientClearWindowSize(3),
       refreshClientClearWindowSize(5),
-      OUT_OF_SIZING,
+      refreshClientSize(100, 30),
     ]);
+  });
+
+  it("releasing a last claim that set only the overall size sends it again after the flag", async () => {
+    const { claims, take } = setup();
+    const a = claims.claim();
+    await a.setSize(100, 30);
+    take();
+    await a.release();
+    expect(take()).toEqual([OUT_OF_SIZING, refreshClientSize(100, 30)]);
   });
 
   it("a clear leaves the window at another claim's size", async () => {
@@ -142,6 +153,17 @@ describe("ClientSizeClaims", () => {
     },
   );
 
+  it.each([-1, 1.5, Number.NaN])(
+    "a window id tmux would refuse (%s) rejects and sends nothing",
+    async (windowId) => {
+      const { claims, take } = setup();
+      await expect(
+        claims.claim().setWindowSize(windowId, 100, 30),
+      ).rejects.toThrow(TmuxInvalidCommandError);
+      expect(take()).toEqual([]);
+    },
+  );
+
   it("a released claim refuses to declare, and sends nothing", async () => {
     const { claims, take } = setup();
     const a = claims.claim();
@@ -149,9 +171,11 @@ describe("ClientSizeClaims", () => {
     await a.release();
     take();
     await expect(a.setWindowSize(3, 100, 30)).rejects.toThrow(
-      TmuxInvalidCommandError,
+      "the size claim was released",
     );
-    await expect(a.setSize(100, 30)).rejects.toThrow(TmuxInvalidCommandError);
+    await expect(a.setSize(100, 30)).rejects.toThrow(
+      "the size claim was released",
+    );
     expect(take()).toEqual([]);
   });
 

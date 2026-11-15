@@ -23,9 +23,10 @@ export class ClientSizeLedger {
 
   constructor(private readonly deps: ClientSizeLedgerDeps) {}
 
-  // [LAW:no-silent-failure] exception: a departed peer has no one to answer,
-  // and a release sends only commands tmux accepts (src/client-size.ts), so
-  // what it can reject with is a connection already gone.
+  // [LAW:no-silent-failure] exception: a departed peer has no one to answer.
+  // A release sends only commands tmux accepts (src/client-size.ts), so what
+  // it can reject with is a connection already gone, or, on tmux 3.2, the
+  // refusal of a window clear whose declaration was refused and reported.
   private readonly swallow = (): void => undefined;
 
   register(peer: Peer): void {

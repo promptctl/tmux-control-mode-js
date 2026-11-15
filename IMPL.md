@@ -185,7 +185,7 @@ not a command-function because its bare-newline signal cannot be correlated.)
 | `listPanes(client)` | `src/commands/index.ts` | `list-panes` |
 | `sendKeys(client, target, keys)` | `src/commands/index.ts` | `send-keys -H -t …` (hex bytes; empty keys → synthetic success, no wire send) |
 | `splitWindow(client, options?)` | `src/commands/index.ts` | `split-window -h`/`-v` |
-| `setSize(client, width, height)` | `src/commands/index.ts` | `refresh-client -C <w>x<h>` |
+| `setSize`, `setWindowSize`, `clearWindowSize` | `TmuxClient` methods (`ClientSizeSurface`), through the client's size claims (`src/client-size.ts`) | `refresh-client -C <w>x<h>`, `-C @<id>:<w>x<h>`, `-C @<id>:`, and `-f [!]ignore-size` |
 | `setPaneAction(client, paneId, action)` | `src/commands/index.ts` | `refresh-client -A` (pane flow control) |
 | `subscribeRaw(client, name, what, format)` | `src/commands/index.ts` | `refresh-client -B` (subscribe) |
 | `unsubscribe(client, name)` | `src/commands/index.ts` | `refresh-client -B <name>` (unsubscribe) |
@@ -212,13 +212,12 @@ do **not** copy the prose into this file.
 | Parser CRLF tolerance | how `feed()` accepts `\r\n` as well as `\n` | `TmuxParser.feed` — `src/protocol/parser.ts` | SPEC §4.3.1 + MANIFEST §3.1 (mirror) |
 | Parsed message types | library `output` vs `extended-output` parsed shapes | `OutputMessage` / `ExtendedOutputMessage` — `src/protocol/types.ts` | SPEC §7.1 (untagged, inline) |
 | Notification-block reliance | `processLine`'s reliance on "notifications never appear inside `%begin`/`%end`" | `processLine` — `src/protocol/parser.ts` (where `[LAW:one-source-of-truth]` already lives) | MANIFEST Invariant 4.1 "Library reliance" |
-| Size-control mapping | how the library maps size control to the `setSize` command | `setSize` — `src/commands/index.ts` | SPEC §11.1 |
+| Size-control mapping | how the library maps size control to `refresh-client -C` | `ClientSizeSurface.setSize` — `src/client-size.ts` | SPEC §11.1 |
 
-> **Precision note for R5/R6:** `setSize` and `requestReport` are **free functions** in
-> `src/commands/index.ts`, *not* `TmuxClient` methods — the R5/R6 ticket text says
-> "JSDoc on `TmuxClient.setSize`", which would target a method that does not exist. Put
-> the JSDoc on the free functions. `close()` and `detach()` **are** `TmuxClient`
-> methods (`src/client.ts`).
+> **Precision note for R5/R6:** `requestReport` is a **free function** in
+> `src/commands/index.ts`, *not* a `TmuxClient` method; put its JSDoc there. `setSize`,
+> `close()` and `detach()` **are** `TmuxClient` methods (`src/client.ts`; `setSize` is
+> declared on `ClientSizeSurface` in `src/client-size.ts`).
 
 ---
 
@@ -234,7 +233,7 @@ when their shared home is written. Line numbers are from the audit
 | 2 | Parser CRLF tolerance | JSDoc `TmuxParser.feed` | SPEC §4.3.1 ↔ MANIFEST §3.1 | R5+R6 |
 | 3 | Parsed message types | JSDoc `OutputMessage`/`ExtendedOutputMessage` | SPEC §7.1 | R5 |
 | 4 | Notification-block reliance | JSDoc `processLine` | MANIFEST Invariant 4.1 | R6 |
-| 5 | Size-control mapping | JSDoc `setSize` | SPEC §11.1 | R5 |
+| 5 | Size-control mapping | JSDoc `ClientSizeSurface.setSize` | SPEC §11.1 | R5 |
 | 6 | Transport / `-C` vs `-CC` rationale | IMPL.md §2.1 | SPEC §12.1 ↔ MANIFEST §2.1 | R5+R6 |
 | 7 | Version-compat policy | IMPL.md §2.2 | SPEC §15.1 | R5 |
 | 8 | Synthetic events / lifecycle | IMPL.md §2.3 | SPEC §23.1 | R5 |

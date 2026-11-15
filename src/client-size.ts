@@ -18,8 +18,9 @@
 // counts for its lifetime), and only the `ignore-size` flag takes it out.
 //
 // [LAW:parse-dont-validate] tmux refuses a size only when a side is outside
-// 1..10000 (cmd-refresh-client.c), and a claim refuses that size itself
-// before recording it, so what the claims hold is what tmux accepts. (tmux
+// 1..10000 or the window id is not a number (cmd-refresh-client.c; a window
+// that does not exist is accepted), and a claim refuses those itself before
+// recording them, so what the claims hold is what tmux accepts. (tmux
 // 3.2 refuses every per-window form alike, so there too no command's fate
 // depends on what was sent before it.) Each change therefore sends the
 // difference between the claims just before it and just after it.
@@ -95,15 +96,20 @@ const same = (a: Size, b: Size | null | undefined): boolean =>
   a.width === b?.width && a.height === b.height;
 
 /**
- * The commands that take tmux from `before` to `after`, in the order tmux
- * must see them: into window sizing first, out of it last. tmux has no
- * command that withdraws an overall size, so a `client` gone null sends
- * nothing; `ignore-size` takes the client out once no size is declared.
+ * The commands that take tmux from `before` to `after`. tmux recomputes
+ * window sizes when a size command arrives, never when a flag changes, so
+ * the `ignore-size` flag goes first and size commands follow it. Leaving
+ * sizing, the overall size tmux still holds is sent again, since there may
+ * be no window to clear. tmux has no command that withdraws an overall size.
  */
 export function sizeCommands(before: SizeState, after: SizeState): string[] {
   const commands: string[] = [];
-  if (after.counts && !before.counts) {
-    commands.push(refreshClientClearFlags(IGNORE_SIZE));
+  if (after.counts !== before.counts) {
+    commands.push(
+      after.counts
+        ? refreshClientClearFlags(IGNORE_SIZE)
+        : refreshClientSetFlags(IGNORE_SIZE),
+    );
   }
   if (after.client !== null && !same(after.client, before.client)) {
     commands.push(refreshClientSize(after.client.width, after.client.height));
@@ -118,8 +124,8 @@ export function sizeCommands(before: SizeState, after: SizeState): string[] {
       commands.push(refreshClientClearWindowSize(window));
     }
   }
-  if (!after.counts && before.counts) {
-    commands.push(refreshClientSetFlags(IGNORE_SIZE));
+  if (before.counts && !after.counts && before.client !== null) {
+    commands.push(refreshClientSize(before.client.width, before.client.height));
   }
   return commands;
 }
@@ -148,6 +154,16 @@ function parseSize(command: string, width: number, height: number): Size {
   return { width, height };
 }
 
+function parseWindow(command: string, windowId: number): number {
+  if (!Number.isInteger(windowId) || windowId < 0) {
+    throw new TmuxInvalidCommandError(
+      command,
+      `window id ${String(windowId)}: must be a non-negative integer`,
+    );
+  }
+  return windowId;
+}
+
 export class ClientSizeClaims {
   private readonly slots = new Map<Target, Slot>();
 
@@ -165,27 +181,25 @@ export class ClientSizeClaims {
     let released = false;
     // [LAW:no-silent-failure] A released claim has no owner left to withdraw
     // what it would declare, so its use is refused rather than recorded.
-    const change = (method: string, edit: () => void) =>
+    const change = (edit: () => void) =>
       released
-        ? Promise.reject(
-            new TmuxInvalidCommandError(method, "the size claim was released"),
-          )
+        ? Promise.reject(new Error("the size claim was released"))
         : this.change(edit);
     return {
       setSize: (width, height) =>
-        change("setSize", () => {
+        change(() => {
           const command = refreshClientSize(width, height);
           this.put("client", token, parseSize(command, width, height));
         }),
       setWindowSize: (windowId, width, height) =>
-        change("setWindowSize", () => {
+        change(() => {
           const command = refreshClientWindowSize(windowId, width, height);
-          this.put(windowId, token, parseSize(command, width, height));
+          const size = parseSize(command, width, height);
+          this.put(parseWindow(command, windowId), token, size);
         }),
-      clearWindowSize: (windowId) =>
-        change("clearWindowSize", () => this.drop(windowId, token)),
+      clearWindowSize: (windowId) => change(() => this.drop(windowId, token)),
       release: () =>
-        change("release", () => {
+        change(() => {
           released = true;
           for (const target of [...this.slots.keys()]) this.drop(target, token);
         }),
