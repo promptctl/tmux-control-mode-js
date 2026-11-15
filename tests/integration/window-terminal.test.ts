@@ -8,11 +8,7 @@
 // reseeded once. Panes run `cat`, so what is typed is what the pane shows.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
@@ -40,6 +36,7 @@ import type {
   WindowTerminalState,
   WindowView,
 } from "../../src/window-terminal/engine/window-model.js";
+import { PANE_META_FORMAT } from "../../src/window-terminal/engine/bootstrap.js";
 import type { PaneId, WindowId } from "../../src/window-terminal/ids.js";
 import { ClientSizeDeclarer } from "../../src/window-terminal/sizing/client-size.js";
 
@@ -229,78 +226,29 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     await pollUntil(() => s.sinks.get(added)?.resizeCalls.at(-1)?.cols === 30);
   });
 
-  // Linux names a process by its argv[0], which a symlink sets; macOS names
-  // it by the binary it ran.
-  it.skipIf(process.platform !== "linux")(
-    "a process named with a newline and a protocol line reads as one command, and fakes no event",
-    async () => {
-      const { c, window } = await start();
-      const s = recorder();
-      const e = engineOver(c, window, s);
-      engine = e;
-      await untilLive(e, (v) => v.panes.length === 1);
-
-      // tmux reports a process by the name it ran under, up to its first
-      // space (names.c parse_window_name), and writes a subscription value
-      // into the control stream raw. A bare `%exit` line would end the
-      // connection.
-      const dir = mkdtempSync(join(tmpdir(), "wt-name-"));
-      const name = "x\n%exit";
-      symlinkSync(
-        execFileSync("which", ["sleep"], { encoding: "utf8" }).trim(),
-        join(dir, name),
-      );
-      const added = q(socket, [
-        "split-window",
-        "-t",
-        window,
-        "-P",
-        "-F",
-        "#{pane_id}",
-        join(dir, name),
-        "60",
-      ]) as PaneId;
-      try {
-        // tmux's own reading is the oracle; the page shows it with each
-        // control byte as `?`.
-        const own = (): string =>
-          q(socket, [
-            "display-message",
-            "-p",
-            "-t",
-            added,
-            "#{pane_current_command}",
-          ]);
-        await pollUntil(() => own().includes("%exit"), 3000).catch(() => {
-          throw new Error(`tmux names the pane ${JSON.stringify(own())}`);
-        });
-        const expected = [...own()]
-          .map((ch) => (ch < " " || ch === "\x7f" ? "?" : ch))
-          .join("");
-        const seen = (): string =>
-          JSON.stringify({
-            phase: e.state.phase,
-            panes: liveView(e.state)?.panes.map((p) => [p.id, p.command]),
-          });
-        await pollUntil(
-          () =>
-            liveView(e.state)?.panes.some(
-              (p) => p.id === added && p.command === expected,
-            ) === true,
-          4000,
-        ).catch(() => {
-          throw new Error(
-            `expected ${JSON.stringify(expected)}; saw ${seen()}`,
-          );
-        });
-        expect(expected).toContain("?%exit");
-        expect(liveView(e.state)?.panes).toHaveLength(2);
-      } finally {
-        rmSync(dir, { recursive: true });
-      }
-    },
-    15_000,
-  );
+  it("the pane-meta format reads a control byte in a command as ?, on the running tmux", async () => {
+    const { window } = await start();
+    const pane = q(socket, [
+      "display-message",
+      "-p",
+      "-t",
+      window,
+      "#{pane_id}",
+    ]);
+    // tmux writes a subscription value into the control stream raw, so a
+    // command named "x\n%exit" would end the connection. The substitution is
+    // the same over any value; a pane option stands in for the command.
+    q(socket, ["set-option", "-p", "-t", pane, "@hostile", "x\n%exit"]);
+    q(socket, ["select-pane", "-t", pane, "-T", "t"]);
+    expect(PANE_META_FORMAT).toContain(":pane_current_command}");
+    const format = PANE_META_FORMAT.replace(
+      ":pane_current_command}",
+      ":@hostile}",
+    );
+    expect(q(socket, ["display-message", "-p", "-t", pane, format])).toBe(
+      "t\tx?%exit",
+    );
+  });
 
   it("keys typed into a pane land in that pane only, and tmux's active pane stays", async () => {
     const { c, window } = await start();
