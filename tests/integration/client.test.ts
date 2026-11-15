@@ -1166,8 +1166,16 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
       "-T",
       "agent build \\ 1",
     ]);
-    // tmux stores the title vis(3)-encoded: the backslash reads doubled.
-    const rendered = "agent build \\\\ 1";
+    // From tmux 3.8 a title is stored vis(3)-encoded (the backslash doubled),
+    // before it as given; either way the record carries what tmux reads back.
+    const rendered = tmux(socketName, [
+      "display-message",
+      "-p",
+      "-t",
+      `${sessionName}:`,
+      "#{pane_title}",
+    ]);
+    expect(rendered).toContain("\\");
     const p = await waitForPane(
       client,
       (pane) => pane.sessionName === sessionName && pane.title === rendered,

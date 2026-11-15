@@ -64,9 +64,9 @@ export function parseFlags(value: string): WindowFlags | null {
 }
 
 /**
- * A pane's title, then its current command. tmux stores a title vis(3)-encoded
- * (no literal tab), so the first tab is the separator even when the command's
- * OS-reported name holds one.
+ * A pane's title, then its current command. tmux refuses a title holding a
+ * control character, so the first tab is the separator even when the
+ * command's OS-reported name holds one.
  */
 export const PANE_META_FORMAT = "#{pane_title}\t#{pane_current_command}";
 
