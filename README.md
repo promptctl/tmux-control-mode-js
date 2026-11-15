@@ -181,6 +181,72 @@ startup command's reply usually comes before any peer.
   reports its own socket.
 - `topology-error` is each client's own: it reports that client's pane table.
 
+## A window in the browser
+
+`./window-terminal` draws one tmux window, every pane in tmux's layout, into
+an element with xterm.js, and sends what is typed in a pane to that pane:
+
+```bash
+npm i @promptctl/tmux-control-mode-js @xterm/xterm
+```
+
+```ts
+import "@xterm/xterm/css/xterm.css";
+import { WebSocketTmuxClient } from "@promptctl/tmux-control-mode-js/websocket";
+import { mountWindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal";
+
+const connection = new WebSocketTmuxClient({
+  url: "ws://localhost:8080",
+  reconnect: { maxAttempts: Infinity },
+});
+const terminal = mountWindowTerminal(document.getElementById("term")!, {
+  connection,
+  window: "@3",
+});
+terminal.onState((s) => console.log(s.phase)); // connecting | live | stale | gone
+```
+
+`connection` is a `TmuxClient`, a `WebSocketTmuxClient` or the Electron
+renderer client. Each pane arrives with `history` lines of scrollback (default
+2000) and follows splits, closes and zoom. A click, or `terminal.focus(paneId)`,
+picks the pane this page's keys go to; tmux's active pane never moves.
+`terminal.dispose()` releases every subscription the terminal holds.
+
+`./window-terminal/react` is the same terminal as a component, and also needs
+`react` (and `@types/react` for TypeScript):
+
+```tsx
+import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/react";
+
+<WindowTerminal connection={connection} window="@3" sizing={sizing} onState={setState} />;
+```
+
+A new `connection`, `window` or `history` mounts a new terminal; `sizing` and
+`appearance` (`theme`, `fontFamily`, `lineHeight`, `cursorStyle`) update the
+one there is, as `terminal.update()` does.
+
+`sizing` says who decides the window's size:
+
+- `{ window: "box", font }` (the default, at `font: 14`): the element's box
+  declares this client's size for the window (`refresh-client -C`), and tmux
+  arbitrates with its other clients by its `window-size` option. With
+  `font: { min, max }`, the largest font at which `minCols` x `minRows` fit.
+- `{ window: "tmux", font, fit }`: tmux's size is given; the largest font at
+  which the window fits the box's width, height, both, or (`"none"`) `max`.
+
+The element needs a definite size; what does not fit scrolls inside it.
+
+Things to know:
+
+- One connection has one size. Two terminals on it showing different
+  windows both declare it, and the last declaration wins; after its first
+  per-window declaration, tmux sizes the session's other windows to it too.
+- Through a WebSocket bridge every page shares the bridge's one tmux client, so
+  a declared size outlives a page that closes without `dispose()`.
+- With `pane-border-status` set, a pane's cell is taller than its terminal;
+  the terminal sits at the top of its cell.
+- Floating panes (tmux 3.8) are not shown.
+
 ## Idle pane suppression (opt-in)
 
 By default tmux streams output for **every** pane to a control-mode client,
