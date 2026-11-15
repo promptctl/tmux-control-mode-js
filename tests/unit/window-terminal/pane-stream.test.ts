@@ -17,6 +17,7 @@ import {
   TransportClosedError,
   TransportSendError,
 } from "../../../src/browser.js";
+import { BridgeError } from "../../../src/connectors/errors.js";
 
 // A live-tmux command failure (tmux replied %error). `reportError` must SURFACE
 // this class — tmux was alive, so the blank pane is a real failure.
@@ -612,6 +613,25 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
 
     expect(stream.lastError).toBeNull();
     expect(errors).toEqual([]);
+    stream.dispose();
+  });
+
+  it("a closed bridge (BRIDGE_CLOSED) is connection-gone too; another bridge error surfaces", async () => {
+    vi.useRealTimers();
+    const client = new FakeTmuxClient();
+    client.setExecuteFailure((cmd) =>
+      isSubscribe(cmd)
+        ? new BridgeError("BRIDGE_CLOSED", "socket dropped")
+        : cmd.startsWith("capture-pane")
+          ? new BridgeError("BRIDGE_TIMEOUT", "slow")
+          : null,
+    );
+    const errors: PaneStreamError[] = [];
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.on("error", (e) => errors.push(e));
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
     stream.dispose();
   });
 

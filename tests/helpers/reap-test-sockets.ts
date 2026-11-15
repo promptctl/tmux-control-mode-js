@@ -32,6 +32,7 @@ export const TEST_SOCKET_PREFIXES = [
   "tmux-js-test-",
   "tmux-js-conf-",
   "tmux-js-pstream-",
+  "tmux-js-wterm-",
   "tmux-scope-test-",
   "tmux-line-test-",
   "tmux-idle-test-",
