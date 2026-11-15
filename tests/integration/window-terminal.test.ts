@@ -239,10 +239,12 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       engine = engineOver(c, window, s);
       await untilLive(engine, (v) => v.panes.length === 1);
 
-      // tmux reports a process by the name it ran under, and writes a
-      // subscription value into the control stream raw.
+      // tmux reports a process by the name it ran under, up to its first
+      // space (names.c parse_window_name), and writes a subscription value
+      // into the control stream raw. A bare `%exit` line would end the
+      // connection.
       const dir = mkdtempSync(join(tmpdir(), "wt-name-"));
-      const name = `x\n%window-close ${window}`;
+      const name = "x\n%exit";
       symlinkSync(
         execFileSync("which", ["sleep"], { encoding: "utf8" }).trim(),
         join(dir, name),
@@ -259,9 +261,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       ]) as PaneId;
       try {
         await untilLive(engine, (v) =>
-          v.panes.some(
-            (p) => p.id === added && p.command === `x?%window-close ${window}`,
-          ),
+          v.panes.some((p) => p.id === added && p.command === "x?%exit"),
         );
         expect(liveView(engine.state)?.panes).toHaveLength(2);
       } finally {
