@@ -1116,6 +1116,7 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     currentCommand,
     width,
     height,
+    title,
   ] = fields;
   return completeRecord<PaneRecord>({
     sessionId: parseSigilId("$", sessionId),
@@ -1127,6 +1128,7 @@ export function parsePaneRecordLine(line: string): PaneRecord | null {
     startCommand: decodeField(startCommand),
     width: parseUint(width),
     height: parseUint(height),
+    title: decodeField(title),
   });
 }
 
@@ -1190,7 +1192,7 @@ export const WINDOW_RECORD: RecordFormat<WindowRecord> = {
   parseLine: parseWindowRecordLine,
 };
 export const PANE_RECORD: RecordFormat<PaneRecord> = {
-  fieldCount: 12,
+  fieldCount: 13,
   parseLine: parsePaneRecordLine,
 };
 export const SESSION_RECORD: RecordFormat<SessionRecord> = {

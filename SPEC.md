@@ -790,6 +790,12 @@ refresh-client -C @<window-id>:
 
 Requires `CLIENT_CONTROL`.
 
+The library's typed wrappers are `setSize` (first form), `setWindowSize`
+(second) and `clearWindowSize` (third). A control client that has declared
+only per-window sizes does not resize the session's other windows: on tmux
+3.8, declaring `@W:100x30` leaves a second window's size unchanged, across
+`select-window` and `new-window` (`tests/integration/window-terminal.test.ts`).
+
 **Source:** `cmd-refresh-client.c:82-131`, `tmux.1` `refresh-client` `.Fl C`
 
 ---

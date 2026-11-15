@@ -71,6 +71,21 @@ export function refreshClientSize(width: number, height: number): string {
   return `refresh-client -C ${width}x${height}`;
 }
 
+// [LAW:one-source-of-truth] The per-window forms of `refresh-client -C`
+// (cmd-refresh-client.c): `@W:WxH` sets this client's size for one window,
+// `@W:` drops it so tmux sizes that window from its other clients again.
+export function refreshClientWindowSize(
+  windowId: number,
+  width: number,
+  height: number,
+): string {
+  return `refresh-client -C @${windowId}:${width}x${height}`;
+}
+
+export function refreshClientClearWindowSize(windowId: number): string {
+  return `refresh-client -C @${windowId}:`;
+}
+
 // [LAW:one-source-of-truth] The fixed `-F` format strings behind the public
 // listWindows/listPanes records live here only; commands/index.ts just
 // executes them and pane-output.ts just parses their output. Tab-separated:
@@ -86,7 +101,11 @@ export function refreshClientSize(width: number, height: number): string {
 // renders a literal tab as `\t`. `pane_current_command` is the process's
 // name as the OS reports it (`osdep_get_name`, `/proc/<pid>/cmdline` on
 // Linux), which tmux passes through unescaped, so it gets
-// `escapeFreeTextField` below the same as `pane_current_path`.
+// `escapeFreeTextField` below the same as `pane_current_path`. `pane_title`
+// needs no treatment either: tmux stores a title through `utf8_stravis`
+// (VIS_CSTYLE|VIS_TAB|VIS_NL, screen.c `screen_set_title`), so it never holds
+// a literal tab or newline, and a backslash already reads `\\` (confirmed
+// live on tmux 3.8).
 export function listWindowsCommand(): string {
   return (
     "list-windows -a -F '#{session_id}\t#{session_name}\t#{window_id}\t" +
@@ -131,7 +150,7 @@ export function listPanesCommand(): string {
     `${escapeFreeTextField("#{pane_current_path}")}\t` +
     "#{pane_pid}\t#{pane_start_command}\t" +
     `${escapeFreeTextField("#{pane_current_command}")}\t` +
-    "#{pane_width}\t#{pane_height}'"
+    "#{pane_width}\t#{pane_height}\t#{pane_title}'"
   );
 }
 

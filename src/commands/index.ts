@@ -28,6 +28,8 @@ import type {
 } from "../protocol/encoder.js";
 import {
   refreshClientSize,
+  refreshClientWindowSize,
+  refreshClientClearWindowSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
@@ -307,10 +309,8 @@ export function splitWindow(
 
 /**
  * Set the overall client size, mapping to `refresh-client -C <width>x<height>`
- * (the encoder is `refreshClientSize` in `../protocol/encoder.ts`). This is the
- * first of the three `-C` forms tmux accepts; the per-window forms
- * (`refresh-client -C @<id>:<w>x<h>` and the per-window clear `... @<id>:`) have
- * no typed wrapper — issue them via `client.execute("refresh-client -C @<id>:...")`.
+ * (the encoder is `refreshClientSize` in `../protocol/encoder.ts`). The
+ * per-window forms are {@link setWindowSize} and {@link clearWindowSize}.
  */
 export function setSize(
   client: TmuxConnection,
@@ -318,6 +318,33 @@ export function setSize(
   height: number,
 ): Promise<CommandResponse> {
   return client.execute(refreshClientSize(width, height));
+}
+
+/**
+ * Declare this client's size for window `@windowId` only, mapping to
+ * `refresh-client -C @<id>:<width>x<height>`. When this is the window's only
+ * client the window takes that size; with other clients attached tmux's
+ * `window-size` option arbitrates and this size is one input to it. The
+ * session's other windows keep their own sizes.
+ */
+export function setWindowSize(
+  client: TmuxConnection,
+  windowId: number,
+  width: number,
+  height: number,
+): Promise<CommandResponse> {
+  return client.execute(refreshClientWindowSize(windowId, width, height));
+}
+
+/**
+ * Drop this client's size for window `@windowId` (`refresh-client -C @<id>:`),
+ * so tmux sizes the window from its other clients again.
+ */
+export function clearWindowSize(
+  client: TmuxConnection,
+  windowId: number,
+): Promise<CommandResponse> {
+  return client.execute(refreshClientClearWindowSize(windowId));
 }
 
 export function setPaneAction(

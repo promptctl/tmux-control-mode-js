@@ -282,6 +282,7 @@ describe("Outbox — settle", () => {
     startCommand: "",
     width: 80,
     height: 24,
+    title: "",
   };
 
   it("resolves a response that has its method's shape, with only the declared fields", async () => {

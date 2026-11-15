@@ -62,6 +62,8 @@ export {
   tmuxEscape,
   sendKeys,
   refreshClientSize,
+  refreshClientWindowSize,
+  refreshClientClearWindowSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,

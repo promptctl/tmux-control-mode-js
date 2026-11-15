@@ -104,6 +104,8 @@ export {
   sendKeys,
   splitWindow,
   setSize,
+  setWindowSize,
+  clearWindowSize,
   setPaneAction,
   subscribeRaw,
   unsubscribe,

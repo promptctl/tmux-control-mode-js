@@ -4,6 +4,8 @@
 import {
   tmuxEscape,
   refreshClientSize,
+  refreshClientWindowSize,
+  refreshClientClearWindowSize,
   refreshClientPaneAction,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
@@ -64,6 +66,20 @@ describe("refreshClientSize", () => {
 
   it("1x1", () => {
     expect(refreshClientSize(1, 1)).toBe("refresh-client -C 1x1");
+  });
+});
+
+describe("refreshClientWindowSize", () => {
+  it("sets one window's size", () => {
+    expect(refreshClientWindowSize(3, 100, 30)).toBe(
+      "refresh-client -C @3:100x30",
+    );
+  });
+});
+
+describe("refreshClientClearWindowSize", () => {
+  it("clears one window's size", () => {
+    expect(refreshClientClearWindowSize(3)).toBe("refresh-client -C @3:");
   });
 });
 

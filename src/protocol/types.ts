@@ -479,6 +479,12 @@ export interface PaneRecord {
   readonly startCommand: string;
   readonly width: number;
   readonly height: number;
+  /**
+   * `#{pane_title}`: what the pane's program last set as its title (OSC 0/2)
+   * or `select-pane -T` gave it, as tmux stores it — vis(3)-encoded, so a
+   * backslash reads `\\` and a tab `\t`.
+   */
+  readonly title: string;
 }
 
 /**

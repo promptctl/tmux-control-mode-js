@@ -33,6 +33,7 @@ const PANE_FIELDS = {
   currentCommand: "zsh",
   width: "80",
   height: "24",
+  title: "build",
 };
 function paneLine(fields: Partial<typeof PANE_FIELDS> = {}): string {
   return Object.values({ ...PANE_FIELDS, ...fields }).join("\t");
@@ -55,6 +56,7 @@ describe("parsePaneRecordLine", () => {
       startCommand: "zsh",
       width: 80,
       height: 24,
+      title: "build",
     });
   });
 
@@ -94,6 +96,13 @@ describe("parsePaneRecordLine", () => {
       });
       expect(parsePaneRecordLine(line)?.process).toEqual({ state: "dead" });
     }
+  });
+
+  it("keeps a title as tmux's own vis(3) rendering", () => {
+    const rendered = `a${BACKSLASH}${BACKSLASH}b${BACKSLASH}tc`;
+    expect(parsePaneRecordLine(paneLine({ title: rendered }))?.title).toBe(
+      rendered,
+    );
   });
 
   it("parses a running pane whose cwd tmux cannot read as cwd null", () => {
