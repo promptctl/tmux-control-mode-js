@@ -79,7 +79,14 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
-function mount(sizing?: Sizing) {
+function mount(
+  sizing?: Sizing,
+  cellAt: ReturnType<WindowTerminalPorts["measure"]>["cellAt"] = () =>
+    (px) => ({
+      width: px / 2,
+      height: px,
+    }),
+) {
   const client = scriptedTmux(world());
   client.setConnectionState({ status: "ready" });
   const host = document.createElement("div");
@@ -89,14 +96,14 @@ function mount(sizing?: Sizing) {
   const measureDispose = vi.fn();
   const ports: WindowTerminalPorts = {
     // A cell is 0.5em by 1em: at 16px, 8 x 16.
-    measure: {
-      cellAt: () => (px) => ({ width: px / 2, height: px }),
+    measure: () => ({
+      cellAt,
       onChange(cb) {
         metrics.add(cb);
         return () => metrics.delete(cb);
       },
       dispose: measureDispose,
-    },
+    }),
     frame(cb) {
       frames.push(cb);
       return () => frames.splice(frames.indexOf(cb), 1);
@@ -195,6 +202,23 @@ describe("window terminal — what is drawn", () => {
     expect(terminals.map((t) => t.options.fontSize)).toEqual([12, 12]);
   });
 
+  it("an appearance equal to the one in use, in a new object, leaves every xterm alone", async () => {
+    const { terminal, flush } = await live();
+    terminal.update({ appearance: { theme: { background: "#000" } } });
+    flush();
+    const themes = terminals.map((t) => t.options.theme);
+    terminal.update({ appearance: { theme: { background: "#000" } } });
+    flush();
+    expect(terminals.map((t) => t.options.theme)).toEqual(themes);
+    expect(terminals.every((t, i) => t.options.theme === themes[i])).toBe(true);
+    terminal.update({ appearance: { theme: { background: "#111" } } });
+    flush();
+    expect(terminals.map((t) => t.options.theme)).toEqual([
+      { background: "#111" },
+      { background: "#111" },
+    ]);
+  });
+
   it("fonts finishing loading make every pane's xterm measure again", async () => {
     const { metrics, flush } = await live();
     const writes = terminals.map((t) => {
@@ -248,6 +272,18 @@ describe("window terminal — the size claim", () => {
     expect(sizeCommands()).toHaveLength(2);
   });
 
+  it("a bad option at mount throws before anything is measured", () => {
+    const measure = vi.fn();
+    expect(() =>
+      createWindowTerminal(
+        document.createElement("div"),
+        { connection: scriptedTmux(world()), window: "3" as never },
+        { measure, frame: () => () => undefined, now: () => 0 },
+      ),
+    ).toThrow(RangeError);
+    expect(measure).not.toHaveBeenCalled();
+  });
+
   it("a bad setting thrown by update changes nothing", async () => {
     const { terminal, flush, sizeCommands } = await live({
       window: "box",
@@ -270,6 +306,20 @@ describe("window terminal — the size claim", () => {
 });
 
 describe("window terminal — where keys go", () => {
+  it("a frame that fails to draw reaches onError(render), not the page's handler", async () => {
+    const unmeasurable = new Error("cell measured 0x0");
+    const m = mount(undefined, () => () => {
+      throw unmeasurable;
+    });
+    await settle();
+    observed?.(800, 480);
+    m.flush();
+    expect(m.errors.map((e) => [e.seam, e.cause])).toEqual([
+      ["render", unmeasurable],
+    ]);
+    m.terminal.dispose();
+  });
+
   it("focus entering a pane makes it this browser's focus; tmux's active pane does not move", async () => {
     const { client, pane, terminal } = await live();
     pane("%0")?.querySelector("textarea")?.focus();

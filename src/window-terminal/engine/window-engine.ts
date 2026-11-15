@@ -253,8 +253,14 @@ export class WindowEngine {
       if (epoch !== this.epoch) return;
       this.queue = null;
       // A lost connection re-bootstraps when it is ready again.
-      if (!isConnectionGone(err))
-        this.report({ seam: "bootstrap", cause: err });
+      if (isConnectionGone(err)) return;
+      this.report({ seam: "bootstrap", cause: err });
+      this.sync = {
+        kind: "gone",
+        reason: "bootstrap-failed",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+      this.publish();
     });
   }
 

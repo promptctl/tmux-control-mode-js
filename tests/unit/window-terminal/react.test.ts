@@ -195,6 +195,20 @@ describe("<WindowTerminal>", () => {
     expect(mounted[0].disposed).toBe(true);
   });
 
+  it("a different ref gets the terminal and the old one is cleared, without remounting", () => {
+    const a = { current: null as Terminal | null };
+    const b = { current: null as Terminal | null };
+    const props = { connection: CONN_A, window: "@1" as const };
+    render(createElement(WindowTerminal, { ...props, ref: a }));
+    render(createElement(WindowTerminal, { ...props, ref: b }));
+    expect(mounted).toHaveLength(1);
+    expect(a.current).toBeNull();
+    expect(b.current).toBe(mounted[0].terminal);
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(b.current).toBeNull();
+  });
+
   it("under StrictMode, the extra mount is disposed and exactly one terminal stays", () => {
     render(
       createElement(

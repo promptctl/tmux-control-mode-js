@@ -34,7 +34,7 @@ export function mountWindowTerminal(
     throw new RangeError("element must be in a document with a window");
   }
   return createWindowTerminal(element, options, {
-    measure: createCellMeasure(win),
+    measure: () => createCellMeasure(win),
     frame: (cb) => {
       const id = win.requestAnimationFrame(cb);
       return () => win.cancelAnimationFrame(id);

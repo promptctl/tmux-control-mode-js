@@ -30,3 +30,14 @@ export function parseAppearance(raw: Appearance | undefined): Appearance {
   }
   return a;
 }
+
+/**
+ * Whether two appearances look the same. A host passing an inline
+ * `appearance` hands a new object every render; xterm.js redraws every pane
+ * on any theme assignment, so only a different look reaches it. An
+ * appearance is plain data (strings, numbers, a theme of colour strings), so
+ * its JSON is the comparison.
+ */
+export function sameAppearance(a: Appearance, b: Appearance): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}

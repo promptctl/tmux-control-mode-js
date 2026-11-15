@@ -75,12 +75,14 @@ export type WindowTerminalState =
       readonly reason:
         | "window-closed"
         | "connection-closed"
-        | "window-unreachable";
+        | "window-unreachable"
+        | "bootstrap-failed";
       readonly detail?: string;
     };
 
 /**
- * A tmux command the terminal issued failed while tmux was reachable. A lost
+ * A tmux command the terminal issued failed while tmux was reachable, or a
+ * frame failed to draw (`render`: cells that measure as nothing, say). A lost
  * connection is never one of these: it is the `stale` phase.
  */
 export interface WindowTerminalError {
@@ -90,7 +92,8 @@ export interface WindowTerminalError {
     | "declare-size"
     | "send-keys"
     | "bootstrap"
-    | "layout";
+    | "layout"
+    | "render";
   readonly windowId: WindowId;
   readonly paneId?: PaneId;
   readonly cause: unknown;
@@ -297,14 +300,19 @@ export function deriveView(
  *
  * - `unsynced` — not bootstrapped since the connection last became ready.
  * - `synced` — bootstrapped, and following the window's notifications.
- * - `gone` — the window closed, or was never reachable; final.
+ * - `gone` — the window closed, was never reachable, or tmux answered the
+ *   bootstrap and it failed (a refused command, a reply it cannot read),
+ *   which nothing on a live connection would retry; final.
  */
 export type Sync =
   | { readonly kind: "unsynced" }
   | { readonly kind: "synced" }
   | {
       readonly kind: "gone";
-      readonly reason: "window-closed" | "window-unreachable";
+      readonly reason:
+        | "window-closed"
+        | "window-unreachable"
+        | "bootstrap-failed";
       readonly detail?: string;
     };
 

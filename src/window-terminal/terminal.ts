@@ -36,7 +36,11 @@ import {
   type ResolvedSizing,
   type Sizing,
 } from "./options.js";
-import { parseAppearance, type Appearance } from "./render/appearance.js";
+import {
+  parseAppearance,
+  sameAppearance,
+  type Appearance,
+} from "./render/appearance.js";
 import { renderPlan } from "./render/render-plan.js";
 import { WindowRenderer } from "./render/window-renderer.js";
 import {
@@ -75,7 +79,8 @@ export interface WindowTerminal {
 
 /** What the composition takes from the page; a test passes its own. */
 export interface WindowTerminalPorts {
-  readonly measure: CellMeasure;
+  /** Called once the options have parsed; the terminal disposes what it returns. */
+  readonly measure: () => CellMeasure;
   readonly frame: (cb: () => void) => () => void;
   readonly now: () => number;
 }
@@ -90,6 +95,7 @@ export function createWindowTerminal(
   const history = parseHistory(options.history);
   let sizing: ResolvedSizing = parseSizing(options.sizing ?? DEFAULT_SIZING);
   let appearance: Appearance = parseAppearance(options.appearance);
+  const measure = ports.measure();
   let box: Box = { width: 0, height: 0 };
   let cancelFrame: (() => void) | null = null;
   let disposed = false;
@@ -126,14 +132,20 @@ export function createWindowTerminal(
     if (disposed || cancelFrame !== null) return;
     cancelFrame = ports.frame(() => {
       cancelFrame = null;
-      render();
+      // [LAW:single-enforcer] The frame is where drawing runs, so its failure
+      //   reaches onError here, not the page's global handler.
+      try {
+        render();
+      } catch (cause) {
+        reportError({ seam: "render", windowId, cause });
+      }
     });
   }
 
   function render(): void {
     const state = engine.state;
     if (state.phase !== "live" && state.phase !== "stale") return;
-    const cell = ports.measure.cellAt(
+    const cell = measure.cellAt(
       appearance.fontFamily ?? DEFAULT_FONT_FAMILY,
       appearance.lineHeight ?? DEFAULT_LINE_HEIGHT,
     );
@@ -144,7 +156,7 @@ export function createWindowTerminal(
 
   const offEngineError = engine.onError(reportError);
   const offState = engine.onState(schedule);
-  const offMetrics = ports.measure.onChange(() => {
+  const offMetrics = measure.onChange(() => {
     renderer.remeasure();
     schedule();
   });
@@ -160,7 +172,7 @@ export function createWindowTerminal(
           : parseAppearance(settings.appearance);
       if (disposed) return;
       sizing = nextSizing;
-      if (nextAppearance !== appearance) {
+      if (!sameAppearance(nextAppearance, appearance)) {
         appearance = nextAppearance;
         renderer.setAppearance(appearance);
       }
@@ -190,7 +202,7 @@ export function createWindowTerminal(
       declarer.dispose();
       engine.dispose();
       renderer.dispose();
-      ports.measure.dispose();
+      measure.dispose();
       errorListeners.clear();
     },
   };

@@ -196,7 +196,7 @@ describe("WindowEngine — arrival", () => {
     expect(engine.state).toEqual({ phase: "gone", reason: "window-closed" });
   });
 
-  it("a bootstrap tmux refuses reaches onError(bootstrap)", async () => {
+  it("a bootstrap tmux refuses reaches onError(bootstrap) and is gone(bootstrap-failed), not a wait", async () => {
     const client = scriptedTmux(world());
     client.setExecuteFailure((cmd) =>
       cmd.startsWith("display-message -p -t @1")
@@ -222,7 +222,11 @@ describe("WindowEngine — arrival", () => {
     expect(errors.map((e) => [e.seam, e.windowId])).toEqual([
       ["bootstrap", "@1"],
     ]);
-    expect(engine.state.phase).toBe("connecting");
+    expect(engine.state).toEqual({
+      phase: "gone",
+      reason: "bootstrap-failed",
+      detail: "can't find window",
+    });
     engine.dispose();
   });
 

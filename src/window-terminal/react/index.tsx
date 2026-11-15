@@ -43,10 +43,6 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
     const terminal = useRef<Terminal | null>(null);
     const latest = useRef(props);
     latest.current = props;
-    // An inline callback ref is a new function every render; read through a
-    // holder so it never remounts the terminal.
-    const forwarded = useRef(ref);
-    forwarded.current = ref;
     const { connection, window, history, sizing, appearance } = props;
 
     useEffect(() => {
@@ -62,15 +58,21 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
       terminal.current = t;
       const offState = t.onState((s) => latest.current.onState?.(s));
       const offError = t.onError((e) => latest.current.onError?.(e));
-      assign(forwarded.current, t);
       return () => {
-        assign(forwarded.current, null);
         offState();
         offError();
         t.dispose();
         terminal.current = null;
       };
     }, [connection, window, history]);
+
+    // The ref has its own lifetime: a new ref gets the terminal and the old
+    // one is cleared, as React does for a DOM ref, without remounting. React
+    // runs every cleanup before any setup, so a remount clears, then assigns.
+    useEffect(() => {
+      assign(ref, terminal.current);
+      return () => assign(ref, null);
+    }, [ref, connection, window, history]);
 
     useEffect(() => {
       terminal.current?.update({ sizing, appearance });
