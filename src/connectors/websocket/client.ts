@@ -58,7 +58,11 @@ import {
   type TmuxMessage,
   type WindowRecord,
 } from "../../protocol/types.js";
-import type { SplitOptions, TmuxConnection } from "../../client.js";
+import type {
+  SplitOptions,
+  SubscriptionSurface,
+  TmuxConnection,
+} from "../../client.js";
 
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
 import { type AttachOptions, type BytesSink } from "../../pane-output.js";
@@ -146,7 +150,9 @@ const DEFAULTS = Object.freeze({
 // WebSocketTmuxClient
 // ---------------------------------------------------------------------------
 
-export class WebSocketTmuxClient implements RpcProxyApi, TmuxConnection {
+export class WebSocketTmuxClient
+  implements RpcProxyApi, TmuxConnection, SubscriptionSurface
+{
   private readonly emitter = new TypedEmitter();
   // [LAW:single-enforcer] When consumer code runs: every entry point — a
   //   public method, a socket event, a timer, a promise's continuation — is

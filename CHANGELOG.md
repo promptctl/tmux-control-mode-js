@@ -74,6 +74,12 @@ All notable changes to this project are documented here. Format follows
   keep their sizes (confirmed on tmux 3.8).
 - `PaneRecord.title`: the pane's title (`#{pane_title}`), as tmux stores it.
   The bridge wire carries it; upgrade server and client together.
+- `SubscriptionSurface` (exported from `.` and `./browser`):
+  `subscribeRaw(name, what, format)` and `unsubscribe(name)` as methods of a
+  connection. `TmuxClient` gains them; `WebSocketTmuxClient` and the Electron
+  renderer client already had them. Through a bridge they are the calls the
+  bridge tracks per peer and ends when the peer goes away, where the same
+  `refresh-client -B` sent with `execute()` outlives the page that sent it.
 - `DeliveryQueue` (exported from `.`): runs a transport adapter's entry
   points as run-to-completion steps and delivers what they post to
   listeners, sinks and error handlers once each step has committed. A

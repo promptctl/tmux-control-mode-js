@@ -45,3 +45,11 @@ export function latin1ToBytes(str: string): Uint8Array {
   }
   return bytes;
 }
+
+// [LAW:one-source-of-truth] The one decode of a latin1-container field that
+// holds text (a name, a title, a path) to real Unicode, as UTF-8 — what tmux
+// stores. Every text field the library hands out as a string passes here.
+const textDecoder = new TextDecoder();
+export function latin1ToText(latin1Field: string): string {
+  return textDecoder.decode(latin1ToBytes(latin1Field));
+}

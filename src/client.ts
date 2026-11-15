@@ -13,7 +13,11 @@ import {
 } from "./connection-state.js";
 import { DeliveryQueue } from "./delivery-queue.js";
 import { TmuxParser } from "./protocol/parser.js";
-import { detachClient } from "./protocol/encoder.js";
+import {
+  detachClient,
+  refreshClientSubscribe,
+  refreshClientUnsubscribe,
+} from "./protocol/encoder.js";
 import type {
   CommandResponse,
   ExitMessage,
@@ -75,6 +79,26 @@ export interface TmuxConnection {
   readonly connectionState: ConnectionState;
 }
 
+/**
+ * Format subscriptions (`refresh-client -B`) as methods of the connection, so
+ * a connection that shares one tmux client between many consumers can track
+ * each consumer's subscriptions and end them when that consumer goes away.
+ * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client all
+ * implement it.
+ *
+ * [LAW:single-enforcer] Through a bridge, the bridge's per-peer subscription
+ *   ledger is the one owner of a subscription's lifetime; a `refresh-client -B`
+ *   sent with `execute()` bypasses it and outlives the page that sent it.
+ */
+export interface SubscriptionSurface {
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse>;
+  unsubscribe(name: string): Promise<CommandResponse>;
+}
+
 // ---------------------------------------------------------------------------
 // Internal correlation state
 // ---------------------------------------------------------------------------
@@ -119,7 +143,7 @@ type BlockOwner = Pick<InflightEntry, "resolve" | "reject">;
 // TmuxClient
 // ---------------------------------------------------------------------------
 
-export class TmuxClient implements TmuxConnection {
+export class TmuxClient implements TmuxConnection, SubscriptionSurface {
   private readonly transport: TmuxTransport;
   private readonly parser: TmuxParser;
   private readonly emitter: TypedEmitter;
@@ -325,6 +349,18 @@ export class TmuxClient implements TmuxConnection {
 
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
     return this.router.attachBytesSink(sink, options);
+  }
+
+  subscribeRaw(
+    name: string,
+    what: string,
+    format: string,
+  ): Promise<CommandResponse> {
+    return this.execute(refreshClientSubscribe(name, what, format));
+  }
+
+  unsubscribe(name: string): Promise<CommandResponse> {
+    return this.execute(refreshClientUnsubscribe(name));
   }
 
   // ---------------------------------------------------------------------------

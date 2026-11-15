@@ -38,7 +38,7 @@ import {
 } from "../../protocol/types.js";
 import { TopologyRouter, type RunCommand } from "../../topology-router.js";
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
-import type { TmuxConnection } from "../../client.js";
+import type { SubscriptionSurface, TmuxConnection } from "../../client.js";
 import {
   BridgeError,
   DEFAULT_ACK_BATCH_BYTES,
@@ -81,7 +81,9 @@ import {
  * work) will starve itself of new output — the same shape as tmux's own
  * `%pause`-when-the-client-falls-behind contract.
  */
-export class TmuxClientProxy implements RpcProxyApi, TmuxConnection {
+export class TmuxClientProxy
+  implements RpcProxyApi, TmuxConnection, SubscriptionSurface
+{
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
   // [LAW:single-enforcer] When listeners and sinks run: each IPC event and

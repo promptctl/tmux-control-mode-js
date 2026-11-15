@@ -9,7 +9,7 @@ import type {
   SessionRecord,
   WindowRecord,
 } from "./protocol/types.js";
-import { latin1ToBytes } from "./protocol/byte-codec.js";
+import { latin1ToBytes, latin1ToText } from "./protocol/byte-codec.js";
 import { parseUint } from "./protocol/uint.js";
 import { TmuxReplyFormatError } from "./errors.js";
 
@@ -965,14 +965,9 @@ export function parseRecordReply<T>(
   );
 }
 
-// [LAW:one-source-of-truth] Decode a single latin1-container field to real
-// Unicode text, once, at this boundary — the exact idiom CommandResponse's
-// own doc comment names. Every text field on WindowRecord/PaneRecord passes
-// through here; no downstream consumer re-decodes.
-const fieldDecoder = new TextDecoder();
-function decodeField(latin1Field: string): string {
-  return fieldDecoder.decode(latin1ToBytes(latin1Field));
-}
+// [LAW:one-source-of-truth] Every text field on WindowRecord/PaneRecord is
+// decoded once, at this boundary; no downstream consumer re-decodes.
+const decodeField = latin1ToText;
 
 // tmux's #{session_id}/#{window_id}/#{pane_id} format variables are always
 // sigil-prefixed ($N / @N / %N respectively — see SPEC.md and
