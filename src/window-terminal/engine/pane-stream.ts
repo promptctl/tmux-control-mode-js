@@ -34,6 +34,7 @@ import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // (which pulls the Node-only transport and breaks browser bundlers).
 import type {
   BytesSink,
+  ClientSizeSurface,
   SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
@@ -45,13 +46,17 @@ import {
   type CommandResponse,
 } from "../../protocol/index.js";
 
+/** What a pane stream runs over: a connection whose format subscriptions are
+ *  its own methods, so a bridge can end them when the page goes away. */
+export type PaneStreamConnection = TmuxConnection & SubscriptionSurface;
+
 /**
  * What a window terminal runs over: a connection whose format subscriptions
- * are its own methods, so a bridge can end them when the page goes away.
- * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client are all
- * one.
+ * and size declarations are its own methods, so a bridge can end them when
+ * the page goes away. `TmuxClient`, `WebSocketTmuxClient` and the Electron
+ * renderer client are all one.
  */
-export type TerminalConnection = TmuxConnection & SubscriptionSurface;
+export type TerminalConnection = PaneStreamConnection & ClientSizeSurface;
 import {
   getScheduler,
   type ReseedPriority,
@@ -122,7 +127,7 @@ export interface PaneStreamError {
 // priority. There is no stream-side `Visibility` type or setter.
 
 export interface PaneStreamOptions {
-  readonly client: TerminalConnection;
+  readonly client: PaneStreamConnection;
   readonly paneId: number;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
@@ -207,7 +212,7 @@ type SeedCycle =
 export class PaneStream implements ReseedTarget {
   readonly paneId: number;
 
-  private readonly client: TerminalConnection;
+  private readonly client: PaneStreamConnection;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
   private readonly subscriptionName: string;
@@ -352,7 +357,7 @@ export class PaneStream implements ReseedTarget {
 
     // [LAW:dataflow-not-control-flow] The subscription path always runs; it
     // goes through the connection's own subscription methods (see
-    // `TerminalConnection`) so a bridge owns its lifetime.
+    // `PaneStreamConnection`) so a bridge owns its lifetime.
     this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
     this.client.on("subscription-changed", this.onSubscriptionChanged);
     this.subscribeSize();

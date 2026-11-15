@@ -4,6 +4,7 @@
 // A bridge server turns a parsed `RpcRequest` into one of three logical
 // outcomes, and that classification is identical for every transport:
 //   1. intercept the bridge-stateful methods (subscribeRaw / unsubscribe /
+//      setSize / setWindowSize / clearWindowSize /
 //      enableCrossSessionLayoutChange / disableCrossSessionLayoutChange) so
 //      ownership + refcount stay enforced by the shared BridgeConnection,
 //      dispatching everything else through `dispatchRpcRequest`;
@@ -118,6 +119,15 @@ function runBridgeDispatch(
   if (req.method === "unsubscribe") {
     const [name] = req.args;
     return bridge.unsubscribeForPeer(peer, name);
+  }
+  if (req.method === "setSize") {
+    return bridge.sizeClaimOf(peer).setSize(...req.args);
+  }
+  if (req.method === "setWindowSize") {
+    return bridge.sizeClaimOf(peer).setWindowSize(...req.args);
+  }
+  if (req.method === "clearWindowSize") {
+    return bridge.sizeClaimOf(peer).clearWindowSize(...req.args);
   }
   if (req.method === "enableCrossSessionLayoutChange") {
     return bridge.enableCrossSessionLayoutForPeer(peer).then(() => null);

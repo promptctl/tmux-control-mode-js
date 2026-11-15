@@ -18,6 +18,7 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   pollUntil,
+  attachClient,
   attachSession,
   tmux,
 } from "../helpers/integration.js";
@@ -730,6 +731,99 @@ describe.skipIf(!RUN_INTEGRATION)(
       a.client.close();
       b.client.close();
     }, 15_000);
+  },
+);
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "WebSocket bridge — a departed page's window size",
+  () => {
+    let fx: Fixture;
+    let other: TmuxClient | undefined;
+    const pages: WebSocketTmuxClient[] = [];
+    beforeEach(async () => {
+      fx = await startFixture("size");
+    });
+    afterEach(async () => {
+      for (const p of pages.splice(0)) p.close();
+      other?.close();
+      other = undefined;
+      await fx.shutdown();
+    });
+
+    const q = (args: readonly string[]) => tmux(fx.socketName, args);
+    const firstWindow = () =>
+      q(["display-message", "-p", "-t", fx.sessionName, "#{window_id}"]);
+    // tmux resizes a window to its clients when it is visited, on a later
+    // turn of its loop, so each read visits it first.
+    const sizeOf = (window: string) => {
+      q(["select-window", "-t", window]);
+      return q([
+        "display-message",
+        "-p",
+        "-t",
+        window,
+        "#{window_width}x#{window_height}",
+      ]);
+    };
+
+    // A page whose socket can be dropped the way a crashed tab drops it.
+    async function page(): Promise<{
+      client: WebSocketTmuxClient;
+      drop: () => void;
+    }> {
+      let socket: WsClient | undefined;
+      const client = new WebSocketTmuxClient({
+        url: fx.url,
+        createWebSocket: (u) =>
+          (socket = new WsClient(u)) as unknown as BrowserWebSocketLike,
+        autoConnect: true,
+      });
+      pages.push(client);
+      await waitForState(client, "ready");
+      return { client, drop: () => socket!.terminate() };
+    }
+
+    async function declare(
+      p: WebSocketTmuxClient,
+      window: string,
+      width: number,
+      height: number,
+    ): Promise<void> {
+      await p.setSize(width, height);
+      await p.setWindowSize(Number(window.slice(1)), width, height);
+    }
+
+    // Under `latest` clearing the window's size gives it back; under
+    // `smallest` the page's overall size stays a ceiling unless the sizes it
+    // leaves are the other claims'.
+    for (const windowSize of ["latest", "smallest"] as const) {
+      it(`a page that drops without dispose leaves the window at the other page's size (window-size ${windowSize})`, async () => {
+        q(["set", "-g", "window-size", windowSize]);
+        const window = firstWindow();
+        const a = await page();
+        const b = await page();
+        await declare(b.client, window, 120, 40);
+        await declare(a.client, window, 100, 30);
+        await pollUntil(() => sizeOf(window) === "100x30");
+
+        a.drop();
+        await pollUntil(() => sizeOf(window) === "120x40");
+      }, 20_000);
+
+      it(`the last page to drop gives the window back to the other tmux client (window-size ${windowSize})`, async () => {
+        q(["set", "-g", "window-size", windowSize]);
+        const window = firstWindow();
+        other = await attachClient(fx.socketName, fx.sessionName);
+        await other.setSize(120, 40);
+        await pollUntil(() => sizeOf(window) === "120x40");
+        const a = await page();
+        await declare(a.client, window, 100, 30);
+        await pollUntil(() => sizeOf(window) === "100x30");
+
+        a.drop();
+        await pollUntil(() => sizeOf(window) === "120x40");
+      }, 20_000);
+    }
   },
 );
 

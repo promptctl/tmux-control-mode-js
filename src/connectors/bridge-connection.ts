@@ -1,7 +1,7 @@
 // src/connectors/bridge-connection.ts
 // Transport-agnostic per-peer bookkeeping for tmux-control-mode bridges.
 //
-// [LAW:decomposition] This module is the thin FAÇADE composing two ledgers with
+// [LAW:decomposition] This module is the thin FAÇADE composing ledgers with
 // zero overlapping invariants, each keyed on the shared `Peer` token:
 //   - SubscriptionLedger (../subscription-ledger.ts): subscription ownership +
 //     per-name refcount + inflight-promise race handling, so tmux only sees
@@ -11,6 +11,10 @@
 //     outstanding-byte accounting + the watermark loop that pauses / resumes
 //     panes via `client.setPaneAction(...)` based on the SUM of outstanding
 //     bytes across every peer subscribed to a pane.
+//   - ClientSizeLedger (../client-size-ledger.ts): each peer's claim on the
+//     client's size, released when the peer leaves.
+//   - CrossSessionLayoutLedger (../cross-session-layout-ledger.ts): each
+//     peer's references on cross-session layout coverage.
 // The façade owns only the peer roster (token allocation + lifecycle) and wires
 // each public method to the ledger that owns it. It holds no ledger state.
 //
@@ -47,6 +51,8 @@ import {
 import type { Peer } from "./bridge-peer.js";
 import type { BridgeError } from "./errors.js";
 import { SubscriptionLedger } from "./subscription-ledger.js";
+import { ClientSizeLedger } from "./client-size-ledger.js";
+import type { ClientSizeClaim } from "../client-size.js";
 import { CrossSessionLayoutLedger } from "./cross-session-layout-ledger.js";
 import {
   BackpressureLedger,
@@ -135,6 +141,14 @@ export interface BridgeConnection<L extends boolean = boolean> {
    *   forwarded to tmux. Otherwise the helper synthesizes success.
    */
   unsubscribeForPeer(peer: Peer, name: string): Promise<CommandResponse>;
+
+  /**
+   * The claim this peer's size requests (`setSize`, `setWindowSize`,
+   * `clearWindowSize`) go through. The claim is on the client, so every
+   * bridge sharing it sees every peer's sizes; this peer's departure
+   * withdraws its own and leaves the others'.
+   */
+  sizeClaimOf(peer: Peer): ClientSizeClaim;
 
   /**
    * Turn on cross-session layout coverage for this peer: the shared client
@@ -254,6 +268,7 @@ export function createBridgeConnection<L extends boolean>(
     reportResumeFailure,
   });
   const subscription = new SubscriptionLedger({ client });
+  const clientSize = new ClientSizeLedger({ client });
   const crossSessionLayout = new CrossSessionLayoutLedger({
     client,
     reportReleaseFailure: opts.reportCoverageReleaseFailure,
@@ -262,13 +277,14 @@ export function createBridgeConnection<L extends boolean>(
   // [LAW:one-source-of-truth] The façade holds NO peer roster of its own — each
   // ledger is the single source of truth for its own peers (keyed by the shared
   // `Peer` token) and owns their teardown. This closure keeps only the token
-  // counter; every peer-scoped call is pure fan-out to the two ledgers.
+  // counter; every peer-scoped call is pure fan-out to the ledgers.
   let nextPeerId = 1;
 
   return {
     registerPeer(): Peer {
       const peer: Peer = { id: nextPeerId++ };
       subscription.register(peer);
+      clientSize.register(peer);
       backpressure.register(peer);
       crossSessionLayout.register(peer);
       return peer;
@@ -282,6 +298,7 @@ export function createBridgeConnection<L extends boolean>(
       // (last-owner unsubscribe); the two are independent tmux commands.
       backpressure.releasePeer(peer);
       subscription.releasePeer(peer);
+      clientSize.releasePeer(peer);
       crossSessionLayout.releasePeer(peer);
     },
 
@@ -291,6 +308,10 @@ export function createBridgeConnection<L extends boolean>(
 
     unsubscribeForPeer(peer, name) {
       return subscription.unsubscribe(peer, name);
+    },
+
+    sizeClaimOf(peer) {
+      return clientSize.claimOf(peer);
     },
 
     enableCrossSessionLayoutForPeer(peer) {
@@ -342,10 +363,11 @@ export function createBridgeConnection<L extends boolean>(
       // ledger releases every peer (resuming drained panes) then flushes any pane
       // still paused, and the subscription ledger releases every peer (firing
       // last-owner unsubscribes). The façade owns no roster to iterate — it fans
-      // out to the two owners. `dispose` closes over the ledger locals, so a
+      // out to the owners. `dispose` closes over the ledger locals, so a
       // destructured `const { dispose } = bridge; dispose();` still works.
       backpressure.dispose();
       subscription.dispose();
+      clientSize.dispose();
       crossSessionLayout.dispose();
     },
   };

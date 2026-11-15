@@ -38,13 +38,18 @@ import * as commands from "../commands/index.js";
 
 // Cross-session layout coverage is a reference held per peer, so only the
 // bridge's ledger may take one (bridge-dispatch.ts intercepts both methods);
-// a plain TmuxConnection has no relay to enable.
+// a plain TmuxConnection has no relay to enable. A peer's size is a claim on
+// the client it shares with other peers, so only the bridge's ledger may
+// send one.
 export type ConnectionRpcRequest = Exclude<
   RpcRequest,
   {
     readonly method:
       | "enableCrossSessionLayoutChange"
-      | "disableCrossSessionLayoutChange";
+      | "disableCrossSessionLayoutChange"
+      | "setSize"
+      | "setWindowSize"
+      | "clearWindowSize";
   }
 >;
 
@@ -65,8 +70,6 @@ export function dispatchRpcRequest(
       return commands.sendKeys(client, req.args[0], req.args[1]);
     case "splitWindow":
       return commands.splitWindow(client, req.args[0]);
-    case "setSize":
-      return commands.setSize(client, req.args[0], req.args[1]);
     case "setPaneAction":
       return commands.setPaneAction(client, req.args[0], req.args[1]);
     case "subscribeRaw":

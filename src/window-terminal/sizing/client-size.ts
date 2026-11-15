@@ -25,15 +25,16 @@
 //   on the connection writes the slot. A release (or dispose) clears a slot
 //   others may hold, so it tells every other declarer of that window on the
 //   connection to forget what it declared and send its claim again. A
-//   declaration needs no such word: the last one wins.
+//   declaration needs no such word: the last one wins. Connections that
+//   share one tmux client behind a bridge each hold a claim on it, so a
+//   release on one leaves the others' sizes (src/client-size.ts).
 
-import type { TmuxConnection, TmuxEventMap } from "../../browser.js";
-import {
-  clearWindowSize,
-  isConnectionGone,
-  setSize,
-  setWindowSize,
+import type {
+  ClientSizeSurface,
+  TmuxConnection,
+  TmuxEventMap,
 } from "../../browser.js";
+import { isConnectionGone } from "../../browser.js";
 import { rethrowUnlessGone } from "../engine/teardown.js";
 import { windowNumber, type WindowId } from "../ids.js";
 import type { Grid, SizeClaim } from "./solve.js";
@@ -43,15 +44,19 @@ import type { Grid, SizeClaim } from "./solve.js";
 //   registry is keyed by the connection and holds nothing past it.
 const declarers = new WeakMap<TmuxConnection, Set<ClientSizeDeclarer>>();
 
+// The size commands are the connection's own methods, so a bridge can
+// withdraw them when the page goes away.
+type SizedConnection = TmuxConnection & ClientSizeSurface;
+
 export interface ClientSizeDeclarerOptions {
-  readonly connection: TmuxConnection;
+  readonly connection: SizedConnection;
   readonly windowId: WindowId;
   /** A size command tmux refused. A lost connection is not one. */
   readonly onError: (cause: unknown) => void;
 }
 
 export class ClientSizeDeclarer {
-  private readonly connection: TmuxConnection;
+  private readonly connection: SizedConnection;
   private readonly window: number;
   private readonly onError: (cause: unknown) => void;
   private wanted: SizeClaim = { kind: "hold" };
@@ -100,9 +105,9 @@ export class ClientSizeDeclarer {
     this.peers.delete(this);
     if (this.declared !== null) {
       this.declared = null;
-      void clearWindowSize(this.connection, this.window).catch(
-        rethrowUnlessGone,
-      );
+      void this.connection
+        .clearWindowSize(this.window)
+        .catch(rethrowUnlessGone);
       this.reassertPeers();
     }
   }
@@ -157,14 +162,14 @@ export class ClientSizeDeclarer {
         if (same(this.declared) || same(this.refused)) return null;
         this.declared = claim.grid;
         return Promise.all([
-          setSize(this.connection, cols, rows),
-          setWindowSize(this.connection, this.window, cols, rows),
+          this.connection.setSize(cols, rows),
+          this.connection.setWindowSize(this.window, cols, rows),
         ]);
       }
       case "release": {
         if (this.declared === null) return null;
         this.declared = null;
-        const cleared = clearWindowSize(this.connection, this.window);
+        const cleared = this.connection.clearWindowSize(this.window);
         this.reassertPeers();
         return cleared;
       }

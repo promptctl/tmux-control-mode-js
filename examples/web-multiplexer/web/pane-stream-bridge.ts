@@ -23,6 +23,7 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
+  ClientSizeSurface,
   SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
@@ -35,6 +36,9 @@ import {
   serverScope,
   subscribeRaw,
   unsubscribe,
+  setSize,
+  setWindowSize,
+  clearWindowSize,
 } from "@promptctl/tmux-control-mode-js/browser";
 import { PaneStream } from "./window-terminal-internals.ts";
 import type {
@@ -65,7 +69,7 @@ function mapConnState(s: ConnState): ConnectionState {
  * the app's lifetime in the demo — the bridge is never replaced).
  */
 export class BridgePaneStreamClient
-  implements TmuxConnection, SubscriptionSurface
+  implements TmuxConnection, SubscriptionSurface, ClientSizeSurface
 {
   private _connectionState: ConnectionState = { status: "connecting" };
   // Becomes true on the first `ready` transition; subsequent `ready`
@@ -201,6 +205,24 @@ export class BridgePaneStreamClient
 
   unsubscribe(name: string): Promise<CommandResponse> {
     return unsubscribe(this, name);
+  }
+
+  // Nor any claims on the client's size: a size here is the plain
+  // `refresh-client -C`.
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return setSize(this, width, height);
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return setWindowSize(this, windowId, width, height);
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return clearWindowSize(this, windowId);
   }
 
   // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the

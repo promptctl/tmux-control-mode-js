@@ -6,6 +6,34 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- `TerminalConnection` (`./window-terminal`) also requires
+  `ClientSizeSurface`: a connection of your own passed to a window terminal
+  needs `setSize`, `setWindowSize` and `clearWindowSize`. `TmuxClient`,
+  `WebSocketTmuxClient` and the Electron renderer client have them. The
+  window terminal declares its size through them, no longer with `execute()`.
+- The bridge wire gains `setWindowSize` and `clearWindowSize`; upgrade server
+  and client together.
+
+### Added
+
+- `ClientSizeSurface` (exported from `.` and `./browser`): `setSize`,
+  `setWindowSize` and `clearWindowSize` as methods of a connection.
+- `TmuxClient.claimSize()` returns a `ClientSizeClaim` (exported from `.`):
+  one consumer's share of the client's size, withdrawn by `release()`. tmux
+  holds the latest live claim's overall and per-window sizes, and the client
+  counts toward window sizes (`ignore-size` off) only while some claim
+  declares one. `TmuxClient`'s own size methods are one such claim.
+
+### Fixed
+
+- A page that closes without `dispose()` no longer leaves its window size on
+  the bridge's tmux client. Each bridge peer's sizes are a claim on the
+  client the pages share, so a departed page's window reads the other
+  pages' size, or the other tmux clients' once no page declares one, under
+  `window-size latest` and `smallest` alike.
+
 ## [0.3.0] - 2026-11-15
 
 ### Changed — breaking

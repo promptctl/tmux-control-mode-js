@@ -55,7 +55,11 @@ export type {
 } from "./protocol/types.js";
 export { parseWindowLayout } from "./protocol/layout.js";
 export type { ConnectionState } from "./connection-state.js";
-export type { TmuxConnection, SubscriptionSurface } from "./client.js";
+export type {
+  TmuxConnection,
+  SubscriptionSurface,
+  ClientSizeSurface,
+} from "./client.js";
 
 // [LAW:one-source-of-truth] The tmux version-compatibility contract is pure
 //   (zero Node coupling), so it ships identically on the browser surface. A

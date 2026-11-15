@@ -5,6 +5,8 @@ export { TmuxClient } from "./client.js";
 export type {
   TmuxConnection,
   SubscriptionSurface,
+  ClientSizeSurface,
+  ClientSizeClaim,
   SplitOptions,
   TmuxClientOptions,
 } from "./client.js";

@@ -38,7 +38,11 @@ import {
 } from "../../protocol/types.js";
 import { TopologyRouter, type RunCommand } from "../../topology-router.js";
 import type { RpcProxyApi, RpcResponseMap } from "../rpc.js";
-import type { SubscriptionSurface, TmuxConnection } from "../../client.js";
+import type {
+  ClientSizeSurface,
+  SubscriptionSurface,
+  TmuxConnection,
+} from "../../client.js";
 import {
   BridgeError,
   DEFAULT_ACK_BATCH_BYTES,
@@ -82,7 +86,7 @@ import {
  * `%pause`-when-the-client-falls-behind contract.
  */
 export class TmuxClientProxy
-  implements RpcProxyApi, TmuxConnection, SubscriptionSurface
+  implements RpcProxyApi, TmuxConnection, SubscriptionSurface, ClientSizeSurface
 {
   private readonly ipc: IpcRendererLike;
   private readonly emitter: TypedEmitter;
@@ -270,6 +274,21 @@ export class TmuxClientProxy
 
   setSize(width: number, height: number): Promise<CommandResponse> {
     return this.invoke({ method: "setSize", args: [width, height] });
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.invoke({
+      method: "setWindowSize",
+      args: [windowId, width, height],
+    });
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.invoke({ method: "clearWindowSize", args: [windowId] });
   }
 
   setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {

@@ -34,6 +34,11 @@ import {
 import { TopologyRouter } from "./topology-router.js";
 import type { TopologyRouterOptions } from "./topology-router.js";
 import { CrossSessionLayoutRelay } from "./cross-session-layout.js";
+import {
+  ClientSizeClaims,
+  type ClientSizeClaim,
+  type ClientSizeSurface,
+} from "./client-size.js";
 import { CONTROL_FLAGS, isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
 import { closedSendReason } from "./transport/close-gate.js";
@@ -90,6 +95,8 @@ export interface TmuxConnection {
  *   ledger is the one owner of a subscription's lifetime; a `refresh-client -B`
  *   sent with `execute()` bypasses it and outlives the page that sent it.
  */
+export type { ClientSizeClaim, ClientSizeSurface } from "./client-size.js";
+
 export interface SubscriptionSurface {
   subscribeRaw(
     name: string,
@@ -143,7 +150,9 @@ type BlockOwner = Pick<InflightEntry, "resolve" | "reject">;
 // TmuxClient
 // ---------------------------------------------------------------------------
 
-export class TmuxClient implements TmuxConnection, SubscriptionSurface {
+export class TmuxClient
+  implements TmuxConnection, SubscriptionSurface, ClientSizeSurface
+{
   private readonly transport: TmuxTransport;
   private readonly parser: TmuxParser;
   private readonly emitter: TypedEmitter;
@@ -206,6 +215,11 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
   // events via this callback; TmuxClient performs the actual emission,
   // mirroring how TopologyRouter's bootstrap-failure callback works above.
   private readonly crossSessionLayoutRelay: CrossSessionLayoutRelay;
+
+  private readonly sizes = new ClientSizeClaims((command) =>
+    this.execute(command),
+  );
+  private readonly ownSize = this.sizes.claim();
 
   constructor(transport: TmuxTransport, options?: TmuxClientOptions) {
     this.transport = transport;
@@ -362,6 +376,32 @@ export class TmuxClient implements TmuxConnection, SubscriptionSurface {
 
   async unsubscribe(name: string): Promise<CommandResponse> {
     return this.execute(refreshClientUnsubscribe(name));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Client size. This client's own methods are one claim among the claims a
+  // bridge takes for its peers; see src/client-size.ts.
+  // ---------------------------------------------------------------------------
+
+  /** A share of this client's size for one consumer, withdrawn by `release()`. */
+  claimSize(): ClientSizeClaim {
+    return this.sizes.claim();
+  }
+
+  setSize(width: number, height: number): Promise<CommandResponse> {
+    return this.ownSize.setSize(width, height);
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.ownSize.setWindowSize(windowId, width, height);
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.ownSize.clearWindowSize(windowId);
   }
 
   // ---------------------------------------------------------------------------

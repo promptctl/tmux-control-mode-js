@@ -59,6 +59,7 @@ import {
   type WindowRecord,
 } from "../../protocol/types.js";
 import type {
+  ClientSizeSurface,
   SplitOptions,
   SubscriptionSurface,
   TmuxConnection,
@@ -151,7 +152,7 @@ const DEFAULTS = Object.freeze({
 // ---------------------------------------------------------------------------
 
 export class WebSocketTmuxClient
-  implements RpcProxyApi, TmuxConnection, SubscriptionSurface
+  implements RpcProxyApi, TmuxConnection, SubscriptionSurface, ClientSizeSurface
 {
   private readonly emitter = new TypedEmitter();
   // [LAW:single-enforcer] When consumer code runs: every entry point — a
@@ -373,6 +374,18 @@ export class WebSocketTmuxClient
 
   setSize(width: number, height: number): Promise<CommandResponse> {
     return this.call("setSize", [width, height]);
+  }
+
+  setWindowSize(
+    windowId: number,
+    width: number,
+    height: number,
+  ): Promise<CommandResponse> {
+    return this.call("setWindowSize", [windowId, width, height]);
+  }
+
+  clearWindowSize(windowId: number): Promise<CommandResponse> {
+    return this.call("clearWindowSize", [windowId]);
   }
 
   setPaneAction(paneId: number, action: PaneAction): Promise<CommandResponse> {
