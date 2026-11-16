@@ -310,6 +310,8 @@ To bound how long one caller waits, race the command against a timer, and clear
 the timer when the race settles:
 
 ```ts
+import { capturePane } from "@promptctl/tmux-control-mode-js";
+
 async function within<T>(ms: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
@@ -331,11 +333,9 @@ never reaches another command's. To free the commands queued behind a command
 that will never finish, `close()` the connection: the queued commands reject
 with `TransportClosedError`.
 
-A `WebSocketTmuxClient` call is already bounded: it rejects with `BridgeError`
-`BRIDGE_TIMEOUT` after `requestTimeoutMs` (30 s by default). Closing a bridged
-client does not close the server's `TmuxClient` unless the bridge was created
-with `disposeClient`, so by default that `TmuxClient` still waits behind the
-slow command.
+A `WebSocketTmuxClient` call rejects on its own with `BridgeError`
+`BRIDGE_TIMEOUT`, but the same holds there: the command keeps running on the
+server's `TmuxClient`, and a retry waits behind it.
 
 ## Testing
 
