@@ -14,17 +14,14 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
 import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js";
 import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js";
-import type {
-  IpcMainInvokeEventLike,
-  WebContentsLike,
-} from "../../src/connectors/electron/types.js";
+import type { IpcMainEventLike } from "../../src/connectors/electron/types.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 interface Rig {
   readonly pipeline: InvokePipeline;
   readonly registry: SenderRegistry;
-  readonly event: IpcMainInvokeEventLike;
+  readonly event: IpcMainEventLike;
   readonly sent: string[];
   /** Feed a raw control-mode chunk (e.g. a command's %begin/%end reply). */
   feed(chunk: string): void;
@@ -62,9 +59,7 @@ function makeRig(): Rig {
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });
-  const event: IpcMainInvokeEventLike = {
-    sender: createIpcHub().createRenderer().sender,
-  };
+  const event: IpcMainEventLike = createIpcHub().createRenderer().event;
   return { pipeline, registry, event, sent, feed };
 }
 
@@ -129,23 +124,14 @@ describe("InvokePipeline — outcome encoding", () => {
 describe("InvokePipeline — destroyed sender", () => {
   it("aborts an invoke whose sender is already destroyed, without dispatching", async () => {
     const { pipeline, sent } = makeRig();
-    const deadWc: WebContentsLike = {
-      send() {
-        // A destroyed renderer receives nothing.
-      },
-      once() {
-        // No destroyed-listener wiring for an already-dead wc.
-      },
-      removeListener() {
-        // Nothing was attached.
-      },
-      isDestroyed: () => true,
-    };
+    const dead = createIpcHub().createRenderer();
+    const deadEvent = dead.event;
+    dead.destroy();
 
     // The queued invoke lands after the renderer died. getOrCreate refuses to
     // resurrect it, so the pipeline aborts BEFORE dispatching.
     await expect(
-      pipeline.handle({ sender: deadWc }, { method: "execute", args: ["ls"] }),
+      pipeline.handle(deadEvent, { method: "execute", args: ["ls"] }),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_ABORTED" },

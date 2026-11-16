@@ -66,27 +66,68 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 // leaking into every call site.
 // ---------------------------------------------------------------------------
 
+/**
+ * A frame host (Electron's `WebFrameMain`), by the ids that name it. A
+ * frame's document lives in one render frame host; a navigation that swaps
+ * hosts gives the frame a new `routingId` (never reused within a process) or
+ * a new process.
+ */
+export interface WebFrameLike {
+  readonly processId: number;
+  readonly routingId: number;
+}
+
+/**
+ * The WebContents events after which the page it showed is gone: the
+ * WebContents itself destroyed, its main frame committed to a new document
+ * (a reload or navigation — same-document navigations fire
+ * `did-navigate-in-page` instead), or its renderer process crashed.
+ */
+export const PAGE_END_EVENTS = [
+  "destroyed",
+  "did-navigate",
+  "render-process-gone",
+] as const;
+export type PageEndEvent = (typeof PAGE_END_EVENTS)[number];
+
+/**
+ * A load in the WebContents failed. A failed main-frame load that commits an
+ * error page swaps the frame host and fires this instead of `did-navigate`;
+ * a failure that commits nothing (an aborted navigation) leaves the page
+ * shown.
+ */
+export type LoadFailedEvent = "did-fail-load";
+
 export interface WebContentsLike {
   send(channel: IpcChannel, ...args: unknown[]): void;
-  once(event: "destroyed", listener: () => void): void;
   /**
-   * Required so the bridge can detach its `destroyed` listener when a
-   * sender is torn down via `unregister` while the WebContents is still
-   * alive. Without this the once-handler closure stays attached to the
-   * emitter for the WebContents's remaining lifetime, leaks the senders
-   * Map slot it referenced, and fires later as a no-op against a
-   * sender that no longer exists.
+   * The frame host of the page this WebContents shows. After `destroy()` it
+   * still reads the last host; before Electron 34, reading it after a
+   * renderer crash throws until a new document commits.
    */
-  removeListener(event: "destroyed", listener: () => void): void;
+  readonly mainFrame: WebFrameLike;
+  once(event: PageEndEvent, listener: () => void): void;
+  on(event: LoadFailedEvent, listener: () => void): void;
+  /**
+   * Required so the bridge can detach its page listeners when a sender is
+   * torn down via `unregister` while the page is still alive. Without this
+   * a listener stays attached to the emitter for the WebContents's remaining
+   * lifetime and fires later against a page that never registered.
+   */
+  removeListener(
+    event: PageEndEvent | LoadFailedEvent,
+    listener: () => void,
+  ): void;
   isDestroyed(): boolean;
+  isCrashed(): boolean;
 }
 
-export interface IpcMainInvokeEventLike {
-  readonly sender: WebContentsLike;
-}
-
+/** An IPC message as ipcMain receives it: the WebContents and the frame host
+ *  (`processId`, `frameId` = the host's `routingId`) that sent it. */
 export interface IpcMainEventLike {
   readonly sender: WebContentsLike;
+  readonly processId: number;
+  readonly frameId: number;
 }
 
 export type IpcMainOnListener = (
@@ -95,7 +136,7 @@ export type IpcMainOnListener = (
 ) => void;
 
 export type IpcMainInvokeListener = (
-  event: IpcMainInvokeEventLike,
+  event: IpcMainEventLike,
   ...args: unknown[]
 ) => unknown | Promise<unknown>;
 

@@ -23,6 +23,7 @@ import type {
 import type { ConnectionState } from "../../src/connection-state.js";
 import {
   IPC,
+  type IpcMainEventLike,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
 import {
@@ -32,13 +33,13 @@ import {
 } from "../../src/connectors/electron/sender-registry.js";
 import { createIpcHub, type FakeRenderer } from "./_helpers/ipc-hub.js";
 
-// getOrCreate returns `SenderState | undefined` (undefined for a destroyed wc).
-// In tests that pass a live wc, narrow explicitly rather than asserting non-null.
+// getOrCreate returns `SenderState | undefined` (undefined once the sending page
+// has ended). In tests that pass a live page, narrow explicitly rather than asserting non-null.
 function mustCreate(
   registry: SenderRegistry,
-  wc: WebContentsLike,
+  event: IpcMainEventLike,
 ): SenderState {
-  const state = registry.getOrCreate(wc);
+  const state = registry.getOrCreate(event);
   if (state === undefined) throw new Error("expected a live sender for wc");
   return state;
 }
@@ -48,36 +49,50 @@ function mustCreate(
 // (isDestroyed → teardown) in isolation from the destroy-handler teardown path.
 interface ControllableWc {
   readonly wc: WebContentsLike;
+  readonly event: IpcMainEventLike;
   readonly sends: unknown[];
   setDestroyed(): void;
-  destroyHandlerCount(): number;
+  /** Crashed, with `mainFrame` still readable (Electron 34+). */
+  setCrashed(): void;
+  pageListenerCount(): number;
 }
 
 function makeControllableWc(): ControllableWc {
   let destroyed = false;
+  let crashed = false;
   const sends: unknown[] = [];
-  const listeners = new Set<() => void>();
+  const attached = new Map<string, Set<() => void>>();
+  const attach = (event: string, listener: () => void): void => {
+    const set = attached.get(event) ?? new Set();
+    attached.set(event, set.add(listener));
+  };
   const wc: WebContentsLike = {
     send(_channel, ...args) {
       sends.push(args[0]);
     },
-    once(event, listener) {
-      if (event === "destroyed") listeners.add(listener);
-    },
+    mainFrame: { processId: 1, routingId: 1 },
+    once: attach,
+    on: attach,
     removeListener(event, listener) {
-      if (event === "destroyed") listeners.delete(listener);
+      attached.get(event)?.delete(listener);
     },
     isDestroyed() {
       return destroyed;
     },
+    isCrashed: () => crashed,
   };
   return {
     wc,
+    event: { sender: wc, processId: 1, frameId: 1 },
     sends,
     setDestroyed() {
       destroyed = true;
     },
-    destroyHandlerCount: () => listeners.size,
+    setCrashed() {
+      crashed = true;
+    },
+    pageListenerCount: () =>
+      [...attached.values()].reduce((n, set) => n + set.size, 0),
   };
 }
 
@@ -164,26 +179,26 @@ describe("SenderRegistry — peer lifecycle", () => {
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
 
-    const a = mustCreate(registry, r.sender);
-    const b = mustCreate(registry, r.sender);
+    const a = mustCreate(registry, r.event);
+    const b = mustCreate(registry, r.event);
 
     expect(a).toBe(b);
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
     expect(a.peer).toBe(bridge.peers[0]);
   });
 
-  it("attaches one destroyed handler whose firing drives teardown (removePeer)", () => {
+  it("attaches one page-end handler whose firing drives teardown (removePeer)", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
 
-    const state = mustCreate(registry, r.sender);
-    expect(r.destroyHandlerCount()).toBe(1);
+    const state = mustCreate(registry, r.event);
+    expect(r.pageListenerCount()).toBe(4);
 
     r.destroy();
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
-    // The destroyed handler was consumed by `once` firing.
-    expect(r.destroyHandlerCount()).toBe(0);
+    // The fired handler was consumed by `once`; teardown detached the rest.
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("refuses to resurrect a sender for an already-destroyed wc (post-teardown invoke race)", () => {
@@ -191,7 +206,7 @@ describe("SenderRegistry — peer lifecycle", () => {
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const dead = makeControllableWc();
 
-    mustCreate(registry, dead.wc); // live: one peer registered
+    mustCreate(registry, dead.event); // live: one peer registered
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
 
     // Renderer dies: teardown runs (as its destroyed handler would) and the wc
@@ -200,9 +215,97 @@ describe("SenderRegistry — peer lifecycle", () => {
     dead.setDestroyed();
 
     // No new sender, no leaked peer, no never-firing destroyed listener.
-    expect(registry.getOrCreate(dead.wc)).toBeUndefined();
+    expect(registry.getOrCreate(dead.event)).toBeUndefined();
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
-    expect(dead.destroyHandlerCount()).toBe(0);
+    expect(dead.pageListenerCount()).toBe(0);
+  });
+});
+
+describe("SenderRegistry — the live page", () => {
+  it("refuses a message from a frame other than the page's main frame", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const subframe = { ...r.event, frameId: r.event.frameId + 1 };
+
+    expect(registry.getOrCreate(subframe)).toBeUndefined();
+    registry.register(subframe);
+    expect(bridge.registerPeer).not.toHaveBeenCalled();
+  });
+
+  it("a navigation tears the page's sender down", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = mustCreate(registry, r.event);
+
+    r.navigate();
+    expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
+    expect(mustCreate(registry, r.event).peer).not.toBe(state.peer);
+  });
+
+  it("a failed load that commits an error page tears the page's sender down", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = mustCreate(registry, r.event);
+
+    r.failLoad({ commitErrorPage: true });
+    expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
+    expect(r.pageListenerCount()).toBe(0);
+  });
+
+  it("a failed load that commits nothing leaves the page's sender", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = mustCreate(registry, r.event);
+
+    r.failLoad({ commitErrorPage: false });
+    expect(bridge.removePeer).not.toHaveBeenCalled();
+    expect(registry.getOrCreate(r.event)).toBe(state);
+  });
+
+  it("refuses a crashed renderer's queued message when its frame still reads (Electron 34+)", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const dead = makeControllableWc();
+    mustCreate(registry, dead.event);
+
+    registry.teardown(dead.wc); // as render-process-gone would
+    dead.setCrashed();
+    expect(registry.getOrCreate(dead.event)).toBeUndefined();
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
+  });
+
+  it("an ack from a page that has ended releases nothing against the next page's peer", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const old = r.event;
+    mustCreate(registry, old);
+
+    r.navigate({ swapFrame: true });
+    mustCreate(registry, r.event);
+    registry.ack(old, { paneId: 3, bytes: 128 });
+    expect(bridge.ackOutput).not.toHaveBeenCalled();
+  });
+
+  it("refuses what a crashed renderer had queued, without reading its disposed frame", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const dead = r.event;
+    mustCreate(registry, dead);
+
+    r.crash();
+    expect(() => r.sender.mainFrame).toThrow();
+    expect(registry.getOrCreate(dead)).toBeUndefined();
+    registry.register(dead);
+    registry.ack(dead, { paneId: 3, bytes: 128 });
+    registry.unregister(dead);
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
+    expect(bridge.ackOutput).not.toHaveBeenCalled();
   });
 });
 
@@ -215,8 +318,8 @@ describe("SenderRegistry — register", () => {
     const r = createIpcHub().createRenderer();
     const events = captureEvents(r);
 
-    registry.register(r.sender);
-    registry.register(r.sender);
+    registry.register(r.event);
+    registry.register(r.event);
 
     // Byte sink attached exactly once despite two register calls.
     expect(client.attachBytesSink).toHaveBeenCalledTimes(1);
@@ -232,8 +335,8 @@ describe("SenderRegistry — register", () => {
     const registry = new SenderRegistry({ bridge, client });
     const r = createIpcHub().createRenderer();
     const events = captureEvents(r);
-    registry.register(r.sender);
-    const state = mustCreate(registry, r.sender);
+    registry.register(r.event);
+    const state = mustCreate(registry, r.event);
 
     const chunk: ChunkPayload = {
       paneId: 7,
@@ -263,9 +366,9 @@ describe("SenderRegistry — ack", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
-    const state = mustCreate(registry, r.sender);
+    const state = mustCreate(registry, r.event);
 
-    registry.ack(r.sender, { paneId: 3, bytes: 128 });
+    registry.ack(r.event, { paneId: 3, bytes: 128 });
     expect(bridge.ackOutput).toHaveBeenCalledWith(state.peer, 3, 128);
   });
 
@@ -273,11 +376,11 @@ describe("SenderRegistry — ack", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const known = createIpcHub().createRenderer();
-    registry.getOrCreate(known.sender);
+    registry.getOrCreate(known.event);
 
-    registry.ack(known.sender, { paneId: -1, bytes: 5 }); // invalid paneId
-    registry.ack(known.sender, "not-an-object");
-    registry.ack(createIpcHub().createRenderer().sender, {
+    registry.ack(known.event, { paneId: -1, bytes: 5 }); // invalid paneId
+    registry.ack(known.event, "not-an-object");
+    registry.ack(createIpcHub().createRenderer().event, {
       paneId: 0,
       bytes: 1,
     }); // unknown sender
@@ -292,8 +395,8 @@ describe("SenderRegistry — teardown", () => {
     const client = makeClient();
     const registry = new SenderRegistry({ bridge, client });
     const r = createIpcHub().createRenderer();
-    registry.register(r.sender);
-    const state = mustCreate(registry, r.sender);
+    registry.register(r.event);
+    const state = mustCreate(registry, r.event);
 
     registry.teardown(r.sender);
     registry.teardown(r.sender); // idempotent
@@ -302,14 +405,14 @@ describe("SenderRegistry — teardown", () => {
     expect(bridge.removePeer).toHaveBeenCalledTimes(1);
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     // Listener detached from the still-alive emitter (unregister-driven path).
-    expect(r.destroyHandlerCount()).toBe(0);
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("flags every in-flight dispatch of the torn-down sender aborted", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
-    const state = mustCreate(registry, r.sender);
+    const state = mustCreate(registry, r.event);
 
     // Stand in for the invoke pipeline: two in-flight dispatches on this sender.
     const a: PendingDispatch = { aborted: false };
@@ -331,8 +434,8 @@ describe("SenderRegistry — teardown", () => {
     const hub = createIpcHub();
     const a = hub.createRenderer();
     const b = hub.createRenderer();
-    registry.getOrCreate(a.sender);
-    registry.getOrCreate(b.sender);
+    registry.getOrCreate(a.event);
+    registry.getOrCreate(b.event);
 
     registry.teardownAll();
     expect(bridge.removePeer).toHaveBeenCalledTimes(2);
@@ -350,8 +453,8 @@ describe("SenderRegistry — broadcast", () => {
     const subEvents = captureEvents(subscribed);
     const unsubEvents = captureEvents(unsubscribed);
 
-    registry.register(subscribed.sender); // isSubscribed = true
-    registry.getOrCreate(unsubscribed.sender); // never register → not subscribed
+    registry.register(subscribed.event); // isSubscribed = true
+    registry.getOrCreate(unsubscribed.event); // never register → not subscribed
     subEvents.length = 0; // drop the register-time connection-state snapshot
 
     registry.broadcast({ type: "reconnected" });
@@ -369,8 +472,8 @@ describe("SenderRegistry — broadcast", () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const dead = makeControllableWc();
-    registry.register(dead.wc);
-    const state = mustCreate(registry, dead.wc);
+    registry.register(dead.event);
+    const state = mustCreate(registry, dead.event);
     dead.sends.length = 0; // drop the register-time connection-state snapshot
 
     dead.setDestroyed(); // destroyed, but the once-handler did NOT fire
@@ -382,7 +485,7 @@ describe("SenderRegistry — broadcast", () => {
     expect(bridge.removePeer).toHaveBeenCalledTimes(1);
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     expect(dead.sends).toEqual([]);
-    expect(dead.destroyHandlerCount()).toBe(0);
+    expect(dead.pageListenerCount()).toBe(0);
 
     // Reaped: a second broadcast finds nothing to tear down.
     registry.broadcast({ type: "reconnected" });

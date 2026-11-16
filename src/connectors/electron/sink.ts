@@ -55,7 +55,9 @@ import { IPC, type WebContentsLike } from "./types.js";
  * @see attachWebContentsSink for the one-line convenience wrapper.
  */
 export class WebContentsSink implements BytesSink {
-  constructor(private readonly wc: WebContentsLike) {}
+  constructor(
+    private readonly wc: Pick<WebContentsLike, "send" | "isDestroyed">,
+  ) {}
 
   write(msg: ChunkPayload): void {
     // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check
@@ -100,7 +102,7 @@ export class WebContentsSink implements BytesSink {
  */
 export function attachWebContentsSink(
   client: Pick<TmuxConnection, "attachBytesSink">,
-  wc: WebContentsLike,
+  wc: Pick<WebContentsLike, "send" | "isDestroyed">,
   options?: AttachOptions,
 ): () => void {
   return client.attachBytesSink(new WebContentsSink(wc), options);
