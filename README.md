@@ -236,13 +236,15 @@ A prop taken away returns to its default.
 
 `xterm` is xterm.js's options for every pane (`ITerminalOptions`): `theme`,
 `fontFamily`, `linkHandler`, `cursorStyle`, `disableStdin` and the rest. An
-option left out returns to its default. A key xterm.js does not have, a value it refuses, or a `lineHeight` or `letterSpacing` that is not finite throws
-`RangeError` at the call that passed it, changing nothing. The terminal sets
-the ones tmux or its layout decides, and the type refuses them: `cols` and
-`rows`, `fontSize` (`sizing.font`), `scrollback` (`history`), `tabStopWidth`
-(tmux's tab stops), `windowOptions` (tmux answers the window reports),
-`overviewRulerWidth` (a pane is exactly its cells wide), `allowProposedApi`
-(below), `convertEol`, `windowsMode`, `windowsPty` and `documentOverride`.
+option left out returns to its default. A key xterm.js does not have, a
+value it refuses, or a `lineHeight` or `letterSpacing` that is not finite
+throws `RangeError` at the call that passed it, changing nothing. The
+terminal sets the ones tmux or its layout decides, and the type refuses
+them: `cols` and `rows`, `fontSize` (`sizing.font`), `scrollback`
+(`history`), `tabStopWidth` (tmux's tab stops), `windowOptions` (tmux
+answers the window reports), `overviewRuler` (a pane is exactly its cells
+wide), `allowProposedApi` (below), `convertEol`, `windowsMode`, `windowsPty`
+and `documentOverride`.
 
 A pane counts a character's cells as tmux does: an emoji is two, a character
 with VS16 two, and a ZWJ sequence or a flag is one character, so whatever
@@ -265,9 +267,9 @@ loads is an `onError` (`render`), as an addon that throws.
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads; it is read at mount. An addon that throws as a pane opens is
 an `onError` (`render`), and that pane stays empty. Panes are laid out in the
-cell their renderer draws, xterm.js's DOM renderer or a renderer addon (WebGL,
-canvas). xterm.js 5.5 makes an OSC 8 link with
-a scheme other than `http:` or `https:` only when `linkHandler` allows it:
+cell their renderer draws, xterm.js's DOM renderer or the WebGL addon.
+xterm.js 6 makes an OSC 8 link with a scheme other than `http:` or `https:`
+only when `linkHandler` allows it:
 
 ```tsx
 import type {

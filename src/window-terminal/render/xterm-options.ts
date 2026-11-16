@@ -8,7 +8,11 @@
 //   a new xterm option needs no change here.
 
 import { Terminal } from "@xterm/xterm";
-import type { ITerminalAddon, ITerminalOptions } from "@xterm/xterm";
+import type {
+  ITerminalAddon,
+  ITerminalInitOnlyOptions,
+  ITerminalOptions,
+} from "@xterm/xterm";
 import type { CellFont } from "../sizing/cell-metrics.js";
 
 /**
@@ -21,13 +25,14 @@ export type XtermAddons = () => readonly ITerminalAddon[];
 /**
  * The xterm.js options the window terminal sets itself, because tmux or the
  * terminal decides them: tmux sizes the window (cols, rows), its bytes are
- * written as sent (convertEol), its panes keep 8-column tab stops
- * (tabStopWidth) and answer the window reports themselves (windowOptions),
- * the sizing solver picks the font size from `sizing.font` (fontSize),
- * `history` is the scrollback (scrollback), a pane's box is exactly its
- * cells wide, so a ruler would cover its last columns (overviewRulerWidth),
- * and a character's cells are counted as tmux counts them, through xterm's
- * proposed Unicode API (allowProposedApi).
+ * written as sent and its lines wrap and reflow as tmux's do (convertEol,
+ * windowsMode), its panes keep 8-column tab stops (tabStopWidth) and answer
+ * the window reports themselves (windowOptions), the sizing solver picks the
+ * font size from `sizing.font` (fontSize), `history` is the scrollback
+ * (scrollback), a pane's box is exactly its cells wide, so a ruler would
+ * cover its last columns (overviewRuler), and a character's cells are
+ * counted as tmux counts them, through xterm's proposed Unicode API
+ * (allowProposedApi).
  */
 export const TERMINAL_OWNED = [
   "cols",
@@ -40,9 +45,16 @@ export const TERMINAL_OWNED = [
   "scrollback",
   "tabStopWidth",
   "windowOptions",
-  "overviewRulerWidth",
+  "overviewRuler",
   "allowProposedApi",
-] as const;
+  // [LAW:types-are-the-program] A key xterm renames stops the build. The one
+  //   key outside xterm's typings is windowsMode, which xterm.js 6 dropped
+  //   from them but still acts on.
+] as const satisfies readonly (
+  | keyof ITerminalOptions
+  | keyof ITerminalInitOnlyOptions
+  | "windowsMode"
+)[];
 
 /** xterm.js's options for every pane, less the ones the terminal owns. */
 export type XtermOptions = Omit<

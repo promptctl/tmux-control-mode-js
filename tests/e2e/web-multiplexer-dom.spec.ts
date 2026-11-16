@@ -329,6 +329,62 @@ test("an emoji with VS16 takes two cells, as tmux counts it, with no Unicode add
   }
 });
 
+test("a pane scrolled back by the wheel still shows its last column, with no scrollbar over it", async () => {
+  const handle = await launchApp();
+  try {
+    const { page, socket } = handle;
+    // More lines than any pane holds, so the wheel has history to scroll.
+    tmux(socket, [
+      "send-keys",
+      "-t",
+      "web-multiplexer-demo",
+      "seq -f n%g 1 300",
+      "Enter",
+    ]);
+    // The session's one pane, so its right edge is the window's.
+    const pane = page.locator(".wt-pane:not([hidden])").first();
+    const rows = pane.locator(".xterm-rows");
+    // `n300` is the output's alone: the echoed command reads `n%g 1 300`.
+    await expect(rows).toContainText("n300", { timeout: 15_000 });
+    // tmux's window can be larger than the demo's box, so the window
+    // scrolls: bring the pane's right edge into view, and take the point on
+    // the pane's last column halfway down the part of it the window shows.
+    const point = await pane.evaluate((p) => {
+      const root = p.closest(".wt-root");
+      if (root === null) throw new Error("the pane is not in a window");
+      root.scrollLeft = root.scrollWidth;
+      const edge = p.getBoundingClientRect();
+      const shown = root.getBoundingClientRect();
+      const top = Math.max(edge.top, shown.top);
+      const bottom = Math.min(edge.bottom, shown.bottom);
+      return { x: edge.right - 2, y: (top + bottom) / 2 };
+    });
+    // A pointer over the pane keeps xterm's scrollbar revealed, so it cannot
+    // fade out of the hit test.
+    await page.mouse.move(point.x, point.y);
+    await page.mouse.wheel(0, -4000);
+    await expect(rows).not.toContainText("n300");
+    const hit = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      if (el === null) return "nothing";
+      if (el.closest(".scrollbar") !== null) return "scrollbar";
+      if (el.closest(".xterm-screen") !== null) return "screen";
+      return `${el.tagName}.${el.getAttribute("class") ?? ""}`;
+    }, point);
+    expect(hit).toBe("screen");
+    // The viewport under the screen keeps no native scrollbar, which a
+    // transparent theme would show over the last column.
+    const strip = await pane.evaluate((p) => {
+      const v = p.querySelector<HTMLElement>(".xterm-viewport");
+      if (v === null) throw new Error("the pane has no viewport");
+      return v.offsetWidth - v.clientWidth;
+    });
+    expect(strip).toBe(0);
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
 test("each pane's xterm fills its pane box exactly, drawn by the DOM renderer or by WebGL", async () => {
   const handle = await launchApp();
   try {
