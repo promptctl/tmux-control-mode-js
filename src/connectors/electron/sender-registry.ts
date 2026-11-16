@@ -4,11 +4,13 @@
 // SenderState, the per-renderer byte forwarder, subscription gating, and the
 // event fan-out over senders. The wiring shell holds no sender state.
 //
-// [LAW:one-source-of-truth] One SenderState entry per renderer, and one `Peer`
-// token per renderer registered with the shared BridgeConnection helper.
-// `teardown` is the only path that releases both — subscription refcount,
-// outstanding-byte accounting, byte forwarder, and destroyed-listener all drop
-// together, in one place.
+// [LAW:one-source-of-truth] One SenderState entry per page a WebContents shows,
+// and one `Peer` token per page registered with the shared BridgeConnection
+// helper. A page ends when its WebContents is destroyed, navigates to a new
+// document, or loses its renderer process; `teardown` is the only path that
+// releases both — subscription refcount, size claim, outstanding-byte
+// accounting, byte forwarder, and page-end listeners all drop together, in one
+// place.
 //
 // [LAW:one-way-deps] This module knows nothing about the invoke pipeline. It
 // defines the per-sender record — including the `pending` set of in-flight
@@ -20,7 +22,13 @@ import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
 import { serverScope, type BytesSink } from "../../pane-output.js";
 import type { BridgeConnection, Peer } from "../bridge-connection.js";
-import { IPC, parseAckMessage, type WebContentsLike } from "./types.js";
+import {
+  IPC,
+  parseAckMessage,
+  type IpcMainEventLike,
+  type PageEndEvent,
+  type WebContentsLike,
+} from "./types.js";
 import { WebContentsSink } from "./sink.js";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +37,7 @@ import { WebContentsSink } from "./sink.js";
 // Subscription ownership, refcount, and outstanding-byte accounting all live
 // inside the shared BridgeConnection helper, keyed by the `peer` token below.
 // SenderState carries only what is electron-specific: the WebContents, the
-// destroyed-listener handle, the isSubscribed flag that gates event forwarding,
+// page-end listener handle, the isSubscribed flag that gates event forwarding,
 // and the in-flight invoke abort-flags. The invoke pipeline creates the
 // PendingDispatch objects and owns their lifecycle; this record is where they
 // live and where teardown flags them, so there is one place a sender's fate is
@@ -55,15 +63,12 @@ export interface SenderState {
   /** True once the renderer has sent IPC.register; toggled off by unregister. */
   isSubscribed: boolean;
   /**
-   * The exact `destroyed` listener registered with `wc.once`. Stored so
-   * `teardown` can call `wc.removeListener` when teardown is driven by
-   * `unregister` instead of by the WebContents actually being destroyed —
-   * otherwise the once-handler stays attached on a still-alive emitter,
-   * fires later (as a no-op against a sender that no longer exists), and
-   * keeps a closure-reference path alive on the emitter for the rest of
-   * the WebContents's lifetime.
+   * The exact listener registered with `wc.once` for every PAGE_END_EVENTS
+   * entry. Stored so `teardown` can call `wc.removeListener` for the events
+   * that did not fire — otherwise a once-handler stays attached on a
+   * still-alive emitter and tears down the NEXT page's sender when it fires.
    */
-  readonly onDestroyed: () => void;
+  readonly onPageEnd: () => void;
   /** In-flight invoke dispatches owned by this sender. The pipeline adds/removes
    *  entries; teardown flags them all aborted. */
   readonly pending: Set<PendingDispatch>;
@@ -85,47 +90,71 @@ export interface SenderRegistryDeps {
   readonly client: Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 }
 
+const PAGE_END_EVENTS: readonly PageEndEvent[] = [
+  "destroyed",
+  "did-navigate",
+  "render-process-gone",
+];
+
+/**
+ * Whether `event` was sent by the page its WebContents shows now.
+ *
+ * [LAW:single-enforcer] The one test every renderer message passes before it
+ * touches a sender. A page that has ended can still have messages in flight:
+ * an invoke the old page queued may land after `did-navigate` tore its sender
+ * down. When the navigation reused the frame host, Chromium delivers the old
+ * document's IPC before the commit that fires `did-navigate`, so it reached
+ * the old sender; when it swapped hosts, the old host's ids no longer match
+ * `mainFrame`. (`WebFrameMain` object identity is no test: before Electron 34
+ * one object follows the frame across host swaps.) Messages from subframes
+ * fail too — a page has one peer, its main frame's.
+ */
+function sentByLivePage(event: IpcMainEventLike): boolean {
+  const wc = event.sender;
+  // `mainFrame` throws on a destroyed WebContents.
+  if (wc.isDestroyed()) return false;
+  const frame = wc.mainFrame;
+  return (
+    event.processId === frame.processId && event.frameId === frame.routingId
+  );
+}
+
 export class SenderRegistry {
   private readonly senders = new Map<WebContentsLike, SenderState>();
 
   constructor(private readonly deps: SenderRegistryDeps) {}
 
   /**
-   * The SenderState for `wc`, creating it (and registering its peer + destroyed
-   * handler) on first sight. Called by both `register` and the invoke pipeline,
-   * so a renderer that only ever invoke()s — never register()s — still cleans up
-   * when its webContents dies.
+   * The SenderState for the page that sent `event`, creating it (and
+   * registering its peer + page-end handler) on first sight. Called by both
+   * `register` and the invoke pipeline, so a renderer that only ever invoke()s
+   * — never register()s — still cleans up when its page ends.
    *
-   * Returns `undefined` for an already-destroyed WebContents (see below):
-   * callers abort rather than resurrect a sender that can never be torn down.
+   * [LAW:types-are-the-program] [LAW:no-silent-failure] Returns `undefined`
+   * when the sending page has ended (see sentByLivePage): its page-end event
+   * has already fired, so a fresh peer would never be torn down — or, after a
+   * navigation, would be inherited by the next page. Callers abort instead of
+   * billing a peer and running a real command for a page that is gone.
    */
-  getOrCreate(wc: WebContentsLike): SenderState | undefined {
+  getOrCreate(event: IpcMainEventLike): SenderState | undefined {
+    if (!sentByLivePage(event)) return undefined;
+    const wc = event.sender;
     const existing = this.senders.get(wc);
     if (existing !== undefined) return existing;
-    // [LAW:types-are-the-program] [LAW:no-silent-failure] Refuse to resurrect a
-    // sender for an already-destroyed WebContents. Its `destroyed` event has
-    // already fired (that is what drove teardown), so a fresh peer + a new
-    // `wc.once("destroyed")` listener would leak forever — the only trigger for
-    // teardown never comes again. This is the post-teardown race: a queued
-    // invoke lands after the renderer died. A destroyed wc has no live sender;
-    // the type says so, and the pipeline turns it into an aborted reply instead
-    // of billing a peer and running a real command for a dead renderer.
-    if (wc.isDestroyed()) return undefined;
-    // [LAW:single-enforcer] One destroyed-handler per sender. The handler is
-    // stored on the sender so `teardown` can detach it when the unregister
-    // path runs and wc is still alive.
-    const onDestroyed = (): void => this.teardown(wc);
+    // [LAW:single-enforcer] One page-end handler per sender, stored on the
+    // sender so `teardown` can detach it from the events that did not fire.
+    const onPageEnd = (): void => this.teardown(wc);
     const peer = this.deps.bridge.registerPeer();
     const state: SenderState = {
       wc,
       peer,
       isSubscribed: false,
-      onDestroyed,
+      onPageEnd,
       pending: new Set(),
       detachBytes: null,
     };
     this.senders.set(wc, state);
-    wc.once("destroyed", onDestroyed);
+    for (const e of PAGE_END_EVENTS) wc.once(e, onPageEnd);
     return state;
   }
 
@@ -134,11 +163,12 @@ export class SenderRegistry {
    * byte forwarder exactly once, and send the current connection-state snapshot
    * so a late-joining renderer has the lifecycle state immediately.
    */
-  register(wc: WebContentsLike): void {
-    const state = this.getOrCreate(wc);
-    // A register that lands after the renderer was destroyed has no live sender
-    // to subscribe — nothing to attach, nothing to snapshot to a dead wc.
+  register(event: IpcMainEventLike): void {
+    const state = this.getOrCreate(event);
+    // [LAW:no-silent-failure] exception: a register from a page that has ended
+    // has no one to answer — nothing to attach, nothing to snapshot.
     if (state === undefined) return;
+    const wc = state.wc;
     state.isSubscribed = true;
     // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
     // exactly once per registration. Each renderer's sink is the routing
@@ -191,8 +221,11 @@ export class SenderRegistry {
    * Handle a renderer's IPC.ack: validate at the trust boundary and forward the
    * released byte count to the bridge's backpressure accounting.
    */
-  ack(wc: WebContentsLike, arg: unknown): void {
-    const state = this.senders.get(wc);
+  ack(event: IpcMainEventLike, arg: unknown): void {
+    // An ack from a page that has ended releases nothing: its bytes were
+    // released with its peer.
+    if (!sentByLivePage(event)) return;
+    const state = this.senders.get(event.sender);
     if (state === undefined) return;
     // [LAW:single-enforcer] Validation happens at the IPC trust boundary.
     // Bad acks from a compromised renderer are dropped silently — they can
@@ -209,27 +242,37 @@ export class SenderRegistry {
   }
 
   /**
+   * Handle a renderer's IPC.unregister. An unregister from a page that has
+   * ended must not tear down the page shown now.
+   */
+  unregister(event: IpcMainEventLike): void {
+    if (!sentByLivePage(event)) return;
+    this.teardown(event.sender);
+  }
+
+  /**
    * Tear this sender down through the single unified path. Idempotent: a noop
-   * when the sender is already gone, so a double-firing renderer (or a late
-   * `destroyed` after `unregister`) cannot decrement refcounts twice.
+   * when the sender is already gone, so a double-firing renderer cannot
+   * decrement refcounts twice.
    */
   teardown(wc: WebContentsLike): void {
     const state = this.senders.get(wc);
     if (state === undefined) return;
     this.senders.delete(wc);
 
-    // (0) Detach the destroyed handler. If we got here BECAUSE the wc was
-    //     destroyed, removeListener is harmless (the listener has already
-    //     fired and been removed by `once`). If we got here from unregister
-    //     while the wc is still alive, this is the only thing that prevents
-    //     a leaked listener on the emitter — see SenderState.onDestroyed.
-    state.wc.removeListener("destroyed", state.onDestroyed);
+    // (0) Detach the page-end handler from every event. The one that fired
+    //     (if any) has already been removed by `once`; the rest would
+    //     otherwise fire later against the next page — see
+    //     SenderState.onPageEnd.
+    for (const e of PAGE_END_EVENTS) {
+      state.wc.removeListener(e, state.onPageEnd);
+    }
 
     // (1) Flag in-flight invokes for this sender aborted. The TmuxClient FIFO
     //     stays intact — the underlying %begin/%end still resolves the pending
     //     entry in order — but the invoke pipeline observes the abort and
-    //     returns a BRIDGE_ABORTED envelope instead of delivering to a dead
-    //     webContents. The pipeline created these entries; teardown decides the
+    //     returns a BRIDGE_ABORTED envelope instead of delivering to a page
+    //     that is gone. The pipeline created these entries; teardown decides the
     //     sender's fate in one place.
     for (const p of state.pending) p.aborted = true;
 

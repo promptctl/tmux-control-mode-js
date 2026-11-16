@@ -71,7 +71,7 @@ interface RecordedSend {
 }
 
 interface FakeWebContents {
-  readonly wc: WebContentsLike;
+  readonly wc: Pick<WebContentsLike, "send" | "isDestroyed">;
   readonly sends: RecordedSend[];
   destroy(): void;
 }
@@ -79,12 +79,10 @@ interface FakeWebContents {
 function createFakeWebContents(): FakeWebContents {
   let destroyed = false;
   const sends: RecordedSend[] = [];
-  const wc: WebContentsLike = {
+  const wc: Pick<WebContentsLike, "send" | "isDestroyed"> = {
     send(channel, ...args) {
       sends.push({ channel, args });
     },
-    once() {},
-    removeListener() {},
     isDestroyed() {
       return destroyed;
     },

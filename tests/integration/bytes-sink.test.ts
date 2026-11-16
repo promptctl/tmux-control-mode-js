@@ -62,15 +62,13 @@ describe.skipIf(!RUN_INTEGRATION)(
     it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
       // Fake WebContents that records messages sent on any channel.
       const ipcMessages: { channel: string; payload: unknown }[] = [];
-      const fakeWc: WebContentsLike = {
+      const fakeWc: Pick<WebContentsLike, "send" | "isDestroyed"> = {
         send(channel: string, ...args: unknown[]) {
           ipcMessages.push({ channel, payload: args[0] });
         },
         isDestroyed() {
           return false;
         },
-        once(_event: string, _listener: () => void) {},
-        removeListener(_event: string, _listener: () => void) {},
       };
 
       const paneId = await getFirstPaneId(client!);
@@ -111,15 +109,13 @@ describe.skipIf(!RUN_INTEGRATION)(
     it("INT-22b: WebContentsSink is a no-op when isDestroyed() returns true", () => {
       const sent: string[] = [];
       let destroyed = false;
-      const fakeWc: WebContentsLike = {
+      const fakeWc: Pick<WebContentsLike, "send" | "isDestroyed"> = {
         send(channel: string) {
           sent.push(channel);
         },
         isDestroyed() {
           return destroyed;
         },
-        once() {},
-        removeListener() {},
       };
 
       const sink = new WebContentsSink(fakeWc);

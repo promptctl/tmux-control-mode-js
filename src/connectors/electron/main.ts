@@ -91,10 +91,15 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
  *     `client.setPaneAction(paneId, Pause)`; the renderer's `tmux:ack` drops
  *     the total below `outputLowWatermark` and the helper resumes the pane.
  *
- * Renderer death:
- *   - `webContents.once("destroyed", ...)` drives `SenderRegistry.teardown`
- *     once per sender, which flags in-flight invokes aborted (via the invoke
- *     pipeline), detaches the byte forwarder, and `bridge.removePeer`s.
+ * Page end:
+ *   - A renderer's peer lives one page. The WebContents' `destroyed`,
+ *     `did-navigate` (a reload or navigation committed a new document) or
+ *     `render-process-gone` drives `SenderRegistry.teardown` once per sender,
+ *     which flags in-flight invokes aborted (via the invoke pipeline), detaches
+ *     the byte forwarder, and `bridge.removePeer`s — withdrawing the page's
+ *     sizes and subscriptions. Messages the ended page still had in flight,
+ *     and messages from subframes, are refused (an invoke gets
+ *     BRIDGE_ABORTED).
  *
  * Returns a handle whose `dispose()` removes every installed IPC handler,
  * tears down every sender, calls `bridge.dispose()`, and frees the ipcMain for
@@ -179,13 +184,13 @@ export function createMainBridge(
   // at either site means a refactor cannot silently make dispose() a no-op.
   // -------------------------------------------------------------------------
   const onRegisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
-    registry.register(event.sender);
+    registry.register(event);
   const onUnregisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
-    registry.teardown(event.sender);
+    registry.unregister(event);
   const onAckListener: IpcMainOnListener = (
     event: IpcMainEventLike,
     ...args: unknown[]
-  ) => registry.ack(event.sender, args[0]);
+  ) => registry.ack(event, args[0]);
 
   ipcMain.on(IPC.register, onRegisterListener);
   ipcMain.on(IPC.unregister, onUnregisterListener);

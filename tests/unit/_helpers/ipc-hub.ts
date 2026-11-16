@@ -1,10 +1,14 @@
 // tests/unit/_helpers/ipc-hub.ts
 // In-memory IPC hub that couples a fake IpcMain with one or more fake
-// IpcRenderers. Mirrors real Electron semantics:
+// WebContents, each showing one page (document) at a time. Mirrors real
+// Electron semantics:
 //   - structuredClone on every cross-process arg (regressions that depend on
 //     shared identity fail here the same way they'd fail in production).
 //   - ipcMain.handle throws on a second registration for the same channel.
-//   - destroyed-listeners are removable.
+//   - page-end listeners (destroyed / did-navigate / render-process-gone) are
+//     removable.
+//   - every IPC event carries the sending document's frame-host ids, and a
+//     WebContents' `mainFrame` names the host of the document it shows now.
 //
 // Used by tests that need to drive the Electron bridges (main + renderer)
 // without booting a real Electron process.
@@ -14,18 +18,35 @@ import type {
   IpcMainInvokeEventLike,
   IpcMainLike,
   IpcRendererLike,
+  PageEndEvent,
   WebContentsLike,
+  WebFrameLike,
 } from "../../../src/connectors/electron/types.js";
 
 export interface FakeRenderer {
+  /** The ipcRenderer of the document the WebContents shows now. */
   readonly ipcRenderer: IpcRendererLike;
   readonly sender: WebContentsLike;
+  /** The IPC event the current document's messages carry. */
+  readonly event: IpcMainEventLike;
   destroy(): void;
   /**
-   * Visibility hook for leak regression tests: how many `destroyed`
-   * listeners are still attached to this fake's WebContents.
+   * Commit a new document in the main frame (a reload or navigation), firing
+   * `did-navigate`. With `swapFrame` the new document gets a new frame host,
+   * and the old document's ipcRenderer keeps sending under the old host's ids
+   * — the late messages of a page that has ended. Without it the host is
+   * reused, and Chromium delivers the old document's IPC before the commit,
+   * so the old ipcRenderer throws if used.
    */
-  destroyHandlerCount(): number;
+  navigate(options?: { readonly swapFrame?: boolean }): void;
+  /** The renderer process dies; fires `render-process-gone`. */
+  crash(): void;
+  /**
+   * Visibility hook for leak regression tests: how many listeners are still
+   * attached to this fake's WebContents for each of `destroyed`,
+   * `did-navigate` and `render-process-gone`, in that order.
+   */
+  pageEndListenerCounts(): number[];
 }
 
 export interface IpcHub {
@@ -42,6 +63,7 @@ export function createIpcHub(): IpcHub {
 
   const invokeHandlers = new Map<string, InvokeHandler>();
   const mainOnListeners = new Map<string, Set<OnHandler>>();
+  let nextProcessId = 1;
 
   const ipcMain: IpcMainLike = {
     handle(channel, listener) {
@@ -73,14 +95,31 @@ export function createIpcHub(): IpcHub {
 
   function createRenderer(): FakeRenderer {
     type RendererHandler = (event: unknown, ...args: unknown[]) => void;
-    const rendererListeners = new Map<string, Set<RendererHandler>>();
+    interface Document {
+      readonly frame: WebFrameLike;
+      readonly listeners: Map<string, Set<RendererHandler>>;
+      readonly ipcRenderer: IpcRendererLike;
+      /** False once the document's frame host was reused by a later one. */
+      sends: boolean;
+    }
+
     let destroyed = false;
-    const destroyHandlers = new Set<() => void>();
+    const pageEndListeners = new Map<PageEndEvent, Set<() => void>>();
+    const processId = nextProcessId++;
+    let nextRoutingId = 1;
+
+    const fire = (event: PageEndEvent): void => {
+      const set = pageEndListeners.get(event);
+      if (!set) return;
+      const snapshot = [...set];
+      set.clear();
+      for (const h of snapshot) h();
+    };
 
     const sender: WebContentsLike = {
       send(channel, ...args) {
         if (destroyed) return;
-        const set = rendererListeners.get(channel);
+        const set = doc.listeners.get(channel);
         if (!set) return;
         // Real Electron sends args through structuredClone before they
         // reach the renderer. Mirroring that here means a test that mutates
@@ -88,54 +127,106 @@ export function createIpcHub(): IpcHub {
         // fails the same way it would in production.
         for (const h of set) h({}, ...cloneArgs(args));
       },
+      get mainFrame() {
+        if (destroyed) throw new Error("Object has been destroyed");
+        return doc.frame;
+      },
       once(event, listener) {
-        if (event === "destroyed") destroyHandlers.add(listener);
+        let set = pageEndListeners.get(event);
+        if (!set) {
+          set = new Set();
+          pageEndListeners.set(event, set);
+        }
+        set.add(listener);
       },
       removeListener(event, listener) {
-        if (event === "destroyed") destroyHandlers.delete(listener);
+        pageEndListeners.get(event)?.delete(listener);
       },
       isDestroyed() {
         return destroyed;
       },
     };
 
-    const ipcRenderer: IpcRendererLike = {
-      async invoke(channel, ...args) {
-        const handler = invokeHandlers.get(channel);
-        if (handler === undefined) {
-          throw new Error(`no handler registered for ${channel}`);
+    function createDocument(frame: WebFrameLike): Document {
+      const listeners = new Map<string, Set<RendererHandler>>();
+      const event = (): IpcMainEventLike => {
+        if (!document.sends) {
+          throw new Error(
+            "this document's frame host was reused by a later document; " +
+              "Chromium delivered its IPC before the navigation committed",
+          );
         }
-        const result = await handler({ sender }, ...cloneArgs(args));
-        return cloneArgs([result])[0];
-      },
-      send(channel, ...args) {
-        const set = mainOnListeners.get(channel);
-        if (!set) return;
-        for (const h of set) h({ sender }, ...cloneArgs(args));
-      },
-      on(channel, listener) {
-        let set = rendererListeners.get(channel);
-        if (!set) {
-          set = new Set();
-          rendererListeners.set(channel, set);
-        }
-        set.add(listener as RendererHandler);
-      },
-      removeListener(channel, listener) {
-        rendererListeners.get(channel)?.delete(listener as RendererHandler);
-      },
-    };
+        return {
+          sender,
+          processId: frame.processId,
+          frameId: frame.routingId,
+        };
+      };
+      const ipcRenderer: IpcRendererLike = {
+        async invoke(channel, ...args) {
+          const handler = invokeHandlers.get(channel);
+          if (handler === undefined) {
+            throw new Error(`no handler registered for ${channel}`);
+          }
+          const result = await handler(event(), ...cloneArgs(args));
+          return cloneArgs([result])[0];
+        },
+        send(channel, ...args) {
+          const e = event();
+          const set = mainOnListeners.get(channel);
+          if (!set) return;
+          for (const h of set) h(e, ...cloneArgs(args));
+        },
+        on(channel, listener) {
+          let set = listeners.get(channel);
+          if (!set) {
+            set = new Set();
+            listeners.set(channel, set);
+          }
+          set.add(listener as RendererHandler);
+        },
+        removeListener(channel, listener) {
+          listeners.get(channel)?.delete(listener as RendererHandler);
+        },
+      };
+      const document: Document = { frame, listeners, ipcRenderer, sends: true };
+      return document;
+    }
+
+    let doc = createDocument({ processId, routingId: nextRoutingId++ });
 
     return {
-      ipcRenderer,
+      get ipcRenderer() {
+        return doc.ipcRenderer;
+      },
       sender,
+      get event() {
+        return {
+          sender,
+          processId: doc.frame.processId,
+          frameId: doc.frame.routingId,
+        };
+      },
       destroy() {
         destroyed = true;
-        const snapshot = [...destroyHandlers];
-        destroyHandlers.clear();
-        for (const h of snapshot) h();
+        fire("destroyed");
       },
-      destroyHandlerCount: () => destroyHandlers.size,
+      navigate({ swapFrame = false } = {}) {
+        const old = doc;
+        old.sends = swapFrame;
+        doc = createDocument(
+          swapFrame ? { processId, routingId: nextRoutingId++ } : old.frame,
+        );
+        fire("did-navigate");
+      },
+      crash() {
+        doc.sends = false;
+        fire("render-process-gone");
+      },
+      pageEndListenerCounts: () =>
+        (["destroyed", "did-navigate", "render-process-gone"] as const).map(
+          (e) => pageEndListeners.get(e)?.size ?? 0,
+        ),
     };
   }
 

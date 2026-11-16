@@ -58,7 +58,7 @@ function abortedEnvelope(method: string): InvokeResultEnvelope {
     status: "bridge-error",
     error: new BridgeError(
       "BRIDGE_ABORTED",
-      `dispatch for method=${method} aborted: sender destroyed`,
+      `dispatch for method=${method} aborted: the sending page is gone`,
     ).toPayload(),
   };
 }
@@ -172,11 +172,12 @@ export class InvokePipeline {
     //
     // [LAW:single-enforcer] parseRpcRequest is still the only validation site;
     // RpcError never escapes — it is mapped to BridgeError at this seam.
-    const sender = this.deps.registry.getOrCreate(event.sender);
-    // [LAW:no-ambient-temporal-coupling] The wc was already destroyed when this
-    // queued invoke ran (its teardown fired first). There is no live sender to
-    // bill and no point running a real command for a dead renderer — the reply
-    // is moot. Abort before creating any state, so no peer is resurrected.
+    const sender = this.deps.registry.getOrCreate(event);
+    // [LAW:no-ambient-temporal-coupling] The sending page had already ended
+    // when this queued invoke ran (its teardown fired first). There is no live
+    // sender to bill and no point running a real command for a page that is
+    // gone — the reply is moot. Abort before creating any state, so no peer is
+    // minted for the next page to inherit.
     if (sender === undefined) return abortedEnvelope(methodLabel(args[0]));
     const dispatch: PendingDispatch = { aborted: false };
     sender.pending.add(dispatch);

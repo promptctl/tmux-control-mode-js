@@ -178,7 +178,10 @@ every connected peer: tmux's notifications, `unsolicited-response` (tmux's
 reply to a command no caller sent: the command line it was started with, a
 hook, an `if-shell -b`) and `protocol-error` (a line from tmux the parser
 could not read). A peer sees only those that arrive while it is connected, so the
-startup command's reply usually comes before any peer.
+startup command's reply usually comes before any peer. An Electron renderer's
+peer lasts one page: a reload, a navigation or a renderer crash ends it as a
+closed socket ends a WebSocket peer, taking the page's sizes and subscriptions
+with it.
 
 - `cross-session-layout-*` events reach a peer once it calls
   `enableCrossSessionLayoutChange`.
