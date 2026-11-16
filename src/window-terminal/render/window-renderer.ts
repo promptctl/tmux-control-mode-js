@@ -43,7 +43,10 @@ export interface WindowRendererOptions {
   readonly onRenderer: () => void;
 }
 
-/** What the renderer drives in a pane. */
+/**
+ * What the renderer drives in a pane. A pane drawn by no renderer (its xterm
+ * failed to open) draws no cell, so its `renderer` is null.
+ */
 type PaneDrawing = TerminalSink &
   Pick<
     XtermSink,
@@ -52,9 +55,8 @@ type PaneDrawing = TerminalSink &
     | "setOptions"
     | "remeasure"
     | "focus"
-    | "renderer"
     | "onRendererChange"
-  >;
+  > & { readonly renderer: CellRenderer | null };
 
 // [LAW:dataflow-not-control-flow] A pane with no xterm takes every call and
 //   draws nothing, so nothing that drives panes asks which kind it has.
@@ -69,7 +71,7 @@ const NOTHING_DRAWN: PaneDrawing = {
   setOptions: () => undefined,
   remeasure: () => undefined,
   focus: () => undefined,
-  renderer: "dom",
+  renderer: null,
   onRendererChange: () => () => undefined,
 };
 
@@ -277,13 +279,16 @@ export class WindowRenderer implements PaneSurfaces {
 
   /**
    * The renderer the panes' cells are drawn by. Every pane loads the same
-   * addons, so they agree; where one does not (its renderer addon failed or
-   * was disposed), or no pane is open yet, the window takes the DOM renderer's cell, never narrower
-   * than a canvas renderer's, so the canvas panes fall short of their boxes
-   * rather than the DOM panes losing columns past them.
+   * addons, so they agree; where one does not (its WebGL context was lost),
+   * or no pane draws yet, the window takes the DOM renderer's cell, never
+   * narrower than a canvas renderer's, so the canvas panes fall short of
+   * their boxes rather than the DOM panes losing columns past them. A pane
+   * that draws nothing has no say.
    */
   get renderer(): CellRenderer {
-    const drawn = [...this.panes.values()].map((p) => p.sink.renderer);
+    const drawn = [...this.panes.values()].flatMap(
+      (p) => p.sink.renderer ?? [],
+    );
     return drawn.length > 0 && drawn.every((r) => r === "canvas")
       ? "canvas"
       : "dom";

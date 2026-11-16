@@ -286,6 +286,19 @@ describe("window terminal — what is drawn", () => {
       );
     });
 
+    it("a pane that failed to open draws no cell and has no say", async () => {
+      let opened = 0;
+      const broken = {
+        activate() {
+          throw new Error("no WebGL2 here");
+        },
+        dispose: () => undefined,
+      };
+      expect(
+        await widthUnder(() => (opened++ === 0 ? webgl() : [broken])),
+      ).toBe("7px");
+    });
+
     it("WebGL dropped (a lost context) lays the window out again in the DOM renderer's cell", async () => {
       const loaded: { dispose(): void }[] = [];
       const m = await laidOut(() => {

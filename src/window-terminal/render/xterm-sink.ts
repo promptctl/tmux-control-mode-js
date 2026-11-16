@@ -162,12 +162,14 @@ export class XtermSink implements TerminalSink {
         throw new Error("xterm opened without a screen element");
       }
       this.screen = screen;
-      this.rendererObserver.observe(screen, { childList: true });
       addons = (opts.addons ?? (() => []))();
       for (const addon of addons) {
         taken += 1;
         this.terminal.loadAddon(addon);
       }
+      // Watched once the terminal stands: the renderer it opened with is
+      // read at the first layout, and only a later change needs telling.
+      this.rendererObserver.observe(screen, { childList: true });
       this.visibility = new VisibilityTracker(this.container);
     } catch (err) {
       release(err, [this.terminal, ...addons.slice(taken)]);
