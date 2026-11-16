@@ -141,7 +141,6 @@ export function parseSizing(raw: Sizing): ResolvedSizing {
   }
 }
 
-/** Scrollback lines per pane: captured on arrival and kept by xterm. */
 /**
  * A pane's history depth when nobody says otherwise: tmux's default
  * `history-limit`, so a pane arrives with as much history as tmux keeps for
@@ -149,6 +148,7 @@ export function parseSizing(raw: Sizing): ResolvedSizing {
  */
 export const DEFAULT_HISTORY = 2000;
 
+/** Scrollback lines per pane: captured on arrival and kept by xterm. */
 export function parseHistory(raw: number | undefined): number {
   const n = raw ?? DEFAULT_HISTORY;
   if (!Number.isInteger(n) || n < 0) {
