@@ -40,6 +40,8 @@ import type { WireEntry } from "../bridge.ts";
 import {
   presentFor,
   badgeColor,
+  WIRE_DIRECTIONS,
+  WIRE_DIRECTION_ORDER,
   renderPayload,
   formatMs,
   formatDelta,
@@ -59,7 +61,6 @@ export const InspectorView = observer(function InspectorView({
   uiStore,
 }: Props) {
   const visible = store.visibleEntries;
-  const counts = store.counts;
   const paneLabels = demoStore.paneLabels;
 
   return (
@@ -93,30 +94,9 @@ export const InspectorView = observer(function InspectorView({
             style={{ minWidth: 280 }}
           />
           <Divider orientation="vertical" />
-          <DirectionChip
-            store={store}
-            dir="out"
-            label={`↑ out ${counts.out}`}
-            color="blue"
-          />
-          <DirectionChip
-            store={store}
-            dir="in-event"
-            label={`↓ event ${counts["in-event"]}`}
-            color="teal"
-          />
-          <DirectionChip
-            store={store}
-            dir="in-response"
-            label={`↓ resp ${counts["in-response"]}`}
-            color="grape"
-          />
-          <DirectionChip
-            store={store}
-            dir="in-error"
-            label={`⚠ err ${counts["in-error"]}`}
-            color="red"
-          />
+          {WIRE_DIRECTION_ORDER.map((dir) => (
+            <DirectionChip key={dir} store={store} dir={dir} />
+          ))}
           <Divider orientation="vertical" />
           <Text size="xs" c="dimmed">
             {visible.length} / {store.entries.length} shown
@@ -135,30 +115,29 @@ export const InspectorView = observer(function InspectorView({
           </Button>
         </Group>
 
-        {/* Event-type chips — only meaningful when in-event is visible */}
-        {store.knownEventTypes.length > 0 &&
-          !store.hiddenDirections["in-event"] && (
-            <Group gap={4} wrap="wrap" mt={6}>
-              <Text size="xs" c="dimmed">
-                event types:
-              </Text>
-              {store.knownEventTypes.map((t) => {
-                const hidden = uiStore.isHidden(t);
-                return (
-                  <Badge
-                    key={t}
-                    size="xs"
-                    variant={hidden ? "outline" : "light"}
-                    color={hidden ? "gray" : "teal"}
-                    style={{ cursor: "pointer", opacity: hidden ? 0.45 : 1 }}
-                    onClick={() => uiStore.toggleEventType(t)}
-                  >
-                    %{t}
-                  </Badge>
-                );
-              })}
-            </Group>
-          )}
+        {/* Event-type chips — one per notification type, events and output alike */}
+        {store.knownEventTypes.length > 0 && (
+          <Group gap={4} wrap="wrap" mt={6}>
+            <Text size="xs" c="dimmed">
+              event types:
+            </Text>
+            {store.knownEventTypes.map((t) => {
+              const hidden = uiStore.isHidden(t);
+              return (
+                <Badge
+                  key={t}
+                  size="xs"
+                  variant={hidden ? "outline" : "light"}
+                  color={hidden ? "gray" : "teal"}
+                  style={{ cursor: "pointer", opacity: hidden ? 0.45 : 1 }}
+                  onClick={() => uiStore.toggleEventType(t)}
+                >
+                  %{t}
+                </Badge>
+              );
+            })}
+          </Group>
+        )}
       </Paper>
 
       {/* -------------------------- Split view -------------------------- */}
@@ -260,17 +239,14 @@ export const InspectorView = observer(function InspectorView({
 interface ChipProps {
   readonly store: InspectorStore;
   readonly dir: WireEntry["dir"];
-  readonly label: string;
-  readonly color: string;
 }
 
 const DirectionChip = observer(function DirectionChip({
   store,
   dir,
-  label,
-  color,
 }: ChipProps) {
   const hidden = store.hiddenDirections[dir];
+  const { arrow, label, color } = WIRE_DIRECTIONS[dir];
   return (
     <Badge
       size="sm"
@@ -283,7 +259,7 @@ const DirectionChip = observer(function DirectionChip({
       }}
       onClick={() => store.toggleDirection(dir)}
     >
-      {label}
+      {`${arrow} ${label} ${store.counts[dir]}`}
     </Badge>
   );
 });

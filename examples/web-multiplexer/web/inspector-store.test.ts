@@ -1,61 +1,33 @@
 // examples/web-multiplexer/web/inspector-store.test.ts
 //
-// Regression coverage for SD5 (tmux-complexity-lkg.15): `eventMessages` must
+// Regression coverage for SD5 (tmux-complexity-lkg.15): `notifications` must
 // be a MobX computed a consumer can read fresh on every render, because
 // `entries` is mutated in place (`.push()`/`.shift()`) on the common path —
 // a React `useMemo` keyed on `entries`' reference would never see it change.
 // [LAW:one-source-of-truth]
+//
+// And for lkg.20: pane output rides its own `in-output` direction, yet is
+// still a notification named `output` — listed in the Debug tab and hidden by
+// a hidden `output` type, as it was when it arrived as an `in-event`.
 
 import { describe, it, expect, vi } from "vitest";
 import type { WireHandler, TmuxBridge } from "./bridge.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { UiStore } from "./ui-store.ts";
+import { notificationType } from "./event-summary.ts";
+import { fakeBridge } from "./fake-bridge.ts";
 
-/** Minimal TmuxBridge double that captures the `onWire` handler so the test
- *  can push wire entries directly, the way the real transport would. */
-function fakeBridge(): { bridge: TmuxBridge; emit: WireHandler } {
-  const noop = (): void => {
-    /* test stub: no behavior under test */
-  };
-  const noopUnsub = (): (() => void) => noop;
-  let handler: WireHandler = noop;
-  return {
-    bridge: {
-      execute: () =>
-        Promise.resolve({
-          commandNumber: 0,
-          timestamp: 0,
-          output: [],
-          success: true,
-        }),
-      sendKeys: () =>
-        Promise.resolve({
-          commandNumber: 0,
-          timestamp: 0,
-          output: [],
-          success: true,
-        }),
-      detach: noop,
-      connect: noop,
-      disconnect: noop,
-      onEvent: noopUnsub,
-      onError: noopUnsub,
-      onState: noopUnsub,
-      onWire: (h) => {
-        handler = h;
-        return noop;
-      },
-      startFirehose: noop,
-      stopFirehose: noop,
-      onFirehose: noopUnsub,
-      setSize: () => Promise.reject(new Error("setSize: not modeled")),
-      setWindowSize: () =>
-        Promise.reject(new Error("setWindowSize: not modeled")),
-      clearWindowSize: () =>
-        Promise.reject(new Error("clearWindowSize: not modeled")),
+/** A TmuxBridge double that captures the `onWire` handler so the test can
+ *  push wire entries directly, the way the real transport would. */
+function wireBridge(): { bridge: TmuxBridge; emit: WireHandler } {
+  let handler: WireHandler = () => {};
+  const bridge = fakeBridge({
+    onWire: (h) => {
+      handler = h;
+      return () => {};
     },
-    emit: (entry) => handler(entry),
-  };
+  });
+  return { bridge, emit: (entry) => handler(entry) };
 }
 
 function makeStorage(): Storage {
@@ -72,40 +44,73 @@ function makeStorage(): Storage {
   };
 }
 
-describe("InspectorStore#eventMessages", () => {
-  it("picks up events ingested after the first read, newest first", () => {
-    vi.stubGlobal("sessionStorage", makeStorage());
-    const uiStore = new UiStore();
-    const { bridge, emit } = fakeBridge();
-    const store = new InspectorStore(bridge, uiStore);
+function inspector(): {
+  store: InspectorStore;
+  uiStore: UiStore;
+  emit: WireHandler;
+} {
+  vi.stubGlobal("sessionStorage", makeStorage());
+  const uiStore = new UiStore();
+  const { bridge, emit } = wireBridge();
+  return { store: new InspectorStore(bridge, uiStore), uiStore, emit };
+}
+
+const outputChunk = { paneId: 5, data: new TextEncoder().encode("hi") };
+
+describe("InspectorStore#notifications", () => {
+  it("picks up notifications ingested after the first read, newest first", () => {
+    const { store, emit } = inspector();
 
     emit({ dir: "in-event", ts: 0, event: { type: "sessions-changed" } });
     // First read establishes any caller's baseline — this is the read a
     // React useMemo keyed on `entries`' reference would have frozen on.
-    expect(store.eventMessages).toEqual([{ type: "sessions-changed" }]);
+    expect(store.notifications.map(notificationType)).toEqual([
+      "sessions-changed",
+    ]);
 
-    emit({
-      dir: "in-event",
-      ts: 1,
-      event: { type: "window-add", windowId: 3 },
-    });
+    emit({ dir: "in-output", ts: 1, chunk: outputChunk });
     // `entries.push()` mutated the array in place — same reference, new
     // content. A correct computed sees it; a stale useMemo would not.
-    expect(store.eventMessages).toEqual([
-      { type: "window-add", windowId: 3 },
-      { type: "sessions-changed" },
+    expect(store.notifications.map(notificationType)).toEqual([
+      "output",
+      "sessions-changed",
     ]);
   });
 
   it("ignores out/in-response/in-error wire entries", () => {
-    vi.stubGlobal("sessionStorage", makeStorage());
-    const uiStore = new UiStore();
-    const { bridge, emit } = fakeBridge();
-    const store = new InspectorStore(bridge, uiStore);
+    const { store, emit } = inspector();
 
     emit({ dir: "in-error", ts: 0, id: null, message: "boom" });
     emit({ dir: "in-event", ts: 1, event: { type: "sessions-changed" } });
 
-    expect(store.eventMessages).toEqual([{ type: "sessions-changed" }]);
+    expect(store.notifications.map(notificationType)).toEqual([
+      "sessions-changed",
+    ]);
+  });
+});
+
+describe("InspectorStore event-type filter", () => {
+  it("offers `output` as a type and hides pane output when it is hidden", () => {
+    const { store, uiStore, emit } = inspector();
+    emit({ dir: "in-event", ts: 0, event: { type: "sessions-changed" } });
+    emit({ dir: "in-output", ts: 1, chunk: outputChunk });
+
+    expect(store.knownEventTypes).toEqual(["output", "sessions-changed"]);
+
+    uiStore.toggleEventType("output");
+    expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-event"]);
+  });
+});
+
+describe("InspectorStore search", () => {
+  it("finds notifications by `in event` and `in output`, as it does `in response`", () => {
+    const { store, emit } = inspector();
+    emit({ dir: "in-event", ts: 0, event: { type: "sessions-changed" } });
+    emit({ dir: "in-output", ts: 1, chunk: outputChunk });
+
+    store.setSearch("in output");
+    expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-output"]);
+    store.setSearch("in event");
+    expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-event"]);
   });
 });

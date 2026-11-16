@@ -1,68 +1,57 @@
 // examples/web-multiplexer/web/event-summary.test.ts
 //
-// Isolation tests for the inspector's one-line event summarizer. Pure:
-// a TmuxMessage plus a label map in, one display line out — no MobX, no
+// Isolation tests for the inspector's one-line summarizers. Pure:
+// a notification or a pane-output chunk plus a label map in, one display line out — no MobX, no
 // client. These pin the per-type summary shapes and the pane-label
 // fallback the Protocol Inspector timeline rides on. [LAW:behavior-not-structure]
 
 import { describe, it, expect } from "vitest";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type {
+  ChunkPayload,
+  EmitterTmuxMessage,
+} from "@promptctl/tmux-control-mode-js/browser";
 import { windowLayoutFields } from "@promptctl/tmux-control-mode-js/protocol";
-import { summarizeEvent } from "./event-summary.ts";
+import { summarizeEvent, summarizeOutput } from "./event-summary.ts";
 
 const labels = new Map<number, string>([[5, "$0:@1.%5"]]);
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
-describe("summarizeEvent — pane label", () => {
+describe("summarizeOutput — pane label", () => {
   it("uses the label map for a known pane id", () => {
-    const ev: TmuxMessage = { type: "output", paneId: 5, data: bytes("hi") };
-    expect(summarizeEvent(ev, labels)).toBe(`$0:@1.%5  ⟨hi⟩`);
+    const chunk: ChunkPayload = { paneId: 5, data: bytes("hi") };
+    expect(summarizeOutput(chunk, labels)).toBe(`$0:@1.%5  ⟨hi⟩`);
   });
 
   it("falls back to %<id> for an unknown pane id", () => {
-    const ev: TmuxMessage = { type: "output", paneId: 9, data: bytes("hi") };
-    expect(summarizeEvent(ev, labels)).toBe(`%9  ⟨hi⟩`);
+    const chunk: ChunkPayload = { paneId: 9, data: bytes("hi") };
+    expect(summarizeOutput(chunk, labels)).toBe(`%9  ⟨hi⟩`);
   });
 });
 
-describe("summarizeEvent — byte preview delimiter survives a literal quote", () => {
+describe("summarizeOutput — byte preview delimiter survives a literal quote", () => {
   it("does not let a quote byte in the payload terminate the wrapper early", () => {
     // escapeByte passes 0x20-0x7e through unescaped, including `"` — the
     // wrapper must not be a quote itself, or this payload would render as
     // two visually-separate values instead of one. [LAW:no-silent-failure]
-    const ev: TmuxMessage = {
-      type: "output",
-      paneId: 9,
-      data: bytes(`he said "hi"`),
-    };
-    expect(summarizeEvent(ev, labels)).toBe(`%9  ⟨he said "hi"⟩`);
+    const chunk: ChunkPayload = { paneId: 9, data: bytes(`he said "hi"`) };
+    expect(summarizeOutput(chunk, labels)).toBe(`%9  ⟨he said "hi"⟩`);
   });
 });
 
-describe("summarizeEvent — byte previews stay single-line short", () => {
+describe("summarizeOutput — byte previews stay single-line short", () => {
   it("caps the output preview at 64 bytes", () => {
     const long = "x".repeat(200);
-    const ev: TmuxMessage = { type: "output", paneId: 9, data: bytes(long) };
-    const out = summarizeEvent(ev, labels);
+    const chunk: ChunkPayload = { paneId: 9, data: bytes(long) };
+    const out = summarizeOutput(chunk, labels);
     // The preview is truncated well under the raw length; the timeline
     // is a dense one-line table so this must never blow out.
     expect(out.length).toBeLessThan(120);
-  });
-
-  it("renders extended-output with an age tag", () => {
-    const ev: TmuxMessage = {
-      type: "extended-output",
-      paneId: 9,
-      age: 42,
-      data: bytes("y"),
-    };
-    expect(summarizeEvent(ev, labels)).toBe(`%9 age=42ms  ⟨y⟩`);
   });
 });
 
 describe("summarizeEvent — window / session / client shapes", () => {
   it("summarizes window-renamed as id → name", () => {
-    const ev: TmuxMessage = {
+    const ev: EmitterTmuxMessage = {
       type: "window-renamed",
       windowId: 3,
       name: "logs",
@@ -71,7 +60,7 @@ describe("summarizeEvent — window / session / client shapes", () => {
   });
 
   it("summarizes window-pane-changed terse (no 'active' verbiage)", () => {
-    const ev: TmuxMessage = {
+    const ev: EmitterTmuxMessage = {
       type: "window-pane-changed",
       windowId: 3,
       paneId: 5,
@@ -80,7 +69,7 @@ describe("summarizeEvent — window / session / client shapes", () => {
   });
 
   it("summarizes session-changed as $id name", () => {
-    const ev: TmuxMessage = {
+    const ev: EmitterTmuxMessage = {
       type: "session-changed",
       sessionId: 2,
       name: "main",
@@ -89,7 +78,7 @@ describe("summarizeEvent — window / session / client shapes", () => {
   });
 
   it("summarizes subscription-changed without the trailing value", () => {
-    const ev: TmuxMessage = {
+    const ev: EmitterTmuxMessage = {
       type: "subscription-changed",
       name: "panes",
       sessionId: 0,
@@ -118,7 +107,7 @@ describe("summarizeEvent — exit and empty fallthrough", () => {
 // One representative per remaining branch, so every arm of the summarizer
 // has its contract pinned before SD5 consolidates the three copies.
 describe("summarizeEvent — full branch coverage", () => {
-  const cases: readonly (readonly [TmuxMessage, string])[] = [
+  const cases: readonly (readonly [EmitterTmuxMessage, string])[] = [
     [{ type: "pause", paneId: 5 }, "$0:@1.%5"],
     [{ type: "continue", paneId: 9 }, "%9"],
     [{ type: "pane-mode-changed", paneId: 5 }, "$0:@1.%5"],

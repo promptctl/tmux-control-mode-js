@@ -9,7 +9,10 @@
 // with a typed BridgeError, not left unsettled.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { BridgeError } from "@promptctl/tmux-control-mode-js/websocket/protocol";
+import {
+  BridgeError,
+  encodePaneOutput,
+} from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import { WebSocketBridge } from "./ws-client.ts";
 
@@ -58,7 +61,7 @@ class FakeSocket {
     this.listeners.close.forEach((l) => l());
   }
 
-  fireMessage(data: string): void {
+  fireMessage(data: string | ArrayBuffer): void {
     this.listeners.message.forEach((l) => l({ data }));
   }
 }
@@ -417,5 +420,29 @@ describe("WebSocketBridge — command contract", () => {
     const p = bridge.execute("list-panes");
     answer(socket, true);
     await expect(p).resolves.toMatchObject({ output: ["ok"], success: true });
+  });
+});
+
+describe("WebSocketBridge — pane output", () => {
+  it("delivers a binary pane-output frame on onPaneOutput and logs it as in-output, never as an event", () => {
+    const { bridge, socket } = connectedBridge();
+    const chunks: { paneId: number; text: string }[] = [];
+    const events: string[] = [];
+    const wire: string[] = [];
+    bridge.onPaneOutput(({ paneId, data }) =>
+      chunks.push({ paneId, text: new TextDecoder().decode(data) }),
+    );
+    bridge.onEvent((ev) => events.push(ev.type));
+    bridge.onWire((entry) => wire.push(entry.dir));
+
+    const frame = encodePaneOutput({
+      paneId: 3,
+      data: new TextEncoder().encode("hi"),
+    });
+    socket.fireMessage(frame.slice().buffer);
+
+    expect(chunks).toEqual([{ paneId: 3, text: "hi" }]);
+    expect(events).toEqual([]);
+    expect(wire).toEqual(["in-output"]);
   });
 });

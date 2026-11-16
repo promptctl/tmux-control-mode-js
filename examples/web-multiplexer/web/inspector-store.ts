@@ -18,9 +18,14 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
 import type { UiStore } from "./ui-store.ts";
-import { summarizeEvent } from "./event-summary.ts";
+import type { Notification } from "./event-summary.ts";
+import {
+  isNotification,
+  notificationType,
+  summarizeNotification,
+} from "./event-summary.ts";
+import { WIRE_DIRECTIONS } from "./inspector-presentation.ts";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -39,16 +44,23 @@ export interface InspectorEntry {
 
 const MAX_ENTRIES = 1000;
 
+// [LAW:one-source-of-truth] Every direction, shown: the initial filter and
+//   what "clear filters" returns to.
+function allDirectionsShown(): Record<WireEntry["dir"], boolean> {
+  return {
+    out: false,
+    "in-event": false,
+    "in-output": false,
+    "in-response": false,
+    "in-error": false,
+  };
+}
+
 export class InspectorStore {
   entries: InspectorEntry[] = [];
   paused = false;
   search = "";
-  hiddenDirections: Record<WireEntry["dir"], boolean> = {
-    out: false,
-    "in-event": false,
-    "in-response": false,
-    "in-error": false,
-  };
+  hiddenDirections: Record<WireEntry["dir"], boolean> = allDirectionsShown();
   selectedId: number | null = null;
 
   private nextId = 1;
@@ -158,12 +170,7 @@ export class InspectorStore {
   }
 
   clearFilters(): void {
-    this.hiddenDirections = {
-      out: false,
-      "in-event": false,
-      "in-response": false,
-      "in-error": false,
-    };
+    this.hiddenDirections = allDirectionsShown();
     this.uiStore.clearHidden();
     this.search = "";
   }
@@ -176,28 +183,28 @@ export class InspectorStore {
   // Derived
   // -------------------------------------------------------------------------
 
-  /** All unique event-type strings seen among in-event entries. Sorted. */
+  /** All unique notification types seen in `entries`. Sorted. */
   get knownEventTypes(): string[] {
     const s = new Set<string>();
     for (const e of this.entries) {
-      if (e.wire.dir === "in-event") s.add(e.wire.event.type);
+      if (isNotification(e.wire)) s.add(notificationType(e.wire));
     }
     return [...s].sort();
   }
 
   /**
-   * The `in-event` slice of `entries`, newest first — the showcase Debug
-   * tab's event list. A MobX computed, not a React `useMemo`: `entries` is
-   * mutated in place on the hot path (`.push()`/`.shift()` below), so its
-   * reference rarely changes even though its contents do, and a `useMemo`
-   * keyed on that reference would go stale after the first render.
-   * [LAW:one-source-of-truth]
+   * The notification slice of `entries` — events and pane output — newest
+   * first: the showcase Debug tab's list. A MobX computed, not a React
+   * `useMemo`: `entries` is mutated in place on the hot path
+   * (`.push()`/`.shift()` below), so its reference rarely changes even
+   * though its contents do, and a `useMemo` keyed on that reference would
+   * go stale after the first render. [LAW:one-source-of-truth]
    */
-  get eventMessages(): TmuxMessage[] {
-    const out: TmuxMessage[] = [];
+  get notifications(): Notification[] {
+    const out: Notification[] = [];
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const wire = this.entries[i].wire;
-      if (wire.dir === "in-event") out.push(wire.event);
+      if (isNotification(wire)) out.push(wire);
     }
     return out;
   }
@@ -213,7 +220,10 @@ export class InspectorStore {
     const needle = this.search.trim().toLowerCase();
     return this.entries.filter((e) => {
       if (hiddenDirections[e.wire.dir]) return false;
-      if (e.wire.dir === "in-event" && uiStore.isHidden(e.wire.event.type)) {
+      if (
+        isNotification(e.wire) &&
+        uiStore.isHidden(notificationType(e.wire))
+      ) {
         return false;
       }
       if (needle.length === 0) return true;
@@ -231,6 +241,7 @@ export class InspectorStore {
     const c: Record<WireEntry["dir"], number> = {
       out: 0,
       "in-event": 0,
+      "in-output": 0,
       "in-response": 0,
       "in-error": 0,
     };
@@ -244,8 +255,8 @@ export class InspectorStore {
 // ---------------------------------------------------------------------------
 
 // [LAW:single-enforcer] No pane-label lookup is threaded into the search
-// path — search matches raw ids (summarizeEvent's own fallback for an
-// unknown pane), not pretty labels — so one shared empty map suffices
+// path — search matches raw ids (summarizeNotification's own fallback for
+// an unknown pane), not pretty labels — so one shared empty map suffices
 // instead of allocating one per filter pass.
 const NO_LABELS = new Map<number, string>();
 
@@ -256,10 +267,10 @@ const NO_LABELS = new Map<number, string>();
  * box matches against this string so users can type `resize-pane`,
  * `%output`, `r12`, or a pane id like `%5` and get hits.
  *
- * [LAW:single-enforcer] The in-event branch routes through the one shared
- * `summarizeEvent` (event-summary.ts) instead of a parallel hand-maintained
- * switch — SD5 (tmux-complexity-lkg.15) collapsed the three copies that
- * used to exist.
+ * [LAW:single-enforcer] The notification branch — events and pane output —
+ * routes through the one shared `summarizeNotification` (event-summary.ts)
+ * instead of a parallel hand-maintained switch — SD5
+ * (tmux-complexity-lkg.15) collapsed the three copies that used to exist.
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
@@ -269,8 +280,8 @@ function summarizeForSearch(w: WireEntry): string {
       return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
     return `out detach ${w.msg.id}`;
   }
-  if (w.dir === "in-event") {
-    return `in event %${w.event.type} ${summarizeEvent(w.event, NO_LABELS)}`;
+  if (isNotification(w)) {
+    return `in ${WIRE_DIRECTIONS[w.dir].label} %${notificationType(w)} ${summarizeNotification(w, NO_LABELS)}`;
   }
   if (w.dir === "in-response") {
     return `in response ${w.id} ${w.response.success ? "ok" : "err"} ${w.response.output.join(" ")}`;

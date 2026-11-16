@@ -12,10 +12,8 @@
 // so we stub a Map-backed Storage to exercise the real persistence path.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
 import { UiStore } from "./ui-store.ts";
 import { ConsoleStore, quoteTmuxArg } from "./console-store.ts";
 import {
@@ -31,6 +29,7 @@ import type {
   TmuxBridge,
 } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
+import { fakeBridge } from "./fake-bridge.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
 // The auto-persist reaction is debounced; give it room to flush before we
@@ -54,45 +53,6 @@ function makeStorage(): Storage {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Minimal TmuxBridge double — most methods are unexercised test stubs. */
-function fakeBridge(): TmuxBridge {
-  const noop = (): void => {
-    /* test stub: no behavior under test */
-  };
-  const noopUnsub = (): (() => void) => noop;
-  return {
-    execute: () =>
-      Promise.resolve({
-        commandNumber: 0,
-        timestamp: 0,
-        output: [],
-        success: true,
-      }),
-    sendKeys: () =>
-      Promise.resolve({
-        commandNumber: 0,
-        timestamp: 0,
-        output: [],
-        success: true,
-      }),
-    detach: noop,
-    connect: noop,
-    disconnect: noop,
-    onEvent: noopUnsub,
-    onError: noopUnsub,
-    onState: noopUnsub,
-    onWire: noopUnsub,
-    startFirehose: noop,
-    stopFirehose: noop,
-    onFirehose: noopUnsub,
-    setSize: () => Promise.reject(new Error("setSize: not modeled")),
-    setWindowSize: () =>
-      Promise.reject(new Error("setWindowSize: not modeled")),
-    clearWindowSize: () =>
-      Promise.reject(new Error("clearWindowSize: not modeled")),
-  };
 }
 
 interface Call {
@@ -135,7 +95,7 @@ function playgroundBridge(): {
   bridge: TmuxBridge;
   execCalls: Call[];
   eventListeners: Set<EventHandler>;
-  emit: (ev: TmuxMessage) => void;
+  emit: (ev: EmitterTmuxMessage) => void;
   fireState: (s: ConnState) => void;
 } {
   const execCalls: Call[] = [];
@@ -165,7 +125,7 @@ function playgroundBridge(): {
   };
 }
 
-function subEvent(name: string, value: string): TmuxMessage {
+function subEvent(name: string, value: string): EmitterTmuxMessage {
   return {
     type: "subscription-changed",
     name,

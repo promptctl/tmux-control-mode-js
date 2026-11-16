@@ -12,6 +12,7 @@ import type { LlmClient } from "./llm-client.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import type { CopilotSuggestResponse } from "../shared/copilot-frame.ts";
 import { deferred, tick } from "./test-utils.ts";
+import { fakeBridge, OK } from "./fake-bridge.ts";
 
 interface SentKeys {
   readonly target: string;
@@ -20,35 +21,12 @@ interface SentKeys {
 
 /** Bridge double that records sendKeys and no-ops everything else. */
 function recordingBridge(sent: SentKeys[]): TmuxBridge {
-  const noopUnsub = (): void => {};
-  const okResponse = {
-    commandNumber: 0,
-    timestamp: 0,
-    output: [],
-    success: true,
-  };
-  return {
-    execute: () => Promise.resolve(okResponse),
-    sendKeys: (target: string, keys: string) => {
+  return fakeBridge({
+    sendKeys: (target, keys) => {
       sent.push({ target, keys });
-      return Promise.resolve(okResponse);
+      return Promise.resolve(OK);
     },
-    detach: () => {},
-    connect: () => {},
-    disconnect: () => {},
-    onEvent: () => noopUnsub,
-    onError: () => noopUnsub,
-    onState: () => noopUnsub,
-    onWire: () => noopUnsub,
-    startFirehose: () => {},
-    stopFirehose: () => {},
-    onFirehose: () => noopUnsub,
-    setSize: () => Promise.reject(new Error("setSize: not modeled")),
-    setWindowSize: () =>
-      Promise.reject(new Error("setWindowSize: not modeled")),
-    clearWindowSize: () =>
-      Promise.reject(new Error("clearWindowSize: not modeled")),
-  };
+  });
 }
 
 /** LlmClient double returning a canned response (and recording the call). */

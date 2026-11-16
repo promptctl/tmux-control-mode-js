@@ -178,6 +178,32 @@ describe("ElectronBridge state", () => {
   });
 });
 
+describe("ElectronBridge pane output", () => {
+  it("delivers a pane's bytes on onPaneOutput and logs them as in-output, never as an event", async () => {
+    const { bridge, wire, fromMain } = connectedBridge();
+    fromMain(READY);
+    await settle();
+    const chunks: { paneId: number; text: string }[] = [];
+    const events: string[] = [];
+    bridge.onPaneOutput(({ paneId, data }) =>
+      chunks.push({ paneId, text: new TextDecoder().decode(data) }),
+    );
+    bridge.onEvent((ev) => events.push(ev.type));
+
+    fromMain({
+      type: "output",
+      paneId: 3,
+      data: new TextEncoder().encode("hi"),
+    });
+    await settle();
+
+    expect(chunks).toEqual([{ paneId: 3, text: "hi" }]);
+    expect(events).toEqual([]);
+    expect(wire).toEqual(["in-output"]);
+    bridge.disconnect();
+  });
+});
+
 describe("BridgePaneStreamClient over ElectronBridge", () => {
   it("a BRIDGE_CLOSED reply that beats main's closed retires the router's connection, so it reports no topology error", async () => {
     const { bridge, fromMain } = connectedBridge({

@@ -23,6 +23,8 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
+  ChunkPayload,
+  EmitterTmuxMessage,
   RunCommand,
   SubscriptionSurface,
   TmuxConnection,
@@ -41,10 +43,7 @@ import type {
   PaneActivity,
   PaneStreamState,
 } from "./window-terminal-internals.ts";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
 import { toConnectionState } from "./bridge.ts";
 
@@ -57,8 +56,9 @@ import { toConnectionState } from "./bridge.ts";
  * `TmuxConnection` surface that `PaneStream` consumes. Create one per bridge;
  * share across all `PaneStream` instances for the same session.
  *
- * The adapter subscribes to `bridge.onEvent` and `bridge.onState` in its
- * constructor. These subscriptions live for the adapter's lifetime (which is
+ * The adapter subscribes to `bridge.onPaneOutput`, `bridge.onEvent` and
+ * `bridge.onState` in its constructor. These subscriptions live for the
+ * adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
 export class BridgePaneStreamClient
@@ -95,20 +95,22 @@ export class BridgePaneStreamClient
     // per-event-type handler sets. No subscribe/unsubscribe churn when panes
     // mount/unmount — the bridge subscription is stable for the adapter's
     // lifetime; the per-type sets grow/shrink as PaneStream instances attach.
+    // [LAW:single-enforcer] Pane bytes reach consumers through the router's
+    //   sinks only, stepped in the same queue as events so arrival order holds.
+    bridge.onPaneOutput((chunk) =>
+      this.delivery.step(this.onBridgeOutput, chunk),
+    );
     bridge.onEvent((ev) => this.delivery.step(this.onBridgeEvent, ev));
     bridge.onState((state) => this.delivery.step(this.onBridgeState, state));
   }
 
-  private readonly onBridgeEvent = (ev: TmuxMessage): void => {
-    // [LAW:single-enforcer] Pane bytes leave the bridge through the
-    //   router's sinks only — the per-pane `PaneStream` subscribes via
-    //   `attachBytesSink(paneScope)`, never `on("output")`.
-    if (ev.type === "output" || ev.type === "extended-output") {
-      this.router.dispatchBytes({ paneId: ev.paneId, data: ev.data });
-      return;
-    }
-    // The router takes what topology needs from every other event, which
-    // then fans out to its type's handlers.
+  private readonly onBridgeOutput = (chunk: ChunkPayload): void => {
+    this.router.dispatchBytes(chunk);
+  };
+
+  // The router takes what topology needs from every event, which then fans
+  // out to its type's handlers.
+  private readonly onBridgeEvent = (ev: EmitterTmuxMessage): void => {
     this.router.handleNotification(ev);
     this.announce(ev);
   };

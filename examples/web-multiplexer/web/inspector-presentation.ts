@@ -11,7 +11,7 @@
 
 import type { WireEntry } from "./bridge.ts";
 import { prettyBytes, escapeByte } from "./format-bytes.ts";
-import { summarizeEvent } from "./event-summary.ts";
+import { notificationType, summarizeNotification } from "./event-summary.ts";
 
 export interface Presentation {
   readonly arrow: string;
@@ -20,10 +20,47 @@ export interface Presentation {
   readonly summary: string;
 }
 
+export interface WireDirection {
+  readonly arrow: string;
+  readonly label: string;
+  /** A Mantine color name. */
+  readonly color: string;
+}
+
+// [LAW:one-source-of-truth] Each direction's arrow, label and color, read by
+//   the timeline row, the detail badge and the filter chips alike.
+// [LAW:types-are-the-program] Keyed by every direction: a new direction
+//   without a row does not compile.
+export const WIRE_DIRECTIONS: Record<WireEntry["dir"], WireDirection> = {
+  out: { arrow: "↑", label: "out", color: "blue" },
+  "in-event": { arrow: "↓", label: "event", color: "teal" },
+  "in-output": { arrow: "↓", label: "output", color: "cyan" },
+  "in-response": { arrow: "↓", label: "resp", color: "grape" },
+  "in-error": { arrow: "⚠", label: "err", color: "red" },
+};
+
+// [LAW:types-are-the-program] exception: Object.keys widens to string[];
+//   these are exactly WIRE_DIRECTIONS' keys, in its order.
+export const WIRE_DIRECTION_ORDER = Object.keys(
+  WIRE_DIRECTIONS,
+) as readonly WireEntry["dir"][];
+
 export function presentFor(
   w: WireEntry,
   paneLabels: Map<number, string>,
 ): Presentation {
+  const { arrow, color } = WIRE_DIRECTIONS[w.dir];
+  return {
+    arrow,
+    color: `var(--mantine-color-${color}-6)`,
+    ...describe(w, paneLabels),
+  };
+}
+
+function describe(
+  w: WireEntry,
+  paneLabels: Map<number, string>,
+): Pick<Presentation, "type" | "summary"> {
   if (w.dir === "out") {
     const msg = w.msg;
     // [LAW:dataflow-not-control-flow] Every outbound kind labels the same
@@ -38,19 +75,12 @@ export function presentFor(
         : msg.kind === "sendKeys"
           ? `${msg.target}  ${escapeForDisplay(msg.keys)}`
           : "";
-    return {
-      arrow: "↑",
-      color: "var(--mantine-color-blue-6)",
-      type: `${msg.kind} #${msg.id}`,
-      summary,
-    };
+    return { type: `${msg.kind} #${msg.id}`, summary };
   }
-  if (w.dir === "in-event") {
+  if (w.dir === "in-event" || w.dir === "in-output") {
     return {
-      arrow: "↓",
-      color: "var(--mantine-color-teal-6)",
-      type: `%${w.event.type}`,
-      summary: summarizeEvent(w.event, paneLabels),
+      type: `%${notificationType(w)}`,
+      summary: summarizeNotification(w, paneLabels),
     };
   }
   if (w.dir === "in-response") {
@@ -58,38 +88,28 @@ export function presentFor(
     const more =
       w.response.output.length > 1 ? ` …+${w.response.output.length - 1}` : "";
     return {
-      arrow: "↓",
-      color: "var(--mantine-color-grape-6)",
       type: `response #${w.id}${w.response.success ? "" : " !err"}`,
       summary: `${head}${more}`,
     };
   }
   return {
-    arrow: "⚠",
-    color: "var(--mantine-color-red-6)",
     type: `error${w.id !== null ? ` #${w.id}` : ""}`,
     summary: w.message,
   };
 }
 
 export function badgeColor(dir: WireEntry["dir"]): string {
-  if (dir === "out") return "blue";
-  if (dir === "in-event") return "teal";
-  if (dir === "in-response") return "grape";
-  return "red";
+  return WIRE_DIRECTIONS[dir].color;
 }
 
 export function renderPayload(w: WireEntry): string {
   if (w.dir === "out") return JSON.stringify(w.msg, null, 2);
-  if (w.dir === "in-event") {
-    const ev = w.event;
-    if (ev.type === "output" || ev.type === "extended-output") {
-      // Render the Uint8Array bytes as escaped ASCII so the inspector
-      // can serve as a raw-byte viewer.
-      const ageNote = ev.type === "extended-output" ? `  age=${ev.age}ms` : "";
-      return `paneId=%${ev.paneId}${ageNote}\nbytes=${prettyBytes(ev.data, 96)}\n\n${JSON.stringify({ ...ev, data: `<${ev.data.byteLength} bytes>` }, null, 2)}`;
-    }
-    return JSON.stringify(ev, null, 2);
+  if (w.dir === "in-event") return JSON.stringify(w.event, null, 2);
+  if (w.dir === "in-output") {
+    // Render the bytes as escaped ASCII so the inspector can serve as a
+    // raw-byte viewer.
+    const { paneId, data } = w.chunk;
+    return `paneId=%${paneId}\nbytes=${prettyBytes(data, 96)}\n\n(${data.byteLength} bytes)`;
   }
   if (w.dir === "in-response") {
     const req =

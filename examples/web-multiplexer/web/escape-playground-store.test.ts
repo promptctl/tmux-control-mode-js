@@ -14,6 +14,7 @@ import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { EscapePlaygroundStore } from "./escape-playground-store.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
+import { fakeBridge } from "./fake-bridge.ts";
 
 interface Call {
   readonly target: string;
@@ -25,40 +26,14 @@ interface Call {
  *  is an unexercised stub. */
 function sendKeysBridge(): { bridge: TmuxBridge; calls: Call[] } {
   const calls: Call[] = [];
-  const noop = (): void => {};
-  const noopUnsub = (): (() => void) => noop;
-  return {
-    bridge: {
-      execute: () =>
-        Promise.resolve({
-          commandNumber: 0,
-          timestamp: 0,
-          output: [],
-          success: true,
-        }),
-      sendKeys: (target: string, keys: string) => {
-        const d = deferred<CommandResponse>();
-        calls.push({ target, keys, d });
-        return d.promise;
-      },
-      detach: noop,
-      connect: noop,
-      disconnect: noop,
-      onEvent: noopUnsub,
-      onError: noopUnsub,
-      onState: noopUnsub,
-      onWire: noopUnsub,
-      startFirehose: noop,
-      stopFirehose: noop,
-      onFirehose: noopUnsub,
-      setSize: () => Promise.reject(new Error("setSize: not modeled")),
-      setWindowSize: () =>
-        Promise.reject(new Error("setWindowSize: not modeled")),
-      clearWindowSize: () =>
-        Promise.reject(new Error("clearWindowSize: not modeled")),
+  const bridge = fakeBridge({
+    sendKeys: (target, keys) => {
+      const d = deferred<CommandResponse>();
+      calls.push({ target, keys, d });
+      return d.promise;
     },
-    calls,
-  };
+  });
+  return { bridge, calls };
 }
 
 function readyStore(): { store: EscapePlaygroundStore; calls: Call[] } {

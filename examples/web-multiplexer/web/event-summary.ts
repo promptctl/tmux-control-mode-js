@@ -1,8 +1,9 @@
 // examples/web-multiplexer/web/event-summary.ts
 //
-// One-line summary of a control-mode event for the Protocol Inspector's
-// timeline. Pure: a TmuxMessage plus a pane-label lookup in, a single
-// display line out — no MobX, no client, no effects. [LAW:effects-at-boundaries]
+// One-line summary of a control-mode notification, or of a chunk of pane
+// output, for the Protocol Inspector's timeline. Pure: the message plus a
+// pane-label lookup in, a single display line out — no MobX, no client, no
+// effects. [LAW:effects-at-boundaries]
 //
 // This is the shared home for inspector-style event summarization. The
 // summary stays on ONE line (the timeline is a dense table), which is why
@@ -19,23 +20,58 @@
 // caller's chosen delimiter — so a literal quote in pane output would
 // otherwise terminate the wrapper early and read as two values.
 
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type {
+  ChunkPayload,
+  EmitterTmuxMessage,
+} from "@promptctl/tmux-control-mode-js/browser";
+import type { WireEntry } from "./bridge.ts";
 import { prettyBytes } from "./format-bytes.ts";
+
+/**
+ * An inbound tmux notification as the wire log records it: a parsed event,
+ * or a chunk of `%output` that rode the pane-bytes channel.
+ */
+export type Notification = Extract<
+  WireEntry,
+  { dir: "in-event" | "in-output" }
+>;
+
+export function isNotification(w: WireEntry): w is Notification {
+  return w.dir === "in-event" || w.dir === "in-output";
+}
+
+// [LAW:one-source-of-truth] The notification's tmux name — the key the
+//   event-type filter hides by — whichever channel carried it. Pane bytes
+//   are `output`, the name they had as an `in-event`, so a hidden `output`
+//   saved before the bytes got their own channel still hides them.
+export function notificationType(n: Notification): string {
+  return n.dir === "in-event" ? n.event.type : "output";
+}
+
+export function summarizeNotification(
+  n: Notification,
+  labels: Map<number, string>,
+): string {
+  return n.dir === "in-event"
+    ? summarizeEvent(n.event, labels)
+    : summarizeOutput(n.chunk, labels);
+}
 
 function paneLabel(id: number, labels: Map<number, string>): string {
   return labels.get(id) ?? `%${id}`;
 }
 
-export function summarizeEvent(
-  ev: TmuxMessage,
+export function summarizeOutput(
+  chunk: ChunkPayload,
   labels: Map<number, string>,
 ): string {
-  if (ev.type === "output") {
-    return `${paneLabel(ev.paneId, labels)}  ⟨${prettyBytes(ev.data, 64)}⟩`;
-  }
-  if (ev.type === "extended-output") {
-    return `${paneLabel(ev.paneId, labels)} age=${ev.age}ms  ⟨${prettyBytes(ev.data, 64)}⟩`;
-  }
+  return `${paneLabel(chunk.paneId, labels)}  ⟨${prettyBytes(chunk.data, 64)}⟩`;
+}
+
+export function summarizeEvent(
+  ev: EmitterTmuxMessage,
+  labels: Map<number, string>,
+): string {
   if (
     ev.type === "pause" ||
     ev.type === "continue" ||
@@ -85,7 +121,7 @@ export function summarizeEvent(
   return assertNever(ev);
 }
 
-// [LAW:types-are-the-program] If a TmuxMessage variant is added upstream
+// [LAW:types-are-the-program] If a notification variant is added upstream
 // without a branch above, `ev` is no longer `never` here and this fails to
 // compile — the summarizer stays total by construction, never silently
 // returning an empty line for an unhandled type. [LAW:no-silent-failure]

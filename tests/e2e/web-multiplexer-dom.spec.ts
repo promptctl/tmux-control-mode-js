@@ -281,9 +281,13 @@ test("an OSC 8 link with a custom scheme calls the page's link handler with its 
     if (box === null) throw new Error("link row has no box");
     const x = box.x + (await cellWidth(page)) * 2.5;
     const y = box.y + box.height / 2;
-    // xterm finds a link under the pointer as it moves, then activates it.
+    // xterm finds a link under the pointer as it moves, asynchronously, and
+    // only a click on a link it has already found activates it. The pointer
+    // cursor is its sign of having found one.
+    // [LAW:no-ambient-temporal-coupling] Click on that state, not on time.
     await page.mouse.move(x - 4, y);
     await page.mouse.move(x, y);
+    await expect(page.locator(".xterm-cursor-pointer")).toHaveCount(1);
     await page.mouse.click(x, y);
     await expect(page.getByTestId("last-link")).toHaveText(URI, {
       timeout: 5_000,

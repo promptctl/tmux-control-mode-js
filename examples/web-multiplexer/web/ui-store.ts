@@ -14,72 +14,9 @@ import {
   DEFAULT_CONSOLE,
   parseConsole,
 } from "./console-types.ts";
+import { type AppMode, parseAppMode } from "./app-mode.ts";
 
 const STORAGE_KEY = "tmux-demo-ui-v1";
-
-export type AppMode =
-  | "multiplexer"
-  | "console"
-  | "inspector"
-  | "heatmap"
-  | "search"
-  | "regex"
-  | "image"
-  | "playground"
-  | "record"
-  | "attribution"
-  | "timemachine"
-  | "momentdiff"
-  | "bisect"
-  | "broadcast"
-  | "syncscroll"
-  | "mirror"
-  | "collaborate"
-  | "sniffer"
-  | "hyperlinks"
-  | "commands"
-  | "copilot"
-  | "reader"
-  | "webgl"
-  | "tutorial"
-  | "conformance";
-
-/**
- * Single membership predicate for `AppMode`. [LAW:single-enforcer] both the
- * persistence guard (untrusted storage) and the header control (untrusted
- * Mantine `string`) narrow through this one place rather than each re-listing
- * the union. [LAW:dataflow-not-control-flow] membership is a boolean on the
- * data; callers run `setAppMode` unconditionally with the chosen value.
- */
-export function isAppMode(v: unknown): v is AppMode {
-  return (
-    v === "multiplexer" ||
-    v === "console" ||
-    v === "inspector" ||
-    v === "heatmap" ||
-    v === "search" ||
-    v === "regex" ||
-    v === "image" ||
-    v === "playground" ||
-    v === "record" ||
-    v === "attribution" ||
-    v === "timemachine" ||
-    v === "momentdiff" ||
-    v === "bisect" ||
-    v === "broadcast" ||
-    v === "syncscroll" ||
-    v === "mirror" ||
-    v === "collaborate" ||
-    v === "sniffer" ||
-    v === "hyperlinks" ||
-    v === "commands" ||
-    v === "copilot" ||
-    v === "reader" ||
-    v === "webgl" ||
-    v === "tutorial" ||
-    v === "conformance"
-  );
-}
 
 interface PersistedShape {
   navbarWidth: number;
@@ -143,7 +80,12 @@ function loadFromStorage(): PersistedShape {
         parsed.terminalFontSize <= TERMINAL_FONT_MAX
           ? parsed.terminalFontSize
           : DEFAULTS.terminalFontSize,
-      appMode: isAppMode(parsed.appMode) ? parsed.appMode : DEFAULTS.appMode,
+      // A mode an older build persisted may no longer exist; like every
+      // other field here, an unreadable value falls back to the default.
+      appMode:
+        (typeof parsed.appMode === "string"
+          ? parseAppMode(parsed.appMode)
+          : null) ?? DEFAULTS.appMode,
       console: parseConsole(parsed.console),
     };
   } catch {
