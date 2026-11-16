@@ -59,9 +59,9 @@ export class WebGLGridSink implements TerminalSink {
     trailing: readonly Uint8Array[],
   ): void {
     // The snapshot is the whole picture (TerminalSink.seed), so the replay log
-    // restarts at it: a resize replays from the seed, which bounded eviction
-    // can then never drop ahead of the bytes behind it. Then the snapshot and
-    // its trailing bytes, in order — same ingest path as write().
+    // restarts at it: a resize replays from the latest seed, not from the
+    // bytes it supersedes. Then the snapshot and its trailing bytes, in order
+    // — same ingest path as write().
     this.clear();
     this.ingest(captured);
     for (const chunk of trailing) this.ingest(chunk);

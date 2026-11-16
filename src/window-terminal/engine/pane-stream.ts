@@ -215,8 +215,9 @@ export class PaneStream implements ReseedTarget {
   // Every byte that arrived behind the in-flight capture, attached or not.
   // Handed to the sink as the seed's `trailing` argument when the capture
   // resolves, so the snapshot and the bytes behind it cross the seam as one
-  // ordered value. [LAW:single-enforcer] Reset only where a capture is issued
-  // (`startSeedCycle`): the bytes before that point are inside the capture.
+  // ordered value. [LAW:single-enforcer] Its one reset is the capture taking
+  // it on resolution (seed()); bytes buffer only while a capture is in flight,
+  // so it is empty whenever the next capture is issued.
   private buffer: Uint8Array[] = [];
   // The pane's picture as of a capture nothing has followed — kept so a
   // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
@@ -677,15 +678,15 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Begin a new seed cycle. Owns every write to `this.pendingSeed`; the
-   * inner `seed()` body never touches the field.
+   * Begin a new seed cycle. Owns the start/resolution writes to
+   * `this.seedCycle`; the inner `seed()` body never touches the field.
    *
    * Bookkeeping order: invoke `seed()` (which, as an async function, runs
    * its body synchronously until the first `await` and then yields a
-   * promise), assign the returned promise to `this.pendingSeed`, attach a
-   * `.finally` that clears the field iff it still points at *this* cycle.
+   * promise), enter `capturing` with that promise as `run`, attach a
+   * `.finally` that returns to `idle` iff `run` still points at *this* cycle.
    * That last clause matters because the body may chain a stale-re-issue
-   * (`if (seedStaleMidFlight) startSeedCycle()`), in which case the new
+   * (`if (seedCycle.stale) startSeedCycle()`), in which case the new
    * cycle's promise has already replaced ours and our `.finally` must
    * leave it alone.
    *
@@ -696,16 +697,12 @@ export class PaneStream implements ReseedTarget {
    * Lifting the assignment out of the async body fixes the race.
    *
    * Entering `capturing` here (not stale) is also what resets staleness for the
-   * new cycle — there is no separate flag to clear. Likewise the buffer: bytes
-   * before this point are inside the new capture (seed() issues the RPC
-   * synchronously before its first await), so draining them after it would
-   * duplicate output; bytes from here on are its `trailing`.
+   * new cycle — there is no separate flag to clear.
    *
    * [LAW:single-enforcer] Every `this.seedCycle` write for start/resolution
    *   lives here; the only other writer is `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
-    this.buffer = [];
     const p = this.seed();
     this.seedCycle = { phase: "capturing", run: p, stale: false };
     void p.finally(() => {
@@ -779,6 +776,12 @@ export class PaneStream implements ReseedTarget {
       this.reportError("seed", err);
     }
 
+    // The capture takes the bytes that arrived behind it, whatever happens to
+    // it below: handed to a sink, or dropped with a capture that is no longer
+    // the picture.
+    const trailing = this.buffer;
+    this.buffer = [];
+
     // Re-check liveness after the await; consumer may have disposed in the
     // meantime.
     if (this.currentState === "disposed") return;
@@ -806,8 +809,6 @@ export class PaneStream implements ReseedTarget {
     }
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
-    // No `await` from here to the state flip — nothing can mutate `this.buffer`
-    // between reading it as `trailing` and handing it to the sink.
     //
     // The pure capture-grid reconstruction (flag→escape selection, blank-row
     // padding, Latin-1→bytes) lives in `buildSeed`; PaneStream owns only the
@@ -822,7 +823,7 @@ export class PaneStream implements ReseedTarget {
     // capture-pane round-trip. Bytes buffered behind the capture already moved
     // the pane past the snapshot, so only a capture nothing followed is the
     // current picture; a failed capture is no picture at all.
-    this.lastSeed = this.buffer.length === 0 ? seed : null;
+    this.lastSeed = trailing.length === 0 ? seed : null;
     // The seed seam just succeeded (past the stale-drop guard above), so any
     // outstanding seed failure is moot — clear it so lastError stops reporting
     // a recovered transient failure.
@@ -835,15 +836,9 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes captured behind it over as one ordered
-    // value. Clear the buffer AFTER the handoff, not before: a sink consumes
-    // `trailing` synchronously and never retains the array, so aliasing is safe
-    // for the duration of the call, and reassigning to a fresh array afterward
-    // means PaneStream never mutates the handed-off array in place. Clearing
-    // after also matches the pre-SD2 failure path — if the sink throws, the
-    // buffered bytes survive in `this.buffer` rather than being dropped.
-    if (seed !== null) liveSink.seed(seed.captured, seed.cursor, this.buffer);
-    else for (const chunk of this.buffer) liveSink.write(chunk);
-    this.buffer = [];
+    // value.
+    if (seed !== null) liveSink.seed(seed.captured, seed.cursor, trailing);
+    else for (const chunk of trailing) liveSink.write(chunk);
     this.setState("live");
   }
 
