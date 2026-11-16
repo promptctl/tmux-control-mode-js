@@ -127,7 +127,7 @@ describe.skipIf(!RUN_INTEGRATION)("Command Correlation", () => {
   let client: TmuxClient;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "corr");
+    socketName = uniqueSocket("corr");
   });
 
   afterEach(() => {
@@ -219,7 +219,7 @@ describe.skipIf(!RUN_INTEGRATION)("refresh-client surface", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "refresh");
+    socketName = uniqueSocket("refresh");
   });
 
   afterEach(() => {
@@ -345,7 +345,7 @@ describe.skipIf(!RUN_INTEGRATION)("Lifecycle events", () => {
   let socketName = "";
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "life");
+    socketName = uniqueSocket("life");
   });
 
   afterEach(() => {
@@ -1011,7 +1011,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
     it.skipIf(!tmuxAtLeast(minVersion))(
       `observes %${name} live from a real tmux`,
       async () => {
-        const socketName = uniqueSocket("tmux-js-test-", "cov");
+        const socketName = uniqueSocket("cov");
         const sessionName = uniqueName(`cov-${name}`);
         let client: TmuxClient | null = null;
         try {
@@ -1039,7 +1039,7 @@ describe.skipIf(!RUN_INTEGRATION)("Notification coverage (SPEC §23)", () => {
   // The COVERAGE probes pin each variant with cross-session setups; this pins
   // the common teardown path, whose variant tmux picks differently by version.
   it("an own-session kill-window emits a close event for that window", async () => {
-    const socketName = uniqueSocket("tmux-js-test-", "cov");
+    const socketName = uniqueSocket("cov");
     const sessionName = uniqueName("cov-ownkill");
     let client: TmuxClient | null = null;
     try {
@@ -1097,7 +1097,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "cmd");
+    socketName = uniqueSocket("cmd");
   });
 
   afterEach(() => {

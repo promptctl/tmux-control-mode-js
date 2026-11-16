@@ -9,7 +9,8 @@ import { execFileSync } from "node:child_process";
  * arguments (`-F`, `-c`, display formats) still expand `#{...}`. stderr is
  * piped so a failure's error carries tmux's reason.
  * [LAW:single-enforcer] The one place a vitest suite builds a tmux invocation
- * against a server (the Playwright specs in tests/e2e keep their own). Kept free of src/ imports so the reaper's globalSetup can share it.
+ * against a server (the Playwright specs in tests/e2e keep their own, as does the reaper's
+ * kill-server, which targets another run's TMUX_TMPDIR).
  */
 export function tmux(socketName: string, args: readonly string[]): string {
   return execFileSync("tmux", ["-f", "/dev/null", "-L", socketName, ...args], {

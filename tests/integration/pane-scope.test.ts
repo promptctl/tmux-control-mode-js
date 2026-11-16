@@ -70,7 +70,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-scope-test-", "scope");
+    socketName = uniqueSocket("scope");
   });
 
   afterEach(() => {

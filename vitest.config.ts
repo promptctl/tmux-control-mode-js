@@ -3,8 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globals: true,
-    // Reap leaked ephemeral tmux test sockets before and after the run so a
-    // previously-killed run can't pile up servers that corrupt this run.
+    // Give the run a tmux namespace (TMUX_TMPDIR) of its own, and reap the
+    // servers of runs killed before their teardown, never a live run's.
     globalSetup: ["./tests/helpers/global-socket-reaper.ts"],
     // [LAW:no-ambient-temporal-coupling] Integration tests each spawn a real
     // tmux daemon. Without a concurrency cap, all 10 integration files start

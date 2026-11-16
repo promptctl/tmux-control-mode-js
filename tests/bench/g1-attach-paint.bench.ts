@@ -95,7 +95,7 @@ describe.skipIf(!integrationOn)(
     let paneId: number;
 
     beforeEach(async () => {
-      socket = uniqueSocket("tmux-js-bench-", "g1");
+      socket = uniqueSocket("g1");
       client = await attachSession(socket, uniqueName("g1"), {
         newSessionFlags: ["-x", "80", "-y", "24"],
       });

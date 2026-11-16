@@ -110,7 +110,7 @@ export function describeTopologyMoves(
       let opened: { conn: MovesConnection; close(): void } | null = null;
 
       beforeEach(() => {
-        socketName = uniqueSocket("tmux-scope-test-", "moves");
+        socketName = uniqueSocket("moves");
       });
 
       afterEach(() => {

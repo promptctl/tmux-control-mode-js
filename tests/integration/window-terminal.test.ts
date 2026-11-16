@@ -121,7 +121,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
   let engine: WindowEngine | null = null;
 
   beforeEach(() => {
-    socket = uniqueSocket("tmux-js-wterm-", "wt");
+    socket = uniqueSocket("wt");
   });
 
   afterEach(() => {
@@ -486,7 +486,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     const teardown: (() => Promise<void> | void)[] = [];
 
     beforeEach(() => {
-      socket = uniqueSocket("tmux-js-wterm-", "br");
+      socket = uniqueSocket("br");
     });
 
     afterEach(async () => {

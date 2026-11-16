@@ -1,7 +1,8 @@
 // src/transport/sockets.ts
 // Node-only filesystem-level utilities for tmux's named-socket directory.
 //
-// tmux stores named sockets (`tmux -L NAME`) at /tmp/tmux-<UID>/<NAME>.
+// tmux stores named sockets (`tmux -L NAME`) at $TMUX_TMPDIR/tmux-<UID>/<NAME>
+// (TMUX_TMPDIR defaulting to /tmp).
 // Consumers that drive multiple servers, want to enumerate live servers,
 // or clean up after their own ephemeral test sockets all need the same
 // three primitives:
@@ -22,7 +23,9 @@ import { existsSync, readdirSync } from "node:fs";
 
 /**
  * Filesystem location of the tmux named-socket directory for the
- * current user. Returns `/tmp/tmux-<UID>` on POSIX systems.
+ * current user: `$TMUX_TMPDIR/tmux-<UID>`, or `/tmp/tmux-<UID>` when
+ * `TMUX_TMPDIR` is unset or empty — tmux's own rule (tmux.c), so this
+ * names the directory a `tmux -L` started from this environment uses.
  *
  * Throws if the platform has no `process.getuid` (Windows) — tmux
  * itself is POSIX-only, so this should never happen in practice.
@@ -34,7 +37,8 @@ export function tmuxSocketDir(): string {
         "tmux is POSIX-only.",
     );
   }
-  return `/tmp/tmux-${process.getuid()}`;
+  // `||`, not `??`: tmux treats an empty TMUX_TMPDIR as unset.
+  return `${process.env.TMUX_TMPDIR || "/tmp"}/tmux-${process.getuid()}`;
 }
 
 /**

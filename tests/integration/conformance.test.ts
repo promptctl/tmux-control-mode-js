@@ -37,7 +37,7 @@ describe.skipIf(!RUN_INTEGRATION)("conformance — live tmux column", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-conf-", "live");
+    socketName = uniqueSocket("live");
   });
   afterEach(() => {
     client?.close();

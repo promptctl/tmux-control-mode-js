@@ -52,7 +52,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null = null;
 
     beforeEach(async () => {
-      socketName = uniqueSocket("tmux-bytes-sink-test-", "electron");
+      socketName = uniqueSocket("electron");
       client = await attachSession(socketName, "electron-test");
     });
 

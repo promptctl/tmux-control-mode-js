@@ -357,6 +357,23 @@ describe("CrossSessionLayoutRelay", () => {
     expect(fake.handlers.size).toBe(0);
   });
 
+  it("resolves disable when the connection is gone, since the subscription went with it", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    fake.fail("refresh-client -B", new TransportClosedError(undefined));
+    await relay.disable();
+    expect(fake.handlers.size).toBe(0);
+  });
+
+  it("rejects disable when a live tmux refuses the unsubscribe", async () => {
+    const fake = fakeConnection();
+    const { relay } = relayOver(fake);
+    await relay.enable();
+    fake.fail("refresh-client -B");
+    await expect(relay.disable()).rejects.toBeInstanceOf(TmuxCommandError);
+  });
+
   it("emits nothing from a fetch still in flight when disable resolves", async () => {
     const fake = fakeConnection();
     const { relay, emitted } = relayOver(fake);

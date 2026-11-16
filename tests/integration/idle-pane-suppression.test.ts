@@ -139,7 +139,7 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
   const clients: TmuxClient[] = [];
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-idle-test-", "idle");
+    socketName = uniqueSocket("idle");
   });
 
   afterEach(() => {

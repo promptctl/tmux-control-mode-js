@@ -1,159 +1,109 @@
-// Behavioral tests for the socket reaper.
+// Behavioral tests for the per-run tmux namespaces and their reaper.
 //
-// No real tmux needed: we inject a temp dir seeded with test and foreign socket
-// files, and a spy `killServer` that records which names it was called with.
-// The test asserts only test-prefixed sockets are reaped and foreign ones are
-// preserved. This verifies the hard constraint from the ticket:
-// MUST never touch the developer's real `default` socket or unrelated sockets.
+// No real tmux needed: run directories are seeded under a temp root, with a
+// liveness seam deciding which runs are dead and a spy recording which
+// servers would be killed. The hard constraint: a live run's servers are
+// never touched, whatever their sockets are called.
 
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { rmSync } from "node:fs";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
-  isTestSocket,
-  reapTestSockets,
-  TEST_SOCKET_PREFIXES,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  killTmuxServer,
+  reapDeadRuns,
+  reapRun,
+  RUNS_ROOT,
+  socketDirIn,
 } from "../../helpers/reap-test-sockets.js";
 
-// ──────────────────────────────────────────────────────────────────────────────
-// isTestSocket — pure predicate, no IO
-// ──────────────────────────────────────────────────────────────────────────────
-
-describe("isTestSocket", () => {
-  it("accepts every registered prefix", () => {
-    for (const prefix of TEST_SOCKET_PREFIXES) {
-      const name = `${prefix}1234567890-ab3fg`;
-      expect(isTestSocket(name), `expected true for: ${name}`).toBe(true);
-    }
-  });
-
-  it("rejects the developer's real default socket", () => {
-    expect(isTestSocket("default")).toBe(false);
-  });
-
-  it("rejects unrelated demo and tool sockets", () => {
-    for (const name of [
-      "cmtest-44650",
-      "imgtest-66912",
-      "imgtest-probe",
-      "mreg",
-      "collab",
-      "sniffdemo",
-      "webgl",
-      "sbtm",
-      "console",
-    ]) {
-      expect(isTestSocket(name), `expected false for: ${name}`).toBe(false);
-    }
-  });
-
-  it("does not match on substring — prefix must be at index 0", () => {
-    expect(isTestSocket("not-tmux-js-test-foo")).toBe(false);
-  });
-});
-
-// ──────────────────────────────────────────────────────────────────────────────
-// reapTestSockets — IO behavior via injected dir + killServer spy
-// ──────────────────────────────────────────────────────────────────────────────
-
-let testDir: string;
+let root: string;
 const killed: string[] = [];
+/** Records each kill; a socket named `live-…` has a server running, any other is a dead file. */
+const spyKill = (dir: string, socket: string): boolean => {
+  killed.push(`${dir.slice(root.length + 1)}/${socket}`);
+  return socket.startsWith("live-");
+};
+
+/** A run directory `pid` under the temp root, with these tmux sockets in it. */
+function seedRun(pid: number, sockets: string[]): void {
+  const socketDir = socketDirIn(join(root, String(pid)));
+  mkdirSync(socketDir, { recursive: true });
+  for (const name of sockets) writeFileSync(join(socketDir, name), "");
+}
 
 beforeEach(() => {
   killed.length = 0;
-  testDir = join(
-    tmpdir(),
-    `reap-test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-  );
-  mkdirSync(testDir, { recursive: true });
+  root = mkdtempSync(join(tmpdir(), "reap-test-"));
 });
 
 afterEach(() => {
-  rmSync(testDir, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
 });
 
-function seedSocket(name: string): void {
-  writeFileSync(join(testDir, name), "");
-}
+describe("reapDeadRuns", () => {
+  it("reaps a dead run's servers and leaves a live run's alone, whatever their names", () => {
+    seedRun(100, ["live-xsl-1-a", "live-collab-1-b"]);
+    seedRun(200, ["live-xsl-1-a"]);
 
-function spyKill(name: string): void {
-  killed.push(name);
-}
+    const reaped = reapDeadRuns(root, (pid) => pid === 200, spyKill);
 
-function surviving(): string[] {
-  return readdirSync(testDir);
-}
-
-describe("reapTestSockets", () => {
-  it("reaps all test-prefixed sockets and leaves foreign ones intact", () => {
-    const testSockets = [
-      "tmux-js-test-cmd-1782133005851-kkh3i",
-      "tmux-scope-test-paneTitle-1782133005851-kkh3i",
-      "tmux-bridge-test-auth-1782136013827-asbek",
-      "tmux-bytes-sink-test-electron-1782133005851-kkh3i",
-      "tmux-idle-test-notify-1782133005851-kkh3i",
-      "tmux-js-conf-session-1782133005851-kkh3i",
-      "tmux-js-pstream-ps-1782133005851-kkh3i",
-      "tmux-line-test-format-1782133005851-kkh3i",
-      "tmux-js-bench-g1-1782133005851-kkh3i",
-    ];
-    const foreignSockets = [
-      "default",
-      "cmtest-44650",
-      "imgtest-probe",
-      "mreg",
-      "collab",
-    ];
-
-    for (const name of [...testSockets, ...foreignSockets]) seedSocket(name);
-
-    const reaped = reapTestSockets({ dir: testDir, killServer: spyKill });
-
-    expect(reaped.sort()).toEqual(testSockets.sort());
-    expect(killed.sort()).toEqual(testSockets.sort());
-    expect(surviving().sort()).toEqual(foreignSockets.sort());
+    expect(reaped.sort()).toEqual(["live-collab-1-b", "live-xsl-1-a"]);
+    expect(killed.sort()).toEqual(["100/live-collab-1-b", "100/live-xsl-1-a"]);
+    expect(readdirSync(root)).toEqual(["200"]);
   });
 
-  it("returns empty and touches nothing when dir is absent", () => {
-    const reaped = reapTestSockets({
-      dir: join(testDir, "nonexistent"),
-      killServer: spyKill,
-    });
-    expect(reaped).toEqual([]);
+  it("reaps a dead run that never started a server", () => {
+    mkdirSync(join(root, "100"));
+    expect(reapDeadRuns(root, () => false, spyKill)).toEqual([]);
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it("finds nothing when no run has made the root yet", () => {
+    expect(reapDeadRuns(join(root, "absent"), () => false, spyKill)).toEqual(
+      [],
+    );
     expect(killed).toEqual([]);
   });
 
-  it("returns empty when dir has no test sockets", () => {
-    seedSocket("default");
-    seedSocket("cmtest-12345");
+  it("leaves an entry not named for a run alone, such as a Finder .DS_Store", () => {
+    writeFileSync(join(root, ".DS_Store"), "");
+    expect(reapDeadRuns(root, () => false, spyKill)).toEqual([]);
+    expect(readdirSync(root)).toEqual([".DS_Store"]);
+  });
+});
 
-    const reaped = reapTestSockets({ dir: testDir, killServer: spyKill });
-    expect(reaped).toEqual([]);
-    expect(killed).toEqual([]);
-    expect(surviving().sort()).toEqual(["cmtest-12345", "default"]);
+describe("killTmuxServer", () => {
+  it("throws when tmux cannot run, rather than reading it as no server", () => {
+    expect(() => killTmuxServer("any", { ...process.env, PATH: root })).toThrow(
+      /ENOENT/,
+    );
+  });
+});
+
+describe("reapRun", () => {
+  it("kills every server in the run's namespace, then removes it", () => {
+    seedRun(100, ["live-a-1-x", "b-1-y"]);
+    reapRun(join(root, "100"), spyKill);
+    expect(killed.sort()).toEqual(["100/b-1-y", "100/live-a-1-x"]);
+    expect(readdirSync(root)).toEqual([]);
   });
 
-  it("returns null dir gracefully (no POSIX uid env)", () => {
-    const reaped = reapTestSockets({ dir: null, killServer: spyKill });
-    expect(reaped).toEqual([]);
-    expect(killed).toEqual([]);
+  it("reports only the servers still running, not the socket files tmux leaves behind", () => {
+    seedRun(100, ["live-a-1-x", "b-1-y", "c-1-z"]);
+    expect(reapRun(join(root, "100"), spyKill)).toEqual(["live-a-1-x"]);
   });
+});
 
-  it("calls killServer before unlinking — kill is attempted even for live daemons", () => {
-    const order: string[] = [];
-    seedSocket("tmux-js-test-foo-1234567890-abcde");
-
-    reapTestSockets({
-      dir: testDir,
-      killServer: (name) => {
-        order.push(`kill:${name}`);
-      },
-    });
-
-    // kill was called, then file was removed
-    expect(order).toEqual(["kill:tmux-js-test-foo-1234567890-abcde"]);
-    expect(surviving()).toEqual([]);
+describe("this run's tmux namespace", () => {
+  it("is where every tmux this worker spawns puts its socket", () => {
+    // globalSetup set it before vitest started this worker.
+    expect(process.env.TMUX_TMPDIR?.startsWith(`${RUNS_ROOT}/`)).toBe(true);
   });
 });
