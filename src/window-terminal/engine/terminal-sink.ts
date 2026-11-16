@@ -39,24 +39,30 @@ export interface SeedCursor {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.seed(captured, cursor, trailing)  (snapshot +
- *                        →                                          the live bytes
- *                        →                                          captured behind it)
- *                        →  sink.write(data) ×N          (live byte stream)
- *                        →  sink.resize(cols, rows) ×M   (layout changes)
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (if the size is known)
+ *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
+ *                                                          the live bytes
+ *                                                          captured behind it)
+ *   then, interleaved:      sink.write(data)             (live byte stream)
+ *                           sink.resize(cols, rows)      (layout changes)
+ *                           sink.seed(...)               (each recapture)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
- * `seed` is called exactly once per attach, BEFORE any `write`. The snapshot and
- * its `trailing` bytes are one ordered unit, so the seed-before-live guarantee
- * rides on the value's shape — a sink applies `captured` then `trailing` in
- * order and nothing downstream re-derives that order from call sequencing.
+ * `seed` is called when a capture (or the re-attach cache) is handed to the
+ * sink: at attach, and again whenever the stream recaptures (reconnect,
+ * `%continue`, a new pane size), so it can follow `write`s. A failed capture
+ * hands over no seed — its trailing bytes arrive as `write`s and the sink keeps
+ * what it shows. The snapshot and its `trailing` bytes are one ordered unit,
+ * so the seed-before-live guarantee rides on the value's shape — a sink
+ * applies `captured` then `trailing` in order and nothing downstream
+ * re-derives that order from call sequencing.
  */
 export interface TerminalSink {
   /**
    * Seed the view with a snapshot captured from tmux, followed by `trailing` —
    * the live bytes that arrived while that snapshot was being fetched, in
-   * arrival order. Called exactly once per `attach()`, BEFORE any `write()`.
+   * arrival order. See the lifecycle above for when it is called.
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
    * them, wrapped by library-synthesized mode-restore escapes (alt-screen/
@@ -65,6 +71,10 @@ export interface TerminalSink {
    * library, not emitted by `capture-pane`. Each element of `trailing` is the
    * same raw byte stream `write()` carries, so the renderer is the single
    * decoding authority; the library never interprets the captured grid bytes.
+   *
+   * `captured` is the pane's whole picture as of the capture: every byte the
+   * sink was given before this call is already inside it, so nothing the sink
+   * received earlier needs to be applied after it.
    *
    * `trailing` makes the seed-before-live ordering a property of THIS value:
    * the snapshot and the bytes that immediately follow it cross the seam as one
@@ -92,8 +102,9 @@ export interface TerminalSink {
   write(data: Uint8Array): void;
 
   /**
-   * Apply the current pane geometry. Called when the stream observes a
-   * `subscription-changed` for this pane (tmux is the size authority).
+   * Apply the current pane geometry, as tmux (the size authority) reported
+   * it: at attach when the stream already knows the size, and on each
+   * `subscription-changed` for this pane while attached.
    */
   resize(cols: number, rows: number): void;
 
