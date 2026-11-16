@@ -388,12 +388,27 @@ test("a pane resized again and again holds its history once", async () => {
             Math.round((height(area) - height(viewport)) / height(rows[0])),
         };
       }, PANE);
-    // A row of the pane that reads exactly `text`: the output, not the echo
+    // The pane's screen as xterm draws it and as tmux holds it, so a wait
+    // that times out shows both.
+    const screens = async (): Promise<{ xterm: string; tmux: string }> => ({
+      xterm: await page.evaluate(
+        (id) =>
+          Array.from(
+            document.querySelectorAll(
+              `.wt-pane[data-pane-id="${id}"] .xterm-rows > div`,
+            ),
+            (r) => r.textContent ?? "",
+          ).join("\n"),
+        PANE,
+      ),
+      tmux: tmuxOutput(socket, ["capture-pane", "-p", "-t", PANE]),
+    });
+    // xterm shows a row that reads exactly `text`: the output, not the echo
     // of the command line that printed it.
-    const row = (text: string) =>
-      page
-        .locator(`.wt-pane[data-pane-id="${PANE}"] .xterm-rows > div`)
-        .filter({ hasText: new RegExp(`^\\s*${text}\\s*$`) });
+    const showsRow = (text: string) =>
+      expect.poll(screens, { timeout: 15_000 }).toMatchObject({
+        xterm: expect.stringMatching(new RegExp(`^\\s*${text}\\s*$`, "m")),
+      });
     // The pane's new size reaches xterm on the notification that also has
     // the pane recaptured, so rows that agree mean the recapture is under
     // way; a history it stacked stays in the scrollback for every later
@@ -404,7 +419,7 @@ test("a pane resized again and again holds its history once", async () => {
         ? "same"
         : `xterm ${held.rows} rows/${held.lines} lines, tmux ${truth.rows}/${truth.lines}`;
     };
-    await expect(row("60")).toHaveCount(1, { timeout: 15_000 });
+    await showsRow("60");
     await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
     // A split below halves the pane and closing it restores the height:
     // each is a new pane size, so the pane is recaptured, history included.
@@ -427,7 +442,7 @@ test("a pane resized again and again holds its history once", async () => {
     // resize's seed, so a history the seed stacked is in the scrollback by
     // the time the output shows.
     tmux(socket, ["send-keys", "-t", PANE, "printf '%s\\n' do''ne", "Enter"]);
-    await expect(row("done")).toHaveCount(1, { timeout: 15_000 });
+    await showsRow("done");
     await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
   } finally {
     await disposeApp(handle);
