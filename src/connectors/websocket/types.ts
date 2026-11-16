@@ -116,15 +116,15 @@ export interface ServerWebSocketLike {
   close(code?: ServerCloseCode, reason?: string): void;
   terminate(): void;
 
+  // [LAW:types-are-the-program] `ws` passes a Buffer, which is a Uint8Array
+  // (under its default `binaryType`); naming Buffer here would make a
+  // browser's type check of ./websocket need @types/node.
   on(
     event: "message",
-    listener: (data: unknown, isBinary: boolean) => void,
+    listener: (data: Uint8Array | string, isBinary: boolean) => void,
   ): void;
   on(
     event: "close",
-    // [LAW:types-are-the-program] `ws` passes a Buffer, which is a
-    // Uint8Array; naming Buffer here would make a browser's type check of
-    // ./websocket need @types/node.
     listener: (code: number, reason: Uint8Array | string) => void,
   ): void;
   on(event: "error", listener: (err: Error) => void): void;

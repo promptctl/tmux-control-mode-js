@@ -63,8 +63,8 @@ All notable changes to this project are documented here. Format follows
   `./websocket`: `ServerWebSocketLike`'s close listener takes its reason as
   `Uint8Array | string`, not Node's `Buffer`. `ws` still satisfies it.
 - The WebSocket bridge reads a browser's text frames as UTF-8. It decoded them
-  byte-per-character, so non-ASCII text in a call (`sendKeys`, `execute`, a
-  session name) reached tmux garbled: `é` arrived as `Ã©`.
+  byte-per-character, so non-ASCII text a browser typed into a call
+  (`sendKeys`, `execute`) reached tmux garbled: `é` arrived as `Ã©`.
 
 ## [0.3.0] - 2026-11-15
 
