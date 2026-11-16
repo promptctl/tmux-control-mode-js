@@ -9,8 +9,8 @@
 // reconstructs terminal STATE at an arbitrary past moment. The replay surface is
 // not a live pane — it is an `XtermSink` this view OWNS and feeds recorded bytes
 // to. So the .4 live-pane findings (select-window, the resize-on-subscribe race)
-// don't apply; only "give the sink its first resize before writing" and "floor
-// the container height" carry over.
+// don't apply; only "size the sink before writing" and "floor the container
+// height" carry over.
 //
 // [LAW:dataflow-not-control-flow] The terminal's content is a pure function of
 //   the scrub position: forward steps write the byte delta (`bytesBetween`), a
@@ -321,9 +321,9 @@ function Centered({ children }: { children: React.ReactNode }) {
 /**
  * Owns an `XtermSink` and feeds it recorded bytes as the scrub position moves.
  * Forward steps write the delta (`bytesBetween`); a backward jump clears and
- * re-seeks (`bytesUpTo`). The sink is given its first `resize` directly from the
- * captured geometry — the same first-paint unlock the playground needed, here
- * for a sink we drive ourselves rather than one fed by a live PaneStream.
+ * re-seeks (`bytesUpTo`). The sink is sized from the captured geometry before
+ * the first byte is written, so the recording replays at the size it was
+ * recorded at.
  *
  * [LAW:no-ambient-temporal-coupling] One owner for the sink lifecycle (this
  *   component) and one owner for "what is painted" (the scrub effect, keyed on
@@ -360,8 +360,6 @@ function ReplaySurface({
       fontSize: initial.current.fontSize,
     });
     sinkRef.current = sink;
-    // First resize drains the buffer and unblocks painting — without it the
-    // sink holds every write forever (see the .4 findings).
     sink.resize(initial.current.cols, initial.current.rows);
     renderedMs.current = -1;
     return () => {

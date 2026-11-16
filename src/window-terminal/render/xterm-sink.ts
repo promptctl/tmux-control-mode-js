@@ -4,11 +4,8 @@
 // Which modules may touch the DOM at all is stated by tsconfig.dom.json's
 // includes; the engine (PaneStream, BufferingSink) is environment-agnostic.
 //
-// This file owns the Terminal lifecycle. Two orthogonal concerns are delegated
-// to collaborators:
-//   - FirstResizeGate (first-resize-gate.ts) — the seed/live-byte ordering
-//     buffer that spans the one-rAF first-resize defer.
-//   - VisibilityTracker (visibility-tracker.ts) — on-screen visibility.
+// This file owns the Terminal lifecycle. On-screen visibility is delegated to
+// VisibilityTracker (visibility-tracker.ts).
 // The sink never sizes itself: cols/rows come from tmux through `resize()`,
 // and the font size from whoever owns the layout through `setFont()`.
 //
@@ -19,16 +16,14 @@
 //     Option changes (the host's `XtermOptions`, the font size) flow
 //     through xterm's in-place option setters; we never
 //     tear-down-and-rebuild (O10).
-//  2. The very first `term.resize()` is deferred by one rAF. Xterm's
-//     `Viewport.syncScrollArea` dereferences a renderer-`dimensions` object
-//     that is only instantiated on the first render tick — calling
-//     `term.resize()` synchronously inside `term.open()` throws
-//     "Cannot read properties of undefined (reading 'dimensions')".
-//     This is the demo's hard-won lesson and stays load-bearing here.
+//  2. Every call reaches xterm when it is made: `resize()`, `seed()` and
+//     `write()` apply in the order the caller makes them, so a seed is drawn
+//     at the size given just before it. (xterm.js 5 threw on a resize before
+//     its first render tick; xterm.js 6 does not, so nothing is deferred.)
 //  3. `write(Uint8Array)` forwards directly to `term.write()` — no
 //     `TextDecoder` in the live path. The byte-fidelity guarantee
 //     comes from this single line.
-//  4. `dispose()` releases every observer/listener/timer and disposes the
+//  4. `dispose()` releases every observer/listener and disposes the
 //     `Terminal`. After dispose, every public method is a no-op.
 //
 // [LAW:locality-or-seam] PaneStream (the producer side of the seam) sees
@@ -49,7 +44,6 @@ import {
   type XtermAddons,
   type XtermOptions,
 } from "./xterm-options.js";
-import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
 import type { CellRenderer } from "../sizing/cell-metrics.js";
@@ -96,24 +90,15 @@ export class XtermSink implements TerminalSink {
    * viewport queries, buffer inspection. Options and addons have their own
    * way in (`xterm`, `addons`). The producer-side seam is `TerminalSink`; PaneStream never
    * sees this field. Touching it bypasses the wrapper's invariants
-   * (deferred first resize, in-place option mutation), so reach for it
+   * (tmux's size, in-place option mutation), so reach for it
    * only when the wrapper genuinely doesn't expose what you need.
    */
   readonly terminal: Terminal;
 
   private readonly container: HTMLElement;
 
-  // Tmux-reported pane geometry. Updated only by `resize()`.
-  private cols = 0;
-  private rows = 0;
-
   private isDisposed = false;
-  private firstResizeDone = false;
-  private firstResizeQueued = false;
-  private rafFirstResizeId: number | null = null;
 
-  // Seed / live-byte ordering across the one-rAF first-resize defer.
-  private readonly gate = new FirstResizeGate();
   // On-screen visibility (IntersectionObserver + document visibility).
   private readonly visibility: VisibilityTracker;
   // Every option's value before any host option: xterm's default or the
@@ -143,10 +128,8 @@ export class XtermSink implements TerminalSink {
       allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
       scrollback: opts.scrollback,
-      // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
-      // renderer that's instantiated on first render tick; the addon's
-      // post-`open()` resize would crash. cols/rows come from tmux via
-      // `resize()`.
+      // No FitAddon: cols/rows are tmux's, from `resize()`, never fitted to
+      // the container.
     });
     // [LAW:one-source-of-truth] xterm fills every option of a terminal it
     //   constructed, so it supplies each reset value; the terminal keeps no
@@ -201,33 +184,14 @@ export class XtermSink implements TerminalSink {
     trailing: readonly Uint8Array[],
   ): void {
     if (this.isDisposed) return;
-    // The snapshot and its `trailing` live bytes are one ordered unit (see
-    // TerminalSink.seed). Apply the snapshot, then route each trailing chunk
-    // through `write()` so it shares the gate/cap path — the gate never needs to
-    // interleave a separately-arriving seed with separately-arriving live bytes,
-    // because they arrive together and in order here.
-    if (this.gate.buffering) {
-      // First resize not yet fired: hold the snapshot; the trailing chunks land
-      // in the same gate buffer via write() below, after it. A later reseed
-      // supersedes this snapshot and the bytes buffered behind it.
-      this.gate.bufferSeed({ captured, cursor });
-    } else {
-      // Gate open — apply the snapshot inline. This is authoritative by
-      // construction, WITHOUT terminal.clear(): `captured` carries its own clear
-      // in-band (see TerminalSink.seed), so it is ordered behind every byte
-      // xterm has queued, where a synchronous clear() would run ahead of them.
-      // It is then tmux's history plus a screen normalized to exactly
-      // `pane_height` rows, so no stale row survives in the buffer it draws
-      // into.
-      // That holds equally for a steady-state reseed and for one arriving in
-      // the post-cap-drain window (gate opened early because the pane-size
-      // subscription was silent).
-      this.applySeed(captured, cursor);
-    }
-    for (const chunk of trailing) this.write(chunk);
-  }
-
-  private applySeed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    // The snapshot is authoritative by construction, WITHOUT terminal.clear():
+    // `captured` carries its own clear in-band (see TerminalSink.seed), so it
+    // is ordered behind every byte xterm has queued, where a synchronous
+    // clear() would run ahead of them. It is then tmux's history plus a
+    // screen normalized to exactly `pane_height` rows, so no stale row
+    // survives in the buffer it draws into. Its `trailing` live bytes follow
+    // it in order.
+    //
     // xterm.write accepts Uint8Array; the seed is raw bytes (same as the live
     // path) and xterm is the single decoding authority. The CUP below is an
     // ASCII string — xterm.write accepts either form.
@@ -250,6 +214,7 @@ export class XtermSink implements TerminalSink {
         if (!this.isDisposed) this.terminal.scrollToBottom();
       });
     }
+    for (const chunk of trailing) this.terminal.write(chunk);
   }
 
   // [HOT-PATH] live byte forwarding — must not allocate per call.
@@ -258,74 +223,12 @@ export class XtermSink implements TerminalSink {
   // TextDecoder on this path.
   write(data: Uint8Array): void {
     if (this.isDisposed) return;
-    // [LAW:single-enforcer] The gate is the sole owner of pre-first-resize
-    // buffering. In steady state it is `open` and this branch is skipped, so
-    // the hot path is a bare `term.write(data)` — no allocation. Only during
-    // the brief startup window do writes route through the gate, which returns
-    // a DrainBatch when the cap forces an early drain (the no-resize valve).
-    if (this.gate.buffering) {
-      const overflow = this.gate.bufferWrite(data);
-      if (overflow !== null) this.performDrain(overflow);
-      return;
-    }
     this.terminal.write(data);
-  }
-
-  // Apply a batch the gate released: the pending seed (if any) then the
-  // buffered live bytes, preserving seed-before-live ordering. term.write() is
-  // safe before the first resize (only term.resize() dereferences the
-  // not-yet-initialised renderer dimensions); content renders at xterm's
-  // default geometry until a real resize arrives and reflows.
-  private performDrain(batch: DrainBatch): void {
-    // [LAW:composability] Self-guard the disposed state rather than trust each
-    //   caller to have checked it — this helper writes to the terminal, so it
-    //   owns the "no writes after dispose" invariant (invariant #4) locally and
-    //   asks nothing of its callers. A disposed terminal must never be written.
-    if (this.isDisposed) return;
-    if (batch.seed !== null) {
-      this.applySeed(batch.seed.captured, batch.seed.cursor);
-    }
-    for (const chunk of batch.writes) {
-      this.terminal.write(chunk);
-    }
   }
 
   resize(cols: number, rows: number): void {
     if (this.isDisposed) return;
     if (cols <= 0 || rows <= 0) return;
-    this.cols = cols;
-    this.rows = rows;
-
-    if (!this.firstResizeDone) {
-      // First-resize defer. Calling `term.resize()` synchronously inside or
-      // immediately after `term.open()` throws because xterm's renderer
-      // hasn't initialised its `dimensions` object yet — that happens on
-      // the first render tick. Defer by one rAF; subsequent resizes are
-      // synchronous because the renderer is now alive.
-      if (this.firstResizeQueued) return;
-      this.firstResizeQueued = true;
-      this.rafFirstResizeId = requestAnimationFrame(() => {
-        this.rafFirstResizeId = null;
-        this.firstResizeQueued = false;
-        if (this.isDisposed) return;
-        if (this.cols <= 0 || this.rows <= 0) return;
-        // [LAW:no-ambient-temporal-coupling] Advance the phase only AFTER the
-        // resize it names actually happens. If `terminal.resize()` threw, the
-        // flag would stay false, so the next resize() re-queues this rAF (a
-        // retry) and the gate stays buffering (its byte cap still bounds the
-        // no-resize path) — never a "past first resize but never released"
-        // limbo.
-        this.terminal.resize(this.cols, this.rows);
-        this.firstResizeDone = true;
-        // Resize precedes the drain so content lays out at the correct
-        // dimensions from the start (no reflow, no broken scroll area). The
-        // gate releases any pending seed, then the buffered live bytes in
-        // order. If the cap already forced an early drain, the gate is open and
-        // this returns an empty batch — the resize alone reflows.
-        this.performDrain(this.gate.release());
-      });
-      return;
-    }
     this.terminal.resize(cols, rows);
   }
 
@@ -347,13 +250,7 @@ export class XtermSink implements TerminalSink {
   dispose(): void {
     if (this.isDisposed) return;
     this.isDisposed = true;
-    this.gate.dispose();
     this.visibility.dispose();
-    if (this.rafFirstResizeId !== null) {
-      cancelAnimationFrame(this.rafFirstResizeId);
-      this.rafFirstResizeId = null;
-    }
-    this.firstResizeQueued = false;
     this.rendererObserver.disconnect();
     this.rendererListeners.clear();
 

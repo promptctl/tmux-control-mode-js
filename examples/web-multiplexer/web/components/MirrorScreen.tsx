@@ -13,6 +13,7 @@
 //   the view: the bridge has no write path, and the renderer has no input path.
 
 import { useEffect, useRef } from "react";
+import { autorun } from "mobx";
 import { observer } from "mobx-react-lite";
 import type { XtermSink } from "../window-terminal-internals.ts";
 import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
@@ -49,31 +50,28 @@ export const MirrorScreen = observer(function MirrorScreen({
     });
     sinkRef.current = sink;
 
-    // If geometry already arrived (fast connect), resize immediately so the
-    // first writes paint; otherwise the size effect below handles it.
-    if (bridge.cols > 0 && bridge.rows > 0) {
-      sink.resize(bridge.cols, bridge.rows);
-    }
+    // Size the sink from each size frame the server sends (none before the
+    // first: the bridge reads 0x0 until then). [LAW:no-ambient-temporal-coupling]
+    // An autorun runs as the frame is handled, so the size reaches the sink
+    // ahead of the seed bytes the server sends after it; a React effect would
+    // run after them, and the seed would draw at xterm's default size.
+    const stopSize = autorun(() => {
+      if (bridge.cols > 0 && bridge.rows > 0) {
+        sink.resize(bridge.cols, bridge.rows);
+      }
+    });
 
     const detach = bridge.onBytes((data) => sink.write(data));
     bridge.connect();
 
     return () => {
       detach();
+      stopSize();
       bridge.disconnect();
       sink.dispose();
       sinkRef.current = null;
     };
   }, [bridge]);
-
-  // Resize the sink whenever the server reports (or re-reports) pane geometry.
-  // A fresh XtermSink buffers writes until its first resize, so this is what
-  // unblocks the seed paint.
-  useEffect(() => {
-    const sink = sinkRef.current;
-    if (sink === null || bridge.cols === 0 || bridge.rows === 0) return;
-    sink.resize(bridge.cols, bridge.rows);
-  }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
     sinkRef.current?.setFont(fontSize);

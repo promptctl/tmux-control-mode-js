@@ -13,7 +13,10 @@
 
 import { describe, it, expect } from "vitest";
 import { Terminal } from "@xterm/headless";
-import { buildSeed } from "../../../src/window-terminal/engine/seed-builder.js";
+import {
+  buildSeed,
+  parseGrid,
+} from "../../../src/window-terminal/engine/seed-builder.js";
 
 const ESC = "\x1b";
 // Seed bytes are raw (same kind as live write()); decode Latin-1 losslessly to
@@ -216,5 +219,42 @@ describe("buildSeed: drawn into xterm.js", () => {
     await draw(term, buildSeed(["x", "", ""], state, 0).captured);
     const cell = term.buffer.active.getLine(2)?.getCell(5);
     expect(cell?.isBgDefault()).toBe(true);
+  });
+});
+
+describe("buildSeed: the size it was captured at", () => {
+  it("carries pane_width and pane_height as the seed's size", () => {
+    // State line: cursor 0;0, flags, pane_height 24, history 0, region 0-23,
+    // pane_width 80.
+    const { size } = buildSeed(["x"], "0;0;0;1;0;0;0;1;24;0;0;23;80", 2000);
+    expect(size).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it("has no size when tmux reported none", () => {
+    expect(buildSeed(["x"], "0;0", 2000).size).toBeNull();
+    expect(
+      buildSeed(["x"], "0;0;0;1;0;0;0;1;24;0;0;23;", 2000).size,
+    ).toBeNull();
+  });
+});
+
+describe("parseGrid", () => {
+  it("reads positive decimal fields", () => {
+    expect(parseGrid("120", "40")).toEqual({ cols: 120, rows: 40 });
+  });
+
+  it("takes nothing but digits, and no zero", () => {
+    for (const [w, h] of [
+      ["1e2", "24"],
+      [" 80", "24"],
+      ["+80", "24"],
+      ["0x50", "24"],
+      ["80", "24 "],
+      ["0", "24"],
+      ["80", ""],
+      [undefined, "24"],
+    ]) {
+      expect(parseGrid(w, h)).toBeNull();
+    }
   });
 });

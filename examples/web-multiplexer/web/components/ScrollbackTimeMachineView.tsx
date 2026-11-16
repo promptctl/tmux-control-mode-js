@@ -359,7 +359,7 @@ function ReplaySurface({
       fontSize: initial.current.fontSize,
     });
     sinkRef.current = sink;
-    // First resize drains the buffer and unblocks painting (see the .4/.5 findings).
+    // Sized before the first byte, so the replay draws at the recorded size.
     sink.resize(initial.current.cols, initial.current.rows);
     rendered.current = null;
     return () => {

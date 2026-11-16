@@ -84,6 +84,13 @@ All notable changes to this project are documented here. Format follows
   had not drained. `close()` releases the proxy's own subscriptions, size
   claims and unacked bytes, and nothing of the others'.
 
+- `./window-terminal`: a pane draws at tmux's size from its first frame.
+  tmux reports a pane's size to a control client only for a pane in that
+  client's session, and only at its next check, up to a second later, so a
+  pane in another session stayed blank and any other pane waited for the
+  report. Each capture now reads the pane's size with its contents, and is
+  drawn at that size.
+
 - `./window-terminal`: a pane's scrollback holds its history once, however
   often it is captured again. Each resize, `%continue` or reconnect wrote
   the history in again under what was already there, so a pane resized
