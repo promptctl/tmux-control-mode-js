@@ -247,7 +247,17 @@ export class XtermSink implements TerminalSink {
       // 1 here is the only translation; sinks that don't position a hardware
       // cursor (BufferingSink) ignore the cursor entirely.
       this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
+        const b = this.terminal.buffer.active;
+        const before = b.viewportY;
         if (!this.isDisposed) this.terminal.scrollToBottom();
+        (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+          `[DBG sink] seed parsed base=${b.baseY} viewportY ${before} -> ${b.viewportY}`,
+        );
+        setTimeout(() => {
+          (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+            `[DBG sink] seed +300ms base=${b.baseY} viewportY=${b.viewportY}`,
+          );
+        }, 300);
       });
     } else {
       this.terminal.write(captured, () => {
@@ -282,8 +292,13 @@ export class XtermSink implements TerminalSink {
       const buf = this.terminal.buffer.active;
       const line = buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true);
       (globalThis as unknown as { console: { log(s: string): void } }).console.log(
-        `[DBG sink] parsed; cursor row text "${line}" y=${buf.cursorY} base=${buf.baseY} len=${buf.length}`,
+        `[DBG sink] parsed; cursor row text "${line}" y=${buf.cursorY} base=${buf.baseY} len=${buf.length} viewportY=${buf.viewportY}`,
       );
+      setTimeout(() => {
+        (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+          `[DBG sink] +500ms base=${buf.baseY} viewportY=${buf.viewportY}`,
+        );
+      }, 500);
     });
   }
 
