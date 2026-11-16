@@ -12,7 +12,10 @@
 // compile time — there is no second consumption shape to drift from.
 
 import type { ClientToServer } from "../shared/protocol.ts";
-import type { ClientSizeSurface } from "@promptctl/tmux-control-mode-js/browser";
+import type {
+  ClientSizeSurface,
+  ConnectionState,
+} from "@promptctl/tmux-control-mode-js/browser";
 import type {
   CommandResponse,
   TmuxMessage,
@@ -30,12 +33,34 @@ import type {
  *   - `closed`     — transport torn down (graceful or otherwise)
  *
  * Transports that have no separate "open vs handshake-done" distinction
- * (e.g. Electron IPC, where the proxy is constructed against an
- * already-attached TmuxClient) MAY skip directly from `connecting` to
- * `ready`. The state values themselves are the contract — consumers must
+ * (e.g. Electron IPC, which follows main's TmuxClient) MAY skip directly
+ * from `connecting` to `ready`. The state values themselves are the contract — consumers must
  * not assume every transition fires.
  */
 export type ConnState = "connecting" | "open" | "ready" | "closed";
+
+// [LAW:one-source-of-truth] The two translations between ConnState and the
+//   library's ConnectionState live together, so they cannot drift apart.
+
+/** A library connection's state as the bridge reports it. */
+export function toConnState(state: ConnectionState): ConnState {
+  switch (state.status) {
+    case "ready":
+      return "ready";
+    case "closed":
+      return "closed";
+    case "connecting":
+    case "reconnecting":
+      return "connecting";
+  }
+}
+
+/** The bridge's state as a library connection reports it. */
+export function toConnectionState(s: ConnState): ConnectionState {
+  if (s === "ready") return { status: "ready" };
+  if (s === "closed") return { status: "closed", reason: "transport-error" };
+  return { status: "connecting" };
+}
 
 /**
  * One entry per thing that crossed the bridge in either direction. Powers
@@ -94,6 +119,11 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
  * the URL on `connect()`; transports that are already attached at
  * construction time (Electron IPC) treat `connect()` as a no-op and ignore
  * the URL argument.
+ *
+ * Every command method keeps the library's `TmuxConnection` contract: a tmux
+ * `%error` rejects with `TmuxCommandError`, whose `.response` carries tmux's
+ * output (`.catch(asCommandResponse)` recovers it as a value); any other
+ * rejection is a bridge failure.
  */
 export interface TmuxBridge extends ClientSizeSurface {
   execute(command: string): Promise<CommandResponse>;

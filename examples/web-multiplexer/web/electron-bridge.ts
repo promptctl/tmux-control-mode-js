@@ -10,7 +10,8 @@
 // [LAW:dataflow-not-control-flow] Method calls and events run the same
 // pipeline every time:
 //   - methods: synthesize ClientToServer → emit "out" wire → invoke proxy
-//     → emit "in-response" wire (or "in-error" on rejection)
+//     → emit "in-response" wire (a tmux %error included), or "in-error"
+//     when the bridge itself fails
 //   - events:  proxy.on("*") → emit "in-event" wire → fan out to handlers
 // No branching on "is this a special method" or "is this a special event".
 
@@ -22,6 +23,7 @@ import {
 // [LAW:one-way-deps] Browser-safe core only — the `/browser` subpath carries
 // no Node transport coupling (see pane-stream-bridge.ts).
 import {
+  TmuxCommandError,
   isTmuxMessage,
   serverScope,
 } from "@promptctl/tmux-control-mode-js/browser";
@@ -50,6 +52,7 @@ import type {
   WireEntry,
   WireHandler,
 } from "./bridge.ts";
+import { toConnState } from "./bridge.ts";
 
 export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
@@ -89,7 +92,14 @@ export class ElectronBridge implements TmuxBridge {
     // emitter source — the one inbound path that can carry synthetic
     // events. The demo consumes only tmux's own messages, so `deliverEvent`
     // downstream speaks one honest TmuxMessage shape.
+    // [LAW:one-source-of-truth] The bridge is ready while main's tmux client
+    //   is: main forwards that client's connection-state, so a drop there
+    //   reaches onState like a WebSocket close does.
     this.proxyEventHandler = (msg) => {
+      if (msg.type === "connection-state") {
+        this.setState(toConnState(msg.state));
+        return;
+      }
       if (!isTmuxMessage(msg)) return;
       this.deliverEvent(msg);
     };
@@ -243,15 +253,9 @@ export class ElectronBridge implements TmuxBridge {
       { scope: serverScope },
     );
     this.proxy = proxy;
+    // Ready arrives as main's connection-state snapshot, which main sends
+    // when this proxy registers.
     this.setState("connecting");
-    // Main-side createWindow gates on `session-changed`, so by the time
-    // this runs the underlying TmuxClient is already attached and ready.
-    // Defer the ready transition by one microtask so callers that wire
-    // `onState` synchronously after connect() observe connecting → ready.
-    queueMicrotask(() => {
-      if (this.proxy !== proxy) return;
-      this.setState("ready");
-    });
   }
 
   disconnect(): void {
@@ -334,17 +338,16 @@ export class ElectronBridge implements TmuxBridge {
     this.emitWire({ dir: "out", ts: sentAt, msg: request });
     try {
       const response = await invoker(proxy);
-      const now = Date.now();
-      this.emitWire({
-        dir: "in-response",
-        ts: now,
-        id: request.id,
-        response,
-        latencyMs: now - sentAt,
-        request,
-      });
+      this.emitResponse(request, sentAt, response);
       return response;
     } catch (err) {
+      // A tmux %error is tmux's reply, rejected per the TmuxBridge contract:
+      // the wire logs it as the response it is, and only a bridge failure
+      // reaches onError — as on the WebSocket bridge.
+      if (err instanceof TmuxCommandError) {
+        this.emitResponse(request, sentAt, err.response);
+        throw err;
+      }
       const message = err instanceof Error ? err.message : String(err);
       this.emitWire({
         dir: "in-error",
@@ -355,6 +358,22 @@ export class ElectronBridge implements TmuxBridge {
       this.errorHandlers.forEach((h) => h(message, request.id));
       throw err;
     }
+  }
+
+  private emitResponse(
+    request: ClientToServer,
+    sentAt: number,
+    response: CommandResponse,
+  ): void {
+    const now = Date.now();
+    this.emitWire({
+      dir: "in-response",
+      ts: now,
+      id: request.id,
+      response,
+      latencyMs: now - sentAt,
+      request,
+    });
   }
 
   private setState(s: ConnState): void {

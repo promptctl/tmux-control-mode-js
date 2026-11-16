@@ -23,7 +23,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
-import { asCommandResponse } from "./command-response.js";
+import { asCommandResponse } from "../shared/command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 import { spawnReadyControlClient } from "./control-client.js";
 import {

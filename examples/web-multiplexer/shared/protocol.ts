@@ -9,6 +9,7 @@
 
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { BridgeErrorCode } from "@promptctl/tmux-control-mode-js/websocket/protocol";
 
 // ---------------------------------------------------------------------------
 // Browser → Server
@@ -79,11 +80,16 @@ export interface ResponseFrame {
   readonly response: CommandResponse;
 }
 
-export interface ErrorFrame {
-  readonly kind: "error";
-  readonly id?: string;
-  readonly message: string;
-}
+/** A failure the server reports. One that answers a command carries the
+ *  command's id and the code its BridgeError rejects with. */
+export type ErrorFrame =
+  | { readonly kind: "error"; readonly message: string }
+  | {
+      readonly kind: "error";
+      readonly id: string;
+      readonly code: BridgeErrorCode;
+      readonly message: string;
+    };
 
 export interface ReadyFrame {
   readonly kind: "ready";

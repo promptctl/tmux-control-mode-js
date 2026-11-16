@@ -253,21 +253,20 @@ export class BroadcastStore {
       let failedPanes = 0;
       for (const [i, outcome] of settled.entries()) {
         const p = ready[i];
-        // A pane counts as sent only if sendKeys both settled AND tmux
-        // accepted it: a tmux %error resolves with {success:false} (see
-        // ws-client.ts) rather than rejecting, so "fulfilled" alone would
-        // over-count. [LAW:types-are-the-program]
-        if (outcome.status === "fulfilled" && outcome.value.success) {
+        // A pane counts as sent only if tmux accepted it: a tmux %error
+        // rejects like a bridge failure does.
+        if (outcome.status === "fulfilled") {
           sentPanes++;
           sentBytes += new TextEncoder().encode(p.text).length;
         } else {
           failedPanes++;
           // [LAW:no-silent-failure] A bridge-closed rejection is already
-          // reported via onState/onError, but log it so a future
-          // non-BRIDGE_CLOSED failure doesn't vanish with zero diagnostic.
-          const reason =
-            outcome.status === "rejected" ? outcome.reason : "tmux %error";
-          console.warn(`[broadcast] sendKeys to %${p.paneId} failed`, reason);
+          // reported via onState/onError, but log every failure so a tmux
+          // %error or any other rejection doesn't vanish with zero diagnostic.
+          console.warn(
+            `[broadcast] sendKeys to %${p.paneId} failed`,
+            outcome.reason,
+          );
         }
       }
       // [LAW:no-ambient-temporal-coupling] Discard a stale settlement: only

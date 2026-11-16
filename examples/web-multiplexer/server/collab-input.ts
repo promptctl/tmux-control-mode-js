@@ -16,7 +16,7 @@
 //   `ready` promise (the cold-start race), owned by `spawnReadyControlClient`.
 
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
-import { asCommandResponse } from "./command-response.js";
+import { asCommandResponse } from "../shared/command-response.js";
 import {
   spawnReadyControlClient,
   type ReadyControlClient,

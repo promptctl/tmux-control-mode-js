@@ -29,6 +29,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import { bytesToLatin1 } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "../shared/command-response.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import { LineAssembler } from "./ansi-text.ts";
 import { TrigramIndex } from "./trigram-index.ts";
@@ -163,13 +164,9 @@ export class SearchStore {
       this.backfilling = true;
     });
     try {
+      // [LAW:no-silent-failure] A failed enumeration rejects into the catch
+      // below, never read as "zero panes".
       const listed = await this.bridge.execute("list-panes -a -F '#{pane_id}'");
-      // [LAW:no-silent-failure] A failed enumeration is surfaced, not treated
-      // as "zero panes". Leave the latch open so a later activation retries.
-      if (!listed.success) {
-        console.warn("[search] list-panes failed; scrollback not indexed");
-        return;
-      }
       const paneIds = listed.output.flatMap((line) => {
         const m = /^%(\d+)/.exec(line.trim());
         return m !== null ? [Number(m[1])] : [];
@@ -179,15 +176,19 @@ export class SearchStore {
         paneIds.map((paneId) =>
           this.bridge
             .execute(`capture-pane -p -S - -E - -t %${paneId}`)
+            .catch(asCommandResponse)
             .then((resp) => ({ paneId, resp })),
         ),
       );
 
       runInAction(() => {
         for (const { paneId, resp } of captures) {
-          // A pane that closed between list and capture fails its capture —
-          // expected churn, skip it. Genuine errors still surface above.
-          if (!resp.success) continue;
+          // A pane that closed between list and capture fails its capture, so
+          // a failed capture leaves its pane out of the index, said aloud.
+          if (!resp.success) {
+            console.warn(`[search] capture of %${paneId} failed`, resp.output);
+            continue;
+          }
           for (const text of resp.output) this.appendLine(paneId, text);
         }
         this.backfilled = true;
@@ -196,8 +197,8 @@ export class SearchStore {
     } catch (err) {
       // [LAW:no-silent-failure] A transport rejection (e.g. bridge closed
       // mid-backfill) is logged, not left as an unhandled rejection on this
-      // fire-and-forget caller. Leave the latch open so a later activation
-      // retries, same as the list-panes-failed branch above.
+      // fire-and-forget caller, as is a failed list-panes. Leave the latch
+      // open so a later activation retries.
       console.warn("[search] backfill failed", err);
     } finally {
       runInAction(() => {

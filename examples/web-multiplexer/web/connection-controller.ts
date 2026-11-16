@@ -106,24 +106,18 @@ export class ConnectionController {
       ]);
 
       runInAction(() => {
-        if (sessionsResp.success) {
-          this.model.applySnapshot(
-            SESSIONS_SUB,
-            encodeSnapshotLines(sessionsResp.output),
-          );
-        }
-        if (windowsResp.success) {
-          this.model.applySnapshot(
-            WINDOWS_SUB,
-            encodeSnapshotLines(windowsResp.output),
-          );
-        }
-        if (panesResp.success) {
-          this.model.applySnapshot(
-            PANES_SUB,
-            encodeSnapshotLines(panesResp.output),
-          );
-        }
+        this.model.applySnapshot(
+          SESSIONS_SUB,
+          encodeSnapshotLines(sessionsResp.output),
+        );
+        this.model.applySnapshot(
+          WINDOWS_SUB,
+          encodeSnapshotLines(windowsResp.output),
+        );
+        this.model.applySnapshot(
+          PANES_SUB,
+          encodeSnapshotLines(panesResp.output),
+        );
       });
 
       // Bootstrap the "which session is OUR client attached to" field. In
@@ -133,7 +127,7 @@ export class ConnectionController {
       const sessionResp = await this.client.execute(
         "display-message -p '#{session_id}'",
       );
-      if (sessionResp.success && sessionResp.output[0] !== undefined) {
+      if (sessionResp.output[0] !== undefined) {
         const parsed = parseInt(sessionResp.output[0].replace(/^\$/, ""), 10);
         if (Number.isFinite(parsed)) {
           this.model.setClientSession(parsed);

@@ -28,22 +28,16 @@ export class SelectionController {
     // %client-session-changed event will confirm it shortly.
     const token = this.model.beginSelect(id);
     // [LAW:no-silent-failure] If the switch doesn't land — a transport
-    // rejection, OR a tmux %error which resolves execute() with
-    // {success:false} rather than throwing (same contract jumpToPane checks) —
-    // the confirming event never arrives, so revert the optimistic pointer.
-    // Otherwise activeSessionId would keep pointing at a session tmux never
-    // switched to. Guarded by `token`: a newer selectSession/jumpToPane must
-    // win over this reversion arriving late.
+    // rejection or a tmux %error — the confirming event never arrives, so
+    // revert the optimistic pointer. Otherwise activeSessionId would keep
+    // pointing at a session tmux never switched to. Guarded by `token`: a
+    // newer selectSession/jumpToPane must win over this reversion arriving
+    // late.
     void (async () => {
       let switched = false;
       try {
-        switched = (await this.client.execute(`switch-client -t \\$${id}`))
-          .success;
-        if (!switched) {
-          console.warn(
-            "[selection] selectSession switch-client returned %error",
-          );
-        }
+        await this.client.execute(`switch-client -t \\$${id}`);
+        switched = true;
       } catch (err) {
         console.warn("[selection] selectSession failed", err);
       }
@@ -90,9 +84,8 @@ export class SelectionController {
    * [LAW:no-ambient-temporal-coupling] `select-window`/`select-pane` target
    *   the session `switch-client` was supposed to activate, so that ordering
    *   dependency is made explicit: they are only issued after `switch-client`
-   *   *actually switched*. A switch that failed — either a transport rejection
-   *   or a tmux `%error` (which resolves `execute()` with `{success:false}`
-   *   rather than throwing) — short-circuits the jump instead of the other two
+   *   *actually switched*. A switch that failed — a transport rejection or a
+   *   tmux `%error` — short-circuits the jump instead of the other two
    *   firing regardless and moving the target session's active window/pane
    *   while the client itself never switched there. Once switched,
    *   `select-window`/`select-pane` use `@windowId` / `%paneId` absolute
@@ -104,15 +97,8 @@ export class SelectionController {
     void (async () => {
       let switched = false;
       try {
-        // A tmux %error resolves execute() with {success:false} (see
-        // ws-client.ts) rather than throwing, so "switched" means the command
-        // succeeded, not merely that the promise settled.
-        switched = (
-          await this.client.execute(`switch-client -t \\$${sessionId}`)
-        ).success;
-        if (!switched) {
-          console.warn("[selection] jumpToPane switch-client returned %error");
-        }
+        await this.client.execute(`switch-client -t \\$${sessionId}`);
+        switched = true;
       } catch (err) {
         console.warn("[selection] jumpToPane switch-client failed", err);
       }

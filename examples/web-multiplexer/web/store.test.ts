@@ -12,6 +12,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import { DemoStore } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
@@ -85,7 +86,7 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
     expect(store.activeSessionId).toBe(7);
   });
 
-  it("reverts clientSessionId when switch-client resolves with success:false (tmux %error), falling back to the attached session", async () => {
+  it("reverts clientSessionId when switch-client rejects a tmux %error, falling back to the attached session", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
@@ -96,15 +97,17 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
     store.selectSession(5);
     expect(store.activeSessionId).toBe(5);
 
-    // A tmux %error resolves (not rejects) with success:false — the client
+    // A tmux %error rejects with TmuxCommandError — the client
     // never switched, so the optimistic pointer must revert just as it does on
     // a transport rejection.
-    findCall(calls, "switch-client").d.resolve({
-      commandNumber: 0,
-      timestamp: 0,
-      output: [],
-      success: false,
-    });
+    findCall(calls, "switch-client").d.reject(
+      new TmuxCommandError({
+        commandNumber: 0,
+        timestamp: 0,
+        output: ["can't find session"],
+        success: false,
+      }),
+    );
     await tick();
 
     expect(store.activeSessionId).toBe(7);
@@ -227,7 +230,7 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
     );
   });
 
-  it("does not issue select-window/select-pane when switch-client resolves with success:false (tmux %error)", async () => {
+  it("does not issue select-window/select-pane when switch-client rejects a tmux %error", async () => {
     const { bridge, calls } = fakeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
@@ -236,15 +239,17 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
     ]);
 
     store.jumpToPane(9, 42, 7);
-    // A tmux %error resolves (not rejects) with success:false — the client
+    // A tmux %error rejects with TmuxCommandError — the client
     // never switched, so the follow-on selects must not fire against the
     // still-current session, and the optimistic clientSessionId reverts.
-    findCall(calls, "switch-client").d.resolve({
-      commandNumber: 0,
-      timestamp: 0,
-      output: [],
-      success: false,
-    });
+    findCall(calls, "switch-client").d.reject(
+      new TmuxCommandError({
+        commandNumber: 0,
+        timestamp: 0,
+        output: ["can't find session"],
+        success: false,
+      }),
+    );
     await tick();
 
     expect(calls.some((c) => c.command.includes("select-window"))).toBe(false);
