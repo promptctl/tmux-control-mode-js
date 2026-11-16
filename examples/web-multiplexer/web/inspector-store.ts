@@ -18,9 +18,9 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
-import type { TmuxMessage } from "@promptctl/tmux-control-mode-js";
+import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
 import type { UiStore } from "./ui-store.ts";
-import { summarizeEvent } from "./event-summary.ts";
+import { summarizeEvent, summarizeOutput } from "./event-summary.ts";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -39,16 +39,23 @@ export interface InspectorEntry {
 
 const MAX_ENTRIES = 1000;
 
+// [LAW:one-source-of-truth] Every direction, shown: the initial filter and
+//   what "clear filters" returns to.
+function allDirectionsShown(): Record<WireEntry["dir"], boolean> {
+  return {
+    out: false,
+    "in-event": false,
+    "in-output": false,
+    "in-response": false,
+    "in-error": false,
+  };
+}
+
 export class InspectorStore {
   entries: InspectorEntry[] = [];
   paused = false;
   search = "";
-  hiddenDirections: Record<WireEntry["dir"], boolean> = {
-    out: false,
-    "in-event": false,
-    "in-response": false,
-    "in-error": false,
-  };
+  hiddenDirections: Record<WireEntry["dir"], boolean> = allDirectionsShown();
   selectedId: number | null = null;
 
   private nextId = 1;
@@ -158,12 +165,7 @@ export class InspectorStore {
   }
 
   clearFilters(): void {
-    this.hiddenDirections = {
-      out: false,
-      "in-event": false,
-      "in-response": false,
-      "in-error": false,
-    };
+    this.hiddenDirections = allDirectionsShown();
     this.uiStore.clearHidden();
     this.search = "";
   }
@@ -193,8 +195,8 @@ export class InspectorStore {
    * keyed on that reference would go stale after the first render.
    * [LAW:one-source-of-truth]
    */
-  get eventMessages(): TmuxMessage[] {
-    const out: TmuxMessage[] = [];
+  get eventMessages(): EmitterTmuxMessage[] {
+    const out: EmitterTmuxMessage[] = [];
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const wire = this.entries[i].wire;
       if (wire.dir === "in-event") out.push(wire.event);
@@ -231,6 +233,7 @@ export class InspectorStore {
     const c: Record<WireEntry["dir"], number> = {
       out: 0,
       "in-event": 0,
+      "in-output": 0,
       "in-response": 0,
       "in-error": 0,
     };
@@ -271,6 +274,9 @@ function summarizeForSearch(w: WireEntry): string {
   }
   if (w.dir === "in-event") {
     return `in event %${w.event.type} ${summarizeEvent(w.event, NO_LABELS)}`;
+  }
+  if (w.dir === "in-output") {
+    return `in output %output ${summarizeOutput(w.chunk, NO_LABELS)}`;
   }
   if (w.dir === "in-response") {
     return `in response ${w.id} ${w.response.success ? "ok" : "err"} ${w.response.output.join(" ")}`;

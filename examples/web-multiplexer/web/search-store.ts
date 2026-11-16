@@ -10,8 +10,9 @@
 // Two sources feed one index:
 //   - HISTORY  — `capture-pane -p -S - -E -` per pane, run once (lazily, on
 //                first entry to search mode). Plain text already.
-//   - LIVE     — `%output` bytes, decoded → ANSI-stripped → reassembled into
-//                lines, batched on a ticker and appended incrementally.
+//   - LIVE     — `%output` bytes from a server-scope sink, decoded →
+//                ANSI-stripped → reassembled into lines, batched on a
+//                ticker and appended incrementally.
 //
 // [LAW:one-source-of-truth] `lines` (keyed by monotonic id) + the per-pane
 //   `paneRing` order ARE the corpus. `index` (TrigramIndex) is DERIVED and
@@ -23,7 +24,7 @@
 //   the same assemble→append→index pipeline. There is no "indexing on/off"
 //   branch — backfill is a one-shot enrichment layered on top, not a mode.
 //
-// [LAW:effects-at-boundaries] All IO (bridge.execute, bridge.onEvent, the
+// [LAW:effects-at-boundaries] All IO (bridge.execute, the byte sink, the
 //   ticker) lives in this store; the line store, ANSI stripping, and trigram
 //   index it drives are pure and tested in isolation.
 
@@ -31,6 +32,8 @@ import { makeAutoObservable, runInAction } from "mobx";
 import { bytesToLatin1 } from "@promptctl/tmux-control-mode-js/protocol";
 import { asCommandResponse } from "../shared/command-response.ts";
 import type { TmuxBridge } from "./bridge.ts";
+import type { TmuxConnection } from "@promptctl/tmux-control-mode-js/browser";
+import { serverScope } from "@promptctl/tmux-control-mode-js/browser";
 import { LineAssembler } from "./ansi-text.ts";
 import { TrigramIndex } from "./trigram-index.ts";
 
@@ -79,10 +82,15 @@ export class SearchStore {
   private nextId = 1;
 
   private timerHandle: number | null = null;
-  private readonly disposeOnEvent: () => void;
+  private readonly detachSink: () => void;
   private readonly disposeOnState: () => void;
 
-  constructor(private readonly bridge: TmuxBridge) {
+  // [LAW:single-enforcer] Pane bytes come from the sink registry, the one
+  //   place the showcase routes them; the bridge serves commands and state.
+  constructor(
+    private readonly bridge: TmuxBridge,
+    bytes: Pick<TmuxConnection, "attachBytesSink">,
+  ) {
     makeAutoObservable<
       this,
       | "index"
@@ -104,16 +112,20 @@ export class SearchStore {
       timerHandle: false,
     });
 
-    this.disposeOnEvent = bridge.onEvent((ev) => {
-      if (ev.type === "output" || ev.type === "extended-output") {
-        let chunks = this.accum.get(ev.paneId);
-        if (chunks === undefined) {
-          chunks = [];
-          this.accum.set(ev.paneId, chunks);
-        }
-        chunks.push(bytesToLatin1(ev.data));
-      }
-    });
+    this.detachSink = bytes.attachBytesSink(
+      {
+        write: ({ paneId, data }) => {
+          let chunks = this.accum.get(paneId);
+          if (chunks === undefined) {
+            chunks = [];
+            this.accum.set(paneId, chunks);
+          }
+          chunks.push(bytesToLatin1(data));
+        },
+        end: () => undefined,
+      },
+      { scope: serverScope },
+    );
 
     // A reconnect can mean history changed underneath us; re-run backfill if
     // search mode has already been activated this session.
@@ -131,7 +143,7 @@ export class SearchStore {
   }
 
   dispose(): void {
-    this.disposeOnEvent();
+    this.detachSink();
     this.disposeOnState();
     if (this.timerHandle !== null) {
       clearInterval(

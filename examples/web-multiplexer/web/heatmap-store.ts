@@ -2,8 +2,7 @@
 //
 // HeatmapStore — reactive byte-rate tracker per pane.
 //
-// Every `%output` / `%extended-output` event contributes to a per-pane
-// byte accumulator. A 200ms ticker turns those accumulators into a
+// Every chunk of pane output contributes to a per-pane byte accumulator. A 200ms ticker turns those accumulators into a
 // bytes-per-second rate and writes it to an observable Map. Each tick
 // also decays existing rates so quiet panes smoothly fade out, giving
 // the UI a pulsing-heatmap feel without per-event re-renders.
@@ -19,7 +18,8 @@
 // the accumulator), not by skipping work.
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { TmuxBridge } from "./bridge.ts";
+import type { TmuxConnection } from "@promptctl/tmux-control-mode-js/browser";
+import { serverScope } from "@promptctl/tmux-control-mode-js/browser";
 
 const TICK_INTERVAL_MS = 200;
 /** Per-tick multiplier applied to existing rates so quiet panes fade. */
@@ -38,19 +38,25 @@ export class HeatmapStore {
   private readonly accum = new Map<number, number>();
   private lastTick: number = Date.now();
   private timerHandle: number | null = null;
-  private readonly disposeOnEvent: () => void;
+  private readonly detachSink: () => void;
 
-  constructor(client: TmuxBridge) {
+  // [LAW:single-enforcer] Pane bytes come from the sink registry, the one
+  //   place the showcase routes them; a server-scope sink sees every pane.
+  constructor(bytes: Pick<TmuxConnection, "attachBytesSink">) {
     makeAutoObservable(this);
 
-    this.disposeOnEvent = client.onEvent((ev) => {
-      if (ev.type === "output" || ev.type === "extended-output") {
-        this.accum.set(
-          ev.paneId,
-          (this.accum.get(ev.paneId) ?? 0) + ev.data.byteLength,
-        );
-      }
-    });
+    this.detachSink = bytes.attachBytesSink(
+      {
+        write: ({ paneId, data }) => {
+          this.accum.set(
+            paneId,
+            (this.accum.get(paneId) ?? 0) + data.byteLength,
+          );
+        },
+        end: () => undefined,
+      },
+      { scope: serverScope },
+    );
 
     // setInterval returns a number in the browser; guard for Node types.
     this.timerHandle = setInterval(
@@ -60,7 +66,7 @@ export class HeatmapStore {
   }
 
   dispose(): void {
-    this.disposeOnEvent();
+    this.detachSink();
     if (this.timerHandle !== null) {
       clearInterval(
         this.timerHandle as unknown as ReturnType<typeof setInterval>,

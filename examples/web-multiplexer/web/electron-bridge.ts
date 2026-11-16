@@ -13,6 +13,7 @@
 //     → emit "in-response" wire (a tmux %error included), or "in-error"
 //     when the bridge itself fails
 //   - events:  proxy.on("*") → emit "in-event" wire → fan out to handlers
+//   - bytes:   proxy byte sink → emit "in-output" wire → fan out to handlers
 // No branching on "is this a special method" or "is this a special event".
 
 import {
@@ -30,11 +31,9 @@ import {
 import type {
   ChunkPayload,
   EmitterMessage,
+  EmitterTmuxMessage,
 } from "@promptctl/tmux-control-mode-js/browser";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import {
   refreshClientClearWindowSize,
   refreshClientSize,
@@ -46,6 +45,7 @@ import type {
   ConnState,
   ErrorHandler,
   EventHandler,
+  PaneOutputHandler,
   FirehoseHandler,
   StateHandler,
   TmuxBridge,
@@ -58,13 +58,14 @@ export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
   private readonly proxyEventHandler: (msg: EmitterMessage) => void;
   private proxy: TmuxClientProxy | null = null;
-  // [LAW:single-enforcer] Disposer for the proxy byte-sink that re-surfaces
-  // pane output as `output` events. One sink per live proxy; cleared on
-  // disconnect alongside the proxy.
+  // [LAW:single-enforcer] Disposer for the proxy byte sink that feeds
+  // `onPaneOutput`. One sink per live proxy; cleared on disconnect alongside
+  // the proxy.
   private byteSinkDisposer: (() => void) | null = null;
   private state: ConnState = "connecting";
   private nextId = 0;
   private readonly eventHandlers = new Set<EventHandler>();
+  private readonly paneOutputHandlers = new Set<PaneOutputHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly wireHandlers = new Set<WireHandler>();
@@ -91,7 +92,7 @@ export class ElectronBridge implements TmuxBridge {
     // [LAW:one-type-per-behavior] The lifecycle filter lives HERE, at the
     // emitter source — the one inbound path that can carry synthetic
     // events. The demo consumes only tmux's own messages, so `deliverEvent`
-    // downstream speaks one honest TmuxMessage shape.
+    // downstream speaks one honest EmitterTmuxMessage shape.
     // [LAW:one-source-of-truth] The bridge is ready while main's tmux client
     //   is: main forwards that client's connection-state, so a drop there
     //   reaches onState like a WebSocket close does.
@@ -226,30 +227,16 @@ export class ElectronBridge implements TmuxBridge {
     if (this.proxy !== null) return;
     const proxy = createRendererBridge(this.ipcRenderer);
     proxy.on("*", this.proxyEventHandler);
-    // [LAW:single-enforcer] The renderer proxy delivers pane bytes ONLY through
-    // its byte-sink channel (`attachBytesSink`) — it does NOT re-emit them on
-    // `on("*")`, which carries non-byte EmitterMessages. So bridge the byte
-    // channel back into the unified event stream: each chunk becomes an
-    // `output` TmuxMessage routed through `deliverEvent`, exactly mirroring the
-    // WebSocket transport (which decodes binary frames into the same `output`
-    // message and delivers them through its event fan-out + wire log). Without
-    // this, BridgePaneStreamClient — which consumes pane bytes via
-    // `bridge.onEvent("output")` — would never see live pane output.
+    // [LAW:dataflow-not-control-flow] The proxy delivers pane bytes only
+    //   through its byte sink, never on `on("*")`; the bridge keeps the two
+    //   channels apart, as `onPaneOutput` and `onEvent`.
     // [LAW:one-source-of-truth] With only this server-scope sink, the proxy's
     //   router keeps no topology and sends no query: BridgePaneStreamClient's
     //   router is the page's one topology, and it outlives the proxy that a
     //   socket swap replaces.
     this.byteSinkDisposer = proxy.attachBytesSink(
       {
-        write: (chunk: ChunkPayload): void => {
-          // [LAW:one-type-per-behavior] An `output` message is already a
-          // TmuxMessage — no lifecycle filter needed on this synthetic path.
-          this.deliverEvent({
-            type: "output",
-            paneId: chunk.paneId,
-            data: chunk.data,
-          });
-        },
+        write: (chunk: ChunkPayload): void => this.deliverPaneOutput(chunk),
         end: (): void => {
           // no-op: pane output is pushed per chunk; there is no frame to flush.
         },
@@ -287,6 +274,13 @@ export class ElectronBridge implements TmuxBridge {
     };
   }
 
+  onPaneOutput(h: PaneOutputHandler): () => void {
+    this.paneOutputHandlers.add(h);
+    return () => {
+      this.paneOutputHandlers.delete(h);
+    };
+  }
+
   onError(h: ErrorHandler): () => void {
     this.errorHandlers.add(h);
     return () => {
@@ -313,16 +307,16 @@ export class ElectronBridge implements TmuxBridge {
   // Internals
   // ---------------------------------------------------------------------------
 
-  /**
-   * Single delivery path for an inbound event — proxy state events (filtered
-   * to TmuxMessages at the emitter source) and decoded pane-output bytes both
-   * flow through here, so every consumer and the in-event WireEntry see one
-   * uniform TmuxMessage shape, identical to the WebSocket transport's
-   * deliverEvent. [LAW:one-type-per-behavior]
-   */
-  private deliverEvent(ev: TmuxMessage): void {
+  // [LAW:one-type-per-behavior] The two inbound delivery paths, each the
+  //   same as the WebSocket transport's: log the entry, then fan it out.
+  private deliverEvent(ev: EmitterTmuxMessage): void {
     this.emitWire({ dir: "in-event", ts: Date.now(), event: ev });
     this.eventHandlers.forEach((h) => h(ev));
+  }
+
+  private deliverPaneOutput(chunk: ChunkPayload): void {
+    this.emitWire({ dir: "in-output", ts: Date.now(), chunk });
+    this.paneOutputHandlers.forEach((h) => h(chunk));
   }
 
   private async invokeWithWire(

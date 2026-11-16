@@ -13,13 +13,12 @@
 
 import type { ClientToServer } from "../shared/protocol.ts";
 import type {
+  ChunkPayload,
   ClientSizeSurface,
   ConnectionState,
+  EmitterTmuxMessage,
 } from "@promptctl/tmux-control-mode-js/browser";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 
 /**
  * Connection state observed by every consumer that cares about the
@@ -66,18 +65,22 @@ export function toConnectionState(s: ConnState): ConnectionState {
  * One entry per thing that crossed the bridge in either direction. Powers
  * the InspectorView's wire log. Transports synthesize this on each side.
  *
- * Note: `in-event.event` is a fully-decoded TmuxMessage (Uint8Array bytes
- * for output / extended-output). The transport's wire encoding — binary
- * pane-output frames over WebSocket, native IPC over Electron — is a detail
- * the library decodes at the bridge boundary; the inspector renders the
- * bytes directly.
+ * Pane bytes and tmux's notifications cross the wire on separate channels
+ * (binary frames vs JSON over WebSocket; the byte sink vs `on("*")` over
+ * Electron), and the log keeps them apart: `in-output` holds one chunk of
+ * pane bytes, `in-event` one notification.
  */
 export type WireEntry =
   | { readonly dir: "out"; readonly ts: number; readonly msg: ClientToServer }
   | {
       readonly dir: "in-event";
       readonly ts: number;
-      readonly event: TmuxMessage;
+      readonly event: EmitterTmuxMessage;
+    }
+  | {
+      readonly dir: "in-output";
+      readonly ts: number;
+      readonly chunk: ChunkPayload;
     }
   | {
       readonly dir: "in-response";
@@ -94,7 +97,8 @@ export type WireEntry =
       readonly message: string;
     };
 
-export type EventHandler = (event: TmuxMessage) => void;
+export type EventHandler = (event: EmitterTmuxMessage) => void;
+export type PaneOutputHandler = (chunk: ChunkPayload) => void;
 export type ErrorHandler = (message: string, id?: string) => void;
 export type StateHandler = (state: ConnState) => void;
 export type WireHandler = (entry: WireEntry) => void;
@@ -110,9 +114,9 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
 /**
  * Transport-agnostic bridge surface consumed by every renderer module.
  *
- * Subscription methods (`onEvent` / `onError` / `onState` / `onWire`) all
- * return an unsubscribe function. Calling it removes that handler; calling
- * it twice is safe.
+ * Subscription methods (`onEvent` / `onPaneOutput` / `onError` / `onState` /
+ * `onWire`) all return an unsubscribe function. Calling it removes that
+ * handler; calling it twice is safe.
  *
  * Lifecycle (`connect` / `disconnect`) is included on the interface because
  * DemoStore drives it from a React effect. WebSocket implementations dial
@@ -137,12 +141,18 @@ export interface TmuxBridge extends ClientSizeSurface {
   onError(handler: ErrorHandler): () => void;
   onState(handler: StateHandler): () => void;
   onWire(handler: WireHandler): () => void;
+  /**
+   * Pane output (`%output`) for the attached session, one chunk at a time.
+   * [LAW:dataflow-not-control-flow] A channel of its own, as at both
+   * transports: `onEvent` carries notifications, never pane bytes.
+   */
+  onPaneOutput(handler: PaneOutputHandler): () => void;
 
   /**
    * Firehose channel — live bytes from EVERY pane in EVERY session, tapped via
    * `pipe-pane` in the bridge's host process (the browser cannot open tmux
-   * connections). This is a DEDICATED channel, separate from `onEvent`'s
-   * attached-`%output`: the cross-terminal regex feed sources EXCLUSIVELY from
+   * connections). This is a DEDICATED channel, separate from `onPaneOutput`'s
+   * attached-session `%output`: the cross-terminal regex feed sources EXCLUSIVELY from
    * here so the attached session's bytes never double-count.
    * [LAW:one-source-of-truth]
    *

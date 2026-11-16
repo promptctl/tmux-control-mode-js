@@ -39,6 +39,7 @@ function fakeBridge(): { bridge: TmuxBridge; emit: WireHandler } {
       connect: noop,
       disconnect: noop,
       onEvent: noopUnsub,
+      onPaneOutput: noopUnsub,
       onError: noopUnsub,
       onState: noopUnsub,
       onWire: (h) => {

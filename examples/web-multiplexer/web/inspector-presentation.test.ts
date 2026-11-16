@@ -72,11 +72,11 @@ describe("presentFor — direction → display shape", () => {
     for (const w of cases) expect(presentFor(w, labels).summary).toBe("");
   });
 
-  it("presents an inbound event via the shared summarizer", () => {
+  it("presents a chunk of pane output as %output with a byte preview", () => {
     const w: WireEntry = {
-      dir: "in-event",
+      dir: "in-output",
       ts: 0,
-      event: { type: "output", paneId: 5, data: bytes("hi") },
+      chunk: { paneId: 5, data: bytes("hi") },
     };
     const p = presentFor(w, labels);
     expect(p).toMatchObject({
@@ -153,15 +153,16 @@ describe("renderPayload", () => {
     );
   });
 
-  it("renders output-event bytes as an escaped byte view, not raw JSON", () => {
+  it("renders pane-output bytes as an escaped byte view, not raw JSON", () => {
     const w: WireEntry = {
-      dir: "in-event",
+      dir: "in-output",
       ts: 0,
-      event: { type: "output", paneId: 5, data: bytes("hi") },
+      chunk: { paneId: 5, data: bytes("hi\n") },
     };
     const text = renderPayload(w);
     expect(text).toContain("paneId=%5");
-    expect(text).toContain("<2 bytes>");
+    expect(text).toContain("bytes=hi\\n");
+    expect(text).toContain("(3 bytes)");
   });
 
   it("notes when a response's request was evicted from the ring", () => {

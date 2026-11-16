@@ -21,7 +21,8 @@ import {
 } from "@mantine/core";
 import type { TmuxBridge } from "./bridge.ts";
 import { DemoStore } from "./store.ts";
-import { UiStore, isAppMode } from "./ui-store.ts";
+import { UiStore } from "./ui-store.ts";
+import { APP_MODES, parseAppMode } from "./app-mode.ts";
 import { InspectorStore } from "./inspector-store.ts";
 import { HeatmapStore } from "./heatmap-store.ts";
 import { SearchStore } from "./search-store.ts";
@@ -120,11 +121,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     [demoStore, uiStore],
   );
   const heatmapStore = useMemo(
-    () => new HeatmapStore(demoStore.client),
+    () => new HeatmapStore(demoStore.paneStreamClient),
     [demoStore],
   );
   const searchStore = useMemo(
-    () => new SearchStore(demoStore.client),
+    () => new SearchStore(demoStore.client, demoStore.paneStreamClient),
     [demoStore],
   );
   // [LAW:one-source-of-truth] RegexMatcherStore drives the SAME bridge as the
@@ -626,36 +627,14 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
             <SegmentedControl
               size="xs"
               value={uiStore.appMode}
-              onChange={(v) =>
-                uiStore.setAppMode(isAppMode(v) ? v : "multiplexer")
-              }
-              data={[
-                { label: "Multiplexer", value: "multiplexer" },
-                { label: "Console", value: "console" },
-                { label: "Protocol Inspector", value: "inspector" },
-                { label: "Activity Heatmap", value: "heatmap" },
-                { label: "Scrollback Search", value: "search" },
-                { label: "Regex Matcher", value: "regex" },
-                { label: "Image Extractor", value: "image" },
-                { label: "Escape Playground", value: "playground" },
-                { label: "Session Recorder", value: "record" },
-                { label: "Byte Attribution", value: "attribution" },
-                { label: "Time Machine", value: "timemachine" },
-                { label: "Moment Diff", value: "momentdiff" },
-                { label: "Bug Bisect", value: "bisect" },
-                { label: "Smart Broadcast", value: "broadcast" },
-                { label: "Sync Scrollback", value: "syncscroll" },
-                { label: "Pane Mirror", value: "mirror" },
-                { label: "Collaborative Pane", value: "collaborate" },
-                { label: "Data Sniffer", value: "sniffer" },
-                { label: "Hyperlink Sidebar", value: "hyperlinks" },
-                { label: "Command Palette", value: "commands" },
-                { label: "AI Co-pilot", value: "copilot" },
-                { label: "Terminal Reader", value: "reader" },
-                { label: "WebGL Grid", value: "webgl" },
-                { label: "Protocol Tutorial", value: "tutorial" },
-                { label: "Conformance", value: "conformance" },
-              ]}
+              onChange={(v) => {
+                // [LAW:no-silent-failure] The control can only report a value
+                // from APP_MODES, so an unknown one is a bug — never a mode.
+                const mode = parseAppMode(v);
+                if (mode === null) throw new Error(`unknown app mode: ${v}`);
+                uiStore.setAppMode(mode);
+              }}
+              data={[...APP_MODES]}
             />
           </Group>
           <Group gap="xs" wrap="nowrap">

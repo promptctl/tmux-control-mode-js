@@ -16,8 +16,8 @@
 //     each event by re-parsing the delivered value and replacing the
 //     corresponding observable collection. MobX observers re-render.
 //
-//   - Pane output (%output, %extended-output) is unrelated to subscriptions;
-//     the PaneView component subscribes to those events directly.
+//   - Pane output is unrelated to subscriptions; it reaches each pane's
+//     terminal through a pane-scoped sink on `paneStreamClient`.
 //
 // This is the canonical reactive pattern for a tmux control-mode consumer:
 // zero polling, zero explicit queries after startup, the UI is a pure

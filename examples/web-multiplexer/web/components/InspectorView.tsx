@@ -107,6 +107,12 @@ export const InspectorView = observer(function InspectorView({
           />
           <DirectionChip
             store={store}
+            dir="in-output"
+            label={`↓ output ${counts["in-output"]}`}
+            color="cyan"
+          />
+          <DirectionChip
+            store={store}
             dir="in-response"
             label={`↓ resp ${counts["in-response"]}`}
             color="grape"

@@ -12,10 +12,8 @@
 // so we stub a Map-backed Storage to exercise the real persistence path.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
 import { UiStore } from "./ui-store.ts";
 import { ConsoleStore, quoteTmuxArg } from "./console-store.ts";
 import {
@@ -81,6 +79,7 @@ function fakeBridge(): TmuxBridge {
     connect: noop,
     disconnect: noop,
     onEvent: noopUnsub,
+    onPaneOutput: noopUnsub,
     onError: noopUnsub,
     onState: noopUnsub,
     onWire: noopUnsub,
@@ -135,7 +134,7 @@ function playgroundBridge(): {
   bridge: TmuxBridge;
   execCalls: Call[];
   eventListeners: Set<EventHandler>;
-  emit: (ev: TmuxMessage) => void;
+  emit: (ev: EmitterTmuxMessage) => void;
   fireState: (s: ConnState) => void;
 } {
   const execCalls: Call[] = [];
@@ -165,7 +164,7 @@ function playgroundBridge(): {
   };
 }
 
-function subEvent(name: string, value: string): TmuxMessage {
+function subEvent(name: string, value: string): EmitterTmuxMessage {
   return {
     type: "subscription-changed",
     name,

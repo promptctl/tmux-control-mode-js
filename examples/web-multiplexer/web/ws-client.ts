@@ -20,10 +20,7 @@ import {
   runInAction,
 } from "mobx";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.ts";
-import type {
-  CommandResponse,
-  TmuxMessage,
-} from "@promptctl/tmux-control-mode-js/protocol";
+import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import {
   refreshClientClearWindowSize,
   refreshClientSize,
@@ -35,6 +32,10 @@ import {
   BridgeError,
 } from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
+import type {
+  ChunkPayload,
+  EmitterTmuxMessage,
+} from "@promptctl/tmux-control-mode-js/browser";
 import {
   isFirehoseFrame,
   decodeFirehoseFrame,
@@ -44,6 +45,7 @@ import type {
   ErrorHandler,
   EventHandler,
   FirehoseHandler,
+  PaneOutputHandler,
   StateHandler,
   TmuxBridge,
   WireEntry,
@@ -71,6 +73,7 @@ export class WebSocketBridge implements TmuxBridge {
   private ws: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
   private readonly eventHandlers = new Set<EventHandler>();
+  private readonly paneOutputHandlers = new Set<PaneOutputHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly stateHandlers = new Set<StateHandler>();
   private readonly wireHandlers = new Set<WireHandler>();
@@ -470,8 +473,8 @@ export class WebSocketBridge implements TmuxBridge {
   }
 
   /**
-   * Decode a binary pane-output frame into a TmuxMessage and deliver it
-   * through the same path as JSON events. The library owns the wire format
+   * Decode a binary pane-output frame and deliver its chunk to the
+   * pane-output handlers. The library owns the wire format
    * (`decodePaneOutput` matches the server's `attachWebSocketSink` encoder);
    * the demo never touches base64 or hand-rolls a byte decoder.
    *
@@ -482,7 +485,7 @@ export class WebSocketBridge implements TmuxBridge {
   private handleBinary(buf: ArrayBuffer): void {
     const bytes = new Uint8Array(buf);
     // [LAW:dataflow-not-control-flow] The leading magic byte is the channel
-    // discriminator: 0x7F (library) → attached pane output → event fan-out;
+    // discriminator: 0x7F (library) → attached pane output → pane-output fan-out;
     // 0xF1 → firehose bytes → firehose fan-out. The two channels never cross,
     // so a tapped line can't also reach the terminal as attached output.
     if (isFirehoseFrame(bytes)) {
@@ -496,9 +499,10 @@ export class WebSocketBridge implements TmuxBridge {
       this.emitError(message);
       return;
     }
-    let msg: TmuxMessage;
+    let chunk: ChunkPayload;
     try {
-      msg = decodePaneOutput(bytes);
+      const { paneId, data } = decodePaneOutput(bytes);
+      chunk = { paneId, data };
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "invalid pane-output frame";
@@ -506,18 +510,19 @@ export class WebSocketBridge implements TmuxBridge {
       this.emitError(message);
       return;
     }
-    this.deliverEvent(msg);
+    this.deliverPaneOutput(chunk);
   }
 
-  /**
-   * Single delivery path for an inbound event — JSON state events and decoded
-   * binary pane-output frames both flow through here, so every consumer and
-   * the in-event WireEntry see one uniform TmuxMessage shape (the same shape
-   * the Electron transport delivers natively). [LAW:one-type-per-behavior]
-   */
-  private deliverEvent(ev: TmuxMessage): void {
+  // [LAW:one-type-per-behavior] The two inbound delivery paths, each the
+  //   same as the Electron transport's: log the entry, then fan it out.
+  private deliverEvent(ev: EmitterTmuxMessage): void {
     this.emitWire({ dir: "in-event", ts: Date.now(), event: ev });
     this.eventHandlers.forEach((h) => h(ev));
+  }
+
+  private deliverPaneOutput(chunk: ChunkPayload): void {
+    this.emitWire({ dir: "in-output", ts: Date.now(), chunk });
+    this.paneOutputHandlers.forEach((h) => h(chunk));
   }
 
   onWire(h: WireHandler): () => void {
@@ -528,6 +533,11 @@ export class WebSocketBridge implements TmuxBridge {
   onEvent(h: EventHandler): () => void {
     this.eventHandlers.add(h);
     return () => this.eventHandlers.delete(h);
+  }
+
+  onPaneOutput(h: PaneOutputHandler): () => void {
+    this.paneOutputHandlers.add(h);
+    return () => this.paneOutputHandlers.delete(h);
   }
 
   onError(h: ErrorHandler): () => void {

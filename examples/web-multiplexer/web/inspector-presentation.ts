@@ -11,7 +11,7 @@
 
 import type { WireEntry } from "./bridge.ts";
 import { prettyBytes, escapeByte } from "./format-bytes.ts";
-import { summarizeEvent } from "./event-summary.ts";
+import { summarizeEvent, summarizeOutput } from "./event-summary.ts";
 
 export interface Presentation {
   readonly arrow: string;
@@ -53,6 +53,14 @@ export function presentFor(
       summary: summarizeEvent(w.event, paneLabels),
     };
   }
+  if (w.dir === "in-output") {
+    return {
+      arrow: "↓",
+      color: "var(--mantine-color-cyan-6)",
+      type: "%output",
+      summary: summarizeOutput(w.chunk, paneLabels),
+    };
+  }
   if (w.dir === "in-response") {
     const head = w.response.output[0] ?? "";
     const more =
@@ -72,24 +80,28 @@ export function presentFor(
   };
 }
 
+// [LAW:types-are-the-program] A record keyed by every direction: a new
+//   direction without a color does not compile.
+const BADGE_COLORS: Record<WireEntry["dir"], string> = {
+  out: "blue",
+  "in-event": "teal",
+  "in-output": "cyan",
+  "in-response": "grape",
+  "in-error": "red",
+};
+
 export function badgeColor(dir: WireEntry["dir"]): string {
-  if (dir === "out") return "blue";
-  if (dir === "in-event") return "teal";
-  if (dir === "in-response") return "grape";
-  return "red";
+  return BADGE_COLORS[dir];
 }
 
 export function renderPayload(w: WireEntry): string {
   if (w.dir === "out") return JSON.stringify(w.msg, null, 2);
-  if (w.dir === "in-event") {
-    const ev = w.event;
-    if (ev.type === "output" || ev.type === "extended-output") {
-      // Render the Uint8Array bytes as escaped ASCII so the inspector
-      // can serve as a raw-byte viewer.
-      const ageNote = ev.type === "extended-output" ? `  age=${ev.age}ms` : "";
-      return `paneId=%${ev.paneId}${ageNote}\nbytes=${prettyBytes(ev.data, 96)}\n\n${JSON.stringify({ ...ev, data: `<${ev.data.byteLength} bytes>` }, null, 2)}`;
-    }
-    return JSON.stringify(ev, null, 2);
+  if (w.dir === "in-event") return JSON.stringify(w.event, null, 2);
+  if (w.dir === "in-output") {
+    // Render the bytes as escaped ASCII so the inspector can serve as a
+    // raw-byte viewer.
+    const { paneId, data } = w.chunk;
+    return `paneId=%${paneId}\nbytes=${prettyBytes(data, 96)}\n\n(${data.byteLength} bytes)`;
   }
   if (w.dir === "in-response") {
     const req =

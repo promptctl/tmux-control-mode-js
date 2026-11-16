@@ -37,6 +37,7 @@ function recordingBridge(sent: SentKeys[]): TmuxBridge {
     connect: () => {},
     disconnect: () => {},
     onEvent: () => noopUnsub,
+    onPaneOutput: () => noopUnsub,
     onError: () => noopUnsub,
     onState: () => noopUnsub,
     onWire: () => noopUnsub,
