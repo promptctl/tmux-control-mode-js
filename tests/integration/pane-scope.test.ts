@@ -23,6 +23,12 @@ import {
   attachClient,
   tmux,
 } from "../helpers/integration.js";
+import {
+  describeTopologyMoves,
+  listAllPanes,
+  makeRecordingSink,
+  sendOutputToPane,
+} from "../helpers/topology-moves.js";
 import type { TmuxClient } from "../../src/client.js";
 import {
   serverScope,
@@ -32,69 +38,8 @@ import {
   PANE_LIST_FORMAT,
   parsePaneListLine,
 } from "../../src/pane-output.js";
-import type { BytesSink } from "../../src/pane-output.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Parse numeric IDs from `list-panes -a` output.
- *
- * Returns an array of `{paneId, windowId, sessionId}` triples. The format
- * `%N @N $N` is the authoritative form used by `parsePaneListLine`.
- */
-async function listAllPanes(
-  client: TmuxClient,
-): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const response = await client.execute(
-    `list-panes -a -F '${PANE_LIST_FORMAT}'`,
-  );
-  return response.output.flatMap((line) => {
-    const parsed = parsePaneListLine(line);
-    return parsed !== null ? [parsed] : [];
-  });
-}
-
-/**
- * Send a keystroke to the given pane so it produces output.
- *
- * Uses `send-keys … Enter` to a specific pane target so the pane that
- * receives input is explicit, not the currently-active pane.
- */
-function sendOutputToPane(client: TmuxClient, paneId: number): Promise<void> {
-  return client
-    .execute(`send-keys -t %${paneId} 'echo scope-test-${paneId}' Enter`)
-    .then(() => undefined);
-}
-
-const decoder = new TextDecoder();
-function textOf(
-  arrived: { paneId: number; data: Uint8Array }[],
-  paneId: number,
-): string {
-  return arrived
-    .filter((e) => e.paneId === paneId)
-    .map((e) => decoder.decode(e.data))
-    .join("");
-}
-
-/**
- * Return a `BytesSink` that collects every chunk where `paneId` matches a set.
- * `arrived` is the live reference — push to it from `write`.
- */
-function makeRecordingSink(
-  arrived: { paneId: number; data: Uint8Array }[],
-): BytesSink {
-  return {
-    write(msg): void {
-      arrived.push({ paneId: msg.paneId, data: msg.data.slice() });
-    },
-    end(): void {},
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -410,132 +355,6 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
-  // ── Test 6: pane move (windowScope) ──────────────────────────────────────
-
-  it("SCOPE-06: a pane joined into another window routes to it, not its old window", async () => {
-    const session = uniqueName("join");
-    client = await attachSession(socketName, session);
-    // Two panes in the first window, so it survives the join and reports the
-    // move as a layout-change; a second window to join into.
-    await client.execute("split-window");
-    await client.execute("new-window");
-
-    const all = await listAllPanes(client);
-    const windowIds = [...new Set(all.map((p) => p.windowId))];
-    expect(windowIds.length).toBe(2);
-    const [fromWindow, toWindow] = windowIds;
-    const movedPane = all.filter((p) => p.windowId === fromWindow)[1].paneId;
-
-    const inFrom: { paneId: number; data: Uint8Array }[] = [];
-    const inTo: { paneId: number; data: Uint8Array }[] = [];
-    const disposeFrom = client.attachBytesSink(makeRecordingSink(inFrom), {
-      scope: windowScope(fromWindow),
-    });
-    const disposeTo = client.attachBytesSink(makeRecordingSink(inTo), {
-      scope: windowScope(toWindow),
-    });
-    tmux(socketName, [
-      "join-pane",
-      "-s",
-      `%${movedPane}`,
-      "-t",
-      `@${toWindow}`,
-    ]);
-    await sendOutputToPane(client, movedPane);
-
-    const marker = `scope-test-${movedPane}`;
-    await pollUntil(() => textOf(inTo, movedPane).includes(marker));
-    expect(textOf(inFrom, movedPane)).not.toContain(marker);
-    disposeFrom();
-    disposeTo();
-  }, 20000);
-
-  it("SCOPE-06c: a pane broken out into a new window stops routing to its old window", async () => {
-    const session = uniqueName("break");
-    client = await attachSession(socketName, session);
-    await client.execute("split-window");
-
-    const all = await listAllPanes(client);
-    const [fromWindow] = [...new Set(all.map((p) => p.windowId))];
-    const { paneId: movedPane, sessionId } = all[1];
-
-    const inFrom: { paneId: number; data: Uint8Array }[] = [];
-    const inSession: { paneId: number; data: Uint8Array }[] = [];
-    const disposeFrom = client.attachBytesSink(makeRecordingSink(inFrom), {
-      scope: windowScope(fromWindow),
-    });
-    const disposeSession = client.attachBytesSink(
-      makeRecordingSink(inSession),
-      { scope: sessionScope(sessionId) },
-    );
-    // tmux reports break-pane only as the old window's layout omitting the
-    // pane, then %window-add for the new one.
-    tmux(socketName, ["break-pane", "-d", "-s", `%${movedPane}`]);
-    await sendOutputToPane(client, movedPane);
-
-    const marker = `scope-test-${movedPane}`;
-    await pollUntil(() => textOf(inSession, movedPane).includes(marker));
-    expect(textOf(inFrom, movedPane)).not.toContain(marker);
-    disposeFrom();
-    disposeSession();
-  }, 20000);
-
-  it("SCOPE-06d: a window moved in from another session routes to the attached session, not its old one", async () => {
-    const session = uniqueName("mvwin");
-    client = await attachSession(socketName, session);
-    const other = uniqueName("mvwin-src");
-    // Two windows, so moving one out leaves the source session alive.
-    tmux(socketName, ["new-session", "-d", "-s", other]);
-    tmux(socketName, ["new-window", "-d", "-t", `${other}:`]);
-
-    const all = await listAllPanes(client);
-    const attachedId = Number(
-      (
-        await client.execute("display-message -p '#{session_id}'")
-      ).output[0]!.trim().slice(1),
-    );
-    const moved = all.find((p) => p.sessionId !== attachedId)!;
-
-    const inAttached: { paneId: number; data: Uint8Array }[] = [];
-    const inOld: { paneId: number; data: Uint8Array }[] = [];
-    const disposeAttached = client.attachBytesSink(
-      makeRecordingSink(inAttached),
-      { scope: sessionScope(attachedId) },
-    );
-    const disposeOld = client.attachBytesSink(makeRecordingSink(inOld), {
-      scope: sessionScope(moved.sessionId),
-    });
-    // tmux reports this only as %window-add; the window keeps its id and
-    // its panes keep their ids. tmux runs a client's commands one at a time,
-    // so the stall holds the window-add refresh back while the moved pane's
-    // output (provoked through the CLI, outside that queue) arrives.
-    // The attach-triggered bootstraps reply before anything after them.
-    await client.execute("display-message -p settled");
-    const stall = client.execute("run-shell 'sleep 0.5'");
-    tmux(socketName, [
-      "move-window",
-      "-d",
-      "-s",
-      `@${moved.windowId}`,
-      "-t",
-      `${session}:`,
-    ]);
-    const marker = `scope-test-${moved.paneId}`;
-    tmux(socketName, [
-      "send-keys",
-      "-t",
-      `%${moved.paneId}`,
-      `echo ${marker}`,
-      "Enter",
-    ]);
-    await stall;
-
-    await pollUntil(() => textOf(inAttached, moved.paneId).includes(marker));
-    expect(textOf(inOld, moved.paneId)).not.toContain(marker);
-    disposeAttached();
-    disposeOld();
-  }, 20000);
-
   // ── Test 7: multi-scope dispatch (no duplication) ─────────────────────────
 
   it("SCOPE-07: serverScope + paneScope each fire exactly once per chunk", async () => {
@@ -749,3 +568,13 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 20000);
 });
+
+describe.skipIf(!RUN_INTEGRATION)(
+  "Scope-based pane output across moves",
+  () => {
+    describeTopologyMoves("TmuxClient", async (socketName, session) => {
+      const client = await attachClient(socketName, session);
+      return { conn: client, close: () => client.close() };
+    });
+  },
+);

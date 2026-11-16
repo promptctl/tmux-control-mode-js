@@ -23,16 +23,15 @@ import type {
   ConnectionState,
   AttachOptions,
   BytesSink,
+  RunCommand,
   SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
 } from "@promptctl/tmux-control-mode-js/browser";
 import {
-  SinkRegistry,
-  PaneTopologyManager,
-  TopologyEpochTracker,
-  parsePaneListLine,
-  serverScope,
+  DeliveryQueue,
+  TmuxCommandError,
+  TopologyRouter,
   subscribeRaw,
   unsubscribe,
 } from "@promptctl/tmux-control-mode-js/browser";
@@ -49,6 +48,17 @@ function mapConnState(s: ConnState): ConnectionState {
   if (s === "ready") return { status: "ready" };
   if (s === "closed") return { status: "closed", reason: "transport-error" };
   return { status: "connecting" };
+}
+
+// [LAW:parse-dont-validate] A `TmuxBridge` may report a tmux %error as a
+//   resolved `{success: false}` reply (the WebSocket bridge does); a
+//   `TmuxConnection` rejects it with `TmuxCommandError`, the one shape the
+//   router and the window terminal classify. Every command relayed here
+//   crosses this function.
+function relayed(reply: Promise<CommandResponse>): Promise<CommandResponse> {
+  return reply.then((r) =>
+    r.success ? r : Promise.reject(new TmuxCommandError(r)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -77,13 +87,15 @@ export class BridgePaneStreamClient
   //   and `reconnected`, reaches whoever subscribed to it — the same surface a
   //   `TmuxClient` offers, so the window terminal follows a bridged window.
   private readonly handlers = new Map<string, Set<(ev: never) => void>>();
-  // [LAW:single-enforcer] Same SinkRegistry + PaneTopologyManager every
-  //   `TmuxConnection` in the monorepo uses. `attachBytesSink` delegates to
-  //   `sinks.attach`; the bridge.onEvent handler calls
-  //   `sinks.dispatch(ev, topology.get(paneId))` before the per-type fan-out.
-  private readonly sinks = new SinkRegistry();
-  private readonly topology = new PaneTopologyManager();
-  private readonly topologyEpoch = new TopologyEpochTracker();
+  // [LAW:single-enforcer] Pane bytes are routed by the same TopologyRouter
+  //   every connector in the library composes: this adapter feeds it the
+  //   bridge's bytes, notifications and connection changes, and owns no
+  //   topology of its own.
+  private readonly router = new TopologyRouter(new DeliveryQueue(), (error) =>
+    this.emit({ type: "topology-error", error }),
+  );
+  // The router's queries go out through this connection's command seam.
+  private readonly run: RunCommand = (command) => this.execute(command);
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -91,46 +103,16 @@ export class BridgePaneStreamClient
     // mount/unmount — the bridge subscription is stable for the adapter's
     // lifetime; the per-type sets grow/shrink as PaneStream instances attach.
     bridge.onEvent((ev) => {
-      // [LAW:single-enforcer] Sinks fire BEFORE the per-type listener
-      //   fan-out, matching `TmuxClient.handleMessage`. The registry's
-      //   per-chunk snapshot isolates the attachment set from re-entrant
-      //   attach/detach inside `sink.write`.
-      // [LAW:single-enforcer] Pane bytes leave the bridge through the sink
-      //   registry only — the per-pane `PaneStream` subscribes via
-      //   `attachBytesSink(paneScope)`, never `on("output")`. Dispatch fires
-      //   the registry's per-chunk snapshot, isolating the attachment set
-      //   from re-entrant attach/detach inside `sink.write`.
+      // [LAW:single-enforcer] Pane bytes leave the bridge through the
+      //   router's sinks only — the per-pane `PaneStream` subscribes via
+      //   `attachBytesSink(paneScope)`, never `on("output")`.
       if (ev.type === "output" || ev.type === "extended-output") {
-        this.sinks.dispatch(ev, this.topology.get(ev.paneId));
+        this.router.dispatchBytes({ paneId: ev.paneId, data: ev.data });
         return;
       }
-      // Topology events update the table in lock-step with TmuxClient.
-      if (ev.type === "layout-change") {
-        // list-panes, not ev.layout: membership needs every pane, and tmux
-        // 3.8 omits floating panes from the layout string.
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.refreshWindowTopology(ev.windowId);
-        }
-      } else if (
-        ev.type === "window-add" ||
-        ev.type === "unlinked-window-add"
-      ) {
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.refreshWindowTopology(ev.windowId);
-        }
-      } else if (
-        ev.type === "window-close" ||
-        ev.type === "unlinked-window-close"
-      ) {
-        this.topology.removeWindow(ev.windowId);
-        this.topologyEpoch.invalidateWindow(ev.windowId);
-      } else if (ev.type === "sessions-changed") {
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.bootstrapTopology();
-        }
-      }
-      // Pane bytes already returned above (sink channel); every other event
-      // fans out to its type's handlers.
+      // The router takes what topology needs from every other event, which
+      // then fans out to its type's handlers.
+      this.router.handleNotification(ev);
       this.emit(ev);
     });
 
@@ -140,17 +122,21 @@ export class BridgePaneStreamClient
       const changed = next.status !== this._connectionState.status;
       this._connectionState = next;
       if (changed) this.emit({ type: "connection-state", state: next });
-      if (state === "ready") {
-        if (wasReady) {
-          // [LAW:single-enforcer] The only place that decides "this is a
-          // reconnect" for all PaneStream instances on this bridge.
-          this.emit({ type: "reconnected" });
-        }
-        this.everReady = true;
-        if (this.sinks.hasTopologyDependentSinks()) {
-          void this.bootstrapTopology();
-        }
+      // [LAW:no-ambient-temporal-coupling] The bridge reconnects after
+      //   `closed`, and each PaneStream keeps its sink across that, so leaving
+      //   `ready` is a lost connection, never the router's close (which ends
+      //   every sink for good). A loss with no live connection changes nothing.
+      if (state !== "ready") {
+        this.router.onTransportLost(this.run);
+        return;
       }
+      this.router.onTransportReady(this.run);
+      if (wasReady) {
+        // [LAW:single-enforcer] The only place that decides "this is a
+        // reconnect" for all PaneStream instances on this bridge.
+        this.emit({ type: "reconnected" });
+      }
+      this.everReady = true;
     });
   }
 
@@ -186,7 +172,7 @@ export class BridgePaneStreamClient
   }
 
   execute(command: string): Promise<CommandResponse> {
-    return this.bridge.execute(command);
+    return relayed(this.bridge.execute(command));
   }
 
   // The demo's own bridge server keeps no per-peer subscription ledger, so a
@@ -204,7 +190,7 @@ export class BridgePaneStreamClient
   }
 
   setSize(width: number, height: number): Promise<CommandResponse> {
-    return this.bridge.setSize(width, height);
+    return relayed(this.bridge.setSize(width, height));
   }
 
   setWindowSize(
@@ -212,60 +198,15 @@ export class BridgePaneStreamClient
     width: number,
     height: number,
   ): Promise<CommandResponse> {
-    return this.bridge.setWindowSize(windowId, width, height);
+    return relayed(this.bridge.setWindowSize(windowId, width, height));
   }
 
   clearWindowSize(windowId: number): Promise<CommandResponse> {
-    return this.bridge.clearWindowSize(windowId);
+    return relayed(this.bridge.clearWindowSize(windowId));
   }
 
-  // [LAW:locality-or-seam] Pane bytes fan out via `sinks.dispatch` in the
-  //   bridge.onEvent handler above — same shape as every other
-  //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    const scope = options?.scope ?? serverScope;
-    const dispose = this.sinks.attach(sink, scope);
-    if (
-      (scope.kind === "session" || scope.kind === "window") &&
-      this._connectionState.status === "ready"
-    ) {
-      void this.bootstrapTopology();
-    }
-    return dispose;
-  }
-
-  private async bootstrapTopology(): Promise<void> {
-    const gen = this.topologyEpoch.startBootstrap();
-    try {
-      const r = await this.execute(
-        "list-panes -a -F '#{pane_id} #{window_id} #{session_id}'",
-      );
-      if (!this.topologyEpoch.isBootstrapCurrent(gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.seed(entries);
-    } catch {
-      /* non-fatal */
-    }
-  }
-
-  private async refreshWindowTopology(windowId: number): Promise<void> {
-    const gen = this.topologyEpoch.startWindowRefresh(windowId);
-    try {
-      const r = await this.execute(
-        `list-panes -t @${windowId} -F '#{pane_id} #{window_id} #{session_id}'`,
-      );
-      if (!this.topologyEpoch.isWindowRefreshCurrent(windowId, gen)) return;
-      const entries = r.output.flatMap((line) => {
-        const parsed = parsePaneListLine(line);
-        return parsed !== null ? [parsed] : [];
-      });
-      this.topology.updateWindow(windowId, entries);
-    } catch {
-      this.topology.removeWindow(windowId);
-    }
+    return this.router.attachBytesSink(sink, options);
   }
 }
 

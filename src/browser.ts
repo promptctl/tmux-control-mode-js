@@ -32,6 +32,11 @@ export type {
   PaneMeta,
   PaneListEntry,
 } from "./pane-output.js";
+// [LAW:single-enforcer] A browser-side connection routes pane output by
+//   composing the one router every connector uses, never a copy of it.
+export { TopologyRouter } from "./topology-router.js";
+export type { RunCommand } from "./topology-router.js";
+export { DeliveryQueue } from "./delivery-queue.js";
 
 export { isTmuxMessage } from "./emitter.js";
 export type {
