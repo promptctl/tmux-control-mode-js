@@ -58,6 +58,10 @@ All notable changes to this project are documented here. Format follows
   format subscriptions and byte forwarder. A message the old page still had in
   flight is refused (an invoke answers `BRIDGE_ABORTED`) instead of opening a
   peer the new page would inherit.
+- A browser project that type-checks library declarations
+  (`skipLibCheck: false`) without `@types/node` compiles against
+  `./websocket`: `ServerWebSocketLike`'s close listener takes its reason as
+  `Uint8Array | string`, not Node's `Buffer`. `ws` still satisfies it.
 
 ## [0.3.0] - 2026-11-15
 

@@ -122,7 +122,10 @@ export interface ServerWebSocketLike {
   ): void;
   on(
     event: "close",
-    listener: (code: number, reason: Buffer | string) => void,
+    // [LAW:types-are-the-program] `ws` passes a Buffer, which is a
+    // Uint8Array; naming Buffer here would make a browser's type check of
+    // ./websocket need @types/node.
+    listener: (code: number, reason: Uint8Array | string) => void,
   ): void;
   on(event: "error", listener: (err: Error) => void): void;
   on(event: "pong" | "ping", listener: () => void): void;

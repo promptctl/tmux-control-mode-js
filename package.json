@@ -122,11 +122,12 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --build && pnpm run typecheck:tests && tsc --noEmit -p tsconfig.e2e.json && pnpm -F tmux-control-mode-js-demo-web-multiplexer run typecheck",
+    "typecheck": "tsc --build && pnpm run check:browser-types && pnpm run typecheck:tests && tsc --noEmit -p tsconfig.e2e.json && pnpm -F tmux-control-mode-js-demo-web-multiplexer run typecheck",
     "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "check:deps": "node scripts/check-no-deps.mjs",
     "check:exports": "node scripts/check-exports.mjs",
-    "prepublishOnly": "pnpm run check:deps && pnpm run clean && pnpm run build && pnpm run check:exports"
+    "check:browser-types": "node scripts/check-browser-types.mjs",
+    "prepublishOnly": "pnpm run check:deps && pnpm run clean && pnpm run build && pnpm run check:exports && pnpm run check:browser-types"
   },
   "keywords": [
     "tmux",

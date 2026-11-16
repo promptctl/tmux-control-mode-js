@@ -101,6 +101,9 @@ import {
   type ServerCloseCode,
 } from "./close-code.js";
 
+// A close frame's reason is UTF-8 (RFC 6455 §5.5.1).
+const closeReasonDecoder = new TextDecoder();
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -541,7 +544,7 @@ class Connection {
       this.onFrame(text);
     });
 
-    this.ws.on("close", (code: number, reason: Buffer | string) => {
+    this.ws.on("close", (code: number, reason: Uint8Array | string) => {
       // [LAW:single-enforcer] `this.fatal` carries the BridgeErrorCode when
       // this close was triggered by sendFatalAndClose rather than a
       // peer-initiated disconnect — set there, read here, so the one
@@ -550,7 +553,10 @@ class Connection {
       this.finalize(undefined, {
         kind: "close-event",
         code,
-        reason: typeof reason === "string" ? reason : reason.toString("utf8"),
+        reason:
+          typeof reason === "string"
+            ? reason
+            : closeReasonDecoder.decode(reason),
       });
     });
 
