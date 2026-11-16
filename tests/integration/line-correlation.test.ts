@@ -102,6 +102,18 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect((await next).output).toEqual(["g"]);
     });
 
+    it("a line that quotes its way to the sentinel's name fails alone; the next line is untouched", async () => {
+      const forged = client.execute(
+        'display-message -p a ; tmux-control-mode-js-sentin"el"',
+      );
+      const next = client.execute("display-message -p i");
+
+      await expect(forged).rejects.toThrow(
+        "parse error: unknown command: tmux-control-mode-js-sentinel",
+      );
+      expect((await next).output).toEqual(["i"]);
+    });
+
     it("the sentinel runs nothing in tmux and reaches no listener", async () => {
       tmux(socketName, ["set-hook", "-g", "command-error", "set -g @fired 1"]);
       const guards: string[] = [];

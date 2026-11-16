@@ -50,12 +50,13 @@ All notable changes to this project are documented here. Format follows
   every query. `invalidateWindow` no longer supersedes the window's listings
   in flight: the window refresh you start after it does.
 - `execute()` writes each command line followed by a sentinel line,
-  `tmux-control-mode-js-sentinel`, whose parse error ends the line's reply.
-  A line tmux runs several commands for (`a ; b`, `if-shell`, `source-file`)
-  resolves with all their output, or rejects with the first that failed. A
-  blank or comment-only line is sent and resolves with no output. A command
-  naming the sentinel is refused. A fake transport answers the sentinel line
-  with tmux's `%error` block; `MockTmuxServer` does.
+  `tmux-control-mode-js-sentinel-` and 32 hex digits drawn once per process,
+  whose parse error ends the line's reply. A line tmux runs several commands
+  for (`a ; b`, `if-shell`, `source-file`) resolves with all their output, or
+  rejects with the first that failed. A blank or comment-only line is sent and
+  resolves with no output. A fake transport answers the second line of each
+  send as tmux does, with an `%error` block reading `parse error: unknown
+  command: <that line>`; `MockTmuxServer` does.
 - A block's `begin` event is announced when the block closes, with its `end`
   or `error`. The sentinel's block is never announced.
 

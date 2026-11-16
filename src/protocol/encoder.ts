@@ -193,8 +193,21 @@ const COMMAND_LINE_TERMINATOR = /[\n\0]/;
 // a line naming no tmux command: tmux answers it with exactly one block, its
 // parse error, and runs nothing, fires no hook. That block ends the line.
 // tmux matches a unique command prefix, so the name starts with no command's.
-export const LINE_SENTINEL = "tmux-control-mode-js-sentinel";
+// [LAW:types-are-the-program] The name ends in a secret drawn once per
+// process, so no line a caller writes — however it quotes — and no
+// `command-alias` can name it: only this client's sentinel ends a line.
+export const LINE_SENTINEL = `tmux-control-mode-js-sentinel-${randomHex(16)}`;
 export const LINE_SENTINEL_REPLY = `parse error: unknown command: ${LINE_SENTINEL}`;
+
+// The Web Crypto global of every runtime this layer runs in (Node ≥ 20,
+// browsers, Deno, Bun); the layer compiles without DOM or Node types.
+declare const crypto: { getRandomValues(array: Uint8Array): Uint8Array };
+
+function randomHex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
 
 /** What execute() writes for `command`: the line, then the sentinel line. */
 export function commandLine(command: string): string {
@@ -214,15 +227,11 @@ export function isSentinelReply(output: readonly string[]): boolean {
 /**
  * Why execute() must not send `command`, or `null` when it may. A newline
  * makes tmux read two lines, and an empty one detaches the control client
- * (SPEC §4.1); a NUL ends the line early; a line naming the sentinel would
- * end its own reply early.
+ * (SPEC §4.1); a NUL ends the line early.
  */
 export function commandLineFault(command: string): string | null {
   if (COMMAND_LINE_TERMINATOR.test(command)) return "it holds a newline or NUL";
-  if (command === "") return "it is empty";
-  return command.includes(LINE_SENTINEL)
-    ? `it names ${LINE_SENTINEL}, which ends every line this client writes`
-    : null;
+  return command === "" ? "it is empty" : null;
 }
 
 // The refusal names the field and leaves the value out: an environment value

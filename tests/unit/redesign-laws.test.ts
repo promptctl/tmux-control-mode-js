@@ -36,6 +36,7 @@ import {
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { sentinelBlock } from "./_helpers/wire.js";
+import { LINE_SENTINEL } from "../../src/protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Shared fakes
@@ -279,10 +280,8 @@ describe("fifo-correlation", () => {
 
     // Wire format: the raw command line, then the sentinel line that ends
     // it — no id field, no wrapper.
-    expect(transport.sent[0]).toBe(
-      "cmd-alpha\ntmux-control-mode-js-sentinel\n",
-    );
-    expect(transport.sent[1]).toBe("cmd-beta\ntmux-control-mode-js-sentinel\n");
+    expect(transport.sent[0]).toBe(`cmd-alpha\n${LINE_SENTINEL}\n`);
+    expect(transport.sent[1]).toBe(`cmd-beta\n${LINE_SENTINEL}\n`);
     expect(transport.sent[0]).not.toContain('"id"');
 
     // Inject %begin/%end pairs in order; promises resolve FIFO.

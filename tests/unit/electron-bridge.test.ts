@@ -969,10 +969,7 @@ describe("Electron IPC bridge — method dispatch", () => {
   );
 
   it.each([
-    [
-      "tmux-control-mode-js-sentinel",
-      "it names tmux-control-mode-js-sentinel, which ends every line this client writes",
-    ],
+    ["", "it is empty"],
     ["# note\nkill-server", "it holds a newline or NUL"],
     ["new-window -e 'TOKEN=s3cr3t\0' -- cmd", "it holds a newline or NUL"],
   ])(

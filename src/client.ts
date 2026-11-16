@@ -160,27 +160,21 @@ interface AnsweringLine {
 // block's output, numbered by its first block — by the sentinel's when tmux
 // ran no command for the line.
 function settleLine(line: AnsweringLine, sentinel: BeginMessage): void {
-  const failure = line.replies.find((reply) => reply instanceof Error);
-  if (failure !== undefined) {
-    line.caller.reject(failure);
-    return;
+  const responses: CommandResponse[] = [];
+  for (const reply of line.replies) {
+    if (reply instanceof Error) {
+      line.caller.reject(reply);
+      return;
+    }
+    responses.push(reply);
   }
-  const replies = line.replies.filter(
-    (reply): reply is CommandResponse => !(reply instanceof Error),
-  );
-  const first = replies[0] ?? sentinel;
+  const first = responses[0] ?? sentinel;
   line.caller.resolve({
     commandNumber: first.commandNumber,
     timestamp: first.timestamp,
-    output: replies.flatMap((reply) => reply.output),
+    output: responses.flatMap((response) => response.output),
     success: true,
   });
-}
-
-function replyOutput(reply: BlockReply): readonly string[] {
-  return reply instanceof TmuxCommandError
-    ? reply.response.output
-    : reply.output;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +622,7 @@ export class TmuxClient
 
   // [LAW:single-enforcer] Every block closes here, however it ended.
   // [LAW:dataflow-not-control-flow] tmux says on the guard whether the block
-  // answers a line this client wrote, and its reply says whether it is that
+  // answers a line this client wrote, and its output says whether it is that
   // line's sentinel; the two pick its owner. A reply to a command no caller
   // wrote never reaches a caller.
   // A block's %begin is announced with its close, so the sentinel's, which
@@ -646,23 +640,22 @@ export class TmuxClient
       this.announce(terminator);
       return;
     }
-    const reply = replyOf(block);
     const owned = block.begin.flags === CONTROL_FLAGS;
-    const sentinel =
-      owned && reply instanceof Error && isSentinelReply(replyOutput(reply));
-    if (!sentinel) this.announce(block.begin);
-    if (!owned) {
-      this.settleUnsolicited(reply);
-    } else if (sentinel) {
+    if (owned && isSentinelReply(block.output)) {
       const line = this.answering;
       this.answering = null;
       if (line !== null) settleLine(line, block.begin);
-    } else {
+      if (terminator.type === "protocol-error") this.announce(terminator);
+      return;
+    }
+    this.announce(block.begin);
+    const reply = replyOf(block);
+    if (owned) {
       this.answering?.replies.push(reply);
+    } else {
+      this.settleUnsolicited(reply);
     }
-    if (!sentinel || terminator.type === "protocol-error") {
-      this.announce(terminator);
-    }
+    this.announce(terminator);
   }
 
   // [LAW:one-type-per-behavior] Every block tmux marks as not answering a

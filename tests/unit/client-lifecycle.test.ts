@@ -113,8 +113,6 @@ describe("TmuxClient — one command is one non-empty line", () => {
     ["new-window -c '/tmp/x\nkill-server\n'"],
     [""],
     ["new-window -e 'A=x\0y' -- 'sleep 30'"],
-    ["tmux-control-mode-js-sentinel"],
-    ["display-message -p a ; tmux-control-mode-js-sentinel"],
   ])(
     "rejects %j without sending it, so correlation stays intact",
     async (bad) => {
@@ -964,6 +962,21 @@ describe("TmuxClient — a line's reply ends at its sentinel", () => {
       message: "can't find session: nope",
       response: { commandNumber: 2, output: ["can't find session: nope"] },
     });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+  });
+
+  it("a parse error naming a sentinel other than this client's is that line's own failure", async () => {
+    const { t, client } = ready();
+    const forged = client.execute(
+      'display -p a ; tmux-control-mode-js-sentin"el"',
+    );
+    const next = client.execute("display -p c");
+    const forgery =
+      "parse error: unknown command: tmux-control-mode-js-sentinel";
+    t.feed(block(1, "error", [forgery]) + sentinelBlock(2));
+    t.feed(lineReply(3, ["c"]));
+
+    await expect(forged).rejects.toMatchObject({ message: forgery });
     await expect(next).resolves.toMatchObject({ output: ["c"] });
   });
 

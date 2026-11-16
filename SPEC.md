@@ -258,15 +258,15 @@ NULL)`), none with that flag.
 
 Nothing on the wire says which line a block marked 1 answers, and a line's
 block count is tmux's to decide (§5.5). So `execute()` follows each command
-line with a sentinel line, `tmux-control-mode-js-sentinel`, which names no
-tmux command (no command name starts with it, so tmux's prefix matching finds
-none). tmux answers it with exactly one block (§5.3): runs nothing, fires no
+line with a sentinel line, `tmux-control-mode-js-sentinel-` and 32 hex digits
+drawn once per process, which names no tmux command (no command name starts
+with it, so tmux's prefix matching finds none). tmux answers it with exactly one block (§5.3): runs nothing, fires no
 hook, logs nothing in `show-messages`. A caller owns every block marked 1
 from its line's first through the sentinel's.
 
 ```
 display-message -p a ; display-message -p b
-tmux-control-mode-js-sentinel
+tmux-control-mode-js-sentinel-5f0c…
 ```
 
 ```
@@ -277,14 +277,13 @@ a
 b
 %end 1363006971 8 1
 %begin 1363006971 9 1
-parse error: unknown command: tmux-control-mode-js-sentinel
+parse error: unknown command: tmux-control-mode-js-sentinel-5f0c…
 %error 1363006971 9 1
 ```
 
-A command naming the sentinel is refused before it is sent: a line such as
-`a ; tmux-control-mode-js-sentinel` fails to parse into the sentinel's own
-reply. One route stays open: a `command-alias` named exactly the sentinel,
-set outside this client, makes the sentinel a command.
+The digits are secret, so no line a caller writes, however it quotes, and no
+`command-alias` names the sentinel: a line that fails to parse into the same
+words with other digits is that line's own failure.
 
 ---
 

@@ -236,9 +236,9 @@ export class TmuxProtocolError extends Error {
 
 /**
  * `execute()` refused a command it cannot send as one line; the message
- * says why (see `commandLineFault`). An empty line detaches the client, a
- * NUL makes tmux run only what precedes it and reply success, and a line
- * naming the sentinel would end its own reply early. Nothing was sent.
+ * says why (see `commandLineFault`). An empty line detaches the client, and
+ * a NUL makes tmux run only what precedes it and reply success. Nothing was
+ * sent.
  */
 export class TmuxInvalidCommandError extends Error {
   readonly command: string;
