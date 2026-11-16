@@ -19,6 +19,8 @@ import {
   uniqueName,
   attachSession,
   getPrimaryPaneId,
+  pollUntil,
+  waitForPaneText,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys } from "../../src/commands/index.js";
@@ -113,8 +115,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       // Put a known marker on the pane so the seed is non-empty.
       await sendKeys(client, `%${paneId}`, "echo HELLO_SEED_MARKER");
       await client.execute(`send-keys -t %${paneId} Enter`);
-      // Give the shell a moment to render.
-      await new Promise((r) => setTimeout(r, 200));
+      await waitForPaneText(client, paneId, "HELLO_SEED_MARKER");
 
       const sink = new CollectorSink();
       stream = new PaneStream({
@@ -124,10 +125,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
 
       // Wait for capture + cursor responses + state transition.
-      for (let i = 0; i < 20 && stream.state !== "live"; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(stream.state).toBe("live");
+      await pollUntil(() => stream!.state === "live");
       expect(sink.seedCalls).toHaveLength(1);
       expect(sink.seedCalls[0].byteLength).toBeGreaterThan(0);
       // Cursor should be present and inside the 80x24 viewport.
@@ -150,14 +148,9 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
       // Wait for live + the initial subscription-changed (tmux delivers
       // the current value on subscribe).
-      for (let i = 0; i < 20 && stream.state !== "live"; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      await pollUntil(() => stream!.state === "live");
       // Initial subscription delivery — at least one resize call.
-      for (let i = 0; i < 20 && sink.resizeCalls.length === 0; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(sink.resizeCalls.length).toBeGreaterThanOrEqual(1);
+      await pollUntil(() => sink.resizeCalls.length > 0);
       // The expected geometry is what tmux reports for the pane, not the
       // requested size: tmux 3.2 gives an 80x24 session a 23-row pane.
       expect(sink.resizeCalls[sink.resizeCalls.length - 1]).toEqual(
@@ -167,16 +160,14 @@ describe.skipIf(!RUN_INTEGRATION)(
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
       await client.setSize(120, 30);
-      for (
-        let i = 0;
-        i < 30 &&
-        (sink.resizeCalls.length === 1 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].rows < 30 - 1);
-        i++
-      ) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      await pollUntil(() => {
+        const last = sink.resizeCalls[sink.resizeCalls.length - 1];
+        return (
+          sink.resizeCalls.length > 1 &&
+          last.cols === 120 &&
+          last.rows >= 30 - 1
+        );
+      });
       const after = sink.resizeCalls[sink.resizeCalls.length - 1];
       expect(after.cols).toBe(120);
       // The requested height lands, less at most the status line's row

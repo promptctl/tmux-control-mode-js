@@ -15,6 +15,7 @@ import {
   uniqueSocket,
   uniqueName,
   pollUntil,
+  readUntil,
   attachSession,
   attachClient,
   recordingTransport,
@@ -90,8 +91,6 @@ function makeRecordingSink(arrived: number[]): BytesSink {
   };
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 /**
  * Poll `list-panes -a` until a pane not in `knownIds` appears, returning it.
  * A single snapshot can race a freshly-created pane's registration under load;
@@ -102,16 +101,14 @@ async function waitForNewPane(
   knownIds: number[],
   timeoutMs = 8000,
 ): Promise<{ paneId: number; windowId: number; sessionId: number }> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const found = (await listAllPanes(client)).find(
-      (p) => !knownIds.includes(p.paneId),
-    );
-    if (found !== undefined) return found;
-    if (Date.now() >= deadline)
-      throw new Error("waitForNewPane: no new pane appeared in time");
-    await sleep(20);
-  }
+  const isNew = (p: { paneId: number }) => !knownIds.includes(p.paneId);
+  const panes = await readUntil(
+    () => listAllPanes(client),
+    (listing) => listing.some(isNew),
+    "waitForNewPane: no new pane appeared",
+    timeoutMs,
+  );
+  return panes.filter(isNew)[0];
 }
 
 // Did a pause / continue command for this pane reach the wire?

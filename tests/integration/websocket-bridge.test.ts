@@ -264,11 +264,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
       seen.some((data) =>
         new TextDecoder().decode(data).includes("websocket-bridge-ok"),
       );
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline && !isMatch()) {
-      await new Promise<void>((r) => setTimeout(r, 50));
-    }
-    expect(isMatch()).toBe(true);
+    await pollUntil(isMatch, 5_000);
 
     detach();
     await client.close();
@@ -283,11 +279,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
 
     await client.execute("new-window");
 
-    const deadline = Date.now() + 3_000;
-    while (windowAdds.length === 0 && Date.now() < deadline) {
-      await new Promise<void>((r) => setTimeout(r, 20));
-    }
-    expect(windowAdds.length).toBeGreaterThanOrEqual(1);
+    await pollUntil(() => windowAdds.length > 0, 3_000);
     expect(windowAdds[0].type).toBe("window-add");
 
     await client.close();

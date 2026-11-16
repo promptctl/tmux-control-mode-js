@@ -9,6 +9,7 @@ import {
   uniqueName,
   waitForEvent,
   attachSession,
+  readUntil,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import {
@@ -94,13 +95,14 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
     bound.handleKey(parseChord("C-b"));
     bound.handleKey(parseChord(targetIdx));
 
-    for (let attempts = 0; attempts < 20; attempts++) {
-      const list = await client.execute("list-windows");
-      const active = list.output.find((line) => /^\d+:.*\*/.test(line));
-      if (active && active.startsWith(`${targetIdx}:`)) return;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    throw new Error(`window ${targetIdx} never became active`);
+    await readUntil(
+      () => client!.execute("list-windows"),
+      (list) =>
+        list.output.some(
+          (line) => /^\d+:.*\*/.test(line) && line.startsWith(`${targetIdx}:`),
+        ),
+      `window ${targetIdx} never became active`,
+    );
   }, 15000);
 
   it("non-prefix key in root mode returns handled=false and does not dispatch", async () => {

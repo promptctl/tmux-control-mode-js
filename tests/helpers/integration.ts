@@ -318,22 +318,18 @@ export async function readUntil<T>(
   }
 }
 
-/** Poll `pred` until it holds; reject if it has not within `ms`. */
-export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const check = () => {
-      let held: boolean;
-      try {
-        held = pred();
-      } catch (err) {
-        return reject(err);
-      }
-      if (held) return resolve();
-      if (Date.now() >= deadline)
-        return reject(new Error(`pollUntil: condition not met within ${ms}ms`));
-      setTimeout(check, 5);
-    };
-    check();
-  });
+/**
+ * Poll `pred` until it holds; reject if it has not within `ms`. A throw from
+ * `pred` rejects.
+ *
+ * [LAW:one-source-of-truth] readUntil is the one poll loop; this is its form
+ * for a predicate over state the test already holds.
+ */
+export async function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
+  await readUntil(
+    async () => pred(),
+    (held) => held,
+    "pollUntil: condition not met",
+    ms,
+  );
 }
