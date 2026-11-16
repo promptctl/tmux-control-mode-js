@@ -34,7 +34,6 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
-import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
 import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { EmitterMessage } from "../../emitter.js";
@@ -100,6 +99,10 @@ import {
   NORMAL_CLOSURE,
   type ServerCloseCode,
 } from "./close-code.js";
+
+// A text frame's payload and a close frame's reason are UTF-8 (RFC 6455
+// §5.6, §5.5.1); `ws` hands both over as bytes.
+const wsText = new TextDecoder();
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -532,16 +535,16 @@ class Connection {
         );
         return;
       }
-      const text =
-        typeof data === "string"
-          ? data
-          : data instanceof Uint8Array
-            ? bytesToLatin1(data)
-            : String(data);
-      this.onFrame(text);
+      if (typeof data === "string") this.onFrame(data);
+      else if (data instanceof Uint8Array) this.onFrame(wsText.decode(data));
+      else
+        this.sendFatalAndClose(
+          "BRIDGE_PROTOCOL_ERROR",
+          `a text frame's payload must be a string or bytes, got ${Object.prototype.toString.call(data)}`,
+        );
     });
 
-    this.ws.on("close", (code: number, reason: Buffer | string) => {
+    this.ws.on("close", (code: number, reason: Uint8Array | string) => {
       // [LAW:single-enforcer] `this.fatal` carries the BridgeErrorCode when
       // this close was triggered by sendFatalAndClose rather than a
       // peer-initiated disconnect — set there, read here, so the one
@@ -550,7 +553,7 @@ class Connection {
       this.finalize(undefined, {
         kind: "close-event",
         code,
-        reason: typeof reason === "string" ? reason : reason.toString("utf8"),
+        reason: typeof reason === "string" ? reason : wsText.decode(reason),
       });
     });
 

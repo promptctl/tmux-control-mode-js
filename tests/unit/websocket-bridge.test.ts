@@ -56,6 +56,8 @@ interface FakeWs extends ServerWebSocketLike {
   setBuffered(n: number): void;
   feedClient(frame: object): void;
   feedBinary(bytes: Uint8Array): void;
+  // A text frame whose payload the transport hands over in a shape of its own.
+  feedTextPayload(data: unknown): void;
   fireClose(code?: number, reason?: string): void;
   fireError(err: Error): void;
   // Whether the peer behind an OPEN socket answers pings. Default true (a
@@ -80,11 +82,21 @@ interface FakeWs extends ServerWebSocketLike {
 // deadline.
 type ClosingPing = "dropped" | "refused";
 
-function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
+// How the transport hands over a text frame's payload and a close reason:
+// `ws` passes the UTF-8 bytes; another ServerWebSocketLike may pass a string.
+type TextShape = "bytes" | "string";
+const utf8 = new TextEncoder();
+
+function createFakeWs(
+  closingPing: ClosingPing = "dropped",
+  textShape: TextShape = "bytes",
+): FakeWs {
+  const text = (s: string): Uint8Array | string =>
+    textShape === "bytes" ? utf8.encode(s) : s;
   let buffered = 0;
   interface Listeners {
     message?: (data: unknown, isBinary: boolean) => void;
-    close?: (code: number, reason: Buffer | string) => void;
+    close?: (code: number, reason: Uint8Array | string) => void;
     error?: (err: Error) => void;
     pong?: () => void;
     ping?: () => void;
@@ -116,14 +128,17 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
         const call = parseClientFrame(raw);
         if (call.k === "call") calls.set(call.id, call.method);
       }
-      listeners.message?.(raw, false);
+      listeners.message?.(text(raw), false);
     },
     feedBinary(bytes) {
       listeners.message?.(bytes, true);
     },
+    feedTextPayload(data) {
+      listeners.message?.(data, false);
+    },
     fireClose(code = 1000, reason = "") {
       readyState = 3;
-      listeners.close?.(code, reason);
+      listeners.close?.(code, text(reason));
     },
     fireError(err) {
       listeners.error?.(err);
@@ -1590,6 +1605,74 @@ function closedEvents(
       e.kind === "connection-closed",
   );
 }
+
+describe.each<TextShape>(["bytes", "string"])(
+  "WebSocket bridge — text delivered as %s",
+  (textShape) => {
+    it("a call's non-ASCII text reaches tmux as the characters the browser sent", async () => {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      const bridge = createWebSocketBridge({ createClient: () => client });
+      const ws = createFakeWs("dropped", textShape);
+      void bridge.handleConnection(ws);
+      ws.feedClient({ k: "hello" });
+      await flush();
+
+      ws.feedClient({
+        k: "call",
+        id: "x",
+        method: "execute",
+        args: ["display-message 'café ✓ 日本'"],
+      });
+      await flush();
+      expect(t.sent).toContain("display-message 'café ✓ 日本'\n");
+    });
+
+    it("a peer's non-ASCII close reason is reported as the text it sent", async () => {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      const events: BridgeObservabilityEvent[] = [];
+      const bridge = createWebSocketBridge({
+        createClient: () => client,
+        onEvent: (ev) => events.push(ev),
+      });
+      const ws = createFakeWs("dropped", textShape);
+      void bridge.handleConnection(ws);
+      ws.feedClient({ k: "hello" });
+      await flush();
+
+      ws.fireClose(4000, "au revoir — fermé");
+      expect(closedEvents(events)).toEqual([
+        expect.objectContaining({ code: 4000, reason: "au revoir — fermé" }),
+      ]);
+    });
+  },
+);
+
+describe("WebSocket bridge — a text frame's payload", () => {
+  it("neither a string nor bytes is a protocol error naming what arrived", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedTextPayload(new ArrayBuffer(4));
+    expect(fatalFrames(ws)).toEqual([
+      {
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_PROTOCOL_ERROR",
+          message: expect.stringMatching(/ArrayBuffer/) as string,
+        },
+      },
+    ]);
+  });
+});
 
 describe("WebSocket bridge — upstream close", () => {
   it("closes the socket with a fatal naming the upstream; the in-flight call's reply is recorded but never reaches the closing socket", async () => {

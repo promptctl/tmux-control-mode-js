@@ -116,13 +116,19 @@ export interface ServerWebSocketLike {
   close(code?: ServerCloseCode, reason?: string): void;
   terminate(): void;
 
+  /** A text frame's payload must be a string or its UTF-8 bytes; the bridge
+   *  refuses anything else as a protocol error. `ws` passes a text frame as
+   *  a Buffer whatever its `binaryType`, which only shapes binary frames. */
   on(
     event: "message",
     listener: (data: unknown, isBinary: boolean) => void,
   ): void;
   on(
     event: "close",
-    listener: (code: number, reason: Buffer | string) => void,
+    // [LAW:types-are-the-program] `ws` passes a Buffer, which is a
+    // Uint8Array; naming Buffer here would make a browser's type check of
+    // ./websocket need @types/node.
+    listener: (code: number, reason: Uint8Array | string) => void,
   ): void;
   on(event: "error", listener: (err: Error) => void): void;
   on(event: "pong" | "ping", listener: () => void): void;
