@@ -47,6 +47,15 @@ const unicode11 = (): ReturnType<XtermAddons> => [
   },
 ];
 
+// A page holds a few WebGL contexts at most, and the browser takes the
+// oldest when a pane wants one more (or the GPU resets). A pane whose context
+// is lost goes back to xterm's DOM renderer, which the window then lays out.
+const webglAddon = (): WebglAddon => {
+  const addon = new WebglAddon();
+  addon.onContextLoss(() => addon.dispose());
+  return addon;
+};
+
 interface Props {
   readonly store: DemoStore;
   readonly uiStore: UiStore;
@@ -89,7 +98,7 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
     const factory: XtermAddons = () => [
       ...unicode11(),
       new WebLinksAddon(open),
-      ...(webgl ? [new WebglAddon()] : []),
+      ...(webgl ? [webglAddon()] : []),
     ];
     return { xterm: options, addons: factory };
   }, [webgl]);
@@ -132,16 +141,18 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
             {lastLink}
           </Text>
         )}
-        <Tooltip label="Draw the panes with WebGL">
-          <Chip
-            size="xs"
-            checked={webgl}
-            onChange={setWebgl}
-            data-testid="webgl-toggle"
-          >
-            WebGL
-          </Chip>
-        </Tooltip>
+        <Chip
+          size="xs"
+          checked={webgl}
+          onChange={(on) => {
+            // The terminal mounts again: its first window is one arriving.
+            seen.current = null;
+            setWebgl(on);
+          }}
+          data-testid="webgl-toggle"
+        >
+          WebGL
+        </Chip>
         <Tooltip label="Smaller font">
           <ActionIcon
             size="xs"

@@ -77,10 +77,17 @@ vi.mock("@xterm/xterm", () => {
   class TerminalMock {
     options: { fontSize: number; theme: object; [k: string]: unknown };
     opened = false;
+    element: HTMLElement | undefined;
     loaded: { addon: unknown; opened: boolean; allowProposedApi: unknown }[] =
       [];
-    open = vi.fn<(el: HTMLElement) => void>(() => {
+    // As xterm does: the terminal's element holds its screen.
+    open = vi.fn<(el: HTMLElement) => void>((container) => {
       this.opened = true;
+      const doc = container.ownerDocument;
+      this.element = doc.createElement("div");
+      this.element.appendChild(doc.createElement("div")).className =
+        "xterm-screen";
+      container.appendChild(this.element);
     });
     write = vi.fn<(d: string | Uint8Array) => void>();
     resize = vi.fn<(c: number, r: number) => void>();

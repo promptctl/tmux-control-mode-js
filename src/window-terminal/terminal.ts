@@ -120,6 +120,7 @@ export function createWindowTerminal(
       schedule();
     },
     onFocusPane: (pane) => engine.focus(pane),
+    onRenderer: () => schedule(),
   });
   const declarer = new ClientSizeDeclarer({
     connection,

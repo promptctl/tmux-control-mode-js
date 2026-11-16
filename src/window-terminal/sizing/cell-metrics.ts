@@ -98,10 +98,12 @@ export interface CellMeasure {
 export function createCellMeasure(win: Window): CellMeasure {
   const doc = win.document;
   const ctx = canvasContext();
-  const cache = new Map<string, CellSize>();
+  // The glyph is what costs a measurement; each renderer's cell is
+  // arithmetic on it.
+  const chars = new Map<string, CellSize>();
   const listeners = new Set<() => void>();
   const changed = (): void => {
-    cache.clear();
+    chars.clear();
     for (const cb of listeners) cb();
   };
 
@@ -123,11 +125,11 @@ export function createCellMeasure(win: Window): CellMeasure {
   return {
     cellAt({ fontFamily: family, lineHeight, letterSpacing }, renderer) {
       return (px) => {
-        const key = `${px}|${lineHeight}|${letterSpacing}|${renderer}|${family}`;
-        const hit = cache.get(key);
-        if (hit !== undefined) return hit;
+        const key = `${px}|${family}`;
         const char =
-          charSizeOnCanvas(ctx, family, px) ?? charSizeInDom(doc, family, px);
+          chars.get(key) ??
+          charSizeOnCanvas(ctx, family, px) ??
+          charSizeInDom(doc, family, px);
         const dpr = win.devicePixelRatio;
         const cell = {
           width:
@@ -143,7 +145,7 @@ export function createCellMeasure(win: Window): CellMeasure {
             `cannot lay out ${px}px ${family}: the document measured its glyph as ${char.width}x${char.height}, a cell of ${cell.width}x${cell.height}`,
           );
         }
-        cache.set(key, cell);
+        chars.set(key, char);
         return cell;
       };
     },
@@ -155,7 +157,7 @@ export function createCellMeasure(win: Window): CellMeasure {
       dprQuery?.removeEventListener("change", onDpr);
       doc.fonts.removeEventListener("loadingdone", changed);
       listeners.clear();
-      cache.clear();
+      chars.clear();
     },
   };
 }
