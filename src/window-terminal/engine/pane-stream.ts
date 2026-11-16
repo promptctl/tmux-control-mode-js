@@ -238,9 +238,8 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // The pane's size as tmux last reported it (`cols;rows`), null before the
-  // first report.
-  private size: string | null = null;
+  // The pane's size as tmux last reported it, null before the first report.
+  private size: { cols: number; rows: number } | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -306,16 +305,12 @@ export class PaneStream implements ReseedTarget {
     this.subscriptionName = `wt-${uniqueToken()}-size-%${opts.paneId}`;
 
     this.onReconnected = () => {
-      // The cached seed is now stale — the underlying pane state has
-      // moved while we were disconnected. Drop it so the ReseedScheduler's
-      // upcoming reseed() (or the next attach()) issues a fresh capture-pane.
-      this.lastSeed = null;
       // A pause belonged to the connection that carried it.
       this.paused = false;
-      // Any in-flight capture-pane is now fetching pre-reconnect data —
-      // mark it stale so seed() drops the result on resolution. A no-op when
-      // idle: with nothing in flight, the cache clear above is what forces the
-      // next attach/reseed to recapture.
+      // The pane moved while we were disconnected: the cache and any
+      // capture-pane in flight are pre-reconnect pictures, so the
+      // ReseedScheduler's upcoming reseed() (or the next attach()) captures
+      // afresh.
       this.markSeedStale();
       // A reconnect can be a new control client (a browser re-joining a
       // bridge is a new peer), which holds none of the old one's
@@ -369,7 +364,7 @@ export class PaneStream implements ReseedTarget {
     this.onPause = (ev) => {
       if (ev.paneId !== this.paneId) return;
       this.paused = true;
-      this.lastSeed = null;
+      this.markSeedStale();
       if (this.sink === null) return;
       this.buffer = [];
       this.setState("seeding");
@@ -470,6 +465,9 @@ export class PaneStream implements ReseedTarget {
     // Reset attach-scoped activity counter so consumers see "since I started
     // looking", not "since the universe began."
     this.currentBytesSinceAttach = 0;
+    // tmux reports the size only when it changes, so a sink attaching after
+    // the report is handed the size the stream already knows.
+    if (this.size !== null) sink.resize(this.size.cols, this.size.rows);
 
     if (this.seedCycle.phase !== "idle") {
       // A capture-pane is already in flight from a previous attach (e.g.
@@ -614,9 +612,8 @@ export class PaneStream implements ReseedTarget {
    * attached.
    */
   private recapture(): void {
-    this.lastSeed = null;
+    this.markSeedStale();
     if (this.seedCycle.phase === "idle") void this.reseed();
-    else this.markSeedStale();
   }
 
   // -------------------------------------------------------------------------
@@ -730,14 +727,17 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Mark an in-flight capture stale: the pane moved past what it will return.
-   * The triggers are a reconnect, a recapture (`%continue`, a new size), a
-   * byte while detached, and a detach that drops buffered bytes; each clears
-   * `lastSeed` first, a byte through the byte path. [LAW:no-mode-explosion]
-   * Staleness is only meaningful mid-capture: a no-op when `idle`. An in-place
-   * field write, so the detached-byte [HOT-PATH] stays allocation-free.
+   * The pane moved past every picture of it this stream holds: drop the cache
+   * and mark an in-flight capture stale. The triggers are a reconnect,
+   * `%pause`, a recapture (`%continue`, a new size), a byte while detached,
+   * and a detach that drops buffered bytes. [LAW:single-enforcer] One method
+   * for both, so a stale capture never has a cache to fall back on.
+   * [LAW:no-mode-explosion] Staleness is only meaningful mid-capture: a no-op
+   * when `idle`. In-place field writes, so the detached-byte [HOT-PATH] stays
+   * allocation-free.
    */
   private markSeedStale(): void {
+    this.lastSeed = null;
     if (this.seedCycle.phase === "capturing") {
       this.seedCycle.stale = true;
     }
@@ -784,8 +784,9 @@ export class PaneStream implements ReseedTarget {
       // render live output than to wedge in 'seeding' forever. A failed
       // capture is no picture of the pane, so it is never handed over as one:
       // the sink keeps what it shows and the trailing bytes reach it as plain
-      // writes. Nothing is cached, so the next attach / reseed retries (that
-      // retry is the recovery path).
+      // writes. Nothing is cached, so the next attach, reconnect or pane
+      // change captures again; until one comes, the sink shows what it had
+      // and `lastError` says why.
       //
       // [LAW:no-silent-failure] But "went live without a picture" is
       //   indistinguishable from "the pane is genuinely blank" — so lift the
@@ -808,8 +809,8 @@ export class PaneStream implements ReseedTarget {
     // it. If anyone is still attached, kick off a fresh seed — through
     // `startSeedCycle` so `this.seedCycle` follows the new cycle.
     if (this.seedCycle.phase === "capturing" && this.seedCycle.stale) {
-      // No `lastSeed === null` guard: every stale trigger (`markSeedStale`)
-      // invalidates the cache BEFORE marking stale, so a stale in-flight
+      // No `lastSeed === null` guard: `markSeedStale` drops the cache as it
+      // marks the capture stale, so a stale in-flight
       // capture provably has no cache to fall back on. Guarding on it here
       // would be dead control-flow whose only reachable-false behavior —
       // silently skipping the re-issue and leaving a stale screen — is
@@ -892,8 +893,11 @@ export class PaneStream implements ReseedTarget {
     // sink at the old size. tmux's screen is right: take it again. Detached
     // too: a resize that prints nothing still leaves the cached picture at
     // the old size.
-    if (this.size !== null && this.size !== ev.value) this.recapture();
-    this.size = ev.value;
+    const moved =
+      this.size !== null &&
+      (this.size.cols !== dims.cols || this.size.rows !== dims.rows);
+    this.size = dims;
+    if (moved) this.recapture();
   }
 
   private setState(next: PaneStreamState): void {

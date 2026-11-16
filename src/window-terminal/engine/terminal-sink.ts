@@ -39,11 +39,13 @@ export interface SeedCursor {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.seed(captured, cursor, trailing)  (snapshot +
- *                        →                                          the live bytes
- *                        →                                          captured behind it)
- *                        →  sink.write(data) ×N          (live byte stream)
- *                        →  sink.resize(cols, rows) ×M   (layout changes)
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (if the size is known)
+ *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
+ *                                                          the live bytes
+ *                                                          captured behind it)
+ *   then, interleaved:      sink.write(data)             (live byte stream)
+ *                           sink.resize(cols, rows)      (layout changes)
+ *                           sink.seed(...)               (each recapture)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *

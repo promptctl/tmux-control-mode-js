@@ -1041,7 +1041,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
-  it("a size change while detached invalidates the cached seed, with no output", async () => {
+  it("a size change while detached invalidates the cached seed and reaches the next sink, with no output", async () => {
     // A program that prints nothing on SIGWINCH leaves no byte to clear the
     // cache; the size change alone moves the pane past the cached picture.
     const { client, stream } = makeStream({ capture: "hello" });
@@ -1056,10 +1056,15 @@ describe("PaneStream — floods (pause/continue)", () => {
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures); // nobody to capture for
 
-    stream.attach(new RecordingSink());
+    // tmux will not report the size again until it changes, so the new sink
+    // is handed the one the stream already knows, before its seed.
+    const sink = new RecordingSink();
+    stream.attach(sink);
     expect(stream.state).toBe("seeding"); // not the cached fast path
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures + 1);
+    expect(sink.events[0]).toBe("resize(100x30)");
+    expect(sink.events[1]).toMatch(/^seed/);
     stream.dispose();
   });
 
