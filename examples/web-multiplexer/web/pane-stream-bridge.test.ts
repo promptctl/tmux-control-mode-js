@@ -16,8 +16,10 @@ import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 import {
   TmuxCommandError,
   TransportClosedError,
+  serverScope,
   windowScope,
 } from "@promptctl/tmux-control-mode-js/browser";
+import { encodePaneOutput } from "@promptctl/tmux-control-mode-js/websocket/protocol";
 import { pollUntil, tmux } from "../../../tests/helpers/integration.ts";
 import { describeTopologyMoves } from "../../../tests/helpers/topology-moves.ts";
 import {
@@ -230,6 +232,36 @@ describe("BridgePaneStreamClient command seam", () => {
       );
       await settle();
       expect(reported).toEqual([]);
+    } finally {
+      bridge.disconnect();
+    }
+  });
+
+  it("delivers connection-state after the consumer code running when the bridge closed, never inside it", async () => {
+    const { bridge, conn, socket } = page();
+    try {
+      socket.open();
+      socket.deliverFrame({ kind: "ready" });
+      await settle();
+      const order: string[] = [];
+      conn.on("connection-state", ({ state }) => order.push(state.status));
+      conn.attachBytesSink(
+        {
+          write: () => {
+            order.push("write");
+            bridge.disconnect();
+            order.push("write returned");
+          },
+          end: () => undefined,
+        },
+        { scope: serverScope },
+      );
+
+      socket.deliver(
+        encodePaneOutput({ paneId: 1, data: new Uint8Array([0x61]) }),
+      );
+      await settle();
+      expect(order).toEqual(["write", "write returned", "closed"]);
     } finally {
       bridge.disconnect();
     }

@@ -52,7 +52,7 @@ import type {
   WireEntry,
   WireHandler,
 } from "./bridge.ts";
-import { bridgeState } from "./bridge.ts";
+import { toConnState } from "./bridge.ts";
 
 export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
@@ -97,7 +97,7 @@ export class ElectronBridge implements TmuxBridge {
     //   reaches onState like a WebSocket close does.
     this.proxyEventHandler = (msg) => {
       if (msg.type === "connection-state") {
-        this.setState(bridgeState(msg.state));
+        this.setState(toConnState(msg.state));
         return;
       }
       if (!isTmuxMessage(msg)) return;

@@ -43,7 +43,7 @@ export type ConnState = "connecting" | "open" | "ready" | "closed";
 //   library's ConnectionState live together, so they cannot drift apart.
 
 /** A library connection's state as the bridge reports it. */
-export function bridgeState(state: ConnectionState): ConnState {
+export function toConnState(state: ConnectionState): ConnState {
   switch (state.status) {
     case "ready":
       return "ready";
@@ -56,7 +56,7 @@ export function bridgeState(state: ConnectionState): ConnState {
 }
 
 /** The bridge's state as a library connection reports it. */
-export function connectionState(s: ConnState): ConnectionState {
+export function toConnectionState(s: ConnState): ConnectionState {
   if (s === "ready") return { status: "ready" };
   if (s === "closed") return { status: "closed", reason: "transport-error" };
   return { status: "connecting" };

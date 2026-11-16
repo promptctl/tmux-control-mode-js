@@ -41,9 +41,12 @@ import type {
   PaneActivity,
   PaneStreamState,
 } from "./window-terminal-internals.ts";
-import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
-import type { TmuxBridge } from "./bridge.ts";
-import { connectionState } from "./bridge.ts";
+import type {
+  CommandResponse,
+  TmuxMessage,
+} from "@promptctl/tmux-control-mode-js/protocol";
+import type { ConnState, TmuxBridge } from "./bridge.ts";
+import { toConnectionState } from "./bridge.ts";
 
 // ---------------------------------------------------------------------------
 // BridgePaneStreamClient
@@ -75,81 +78,95 @@ export class BridgePaneStreamClient
   //   every connector in the library composes: this adapter feeds it the
   //   bridge's bytes, notifications and connection changes, and owns no
   //   topology of its own.
-  private readonly router = new TopologyRouter(new DeliveryQueue(), (error) =>
+  // [LAW:single-enforcer] The queue owns when consumer code runs, as in the
+  //   library's connectors: each bridge callback is one step, and the events
+  //   it announces are delivered after it, behind the sink writes and
+  //   topology errors the router posted before them.
+  private readonly delivery = new DeliveryQueue();
+  private readonly router = new TopologyRouter(this.delivery, (error) =>
     this.emit({ type: "topology-error", error }),
   );
-  // The current connection's runner, which names it to the router. Retiring
-  // a runner the router no longer holds as current changes nothing, so before
-  // the first ready this one retires nothing.
-  private run: RunCommand = (command) => this.execute(command);
+  // Tells the router the current connection is gone. Before the first ready
+  // there is none, so there is nothing to retire.
+  private retire: () => void = () => undefined;
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
     // per-event-type handler sets. No subscribe/unsubscribe churn when panes
     // mount/unmount — the bridge subscription is stable for the adapter's
     // lifetime; the per-type sets grow/shrink as PaneStream instances attach.
-    bridge.onEvent((ev) => {
-      // [LAW:single-enforcer] Pane bytes leave the bridge through the
-      //   router's sinks only — the per-pane `PaneStream` subscribes via
-      //   `attachBytesSink(paneScope)`, never `on("output")`.
-      if (ev.type === "output" || ev.type === "extended-output") {
-        this.router.dispatchBytes({ paneId: ev.paneId, data: ev.data });
-        return;
-      }
-      // The router takes what topology needs from every other event, which
-      // then fans out to its type's handlers.
-      this.router.handleNotification(ev);
-      this.emit(ev);
-    });
+    bridge.onEvent((ev) => this.delivery.step(this.onBridgeEvent, ev));
+    bridge.onState((state) => this.delivery.step(this.onBridgeState, state));
+  }
 
-    bridge.onState((state) => {
-      // [LAW:no-ambient-temporal-coupling] The router moves to the new
-      //   connection before any consumer hears of it, so a `connection-state`
-      //   handler never queries a dropped connection. The bridge reconnects
-      //   after `closed`, and each PaneStream keeps its sink across that, so
-      //   leaving `ready` is a lost connection, never the router's close
-      //   (which ends every sink for good).
-      this.router.onTransportLost(this.run);
-      if (state === "ready") {
-        // Each ready gets a runner of its own, so late evidence about an
-        // earlier connection retires nothing.
-        // [LAW:no-ambient-temporal-coupling] A reply saying the connection is
-        //   gone can beat the bridge's own state change (Electron's
-        //   BRIDGE_CLOSED races main's `closed` over IPC; the server's error
-        //   frame races its socket's close); it retires the connection, as
-        //   the library's renderer runner does. Both demo bridges answer
-        //   BRIDGE_CLOSED only for a connection that is gone.
-        const run: RunCommand = (command) =>
-          this.execute(command).catch((err: unknown) => {
-            if (isConnectionGone(err)) this.router.onTransportLost(run);
-            throw err;
-          });
-        this.run = run;
-        this.router.onTransportReady(run);
-      }
-      const next = connectionState(state);
-      const changed = next.status !== this._connectionState.status;
-      this._connectionState = next;
-      if (changed) this.emit({ type: "connection-state", state: next });
-      if (state !== "ready") return;
-      if (this.everReady) {
-        // [LAW:single-enforcer] The only place that decides "this is a
-        // reconnect" for all PaneStream instances on this bridge.
-        this.emit({ type: "reconnected" });
-      }
-      this.everReady = true;
-    });
+  private readonly onBridgeEvent = (ev: TmuxMessage): void => {
+    // [LAW:single-enforcer] Pane bytes leave the bridge through the
+    //   router's sinks only — the per-pane `PaneStream` subscribes via
+    //   `attachBytesSink(paneScope)`, never `on("output")`.
+    if (ev.type === "output" || ev.type === "extended-output") {
+      this.router.dispatchBytes({ paneId: ev.paneId, data: ev.data });
+      return;
+    }
+    // The router takes what topology needs from every other event, which
+    // then fans out to its type's handlers.
+    this.router.handleNotification(ev);
+    this.announce(ev);
+  };
+
+  private readonly onBridgeState = (state: ConnState): void => {
+    // [LAW:no-ambient-temporal-coupling] The router moves to the new
+    //   connection before any consumer hears of it, so a `connection-state`
+    //   handler never queries a dropped connection. The bridge reconnects
+    //   after `closed`, and each PaneStream keeps its sink across that, so
+    //   leaving `ready` is a lost connection, never the router's close
+    //   (which ends every sink for good).
+    this.retire();
+    this.retire = () => undefined;
+    if (state === "ready") {
+      // The runner names the connection: each ready gets its own, so late
+      // evidence about an earlier connection retires nothing.
+      // [LAW:no-ambient-temporal-coupling] A reply saying the connection is
+      //   gone can beat the bridge's own state change (Electron's
+      //   BRIDGE_CLOSED races main's `closed` over IPC; the server's error
+      //   frame races its socket's close); it retires the connection, as
+      //   the library's renderer runner does. Both demo bridges answer
+      //   BRIDGE_CLOSED only for a connection that is gone.
+      const run: RunCommand = (command) =>
+        this.execute(command).catch((err: unknown) => {
+          if (isConnectionGone(err)) this.router.onTransportLost(run);
+          throw err;
+        });
+      this.router.onTransportReady(run);
+      this.retire = () => this.router.onTransportLost(run);
+    }
+    const next = toConnectionState(state);
+    const changed = next.status !== this._connectionState.status;
+    this._connectionState = next;
+    if (changed) this.announce({ type: "connection-state", state: next });
+    if (state !== "ready") return;
+    if (this.everReady) {
+      // [LAW:single-enforcer] The only place that decides "this is a
+      // reconnect" for all PaneStream instances on this bridge.
+      this.announce({ type: "reconnected" });
+    }
+    this.everReady = true;
+  };
+
+  private announce(ev: TmuxEventMap[keyof TmuxEventMap]): void {
+    this.delivery.post(this.emit, ev);
   }
 
   get connectionState(): ConnectionState {
     return this._connectionState;
   }
 
-  private emit(ev: TmuxEventMap[keyof TmuxEventMap]): void {
+  // Delivered by the queue: the router posts topology errors to it, and
+  // announce posts every other event.
+  private readonly emit = (ev: TmuxEventMap[keyof TmuxEventMap]): void => {
     const set = this.handlers.get(ev.type);
     if (set === undefined) return;
     for (const h of [...set]) (h as (e: typeof ev) => void)(ev);
-  }
+  };
 
   on<K extends keyof TmuxEventMap>(
     event: K,
