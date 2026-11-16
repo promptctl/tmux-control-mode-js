@@ -407,9 +407,9 @@ describe("PaneStream — state machine", () => {
   it("seed preamble opens with ?1049l for main-screen pane (alternate_on=0)", async () => {
     // Regression: the original preamble emitted nothing for alternate_on=0,
     // so a reseed on a terminal still in alt screen drew content into the
-    // wrong buffer. The fix emits ?1049l (exit alt screen) + CUP home before
-    // any screen content so the correct screen and cursor row are established
-    // deterministically, even on a reconnect reseed.
+    // wrong buffer. The seed now opens with ?1049l (exit alt screen), so the
+    // content lands in the main buffer even on a reconnect reseed. What the
+    // clear after it does is seed-builder.test's to check.
     const { stream } = makeStream({
       capture: "row-0\nrow-1",
       // alternate_on=0, cursor visible, no insert/keypad, autowrap, 3 rows
@@ -471,7 +471,7 @@ describe("PaneStream — state machine", () => {
     expect(stream.state).toBe("seeding");
     await flushTicks();
     expect(stream.state).toBe("live");
-    // Reseed must exit alt screen and home cursor before drawing main content.
+    // Reseed must exit alt screen before drawing main content.
     expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l")).toBe(true);
   });
 

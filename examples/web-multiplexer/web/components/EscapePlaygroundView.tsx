@@ -35,7 +35,7 @@ import {
 } from "@mantine/core";
 import { isConnectionGone } from "@promptctl/tmux-control-mode-js/browser";
 import type { XtermSink } from "../window-terminal-internals.ts";
-import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
+import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
@@ -527,6 +527,10 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
+// The stream's capture depth and the sink's scrollback: each seed replaces
+// the scrollback with the capture.
+const HISTORY = 2000;
+
 /**
  * Owns the scratch pane's `ObservablePaneStream` and mounts an XtermSink on it —
  * a faithful copy of PaneView's `PaneCell`. Creating the stream and the sink in
@@ -561,8 +565,7 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
   // [LAW:single-enforcer] One ObservablePaneStream per pane id, stable across
   // re-renders; disposed when the pane unmounts.
   const obs = useMemo(
-    () =>
-      new ObservablePaneStream({ client, paneId, historyLines: SCROLLBACK }),
+    () => new ObservablePaneStream({ client, paneId, historyLines: HISTORY }),
     [client, paneId],
   );
   useEffect(() => () => obs.dispose(), [obs]);
@@ -573,7 +576,7 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
     const { stream } = obs;
     const sink = new FittedXtermSink({
       container,
-      scrollback: SCROLLBACK,
+      scrollback: HISTORY,
       xterm: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });

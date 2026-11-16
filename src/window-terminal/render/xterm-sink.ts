@@ -82,8 +82,8 @@ export interface XtermSinkOptions {
   readonly container: HTMLElement;
   readonly fontSize?: number;
   /**
-   * The depth PaneStream captures (`history`). [LAW:one-source-of-truth]
-   * Every seed replaces the scrollback with up to that many of tmux's lines.
+   * Lines of scrollback. Fed by a PaneStream, give it the stream's
+   * `historyLines`: each seed replaces the scrollback with that many lines.
    */
   readonly scrollback: number;
   readonly xterm?: XtermOptions;

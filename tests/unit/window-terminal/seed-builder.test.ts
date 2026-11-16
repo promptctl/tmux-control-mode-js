@@ -20,8 +20,8 @@ const ESC = "\x1b";
 // inspect them as text — mirrors how a TerminalSink treats the payload.
 const text = (bytes: Uint8Array): string =>
   new TextDecoder("latin1").decode(bytes);
-// The clear every seed starts with: CUP home, SGR 0, ED 2, ED 3.
-const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+// The clear every seed starts with: DECSTBM reset, CUP home, SGR 0, ED 2, ED 3.
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
 // The seed with its clear taken off, so a test can assert the content alone.
 const body = (bytes: Uint8Array): string => {
   const t = text(bytes);
@@ -123,6 +123,12 @@ describe("buildSeed: terminal-mode escapes", () => {
     );
   });
 
+  it("restores tmux's scroll region after the content, 1-indexed", () => {
+    // scroll_region_upper=1, scroll_region_lower=2 (0-indexed).
+    const { captured } = buildSeed(["x"], ";;;;;;;;;;1;2", 0);
+    expect(body(captured)).toBe(`x${ESC}[2;3r`);
+  });
+
   it("treats an empty mode field as a no-op (never forces the mode off)", () => {
     // An older tmux emits "" for an unexpanded format; "" must NOT be read as
     // "0" and actively reset the mode. Empty wrap/cursor fields → no escape.
@@ -168,6 +174,16 @@ describe("buildSeed: drawn into xterm.js", () => {
     await draw(term, buildSeed(["long-old-row", "", ""], state, 0).captured);
     await draw(term, buildSeed(["new", "", ""], state, 0).captured);
     expect(rowsOf(term)[0]).toBe("new");
+  });
+
+  it("holds the history once under a scroll region the live stream left set", async () => {
+    const term = newTerm();
+    // A program set a region below the top row; rows written inside it would
+    // never scroll into the scrollback.
+    await draw(term, `${ESC}[2;3r`);
+    const seed = buildSeed([...history, "s0", "s1", "s2", ""], state, 2000);
+    for (let i = 0; i < 2; i++) await draw(term, seed.captured);
+    expect(rowsOf(term)).toEqual([...history, "s0", "s1", "s2"]);
   });
 
   it("clears with the default background, not attributes DECRC restores", async () => {
