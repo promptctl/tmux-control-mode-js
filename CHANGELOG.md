@@ -38,6 +38,15 @@ All notable changes to this project are documented here. Format follows
   transport that is not ending refused the send.
 - `TopologyEpochTracker.isLatestBootstrap` is also false after
   `supersedeAll()`.
+- `PaneTopologyManager.updateWindow` and `unplaceContradicted` return
+  `Contradiction.lost`, the tiled pane ids the listing or layout dropped,
+  in place of `lostTrack: boolean`. Ask about each lost pane
+  (`list-panes -t %P`) instead of re-querying the whole server.
+- `TopologyEpochTracker.isWindowRefreshCurrent` is gone: call
+  `isListingCurrent(windowId, gen)` with the gen of the query that listed the
+  window, a window refresh's or a locate's. `startLocate()` returns a gen of
+  its own, and `isLocateCurrent` is false only once something supersedes
+  every query.
 
 ### Added
 
@@ -57,6 +66,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A pane that leaves a window's layout, by exiting or by moving to a window
+  of a session tmux sends no layout for, is asked about alone
+  (`list-panes -t %P`), not with `list-panes -a`. That query no longer
+  discards every window refresh in flight. The reply lists the pane's window
+  and places the pane itself, as does the reply about a pane that printed
+  before topology knew it: one round trip, not two.
 - A command sent after tmux died but before its connection closed is no
   longer refused as one failed command: it settles at the close with
   `TransportClosedError` and the connection's end. So a window event read in

@@ -17,6 +17,7 @@ import {
   pollUntil,
   attachSession,
   attachClient,
+  recordingTransport,
 } from "../helpers/integration.js";
 import type { TmuxClient, TmuxClientOptions } from "../../src/client.js";
 import {
@@ -27,32 +28,8 @@ import {
   type BytesSink,
 } from "../../src/pane-output.js";
 import { PaneAction } from "../../src/protocol/types.js";
-import type { TmuxTransport } from "../../src/transport/types.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
-
-/**
- * A transport that records into `sent` every command sent to tmux while
- * delegating to the real spawned transport.
- */
-function recordingTransport(
-  inner: TmuxTransport,
-  sent: string[],
-): TmuxTransport {
-  return {
-    // [LAW:one-source-of-truth] `sent` means "accepted for delivery" — a
-    // refused send (ok: false) never reached tmux, so it must not appear
-    // here as if it did.
-    send: (cmd) => {
-      const result = inner.send(cmd);
-      if (result.ok) sent.push(cmd);
-      return result;
-    },
-    onData: (cb) => inner.onData(cb),
-    onClose: (cb) => inner.onClose(cb),
-    close: () => inner.close(),
-  };
-}
 
 interface Recorded {
   client: TmuxClient;

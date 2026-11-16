@@ -21,6 +21,7 @@ import {
   pollUntil,
   attachSession,
   attachClient,
+  recordingTransport,
   tmux,
 } from "../helpers/integration.js";
 import {
@@ -232,6 +233,86 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     tmux(socketName, ["kill-pane", "-t", split]);
     await expect(locate(split)).rejects.toThrow(/^can't find pane/);
+  }, 15000);
+
+  // A session sink on a recorded client, with a second pane split into the
+  // session's only window. Pane facts are read out of band, so every
+  // `list-panes` in `sent` is the router's.
+  async function splitUnderRecord(tag: string) {
+    const sent: string[] = [];
+    const session = uniqueName(tag);
+    client = await attachSession(socketName, session, {
+      wrapTransport: (inner) => recordingTransport(inner, sent),
+    });
+    const errors: Error[] = [];
+    client.on("topology-error", (e) => errors.push(e.error));
+    const pane = parsePaneListLine(
+      tmux(socketName, [
+        "display-message",
+        "-p",
+        "-t",
+        session,
+        PANE_LIST_FORMAT,
+      ]).trim(),
+    );
+    expect(pane).not.toBeNull();
+    const arrived: ArrivedChunk[] = [];
+    client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: sessionScope(pane!.sessionId),
+    });
+    const split = tmux(socketName, [
+      "split-window",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      `%${pane!.paneId}`,
+      "sleep 30",
+    ]).trim();
+    // Once tmux has answered a command sent after the split, the router has
+    // read the split's layout and queued its refresh ahead of the answer.
+    await client.execute("display-message -p ok");
+    await client.execute("display-message -p ok");
+    return { sent, errors, arrived, pane: pane!, split, mark: sent.length };
+  }
+
+  // Wait until the router has asked about `paneId` and had the answer.
+  async function locatedAfter(sent: string[], paneId: string) {
+    await pollUntil(() =>
+      sent.some((c) => c.startsWith(`list-panes -t ${paneId} `)),
+    );
+    await client!.execute("display-message -p ok");
+  }
+
+  it("SCOPE-03e: a pane exiting from a multi-pane window costs no server-wide query", async () => {
+    const s = await splitUnderRecord("sess-exit");
+    tmux(socketName, ["kill-pane", "-t", s.split]);
+    await locatedAfter(s.sent, s.split);
+
+    expect(
+      s.sent.slice(s.mark).filter((c) => c.startsWith("list-panes -a ")),
+    ).toEqual([]);
+    // The surviving pane still routes to its session.
+    await sendOutputToPane(client!, s.pane.paneId);
+    await pollUntil(() => s.arrived.some((e) => e.paneId === s.pane.paneId));
+    expect(s.errors).toEqual([]);
+  }, 15000);
+
+  it("SCOPE-03f: a pane joined out to another session's window is found with a query about the pane", async () => {
+    // Made first: a new session's %sessions-changed starts a bootstrap.
+    const other = uniqueName("sess-join-dest");
+    tmux(socketName, ["new-session", "-d", "-s", other, "sleep 30"]);
+    const s = await splitUnderRecord("sess-join-out");
+    tmux(socketName, ["join-pane", "-d", "-s", s.split, "-t", `${other}:`]);
+    await locatedAfter(s.sent, s.split);
+
+    expect(
+      s.sent.slice(s.mark).filter((c) => c.startsWith("list-panes -a ")),
+    ).toEqual([]);
+    // tmux sends %output only for panes in windows of the attached session
+    // (control.c), so the joined pane's output cannot be watched here: the
+    // unit suite routes it. Here, tmux's real answer was one the router read.
+    expect(s.errors).toEqual([]);
   }, 15000);
 
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
