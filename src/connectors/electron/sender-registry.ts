@@ -61,7 +61,8 @@ export interface SenderState {
   /** Token returned by BridgeConnection.registerPeer — the Map key the helper
    *  uses internally for refcount + outstanding-byte accounting. */
   readonly peer: Peer;
-  /** True once the renderer has sent IPC.register; toggled off by unregister. */
+  /** True once the page has sent IPC.register; a sender an invoke created
+   *  gets no events until then. */
   isSubscribed: boolean;
   /**
    * The exact listeners registered on `wc`: `onPageEnd` with `once` for every
@@ -124,9 +125,10 @@ function senderFrame(event: IpcMainEventLike): WebFrameLike {
  * down. When the navigation reused the frame host, Chromium delivers the old
  * document's IPC before the commit that fires `did-navigate`, so it reached
  * the old sender; when it swapped hosts, the old host's ids no longer match
- * `mainFrame`. (`WebFrameMain` object identity is no test: before Electron 34
- * one object follows the frame across host swaps.) Messages from subframes
- * fail too — a page has one peer, its main frame's.
+ * `mainFrame`. The new document's first IPC arrives after `did-navigate`, so
+ * it opens a fresh sender. (`WebFrameMain` object identity is no test: before
+ * Electron 34 one object follows the frame across host swaps.) Messages from
+ * subframes fail too — a page has one peer, its main frame's.
  */
 function sentByLivePage(event: IpcMainEventLike): boolean {
   return showsFrame(event.sender, senderFrame(event));
@@ -158,8 +160,10 @@ export class SenderRegistry {
     // [LAW:single-enforcer] One set of page listeners per sender, stored on
     // the sender so `teardown` can detach the ones still attached.
     const onPageEnd = (): void => this.teardown(wc);
-    // A failed load ended the page only if it committed an error page in
-    // another frame host; `did-fail-load` does not say which.
+    // A failed main-frame load that commits an error page moves the main
+    // frame to another host (Chromium isolates main-frame error pages); a
+    // subframe's failure leaves the page shown. Comparing hosts asks the
+    // question directly instead of reading `did-fail-load`'s arguments.
     const onLoadFailed = (): void => {
       if (!showsFrame(wc, page)) this.teardown(wc);
     };

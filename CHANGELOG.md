@@ -49,9 +49,9 @@ All notable changes to this project are documented here. Format follows
   the bridge's tmux client. Each bridge peer's sizes are a claim on the
   client the pages share, withdrawn when its socket closes or its Electron
   renderer's page ends — the WebContents destroyed, reloaded or navigated
-  (into an error page too), or its renderer process crashed — so a departed page's window reads the other pages'
-  size, or the other tmux clients' once no page declares one, under
-  `window-size latest` and `smallest` alike. tmux cannot withdraw an overall
+  (into an error page too), or its renderer process crashed — so a departed
+  page's window reads the other pages' size, or the other tmux clients' once
+  no page declares one, under `window-size latest` and `smallest` alike. tmux cannot withdraw an overall
   size, so a departed page's overall size stays until another page sets one
   or no page declares any; a window terminal always sets both.
 - A reloaded or navigated Electron renderer no longer inherits its old page's
