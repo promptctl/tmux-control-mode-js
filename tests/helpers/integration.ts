@@ -253,9 +253,16 @@ export async function attachSession(
   }
 }
 
-/** The numeric id of the client's current pane (`%N` → N). */
-export async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
-  const r = await client.execute("display-message -p '#{pane_id}'");
+/**
+ * The numeric id (`%N` → N) of the client's current pane, or of `target`'s
+ * (a tmux target such as `other:` or `near:1`).
+ */
+export async function getPrimaryPaneId(
+  client: TmuxClient,
+  target?: string,
+): Promise<number> {
+  const at = target === undefined ? "" : ` -t ${target}`;
+  const r = await client.execute(`display-message -p${at} '#{pane_id}'`);
   // [LAW:one-source-of-truth] The library's pane-id parser, not a local regex.
   return paneNumber(parsePaneId(r.output[0]));
 }

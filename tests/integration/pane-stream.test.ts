@@ -5,9 +5,10 @@
 //
 //  1. capture-pane + display-message round-trip during seed produces
 //     a non-empty seed payload at the sink.
-//  2. Per-pane format subscription (`pane_width;pane_height`) emits
-//     a `subscription-changed` event whose value the stream parses into
-//     a `sink.resize(cols, rows)` call when the pane geometry changes.
+//  2. The connection's pane-size subscription emits a `subscription-changed`
+//     event whose value the stream reads its pane's size from, into a
+//     `sink.resize(cols, rows)` call when the pane geometry changes — for a
+//     pane in the control client's session or any other.
 //
 // [LAW:verifiable-goals] Both gates are bounded; both produce a deterministic
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
@@ -145,7 +146,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(cursor!.row).toBeGreaterThanOrEqual(0);
     }, 15000);
 
-    it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
+    it("tmux's size report fires sink.resize on geometry change", async () => {
       session = uniqueName("size");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
@@ -194,33 +195,94 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
 
-    it("draws a pane outside the client's session at its size, which tmux never reports", async () => {
-      // tmux sends a size subscription's values only for a pane whose window
-      // is in the control client's session, so this pane's size can come
-      // only with its seed.
+    // The sink's last size reaches `cols`x`rows`, and a seed follows it.
+    async function untilDrawnAt(
+      events: string[],
+      cols: number,
+      rows: number,
+    ): Promise<void> {
+      await readUntil(
+        () => events.slice(events.lastIndexOf(`resize(${cols}x${rows})`)),
+        (tail) =>
+          tail[0] === `resize(${cols}x${rows})` && tail.includes("seed"),
+        `the sink was never drawn at ${cols}x${rows}: ${events.join(" ")}`,
+      );
+    }
+
+    function orderSink(): { sink: CollectorSink; events: string[] } {
+      const events: string[] = [];
+      const sink = new CollectorSink();
+      sink.resize = (cols, rows) => void events.push(`resize(${cols}x${rows})`);
+      sink.seed = () => void events.push("seed");
+      return { sink, events };
+    }
+
+    async function untilLive(s: PaneStream): Promise<void> {
+      await readUntil(
+        () => s.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
+    }
+
+    it("follows a pane outside the client's session through a resize", async () => {
       session = uniqueName("near");
       client = await createSession(socket, session);
       const far = uniqueName("far");
       await client.execute(`new-session -d -s ${far} -x 100 -y 30`);
-      const r = await client.execute(
-        `display-message -p -t ${far}: '#{pane_id}'`,
-      );
-      const paneId = Number((r.output[0] ?? "").replace(/^%/, ""));
-      const size = await paneSize(client, paneId);
-      expect(size.cols).toBe(100);
+      const paneId = await getPrimaryPaneId(client, `${far}:`);
 
-      const order: string[] = [];
-      const sink = new CollectorSink();
-      sink.resize = (cols, rows) => void order.push(`resize(${cols}x${rows})`);
-      sink.seed = () => void order.push("seed");
+      const { sink, events } = orderSink();
       stream = new PaneStream({ client, paneId });
       stream.attach(sink);
-      await readUntil(
-        () => stream!.state,
-        (state) => state === "live",
-        "PaneStream never went live",
-      );
-      expect(order).toEqual([`resize(${size.cols}x${size.rows})`, "seed"]);
+      await untilLive(stream);
+      expect(events).toEqual(["resize(100x30)", "seed"]);
+
+      await client.execute(`resize-window -t ${far}: -x 120 -y 40`);
+      await untilDrawnAt(events, 120, 40);
+    }, 15000);
+
+    it("follows a pane that leaves the client's session", async () => {
+      session = uniqueName("near");
+      client = await createSession(socket, session);
+      const far = uniqueName("far");
+      await client.execute(`new-session -d -s ${far}`);
+      await client.execute(`new-window -d -t ${session}:1`);
+      await client.execute(`resize-window -t ${session}:1 -x 100 -y 30`);
+      const paneId = await getPrimaryPaneId(client, `${session}:1`);
+
+      const { sink, events } = orderSink();
+      stream = new PaneStream({ client, paneId });
+      stream.attach(sink);
+      await untilLive(stream);
+      // A size the capture never saw, so only tmux's report can draw it.
+      await client.execute(`resize-window -t ${session}:1 -x 110 -y 35`);
+      await untilDrawnAt(events, 110, 35);
+
+      await client.execute(`move-window -s ${session}:1 -t ${far}:5`);
+      await client.execute(`resize-window -t ${far}:5 -x 90 -y 20`);
+      await untilDrawnAt(events, 90, 20);
+    }, 15000);
+
+    it("a stream keeps following once another on its connection is disposed", async () => {
+      session = uniqueName("near");
+      client = await createSession(socket, session);
+      const far = uniqueName("far");
+      await client.execute(`new-session -d -s ${far} -x 100 -y 30`);
+      const nearPane = await getPrimaryPaneId(client);
+      const farPane = await getPrimaryPaneId(client, `${far}:`);
+
+      const other = new PaneStream({ client, paneId: nearPane });
+      other.attach(new CollectorSink());
+      const { sink, events } = orderSink();
+      stream = new PaneStream({ client, paneId: farPane });
+      stream.attach(sink);
+      await untilLive(other);
+      await untilLive(stream);
+      other.dispose();
+
+      await client.execute(`resize-window -t ${far}: -x 70 -y 15`);
+      await untilDrawnAt(events, 70, 15);
     }, 15000);
   },
 );
