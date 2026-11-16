@@ -8,7 +8,11 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
 import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
-import type { PaneStreamError } from "../../../src/window-terminal/engine/pane-stream.js";
+import type {
+  PaneActivity,
+  PaneStreamError,
+  PaneStreamState,
+} from "../../../src/window-terminal/engine/pane-stream.js";
 import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 import type { SeedCursor } from "../../../src/window-terminal/engine/terminal-sink.js";
 import {
@@ -1109,6 +1113,40 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.attach(new RecordingSink());
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+});
+
+describe("PaneStream — event listeners", () => {
+  it("takes each event's own listener shape", () => {
+    // The @ts-expect-error lines are the assertions; `pnpm run typecheck`
+    // fails if any of them compiles.
+    const calls = (stream: PaneStream) => [
+      () => stream.on("state-changed", (s: PaneStreamState) => s),
+      () => stream.on("activity-changed", (a: PaneActivity) => a),
+      () => stream.on("error", (e: PaneStreamError) => e),
+      () => stream.on("reconnected", () => undefined),
+      // @ts-expect-error a state-changed listener receives a state, not an error
+      () => stream.on("state-changed", (e: PaneStreamError) => e),
+      // @ts-expect-error an error listener receives an error, not activity
+      () => stream.on("error", (a: PaneActivity) => a),
+      // @ts-expect-error a reconnected listener receives nothing
+      () => stream.on("reconnected", (s: PaneStreamState) => s),
+    ];
+    expect(calls).toBeTypeOf("function");
+  });
+
+  it("the returned unsubscribe stops delivery to that listener only", async () => {
+    const { stream } = makeStream();
+    const kept: string[] = [];
+    const dropped: string[] = [];
+    stream.on("state-changed", (s) => kept.push(s));
+    const off = stream.on("state-changed", (s) => dropped.push(s));
+    off();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(kept).toEqual(["seeding", "live"]);
+    expect(dropped).toEqual([]);
     stream.dispose();
   });
 });

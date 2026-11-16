@@ -140,21 +140,28 @@ export interface PaneStreamOptions {
   readonly activityThrottleMs?: number;
 }
 
-type EventName = "state-changed" | "activity-changed" | "reconnected" | "error";
-
+// [LAW:one-source-of-truth] Each event's payload is named here and nowhere
+//   else; the event names, listener types, and listener registry all derive
+//   from this map.
 // `reconnected` listeners take no payload. We model them with `[]` instead
 // of `void` so the listener type stays a plain function with zero params,
 // dodging `@typescript-eslint/no-invalid-void-type` while keeping the
 // per-event payload type checked.
-type EventPayload<E extends EventName> = E extends "state-changed"
-  ? [PaneStreamState]
-  : E extends "activity-changed"
-    ? [PaneActivity]
-    : E extends "error"
-      ? [PaneStreamError]
-      : [];
+interface PaneStreamEvents {
+  "state-changed": [PaneStreamState];
+  "activity-changed": [PaneActivity];
+  reconnected: [];
+  error: [PaneStreamError];
+}
 
-type Listener<E extends EventName> = (...args: EventPayload<E>) => void;
+type EventName = keyof PaneStreamEvents;
+
+type Listener<E extends EventName> = (...args: PaneStreamEvents[E]) => void;
+
+// [LAW:types-are-the-program] The event name is the key, so a listener can
+//   only ever be stored under its own event — indexing with a generic `E`
+//   yields `Set<Listener<E>>` with no cast to vouch for the pairing.
+type ListenerRegistry = { [E in EventName]: Set<Listener<E>> };
 
 type Unsubscribe = () => void;
 
@@ -243,11 +250,13 @@ export class PaneStream implements ReseedTarget {
   private currentBytesSinceAttach = 0;
   private flushTimerId: unknown = null;
 
-  // Listener registries. Per-event Sets so add/remove is O(1).
-  private readonly stateListeners = new Set<Listener<"state-changed">>();
-  private readonly activityListeners = new Set<Listener<"activity-changed">>();
-  private readonly reconnectedListeners = new Set<Listener<"reconnected">>();
-  private readonly errorListeners = new Set<Listener<"error">>();
+  // Listener registry. Per-event Sets so add/remove is O(1).
+  private readonly listeners: ListenerRegistry = {
+    "state-changed": new Set(),
+    "activity-changed": new Set(),
+    reconnected: new Set(),
+    error: new Set(),
+  };
 
   // [LAW:no-silent-failure] Outstanding seam failures, retained for the pull
   //   model (`get lastError()`). The subscribe effect fires in the constructor,
@@ -315,7 +324,7 @@ export class PaneStream implements ReseedTarget {
       this.subscribeSize();
       // ReseedScheduler owns dispatch; we just notify our own listeners
       // so consumers (e.g. status badges) can react.
-      for (const h of this.reconnectedListeners) h();
+      for (const h of this.listeners.reconnected) h();
     };
     this.boundFlushActivity = () => this.flushActivity();
 
@@ -518,10 +527,10 @@ export class PaneStream implements ReseedTarget {
   }
 
   on<E extends EventName>(event: E, handler: Listener<E>): Unsubscribe {
-    const set = this.listenerSet(event);
-    set.add(handler as never);
+    const set = this.listeners[event];
+    set.add(handler);
     return () => {
-      set.delete(handler as never);
+      set.delete(handler);
     };
   }
 
@@ -553,10 +562,7 @@ export class PaneStream implements ReseedTarget {
     }
     this.buffer = [];
     this.sink = null;
-    this.stateListeners.clear();
-    this.activityListeners.clear();
-    this.reconnectedListeners.clear();
-    this.errorListeners.clear();
+    for (const set of Object.values(this.listeners)) set.clear();
     // [LAW:single-enforcer] dispose() is the one teardown — drop the retained
     //   error chain too, so a consumer holding a disposed stream can't read a
     //   stale failure and the PaneStreamError.cause chain is free to GC.
@@ -661,14 +667,14 @@ export class PaneStream implements ReseedTarget {
   private flushActivity(): void {
     this.flushTimerId = null;
     if (this.currentState === "disposed") return;
-    if (this.activityListeners.size === 0) return;
+    if (this.listeners["activity-changed"].size === 0) return;
     // [LAW:single-enforcer] One frozen snapshot per window — the only
     // allocation in the byte path, well under the 2MB/60s allocation budget.
     const snap: PaneActivity = Object.freeze({
       lastByteAt: this.currentLastByteAt,
       bytesSinceLastAttach: this.currentBytesSinceAttach,
     });
-    for (const h of this.activityListeners) h(snap);
+    for (const h of this.listeners["activity-changed"]) h(snap);
   }
 
   /**
@@ -890,7 +896,7 @@ export class PaneStream implements ReseedTarget {
   private setState(next: PaneStreamState): void {
     if (this.currentState === next) return;
     this.currentState = next;
-    for (const h of this.stateListeners) h(next);
+    for (const h of this.listeners["state-changed"]) h(next);
   }
 
   // [LAW:effects-at-boundaries] The pure interior kept computing (the stream
@@ -914,7 +920,7 @@ export class PaneStream implements ReseedTarget {
     // insertion order — keeps `lastError` recency-correct across both seams.
     this.seamErrors.delete(phase);
     this.seamErrors.set(phase, error);
-    for (const h of this.errorListeners) h(error);
+    for (const h of this.listeners.error) h(error);
   }
 
   // [LAW:one-source-of-truth] `lastError` claims "an outstanding failure at this
@@ -927,19 +933,6 @@ export class PaneStream implements ReseedTarget {
   //   the subscription, but only a delivered size vouches for the latter.)
   private clearError(phase: PaneStreamErrorPhase): void {
     this.seamErrors.delete(phase);
-  }
-
-  private listenerSet<E extends EventName>(event: E): Set<Listener<E>> {
-    if (event === "state-changed") {
-      return this.stateListeners as unknown as Set<Listener<E>>;
-    }
-    if (event === "activity-changed") {
-      return this.activityListeners as unknown as Set<Listener<E>>;
-    }
-    if (event === "error") {
-      return this.errorListeners as unknown as Set<Listener<E>>;
-    }
-    return this.reconnectedListeners as unknown as Set<Listener<E>>;
   }
 }
 
