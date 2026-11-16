@@ -1256,6 +1256,8 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   it("routes a pane joined out to an unannounced window once a query about the pane finds it", async () => {
     const s = await movedPane([[2, LAYOUT_4]]);
     expect(s.locates.at(-1)!.cmd).toContain("list-panes -t %5 ");
+    // tmux answers in send order: @2's refresh, then the locate of %5.
+    answerRefresh(s.replies, 2);
     answerLocate(s.locates, 5, 3);
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
@@ -1281,18 +1283,19 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     ]);
   });
 
-  it("asks once more about a pane a lost-pane ask placed when it prints unplaced", async () => {
+  it("asks about a pane's held output even after a lost-pane ask about it failed", async () => {
     const s = await movedPane([[2, LAYOUT_4]]);
     answerRefresh(s.replies, 2);
-    answerLocate(s.locates, 5, 3);
+    // The lost-pane ask and the server-wide query it falls back to both fail;
+    // %5's held chunk is then asked about on its own account.
+    s.locates.at(-1)!.reject(new Error("server busy"));
     await settle();
-    s.router.handleNotification({ type: "window-close", windowId: 3 });
-    s.replies.at(-1)!.reject(windowGone("@3"));
+    s.replies.at(-1)!.reject(new Error("server busy"));
     await settle();
-    const asks = s.locates.length;
-    s.router.dispatchBytes(makeChunk(5));
-    expect(s.locates).toHaveLength(asks + 1);
-    expect(s.locates.at(-1)!.cmd).toContain("list-panes -t %5 ");
+    expect(s.locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %5 "),
+      expect.stringContaining("list-panes -t %5 "),
+    ]);
   });
 
   it("sends no server-wide query when a pane in a multi-pane window exits", async () => {
