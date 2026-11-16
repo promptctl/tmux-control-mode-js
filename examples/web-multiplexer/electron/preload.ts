@@ -14,7 +14,7 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type {
-  IpcEventMessage,
+  AddressedEvent,
   IpcRendererLike,
   IpcRendererOnListener,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
@@ -36,7 +36,7 @@ function assertChannel(channel: string): void {
   }
 }
 
-type Wrapper = (event: IpcRendererEvent, msg: IpcEventMessage) => void;
+type Wrapper = (event: IpcRendererEvent, addressed: AddressedEvent) => void;
 
 const tracker = createWrapperTracker<IpcRendererOnListener, Wrapper>();
 
@@ -54,8 +54,8 @@ const tmuxIpc: IpcRendererLike = {
 
   on(channel, listener) {
     assertChannel(channel);
-    const wrapped: Wrapper = (event, msg): void => {
-      listener(event, msg);
+    const wrapped: Wrapper = (event, addressed): void => {
+      listener(event, addressed);
     };
     tracker.add(channel, listener, wrapped);
     ipcRenderer.on(channel, wrapped);

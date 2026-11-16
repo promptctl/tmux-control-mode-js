@@ -2,15 +2,26 @@
 // [LAW:decomposition] Per-peer per-pane outstanding-byte accounting and the
 // watermark loop that pauses / resumes panes, extracted from
 // createBridgeConnection. This ledger's ONE invariant is: a pane is paused iff
-// the SUM of outstanding bytes across every peer subscribed to it has reached
-// the high watermark and not yet fallen back to or below the low watermark. The
-// two boundaries are inclusive and symmetric — pause at `sum >= high`, resume
-// at `sum <= low` — so the hysteresis band is `(low, high)`. It shares nothing
-// with the subscription ledger except the opaque `Peer` token it indexes on.
+// its slowest peer — the one with the most outstanding bytes for it — has
+// reached the high watermark and not yet fallen back to or below the low
+// watermark. The two boundaries are inclusive and symmetric — pause at
+// `slowest >= high`, resume at `slowest <= low` — so the hysteresis band is
+// `(low, high)`. It shares nothing with the subscription ledger except the
+// opaque `Peer` token it indexes on.
+//
+// Each peer holds its own copy of a pane's bytes in its own pipe, so a peer's
+// outstanding total is what measures how far behind that consumer is; a sum
+// across peers measures nothing a consumer sees. It would also add up what
+// each peer withholds by design — the Electron renderer acks in batches, so
+// every proxy keeps up to one batch unacked — until enough peers kept a paused
+// pane above low forever, with no output left to fill a batch and ack it.
+// Per peer, a paused pane resumes as long as what one peer withholds is at
+// most `low` (see `RendererBridgeOptions.ackBatchBytes`).
 //
 // [LAW:dataflow-not-control-flow] Pause/resume decisions are pure functions of
 // the per-peer `outstanding` maps; the same account / ack pipeline runs every
-// time and the data (the per-pane sum) decides whether setPaneAction fires.
+// time and the data (the slowest peer's bytes) decides whether setPaneAction
+// fires.
 
 import { PaneAction } from "../protocol/types.js";
 import { refreshClientPaneAction } from "../protocol/encoder.js";
@@ -28,9 +39,9 @@ import type { Peer } from "./bridge-peer.js";
 // Tunables
 // ---------------------------------------------------------------------------
 
-/** Default per-pane high watermark (1 MiB summed across peers). */
+/** Default per-pane high watermark (1 MiB outstanding at the slowest peer). */
 export const DEFAULT_OUTPUT_HIGH_WATERMARK = 1 << 20;
-/** Default per-pane low watermark (256 KiB summed across peers). */
+/** Default per-pane low watermark (256 KiB outstanding at the slowest peer). */
 export const DEFAULT_OUTPUT_LOW_WATERMARK = 1 << 18;
 
 /**
@@ -186,15 +197,19 @@ export class BackpressureLedger {
     this.outstanding.set(peer, new Map());
   }
 
-  private totalOutstanding(paneId: number): number {
-    let sum = 0;
-    for (const m of this.outstanding.values()) sum += m.get(paneId) ?? 0;
-    return sum;
+  private slowestOutstanding(paneId: number): number {
+    let slowest = 0;
+    for (const m of this.outstanding.values()) {
+      slowest = Math.max(slowest, m.get(paneId) ?? 0);
+    }
+    return slowest;
   }
 
-  private maybePause(paneId: number): void {
+  // Only the peer just billed changed, and any other peer at `high` would
+  // have paused the pane already, so its total alone decides.
+  private maybePause(paneId: number, billed: number): void {
     if (this.pausedPanes.has(paneId)) return;
-    if (this.totalOutstanding(paneId) < this.high) return;
+    if (billed < this.high) return;
     this.pausedPanes.set(paneId, { resuming: false });
     void this.client
       .execute(refreshClientPaneAction(paneId, PaneAction.Pause))
@@ -210,8 +225,8 @@ export class BackpressureLedger {
     const flow = this.pausedPanes.get(paneId);
     if (flow === undefined) return; // not paused per the ledger
     // Inclusive boundary, symmetric with maybePause's `>= high`: resume once the
-    // sum is at or below low; stay paused while strictly above it.
-    if (this.totalOutstanding(paneId) > this.low) return;
+    // slowest peer is at or below low; stay paused while it is above.
+    if (this.slowestOutstanding(paneId) > this.low) return;
     if (flow.resuming) return; // a Continue is already in flight; don't double-send
     flow.resuming = true;
     void this.client
@@ -249,7 +264,7 @@ export class BackpressureLedger {
 
   /**
    * Account `bytes` of pane output sent to `peer` for `paneId`. When the
-   * per-pane sum across all peers crosses the high watermark, fires
+   * pane's slowest peer reaches the high watermark, fires
    * `client.setPaneAction(paneId, Pause)` exactly once. A peer with no slot
    * (never registered, or already released) is a no-op — a stray account can
    * never resurrect a dead peer's accounting.
@@ -258,15 +273,15 @@ export class BackpressureLedger {
     const m = this.outstanding.get(peer);
     if (m === undefined) return;
     if (bytes <= 0) return;
-    const prev = m.get(paneId) ?? 0;
-    m.set(paneId, prev + bytes);
-    this.maybePause(paneId);
+    const next = (m.get(paneId) ?? 0) + bytes;
+    m.set(paneId, next);
+    this.maybePause(paneId, next);
   }
 
   /**
    * Apply an ack: `peer` reports it has consumed `bytes` for `paneId`. Subtracts
-   * from the peer's outstanding tally and, when the per-pane sum drops to or
-   * below the low watermark, fires `client.setPaneAction(paneId, Continue)`
+   * from the peer's outstanding tally and, when the pane's slowest peer drops
+   * to or below the low watermark, fires `client.setPaneAction(paneId, Continue)`
    * exactly once.
    *
    * Negative or oversized acks are clamped to the peer's current outstanding —
@@ -286,7 +301,7 @@ export class BackpressureLedger {
 
   /**
    * Zero this peer's outstanding bytes for every pane and resume any pane whose
-   * remaining sum (across surviving peers) drops below the low watermark. Used
+   * slowest remaining peer is at or below the low watermark. Used
    * by transports whose underlying drain signal is connection-wide rather than
    * per-pane — notably the WebSocket bridge observing `ws.bufferedAmount`
    * reaching zero. Per-pane accounting is preserved for other peers; this clears
@@ -305,9 +320,9 @@ export class BackpressureLedger {
 
   /**
    * Drop this peer's outstanding accounting entirely and resume panes whose
-   * remaining sum (across surviving peers) drops below the low watermark. The
-   * peer's slot is removed BEFORE the resume decisions so it no longer counts
-   * toward any pane's sum. Idempotent — a peer with no slot is a no-op.
+   * slowest remaining peer is at or below the low watermark. The peer's slot
+   * is removed BEFORE the resume decisions so it no longer counts for any
+   * pane. Idempotent — a peer with no slot is a no-op.
    */
   releasePeer(peer: Peer): void {
     const m = this.outstanding.get(peer);

@@ -372,13 +372,15 @@ export function createIpcHub(): IpcHub {
   };
 }
 
-// Negative, so a raw invoke never shares an id with a proxy's on the page.
+/** The proxy address raw invokes name; a proxy picks a non-negative one. */
+export const RAW_PROXY = -1;
 let lastRawId = 0;
 
 /**
- * Invoke main with `req`, sent as is, and resolve with the reply wherever main
- * put it: on `IPC.event` under the invoke's id, or in the invoke's return.
- * `invoke` carries the call to main: `ipc`'s own, or a handler driven directly.
+ * Invoke main with `req`, sent as is from `RAW_PROXY`, and resolve with the
+ * reply wherever main put it: on `IPC.event` under the invoke's id, or in the
+ * invoke's return. `invoke` carries the call to main: `ipc`'s own, or a
+ * handler driven directly.
  */
 export function invokeRaw(
   ipc: RawIpcRenderer,
@@ -386,15 +388,16 @@ export function invokeRaw(
   invoke: (call: unknown) => Promise<InvokeReturn> = (call) =>
     ipc.invoke(IPC.invoke, call),
 ): Promise<InvokeResultEnvelope> {
-  const id = --lastRawId;
+  const id = ++lastRawId;
   return new Promise((resolve, reject) => {
-    const hear: IpcRendererOnListener = (_e, msg) => {
-      if (msg.type !== "invoke-reply" || msg.id !== id) return;
+    const hear: IpcRendererOnListener = (_e, { to, msg }) => {
+      if (to !== RAW_PROXY || msg.type !== "invoke-reply" || msg.id !== id)
+        return;
       ipc.removeListener(IPC.event, hear);
       resolve(msg.result);
     };
     ipc.on(IPC.event, hear);
-    invoke({ id, request: req }).then((ret) => {
+    invoke({ proxy: RAW_PROXY, id, request: req }).then((ret) => {
       if (ret.via === "event") return;
       ipc.removeListener(IPC.event, hear);
       resolve(ret.result);

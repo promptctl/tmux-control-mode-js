@@ -28,17 +28,17 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
 export const IPC = {
   /**
    * main → renderer: every `IpcEventMessage` — client events, pane bytes and
-   * invoke replies.
+   * invoke replies — as an `AddressedEvent` naming the proxy it is for.
    */
   event: "tmux:event",
   /** renderer → main: method dispatch via ipcRenderer.invoke. */
   invoke: "tmux:invoke",
-  /** renderer → main: "send me events". */
+  /** renderer → main: the proxy named wants events. */
   register: "tmux:register",
-  /** renderer → main: "stop sending me events". */
+  /** renderer → main: the proxy named is done; main releases its peer. */
   unregister: "tmux:unregister",
   /**
-   * renderer → main: "I processed N output bytes for pane P". Drives the
+   * renderer → main: "proxy X processed N output bytes for pane P". Drives the
    * credit-based backpressure loop in main.ts — when outstanding bytes for
    * a pane stay above the high-watermark, main pauses the pane via
    * setPaneAction(Pause); acks pulling outstanding back below the
@@ -67,6 +67,31 @@ export type IpcEventMessage =
   | EmitterMessage
   | OutputMessage
   | InvokeReplyMessage;
+
+/**
+ * The address of one `TmuxClientProxy`: main keeps one peer per address, and
+ * every message main sends names the address it is for.
+ *
+ * A proxy picks its own at random. Proxies on one page cannot share a counter
+ * — a contextBridge preload hands each bundle its own wrapper, so nothing on
+ * the page is shared by identity — and an address need only be unique among
+ * the page's proxies, which 52 random bits are.
+ */
+export type ProxyId = number;
+
+/**
+ * What `IPC.event` carries: a message for the proxy `to`.
+ *
+ * [LAW:one-source-of-truth] The peer is the proxy, as on the WebSocket
+ * connector it is the socket: subscriptions, size claims and acked bytes are
+ * each proxy's own. `webContents.send` reaches every proxy on the page, so
+ * main names the one a message is for and the others drop it. One argument,
+ * so a preload that forwards `(event, arg)` carries it whole.
+ */
+export interface AddressedEvent {
+  readonly to: ProxyId;
+  readonly msg: IpcEventMessage;
+}
 
 /**
  * The reply to the renderer's invoke `id`.
@@ -131,7 +156,7 @@ export type LoadFailedEvent = "did-fail-load";
 
 export interface WebContentsLike {
   /** `IPC.event` is the one channel main sends a renderer on. */
-  send(channel: typeof IPC.event, msg: IpcEventMessage): void;
+  send(channel: typeof IPC.event, addressed: AddressedEvent): void;
   /**
    * The frame host of the page this WebContents shows. After `destroy()` it
    * still reads the last host; before Electron 34, reading it after a
@@ -141,8 +166,8 @@ export interface WebContentsLike {
   once(event: PageEndEvent, listener: () => void): void;
   on(event: LoadFailedEvent, listener: () => void): void;
   /**
-   * Required so the bridge can detach its page listeners when a sender is
-   * torn down via `unregister` while the page is still alive. Without this
+   * Required so the bridge can detach its page listeners when the page's
+   * last proxy unregisters while the page is still alive. Without this
    * a listener stays attached to the emitter for the WebContents's remaining
    * lifetime and fires later against a page that never registered.
    */
@@ -186,22 +211,24 @@ export interface IpcMainLike {
 }
 
 // [LAW:types-are-the-program] No fields required from the renderer event —
-// the bridge is a 1:1 pairing with a single ipcRenderer and origin is known
-// by construction. If a future feature needs to validate event origin, narrow
-// this type or replace with IpcRendererLike.
+// the message itself names the proxy it is for (`AddressedEvent.to`).
 export type IpcRendererEventLike = object;
 
 export type IpcRendererOnListener = (
   event: IpcRendererEventLike,
-  msg: IpcEventMessage,
+  addressed: AddressedEvent,
 ) => void;
 
 export interface IpcRendererLike {
   invoke(channel: typeof IPC.invoke, call: InvokeCall): Promise<InvokeReturn>;
-  // A renderer's own sends are typed per channel; main still parses what
-  // arrives (`parseAckMessage`), since a renderer is untrusted.
-  send(channel: typeof IPC.register | typeof IPC.unregister): void;
-  send(channel: typeof IPC.ack, ack: AckMessage): void;
+  // A renderer's own sends are typed per channel and name the proxy sending;
+  // main still parses what arrives (`parseProxyId`, `parseAckMessage`), since
+  // a renderer is untrusted.
+  send(
+    channel: typeof IPC.register | typeof IPC.unregister,
+    proxy: ProxyId,
+  ): void;
+  send(channel: typeof IPC.ack, proxy: ProxyId, ack: AckMessage): void;
   /** `IPC.event` is the one channel a renderer listens on. */
   on(channel: typeof IPC.event, listener: IpcRendererOnListener): void;
   removeListener(
@@ -218,11 +245,12 @@ export interface IpcRendererLike {
 export type InvokeRequest = RpcRequest;
 
 /**
- * What a renderer invokes with: the request, and the `id` its reply names.
- * One argument, so a preload that forwards `invoke(channel, arg)` carries it
- * whole.
+ * What a renderer invokes with: the proxy calling, the request, and the `id`
+ * its reply names. One argument, so a preload that forwards
+ * `invoke(channel, arg)` carries it whole.
  */
 export interface InvokeCall {
+  readonly proxy: ProxyId;
   readonly id: number;
   readonly request: InvokeRequest;
 }
@@ -257,7 +285,7 @@ export type InvokeResultEnvelope =
  * Where main put an invoke's reply: on `IPC.event` (an `InvokeReplyMessage`)
  * when the page its WebContents shows asked, or else in the invoke's own
  * return — a subframe or an ended page hears nothing on `IPC.event`, and a
- * request with no usable id has no reply to name.
+ * call with no usable proxy or id has no reply to address.
  */
 export type InvokeReturn =
   | { readonly via: "event" }
@@ -320,8 +348,8 @@ export interface MainBridgeHandle {
 
 export interface MainBridgeOptions {
   /**
-   * Per-pane outstanding-byte threshold (summed across all subscribed
-   * renderers) at which main pauses the pane. Default: 1 MiB.
+   * Per-pane outstanding-byte threshold at which main pauses the pane, met
+   * when any one proxy has that many bytes unacked. Default: 1 MiB.
    */
   readonly outputHighWatermark?: number;
   /**
@@ -368,8 +396,10 @@ export interface RendererBridgeOptions {
   /**
    * Bytes-since-last-ack threshold per pane. Renderer batches `tmux:ack`
    * messages to amortize IPC chatter; lower values give tighter feedback to
-   * the main-side watermark loop at the cost of more ack traffic.
-   * Default: 64 KiB.
+   * the main-side watermark loop at the cost of more ack traffic. A proxy
+   * keeps up to a batch unacked once its panes go quiet, so a value above
+   * main's `outputLowWatermark` can leave a paused pane paused for good.
+   * Default: 64 KiB (main's default low watermark is 256 KiB).
    */
   readonly ackBatchBytes?: number;
   /**
@@ -415,12 +445,18 @@ export {
 import { BridgeError } from "../errors.js";
 
 // ---------------------------------------------------------------------------
-// Ack validation (electron-specific channel; not part of the shared RPC).
+// Proxy address + ack validation (electron-specific; not part of the shared
+// RPC).
 //
-// [LAW:single-enforcer] Single trust boundary for the ack channel. Bad acks
-// are dropped silently by main.ts — they can only starve the renderer that
-// sent them, never reach tmux.
+// [LAW:single-enforcer] Single trust boundary for what a renderer names on
+// its own channels. SenderRegistry drops a bad ack silently — it can only
+// starve the proxy it names, never reach tmux.
 // ---------------------------------------------------------------------------
+
+/** The proxy address `raw` names, or null when it names none. */
+export function parseProxyId(raw: unknown): ProxyId | null {
+  return typeof raw === "number" && Number.isSafeInteger(raw) ? raw : null;
+}
 
 export function parseAckMessage(raw: unknown): AckMessage {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {

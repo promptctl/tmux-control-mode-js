@@ -1,7 +1,7 @@
 // src/connectors/electron/invoke-pipeline.ts
 // [LAW:decomposition] Renderer command invocation, extracted from
 // createMainBridge: parse → dispatch → encode, plus the two pieces of state
-// that path needs — the per-sender in-flight dispatch set (for abort-on-
+// that path needs — the per-proxy in-flight dispatch set (for abort-on-
 // teardown) and the handler-call set (for drain). The wiring shell holds
 // neither.
 //
@@ -27,14 +27,16 @@ import { waitAtMost } from "../wait-at-most.js";
 import {
   BridgeError,
   IPC,
+  parseProxyId,
   type InvokeResultEnvelope,
   type InvokeReturn,
   type IpcMainEventLike,
+  type ProxyId,
 } from "./types.js";
 import type {
   PendingDispatch,
+  ProxyPeer,
   SenderRegistry,
-  SenderState,
 } from "./sender-registry.js";
 
 // ---------------------------------------------------------------------------
@@ -60,12 +62,12 @@ function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
 }
 
 // Why an invoke was aborted, as its reply states it.
-const NOT_FROM_PAGE_SHOWN =
-  "not sent by the page its WebContents shows (the page has ended, or a " +
-  "subframe sent it)";
+const NO_REGISTERED_PROXY =
+  "it names no proxy registered by the page its WebContents shows (the " +
+  "page has ended, a subframe sent it, or the proxy never registered)";
 const PEER_TORN_DOWN =
-  "the page's peer was torn down while it ran (the page ended or " +
-  "unregistered, or the bridge was disposed)";
+  "the proxy's peer was released while it ran (the proxy unregistered, " +
+  "its page ended, or the bridge was disposed)";
 
 function abortedEnvelope(method: string, reason: string): InvokeResultEnvelope {
   return {
@@ -77,7 +79,7 @@ function abortedEnvelope(method: string, reason: string): InvokeResultEnvelope {
   };
 }
 
-// Best-effort method name for labelling an aborted reply when the sender is
+// Best-effort method name for labelling an aborted reply when the page is
 // already gone. A malformed request has no method — the label falls back rather
 // than surfacing a parse error the moot reply doesn't need.
 function methodLabel(raw: unknown): string {
@@ -88,14 +90,28 @@ function methodLabel(raw: unknown): string {
   }
 }
 
-// The renderer's `InvokeCall`, as far as main reads it here: `id` is null when
-// the call names no usable reply id; `raw` is the request, which
+// Where an invoke's reply goes on `IPC.event`: the proxy that called, and the
+// id it awaits.
+interface ReplyAddress {
+  readonly proxy: ProxyId;
+  readonly id: number;
+}
+
+// The renderer's `InvokeCall`, as far as main reads it here: `to` is null when
+// the call names no usable proxy or reply id; `raw` is the request, which
 // `parseRpcRequest` alone validates.
-function readInvokeCall(call: unknown): { id: number | null; raw: unknown } {
-  if (typeof call !== "object" || call === null) return { id: null, raw: call };
-  const { id, request } = call as Partial<Record<"id" | "request", unknown>>;
+function readInvokeCall(call: unknown): {
+  to: ReplyAddress | null;
+  raw: unknown;
+} {
+  if (typeof call !== "object" || call === null) return { to: null, raw: call };
+  const { proxy, id, request } = call as Partial<
+    Record<"proxy" | "id" | "request", unknown>
+  >;
+  const from = parseProxyId(proxy);
+  const usableId = typeof id === "number" && Number.isSafeInteger(id);
   return {
-    id: typeof id === "number" && Number.isSafeInteger(id) ? id : null,
+    to: from !== null && usableId ? { proxy: from, id } : null,
     raw: request,
   };
 }
@@ -138,11 +154,11 @@ export interface InvokePipelineDeps {
   // `dispatchBridgeRequest`, which accepts the `TmuxConnection` interface — so
   // that, not the concrete `TmuxClient` class, is the honest dependency type.
   readonly client: TmuxConnection;
-  readonly registry: Pick<SenderRegistry, "getOrCreate">;
+  readonly registry: Pick<SenderRegistry, "registered">;
 }
 
 export class InvokePipeline {
-  // [LAW:one-source-of-truth] The abort signal lives on each sender's `pending`
+  // [LAW:one-source-of-truth] The abort signal lives on each proxy's `pending`
   // set (owned by SenderRegistry, flagged on teardown) — not duplicated here.
   // This Set carries only the await targets for `drain`; it is populated on
   // invoke and self-cleans when each call settles.
@@ -183,44 +199,45 @@ export class InvokePipeline {
     event: IpcMainEventLike,
     call: unknown,
   ): Promise<InvokeReturn> {
-    const { id, raw } = readInvokeCall(call);
-    if (id === null) {
+    const { to, raw } = readInvokeCall(call);
+    if (to === null) {
       const err = new RpcError(
         "INVALID_REQUEST",
-        "invoke call names no integer id",
+        "invoke call names no integer proxy and id",
       );
       return { via: "invoke", result: rpcErrorEnvelope(err) };
     }
-    const sender = this.deps.registry.getOrCreate(event);
+    const caller = this.deps.registry.registered(event, to.proxy);
     // [LAW:no-ambient-temporal-coupling] The sending page had already ended
-    // when this queued invoke ran (its teardown fired first), or a subframe
-    // sent it. There is no live sender to bill and no point running a real
-    // command for a page that is gone — the reply is moot. Abort before
-    // creating any state, so no peer is minted for the next page to inherit.
-    if (sender === undefined) {
-      const result = abortedEnvelope(methodLabel(raw), NOT_FROM_PAGE_SHOWN);
+    // when this queued invoke ran (its teardown fired first), a subframe sent
+    // it, or the renderer named a proxy it never registered. There is no peer
+    // to bill and no one to run a real command for.
+    if (caller === undefined) {
+      const result = abortedEnvelope(methodLabel(raw), NO_REGISTERED_PROXY);
       return { via: "invoke", result };
     }
     const dispatch: PendingDispatch = { aborted: false };
-    sender.pending.add(dispatch);
-    const result = await this.run(sender, dispatch, raw).finally(() =>
-      sender.pending.delete(dispatch),
+    caller.pending.add(dispatch);
+    const result = await this.run(caller, dispatch, raw).finally(() =>
+      caller.pending.delete(dispatch),
     );
     // [LAW:no-ambient-temporal-coupling] The reply rides `IPC.event`, behind
-    //   every event main sent the page before it — unless the sender was
-    //   torn down meanwhile, or its WebContents destroyed ahead of the
-    //   teardown Electron has yet to deliver: `IPC.event` then reaches
-    //   whatever document the WebContents shows next, or nothing, so the
-    //   reply goes back in the return.
-    if (dispatch.aborted || sender.wc.isDestroyed()) {
+    //   every event main sent the proxy before it — unless its peer was
+    //   released meanwhile (the proxy no longer listens), or its WebContents
+    //   destroyed ahead of the teardown Electron has yet to deliver (no page
+    //   hears `IPC.event`), so the reply goes back in the return.
+    if (dispatch.aborted || caller.wc.isDestroyed()) {
       return { via: "invoke", result };
     }
-    sender.wc.send(IPC.event, { type: "invoke-reply", id, result });
+    caller.wc.send(IPC.event, {
+      to: to.proxy,
+      msg: { type: "invoke-reply", id: to.id, result },
+    });
     return { via: "event" };
   }
 
   private async run(
-    sender: SenderState,
+    caller: ProxyPeer,
     dispatch: PendingDispatch,
     raw: unknown,
   ): Promise<InvokeResultEnvelope> {
@@ -249,10 +266,10 @@ export class InvokePipeline {
     const outcome = await dispatchBridgeRequest(
       this.deps.bridge,
       this.deps.client,
-      sender.peer,
+      caller.peer,
       req,
     );
-    // [LAW:no-ambient-temporal-coupling] If the sender was torn down while
+    // [LAW:no-ambient-temporal-coupling] If the proxy's peer was released while
     // the dispatch was in flight, the abort flag is the single owner of
     // "this reply is moot" — it overrides any outcome.
     if (dispatch.aborted) return abortedEnvelope(req.method, PEER_TORN_DOWN);
