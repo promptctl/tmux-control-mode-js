@@ -241,36 +241,37 @@ option left out returns to its default. A key xterm.js does not have, a value it
 the ones tmux or its layout decides, and the type refuses them: `cols` and
 `rows`, `fontSize` (`sizing.font`), `scrollback` (`history`), `tabStopWidth`
 (tmux's tab stops), `windowOptions` (tmux answers the window reports),
-`overviewRulerWidth` (a pane is exactly its cells wide), `convertEol`,
-`windowsMode`, `windowsPty` and `documentOverride`.
+`overviewRulerWidth` (a pane is exactly its cells wide), `allowProposedApi`
+(below), `convertEol`, `windowsMode`, `windowsPty` and `documentOverride`.
+
+A pane counts a character's cells as tmux does: an emoji is two, a character
+with VS16 two, and a ZWJ sequence or a flag is one character, so whatever
+follows lands in tmux's column. tmux takes a codepoint's width from utf8proc
+(the platform's `wcwidth` when built without it); the terminal's table is
+utf8proc's under tmux 3.8, so a tmux on another table, or with
+`codepoint-widths` set, can count a rare character differently. The count
+runs through xterm.js's proposed Unicode API, so `allowProposedApi` is always
+on, and an addon that changes `terminal.unicode.activeVersion` undoes it.
 
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads; it is read at mount. An addon that throws as a pane opens is
 an `onError` (`render`), and that pane stays empty. Panes are laid out in the
 cell their renderer draws, xterm.js's DOM renderer or a renderer addon (WebGL,
 canvas). xterm.js 5.5 makes an OSC 8 link with
-a scheme other than `http:` or `https:` only when `linkHandler` allows it, and
-draws an emoji one cell wide where tmux counts two unless Unicode 11 is the
-version in use:
+a scheme other than `http:` or `https:` only when `linkHandler` allows it:
 
 ```tsx
 import type {
   XtermAddons,
   XtermOptions,
 } from "@promptctl/tmux-control-mode-js/window-terminal";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 
 const activate = (_: MouseEvent, uri: string) => openLink(uri);
 const xterm: XtermOptions = {
-  allowProposedApi: true, // Unicode 11 uses xterm's proposed API
   linkHandler: { allowNonHttpProtocols: true, activate },
 };
-const addons: XtermAddons = () => [
-  new Unicode11Addon(),
-  { activate: (t) => (t.unicode.activeVersion = "11"), dispose: () => {} },
-  new WebLinksAddon(activate),
-];
+const addons: XtermAddons = () => [new WebLinksAddon(activate)];
 
 <WindowTerminal connection={connection} window="@3" xterm={xterm} addons={addons} />;
 ```

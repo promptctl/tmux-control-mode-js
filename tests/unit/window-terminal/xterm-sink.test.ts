@@ -39,7 +39,9 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 interface MockTerminal {
   options: { fontSize: number; theme: object; [k: string]: unknown };
-  loaded: { addon: unknown; opened: boolean; allowProposedApi: unknown }[];
+  loaded: { addon: unknown; opened: boolean; cursorStyle: unknown }[];
+  unicodeProviders: Map<string, unknown>;
+  activeUnicode: string;
   element: HTMLElement | undefined;
   open: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
@@ -79,8 +81,25 @@ vi.mock("@xterm/xterm", () => {
     options: { fontSize: number; theme: object; [k: string]: unknown };
     opened = false;
     element: HTMLElement | undefined;
-    loaded: { addon: unknown; opened: boolean; allowProposedApi: unknown }[] =
-      [];
+    loaded: { addon: unknown; opened: boolean; cursorStyle: unknown }[] = [];
+    unicodeProviders = new Map<string, unknown>();
+    activeUnicode = "6";
+    // As xterm does: the Unicode API is proposed, refused without
+    // allowProposedApi, and only a registered version may be made active.
+    get unicode() {
+      if (this.options.allowProposedApi !== true) {
+        throw new Error("You must set the allowProposedApi option");
+      }
+      const providers = this.unicodeProviders;
+      const set = (v: string) => (this.activeUnicode = v);
+      return {
+        register: (p: { version: string }) => providers.set(p.version, p),
+        set activeVersion(v: string) {
+          if (!providers.has(v)) throw new Error(`unknown version ${v}`);
+          set(v);
+        },
+      };
+    }
     // As xterm does: the terminal's element holds its screen.
     open = vi.fn<(el: HTMLElement) => void>((container) => {
       this.opened = true;
@@ -103,7 +122,7 @@ vi.mock("@xterm/xterm", () => {
       this.loaded.push({
         addon,
         opened: this.opened,
-        allowProposedApi: this.options.allowProposedApi,
+        cursorStyle: this.options.cursorStyle,
       });
       addon.activate(this);
     }
@@ -128,6 +147,7 @@ vi.mock("@xterm/xterm", () => {
 
 // Import AFTER vi.mock so the mocked Terminal is used.
 import { XtermSink } from "../../../src/window-terminal/render/xterm-sink.js";
+import { TMUX_CELLS } from "../../../src/window-terminal/render/tmux-cells.js";
 import { DEFAULT_FONT_FAMILY } from "../../../src/window-terminal/render/xterm-options.js";
 
 // ---------------------------------------------------------------------------
@@ -591,13 +611,12 @@ describe("XtermSink: in-place option setters (O10)", () => {
     const addons = vi.fn(() => [a, b]);
     new XtermSink({
       container: makeContainer(),
-      xterm: { allowProposedApi: true, cursorStyle: "bar" },
+      xterm: { cursorStyle: "bar" },
       addons,
     });
     const term = lastTerm;
     if (term === null) throw new Error("Terminal mock not constructed");
     expect(term.options).toMatchObject({
-      allowProposedApi: true,
       cursorStyle: "bar",
       // The terminal's own choices beside the host's.
       fontFamily: DEFAULT_FONT_FAMILY,
@@ -605,9 +624,17 @@ describe("XtermSink: in-place option setters (O10)", () => {
     });
     expect(addons).toHaveBeenCalledOnce();
     expect(term.loaded).toEqual([
-      { addon: a, opened: true, allowProposedApi: true },
-      { addon: b, opened: true, allowProposedApi: true },
+      { addon: a, opened: true, cursorStyle: "bar" },
+      { addon: b, opened: true, cursorStyle: "bar" },
     ]);
+  });
+
+  it("counts a character's cells as tmux does, with no option or addon from the host", () => {
+    new XtermSink({ container: makeContainer() });
+    const term = lastTerm;
+    if (term === null) throw new Error("Terminal mock not constructed");
+    expect(term.activeUnicode).toBe(TMUX_CELLS.version);
+    expect(term.unicodeProviders.get(TMUX_CELLS.version)).toBe(TMUX_CELLS);
   });
 
   it("an addon that throws leaves no open terminal, and the addons not yet loaded are released", () => {

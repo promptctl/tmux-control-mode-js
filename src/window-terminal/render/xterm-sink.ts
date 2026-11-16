@@ -53,6 +53,7 @@ import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
 import type { CellRenderer } from "../sizing/cell-metrics.js";
+import { TMUX_CELLS } from "./tmux-cells.js";
 
 const utf8Encoder = new TextEncoder();
 
@@ -135,6 +136,8 @@ export class XtermSink implements TerminalSink {
     this.terminal = new Terminal({
       ...TERMINAL_DEFAULTS,
       convertEol: false,
+      // The Unicode provider below is xterm's proposed API.
+      allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
       scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
@@ -146,6 +149,10 @@ export class XtermSink implements TerminalSink {
     //   constructed, so it supplies each reset value; the terminal keeps no
     //   table of xterm's defaults.
     this.base = { ...this.terminal.options };
+    // [LAW:single-enforcer] A character's cells are counted as tmux counts
+    //   them, in every pane, before a byte is written.
+    this.terminal.unicode.register(TMUX_CELLS);
+    this.terminal.unicode.activeVersion = TMUX_CELLS.version;
     // The sink owns the terminal and every addon the factory made. If any
     // step throws, the terminal (and with it each addon xterm took, the one
     // whose activate threw included) and the addons it never took are
@@ -153,8 +160,7 @@ export class XtermSink implements TerminalSink {
     let addons: readonly ITerminalAddon[] = [];
     let taken = 0;
     try {
-      // Before the addons load: one may need an option (Unicode 11 needs
-      // `allowProposedApi`).
+      // Before the addons load: one may need an option.
       this.setOptions(opts.xterm ?? {});
       this.terminal.open(this.container);
       const screen = this.terminal.element?.querySelector(".xterm-screen");

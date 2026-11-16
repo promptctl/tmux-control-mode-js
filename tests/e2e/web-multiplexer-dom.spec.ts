@@ -8,8 +8,8 @@
 //   2. ANSI foreground escapes produce styled spans in the DOM
 //   3. carriage-return overwrite renders correctly
 //   4. the host's xterm options and addons reach the panes: an OSC 8 link
-//      with a custom scheme reaches its link handler, and Unicode 11's
-//      widths are tmux's
+//      with a custom scheme reaches its link handler
+//   5. a character takes the cells tmux counts, with nothing from the host
 //
 // All three categories are from IMPL §11.3. The original §11.3 catalog
 // listed these as "Playwright + xterm.js" because they can only be
@@ -293,17 +293,18 @@ test("an OSC 8 link with a custom scheme calls the page's link handler with its 
   }
 });
 
-test("an emoji takes two cells, as tmux counts it, with Unicode 11 loaded", async () => {
+test("an emoji with VS16 takes two cells, as tmux counts it, with no addon from the host", async () => {
   const handle = await launchApp();
   try {
     const { page } = handle;
     const SENTINEL = `W${Date.now().toString(36).toUpperCase()}`;
     const textarea = page.locator(".xterm-helper-textarea").first();
     await textarea.focus();
-    // U+1F600 (UTF-8 F0 9F 98 80), then the sentinel in red: under xterm's
-    // default Unicode 6 table the emoji is one cell, under Unicode 11 two.
+    // U+26A0 U+FE0F (UTF-8 E2 9A A0 EF B8 8F), then the sentinel in red:
+    // tmux counts the warning sign with VS16 two cells, where xterm's own
+    // tables (Unicode 6, or 11 from its addon) count one.
     await textarea.pressSequentially(
-      `printf '\\360\\237\\230\\200\\033[31m${SENTINEL}\\033[0m\\n'\n`,
+      `printf '\\342\\232\\240\\357\\270\\217\\033[31m${SENTINEL}\\033[0m\\n'\n`,
       { delay: 10 },
     );
     const red = page

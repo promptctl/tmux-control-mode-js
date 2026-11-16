@@ -8,6 +8,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `xterm.allowProposedApi` (`./window-terminal`) is the terminal's: a pane
+  counts cells through xterm.js's proposed Unicode API, so it is always on,
+  and a host that passes it gets a `RangeError`. A host that loaded
+  `@xterm/addon-unicode11` for emoji widths drops it, and the option with it.
+
 - `decodePaneOutput` (`./websocket`) returns `OutputMessage`, and a frame
   with any flags bit set throws `BridgeProtocolError`. It used to accept an
   "extended" frame carrying an `age` that `encodePaneOutput` never wrote, so
@@ -17,6 +22,12 @@ All notable changes to this project are documented here. Format follows
   `OutputMessage` and `ExtendedOutputMessage` already are.
 
 ### Fixed
+
+- A pane counts a character's cells as tmux does, with nothing from the host:
+  an emoji two, a character with VS16 two (⚠️), an emoji newer than Unicode
+  11 two, and a ZWJ sequence, a skin tone or a flag one character. Before,
+  xterm.js's Unicode 6 table counted an emoji one cell, and whatever followed
+  it on the line drew a cell left of where tmux had it.
 
 - `./window-terminal`: a host that loads a renderer addon (`@xterm/addon-webgl`,
   the canvas addon) through `addons` gets panes laid out in the cell that
