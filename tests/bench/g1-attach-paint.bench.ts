@@ -28,48 +28,22 @@
 // Skipped without TMUX_INTEGRATION=1.
 
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
-import { execSync } from "node:child_process";
-import { spawnTmux, TmuxClient } from "../../src/index.js";
+import type { TmuxClient } from "../../src/index.js";
 import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import type {
   TerminalSink,
   SeedCursor,
 } from "../../src/window-terminal/engine/terminal-sink.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import {
+  attachSession,
+  uniqueName,
+  uniqueSocket,
+} from "../helpers/integration.js";
 
 const P99_BUDGET_MS = 100;
 const ITERATIONS = 50; // Real tmux RTT × 50 keeps the bench under ~3 s wall time.
 const integrationOn = process.env.TMUX_INTEGRATION === "1";
-
-function uniqueSocket(): string {
-  return `tmux-js-g1-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-function uniqueSession(): string {
-  return `g1-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-function tmuxCmd(socket: string, args: string): string {
-  return `tmux -L ${socket} ${args}`;
-}
-function killServer(socket: string): void {
-  killTmuxServer(socket);
-}
-
-function createSession(socket: string, session: string): Promise<TmuxClient> {
-  execSync(tmuxCmd(socket, `new-session -d -s ${session} -x 80 -y 24`), {
-    stdio: "ignore",
-  });
-  const transport = spawnTmux(["attach-session", "-t", session], {
-    socketPath: socket,
-  });
-  const client = new TmuxClient(transport);
-  return new Promise<TmuxClient>((resolve) => {
-    const handler = (): void => {
-      client.off("session-changed", handler);
-      resolve(client);
-    };
-    client.on("session-changed", handler);
-  });
-}
 
 async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
   const r = await client.execute("display-message -p '#{pane_id}'");
@@ -119,7 +93,7 @@ describe.skipIf(!integrationOn)(
     // Initialise to a sentinel so a beforeEach that throws BEFORE the
     // socket assignment doesn't make afterEach run teardown against a
     // socket literally named "undefined" (an unrelated, real tmux server
-    // if one happens to exist under that name). Today `uniqueSocket()`
+    // if one happens to exist under that name). Today `uniqueSocket(...)`
     // can't fail, but a future edit that slips a throwing line above it
     // would expose this footgun without the sentinel.
     let socket = "";
@@ -128,15 +102,17 @@ describe.skipIf(!integrationOn)(
     let paneId: number;
 
     beforeEach(async () => {
-      socket = uniqueSocket();
-      session = uniqueSession();
-      client = await createSession(socket, session);
+      socket = uniqueSocket("tmux-js-bench-", "g1");
+      session = uniqueName("g1");
+      client = await attachSession(socket, session, {
+        newSessionFlags: ["-x", "80", "-y", "24"],
+      });
       paneId = await getPrimaryPaneId(client);
     });
 
     afterEach(() => {
       client?.close();
-      if (socket !== "") killServer(socket);
+      if (socket !== "") killTmuxServer(socket);
     });
 
     it(`p99 attach → first sink seed < ${P99_BUDGET_MS}ms across ${ITERATIONS} iterations`, async () => {

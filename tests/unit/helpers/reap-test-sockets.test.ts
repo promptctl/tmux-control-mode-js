@@ -97,7 +97,7 @@ describe("reapTestSockets", () => {
       "tmux-js-conf-session-1782133005851-kkh3i",
       "tmux-js-pstream-ps-1782133005851-kkh3i",
       "tmux-line-test-format-1782133005851-kkh3i",
-      "tmux-js-demo-bench-1782133005851-kkh3i",
+      "tmux-js-bench-g1-1782133005851-kkh3i",
     ];
     const foreignSockets = [
       "default",

@@ -38,7 +38,7 @@ export const TEST_SOCKET_PREFIXES = [
   "tmux-idle-test-",
   "tmux-bridge-test-",
   "tmux-bytes-sink-test-",
-  "tmux-js-demo-bench-",
+  "tmux-js-bench-",
 ] as const;
 
 // Pure predicate — the one place "is this ours to reap?" is decided.
