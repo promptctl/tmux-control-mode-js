@@ -34,18 +34,25 @@ export interface SeedCursor {
   readonly row: number;
 }
 
+/** A pane's size in cells, as tmux reports it (`pane_width`, `pane_height`). */
+export interface PaneSize {
+  readonly cols: number;
+  readonly rows: number;
+}
+
 /**
  * Renderer-side seam consumed by `PaneStream`.
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.resize(cols, rows)      (if the size is known)
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (the size the seed was
+ *                                                          captured at, if known)
  *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
  *                                                          the live bytes
  *                                                          captured behind it)
  *   then, interleaved:      sink.write(data)             (live byte stream)
  *                           sink.resize(cols, rows)      (layout changes)
- *                           sink.seed(...)               (each recapture)
+ *                           sink.resize + sink.seed      (each recapture)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
@@ -113,8 +120,10 @@ export interface TerminalSink {
 
   /**
    * Apply the current pane geometry, as tmux (the size authority) reported
-   * it: at attach when the stream already knows the size, and on each
-   * `subscription-changed` for this pane while attached.
+   * it: before each seed, with the size that seed was captured at, and on
+   * each `subscription-changed` for this pane while attached. A seed is drawn
+   * at the size the sink was last given, so it lands at tmux's size from its
+   * first frame.
    */
   resize(cols: number, rows: number): void;
 

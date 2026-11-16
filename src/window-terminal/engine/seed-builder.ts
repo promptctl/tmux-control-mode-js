@@ -4,7 +4,8 @@
 // `capture-pane` output, the `display-message` state reply, and the requested
 // scrollback depth, it produces the exact byte sequence (`captured`) plus
 // cursor position (`cursor`) a `TerminalSink.seed()` replays to paint a freshly
-// attached pane so its cursor and viewport line up with tmux's grid.
+// attached pane so its cursor and viewport line up with tmux's grid, and the
+// pane size (`size`) the grid was captured at.
 //
 // [LAW:decomposition] This is a tmux-specific grid algorithm — flag→escape
 //   selection, blank-row padding, DEC private-mode synthesis, Latin-1→bytes.
@@ -15,15 +16,17 @@
 //   (the RPCs that produce the inputs, the sink.seed() that consumes the
 //   output, the lastSeed cache) stays in PaneStream at the boundary.
 
-import type { SeedCursor } from "./terminal-sink.js";
+import type { PaneSize, SeedCursor } from "./terminal-sink.js";
 
 /**
- * The replayable snapshot of a pane: the raw seed bytes plus the cursor to home
- * to after writing them. Also the shape PaneStream caches for re-attach.
+ * The replayable snapshot of a pane: the raw seed bytes, the cursor to home
+ * to after writing them, and the pane size they were captured at (`null` when
+ * tmux did not report one). Also the shape PaneStream caches for re-attach.
  */
 export interface Seed {
   readonly captured: Uint8Array;
   readonly cursor: SeedCursor | null;
+  readonly size: PaneSize | null;
 }
 
 /**
@@ -43,7 +46,7 @@ export function buildSeed(
   stateLine: string,
   historyLines: number,
 ): Seed {
-  const { cursor, height, historySize, preamble, epilogue } =
+  const { cursor, size, height, historySize, preamble, epilogue } =
     parseSeedState(stateLine);
 
   // [LAW:dataflow-not-control-flow] The cursor lands correctly by making the
@@ -89,7 +92,7 @@ export function buildSeed(
   // mode escapes are ASCII, so they encode 1:1.
   const captured = latin1ToBytes(preamble + screen + epilogue);
 
-  return { captured, cursor };
+  return { captured, cursor, size };
 }
 
 // ---------------------------------------------------------------------------
@@ -108,6 +111,7 @@ function latin1ToBytes(s: string): Uint8Array {
 
 interface SeedState {
   readonly cursor: SeedCursor | null;
+  readonly size: PaneSize | null;
   /** Visible grid height (`pane_height`); `NaN` if tmux didn't report it. */
   readonly height: number;
   /** Scrollback line count (`history_size`); `NaN` if not reported. */
@@ -129,6 +133,12 @@ function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
   return flag === "1" ? onSeq : offSeq;
 }
 
+// A numeric field of the reply; NaN when it is missing or empty, since
+// Number("") is 0.
+function num(field: string | undefined): number {
+  return field === undefined || field === "" ? NaN : Number(field);
+}
+
 const ESC = "\x1b";
 // The clear every seed starts with, after the screen-buffer switch:
 //   - DECSTBM reset: under a scroll region left by the live stream, the rows
@@ -146,9 +156,7 @@ const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
 // or not an integer leaves the region as the clear set it, like mode(): an
 // escape built from it would print as text.
 function region(upper: string | undefined, lower: string | undefined): string {
-  const [top, bottom] = [upper, lower].map((v) =>
-    v === undefined || v === "" ? NaN : Number(v),
-  );
+  const [top, bottom] = [num(upper), num(lower)];
   return Number.isInteger(top) && Number.isInteger(bottom)
     ? `${ESC}[${top + 1};${bottom + 1}r`
     : "";
@@ -157,28 +165,26 @@ function region(upper: string | undefined, lower: string | undefined): string {
 function parseSeedState(line: string): SeedState {
   // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
   // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag;pane_height;
-  // history_size;scroll_region_upper;scroll_region_lower. cursor_x/y and the
-  // region rows are 0-indexed; the mode flags are 0/1; pane_height and
-  // history_size are grid dimensions.
+  // history_size;scroll_region_upper;scroll_region_lower;pane_width.
+  // cursor_x/y and the region rows are 0-indexed; the mode flags are 0/1;
+  // pane_width, pane_height and history_size are grid dimensions.
   const f = line.split(";");
-  const cx = Number(f[0]);
-  const cy = Number(f[1]);
-  // Both coordinate fields must be present: Number("") is 0, so a missing
-  // cursor_y (e.g. "5;") would otherwise pass Number.isInteger and emit a
-  // bogus {col:5,row:0}, misplacing the CUP.
+  const cx = num(f[0]);
+  const cy = num(f[1]);
   const cursor =
-    f[0] !== undefined &&
-    f[0] !== "" &&
-    f[1] !== undefined &&
-    f[1] !== "" &&
-    Number.isInteger(cx) &&
-    Number.isInteger(cy)
-      ? { col: cx, row: cy }
-      : null;
+    Number.isInteger(cx) && Number.isInteger(cy) ? { col: cx, row: cy } : null;
   // NaN when absent (e.g. a fake/older tmux) — the seed normalization treats
   // NaN as "skip", degrading to the strip-only behaviour rather than padding.
-  const height = f[8] !== undefined && f[8] !== "" ? Number(f[8]) : NaN;
-  const historySize = f[9] !== undefined && f[9] !== "" ? Number(f[9]) : NaN;
+  const height = num(f[8]);
+  const historySize = num(f[9]);
+  const width = num(f[12]);
+  const size =
+    Number.isInteger(width) &&
+    width > 0 &&
+    Number.isInteger(height) &&
+    height > 0
+      ? { cols: width, rows: height }
+      : null;
 
   // Before content: establish the correct screen buffer, clear it, then set
   // autowrap — all of which affect how screen content lays out.
@@ -205,5 +211,5 @@ function parseSeedState(line: string): SeedState {
     mode(f[5], `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM application cursor keys
     mode(f[6], `${ESC}=`, `${ESC}>`); // DECKPAM/DECKPNM keypad mode
 
-  return { cursor, height, historySize, preamble, epilogue };
+  return { cursor, size, height, historySize, preamble, epilogue };
 }

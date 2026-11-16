@@ -84,6 +84,15 @@ All notable changes to this project are documented here. Format follows
   had not drained. `close()` releases the proxy's own subscriptions, size
   claims and unacked bytes, and nothing of the others'.
 
+- `./window-terminal`: a pane draws at tmux's size from its first frame, even
+  when tmux has not reported its size. tmux reports a pane's size only when
+  it changes, so a pane that never resized got no size, and its `XtermSink`
+  held the seed and every byte behind it. Each seed now carries the size it
+  was captured at, and `PaneStream` hands it to the sink just before the
+  seed. `XtermSink` no longer holds anything back: `resize()`, `seed()` and
+  `write()` reach xterm.js when they are called, so a host driving one
+  directly sizes it before writing.
+
 - `./window-terminal`: a pane's scrollback holds its history once, however
   often it is captured again. Each resize, `%continue` or reconnect wrote
   the history in again under what was already there, so a pane resized

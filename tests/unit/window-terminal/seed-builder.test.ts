@@ -70,6 +70,18 @@ describe("buildSeed: cursor parse", () => {
   });
 });
 
+describe("buildSeed: pane size", () => {
+  it("reads pane_width and pane_height into the size the seed is drawn at", () => {
+    const { size } = buildSeed([], "0;0;0;1;0;0;0;1;24;0;0;23;80", 0);
+    expect(size).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it("returns null when tmux reported no pane_width", () => {
+    const { size } = buildSeed([], "0;0;0;1;0;0;0;1;24;0;0;23", 0);
+    expect(size).toBeNull();
+  });
+});
+
 describe("buildSeed: row-exact normalization", () => {
   it("pads trailing blank rows up to history+height so the grid is exact", () => {
     // pane_height=8, history_size=0, all modes 0. Two content rows → 6 padded

@@ -991,6 +991,37 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
     b.dispose();
   });
 
+  // State line with pane_height 24, history_size 0, a full-screen scroll
+  // region and pane_width 80.
+  const SIZED = "0;0;0;1;0;0;0;1;24;0;0;23;80";
+
+  it("gives the sink the seed's size before the seed, with no size report", async () => {
+    // tmux reports a size only when it changes, so a pane that never resizes
+    // never reports one: the seed carries the size it was captured at.
+    const { stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(sink.events[0]).toBe("resize(80x24)");
+    expect(sink.events[1]).toMatch(/^seed/);
+    stream.dispose();
+  });
+
+  it("recaptures on a size report only when it differs from the seed's size", async () => {
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
   it("subscribes through the connection's subscription methods", () => {
     const client = new FakeTmuxClient();
     const spy = vi.spyOn(client, "subscribeRaw");
