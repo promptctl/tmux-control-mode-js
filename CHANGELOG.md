@@ -23,12 +23,22 @@ All notable changes to this project are documented here. Format follows
 
 - `./electron`: main replies to an invoke on `IPC.event`, as an
   `InvokeReplyMessage`, so the reply follows every event sent before it.
-  `IpcRendererLike.invoke` takes one `InvokeCall` (`{ id, request }`) and
-  resolves to an `InvokeReturn`. A preload that forwards
+  `IpcRendererLike.invoke` takes one `InvokeCall` (`{ proxy, id, request }`)
+  and resolves to an `InvokeReturn`. A preload that forwards
   `invoke(channel, arg)` as is keeps working. A custom `IpcRendererLike` that
   answers invokes itself, such as a test fake, returns
   `{ via: "invoke", result }`. Main and renderer must come from the same
   version.
+- `./electron`: each `TmuxClientProxy` is its own peer in main, named by a
+  `ProxyId` it picks. `IPC.event` carries an `AddressedEvent`
+  (`{ to, msg }`), and the proxy named takes it; `IpcRendererLike.send`
+  names the proxy sending (`send(IPC.register, proxy)`,
+  `send(IPC.ack, proxy, ack)`). A preload that forwards a listener's one
+  argument and `send`'s arguments as is keeps working; a hand-written
+  `IpcRendererLike` or `WebContentsLike` takes the new shapes.
+- `./electron/main` no longer exports `WebContentsSink` or
+  `attachWebContentsSink`. Their bytes went to the page unaddressed, which
+  no proxy takes now, and main never gives a host a proxy's address.
 - `./window-terminal`: a `TerminalConnection` must emit each command's
   `begin` event in tmux's order with the pane bytes, before the command's
   reply resolves. `TmuxClient`, `WebSocketTmuxClient` and the Electron
@@ -43,6 +53,14 @@ All notable changes to this project are documented here. Format follows
 - `Outcome` is exported from `./browser`, as from the root entry.
 
 ### Fixed
+
+- `./electron`: proxies on one page no longer share what they hold.
+  Closing one left the page's other proxies deaf to every event, so a
+  `PaneStream` over one failed every seed; one proxy's `unsubscribe` ended a
+  subscription another still held; a new proxy made every proxy on the page
+  bootstrap again; and the fastest proxy's acks resumed a pane a slower one
+  had not drained. `close()` releases the proxy's own subscriptions, size
+  claims and unacked bytes, and nothing of the others'.
 
 - `./window-terminal`: a pane seeded while its program prints draws each
   line once. Every byte that reached the client during the capture was

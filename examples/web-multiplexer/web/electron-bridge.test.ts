@@ -25,6 +25,7 @@ import type {
   IpcRendererLike,
   IpcRendererEventLike,
   IpcRendererOnListener,
+  ProxyId,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { IPC } from "../../../src/connectors/electron/types.ts";
@@ -79,14 +80,17 @@ function connectedBridge(
   fromMain(msg: IpcEventMessage): void;
 } {
   const listeners: IpcRendererOnListener[] = [];
+  // The one proxy's address, as its register names it.
+  let to: ProxyId | undefined;
   const fromMain = (msg: IpcEventMessage): void =>
-    listeners.forEach((l) => l({} as IpcRendererEventLike, msg));
+    listeners.forEach((l) => l({} as IpcRendererEventLike, { to: to!, msg }));
   const ipc: IpcRendererLike = {
     invoke: (_channel, { id }) => {
       fromMain({ type: "invoke-reply", id, result: envelope });
       return Promise.resolve({ via: "event" });
     },
-    send: (channel) => {
+    send: (channel: string, proxy: ProxyId) => {
+      to = proxy;
       if (channel === IPC.register) onRegister.forEach(fromMain);
     },
     on: (_channel, listener) => listeners.push(listener),

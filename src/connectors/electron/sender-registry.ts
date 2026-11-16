@@ -1,84 +1,85 @@
 // src/connectors/electron/sender-registry.ts
-// [LAW:decomposition] The set of registered renderers and their per-sender
-// lifecycle, extracted from createMainBridge. Owns the senders Map, each
-// SenderState, the per-renderer byte forwarder, subscription gating, and the
-// event fan-out over senders. The wiring shell holds no sender state.
+// [LAW:decomposition] The pages that talk to main, the proxies on each, and
+// each proxy's lifecycle, extracted from createMainBridge. Owns the pages
+// Map, each proxy's ProxyPeer, its byte forwarder, event gating, and the event
+// fan-out. The wiring shell holds no sender state.
 //
-// [LAW:one-source-of-truth] One SenderState entry per page a WebContents shows,
-// and one `Peer` token per page registered with the shared BridgeConnection
-// helper. A page ends when its WebContents is destroyed, navigates to a new
-// document, or loses its renderer process; `teardown` is the only path that
-// releases both — subscription refcount, size claim, outstanding-byte
-// accounting, byte forwarder, and page-end listeners all drop together, in one
-// place.
+// [LAW:one-source-of-truth] One `Peer` per proxy, registered with the shared
+// BridgeConnection helper — the proxy is what a renderer opens and closes,
+// as a socket is on the WebSocket connector, so subscriptions, size claims
+// and outstanding bytes are each proxy's own. A proxy's peer ends when it
+// unregisters or when its page ends: its WebContents is destroyed, navigates
+// to a new document, or loses its renderer process. `release` is the only
+// path that drops a peer — subscription refcount, size claim, outstanding-byte
+// accounting and byte forwarder go together, in one place.
 //
 // [LAW:one-way-deps] This module knows nothing about the invoke pipeline. It
-// defines the per-sender record — including the `pending` set of in-flight
-// invoke abort-flags — and flags them on teardown; the pipeline populates that
+// defines the per-proxy record — including the `pending` set of in-flight
+// invoke abort-flags — and flags them on release; the pipeline populates that
 // set through `getOrCreate`. The dependency runs one way (pipeline → registry),
-// and there is exactly one per-renderer record, so nothing can drift.
+// and there is exactly one record per proxy, so nothing can drift.
 
 import type { TmuxClient } from "../../client.js";
 import type { EmitterMessage } from "../../emitter.js";
-import { serverScope, type BytesSink } from "../../pane-output.js";
+import { serverScope } from "../../pane-output.js";
 import type { BridgeConnection, Peer } from "../bridge-connection.js";
 import {
   IPC,
   PAGE_END_EVENTS,
   parseAckMessage,
+  parseProxyId,
   type IpcMainEventLike,
+  type ProxyId,
   type WebContentsLike,
   type WebFrameLike,
 } from "./types.js";
-import { WebContentsSink } from "./sink.js";
-
-// ---------------------------------------------------------------------------
-// Per-sender state.
-//
-// Subscription ownership, refcount, and outstanding-byte accounting all live
-// inside the shared BridgeConnection helper, keyed by the `peer` token below.
-// SenderState carries only what is electron-specific: the WebContents, the
-// page-end listener handle, the isSubscribed flag that gates event forwarding,
-// and the in-flight invoke abort-flags. The invoke pipeline creates the
-// PendingDispatch objects and owns their lifecycle; this record is where they
-// live and where teardown flags them, so there is one place a sender's fate is
-// decided.
-// ---------------------------------------------------------------------------
 
 /**
  * The abort channel for one in-flight invoke. The invoke pipeline creates it,
- * adds it to the owning sender's `pending` set, and reads `aborted` after its
- * dispatch await resolves. `SenderRegistry.teardown` flips it when the sender
- * dies mid-flight, so the pipeline returns a BRIDGE_ABORTED envelope instead of
- * delivering a result to a dead webContents.
+ * adds it to the calling proxy's `pending` set, and reads `aborted` after its
+ * dispatch await resolves. `SenderRegistry` flips it when the proxy's peer is
+ * released mid-flight, so the pipeline returns a BRIDGE_ABORTED envelope
+ * instead of delivering a result to a proxy that is gone.
  */
 export interface PendingDispatch {
   aborted: boolean;
 }
 
-export interface SenderState {
+/**
+ * Main's side of one renderer proxy. Subscription ownership, refcount and
+ * outstanding-byte accounting live inside the BridgeConnection helper, keyed
+ * by `peer`; this record carries only what is electron-specific.
+ */
+export interface ProxyPeer {
+  /** The WebContents showing the proxy's page. */
   readonly wc: WebContentsLike;
-  /** Token returned by BridgeConnection.registerPeer — the Map key the helper
-   *  uses internally for refcount + outstanding-byte accounting. */
+  /** The proxy's address; every message main sends it names this. */
+  readonly id: ProxyId;
+  /** Token returned by BridgeConnection.registerPeer. */
   readonly peer: Peer;
-  /** True once the page has sent IPC.register; a sender an invoke created
-   *  gets no events until then. */
-  isSubscribed: boolean;
+  /** In-flight invoke dispatches the proxy made. The pipeline adds/removes
+   *  entries; release flags them all aborted. */
+  readonly pending: Set<PendingDispatch>;
   /**
-   * The exact listeners registered on `wc`: `onPageEnd` with `once` for every
-   * PAGE_END_EVENTS entry, `onLoadFailed` with `on` for `did-fail-load`.
-   * Stored so `teardown` can call `wc.removeListener` for the ones still
-   * attached — otherwise a listener stays on a still-alive emitter and tears
-   * down the NEXT page's sender when it fires.
+   * Disposer for the proxy's byte forwarder, attached by IPC.register. A
+   * proxy whose invoke landed before its register has none yet, and hears
+   * no events until it registers.
+   */
+  detachBytes: (() => void) | null;
+}
+
+/** A page a WebContents shows, and the proxies on it. */
+interface PageState {
+  /**
+   * The exact listeners registered on the WebContents: `onPageEnd` with
+   * `once` for every PAGE_END_EVENTS entry, `onLoadFailed` with `on` for
+   * `did-fail-load`. Stored so `teardown` can call `wc.removeListener` for
+   * the ones still attached — otherwise a listener stays on a still-alive
+   * emitter and tears down the NEXT page when it fires.
    */
   readonly onPageEnd: () => void;
   readonly onLoadFailed: () => void;
-  /** In-flight invoke dispatches owned by this sender. The pipeline adds/removes
-   *  entries; teardown flags them all aborted. */
-  readonly pending: Set<PendingDispatch>;
-  /** Disposer for this renderer's per-peer byte forwarder sink. Null before
-   * the first IPC.register call; set once and cleared on teardown. */
-  detachBytes: (() => void) | null;
+  readonly proxies: Map<ProxyId, ProxyPeer>;
 }
 
 export interface SenderRegistryDeps {
@@ -120,143 +121,152 @@ function senderFrame(event: IpcMainEventLike): WebFrameLike {
  * Whether `event` was sent by the page its WebContents shows now.
  *
  * [LAW:single-enforcer] The one test every renderer message passes before it
- * touches a sender. A page that has ended can still have messages in flight:
- * an invoke the old page queued may land after `did-navigate` tore its sender
+ * touches a page. A page that has ended can still have messages in flight:
+ * an invoke the old page queued may land after `did-navigate` tore its page
  * down. When the navigation reused the frame host, Chromium delivers the old
  * document's IPC before the commit that fires `did-navigate`, so it reached
- * the old sender; when it swapped hosts, the old host's ids no longer match
+ * the old page; when it swapped hosts, the old host's ids no longer match
  * `mainFrame`. The new document's first IPC arrives after `did-navigate`, so
- * it opens a fresh sender. (`WebFrameMain` object identity is no test: before
+ * it opens a fresh page. (`WebFrameMain` object identity is no test: before
  * Electron 34 one object follows the frame across host swaps.) Messages from
- * subframes fail too — a page has one peer, its main frame's.
+ * subframes fail too — `wc.send` reaches only the main frame's document.
  */
 function sentByLivePage(event: IpcMainEventLike): boolean {
   return showsFrame(event.sender, senderFrame(event));
 }
 
 export class SenderRegistry {
-  private readonly senders = new Map<WebContentsLike, SenderState>();
+  private readonly pages = new Map<WebContentsLike, PageState>();
 
   constructor(private readonly deps: SenderRegistryDeps) {}
 
   /**
-   * The SenderState for the page that sent `event`, creating it (and
-   * registering its peer + page-end handler) on first sight. Called by both
-   * `register` and the invoke pipeline, so a renderer that only ever invoke()s
-   * — never register()s — still cleans up when its page ends.
+   * The ProxyPeer for proxy `proxy` on the page that sent `event`, creating
+   * it (and its page, with the page-end handlers) on first sight. Called by
+   * both `register` and the invoke pipeline, since a proxy's first invoke can
+   * land before its register.
    *
    * [LAW:types-are-the-program] [LAW:no-silent-failure] Returns `undefined`
    * when the sending page has ended (see sentByLivePage): its page-end event
-   * has already fired, so a fresh peer would never be torn down — or, after a
+   * has already fired, so a fresh peer would never be released — or, after a
    * navigation, would be inherited by the next page. Callers abort instead of
    * billing a peer and running a real command for a page that is gone.
    */
-  getOrCreate(event: IpcMainEventLike): SenderState | undefined {
+  getOrCreate(event: IpcMainEventLike, proxy: ProxyId): ProxyPeer | undefined {
     if (!sentByLivePage(event)) return undefined;
     const wc = event.sender;
-    const existing = this.senders.get(wc);
+    const page = this.pages.get(wc) ?? this.openPage(event);
+    const existing = page.proxies.get(proxy);
     if (existing !== undefined) return existing;
-    const page = senderFrame(event);
-    // [LAW:single-enforcer] One set of page listeners per sender, stored on
-    // the sender so `teardown` can detach the ones still attached.
+    const state: ProxyPeer = {
+      wc,
+      id: proxy,
+      peer: this.deps.bridge.registerPeer(),
+      pending: new Set(),
+      detachBytes: null,
+    };
+    page.proxies.set(proxy, state);
+    return state;
+  }
+
+  private openPage(event: IpcMainEventLike): PageState {
+    const wc = event.sender;
+    const frame = senderFrame(event);
+    // [LAW:single-enforcer] One set of page listeners per page, stored on it
+    // so `teardown` can detach the ones still attached.
     const onPageEnd = (): void => this.teardown(wc);
     // A failed main-frame load that commits an error page moves the main
     // frame to another host (Chromium isolates main-frame error pages); a
     // subframe's failure leaves the page shown. Comparing hosts asks the
     // question directly instead of reading `did-fail-load`'s arguments.
     const onLoadFailed = (): void => {
-      if (!showsFrame(wc, page)) this.teardown(wc);
+      if (!showsFrame(wc, frame)) this.teardown(wc);
     };
-    const peer = this.deps.bridge.registerPeer();
-    const state: SenderState = {
-      wc,
-      peer,
-      isSubscribed: false,
-      onPageEnd,
-      onLoadFailed,
-      pending: new Set(),
-      detachBytes: null,
-    };
-    this.senders.set(wc, state);
+    const page: PageState = { onPageEnd, onLoadFailed, proxies: new Map() };
+    this.pages.set(wc, page);
     for (const e of PAGE_END_EVENTS) wc.once(e, onPageEnd);
     wc.on("did-fail-load", onLoadFailed);
-    return state;
+    return page;
   }
 
   /**
-   * Handle a renderer's IPC.register: mark it subscribed, attach the per-peer
-   * byte forwarder exactly once, and send the current connection-state snapshot
-   * so a late-joining renderer has the lifecycle state immediately.
+   * Handle a proxy's IPC.register: attach its byte forwarder, and send it the
+   * current connection-state snapshot so a late-joining proxy has the
+   * lifecycle state immediately.
    */
-  register(event: IpcMainEventLike): void {
-    const state = this.getOrCreate(event);
-    // [LAW:no-silent-failure] exception: a register not sent by the page shown
-    // (it has ended, or a subframe sent it) has no one to answer — `wc.send`
-    // reaches only the main frame's document.
+  register(event: IpcMainEventLike, rawProxy: unknown): void {
+    const proxy = parseProxyId(rawProxy);
+    // [LAW:no-silent-failure] exception: a register naming no proxy has no
+    // one to answer, and neither has one not sent by the page shown (it has
+    // ended, or a subframe sent it) — `wc.send` reaches only the main frame's
+    // document.
+    if (proxy === null) return;
+    const state = this.getOrCreate(event, proxy);
     if (state === undefined) return;
-    const wc = state.wc;
-    state.isSubscribed = true;
-    // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
-    // exactly once per registration. Each renderer's sink is the routing
-    // primitive — the substrate's SinkRegistry.dispatch fans out; no per-chunk
-    // broadcast loop exists in the bridge. [LAW:one-source-of-truth]
-    if (state.detachBytes === null) {
-      // [LAW:one-source-of-truth] The IPC envelope shaping (ChunkPayload →
-      // OutputMessage) and wire send live solely in WebContentsSink.write;
-      // this internal sink wraps that one forwarder and adds backpressure
-      // accounting. Previously both paths hand-built the envelope and could
-      // silently diverge.
-      const forwarder = new WebContentsSink(wc);
-      const rendererSink: BytesSink = {
-        write: (msg): void => {
-          // [LAW:no-defensive-null-guards] Trust-boundary guard gating the
-          // accounting: never bill a renderer whose WebContents Electron has
-          // already destroyed (a stray account could pause a pane that never
-          // acks). The send-side lifecycle guard is WebContentsSink's own.
+    const { wc, id: to } = state;
+    // [LAW:dataflow-not-control-flow] One forwarder per proxy: the substrate's
+    // SinkRegistry fans each chunk out to every proxy's sink; no per-chunk
+    // broadcast loop exists in the bridge. A repeated register keeps the one
+    // it has.
+    state.detachBytes ??= this.deps.client.attachBytesSink(
+      {
+        write: (chunk): void => {
+          // [LAW:no-defensive-null-guards] Trust-boundary guard: never bill
+          // or send to a WebContents Electron has already destroyed (a stray
+          // account could pause a pane that never acks; a send would throw).
           if (wc.isDestroyed()) return;
           // Account BEFORE the send so a synchronous ack during dispatch
           // subtracts from the right baseline.
           this.deps.bridge.accountOutput(
             state.peer,
-            msg.paneId,
-            msg.data.byteLength,
+            chunk.paneId,
+            chunk.data.byteLength,
           );
-          forwarder.write(msg);
+          wc.send(IPC.event, {
+            to,
+            msg: { type: "output", paneId: chunk.paneId, data: chunk.data },
+          });
         },
         end: (): void => {
-          forwarder.end();
+          // No wire-level pane-end frame: pane lifecycle reaches the proxy as
+          // tmux notifications on the same channel.
         },
-      };
-      state.detachBytes = this.deps.client.attachBytesSink(rendererSink, {
-        scope: serverScope,
-      });
-    }
-    // [LAW:dataflow-not-control-flow] Late-joining renderers need the current
+      },
+      { scope: serverScope },
+    );
+    // [LAW:dataflow-not-control-flow] Late-joining proxies need the current
     // lifecycle state immediately, not just when the next transition happens.
-    // Send a snapshot through the same IPC.event channel the live transitions
-    // use — receivers treat it identically.
+    // The snapshot rides the same IPC.event channel the live transitions use —
+    // the proxy treats it identically — addressed to this proxy alone, so the
+    // proxies already on the page hear no repeat of a state they have.
     wc.send(IPC.event, {
-      type: "connection-state",
-      state: this.deps.client.connectionState,
+      to,
+      msg: {
+        type: "connection-state",
+        state: this.deps.client.connectionState,
+      },
     });
   }
 
   /**
-   * Handle a renderer's IPC.ack: validate at the trust boundary and forward the
-   * released byte count to the bridge's backpressure accounting.
+   * Handle a proxy's IPC.ack: validate at the trust boundary and forward the
+   * released byte count to the bridge's backpressure accounting for that
+   * proxy's peer.
    */
-  ack(event: IpcMainEventLike, arg: unknown): void {
+  ack(event: IpcMainEventLike, rawProxy: unknown, rawAck: unknown): void {
     // An ack from a page that has ended releases nothing: its bytes were
-    // released with its peer.
+    // released with its peers.
     if (!sentByLivePage(event)) return;
-    const state = this.senders.get(event.sender);
+    const proxy = parseProxyId(rawProxy);
+    if (proxy === null) return;
+    const state = this.pages.get(event.sender)?.proxies.get(proxy);
     if (state === undefined) return;
     // [LAW:single-enforcer] Validation happens at the IPC trust boundary.
     // Bad acks from a compromised renderer are dropped silently — they can
-    // only starve the renderer that sent them, never reach tmux.
+    // only starve the proxy named, never reach tmux.
     const ack = (() => {
       try {
-        return parseAckMessage(arg);
+        return parseAckMessage(rawAck);
       } catch {
         return null;
       }
@@ -266,74 +276,79 @@ export class SenderRegistry {
   }
 
   /**
-   * Handle a renderer's IPC.unregister. An unregister from a page that has
-   * ended must not tear down the page shown now.
+   * Handle a proxy's IPC.unregister: release its peer — its subscriptions,
+   * size claims, outstanding bytes and in-flight invokes — and leave the
+   * page's other proxies theirs. The page's last proxy takes the page with
+   * it. An unregister from a page that has ended must not touch the page
+   * shown now.
    */
-  unregister(event: IpcMainEventLike): void {
+  unregister(event: IpcMainEventLike, rawProxy: unknown): void {
     if (!sentByLivePage(event)) return;
-    this.teardown(event.sender);
+    const proxy = parseProxyId(rawProxy);
+    if (proxy === null) return;
+    const page = this.pages.get(event.sender);
+    const state = page?.proxies.get(proxy);
+    if (page === undefined || state === undefined) return;
+    page.proxies.delete(proxy);
+    this.release(state);
+    if (page.proxies.size === 0) this.teardown(event.sender);
   }
 
   /**
-   * Tear this sender down through the single unified path. Idempotent: a noop
-   * when the sender is already gone, so a double-firing renderer cannot
-   * decrement refcounts twice.
+   * End a page: release every proxy's peer on it and detach its listeners.
+   * Idempotent: a noop when the page is already gone, so a double-firing
+   * page-end event cannot release a peer twice.
    */
   teardown(wc: WebContentsLike): void {
-    const state = this.senders.get(wc);
-    if (state === undefined) return;
-    this.senders.delete(wc);
-
-    // (0) Detach the page listeners. A page-end one that fired has already
-    //     been removed by `once`; the rest would otherwise fire later against
-    //     the next page — see SenderState.onPageEnd.
-    for (const e of PAGE_END_EVENTS) {
-      state.wc.removeListener(e, state.onPageEnd);
-    }
-    state.wc.removeListener("did-fail-load", state.onLoadFailed);
-
-    // (1) Flag in-flight invokes for this sender aborted. The TmuxClient FIFO
-    //     stays intact — the underlying %begin/%end still resolves the pending
-    //     entry in order — but the invoke pipeline observes the abort and
-    //     returns a BRIDGE_ABORTED envelope instead of delivering to a page
-    //     that is gone. The pipeline created these entries; teardown decides the
-    //     sender's fate in one place.
-    for (const p of state.pending) p.aborted = true;
-
-    // (2) Detach the per-renderer byte forwarder so no further bytes are
-    //     routed to this renderer's sink from the substrate.
-    state.detachBytes?.();
-
-    // (3) Drop helper-side accounting + subscription refcounts in one call.
-    //     bridge.removePeer fires setPaneAction(Continue) for any pane this
-    //     sender's outstanding bytes were keeping paused, and unsubscribes
-    //     from tmux for any subscription this sender was the last owner of.
-    this.deps.bridge.removePeer(state.peer);
+    const page = this.pages.get(wc);
+    if (page === undefined) return;
+    this.pages.delete(wc);
+    // A page-end listener that fired has already been removed by `once`; the
+    // rest would otherwise fire later against the next page — see
+    // PageState.onPageEnd.
+    for (const e of PAGE_END_EVENTS) wc.removeListener(e, page.onPageEnd);
+    wc.removeListener("did-fail-load", page.onLoadFailed);
+    for (const state of page.proxies.values()) this.release(state);
   }
 
-  /** Tear down every sender (dispose path). */
+  /** End every page (dispose path). */
   teardownAll(): void {
-    for (const wc of [...this.senders.keys()]) this.teardown(wc);
+    for (const wc of [...this.pages.keys()]) this.teardown(wc);
+  }
+
+  /** The one path that drops a proxy's peer. */
+  private release(state: ProxyPeer): void {
+    // (1) Flag the proxy's in-flight invokes aborted. The TmuxClient FIFO
+    //     stays intact — the underlying %begin/%end still resolves the pending
+    //     entry in order — but the invoke pipeline observes the abort and
+    //     returns a BRIDGE_ABORTED envelope instead of replying to a proxy
+    //     that is gone.
+    for (const p of state.pending) p.aborted = true;
+    // (2) Detach the proxy's byte forwarder.
+    state.detachBytes?.();
+    // (3) Drop helper-side accounting + subscription refcounts in one call.
+    //     bridge.removePeer fires setPaneAction(Continue) for any pane this
+    //     peer's outstanding bytes were keeping paused, and unsubscribes from
+    //     tmux for any subscription this peer was the last owner of.
+    this.deps.bridge.removePeer(state.peer);
   }
 
   // -------------------------------------------------------------------------
   // Event fan-out.
   //
-  // The mechanism: send a message to every subscribed renderer on IPC.event.
-  // The forwarding *policy* (which messages reach which renderer) is the
+  // The mechanism: send a message to every registered proxy on IPC.event.
+  // The forwarding *policy* (which messages reach which peer) is the
   // bridge's routeEvent/deliversTo; this method only fans out on its verdict.
   // [LAW:dataflow-not-control-flow]
   // -------------------------------------------------------------------------
 
   broadcast(msg: EmitterMessage): void {
-    // Snapshot the senders entries before iterating: teardown below calls
-    // senders.delete(wc), and a destroyed wc detected mid-loop must not perturb
-    // the iteration order of the rest of the senders.
-    const snapshot = [...this.senders];
+    // Snapshot before iterating: teardown below deletes from `pages`.
+    const snapshot = [...this.pages];
     // [LAW:single-enforcer] The bridge decides which events reach which peer;
     // the message is classified once, then checked per peer.
     const route = this.deps.bridge.routeEvent(msg);
-    for (const [wc, state] of snapshot) {
+    for (const [wc, page] of snapshot) {
       // [LAW:no-defensive-null-guards] isDestroyed is a trust-boundary check:
       // Electron may fire "destroyed" asynchronously, so a send could race a
       // teardown. Guarding here avoids a native crash inside wc.send.
@@ -341,9 +356,11 @@ export class SenderRegistry {
         this.teardown(wc);
         continue;
       }
-      if (!state.isSubscribed) continue;
-      if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
-      wc.send(IPC.event, msg);
+      for (const state of page.proxies.values()) {
+        if (state.detachBytes === null) continue;
+        if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
+        wc.send(IPC.event, { to: state.id, msg });
+      }
     }
   }
 }

@@ -4,13 +4,11 @@
 //
 // This file is the wiring shell. The three concerns it used to fuse now live
 // in dedicated collaborators, mirroring the websocket/ split:
-//   - SenderRegistry (./sender-registry.ts) — the set of registered renderers,
-//     their per-sender lifecycle, per-renderer byte forwarding, and event
+//   - SenderRegistry (./sender-registry.ts) — the pages and the proxies on
+//     each, every proxy's peer lifecycle, per-proxy byte forwarding, and event
 //     fan-out.
 //   - InvokePipeline (./invoke-pipeline.ts) — renderer command invocation
 //     (parse → dispatch → encode), abort-on-teardown, and drain.
-//   - WebContentsSink (./sink.ts) — the one BytesSink for the Electron main
-//     transport (mirrors websocket/sink.ts).
 //
 // Everything here is electron-specific: the single-instance ipcMain guard, the
 // ipcMain listener installation, the forwarding policy at the client-event
@@ -67,12 +65,13 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
  *   - Install the bridge ONCE per process at app.whenReady() — `ipcMain` is a
  *     singleton, and a per-window registration would crash on the second
  *     window with "Attempted to register a second handler for tmux:invoke".
- *   - Renderers register themselves on `tmux:register` (the renderer bridge
- *     does this in its constructor).
+ *   - Each renderer proxy registers itself on `tmux:register` (the renderer
+ *     bridge does this in its constructor), naming its `ProxyId`. Main keeps
+ *     one peer per proxy, as the WebSocket bridge keeps one per socket.
  *
  * Event forwarding:
- *   - Every `client` event is forwarded to every subscribed renderer via
- *     `webContents.send(IPC.event, msg)`. `Uint8Array` payloads ride
+ *   - Every `client` event is forwarded to every registered proxy via
+ *     `webContents.send(IPC.event, { to, msg })`. `Uint8Array` payloads ride
  *     Electron's native structured-clone IPC — no base64 hop needed.
  *
  * Method dispatch:
@@ -86,24 +85,24 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
  *
  * Backpressure:
  *   - For every `%output` / `%extended-output` byte forwarded, the helper
- *     accounts it as outstanding for that (renderer, pane) pair. When the
+ *     accounts it as outstanding for that (proxy, pane) pair. When the
  *     per-pane total crosses `outputHighWatermark`, the helper calls
  *     `client.setPaneAction(paneId, Pause)`; the renderer's `tmux:ack` drops
  *     the total below `outputLowWatermark` and the helper resumes the pane.
  *
- * Page end:
- *   - A renderer's peer lives one page. The WebContents' `destroyed`,
- *     `did-navigate` (a reload or navigation committed a new document),
- *     `did-fail-load` that committed an error page, or
- *     `render-process-gone` drives `SenderRegistry.teardown` once per sender,
- *     which flags in-flight invokes aborted (via the invoke pipeline), detaches
- *     the byte forwarder, and `bridge.removePeer`s — withdrawing the page's
- *     sizes and subscriptions. Messages the ended page still had in flight,
- *     and messages from subframes, are refused (an invoke gets
- *     BRIDGE_ABORTED).
+ * Proxy end:
+ *   - A proxy's peer lives until its `tmux:unregister` or its page's end. The
+ *     WebContents' `destroyed`, `did-navigate` (a reload or navigation
+ *     committed a new document), `did-fail-load` that committed an error
+ *     page, or `render-process-gone` drives `SenderRegistry.teardown` once per
+ *     page. Either way each peer released has its in-flight invokes flagged
+ *     aborted (via the invoke pipeline), its byte forwarder detached, and is
+ *     `bridge.removePeer`ed — withdrawing its sizes and subscriptions.
+ *     Messages the ended page still had in flight, and messages from
+ *     subframes, are refused (an invoke gets BRIDGE_ABORTED).
  *
  * Returns a handle whose `dispose()` removes every installed IPC handler,
- * tears down every sender, calls `bridge.dispose()`, and frees the ipcMain for
+ * tears down every page, calls `bridge.dispose()`, and frees the ipcMain for
  * a subsequent createMainBridge. The caller still owns `client.close()`.
  */
 export function createMainBridge(
@@ -147,9 +146,9 @@ export function createMainBridge(
 
   // -------------------------------------------------------------------------
   // Collaborators. The dependency runs one way: the invoke pipeline resolves a
-  // sender's peer through the registry (`getOrCreate`), and the registry flags
-  // that sender's in-flight dispatches aborted on teardown — both act on the
-  // single per-sender record, so there is no back-reference to wire.
+  // proxy's peer through the registry (`getOrCreate`), and the registry flags
+  // that proxy's in-flight dispatches aborted on release — both act on the
+  // single per-proxy record, so there is no back-reference to wire.
   // [LAW:one-way-deps]
   // -------------------------------------------------------------------------
   const registry = new SenderRegistry({ bridge, client });
@@ -170,7 +169,7 @@ export function createMainBridge(
   //
   // `EmitterMessage` excludes `PaneOutputMessage`, so this forwarder cannot
   // receive bytes — the type system enforces it. Byte chunks route through each
-  // renderer's per-peer sink (attached in SenderRegistry.register), not here.
+  // proxy's own sink (attached in SenderRegistry.register), not here.
   const forwardEvent = (msg: EmitterMessage): void => {
     registry.broadcast(msg);
   };
@@ -184,14 +183,18 @@ export function createMainBridge(
   // passed to `on` is the one passed to `removeListener` in dispose(). No cast
   // at either site means a refactor cannot silently make dispose() a no-op.
   // -------------------------------------------------------------------------
-  const onRegisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
-    registry.register(event);
-  const onUnregisterListener: IpcMainOnListener = (event: IpcMainEventLike) =>
-    registry.unregister(event);
+  const onRegisterListener: IpcMainOnListener = (
+    event: IpcMainEventLike,
+    ...args: unknown[]
+  ) => registry.register(event, args[0]);
+  const onUnregisterListener: IpcMainOnListener = (
+    event: IpcMainEventLike,
+    ...args: unknown[]
+  ) => registry.unregister(event, args[0]);
   const onAckListener: IpcMainOnListener = (
     event: IpcMainEventLike,
     ...args: unknown[]
-  ) => registry.ack(event, args[0]);
+  ) => registry.ack(event, args[0], args[1]);
 
   ipcMain.on(IPC.register, onRegisterListener);
   ipcMain.on(IPC.unregister, onUnregisterListener);
@@ -205,7 +208,7 @@ export function createMainBridge(
       ipcMain.removeListener(IPC.unregister, onUnregisterListener);
       ipcMain.removeListener(IPC.ack, onAckListener);
       ipcMain.removeHandler(IPC.invoke);
-      // Tear down every sender through the unified path: aborts in-flight
+      // Tear down every page through the unified path: aborts in-flight
       // dispatches, removes page listeners from still-alive wcs (so
       // dispose doesn't leak handlers across bridge re-installations), and
       // calls bridge.removePeer for each. Then bridge.dispose() flushes any
@@ -222,13 +225,10 @@ export function createMainBridge(
   };
 }
 
-// Re-export the Electron byte forwarder from its own module so a main-process
-// consumer keeps a single import site (`./electron/main`). [LAW:one-source-of-truth]
-export { WebContentsSink, attachWebContentsSink } from "./sink.js";
-
 // Re-export the types a main-process consumer might need without forcing a
 // second import site.
 export type {
+  AddressedEvent,
   BridgeErrorCode,
   BridgeErrorPayload,
   InvokeCall,
@@ -242,6 +242,7 @@ export type {
   MainBridgeHandle,
   MainBridgeOptions,
   PageEndEvent,
+  ProxyId,
   ResumeFailure,
   WebContentsLike,
   WebFrameLike,

@@ -55,6 +55,7 @@ import {
   type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
+  type ProxyId,
   type RendererBridgeOptions,
 } from "./types.js";
 
@@ -143,12 +144,11 @@ export class TmuxClientProxy
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
   private readonly pendingAck = new Map<number, number>();
-  // Main replies on `IPC.event`, which every proxy on the page hears, and
-  // which reaches whatever document the WebContents shows when the reply
-  // lands — a reply sent just before a navigation can reach the next page. A
-  // random start keeps one proxy's ids from naming another's calls, on this
-  // page or the next.
-  private lastInvokeId = Math.floor(Math.random() * 2 ** 52);
+  // This proxy's address: main keeps one peer per address, and every message
+  // on `IPC.event` names the proxy it is for. See `ProxyId`.
+  private readonly address: ProxyId = Math.floor(Math.random() * 2 ** 52);
+  // Replies are addressed to this proxy, so its ids need be unique only here.
+  private lastInvokeId = 0;
   // Each invoke awaiting its reply, by id.
   private readonly awaitingReply = new Map<
     number,
@@ -179,13 +179,17 @@ export class TmuxClientProxy
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
-    // [LAW:locality-or-seam] `IpcEventMessage` is the boundary type; onEvent
-    //   splits it into bytes and events. Each IPC event is one step.
-    this.eventHandler = (_event, msg) => this.delivery.step(this.onEvent, msg);
+    // [LAW:locality-or-seam] `AddressedEvent` is the boundary type: every
+    //   proxy on the page hears `IPC.event`, and each takes the messages
+    //   addressed to it. onEvent splits those into bytes and events. Each IPC
+    //   event is one step.
+    this.eventHandler = (_event, { to, msg }) => {
+      if (to === this.address) this.delivery.step(this.onEvent, msg);
+    };
     this.ipc.on(IPC.event, this.eventHandler);
 
-    // Register this renderer as an event subscriber. Fire-and-forget.
-    this.ipc.send(IPC.register);
+    // Ask main for this proxy's peer and its events. Fire-and-forget.
+    this.ipc.send(IPC.register, this.address);
   }
 
   // [LAW:single-enforcer] Pane bytes flow exclusively through the sink
@@ -375,15 +379,17 @@ export class TmuxClientProxy
   }
 
   /**
-   * Unsubscribe this renderer from further events and stop listening locally.
+   * Stop listening locally and release this proxy's peer in main: its
+   * subscriptions, size claims and unacked bytes. Other proxies on the page
+   * keep theirs.
    * Does NOT close the main-side TmuxClient — the main process owns that
    * lifecycle (closing a renderer shouldn't tear down tmux for other windows).
    *
    * `detach()` is intentionally NOT exposed on the proxy: it tears down the
    * tmux connection for every renderer that shares the bridge, which is an
    * admin operation the host application owns. Renderers that need to walk
-   * away can `close()` to drop their subscription; the main process is the
-   * single party that may invoke `client.detach()` or `client.close()`.
+   * away can `close()`; the main process is the single party that may invoke
+   * `client.detach()` or `client.close()`.
    */
   close(): void {
     this.delivery.step(this.dispose);
@@ -393,7 +399,7 @@ export class TmuxClientProxy
     if (this.closed) return;
     this.closed = true;
     this.ipc.removeListener(IPC.event, this.eventHandler);
-    this.ipc.send(IPC.unregister);
+    this.ipc.send(IPC.unregister, this.address);
     this.pendingAck.clear();
     // No reply reaches this proxy now that it has stopped listening.
     for (const id of [...this.awaitingReply.keys()]) {
@@ -441,7 +447,8 @@ export class TmuxClientProxy
         return;
       }
       this.awaitingReply.set(id, resolve);
-      this.ipc.invoke(IPC.invoke, { id, request: req }).then((ret) => {
+      const call = { proxy: this.address, id, request: req };
+      this.ipc.invoke(IPC.invoke, call).then((ret) => {
         const result = replyInReturn(ret);
         if (result !== null) this.settle(id, result);
       }, reject);
@@ -463,8 +470,8 @@ export class TmuxClientProxy
     throw BridgeError.fromPayload(result.error);
   }
 
-  // Ids this proxy is not awaiting are another proxy's on the page, or a
-  // call that timed out or was closed out.
+  // An id this proxy is not awaiting is a call that timed out or was closed
+  // out.
   private settle(id: number, result: InvokeResultEnvelope): void {
     const resolve = this.awaitingReply.get(id);
     if (resolve === undefined) return;
@@ -505,7 +512,7 @@ export class TmuxClientProxy
     }
     this.pendingAck.delete(msg.paneId);
     const ack: AckMessage = { paneId: msg.paneId, bytes: next };
-    this.ipc.send(IPC.ack, ack);
+    this.ipc.send(IPC.ack, this.address, ack);
   }
 }
 
@@ -526,6 +533,7 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  AddressedEvent,
   InvokeCall,
   InvokeReplyMessage,
   InvokeResultEnvelope,
@@ -534,5 +542,6 @@ export type {
   IpcRendererLike,
   IpcRendererEventLike,
   IpcRendererOnListener,
+  ProxyId,
   RendererBridgeOptions,
 } from "./types.js";

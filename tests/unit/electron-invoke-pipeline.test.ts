@@ -22,6 +22,7 @@ import type {
 import {
   createIpcHub,
   invokeRaw,
+  RAW_PROXY,
   type FakeRenderer,
 } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
@@ -97,11 +98,30 @@ describe("InvokePipeline — validation → envelope", () => {
     expect(sent).toEqual([]);
   });
 
+  it("answers an invoke that names no proxy in the invoke's return, without dispatching", async () => {
+    const { pipeline, event, sent } = makeRig();
+
+    await expect(
+      pipeline.handle(event, {
+        id: 7,
+        request: { method: "execute", args: ["ls"] },
+      }),
+    ).resolves.toMatchObject({
+      via: "invoke",
+      result: {
+        status: "bridge-error",
+        error: { code: "BRIDGE_INVALID_REQUEST" },
+      },
+    });
+    expect(sent).toEqual([]);
+  });
+
   it("answers an invoke whose id is not an integer in the invoke's return, without dispatching", async () => {
     const { pipeline, event, sent } = makeRig();
 
     await expect(
       pipeline.handle(event, {
+        proxy: RAW_PROXY,
         id: "7",
         request: { method: "execute", args: ["ls"] },
       }),
@@ -215,6 +235,7 @@ describe("InvokePipeline — destroyed sender", () => {
     const event = { ...renderer.event, sender };
 
     const p = pipeline.handle(event, {
+      proxy: RAW_PROXY,
       id: 1,
       request: { method: "execute", args: ["list-windows"] },
     });
@@ -241,6 +262,7 @@ describe("InvokePipeline — drain", () => {
     // never arrives (the fake transport records but never replies), so the
     // handler promise stays pending — proving the pipeline tracked it for drain.
     void pipeline.handle(event, {
+      proxy: RAW_PROXY,
       id: 1,
       request: { method: "execute", args: ["ls"] },
     });

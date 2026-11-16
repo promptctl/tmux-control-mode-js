@@ -35,6 +35,8 @@ import {
   type InvokeReturn,
   type IpcRendererLike,
   type IpcRendererOnListener,
+  type MainBridgeOptions,
+  type ProxyId,
   parseAckMessage,
   BridgeError,
 } from "../../src/connectors/electron/types.js";
@@ -44,7 +46,8 @@ import {
   TmuxClientProxy,
 } from "../../src/connectors/electron/renderer.js";
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
-import { createIpcHub, invokeRaw } from "./_helpers/ipc-hub.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
+import { createIpcHub, invokeRaw, RAW_PROXY } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { lineNumberOf, replyTo } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
@@ -318,7 +321,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     // No proxy — register manually so the test owns ack timing. The proxy's
     // auto-ack is a real-IPC convenience; here we want deterministic control.
     const renderer = hub.createRenderer();
-    renderer.ipcRenderer.send(IPC.register);
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
     await hub.settled();
 
     for (let i = 0; i < 5; i++) {
@@ -329,7 +332,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(0);
 
     // Ack 130 bytes → outstanding = 20 < low=25 → exactly one continue.
-    renderer.ipcRenderer.send(IPC.ack, { paneId: 3, bytes: 130 });
+    renderer.ipcRenderer.send(IPC.ack, RAW_PROXY, { paneId: 3, bytes: 130 });
     await hub.settled();
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
   });
@@ -345,7 +348,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     });
 
     const renderer = hub.createRenderer();
-    renderer.ipcRenderer.send(IPC.register);
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
     await hub.settled();
 
     for (let i = 0; i < 20; i++) {
@@ -367,8 +370,8 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     // Two raw subscribers; neither auto-acks.
     const r1 = hub.createRenderer();
     const r2 = hub.createRenderer();
-    r1.ipcRenderer.send(IPC.register);
-    r2.ipcRenderer.send(IPC.register);
+    r1.ipcRenderer.send(IPC.register, RAW_PROXY);
+    r2.ipcRenderer.send(IPC.register, RAW_PROXY);
     await hub.settled();
 
     // Each chunk fans out to BOTH renderers, so per-pane total grows by 60
@@ -383,7 +386,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(0);
 
     // Ack the rest from r1 → outstanding = 0 → resume.
-    r1.ipcRenderer.send(IPC.ack, { paneId: 9, bytes: 60 });
+    r1.ipcRenderer.send(IPC.ack, RAW_PROXY, { paneId: 9, bytes: 60 });
     await hub.settled();
     expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(1);
   });
@@ -578,12 +581,15 @@ describe("Electron IPC bridge — event forwarding", () => {
     // The race: main rejects the in-flight invoke as BRIDGE_CLOSED, and that
     // reply reaches the renderer while its last connection-state is still ready.
     let listener: IpcRendererOnListener | undefined;
+    let address: ProxyId | undefined;
     const ipc: IpcRendererLike = {
       on: (_c, l) => {
         listener = l;
       },
       removeListener: () => undefined,
-      send: () => undefined,
+      send: (_c: unknown, proxy: ProxyId) => {
+        address = proxy;
+      },
       invoke: () => {
         return Promise.resolve({
           via: "invoke",
@@ -600,8 +606,8 @@ describe("Electron IPC bridge — event forwarding", () => {
     listener!(
       {},
       {
-        type: "connection-state",
-        state: { status: "ready" },
+        to: address!,
+        msg: { type: "connection-state", state: { status: "ready" } },
       },
     );
     proxy.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
@@ -612,12 +618,15 @@ describe("Electron IPC bridge — event forwarding", () => {
 
   it("a listener that closes on main's closed hears one closed{disposed}, after it", () => {
     let listener: IpcRendererOnListener | undefined;
+    let address: ProxyId | undefined;
     const ipc: IpcRendererLike = {
       on: (_c, l) => {
         listener = l;
       },
       removeListener: () => undefined,
-      send: () => undefined,
+      send: (_c: unknown, proxy: ProxyId) => {
+        address = proxy;
+      },
       invoke: () => new Promise(() => {}),
     };
     const proxy = createRendererBridge(ipc);
@@ -629,7 +638,13 @@ describe("Electron IPC bridge — event forwarding", () => {
     });
     listener!(
       {},
-      { type: "connection-state", state: { status: "closed", reason: "exit" } },
+      {
+        to: address!,
+        msg: {
+          type: "connection-state",
+          state: { status: "closed", reason: "exit" },
+        },
+      },
     );
     expect(heard).toEqual(["exit", "disposed"]);
   });
@@ -1459,10 +1474,10 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
     expect(r.pageListenerCount()).toBe(0);
   });
 
-  it("duplicate tmux:unregister from a single sender is a noop (L3)", async () => {
+  it("duplicate tmux:unregister from a single proxy is a noop (L3)", async () => {
     // A misbehaving or double-firing renderer can resend tmux:unregister.
     // The bridge must not double-decrement refcounts or duplicate any
-    // teardown side effect — teardownSender is idempotent by lookup.
+    // release side effect — release is idempotent by lookup.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -1470,22 +1485,24 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
     createMainBridge(client, hub.ipcMain);
 
     const r = hub.createRenderer();
-    const proxy = createRendererBridge(r.ipcRenderer);
-
-    const sub = proxy.subscribeRaw("focus", "", "#{pane_id}");
+    r.ipcRenderer.send(IPC.register, RAW_PROXY);
+    const sub = invokeRaw(r.ipcRenderer, {
+      method: "subscribeRaw",
+      args: ["focus", "", "#{pane_id}"],
+    });
     await hub.settled();
     t.answer();
     await sub;
 
     // First unregister: refcount 1 → 0 → tmux unsubscribe fires.
-    r.ipcRenderer.send(IPC.unregister);
+    r.ipcRenderer.send(IPC.unregister, RAW_PROXY);
     await hub.settled();
     expect(
       t.commands().filter((c) => c === "refresh-client -B 'focus'"),
     ).toHaveLength(1);
 
     // Second unregister: noop, no additional unsubscribe.
-    r.ipcRenderer.send(IPC.unregister);
+    r.ipcRenderer.send(IPC.unregister, RAW_PROXY);
     await hub.settled();
     expect(
       t.commands().filter((c) => c === "refresh-client -B 'focus'"),
@@ -2616,7 +2633,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     const windows: number[] = [];
     proxy.on("window-add", (ev) => windows.push(ev.windowId));
     t.sent.length = 0;
-    old.send(IPC.unregister);
+    old.send(IPC.unregister, RAW_PROXY);
     await hub.settled();
     t.feed("%window-add @2\n");
     await hub.settled();
@@ -2757,6 +2774,122 @@ describe("Electron IPC bridge — a reply follows the events before it", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Proxies on one page — each is its own peer (lkg.01g)
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — each proxy on a page is its own peer", () => {
+  // tmux answers every command with an empty success, as it is sent.
+  function rig(options: MainBridgeOptions = {}) {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const transport: TmuxTransport = {
+      ...t.transport,
+      send(cmd) {
+        const result = t.transport.send(cmd);
+        queueMicrotask(() => t.answer());
+        return result;
+      },
+    };
+    const client = new TmuxClient(transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain, options);
+    return { hub, t, r: hub.createRenderer() };
+  }
+
+  it("closing one proxy leaves the other hearing events, settling calls and seeding", async () => {
+    const { hub, t, r } = rig();
+    const a = createRendererBridge(r.ipcRenderer);
+    const b = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    const windows: number[] = [];
+    b.on("window-add", (ev) => windows.push(ev.windowId));
+
+    const inFlight = b.execute("list-windows");
+    a.close();
+    await expect(inFlight).resolves.toMatchObject({ success: true });
+    await hub.settled();
+    t.feed("%window-add @2\n");
+    await hub.settled();
+    expect(windows).toEqual([2]);
+
+    const stream = new PaneStream({ client: b, paneId: 1, historyLines: 0 });
+    const seeds: Uint8Array[] = [];
+    stream.attach({
+      seed: (captured) => seeds.push(captured),
+      write: () => undefined,
+      resize: () => undefined,
+      isVisible: () => true,
+      dispose: () => undefined,
+    });
+    await vi.waitFor(() => expect(stream.state).toBe("live"));
+    expect(seeds).toHaveLength(1);
+    expect(stream.lastError).toBeNull();
+    stream.dispose();
+  });
+
+  it("one proxy's unsubscribe leaves a subscription the other also holds", async () => {
+    const { hub, t, r } = rig();
+    const a = createRendererBridge(r.ipcRenderer);
+    const b = createRendererBridge(r.ipcRenderer);
+    await a.subscribeRaw("focus", "", "#{pane_id}");
+    await b.subscribeRaw("focus", "", "#{pane_id}");
+
+    await a.unsubscribe("focus");
+    await hub.settled();
+    expect(t.commands()).not.toContain(refreshClientUnsubscribe("focus"));
+
+    b.close();
+    await vi.waitFor(() =>
+      expect(t.commands()).toContain(refreshClientUnsubscribe("focus")),
+    );
+  });
+
+  it("closing a proxy releases its size claim while the page's other proxy lives", async () => {
+    const { hub, t, r } = rig();
+    const a = createRendererBridge(r.ipcRenderer);
+    const b = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    await a.setWindowSize(3, 90, 20);
+    t.sent.length = 0;
+
+    a.close();
+    await vi.waitFor(() =>
+      expect(t.commands()).toContain(refreshClientClearWindowSize(3)),
+    );
+    expect(b.connectionState.status).toBe("ready");
+  });
+
+  it("a proxy joining the page tells the proxies already there nothing", async () => {
+    const { hub, r } = rig();
+    const a = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    const heard: string[] = [];
+    a.on("connection-state", (ev) => heard.push(ev.state.status));
+
+    createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    expect(heard).toEqual([]);
+  });
+
+  it("each proxy is billed the bytes it receives: a fast one's acks do not resume a pane a slow one holds", async () => {
+    const { hub, t, r } = rig({
+      outputHighWatermark: 100,
+      outputLowWatermark: 25,
+    });
+    // `fast` acks every byte; `slow` never reaches its ack batch.
+    createRendererBridge(r.ipcRenderer, { ackBatchBytes: 1 });
+    createRendererBridge(r.ipcRenderer, { ackBatchBytes: 1 << 20 });
+    await hub.settled();
+
+    t.feed(`%output %4 ${"x".repeat(60)}\n`);
+    t.feed(`%output %4 ${"x".repeat(60)}\n`);
+    await hub.settled();
+    expect(t.commands().filter((c) => c.includes("%4:pause"))).toHaveLength(1);
+    expect(t.commands().filter((c) => c.includes("%4:continue"))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Renderer → main arguments — compile-time contract (checked by typecheck)
 // ---------------------------------------------------------------------------
 
@@ -2765,12 +2898,14 @@ describe("IpcRendererLike", () => {
     // The @ts-expect-error lines are the assertions; `pnpm run typecheck`
     // fails if any of them compiles.
     const calls = (ipc: IpcRendererLike) => [
-      () => ipc.send(IPC.register),
-      () => ipc.send(IPC.ack, { paneId: 1, bytes: 1 }),
+      () => ipc.send(IPC.register, 1),
+      () => ipc.send(IPC.ack, 1, { paneId: 1, bytes: 1 }),
       // @ts-expect-error an ack carries its AckMessage
-      () => ipc.send(IPC.ack),
-      // @ts-expect-error register carries nothing
-      () => ipc.send(IPC.register, { paneId: 1, bytes: 1 }),
+      () => ipc.send(IPC.ack, 1),
+      // @ts-expect-error a send names the proxy sending
+      () => ipc.send(IPC.register),
+      // @ts-expect-error register carries only the proxy
+      () => ipc.send(IPC.register, 1, { paneId: 1, bytes: 1 }),
       // @ts-expect-error a renderer sends main nothing on IPC.event
       () => ipc.send(IPC.event),
       // @ts-expect-error invoke is the one channel a renderer invokes on
@@ -2780,6 +2915,7 @@ describe("IpcRendererLike", () => {
       async (): Promise<InvokeReturn["via"]> =>
         (
           await ipc.invoke(IPC.invoke, {
+            proxy: 1,
             id: 1,
             request: { method: "listWindows", args: [] },
           })
