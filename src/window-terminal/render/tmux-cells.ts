@@ -19,6 +19,12 @@
 //     both two cells; whatever follows a ZWJ joins; Hangul jamo compose; and
 //     a cell holds at most UTF8_SIZE bytes.
 //
+// Where xterm's input handler, not the provider, decides, it cannot follow
+// tmux: a zero-width codepoint in column 0 gets a cell; xterm forgets the
+// cell before at every escape sequence or control character, where tmux
+// still joins onto it; and a character widened in the last column wraps,
+// where tmux keeps it there.
+//
 // [LAW:one-source-of-truth] tmux is the authority on a cell's width; the
 //   table is generated from its sources, never edited by hand.
 // [LAW:effects-at-boundaries] Pure: xterm calls `charProperties` with what
@@ -98,15 +104,19 @@ function jamoOf(c: number): number {
 // them 24 bits of the provider's own, here what tmux knows of the cell:
 //   bits 3-8   the UTF-8 bytes it holds
 //   bit 9      its last codepoint is a ZWJ
-//   bits 10-11 the regional indicators in it, at most 2
+//   bits 10-11 the regional indicators in it, at most 2, if its first
+//              codepoint is one (tmux pairs no other)
 //   bits 12-13 its first codepoint's skin-tone role
 //   bits 14-15 its last codepoint's jamo class
+//   bit 16     tmux joins nothing onto it
 const widthOf = (p: number): number => (p >> 1) & 3;
 const bytesOf = (p: number): number => (p >> 3) & 0x3f;
 const endsInZwj = (p: number): boolean => ((p >> 9) & 1) === 1;
 const regionalOf = (p: number): number => (p >> 10) & 3;
 const skinRoleOf = (p: number): number => (p >> 12) & 3;
 const jamoClassOf = (p: number): number => (p >> 14) & 3;
+const SEALED = 1 << 16;
+const isSealed = (p: number): boolean => (p & SEALED) !== 0;
 
 function answer(
   joins: boolean,
@@ -128,10 +138,10 @@ function answer(
   );
 }
 
-function newCell(c: number): number {
+function newCell(c: number, cells: number): number {
   return answer(
     false,
-    width(c),
+    cells,
     utf8Length(c),
     false,
     isRegional(c) ? 1 : 0,
@@ -150,18 +160,24 @@ function dropped(before: number): number {
 function joined(before: number, c: number, wide: boolean): number {
   const cells = wide && widthOf(before) === 1 ? 2 : widthOf(before);
   const bytes = bytesOf(before) + utf8Length(c);
-  // tmux keeps a cell's byte count in five bits (utf8.c, UTF8_GET_SIZE), so
-  // a cell of UTF8_SIZE bytes reads back holding none: as wide as it was,
-  // with no codepoint left for the next one to pair with.
+  // tmux keeps a cell's byte count in five bits and its width as width + 1
+  // in the bits above (utf8.c, UTF8_SET_SIZE, UTF8_SET_WIDTH), so a cell of
+  // UTF8_SIZE bytes reads back holding none and two wide. Two cells wide, it
+  // is joined onto still, with no codepoint left for the next one to pair
+  // with; one cell wide, tmux joins nothing onto it again.
   if (bytes === UTF8_SIZE) {
-    return answer(true, cells, 0, false, 0, SKIN_NONE, JAMO_NONE);
+    return (
+      answer(true, cells, 0, false, 0, SKIN_NONE, JAMO_NONE) |
+      (cells === 2 ? 0 : SEALED)
+    );
   }
+  const regional = regionalOf(before);
   return answer(
     true,
     cells,
     bytes,
     c === ZWJ,
-    Math.min(regionalOf(before) + (isRegional(c) ? 1 : 0), 2),
+    regional === 0 ? 0 : Math.min(regional + (isRegional(c) ? 1 : 0), 2),
     skinRoleOf(before),
     jamoOf(c),
   );
@@ -178,28 +194,33 @@ function pairs(before: number, c: number): boolean {
   );
 }
 
+// A printable ASCII character: a cell of its own, one wide, one byte.
+const ASCII_CELL = answer(false, 1, 1, false, 0, SKIN_NONE, JAMO_NONE);
+
 // [HOT-PATH] xterm calls this for every character a pane prints.
 function charProperties(c: number, before: number): number {
+  if (c >= 0x20 && c < 0x7f) return ASCII_CELL;
   if (c === HANGUL_FILLER) return dropped(before);
-  const zero = c === ZWJ || c === VS16 || width(c) === 0;
-  // tmux joins only onto a cell, and never an ASCII character.
-  if (c < 0x80 || widthOf(before) === 0) {
-    return zero ? dropped(before) : newCell(c);
+  const w = width(c);
+  const zero = c === ZWJ || c === VS16 || w === 0;
+  // tmux joins only onto a cell that takes it, and never an ASCII character.
+  if (c < 0x80 || widthOf(before) === 0 || isSealed(before)) {
+    return zero ? dropped(before) : newCell(c, w);
   }
   let wide = c === VS16;
   if (!zero) {
     const jamo = jamoOf(c);
-    if (jamo === JAMO_CHOSEONG) return newCell(c);
+    if (jamo === JAMO_CHOSEONG) return newCell(c, w);
     if (jamo !== JAMO_NONE) {
       if (jamoClassOf(before) !== jamo - 1) return dropped(before);
     } else if (pairs(before, c)) {
       wide = true;
     } else if (!endsInZwj(before)) {
-      return newCell(c);
+      return newCell(c, w);
     }
   }
   if (bytesOf(before) + utf8Length(c) > UTF8_SIZE) {
-    return zero ? dropped(before) : newCell(c);
+    return zero ? dropped(before) : newCell(c, w);
   }
   return joined(before, c, wide);
 }

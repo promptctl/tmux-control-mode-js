@@ -149,10 +149,6 @@ export class XtermSink implements TerminalSink {
     //   constructed, so it supplies each reset value; the terminal keeps no
     //   table of xterm's defaults.
     this.base = { ...this.terminal.options };
-    // [LAW:single-enforcer] A character's cells are counted as tmux counts
-    //   them, in every pane, before a byte is written.
-    this.terminal.unicode.register(TMUX_CELLS);
-    this.terminal.unicode.activeVersion = TMUX_CELLS.version;
     // The sink owns the terminal and every addon the factory made. If any
     // step throws, the terminal (and with it each addon xterm took, the one
     // whose activate threw included) and the addons it never took are
@@ -160,6 +156,10 @@ export class XtermSink implements TerminalSink {
     let addons: readonly ITerminalAddon[] = [];
     let taken = 0;
     try {
+      // [LAW:single-enforcer] A character's cells are counted as tmux counts
+      //   them, in every pane, before a byte is written.
+      this.terminal.unicode.register(TMUX_CELLS);
+      this.terminal.unicode.activeVersion = TMUX_CELLS.version;
       // Before the addons load: one may need an option.
       this.setOptions(opts.xterm ?? {});
       this.terminal.open(this.container);
@@ -172,6 +172,12 @@ export class XtermSink implements TerminalSink {
       for (const addon of addons) {
         taken += 1;
         this.terminal.loadAddon(addon);
+      }
+      const counted = this.terminal.unicode.activeVersion;
+      if (counted !== TMUX_CELLS.version) {
+        throw new Error(
+          `an addon made xterm count cells by Unicode ${counted}; a pane counts them as tmux does`,
+        );
       }
       // Watched once the terminal stands: the renderer it opened with is
       // read at the first layout, and only a later change needs telling.

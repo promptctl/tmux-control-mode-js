@@ -247,11 +247,17 @@ the ones tmux or its layout decides, and the type refuses them: `cols` and
 A pane counts a character's cells as tmux does: an emoji is two, a character
 with VS16 two, and a ZWJ sequence or a flag is one character, so whatever
 follows lands in tmux's column. tmux takes a codepoint's width from utf8proc
-(the platform's `wcwidth` when built without it); the terminal's table is
-utf8proc's under tmux 3.8, so a tmux on another table, or with
-`codepoint-widths` set, can count a rare character differently. The count
+(the platform's `wcwidth` when built without it); the terminal counts as tmux
+3.8 does with its default options, utf8proc's table and
+`variation-selector-always-wide` on, so a tmux older than 3.8, on another
+table, or with either option changed (`codepoint-widths` too) can count a
+character differently. Where xterm.js decides rather than the count, it
+parts from tmux on three rare inputs: a combining character in column 0, one
+that follows its base after an escape sequence, and a character that VS16,
+a skin tone or a second flag letter widens in the last column. The count
 runs through xterm.js's proposed Unicode API, so `allowProposedApi` is always
-on, and an addon that changes `terminal.unicode.activeVersion` undoes it.
+on, and an addon that changes `terminal.unicode.activeVersion` is an
+`onError` (`render`), as an addon that throws.
 
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads; it is read at mount. An addon that throws as a pane opens is

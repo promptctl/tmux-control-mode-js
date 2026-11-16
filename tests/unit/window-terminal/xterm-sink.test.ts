@@ -92,8 +92,12 @@ vi.mock("@xterm/xterm", () => {
       }
       const providers = this.unicodeProviders;
       const set = (v: string) => (this.activeUnicode = v);
+      const get = () => this.activeUnicode;
       return {
         register: (p: { version: string }) => providers.set(p.version, p),
+        get activeVersion() {
+          return get();
+        },
         set activeVersion(v: string) {
           if (!providers.has(v)) throw new Error(`unknown version ${v}`);
           set(v);
@@ -149,6 +153,7 @@ vi.mock("@xterm/xterm", () => {
 import { XtermSink } from "../../../src/window-terminal/render/xterm-sink.js";
 import { TMUX_CELLS } from "../../../src/window-terminal/render/tmux-cells.js";
 import { DEFAULT_FONT_FAMILY } from "../../../src/window-terminal/render/xterm-options.js";
+import type { Terminal } from "@xterm/xterm";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -635,6 +640,30 @@ describe("XtermSink: in-place option setters (O10)", () => {
     if (term === null) throw new Error("Terminal mock not constructed");
     expect(term.activeUnicode).toBe(TMUX_CELLS.version);
     expect(term.unicodeProviders.get(TMUX_CELLS.version)).toBe(TMUX_CELLS);
+  });
+
+  it("an addon that makes xterm count cells another way is refused, and leaves no open terminal", () => {
+    const unicode11 = {
+      activate: vi.fn((t: Terminal) => {
+        t.unicode.register({
+          version: "11",
+          wcwidth: () => 1,
+          charProperties: () => 2,
+        });
+        t.unicode.activeVersion = "11";
+      }),
+      dispose: vi.fn(),
+    };
+    expect(
+      () =>
+        new XtermSink({
+          container: makeContainer(),
+          addons: () => [unicode11],
+        }),
+    ).toThrow(/Unicode 11/);
+    const term = lastTerm;
+    if (term === null) throw new Error("Terminal mock not constructed");
+    expect(term.dispose).toHaveBeenCalledOnce();
   });
 
   it("an addon that throws leaves no open terminal, and the addons not yet loaded are released", () => {

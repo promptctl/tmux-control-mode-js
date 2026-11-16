@@ -16,7 +16,7 @@
 // pkg-config.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -61,6 +61,7 @@ const [unicode, digits] = execFileSync(join(dir, "widths"), {
   maxBuffer: 0x200000,
 }).split("\n");
 const widths = [...digits].map(Number);
+rmSync(dir, { recursive: true });
 
 async function tmuxSource(file) {
   const url = `https://raw.githubusercontent.com/tmux/tmux/${tag}/${file}`;

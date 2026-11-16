@@ -6,7 +6,7 @@
 // input handler is the browser terminal's own.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Terminal } from "@xterm/headless";
@@ -38,6 +38,11 @@ const SAMPLES: Readonly<Record<string, string>> = {
   "a cell of 32 bytes, then ZWJ and an emoji":
     FAMILY + ZWJ + cp(0x301, 0x301) + ZWJ + "👩x",
   "a cell of 32 bytes, then an emoji": FAMILY + ZWJ + cp(0x301, 0x301) + "👩x",
+  "a one-cell cell of 32 bytes, then VS16":
+    cp(0xe9) + cp(0x301).repeat(15) + cp(0xfe0f) + "x",
+  "a one-cell cell of 32 bytes, then ZWJ and an emoji":
+    cp(0xe9) + cp(0x301).repeat(15) + ZWJ + "👩x",
+  "a regional indicator pair after a ZWJ sequence": "👨" + ZWJ + "🇺🇸x",
   "a combining accent": "e" + cp(0x301) + "x",
   CJK: "漢字かな",
   "Hangul jamo": cp(0x1100, 0x1161, 0x11a8) + "x" + cp(0x1161) + "y",
@@ -46,8 +51,8 @@ const SAMPLES: Readonly<Record<string, string>> = {
 };
 
 // Every codepoint of the blocks where terminals' widths differ most, 128 to
-// a line after an "x" (a zero-width codepoint in column 0 is the one case
-// xterm cannot follow; see TMUX_CELLS), alone and each followed by VS16.
+// a line after an "x" (xterm cannot follow tmux with a zero-width codepoint
+// in column 0; see TMUX_CELLS), alone and each followed by VS16.
 const SWEEP: readonly (readonly [number, number])[] = [
   [0x00a0, 0x33ff],
   [0xa960, 0xa97f],
@@ -89,10 +94,11 @@ async function xtermCursor(text: string): Promise<string> {
 
 describe.skipIf(!RUN_INTEGRATION)("TMUX_CELLS against tmux", () => {
   const socket = uniqueSocket("tmux-cells");
-  const dir = mkdtempSync(join(tmpdir(), "tmux-cells-"));
+  let dir = "";
   let files = 0;
 
   beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "tmux-cells-"));
     tmux(socket, [
       "new-session",
       "-d",
@@ -103,7 +109,10 @@ describe.skipIf(!RUN_INTEGRATION)("TMUX_CELLS against tmux", () => {
       "sleep 600",
     ]);
   });
-  afterAll(() => killTmuxServer(socket));
+  afterAll(() => {
+    killTmuxServer(socket);
+    rmSync(dir, { recursive: true, force: true });
+  });
 
   // A pane prints the text and a marker; the cursor is read once the marker
   // shows.
