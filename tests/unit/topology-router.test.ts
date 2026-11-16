@@ -38,6 +38,16 @@ function windowGone(target: string): TmuxCommandError {
   });
 }
 
+// tmux's %error reply to list-panes -t for a pane that no longer exists.
+function paneGone(target: string): TmuxCommandError {
+  return new TmuxCommandError({
+    commandNumber: 1,
+    timestamp: 0,
+    output: [`can't find pane: ${target}`],
+    success: false,
+  });
+}
+
 function makeSink(): BytesSink & {
   chunks: ChunkPayload[];
   ended: number;
@@ -473,9 +483,10 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Pane 1 (session 100) is now in topology, so the session sink receives it.
+    // Pane 1 (session 100) is now in topology, so the session sink receives
+    // it — after the chunk held while its pane was being located.
     router.dispatchBytes(makeChunk(1));
-    expect(sink.chunks).toHaveLength(1);
+    expect(sink.chunks).toHaveLength(2);
   });
 
   // A router driving a NON-FIFO transport: bootstrap A hangs while a newer
@@ -675,18 +686,26 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
 // ---------------------------------------------------------------------------
 
 describe("TopologyRouter — chunks that arrive before topology places their pane", () => {
-  // A runner whose replies the test releases one at a time, in order.
+  // A runner whose replies the test releases one at a time, in order. A
+  // locate (`list-panes -t %P`) is queued apart from the window and
+  // server-wide queries, so a test addresses each kind by its own order.
   function controlledRun() {
-    const replies: {
+    interface Reply {
       cmd: string;
       resolve: (r: CommandResponse) => void;
       reject: (e: unknown) => void;
-    }[] = [];
+    }
+    const replies: Reply[] = [];
+    const locates: Reply[] = [];
     const run = (cmd: string) =>
       new Promise<CommandResponse>((resolve, reject) => {
-        replies.push({ cmd, resolve, reject });
+        (cmd.includes(" -t %") ? locates : replies).push({
+          cmd,
+          resolve,
+          reject,
+        });
       });
-    return { run, replies };
+    return { run, replies, locates };
   }
   const settle = () => new Promise<void>((r) => setTimeout(r, 0));
   const paneIdsOf = (s: ReturnType<typeof makeSink>) =>
@@ -847,14 +866,16 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(sink)).toEqual([5]);
   });
 
-  it("drops held chunks once no query can place them (failed bootstrap)", async () => {
+  it("drops held chunks once no query can place them (failed bootstrap, gone pane)", async () => {
     const router = newRouter();
-    const { run, replies } = controlledRun();
+    const { run, replies, locates } = controlledRun();
     router.onTransportReady(run);
     const sink = makeSink();
     router.attachBytesSink(sink, { scope: sessionScope(1) });
     router.dispatchBytes(makeChunk(5));
     replies[0]!.reject(new Error("boom"));
+    await settle();
+    locates[0]!.reject(paneGone("%5"));
     await settle();
 
     // A later bootstrap placing %5 must not resurrect the dropped chunk.
@@ -862,6 +883,81 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
     await settle();
     expect(sink.chunks).toHaveLength(0);
+  });
+
+  // A seeded router with nothing in flight, and a session sink for $1.
+  async function seeded(onError: (e: Error) => void = () => undefined) {
+    const router = new TopologyRouter(new DeliveryQueue(), onError);
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    replies.shift()!.resolve(makeOkResponse(["%1 @1 $1"]));
+    await settle();
+    return { router, run, replies, locates, sink };
+  }
+
+  it("delivers a new pane's output that beats its announcement, with no server-wide query", async () => {
+    const s = await seeded();
+    // split-window: %7 prints before the %layout-change that announces it.
+    s.router.dispatchBytes(makeChunk(7));
+    expect(s.locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %7 "),
+    ]);
+    s.locates[0]!.resolve(makeOkResponse(["%1 @1 $1", "%7 @1 $1"]));
+    await settle();
+    expect(s.replies.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t @1 "),
+    ]);
+    s.replies[0]!.resolve(makeOkResponse(["%1 @1 $1", "%7 @1 $1"]));
+    await settle();
+    expect(paneIdsOf(s.sink)).toEqual([7]);
+  });
+
+  it("locates a pane once per connection however many chunks it prints", async () => {
+    const errors: Error[] = [];
+    const s = await seeded((e) => errors.push(e));
+    s.router.dispatchBytes(makeChunk(7));
+    s.locates[0]!.reject(new Error("boom"));
+    await settle();
+    for (let i = 0; i < 3; i++) s.router.dispatchBytes(makeChunk(7));
+    await settle();
+    expect(s.locates).toHaveLength(1);
+    expect(s.replies).toEqual([]);
+    expect(errors.map((e) => e.message)).toEqual([
+      "topology locate of %7 failed: boom",
+    ]);
+  });
+
+  it("drops a gone pane's output without reporting it", async () => {
+    const errors: Error[] = [];
+    const s = await seeded((e) => errors.push(e));
+    s.router.dispatchBytes(makeChunk(7));
+    s.locates[0]!.reject(paneGone("%7"));
+    await settle();
+    expect(errors).toEqual([]);
+    expect(s.replies).toEqual([]);
+    expect(s.sink.chunks).toEqual([]);
+  });
+
+  it("holds nothing past a lost connection, and locates again on the next", async () => {
+    const errors: Error[] = [];
+    const s = await seeded((e) => errors.push(e));
+    s.router.dispatchBytes(makeChunk(7));
+    s.router.onTransportLost(s.run);
+    s.locates[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
+    await settle();
+    expect(s.replies).toEqual([]);
+
+    const next = controlledRun();
+    s.router.onTransportReady(next.run);
+    next.replies[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
+    await settle();
+    // The next server's %7 is not the one that printed before the loss.
+    expect(s.sink.chunks).toEqual([]);
+    s.router.dispatchBytes(makeChunk(8));
+    expect(next.locates).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 
   it("replays the bytes as they arrived, not a buffer reused since", async () => {
@@ -1309,10 +1405,11 @@ describe("TopologyRouter — what a sink hears after a callback ends it", () => 
   function withHeldChunks(sinks: BytesSink[]) {
     const router = newRouter();
     let answer: (r: CommandResponse) => void = () => {};
+    // Only the bootstrap answers; the held pane's locate stays in flight.
     router.onTransportReady(
-      () =>
+      (cmd) =>
         new Promise<CommandResponse>((resolve) => {
-          answer = resolve;
+          if (cmd.includes("list-panes -a")) answer = resolve;
         }),
     );
     for (const s of sinks)
