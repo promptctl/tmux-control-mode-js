@@ -253,6 +253,9 @@ export class PaneStream implements ReseedTarget {
   //   writer: tmux keeps a subscription quiet while its value is the one it
   //   last sent, so only that value says what tmux's silence means.
   private size: Grid | null = null;
+  // The size the last seed was drawn at: what the sink shows until the
+  // subscription's first report.
+  private seededAt: Grid | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -905,10 +908,10 @@ export class PaneStream implements ReseedTarget {
     // up to a second before this value arrives, and those bytes reached the
     // sink at the old size. tmux's screen is right: take it again. Detached
     // too: a resize that prints nothing still leaves the cached picture at
-    // the old size.
+    // the old size. Before the first report the old size is the seed's.
+    const shown = this.size ?? this.seededAt;
     const moved =
-      this.size !== null &&
-      (this.size.cols !== dims.cols || this.size.rows !== dims.rows);
+      shown !== null && (shown.cols !== dims.cols || shown.rows !== dims.rows);
     this.size = dims;
     if (moved) this.recapture();
   }
@@ -925,6 +928,7 @@ export class PaneStream implements ReseedTarget {
     trailing: readonly Uint8Array[],
   ): void {
     fit(sink, picture.size);
+    this.seededAt = picture.size;
     sink.seed(picture.captured, picture.cursor, trailing);
     fit(sink, this.size);
   }

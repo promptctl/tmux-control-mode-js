@@ -7,8 +7,8 @@
 //   - seed(captured, cursor): writes captured text + ANSI CUP escape exactly
 //     when cursor is non-null. (Gate 4 fast-path correctness.)
 //   - write(Uint8Array): forwards by reference; never decodes (Gate 5).
-//   - resize(cols, rows): reaches xterm when called, in order with seed()
-//     and write().
+//   - resize(cols, rows): takes effect in order with seed() and write(), as
+//     xterm lays them out.
 //   - setFont / setOptions / remeasure / clear: in-place; never reconstruct Terminal
 //     and never call terminal.dispose(). (O10.)
 //   - dispose(): tears down once; idempotent; subsequent ops are no-ops.
@@ -45,6 +45,8 @@ interface MockTerminal {
   open: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
+  parse(): void;
+  drawn: string[];
   clear: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
@@ -112,9 +114,30 @@ vi.mock("@xterm/xterm", () => {
         "xterm-screen";
       container.appendChild(this.element);
     });
-    write = vi.fn<(d: string | Uint8Array) => void>();
-    resize = vi.fn<(c: number, r: number) => void>();
+    // As xterm does: written bytes queue and are parsed on a later task
+    // (`parse()` stands in for it, logging each chunk with the size it is
+    // laid out at into `drawn`), each callback after its own chunk; a resize
+    // applies at once.
+    private queue: { d: string | Uint8Array; cb?: () => void }[] = [];
+    private size = "default";
+    drawn: string[] = [];
+    write = vi.fn<(d: string | Uint8Array, cb?: () => void) => void>(
+      (d, cb) => void this.queue.push({ d, cb }),
+    );
+    resize = vi.fn<(c: number, r: number) => void>(
+      (c, r) => void (this.size = `${c}x${r}`),
+    );
+    parse() {
+      for (const { d, cb } of this.queue.splice(0)) {
+        if (d.length > 0) {
+          const text = typeof d === "string" ? d : new TextDecoder().decode(d);
+          this.drawn.push(`${text}@${this.size}`);
+        }
+        cb?.();
+      }
+    }
     clear = vi.fn<() => void>();
+    scrollToBottom = vi.fn<() => void>();
     dispose = vi.fn<() => void>();
     focus = vi.fn<() => void>();
     onData = mockEvent();
@@ -292,28 +315,42 @@ describe("XtermSink: write (live byte path)", () => {
 });
 
 describe("XtermSink: resize", () => {
-  it("reaches xterm when called, ahead of a seed that follows it", () => {
-    // A fresh sink holds nothing back: a host sizes it, then seeds it, and
-    // the seed is drawn at that size.
+  it("lays out each byte at the size given before it was written", () => {
+    // xterm parses written bytes on a later task but resizes at once, so a
+    // seed between two resizes must still be drawn at the first one.
     const { sink, term } = newSink();
-    const order: string[] = [];
-    term.resize.mockImplementation(() => order.push("resize"));
-    term.write.mockImplementation(() => order.push("write"));
+    sink.write(enc("old"));
     sink.resize(80, 24);
-    sink.seed(enc("snap"), null, []);
+    sink.seed(enc("snap"), null, [enc("live")]);
     sink.resize(120, 30);
+    sink.write(enc("next"));
+    term.parse();
+    expect(term.drawn).toEqual([
+      "old@default",
+      "snap@80x24",
+      "live@80x24",
+      "next@120x30",
+    ]);
     expect(term.resize.mock.calls).toEqual([
       [80, 24],
       [120, 30],
     ]);
-    expect(order).toEqual(["resize", "write", "resize"]);
     sink.dispose();
+  });
+
+  it("a resize still queued at dispose never reaches xterm", () => {
+    const { sink, term } = newSink();
+    sink.resize(80, 24);
+    sink.dispose();
+    term.parse();
+    expect(term.resize).not.toHaveBeenCalled();
   });
 
   it("ignores degenerate dims (zero cols or rows)", () => {
     const { sink, term } = newSink();
     sink.resize(0, 24);
     sink.resize(80, 0);
+    term.parse();
     expect(term.resize).not.toHaveBeenCalled();
     sink.dispose();
   });

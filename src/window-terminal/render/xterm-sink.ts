@@ -16,10 +16,10 @@
 //     Option changes (the host's `XtermOptions`, the font size) flow
 //     through xterm's in-place option setters; we never
 //     tear-down-and-rebuild (O10).
-//  2. Every call reaches xterm when it is made: `resize()`, `seed()` and
-//     `write()` apply in the order the caller makes them, so a seed is drawn
-//     at the size given just before it. (xterm.js 5 threw on a resize before
-//     its first render tick; xterm.js 6 does not, so nothing is deferred.)
+//  2. `resize()`, `seed()` and `write()` apply in the order the caller makes
+//     them, so a seed is drawn at the size given just before it. xterm
+//     parses written bytes later but resizes at once, so `resize()` queues
+//     itself behind the bytes already written (see `resize`).
 //  3. `write(Uint8Array)` forwards directly to `term.write()` — no
 //     `TextDecoder` in the live path. The byte-fidelity guarantee
 //     comes from this single line.
@@ -229,7 +229,15 @@ export class XtermSink implements TerminalSink {
   resize(cols: number, rows: number): void {
     if (this.isDisposed) return;
     if (cols <= 0 || rows <= 0) return;
-    this.terminal.resize(cols, rows);
+    // [LAW:single-enforcer] The sink keeps its calls in order. xterm queues
+    //   written bytes and parses them on a later task, but `term.resize()`
+    //   applies at once, so a direct call would re-lay out bytes written
+    //   before it (a seed drawn at the next size, not its own). An empty
+    //   write's callback runs in queue order, between the bytes before it and
+    //   the bytes after it.
+    this.terminal.write("", () => {
+      if (!this.isDisposed) this.terminal.resize(cols, rows);
+    });
   }
 
   clear(): void {

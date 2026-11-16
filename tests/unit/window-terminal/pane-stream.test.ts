@@ -1029,6 +1029,32 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
     stream.dispose();
   });
 
+  it("recaptures when tmux's first report differs from the size the seed was drawn at", async () => {
+    // The seed drew 80x24; the pane moved to 120x40 before tmux's first
+    // report, and its program's redraw reached the sink at 80x24.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "120;40");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
+  it("does not recapture when tmux's first report is the size the seed was drawn at", async () => {
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+    stream.dispose();
+  });
+
   it("a cached seed is handed over at its own size too", async () => {
     const { stream } = makeStream({ capture: "hello", cursor: SIZED });
     stream.attach(new RecordingSink());
