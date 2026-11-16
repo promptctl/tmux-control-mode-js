@@ -95,7 +95,7 @@ export class Handshake {
         ok: false,
         errorCode: "BRIDGE_AUTH_DENIED",
         closeCode: AUTH_DENIED,
-        reason: `authenticate failed: ${thrownMessage(err)}`,
+        reason: thrownMessage(err),
       };
     }
   }
