@@ -583,7 +583,7 @@ describe("XtermSink: in-place option setters (O10)", () => {
     if (screen === null || screen === undefined) {
       throw new Error("the terminal opened no screen");
     }
-    // A renderer addon's link layer: WebGL's, or the canvas addon's.
+    // A renderer addon's link layer, as WebGL draws it.
     const linkLayer = document.createElement("canvas");
     linkLayer.className = "xterm-link-layer";
     const mutated = () => new Promise((r) => setTimeout(r, 0));

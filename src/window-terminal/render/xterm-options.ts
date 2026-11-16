@@ -8,7 +8,11 @@
 //   a new xterm option needs no change here.
 
 import { Terminal } from "@xterm/xterm";
-import type { ITerminalAddon, ITerminalOptions } from "@xterm/xterm";
+import type {
+  ITerminalAddon,
+  ITerminalInitOnlyOptions,
+  ITerminalOptions,
+} from "@xterm/xterm";
 import type { CellFont } from "../sizing/cell-metrics.js";
 
 /**
@@ -25,7 +29,7 @@ export type XtermAddons = () => readonly ITerminalAddon[];
  * (tabStopWidth) and answer the window reports themselves (windowOptions),
  * the sizing solver picks the font size from `sizing.font` (fontSize),
  * `history` is the scrollback (scrollback), a pane's box is exactly its
- * cells wide, so a ruler would cover its last columns (overviewRulerWidth),
+ * cells wide, so a ruler would cover its last columns (overviewRuler),
  * and a character's cells are counted as tmux counts them, through xterm's
  * proposed Unicode API (allowProposedApi).
  */
@@ -33,16 +37,20 @@ export const TERMINAL_OWNED = [
   "cols",
   "rows",
   "convertEol",
-  "windowsMode",
   "windowsPty",
   "documentOverride",
   "fontSize",
   "scrollback",
   "tabStopWidth",
   "windowOptions",
-  "overviewRulerWidth",
+  "overviewRuler",
   "allowProposedApi",
-] as const;
+  // [LAW:types-are-the-program] Each key is one xterm.js has: a key a new
+  //   xterm drops stops the build instead of being refused for nothing.
+] as const satisfies readonly (
+  | keyof ITerminalOptions
+  | keyof ITerminalInitOnlyOptions
+)[];
 
 /** xterm.js's options for every pane, less the ones the terminal owns. */
 export type XtermOptions = Omit<

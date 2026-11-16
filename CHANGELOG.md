@@ -8,6 +8,18 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `./window-terminal` needs `@xterm/xterm` 6 (peer `^6.0.0`, was `^5.5.0`);
+  renderer addons move with it (`@xterm/addon-webgl` 0.19; there is no canvas
+  addon for xterm.js 6). A pane whose view followed its output kept following
+  when it grew: xterm.js 5.5 read the scroll event the browser raised for the
+  taller viewport as the person scrolling, when output landed before it, and
+  held the view rows above the bottom. xterm.js 6 keeps the scroll position
+  itself. Its scrollbar, drawn over a pane's last column, is hidden, as the
+  old one was. The terminal owns `xterm.overviewRuler`, which replaced
+  `overviewRulerWidth`, so a host that passes it gets a `RangeError`;
+  `windowsMode`, gone from xterm.js 6, is refused as an option xterm.js does
+  not have.
+
 - `xterm.allowProposedApi` (`./window-terminal`) is the terminal's: a pane
   counts cells through xterm.js's proposed Unicode API, so it is always on,
   and a host that passes it gets a `RangeError`. A host that loaded

@@ -129,7 +129,14 @@ export class WindowRenderer implements PaneSurfaces {
       width: "calc(var(--wt-cols) * var(--wt-cell-w))",
       height: "calc(var(--wt-rows) * var(--wt-cell-h))",
     });
-    this.root.appendChild(this.grid);
+    // A pane's box is exactly its cells wide; xterm's scrollbar, drawn over
+    // the screen's right edge, would cover its last column and take the
+    // pointer there. xterm has no option for it, so one rule hides it in
+    // every pane, as xterm opens or rebuilds it. Wheel scrolling still works.
+    const style = doc.createElement("style");
+    style.textContent =
+      ".wt-root .xterm-scrollable-element > .scrollbar.vertical { display: none; }";
+    this.root.append(style, this.grid);
     host.appendChild(this.root);
 
     this.root.addEventListener("focusin", this.onFocusIn);
@@ -188,13 +195,6 @@ export class WindowRenderer implements PaneSurfaces {
       });
     } catch (cause) {
       return { sink: NOTHING_DRAWN, failures: [cause] };
-    }
-    // The pane's own box clips the terminal to its cell rect; a viewport
-    // scrollbar would cover its last columns. Wheel scrolling still works.
-    const viewport =
-      sink.terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
-    if (viewport !== null && viewport !== undefined) {
-      viewport.style.scrollbarWidth = "none";
     }
     return { sink, failures: [] };
   }
