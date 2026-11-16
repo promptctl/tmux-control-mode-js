@@ -222,6 +222,80 @@ describe.skipIf(!RUN_INTEGRATION)(
       );
       expect(order).toEqual([`resize(${size.cols}x${size.rows})`, "seed"]);
     }, 15000);
+
+    it("draws a pane again at its size after a capture during a zoom undone inside one check", async () => {
+      // tmux reports a size only when it differs from the one it last sent,
+      // so a zoom and unzoom between two checks is never reported.
+      session = uniqueName("zoom");
+      client = await createSession(socket, session);
+      const paneId = await getPrimaryPaneId(client);
+      await client.execute(`split-window -h -t %${paneId}`);
+      const size = await paneSize(client, paneId);
+
+      // The size each capture was taken at: the state line's last two
+      // fields are pane_height ... pane_width.
+      const captures: { cols: number; rows: number }[] = [];
+      const recording = new Proxy(client, {
+        get(target, key, receiver) {
+          if (key !== "execute") {
+            const value: unknown = Reflect.get(target, key, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          }
+          return async (command: string) => {
+            const reply = await target.execute(command);
+            if (command.startsWith("capture-pane")) {
+              const fields = (reply.output.at(-1) ?? "").split(";");
+              captures.push({
+                cols: Number(fields[12]),
+                rows: Number(fields[8]),
+              });
+            }
+            return reply;
+          };
+        },
+      });
+
+      stream = new PaneStream({ client: recording, paneId });
+      stream.attach(new CollectorSink());
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
+      // Past tmux's next check, which reports the pane's size.
+      await new Promise((r) => setTimeout(r, 1100));
+      stream.detach();
+      // A byte from the pane drops the cached picture, so the next attach
+      // captures.
+      const quiet = stream.activity.lastByteAt;
+      await client.execute(`send-keys -t %${paneId} Enter`);
+      await readUntil(
+        () => stream!.activity.lastByteAt,
+        (at) => at !== quiet,
+        "the pane printed nothing",
+      );
+
+      await client.execute(`resize-pane -Z -t %${paneId}`);
+      const before = captures.length;
+      const zoomed = new CollectorSink();
+      stream.attach(zoomed);
+      await readUntil(
+        () => zoomed.seedCalls.length,
+        (n) => n > 0,
+        "the zoomed attach never seeded",
+      );
+      await client.execute(`resize-pane -Z -t %${paneId}`);
+      expect(captures[before]?.cols).toBeGreaterThan(size.cols);
+
+      const after = await readUntil(
+        () => captures.slice(before + 1),
+        (seen) => seen.length > 0,
+        "nothing captured the pane again after the unzoom",
+        3000,
+      );
+      expect(after.at(-1)).toEqual(size);
+      expect(zoomed.resizeCalls.at(-1)).toEqual(size);
+    }, 15000);
   },
 );
 

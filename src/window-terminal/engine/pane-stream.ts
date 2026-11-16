@@ -70,6 +70,14 @@ declare const setTimeout: (handler: () => void, ms?: number) => unknown;
 declare const clearTimeout: (id: unknown) => void;
 declare const Date: { now(): number };
 
+/**
+ * How long after a capture that tmux has not vouched for the stream looks
+ * again: one subscription check (tmux runs it every second, `control.c`
+ * `subs_timer`) plus margin. Looking early costs one redundant capture, never
+ * a wrong picture: the report that follows still recaptures.
+ */
+export const REPORT_WINDOW_MS = 1200;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -251,6 +259,12 @@ export class PaneStream implements ReseedTarget {
   private reported: Grid | null = null;
   // The size the newest capture was taken at; null before the first.
   private captured: Grid | null = null;
+  // A capture at a size tmux has not reported: the pane may have been zoomed
+  // and restored inside one check, which tmux never reports. One check later
+  // tmux has either reported the size (and the report recaptures) or the pane
+  // is back at the reported size, so this timer captures again. A report, a
+  // reconnect and dispose disarm it (`disarmFollowUp`).
+  private followUpTimer: unknown = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -325,6 +339,7 @@ export class PaneStream implements ReseedTarget {
       // reported nothing yet, and may never report this pane (a new control
       // client whose session does not hold it).
       this.reported = null;
+      this.disarmFollowUp();
       // The pane moved while we were disconnected: the cache and any
       // capture-pane in flight are pre-reconnect pictures, so the
       // ReseedScheduler's upcoming reseed() (or the next attach()) captures
@@ -586,6 +601,7 @@ export class PaneStream implements ReseedTarget {
       clearTimeout(this.flushTimerId);
       this.flushTimerId = null;
     }
+    this.disarmFollowUp();
     this.sink = null;
     for (const set of Object.values(this.listeners)) set.clear();
     // [LAW:single-enforcer] dispose() is the one teardown — drop the retained
@@ -838,6 +854,7 @@ export class PaneStream implements ReseedTarget {
     // above), so any outstanding seed failure is moot — clear it so lastError
     // stops reporting a recovered transient failure.
     if (picture !== null) {
+      this.followUpUnvouched(picture.size);
       this.captured = picture.size;
       this.clearError("seed");
     }
@@ -928,7 +945,42 @@ export class PaneStream implements ReseedTarget {
     const moved =
       this.size?.cols !== dims.cols || this.size?.rows !== dims.rows;
     this.reported = dims;
+    // tmux has spoken since the unvouched capture: the report above decides.
+    this.disarmFollowUp();
     if (moved) this.recapture();
+  }
+
+  /**
+   * Look again one check after a capture taken at a size tmux has not
+   * reported (see {@link REPORT_WINDOW_MS}). Not before any report: a pane
+   * outside the control client's session is never reported, and its
+   * captures are the only size it has. Not for a size the previous picture
+   * already showed: then the follow-up that size armed has looked, and tmux
+   * still has not reported it, so a further look would capture once a
+   * second for as long as the pane stays at that size. A capture in flight
+   * leaves an armed follow-up armed, since a second capture during one zoom
+   * finds the same transient size.
+   * [LAW:one-source-of-truth] The report stays the size the sink is drawn
+   *   at; the follow-up only asks tmux again, through `recapture`.
+   */
+  private followUpUnvouched(size: Grid | null): void {
+    const unvouched =
+      size !== null &&
+      this.reported !== null &&
+      !sameGrid(size, this.reported) &&
+      !sameGrid(size, this.captured);
+    if (!unvouched || this.followUpTimer !== null) return;
+    this.followUpTimer = setTimeout(() => {
+      this.followUpTimer = null;
+      this.recapture();
+    }, REPORT_WINDOW_MS);
+  }
+
+  // [LAW:single-enforcer] The one place the follow-up is disarmed.
+  private disarmFollowUp(): void {
+    if (this.followUpTimer === null) return;
+    clearTimeout(this.followUpTimer);
+    this.followUpTimer = null;
   }
 
   private setState(next: PaneStreamState): void {
@@ -981,6 +1033,10 @@ export class PaneStream implements ReseedTarget {
 function parseDimensions(value: string): Grid | null {
   const [width, height, ...rest] = value.split(";");
   return rest.length === 0 ? parseGrid(width, height) : null;
+}
+
+function sameGrid(a: Grid, b: Grid | null): boolean {
+  return a.cols === b?.cols && a.rows === b.rows;
 }
 
 // Size `sink` to `grid`, when the stream knows one.

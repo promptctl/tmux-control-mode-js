@@ -7,7 +7,10 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
-import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
+import {
+  PaneStream,
+  REPORT_WINDOW_MS,
+} from "../../../src/window-terminal/engine/pane-stream.js";
 import type {
   PaneActivity,
   PaneStreamError,
@@ -1373,6 +1376,157 @@ describe("PaneStream — event listeners", () => {
     await flushTicks();
     expect(kept).toEqual(["seeding", "live"]);
     expect(dropped).toEqual([]);
+    stream.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lkg.ej3 — tmux reports a size only when it differs from the one it last
+// sent, once a second. A capture taken while the pane was zoomed and restored
+// inside one check is at a size tmux will never report, so the stream looks
+// again one check later.
+// ---------------------------------------------------------------------------
+
+describe("PaneStream — a capture at a size tmux has not reported", () => {
+  const AT_80x24 = "0;0;0;1;0;0;0;1;24;0;0;23;80";
+  const AT_100x30 = "0;0;0;1;0;0;0;1;30;0;0;29;100";
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    return () => vi.useRealTimers();
+  });
+
+  // A stream whose captures report the size `at` holds when tmux runs them,
+  // with tmux's report of 80x24 already in.
+  function reportedAt80x24(): {
+    client: FakeTmuxClient;
+    stream: PaneStream;
+    name: string;
+    at: { size: string };
+  } {
+    const at = { size: AT_80x24 };
+    const client = new FakeTmuxClient();
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message") ? at.size : "hello",
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    return { client, stream, name, at };
+  }
+
+  // Advance the clock, then let the fake's zero-delay replies land, as
+  // `flushTicks` does on the real clock (a fake zero-delay timer fires 1ms on).
+  async function settle(ms = 0): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms);
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(1);
+  }
+
+  it("is taken again one check later, at the pane's real size", async () => {
+    const { client, stream, at } = reportedAt80x24();
+    const sink = new RecordingSink();
+    at.size = AT_100x30; // zoomed while the attach captures
+    stream.attach(sink);
+    await settle();
+    expect(sink.seedTexts).toHaveLength(1);
+    at.size = AT_80x24; // unzoomed before tmux's next check: no report
+
+    await settle(REPORT_WINDOW_MS);
+    expect(client.capturePaneCount()).toBe(2);
+    expect(sink.seedTexts).toHaveLength(2);
+    expect(sink.events.at(-1)).toMatch(/^seed/);
+    expect(sink.events.filter((e) => e.startsWith("resize"))).toEqual([
+      "resize(80x24)",
+      "resize(80x24)",
+    ]);
+    stream.dispose();
+  });
+
+  it("a report before the check decides instead", async () => {
+    const { client, stream, name, at } = reportedAt80x24();
+    at.size = AT_100x30; // the pane really grew
+    stream.attach(new RecordingSink());
+    await settle();
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await settle();
+    expect(client.capturePaneCount()).toBe(2); // the report's recapture
+
+    await settle(REPORT_WINDOW_MS * 5);
+    expect(client.capturePaneCount()).toBe(2);
+    stream.dispose();
+  });
+
+  it("looks once at a size tmux never reports, not once a second", async () => {
+    // A pane tmux stopped reporting (its window left the client's session)
+    // and then resized: every capture shows a size tmux will never send.
+    const { client, stream, at } = reportedAt80x24();
+    at.size = AT_100x30;
+    stream.attach(new RecordingSink());
+    await settle();
+    await settle(REPORT_WINDOW_MS * 10);
+    expect(client.capturePaneCount()).toBe(2);
+    stream.dispose();
+  });
+
+  it("a capture at the reported size arms nothing", async () => {
+    const { client, stream } = reportedAt80x24();
+    stream.attach(new RecordingSink());
+    await settle();
+    await settle(REPORT_WINDOW_MS * 3);
+    expect(client.capturePaneCount()).toBe(1);
+    stream.dispose();
+  });
+
+  it("before any report, a capture's size is the only one there is", async () => {
+    const { client, stream } = makeStream({
+      capture: "hello",
+      cursor: AT_100x30,
+    });
+    stream.attach(new RecordingSink());
+    await settle();
+    await settle(REPORT_WINDOW_MS * 3);
+    expect(client.capturePaneCount()).toBe(1);
+    stream.dispose();
+  });
+
+  it("a detached stream's look drops the cache, so the next attach captures afresh", async () => {
+    const { client, stream, at } = reportedAt80x24();
+    at.size = AT_100x30;
+    stream.attach(new RecordingSink());
+    await settle();
+    stream.detach();
+    at.size = AT_80x24;
+    await settle(REPORT_WINDOW_MS);
+    expect(client.capturePaneCount()).toBe(1); // nobody to capture for
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding"); // not the transient cached picture
+    await settle();
+    expect(client.capturePaneCount()).toBe(2);
+    stream.dispose();
+  });
+
+  it("dispose disarms it", async () => {
+    const { client, stream, at } = reportedAt80x24();
+    at.size = AT_100x30;
+    stream.attach(new RecordingSink());
+    await settle();
+    stream.dispose();
+    await settle(REPORT_WINDOW_MS * 3);
+    expect(client.capturePaneCount()).toBe(1);
+  });
+
+  it("a reconnect disarms it: the old connection's report vouches for nothing", async () => {
+    const { client, stream, at } = reportedAt80x24();
+    at.size = AT_100x30;
+    stream.attach(new RecordingSink());
+    await settle();
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    await settle();
+    const captures = client.capturePaneCount(); // the reconnect's reseed
+    await settle(REPORT_WINDOW_MS * 3);
+    expect(client.capturePaneCount()).toBe(captures);
     stream.dispose();
   });
 });
