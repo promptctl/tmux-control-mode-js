@@ -295,6 +295,48 @@ everything live.
 - **Per-control-mode-client** — `pause`/`continue` only affect *this* client's
   view. Other tmux clients attached to the same session are untouched.
 
+## A slow command
+
+tmux runs a `TmuxClient`'s commands one at a time, in the order they arrive, so
+a slow command holds up every command sent after it on that connection. A
+`run-shell` waiting on its process holds up only that connection. A
+`capturePane` of a pane with a very long scrollback runs on tmux's single
+server thread, so it also stalls every other client of that server while it
+runs. `TmuxClient` sets no timeout: tmux cannot cancel a command it has already
+received, so a later command waits for the slow one however long the caller
+waits.
+
+To bound how long one caller waits, race the command against a timer, and clear
+the timer when the race settles:
+
+```ts
+import { capturePane } from "@promptctl/tmux-control-mode-js";
+
+async function within<T>(ms: number, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const capture = await within(5_000, capturePane(client, paneId));
+```
+
+The command keeps running in tmux. The client still holds its place in line,
+so the reply that arrives later settles the promise you stopped waiting on and
+never reaches another command's. To free the commands queued behind a command
+that will never finish, `close()` the connection: the queued commands reject
+with `TransportClosedError`.
+
+A `WebSocketTmuxClient` call rejects on its own with `BridgeError`
+`BRIDGE_TIMEOUT`, but the same holds there: the command keeps running on the
+server's `TmuxClient`, and a retry waits behind it.
+
 ## Testing
 
 ```bash
