@@ -1,19 +1,21 @@
 // examples/web-multiplexer/web/collab-bridge.test.ts
 //
-// The collaborative channel's input path, live: CollabBridge over the
-// platform WebSocket, the demo server's own `handleCollabConnection`, and a
-// real tmux pane running od on a raw tty — so the pane's dump is exactly the
-// bytes its pty received. Gated behind TMUX_INTEGRATION=1.
+// The collaborative channel's input path, live: CollabBridge over a
+// WebSocket, the demo server's own `handleCollabConnection`, and a real tmux
+// pane recording the raw bytes its pty receives. Gated behind
+// TMUX_INTEGRATION=1.
 //
 // The file reads the package's built dist/ as the demo does: run
 // `pnpm run build` first.
 
-import { describe, it, beforeAll, afterAll } from "vitest";
+import { describe, it, beforeAll, afterAll, vi } from "vitest";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { killTmuxServer } from "../../../tests/helpers/reap-test-sockets.ts";
 import {
+  hexBytes,
+  rawInputCapture,
   readUntil,
   tmux,
   uniqueSocket,
@@ -29,11 +31,15 @@ describe.skipIf(!integration)("CollabBridge input → pane", () => {
   const socket = uniqueSocket("tmux-bridge-test-", "collab");
   const registry = new MirrorRegistry();
   const input = new CollabInput();
+  const capture = rawInputCapture();
   let server: WebSocketServer;
   let wsBase: string;
   let paneId: number;
 
   beforeAll(async () => {
+    // The browser's WebSocket, which Node has globally only from 22: ws's
+    // client speaks the same API CollabBridge uses.
+    vi.stubGlobal("WebSocket", WebSocket);
     tmux(socket, [
       "new-session",
       "-d",
@@ -41,7 +47,7 @@ describe.skipIf(!integration)("CollabBridge input → pane", () => {
       "80",
       "-y",
       "24",
-      "stty raw -echo; od -An -tx1 -v",
+      capture.command,
     ]);
     // The server's control clients attach where the demo's do.
     process.env.TMUX_DEMO_SOCKET = socket;
@@ -55,8 +61,8 @@ describe.skipIf(!integration)("CollabBridge input → pane", () => {
           "-p",
           "#{pane_current_command}",
         ]).trim(),
-      (cmd) => cmd === "od",
-      "the pane never reached od",
+      (cmd) => cmd === "cat",
+      "the pane never reached cat",
     );
     server = new WebSocketServer({ port: 0 });
     server.on("connection", (ws, request) =>
@@ -72,28 +78,23 @@ describe.skipIf(!integration)("CollabBridge input → pane", () => {
     server.close();
     delete process.env.TMUX_DEMO_SOCKET;
     killTmuxServer(socket);
+    vi.unstubAllGlobals();
   });
 
   it("input bytes reach the pane's program byte-exact, a legacy mouse report included", async () => {
     const bridge = new CollabBridge(wsBase, paneId);
     // Sent before the socket opens: buffered, then flushed in order.
     const mouse = new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21]);
-    const text = new TextEncoder().encode("éABCDEFGH");
+    const text = new TextEncoder().encode("é");
     bridge.sendKeyBytes(mouse);
     bridge.sendKeyBytes(text);
     bridge.connect();
     try {
-      const expected = [...mouse, ...text]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join(" ");
+      const expected = hexBytes([...mouse, ...text]);
       await readUntil(
-        () =>
-          tmux(socket, ["capture-pane", "-p", "-t", `%${paneId}`]).replace(
-            /\s+/g,
-            " ",
-          ),
-        (d) => d.includes(expected),
-        `the pane never received ${expected}`,
+        capture.hex,
+        (got) => got === expected,
+        `the pane never received exactly ${expected}`,
       );
     } finally {
       bridge.disconnect();

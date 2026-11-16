@@ -6,6 +6,9 @@
 // already armed first). Integration tests import these; they do not redeclare
 // them.
 
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspect } from "node:util";
 import { tmux } from "./tmux-cli.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
@@ -335,4 +338,24 @@ export async function readUntil<T>(
     }
     await new Promise<void>((r) => setTimeout(r, 10));
   }
+}
+
+/**
+ * A pane program that records the bytes its pty delivers: a raw tty (no line
+ * discipline, no echo) copied by `cat` into a file. The check reads the file,
+ * so no program's output buffering or terminal rendering stands between the
+ * input and the assertion. The pane's command is `cat` once it is recording.
+ */
+export function rawInputCapture(): { command: string; hex: () => string } {
+  const file = join(mkdtempSync(join(tmpdir(), "raw-input-")), "input");
+  writeFileSync(file, "");
+  return {
+    command: `stty raw -echo; exec cat > '${file}'`,
+    hex: () => hexBytes(readFileSync(file)),
+  };
+}
+
+/** Bytes as space-separated two-digit hex, the form a capture is compared in. */
+export function hexBytes(bytes: Iterable<number>): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
 }

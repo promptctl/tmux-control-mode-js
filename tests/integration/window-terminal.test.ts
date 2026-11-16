@@ -13,6 +13,8 @@ import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
+  hexBytes,
+  rawInputCapture,
   readUntil,
   tmux,
   uniqueName,
@@ -329,14 +331,8 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
 
   it("input bytes typed into a pane reach its program byte-exact, a legacy mouse report included", async () => {
     const { c, window } = await start();
-    // A raw tty and od: the program sees exactly the bytes its pty received.
-    q(socket, [
-      "split-window",
-      "-h",
-      "-t",
-      window,
-      "stty raw -echo; od -An -tx1 -v",
-    ]);
+    const capture = rawInputCapture();
+    q(socket, ["split-window", "-h", "-t", window, capture.command]);
     const pane = q(socket, [
       "display-message",
       "-p",
@@ -356,23 +352,20 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
           pane,
           "#{pane_current_command}",
         ]),
-      (cmd) => cmd === "od",
-      "the pane never reached od",
+      (cmd) => cmd === "cat",
+      "the pane never reached cat",
     );
 
-    // A DEFAULT-encoded press at column 129 (0xa1), then "é" as UTF-8, then
-    // padding to od's 16-byte line.
-    const mouse = [0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21];
-    const text = new TextEncoder().encode("éABCDEFGH");
-    s.send(pane as PaneId, new Uint8Array(mouse));
+    // A DEFAULT-encoded press at column 129 (0xa1), then "é" as UTF-8.
+    const mouse = new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21]);
+    const text = new TextEncoder().encode("é");
+    s.send(pane as PaneId, mouse);
     s.send(pane as PaneId, text);
-    const expected = [...mouse, ...text]
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join(" ");
+    const expected = hexBytes([...mouse, ...text]);
     await readUntil(
-      () => q(socket, ["capture-pane", "-p", "-t", pane]).replace(/\s+/g, " "),
-      (dump) => dump.includes(expected),
-      `the pane never received ${expected}`,
+      capture.hex,
+      (got) => got === expected,
+      `the pane never received exactly ${expected}`,
     );
   });
 

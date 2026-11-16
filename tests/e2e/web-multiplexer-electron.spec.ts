@@ -45,7 +45,8 @@ import {
   type Page,
 } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -243,9 +244,8 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
 // A click reaches the pane's program when that program asked for legacy mouse
 // reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
 // not `onData` — a path the window terminal must forward as raw bytes. The
-// program here is od on a raw tty, so the grid shows the exact bytes it read:
-// two clicks are a press (`1b 5b 4d 20 …`) and a release (`1b 5b 4d 23 …`)
-// each, 24 bytes, enough for od's first 16-byte line.
+// program here copies its raw tty's input to a file, so the test reads the
+// exact bytes it received.
 test("a real click in legacy mouse mode reaches the pane's program", async () => {
   const app = await electron.launch({
     args: [APP_ROOT],
@@ -263,9 +263,12 @@ test("a real click in legacy mouse mode reaches the pane's program", async () =>
       `E2E_${Date.now().toString(36).toUpperCase()}`,
     );
 
+    // The pane's program records the raw bytes its pty receives to a file.
+    const capture = join(mkdtempSync(join(tmpdir(), "e2e-mouse-")), "input");
+    writeFileSync(capture, "");
     const textarea = page.locator(".xterm-helper-textarea").first();
     await textarea.pressSequentially(
-      "clear; printf '\\033[?1000h'; stty raw -echo; od -An -tx1 -v\n",
+      `clear; printf '\\033[?1000h'; stty raw -echo; exec cat > '${capture}'\n`,
       { delay: 10 },
     );
     await expect
@@ -284,15 +287,14 @@ test("a real click in legacy mouse mode reaches the pane's program", async () =>
           { encoding: "utf8" },
         ).trim(),
       )
-      .toBe("od");
+      .toBe("cat");
 
     const screen = page.locator(".xterm-screen").first();
     await screen.click({ position: { x: 20, y: 20 } });
-    await screen.click({ position: { x: 20, y: 20 } });
-    await expect(page.locator(".xterm-rows").first()).toContainText(
-      /1b\s+5b\s+4d\s+20.*1b\s+5b\s+4d\s+23/,
-      { timeout: 15_000 },
-    );
+    // A DEFAULT-encoded press (button 0, 0x20) and its release (0x23).
+    await expect
+      .poll(() => readFileSync(capture).toString("hex"), { timeout: 15_000 })
+      .toMatch(/^1b5b4d20....1b5b4d23/);
   } finally {
     await app.close();
   }
