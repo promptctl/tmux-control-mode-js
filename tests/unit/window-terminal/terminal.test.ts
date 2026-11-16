@@ -381,7 +381,7 @@ describe("window terminal — what is drawn", () => {
     expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
     expect(m.host.querySelector(".wt-root")).toBeNull();
     expect(terminals).toHaveLength(1);
-    expect(m.client.held()).toEqual(NOTHING_HELD);
+    expect(m.client.held()).toEqual(RELEASED);
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {

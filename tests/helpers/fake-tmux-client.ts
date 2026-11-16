@@ -201,21 +201,13 @@ export class FakeTmuxClient {
    * macrotask boundary between the call site and the response.
    */
   execute(command: string): Promise<CommandResponse> {
-    return this.issue(command).reply;
-  }
-
-  // The reply, and whether tmux refuses the command: known when it is issued.
-  private issue(command: string): {
-    readonly refused: boolean;
-    readonly reply: Promise<CommandResponse>;
-  } {
     this.commandLog.push(command);
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
-    const reply = new Promise<CommandResponse>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
         // TmuxClient.execute, which rejects with a typed error on %error /
@@ -249,28 +241,28 @@ export class FakeTmuxClient {
         });
       }, this.roundTripMs);
     });
-    return { refused: failure !== null, reply };
   }
 
-  // [LAW:single-enforcer] `issue()` is the fake's ONE command path, as
-  //   `execute()` is `TmuxClient`'s: the subscription methods encode and go
-  //   through it, so the command log and `setExecuteFailure` see subscriptions
-  //   like any command.
+  // [LAW:single-enforcer] `execute()` is the fake's ONE command path, as it is
+  //   `TmuxClient`'s: the subscription methods encode and go through it, so the
+  //   command log and `setExecuteFailure` see subscriptions like any command.
+  //   Replies settle in the order commands were issued, as tmux answers them,
+  //   so what a subscription command achieved is what its reply says.
   subscribeRaw(
     name: string,
     what: string,
     format: string,
   ): Promise<CommandResponse> {
-    const { refused, reply } = this.issue(
-      refreshClientSubscribe(name, what, format),
-    );
-    if (!refused) this.subscriptions.add(name);
+    const reply = this.execute(refreshClientSubscribe(name, what, format));
+    // The caller handles a refusal; this only records what tmux holds.
+    void reply.then(() => this.subscriptions.add(name), ignoreRefusal);
     return reply;
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {
-    this.subscriptions.delete(name);
-    return this.execute(refreshClientUnsubscribe(name));
+    const reply = this.execute(refreshClientUnsubscribe(name));
+    void reply.then(() => this.subscriptions.delete(name), ignoreRefusal);
+    return reply;
   }
 
   // The size methods are the plain commands, as on a connection with one
@@ -307,6 +299,8 @@ export class FakeTmuxClient {
   close(): void {
     this.setConnectionState({ status: "closed", reason: "disposed" });
     this.listeners.clear();
+    // tmux drops a control client's subscriptions with the client.
+    this.subscriptions.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -473,3 +467,6 @@ function sameState(a: ConnectionState, b: ConnectionState): boolean {
   }
   return true;
 }
+
+// A refused command leaves what tmux holds as it was.
+function ignoreRefusal(): void {}

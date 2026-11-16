@@ -62,6 +62,10 @@ import {
 /** What the renderer gives a pane: where its picture goes, and its teardown. */
 export interface PaneSurface {
   readonly sink: TerminalSink;
+  /**
+   * Idempotent: the renderer's own teardown may already have taken a surface
+   * the engine still holds.
+   */
   dispose(): void;
 }
 
@@ -375,7 +379,11 @@ export class WindowEngine {
   //   have disposed the terminal.
   private createPane(id: PaneId): void {
     if (this.ended) return;
-    // Keys arrive from the person at the pane, never inside create().
+    const stream = new PaneStream({
+      client: this.connection,
+      paneId: paneNumber(id),
+      historyLines: this.history,
+    });
     const surface = this.surfaces.create(id, (bytes) => {
       void stream.sendKeyBytes(bytes).catch((err: unknown) => {
         if (!isConnectionGone(err)) {
@@ -384,17 +392,12 @@ export class WindowEngine {
       });
     });
     // The renderer reports a pane that failed to open from inside create(),
-    // and a listener there may dispose the terminal: the surface goes back
-    // before tmux is asked for anything.
+    // and a listener there may dispose the terminal: this pane is not held yet.
     if (this.ended) {
       surface.dispose();
+      stream.dispose();
       return;
     }
-    const stream = new PaneStream({
-      client: this.connection,
-      paneId: paneNumber(id),
-      historyLines: this.history,
-    });
     stream.on("error", (e) =>
       this.report({ seam: e.phase, paneId: id, cause: e.cause }),
     );
