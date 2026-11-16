@@ -16,6 +16,13 @@ All notable changes to this project are documented here. Format follows
   `tabStopWidth`, `windowOptions` and `overviewRulerWidth`, as well as the
   sizes and modes tmux owns. The React component updates each setting on
   its own, and a prop taken away returns to its default.
+- `createWebSocketBridge` types the connection identity: the identity
+  `authenticate()` attaches reaches `createClient`, `disposeClient`,
+  `authorize` and `onEvent` as the app's own type, inferred from the hook.
+  An accept names its identity (`{ ok: true, identity: undefined }` for none),
+  and `authenticate: cond ? hook : undefined` no longer compiles when the hook
+  attaches one: pass a hook that accepts with no identity instead.
+  `ConnectionIdentity` is gone; `Authenticate<Identity>` is the hook's type.
 - The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
   gone: call the connection's methods of the same names (`ClientSizeSurface`).
   They sent `refresh-client -C` through `execute()`, past the client's size

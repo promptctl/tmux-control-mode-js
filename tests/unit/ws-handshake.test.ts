@@ -11,6 +11,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const acceptAll = () => ({ ok: true as const, identity: undefined });
+
 // The handshake only accepts a stamped deadline; tests go through the same
 // parser the bridge does.
 const ms = (n: number) => parseDurationMs("helloTimeoutMs", n);
@@ -19,7 +21,7 @@ describe("Handshake — hello timeout", () => {
   it("fires onTimeout when hello is not received in time", () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();
-    const hs = new Handshake(ms(100), undefined, undefined);
+    const hs = new Handshake(ms(100), undefined, acceptAll);
     hs.arm(onTimeout);
     vi.advanceTimersByTime(100);
     expect(onTimeout).toHaveBeenCalledOnce();
@@ -28,7 +30,7 @@ describe("Handshake — hello timeout", () => {
   it("clear() prevents onTimeout from firing", () => {
     vi.useFakeTimers();
     const onTimeout = vi.fn();
-    const hs = new Handshake(ms(100), undefined, undefined);
+    const hs = new Handshake(ms(100), undefined, acceptAll);
     hs.arm(onTimeout);
     hs.clear();
     vi.advanceTimersByTime(100);
@@ -36,18 +38,12 @@ describe("Handshake — hello timeout", () => {
   });
 
   it("clear() before arm() is a no-op (does not throw)", () => {
-    const hs = new Handshake(ms(100), undefined, undefined);
+    const hs = new Handshake(ms(100), undefined, acceptAll);
     expect(() => hs.clear()).not.toThrow();
   });
 });
 
 describe("Handshake — authenticate()", () => {
-  it("returns ok:true when no auth hook is configured", async () => {
-    const hs = new Handshake(ms(100), undefined, undefined);
-    const result = await hs.authenticate();
-    expect(result).toEqual({ ok: true, identity: undefined });
-  });
-
   it("passes the result from the auth hook through", async () => {
     const hook = vi.fn().mockResolvedValue({ ok: true, identity: "user-42" });
     const hs = new Handshake(
