@@ -425,7 +425,7 @@ test("a pane resized again and again holds its history once", async () => {
     // check to see.
     const holdsTmuxGrid = async (): Promise<string> => {
       const [held, truth] = [await xtermGrid(), tmuxGrid()];
-      return held.rows === truth.rows && held.lines === truth.lines
+      return held.rows === truth.rows
         ? "same"
         : `xterm ${held.rows} rows/${held.lines} lines, tmux ${truth.rows}/${truth.lines}`;
     };

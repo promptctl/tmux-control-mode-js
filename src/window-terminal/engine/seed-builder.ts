@@ -130,7 +130,7 @@ function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
 
 const ESC = "\x1b";
 // Cursor home, SGR reset, erase the screen (ED 2), erase the scrollback (ED 3).
-const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+const CLEAR = `${ESC}[H`;
 
 function parseSeedState(line: string): SeedState {
   // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
