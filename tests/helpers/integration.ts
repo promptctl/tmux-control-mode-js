@@ -238,6 +238,15 @@ export async function attachSession(
   }
 }
 
+/** The numeric id of the client's current pane (`%N` → N). */
+export async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
+  const r = await client.execute("display-message -p '#{pane_id}'");
+  const line = r.output[0] ?? "";
+  const m = line.match(/^%(\d+)$/);
+  if (m === null) throw new Error(`unexpected pane id reply: ${line}`);
+  return Number(m[1]);
+}
+
 /**
  * Attach a second control client to `sessionName` on `socketName`, run `body`
  * with it, and always close it — even if `body` throws — so a failing probe

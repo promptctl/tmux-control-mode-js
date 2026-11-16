@@ -20,8 +20,8 @@ import { tmux } from "./tmux-cli.js";
 
 // [LAW:one-source-of-truth] The canonical registry of socket-name prefixes the
 // suite mints. Every `tmux -L <name>` a test allocates begins with one of these.
-// The reaper AND the coverage guard test both read THIS list, so adding a test
-// that mints a new prefix without registering it here is a loud test failure,
+// The reaper reads THIS list, and `uniqueSocket` in integration.ts types its
+// `family` from it, so minting under an unregistered prefix is a compile error,
 // not a silent leak. Derived from source, never hand-copied from a ticket.
 //
 // [LAW:single-enforcer] These are deliberately specific (each carries its

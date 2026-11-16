@@ -18,6 +18,7 @@ import {
   uniqueSocket,
   uniqueName,
   attachSession,
+  getPrimaryPaneId,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys } from "../../src/commands/index.js";
@@ -35,14 +36,6 @@ function createSession(socket: string, session: string): Promise<TmuxClient> {
   return attachSession(socket, session, {
     newSessionFlags: ["-x", "80", "-y", "24"],
   });
-}
-
-async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
-  const r = await client.execute("display-message -p '#{pane_id}'");
-  const line = r.output[0] ?? "";
-  const m = line.match(/^%(\d+)$/);
-  if (m === null) throw new Error(`unexpected pane id reply: ${line}`);
-  return Number(m[1]);
 }
 
 async function paneSize(
