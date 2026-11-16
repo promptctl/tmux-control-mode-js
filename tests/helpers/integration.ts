@@ -12,6 +12,7 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
+import { paneNumber, parsePaneId } from "../../src/window-terminal/ids.js";
 
 /** A socket family the reaper collects; any other prefix would leak. */
 export type TestSocketPrefix = (typeof TEST_SOCKET_PREFIXES)[number];
@@ -236,6 +237,13 @@ export async function attachSession(
     }
     throw err;
   }
+}
+
+/** The numeric id of the client's current pane (`%N` → N). */
+export async function getPrimaryPaneId(client: TmuxClient): Promise<number> {
+  const r = await client.execute("display-message -p '#{pane_id}'");
+  // [LAW:one-source-of-truth] The library's pane-id parser, not a local regex.
+  return paneNumber(parsePaneId(r.output[0]));
 }
 
 /**
