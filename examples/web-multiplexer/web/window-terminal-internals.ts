@@ -27,6 +27,7 @@ export type {
 } from "../../../dist/window-terminal/engine/terminal-sink.js";
 export { XtermSink } from "../../../dist/window-terminal/render/xterm-sink.js";
 export type { XtermSinkOptions } from "../../../dist/window-terminal/render/xterm-sink.js";
+export { cellFontOf } from "../../../dist/window-terminal/render/xterm-options.js";
 export { createCellMeasure } from "../../../dist/window-terminal/sizing/cell-metrics.js";
 export { solve } from "../../../dist/window-terminal/sizing/solve.js";
 export { parseSizing } from "../../../dist/window-terminal/options.js";

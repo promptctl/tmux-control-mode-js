@@ -17,6 +17,7 @@ interface MockTerminal {
   element: HTMLElement | undefined;
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  loadAddon: ReturnType<typeof vi.fn>;
   options: Record<string, unknown>;
 }
 const terminals: MockTerminal[] = [];
@@ -34,11 +35,30 @@ vi.mock("@xterm/xterm", () => {
     scrollToBottom = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onBinary = vi.fn(() => ({ dispose: vi.fn() }));
+    loadAddon = vi.fn((addon: { activate(t: unknown): void }) =>
+      addon.activate(this),
+    );
+    // As xterm does: every option has a value, its default where not given,
+    // and the setter refuses a cursor style it does not know.
     constructor(opts: Record<string, unknown>) {
-      this.options = { ...opts };
-      terminals.push(this as unknown as MockTerminal);
+      this.options = new Proxy(
+        { lineHeight: 1, letterSpacing: 0, cursorStyle: "block", ...opts },
+        {
+          set(o, key, value) {
+            if (
+              key === "cursorStyle" &&
+              !["block", "underline", "bar"].includes(value as string)
+            ) {
+              throw new Error(`"${String(value)}" is not a valid value`);
+            }
+            return Reflect.set(o, key, value);
+          },
+        },
+      );
     }
+    // A pane's terminal opens; the terminal's options checker never does.
     open(container: HTMLElement) {
+      terminals.push(this as unknown as MockTerminal);
       const el = container.ownerDocument.createElement("div");
       el.className = "xterm";
       const textarea = container.ownerDocument.createElement("textarea");
@@ -54,6 +74,7 @@ vi.mock("@xterm/xterm", () => {
 
 import {
   createWindowTerminal,
+  type WindowTerminalOptions,
   type WindowTerminalPorts,
 } from "../../../src/window-terminal/terminal.js";
 import { TmuxCommandError } from "../../../src/browser.js";
@@ -88,6 +109,7 @@ function mount(
       width: px / 2,
       height: px,
     }),
+  given: Pick<WindowTerminalOptions, "xterm" | "addons"> = {},
 ) {
   const client = scriptedTmux(world());
   client.setConnectionState({ status: "ready" });
@@ -114,7 +136,7 @@ function mount(
   };
   const terminal = createWindowTerminal(
     host,
-    { connection: client, window: "@1", history: 10, sizing },
+    { connection: client, window: "@1", history: 10, sizing, ...given },
     ports,
   );
   const errors: WindowTerminalError[] = [];
@@ -204,21 +226,109 @@ describe("window terminal — what is drawn", () => {
     expect(terminals.map((t) => t.options.fontSize)).toEqual([12, 12]);
   });
 
-  it("an appearance equal to the one in use, in a new object, leaves every xterm alone", async () => {
+  it("xterm options equal to the ones in use, in a new object, leave every xterm alone", async () => {
     const { terminal, flush } = await live();
-    terminal.update({ appearance: { theme: { background: "#000" } } });
+    terminal.update({ xterm: { theme: { background: "#000" } } });
     flush();
     const themes = terminals.map((t) => t.options.theme);
-    terminal.update({ appearance: { theme: { background: "#000" } } });
+    terminal.update({ xterm: { theme: { background: "#000" } } });
     flush();
     expect(terminals.map((t) => t.options.theme)).toEqual(themes);
     expect(terminals.every((t, i) => t.options.theme === themes[i])).toBe(true);
-    terminal.update({ appearance: { theme: { background: "#111" } } });
+    terminal.update({ xterm: { theme: { background: "#111" } } });
     flush();
     expect(terminals.map((t) => t.options.theme)).toEqual([
       { background: "#111" },
       { background: "#111" },
     ]);
+  });
+
+  it("the host's xterm options and addons reach every pane, the addons made once per pane", async () => {
+    const made: { activate: () => void; dispose: () => void }[] = [];
+    const addons = vi.fn(() => {
+      const addon = { activate: vi.fn(), dispose: vi.fn() };
+      made.push(addon);
+      return [addon];
+    });
+    const m = mount(undefined, undefined, {
+      xterm: { cursorStyle: "bar", allowProposedApi: true },
+      addons,
+    });
+    await settle();
+    expect(
+      terminals.map((t) => [t.options.cursorStyle, t.options.allowProposedApi]),
+    ).toEqual([
+      ["bar", true],
+      ["bar", true],
+    ]);
+    expect(addons).toHaveBeenCalledTimes(2);
+    expect(terminals.map((t) => t.loadAddon.mock.calls)).toEqual([
+      [[made[0]]],
+      [[made[1]]],
+    ]);
+    m.terminal.dispose();
+  });
+
+  it("a new link handler through update reaches every pane", async () => {
+    const { terminal, flush } = await live();
+    const first = vi.fn();
+    terminal.update({ xterm: { linkHandler: { activate: first } } });
+    const second = vi.fn();
+    terminal.update({ xterm: { linkHandler: { activate: second } } });
+    flush();
+    expect(terminals.map((t) => t.options.linkHandler)).toEqual([
+      { activate: second },
+      { activate: second },
+    ]);
+  });
+
+  it("the cell the solver measures is the one xterm draws: family, line height and letter spacing", async () => {
+    const fonts: unknown[] = [];
+    const m = mount(
+      { window: "tmux", font: 16, fit: "none" },
+      (font) => {
+        fonts.push(font);
+        return (px) => ({ width: px / 2, height: px });
+      },
+      { xterm: { fontFamily: "Iosevka", letterSpacing: 2 } },
+    );
+    await settle();
+    observed?.(800, 480);
+    m.flush();
+    expect(fonts.at(-1)).toEqual({
+      fontFamily: "Iosevka",
+      lineHeight: 1,
+      letterSpacing: 2,
+    });
+    m.terminal.dispose();
+  });
+
+  it("a pane whose addon throws is reported once and drawn empty; the window's other panes draw", async () => {
+    const refused = new Error("proposed API not allowed");
+    let calls = 0;
+    const addons = () => {
+      calls += 1;
+      if (calls === 2) throw refused;
+      return [];
+    };
+    const m = mount(undefined, undefined, { addons });
+    await settle();
+    observed?.(800, 480);
+    m.flush();
+    // Later window events: neither re-open the pane nor report it again.
+    m.client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    await settle();
+    m.client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    await settle();
+    m.flush();
+    expect(m.errors.map((e) => [e.seam, e.paneId, e.cause])).toEqual([
+      ["render", "%1", refused],
+    ]);
+    expect(calls).toBe(2);
+    expect(m.pane("%0")?.querySelector(".xterm")).not.toBeNull();
+    expect(m.pane("%1")).not.toBeNull();
+    expect(m.pane("%1")?.querySelector(".xterm")).toBeNull();
+    m.terminal.dispose();
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {
@@ -336,7 +446,14 @@ describe("window terminal — the size claim", () => {
     expect(() =>
       terminal.update({
         sizing: { window: "box", font: { min: 20, max: 10 } },
-        appearance: { fontFamily: "Iosevka" },
+        xterm: { fontFamily: "Iosevka" },
+      }),
+    ).toThrow(RangeError);
+    // A value xterm refuses, beside a good one and a good sizing.
+    expect(() =>
+      terminal.update({
+        sizing: { window: "box", font: 30 },
+        xterm: { fontFamily: "Iosevka", cursorStyle: "beam" as never },
       }),
     ).toThrow(RangeError);
     observed?.(800, 480);
@@ -346,6 +463,23 @@ describe("window terminal — the size claim", () => {
     expect(terminals.every((t) => t.options.fontFamily !== "Iosevka")).toBe(
       true,
     );
+    expect(terminals.every((t) => t.options.fontSize === 14)).toBe(true);
+  });
+
+  it("an option the terminal owns is refused at mount", () => {
+    const measure = vi.fn();
+    expect(() =>
+      createWindowTerminal(
+        document.createElement("div"),
+        {
+          connection: scriptedTmux(world()),
+          window: "@1",
+          xterm: { scrollback: 5 } as never,
+        },
+        { measure, frame: () => () => undefined, now: () => 0 },
+      ),
+    ).toThrow(RangeError);
+    expect(measure).not.toHaveBeenCalled();
   });
 });
 

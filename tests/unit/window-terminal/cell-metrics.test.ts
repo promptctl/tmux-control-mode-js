@@ -3,7 +3,10 @@
 // pixel ratio, a `document.fonts` and a resolution media query the test fires.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createCellMeasure } from "../../../src/window-terminal/sizing/cell-metrics.js";
+import {
+  createCellMeasure,
+  type CellFont,
+} from "../../../src/window-terminal/sizing/cell-metrics.js";
 
 const measured: string[] = [];
 let charScale = { width: 0.6, height: 1.2 };
@@ -86,24 +89,40 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const font = (
+  fontFamily: string,
+  lineHeight: number,
+  letterSpacing = 0,
+): CellFont => ({ fontFamily, lineHeight, letterSpacing });
+
 describe("createCellMeasure", () => {
+  it("letter spacing widens the cell by its whole device pixels, as xterm draws it", () => {
+    const { win } = stubWindow(2);
+    const m = createCellMeasure(win);
+    // 10px: char 6 wide, 12 device px; +round(1.4) = 13 device px, / 2.
+    expect(m.cellAt(font("Mono", 1, 1.4))(10).width).toBe(6.5);
+    // -round(-2.6) = -3: 9 device px.
+    expect(m.cellAt(font("Mono", 1, -2.6))(10).width).toBe(4.5);
+    m.dispose();
+  });
+
   it("cell width is the char width; height rounds the char height up to device pixels, then scales by line height", () => {
     const { win } = stubWindow(2);
     const m = createCellMeasure(win);
     // 10px: char 6 x 12. dpr 2: ceil(24) = 24, x1.25 = 30, floor 30 / 2 = 15.
-    expect(m.cellAt("Mono", 1.25)(10)).toEqual({ width: 6, height: 15 });
+    expect(m.cellAt(font("Mono", 1.25))(10)).toEqual({ width: 6, height: 15 });
     // 13px: char 7.8 x 15.6. ceil(31.2) = 32, x1 = 32, / 2 = 16.
-    expect(m.cellAt("Mono", 1)(13)).toEqual({ width: 7.8, height: 16 });
+    expect(m.cellAt(font("Mono", 1))(13)).toEqual({ width: 7.8, height: 16 });
     m.dispose();
   });
 
-  it("measures each (family, size, line height) once", () => {
+  it("measures each font and size once", () => {
     const { win } = stubWindow(1);
     const m = createCellMeasure(win);
-    const at = m.cellAt("Mono", 1);
+    const at = m.cellAt(font("Mono", 1));
     at(12);
     at(12);
-    m.cellAt("Mono", 1)(12);
+    m.cellAt(font("Mono", 1))(12);
     at(14);
     expect(measured).toEqual(["12px Mono|W", "14px Mono|W"]);
     m.dispose();
@@ -114,11 +133,11 @@ describe("createCellMeasure", () => {
     const m = createCellMeasure(win);
     const changed = vi.fn();
     m.onChange(changed);
-    expect(m.cellAt("Mono", 1)(10).width).toBe(6);
+    expect(m.cellAt(font("Mono", 1))(10).width).toBe(6);
     charScale = { width: 0.5, height: 1.2 };
     fonts.dispatchEvent(new Event("loadingdone"));
     expect(changed).toHaveBeenCalledOnce();
-    expect(m.cellAt("Mono", 1)(10).width).toBe(5);
+    expect(m.cellAt(font("Mono", 1))(10).width).toBe(5);
     m.dispose();
   });
 
@@ -127,10 +146,10 @@ describe("createCellMeasure", () => {
     const m = createCellMeasure(stub.win);
     const changed = vi.fn();
     m.onChange(changed);
-    expect(m.cellAt("Mono", 1)(13).height).toBe(16); // ceil(15.6)
+    expect(m.cellAt(font("Mono", 1))(13).height).toBe(16); // ceil(15.6)
     stub.setDpr(2);
     expect(changed).toHaveBeenCalledOnce();
-    expect(m.cellAt("Mono", 1)(13).height).toBe(16); // ceil(31.2) / 2
+    expect(m.cellAt(font("Mono", 1))(13).height).toBe(16); // ceil(31.2) / 2
     expect(stub.queries.map((q) => [q.media, q.listeners])).toEqual([
       ["(resolution: 1dppx)", 0],
       ["(resolution: 2dppx)", 1],
@@ -143,7 +162,7 @@ describe("createCellMeasure", () => {
     const { win } = stubWindow(1);
     charScale = { width: 0, height: 0 };
     const m = createCellMeasure(win);
-    expect(() => m.cellAt("Missing", 1)(12)).toThrow(
+    expect(() => m.cellAt(font("Missing", 1))(12)).toThrow(
       /cannot measure 12px Missing/,
     );
     m.dispose();

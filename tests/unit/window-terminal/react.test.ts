@@ -1,7 +1,7 @@
 // `<WindowTerminal>` maps React's lifecycle onto `mountWindowTerminal`:
-// identity (connection, window, history) mounts a terminal, settings (sizing,
-// appearance) update it, and the callbacks and ref follow the latest render
-// without remounting.
+// identity (connection, window, history) mounts a terminal, each setting
+// (sizing, xterm) updates it alone, the addons are read at mount, and the
+// callbacks and ref follow the latest render without remounting.
 
 // @vitest-environment happy-dom
 
@@ -64,6 +64,7 @@ import { WindowTerminal } from "../../../src/window-terminal/react/index.js";
 const CONN_A = { name: "a" } as unknown as WindowTerminalOptions["connection"];
 const CONN_B = { name: "b" } as unknown as WindowTerminalOptions["connection"];
 const BOX = { window: "box", font: 14 } as const;
+const ADDONS = () => [];
 
 let root: Root;
 let container: HTMLElement;
@@ -92,7 +93,8 @@ describe("<WindowTerminal>", () => {
         window: "@1",
         history: 50,
         sizing: BOX,
-        appearance: { fontFamily: "Iosevka" },
+        xterm: { fontFamily: "Iosevka" },
+        addons: ADDONS,
         className: "term",
       }),
     );
@@ -103,8 +105,61 @@ describe("<WindowTerminal>", () => {
       window: "@1",
       history: 50,
       sizing: BOX,
-      appearance: { fontFamily: "Iosevka" },
+      xterm: { fontFamily: "Iosevka" },
+      addons: ADDONS,
     });
+  });
+
+  it("the addons are the ones at mount; a new factory neither remounts nor updates", () => {
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        addons: ADDONS,
+      }),
+    );
+    const count = mounted[0].updates.length;
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        addons: () => [],
+      }),
+    );
+    expect(mounted).toHaveLength(1);
+    expect(mounted[0].options.addons).toBe(ADDONS);
+    expect(mounted[0].updates).toHaveLength(count);
+  });
+
+  it("a new value for one setting updates only that one; one taken away returns to its default", () => {
+    const sizing = { window: "tmux", font: 12, fit: "none" } as const;
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        sizing,
+        xterm: { cursorStyle: "bar" },
+      }),
+    );
+    const count = mounted[0].updates.length;
+    // A new xterm object: the sizing (perhaps set through the ref) is left be.
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        sizing,
+        xterm: { cursorStyle: "underline" },
+      }),
+    );
+    expect(mounted[0].updates.slice(count)).toEqual([
+      { xterm: { cursorStyle: "underline" } },
+    ]);
+    render(createElement(WindowTerminal, { connection: CONN_A, window: "@1" }));
+    expect(mounted).toHaveLength(1);
+    expect(mounted[0].updates.slice(count + 1)).toEqual([
+      { sizing: BOX },
+      { xterm: {} },
+    ]);
   });
 
   it("a new connection or window is a new terminal; the old one is disposed", () => {
@@ -142,10 +197,7 @@ describe("<WindowTerminal>", () => {
       }),
     );
     expect(mounted).toHaveLength(1);
-    expect(mounted[0].updates.at(-1)).toEqual({
-      sizing: next,
-      appearance: undefined,
-    });
+    expect(mounted[0].updates.at(-1)).toEqual({ sizing: next });
     const count = mounted[0].updates.length;
     render(
       createElement(WindowTerminal, {
