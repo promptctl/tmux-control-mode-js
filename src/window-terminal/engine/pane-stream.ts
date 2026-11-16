@@ -506,7 +506,7 @@ export class PaneStream implements ReseedTarget {
    * Send input bytes to the underlying pane via tmux `send-keys`.
    * Convenience wrapper so consumers don't need to format pane targets.
    */
-  sendKeys(bytes: Uint8Array): Promise<CommandResponse> {
+  sendKeyBytes(bytes: Uint8Array): Promise<CommandResponse> {
     return sendKeyBytes(this.client, `%${this.paneId}`, bytes);
   }
 

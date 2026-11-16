@@ -377,7 +377,7 @@ export class WindowEngine {
       historyLines: this.history,
     });
     const surface = this.surfaces.create(id, (bytes) => {
-      void stream.sendKeys(bytes).catch((err: unknown) => {
+      void stream.sendKeyBytes(bytes).catch((err: unknown) => {
         if (!isConnectionGone(err)) {
           this.report({ seam: "send-keys", paneId: id, cause: err });
         }

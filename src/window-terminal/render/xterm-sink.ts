@@ -312,7 +312,7 @@ export class XtermSink implements TerminalSink {
    * Subscribe to the bytes the user's input produces: keystrokes, pastes, and
    * the mouse reports xterm generates once the pane's program asks for mouse
    * tracking. The returned function detaches the listener. Called by consumers
-   * that forward input to tmux via `PaneStream.sendKeys()`.
+   * that forward input to tmux via `PaneStream.sendKeyBytes()`.
    *
    * xterm emits input on two events: `onData` carries text (UTF-16, sent as
    * its UTF-8 bytes) and `onBinary` carries raw bytes, one per code unit — the

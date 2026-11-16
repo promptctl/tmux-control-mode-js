@@ -5,7 +5,7 @@
 // [LAW:types-are-the-program] This is a DIFFERENT type from the mirror viewer,
 //   not the same one with a flag. It has everything the mirror has — `onBytes`
 //   (inbound pane bytes), observable lifecycle, connect/disconnect — PLUS one
-//   capability the mirror is structurally without: `sendKeys`. A consumer
+//   capability the mirror is structurally without: `sendKeyBytes`. A consumer
 //   holding a `MirrorViewerBridge` cannot write to the pane because the method
 //   does not exist; a consumer holding a `CollabBridge` can, because it does.
 //   The read-only guarantee of .14 is never loosened; collaboration is a new,
@@ -124,7 +124,7 @@ export class CollabBridge {
    * there is no local echo, so the screen is always the server's truth.
    * [LAW:one-source-of-truth] the pane, not the browser, decides what was typed.
    */
-  sendKeys(bytes: Uint8Array): void {
+  sendKeyBytes(bytes: Uint8Array): void {
     if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(bytes);
     } else {

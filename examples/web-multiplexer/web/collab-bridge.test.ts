@@ -79,8 +79,8 @@ describe.skipIf(!integration)("CollabBridge input → pane", () => {
     // Sent before the socket opens: buffered, then flushed in order.
     const mouse = new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21]);
     const text = new TextEncoder().encode("éABCDEFGH");
-    bridge.sendKeys(mouse);
-    bridge.sendKeys(text);
+    bridge.sendKeyBytes(mouse);
+    bridge.sendKeyBytes(text);
     bridge.connect();
     try {
       const expected = [...mouse, ...text]

@@ -44,7 +44,8 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 interface Recorder extends PaneSurfaces {
   readonly sinks: Map<PaneId, BufferingSink>;
-  readonly keys: Map<PaneId, (bytes: Uint8Array) => void>;
+  /** Input bytes into a pane's surface; throws when the engine never created it. */
+  send(pane: PaneId, bytes: Uint8Array): void;
   readonly disposed: PaneId[];
 }
 
@@ -54,8 +55,12 @@ function recorder(): Recorder {
   const disposed: PaneId[] = [];
   return {
     sinks,
-    keys,
     disposed,
+    send(pane, bytes) {
+      const send = keys.get(pane);
+      if (send === undefined) throw new Error(`no surface for pane ${pane}`);
+      send(bytes);
+    },
     create(pane, send) {
       const sink = new BufferingSink();
       sinks.set(pane, sink);
@@ -308,7 +313,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     engine = engineOver(c, window, s);
     await untilLive(engine, (v) => v.panes.length === 2);
 
-    s.keys.get(first as PaneId)?.(new TextEncoder().encode("WT_KEYS_MARK"));
+    s.send(first as PaneId, new TextEncoder().encode("WT_KEYS_MARK"));
     const captured = (pane: string) =>
       q(socket, ["capture-pane", "-p", "-t", pane]);
     await readUntil(
@@ -359,8 +364,8 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     // padding to od's 16-byte line.
     const mouse = [0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21];
     const text = new TextEncoder().encode("éABCDEFGH");
-    s.keys.get(pane as PaneId)?.(new Uint8Array(mouse));
-    s.keys.get(pane as PaneId)?.(text);
+    s.send(pane as PaneId, new Uint8Array(mouse));
+    s.send(pane as PaneId, text);
     const expected = [...mouse, ...text]
       .map((b) => b.toString(16).padStart(2, "0"))
       .join(" ");

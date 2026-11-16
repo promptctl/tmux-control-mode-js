@@ -362,12 +362,11 @@ function handleMirrorConnection(
  * the output fan-out is reused whole, not re-implemented.
  *
  * What this endpoint ADDS over the mirror is exactly one capability: an inbound
- * `keys` frame is forwarded to the pane via `sendKeys`. Many browsers can hold
- * this socket on the same pane at once; tmux serialises their keystrokes into
- * one authoritative pane and the result fans back through the shared tap — so
- * "two browsers, one pane" needs no CRDT. [LAW:no-silent-failure] a frame that
- * is not a well-formed `keys` frame closes the socket loudly (1003) rather than
- * being ignored.
+ * binary frame's bytes are forwarded to the pane via `sendKeyBytes`. Many
+ * browsers can hold this socket on the same pane at once; tmux serialises their
+ * input into one authoritative pane and the result fans back through the shared
+ * tap — so "two browsers, one pane" needs no CRDT. [LAW:no-silent-failure] a
+ * text frame closes the socket loudly (1003) rather than being ignored.
  */
 export function handleCollabConnection(
   ws: WebSocket,
@@ -406,7 +405,7 @@ export function handleCollabConnection(
       ws.close(1003, "collab expects binary input frames");
       return;
     }
-    void input.sendKeys(paneId, new Uint8Array(raw));
+    void input.sendKeyBytes(paneId, new Uint8Array(raw));
   });
 
   let dispose: (() => void) | null = null;

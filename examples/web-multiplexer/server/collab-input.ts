@@ -1,7 +1,7 @@
 // examples/web-multiplexer/server/collab-input.ts
 // CollabInput — the WRITE side of the collaborative pane: one dedicated
 // server-side control client that injects every browser's keystrokes into the
-// target pane via `sendKeys`. The exact mirror image of `MirrorRegistry`'s
+// target pane via `sendKeyBytes`. The exact mirror image of `MirrorRegistry`'s
 // read-only output tap: where the registry fans a pane's bytes OUT to N
 // browsers, this fans N browsers' keystrokes IN to one pane.
 //
@@ -9,10 +9,10 @@
 //   The registry stays read-only (its viewers are mute by type); this owner
 //   holds the single write capability, so neither concern leaks into the other.
 // [LAW:no-shared-mutable-globals] Single owner (the bridge constructs exactly
-//   one), explicit API (`sendKeys` / `close`), documented invariant: one shared
+//   one), explicit API (`sendKeyBytes` / `close`), documented invariant: one shared
 //   input client serves every collaborator, so tmux — not this class — is the
 //   serialiser of concurrent keystrokes. No CRDT, no per-browser ordering.
-// [LAW:no-ambient-temporal-coupling] The first `sendKeys` gates on the client's
+// [LAW:no-ambient-temporal-coupling] The first `sendKeyBytes` gates on the client's
 //   `ready` promise (the cold-start race), owned by `spawnReadyControlClient`.
 
 import { sendKeyBytes } from "@promptctl/tmux-control-mode-js";
@@ -37,7 +37,7 @@ export class CollabInput {
    * the lost keystroke needs no second signal. [LAW:no-silent-failure] the
    * failure is logged, never swallowed into a phantom success.
    */
-  async sendKeys(paneId: number, bytes: Uint8Array): Promise<void> {
+  async sendKeyBytes(paneId: number, bytes: Uint8Array): Promise<void> {
     if (this.closed) return;
     const { client, ready } = this.ensureClient();
     await ready;
@@ -46,7 +46,7 @@ export class CollabInput {
       asCommandResponse,
     );
     if (!response.success) {
-      console.warn(`[collab] sendKeys to %${paneId} failed`);
+      console.warn(`[collab] sendKeyBytes to %${paneId} failed`);
     }
   }
 
