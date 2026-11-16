@@ -1193,18 +1193,20 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(asked(s.replies, "list-panes -a ")).toBe(0);
   });
 
-  it("routes a moved pane correctly when the new window's refresh lands first", async () => {
+  it("routes a moved pane with no query about it when the new window's layout comes first", async () => {
     const s = await movedPane([
-      [2, LAYOUT_4],
       [3, LAYOUT_6_5],
+      [2, LAYOUT_4],
     ]);
-    answerRefresh(s.replies, 3);
-    await settle();
-    expect(paneIdsOf(s.newSession)).toEqual([5]);
-    answerLocate(s.locates, 5, 3);
+    // The new window's layout already moved %5, so the old one's loses nothing.
+    expect(s.locates).toEqual([]);
+    for (const r of s.replies.splice(0)) {
+      r.resolve(makeOkResponse(AFTER[r.cmd.includes("-t @2 ") ? 2 : 3]));
+    }
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
+    expect(paneIdsOf(s.newWindow)).toEqual([5]);
   });
 
   // tmux sends %layout-change only for windows in the attached session, so a
@@ -1266,8 +1268,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
   it("sends no server-wide query when a pane in a multi-pane window exits", async () => {
     const errors: Error[] = [];
     const s = await movedPane([[2, LAYOUT_4]], (e) => errors.push(e));
-    s.locates.at(-1)!.reject(paneGone("%5"));
+    // tmux answers in send order: @2's refresh, then the locate of %5.
     answerRefresh(s.replies, 2);
+    s.locates.at(-1)!.reject(paneGone("%5"));
     await settle();
     s.router.dispatchBytes(makeChunk(4));
     expect(paneIdsOf(s.oldSession)).toEqual([4, 4]);
@@ -1483,6 +1486,28 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
       expect.stringContaining("list-panes -t %5 "),
       expect.stringContaining("list-panes -t %8 "),
     ]);
+  });
+
+  it("asks tmux nothing about a pane lost once no sink reads topology", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    const detach = router.attachBytesSink(makeSink(), {
+      scope: sessionScope(1),
+    });
+    router.handleNotification(layoutChange(2, LAYOUT_4));
+    detach();
+    const sent = replies.length;
+    replies
+      .find((r) => r.cmd.includes("list-panes -a "))!
+      .resolve(makeOkResponse(BEFORE));
+    await settle();
+    expect(locates).toEqual([]);
+    expect(replies).toHaveLength(sent);
+    expect(errors).toEqual([]);
   });
 
   it("does not hold a bootstrap's seed to a layout an unparsed one replaced", async () => {

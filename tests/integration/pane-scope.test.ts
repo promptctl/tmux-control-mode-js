@@ -29,6 +29,7 @@ import {
   listAllPanes,
   makeRecordingSink,
   sendOutputToPane,
+  textOf,
   type ArrivedChunk,
 } from "../helpers/topology-moves.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -292,9 +293,12 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(
       s.sent.slice(s.mark).filter((c) => c.startsWith("list-panes -a ")),
     ).toEqual([]);
-    // The surviving pane still routes to its session.
+    // The surviving pane still routes to its session: its echo, typed after
+    // the kill, is not output it printed before.
     await sendOutputToPane(client!, s.pane.paneId);
-    await pollUntil(() => s.arrived.some((e) => e.paneId === s.pane.paneId));
+    await pollUntil(() =>
+      textOf(s.arrived, s.pane.paneId).includes(`scope-test-${s.pane.paneId}`),
+    );
     expect(s.errors).toEqual([]);
   }, 15000);
 

@@ -794,16 +794,16 @@ export class TopologyEpochTracker {
   //   distinct staleness questions, one enforcer. [LAW:single-enforcer]
   private latestSupersedeGen = 0;
   // [LAW:types-are-the-program] Global monotone counter: every window
-  //   refresh, locate and window event draws a gen strictly greater than all
-  //   before it, so gens order those events against each other in send order.
+  //   refresh and locate draws a gen strictly greater than all before it, so
+  //   gens order those queries against each other in send order.
   //   A gen never aliases one drawn before a clear of windowMarks.
   private windowEpoch = 0;
   // The windowEpoch at the latest supersedeAll: a listing sent at or before it
   // is stale whatever window it lists.
   private supersededAt = 0;
-  // Each window's latest event since the last supersedeAll — a refresh start,
-  // or a window-add/-close — as its gen. A listing of the window sent before
-  // it is stale.
+  // Each window's latest refresh since the last supersedeAll, as its gen. A
+  // listing of the window sent before it is stale. Only a refresh writes here,
+  // so a connection that refreshes nothing holds no entries.
   private readonly windowMarks = new Map<number, number>();
   // Each window's latest layout pane list since the last bootstrap started:
   // a bootstrap reply can predate a move these record, so its seed is checked
@@ -891,11 +891,11 @@ export class TopologyEpochTracker {
   /**
    * Call before applying a listing of `windowId` sent at `gen`, by a window
    * refresh or a locate. Current iff nothing has superseded everything since
-   * it was sent and nothing about the window happened after it: no newer
-   * refresh, no window-add or -close.
+   * it was sent and no refresh of the window was sent after it.
    * [LAW:single-enforcer] One rule for every listing of one window, whichever
-   *   query asked for it. A refresh's own start is its window's mark, so a
-   *   refresh is current until the next event about its window.
+   *   query asked for it. Every event that makes a window's listings suspect
+   *   (a layout, a window-add or -close) refreshes it, and that refresh is
+   *   what supersedes the listings sent before it.
    */
   isListingCurrent(windowId: number, gen: number): boolean {
     return (
@@ -915,13 +915,12 @@ export class TopologyEpochTracker {
 
   /**
    * Call when a window's membership changes (window-add / window-close).
-   * Invalidates any in-flight bootstrap (its reply can predate the change)
-   * and any listing of the window in flight, by a refresh or a locate.
+   * Invalidates any in-flight bootstrap (its reply can predate the change).
+   * The refresh the change starts supersedes the window's listings in flight.
    */
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
     this.layoutsSinceBootstrap.delete(windowId);
-    this.windowMarks.set(windowId, ++this.windowEpoch);
   }
 }
 

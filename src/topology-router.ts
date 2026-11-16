@@ -68,14 +68,15 @@ interface Hold {
 //   output it holds for panes not yet placed, belong to its server: pane ids
 //   restart on a new one, so every connection change drops them by
 //   construction, however the adapter announces it.
+interface LiveConnection {
+  readonly phase: "live";
+  readonly run: RunCommand;
+  readonly located: Set<number>;
+  readonly hold: Hold;
+}
 type Connection =
   | { readonly phase: "none" }
-  | {
-      readonly phase: "live";
-      readonly run: RunCommand;
-      readonly located: Set<number>;
-      readonly hold: Hold;
-    }
+  | LiveConnection
   | { readonly phase: "lost"; readonly run: RunCommand };
 
 const NO_CONNECTION: Connection = { phase: "none" };
@@ -214,10 +215,18 @@ export class TopologyRouter {
 
   // [LAW:dataflow-not-control-flow] One predicate answers "does anything need
   //   the topology table populated" — topology-scoped sinks, or idle suppression
-  //   (which must know every pane to pause the idle ones). Every bootstrap /
-  //   refresh gate reads this single source.
+  //   (which must know every pane to pause the idle ones).
   private needsTopology(): boolean {
     return this.sinks.hasTopologyDependentSinks() || this.interest !== null;
+  }
+
+  // [LAW:single-enforcer] The one gate on starting a topology query: a live
+  //   connection to ask, and something that reads the table. Without a
+  //   reader the table goes unread until a reader's attach bootstraps it, so
+  //   no caller checks before asking.
+  private queryConnection(): LiveConnection | null {
+    const conn = this.connection;
+    return conn.phase === "live" && this.needsTopology() ? conn : null;
   }
 
   // [LAW:effects-at-boundaries] The single seam from suppression policy to tmux.
@@ -274,9 +283,7 @@ export class TopologyRouter {
     //   requires a delivered Pause, which cannot happen without a runner.
     //   The bootstrap below recomputes the full universe and pauses the
     //   genuinely-idle panes with the runner set.
-    if (this.needsTopology()) {
-      void this.bootstrap();
-    }
+    void this.bootstrap();
   };
 
   /**
@@ -517,9 +524,7 @@ export class TopologyRouter {
         this.topology.removeWindow(msg.windowId);
         this.epoch.invalidateWindow(msg.windowId);
         this.interest?.recompute();
-        if (this.needsTopology()) {
-          void this.refreshWindow(msg.windowId);
-        }
+        void this.refreshWindow(msg.windowId);
         break;
       case "layout-change":
         // A moved pane keeps its old entry, and tmux sends %output for it
@@ -556,9 +561,7 @@ export class TopologyRouter {
         // once, unconditionally, right after every attach's startup guard
         // block, so this still re-fires at startup too; the epoch tracker
         // makes that redundant-but-harmless rather than load-bearing.
-        if (this.needsTopology()) {
-          void this.bootstrap();
-        }
+        void this.bootstrap();
         break;
       default:
         // All other message types: no topology side effect.
@@ -573,8 +576,9 @@ export class TopologyRouter {
   // [LAW:single-enforcer] One bootstrap implementation. No transport adapter
   //   re-implements it.
   private async bootstrap(): Promise<void> {
-    if (this.connection.phase !== "live") return;
-    const run = this.connection.run;
+    const conn = this.queryConnection();
+    if (conn === null) return;
+    const run = conn.run;
     const gen = this.epoch.startBootstrap();
     this.inFlight++;
     const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
@@ -601,8 +605,7 @@ export class TopologyRouter {
         // seed, so re-query: otherwise the topology stays empty and every held
         // chunk is dropped. The re-run counts itself in flight before this
         // finally releases, so held chunks wait for it.
-        if (this.needsTopology() && this.epoch.isLatestBootstrap(gen))
-          void this.bootstrap();
+        if (this.epoch.isLatestBootstrap(gen)) void this.bootstrap();
         return;
       }
       this.topology.seed(parseListReply(command, r.output, parsePaneListLine));
@@ -649,8 +652,8 @@ export class TopologyRouter {
 
   // The queries that re-place what the table was told it got wrong. A new
   // refresh supersedes any sent before the move. A lost pane is asked about at
-  // once, whatever else is in flight: nothing in flight lists the window it
-  // went to, if any.
+  // once, whatever else is in flight: a listing in flight may name the window
+  // it went to, but none is known to, and a redundant ask costs one reply.
   private requery(c: Contradiction, ...windows: number[]): void {
     for (const id of new Set([...c.left, ...windows])) {
       void this.refreshWindow(id);
@@ -669,8 +672,9 @@ export class TopologyRouter {
   }
 
   private async refreshWindow(windowId: number): Promise<void> {
-    if (this.connection.phase !== "live") return;
-    const run = this.connection.run;
+    const conn = this.queryConnection();
+    if (conn === null) return;
+    const run = conn.run;
     const gen = this.epoch.startWindowRefresh(windowId);
     this.inFlight++;
     const command = `list-panes -t @${windowId} -F '${PANE_LIST_FORMAT}'`;
@@ -707,7 +711,7 @@ export class TopologyRouter {
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
       if (!isTargetGone(err, "window")) {
-        if (this.needsTopology()) void this.bootstrap();
+        void this.bootstrap();
         this.reportError(topologyError(`refresh of @${windowId}`, err));
       }
     } finally {
@@ -724,16 +728,12 @@ export class TopologyRouter {
   //   pane itself (the bootstrap, or the refresh its %window-add or
   //   %layout-change started), and a pane placed that way costs no query of
   //   its own. Arrival and every release both ask here. A pane a layout or
-  //   listing lost is asked about by requery() with no gate: nothing in flight
-  //   can place it, and it can be lost again after it was asked about.
+  //   listing lost is asked about by requery() without this gate: no query in
+  //   flight is known to place it, and it can be lost again after it was
+  //   asked about.
   private locate(paneId: number): void {
     const conn = this.connection;
-    if (
-      conn.phase !== "live" ||
-      !this.needsTopology() ||
-      this.inFlight > 0 ||
-      conn.located.has(paneId)
-    )
+    if (conn.phase !== "live" || this.inFlight > 0 || conn.located.has(paneId))
       return;
     void this.ask(paneId);
   }
@@ -742,8 +742,8 @@ export class TopologyRouter {
   // answer is final whenever it comes: a listing of the pane's window, or
   // "can't find pane" — gone, along with any output it could still print.
   private async ask(paneId: number): Promise<void> {
-    const conn = this.connection;
-    if (conn.phase !== "live") return;
+    const conn = this.queryConnection();
+    if (conn === null) return;
     conn.located.add(paneId);
     const gen = this.epoch.startLocate();
     this.inFlight++;
@@ -780,7 +780,7 @@ export class TopologyRouter {
       // leave a live pane unplaced, so — as a failed window refresh does —
       // re-place it with the server-wide query, and report it.
       if (!isTargetGone(err, "pane")) {
-        if (this.needsTopology()) void this.bootstrap();
+        void this.bootstrap();
         this.reportError(topologyError(`locate of %${paneId}`, err));
       }
     } finally {

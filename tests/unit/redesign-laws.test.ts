@@ -359,7 +359,7 @@ describe("topology-race", () => {
     expect(tracker.isLatestBootstrap(gen)).toBe(true);
   });
 
-  it("a window's listing is current until the next event about that window, whichever query sent it", () => {
+  it("a window's listing is current until the next refresh of that window, whichever query sent it", () => {
     const tracker = new TopologyEpochTracker();
     const refresh = tracker.startWindowRefresh(3);
     const locate = tracker.startLocate();
@@ -373,12 +373,6 @@ describe("topology-race", () => {
     expect(tracker.isListingCurrent(3, locate)).toBe(false);
     expect(tracker.isListingCurrent(7, locate)).toBe(true);
     expect(tracker.isListingCurrent(3, later)).toBe(true);
-
-    // A window-close or -add supersedes every listing of the window sent before it.
-    const beforeClose = tracker.startLocate();
-    tracker.invalidateWindow(7);
-    expect(tracker.isListingCurrent(7, beforeClose)).toBe(false);
-    expect(tracker.isLocateCurrent(beforeClose)).toBe(true);
   });
 
   it("a bootstrap supersedes every listing and locate sent before it", () => {
