@@ -252,12 +252,15 @@ follows lands in tmux's column. tmux takes a codepoint's width from utf8proc
 `variation-selector-always-wide` on, so a tmux older than 3.8, on another
 table, or with either option changed (`codepoint-widths` too) can count a
 character differently. Where xterm.js decides rather than the count, it
-parts from tmux on three rare inputs: a combining character in column 0, one
-that follows its base after an escape sequence, and a character that VS16,
-a skin tone or a second flag letter widens in the last column. The count
-runs through xterm.js's proposed Unicode API, so `allowProposedApi` is always
-on, and an addon that changes `terminal.unicode.activeVersion` is an
-`onError` (`render`), as an addon that throws.
+parts from tmux: a codepoint tmux drops (a combining character, U+3164) in
+column 0 takes a cell; a character that would join the one before it (a
+combining character, VS16, a skin tone, a flag's second letter, a jamo
+vowel, whatever follows a ZWJ) starts a cell of its own after an escape
+sequence, such as a color change between the two; and a character that VS16,
+a skin tone or a flag's second letter widens in the last column wraps. The
+count runs through xterm.js's proposed Unicode API, so `allowProposedApi` is
+always on, and an addon that changes `terminal.unicode.activeVersion` as it
+loads is an `onError` (`render`), as an addon that throws.
 
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads; it is read at mount. An addon that throws as a pane opens is

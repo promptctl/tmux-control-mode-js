@@ -3,7 +3,9 @@
 // TMUX_CELLS against a real tmux: each text is printed in a tmux pane and
 // written to an xterm.js terminal counting cells with TMUX_CELLS, and the
 // cursor ends in the same cell in both. xterm.js is @xterm/headless, whose
-// input handler is the browser terminal's own.
+// input handler is the browser terminal's own. The tmux must be one the
+// table counts as: the release it was generated from or later, built with
+// utf8proc, default options.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,8 +15,24 @@ import { Terminal } from "@xterm/headless";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { readUntil, tmux, uniqueSocket } from "../helpers/integration.js";
 import { TMUX_CELLS } from "../../src/window-terminal/render/tmux-cells.js";
+import { TABLE_TMUX_VERSION } from "../../src/window-terminal/render/cell-width-table.js";
+import {
+  meetsTmuxVersion,
+  parseTmuxVersionValue,
+} from "../../src/tmux-compat.js";
+import { runningTmuxVersion } from "../helpers/running-tmux.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
+// [LAW:verifiable-goals] An older tmux joins and counts differently; the
+// table's own release is the floor, so a newer tmux that drifts fails.
+const TABLE_VERSION = parseTmuxVersionValue(TABLE_TMUX_VERSION);
+if (TABLE_VERSION === null) {
+  throw new Error(
+    `cell-width-table.ts: no tmux version in ${TABLE_TMUX_VERSION}`,
+  );
+}
+const COUNTS_AS_TABLE =
+  RUN_INTEGRATION && meetsTmuxVersion(runningTmuxVersion(), TABLE_VERSION);
 
 const COLS = 400;
 const cp = (...cps: number[]): string => String.fromCodePoint(...cps);
@@ -92,7 +110,7 @@ async function xtermCursor(text: string): Promise<string> {
   return `${cursorX},${cursorY}`;
 }
 
-describe.skipIf(!RUN_INTEGRATION)("TMUX_CELLS against tmux", () => {
+describe.skipIf(!COUNTS_AS_TABLE)("TMUX_CELLS against tmux", () => {
   const socket = uniqueSocket("tmux-cells");
   let dir = "";
   let files = 0;

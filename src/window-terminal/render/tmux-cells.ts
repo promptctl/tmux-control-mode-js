@@ -20,7 +20,7 @@
 //     a cell holds at most UTF8_SIZE bytes.
 //
 // Where xterm's input handler, not the provider, decides, it cannot follow
-// tmux: a zero-width codepoint in column 0 gets a cell; xterm forgets the
+// tmux: a codepoint tmux drops gets a cell in column 0; xterm forgets the
 // cell before at every escape sequence or control character, where tmux
 // still joins onto it; and a character widened in the last column wraps,
 // where tmux keeps it there.

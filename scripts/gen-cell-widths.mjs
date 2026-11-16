@@ -39,29 +39,36 @@ int main(void) {
 }
 `;
 
-const dir = mkdtempSync(join(tmpdir(), "cell-widths-"));
-writeFileSync(join(dir, "widths.c"), C);
-const flags = execFileSync(
-  "pkg-config",
-  ["--cflags", "--libs", "libutf8proc"],
-  {
-    encoding: "utf8",
-  },
-)
-  .trim()
-  .split(/\s+/);
-execFileSync("cc", [
-  "-o",
-  join(dir, "widths"),
-  join(dir, "widths.c"),
-  ...flags,
-]);
-const [unicode, digits] = execFileSync(join(dir, "widths"), {
-  encoding: "utf8",
-  maxBuffer: 0x200000,
-}).split("\n");
+// utf8proc's version and every codepoint's width, compiled and run in a
+// directory removed however the run ends.
+function utf8procWidths() {
+  const dir = mkdtempSync(join(tmpdir(), "cell-widths-"));
+  try {
+    writeFileSync(join(dir, "widths.c"), C);
+    const flags = execFileSync(
+      "pkg-config",
+      ["--cflags", "--libs", "libutf8proc"],
+      { encoding: "utf8" },
+    )
+      .trim()
+      .split(/\s+/);
+    execFileSync("cc", [
+      "-o",
+      join(dir, "widths"),
+      join(dir, "widths.c"),
+      ...flags,
+    ]);
+    return execFileSync(join(dir, "widths"), {
+      encoding: "utf8",
+      maxBuffer: 0x200000,
+    }).split("\n");
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+}
+
+const [unicode, digits] = utf8procWidths();
 const widths = [...digits].map(Number);
-rmSync(dir, { recursive: true });
 
 async function tmuxSource(file) {
   const url = `https://raw.githubusercontent.com/tmux/tmux/${tag}/${file}`;
@@ -124,6 +131,9 @@ writeFileSync(
 // and tmux ${tag}'s utf8_default_width_cache (${overrides.length} codepoints).
 // MODIFIER_BASES: the emoji a skin tone joins, from tmux ${tag}'s
 // utf8_should_combine.
+
+// The tmux release the table counts as.
+export const TABLE_TMUX_VERSION = "${tag}";
 
 export const ZERO_WIDTH: readonly number[] = [
 ${hexList(runs(0))}

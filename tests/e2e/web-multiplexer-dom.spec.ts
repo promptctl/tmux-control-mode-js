@@ -11,7 +11,7 @@
 //      with a custom scheme reaches its link handler
 //   5. a character takes the cells tmux counts, with nothing from the host
 //
-// All three categories are from IMPL §11.3. The original §11.3 catalog
+// Items 1-3 are from IMPL §11.3. The original §11.3 catalog
 // listed these as "Playwright + xterm.js" because they can only be
 // verified at the rendered-DOM layer — the integration suite covers
 // the protocol path but not the visual outcome.
@@ -293,7 +293,7 @@ test("an OSC 8 link with a custom scheme calls the page's link handler with its 
   }
 });
 
-test("an emoji with VS16 takes two cells, as tmux counts it, with no addon from the host", async () => {
+test("an emoji with VS16 takes two cells, as tmux counts it, with no Unicode addon from the host", async () => {
   const handle = await launchApp();
   try {
     const { page } = handle;
