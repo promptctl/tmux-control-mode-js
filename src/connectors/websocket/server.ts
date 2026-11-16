@@ -246,25 +246,38 @@ export interface WebSocketBridge {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/** A bridge without `authenticate`: every connection is accepted, with no
+ *  identity. */
+type UnauthenticatedBridgeOptions = Omit<
+  WebSocketBridgeOptions<undefined>,
+  "authenticate"
+> & { readonly authenticate?: undefined };
+
 // [LAW:types-are-the-program] Two call shapes, one overload each: with
 // `authenticate`, the identity it attaches is the one every other hook
-// receives; without it, there is none. The generic overload comes first:
-// tried second, it would see a zero-parameter hook's type as the first
-// overload's check fixed it, with `ok` widened to `boolean`, and refuse it.
+// receives; without it, there is none.
+//
+// The generic overload must come first. TypeScript gives a zero-parameter
+// `authenticate` its contextual type from whichever overload it tries first
+// and keeps that type for the overloads after it. Tried first, the
+// unauthenticated overload would type the hook's `ok: true` as `boolean`, and
+// the generic overload would then refuse the hook.
+/**
+ * `Identity` is inferred from `authenticate`. When `authenticate` is written
+ * inline, it has to come before the hooks that read the identity
+ * (`createClient`, `disposeClient`, `authorize`, `onEvent`): TypeScript infers
+ * from an object literal's function properties in order, so a hook listed
+ * earlier sees `unknown`. Otherwise, name the type:
+ * `createWebSocketBridge<User>({ … })`.
+ */
 export function createWebSocketBridge<Identity>(
   opts: WebSocketBridgeOptions<Identity>,
 ): WebSocketBridge;
 export function createWebSocketBridge(
-  opts: Omit<WebSocketBridgeOptions<undefined>, "authenticate"> & {
-    readonly authenticate?: undefined;
-  },
+  opts: UnauthenticatedBridgeOptions,
 ): WebSocketBridge;
 export function createWebSocketBridge<Identity>(
-  opts:
-    | WebSocketBridgeOptions<Identity>
-    | (Omit<WebSocketBridgeOptions<undefined>, "authenticate"> & {
-        readonly authenticate?: undefined;
-      }),
+  opts: WebSocketBridgeOptions<Identity> | UnauthenticatedBridgeOptions,
 ): WebSocketBridge {
   return opts.authenticate === undefined
     ? startBridge({ ...opts, authenticate: acceptWithoutIdentity })

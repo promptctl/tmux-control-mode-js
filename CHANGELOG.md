@@ -18,10 +18,13 @@ All notable changes to this project are documented here. Format follows
   its own, and a prop taken away returns to its default.
 - `createWebSocketBridge` types the connection identity: the identity
   `authenticate()` attaches reaches `createClient`, `disposeClient`,
-  `authorize` and `onEvent` as the app's own type, inferred from the hook.
-  An accept names its identity (`{ ok: true, identity: undefined }` for none),
-  and `authenticate: cond ? hook : undefined` no longer compiles when the hook
-  attaches one: pass a hook that accepts with no identity instead.
+  `authorize` and `onEvent` as the app's own type. The type is inferred from
+  an inline `authenticate` listed before those hooks; otherwise name it,
+  `createWebSocketBridge<User>(…)`. An accept names its identity
+  (`{ ok: true, identity: undefined }` for none). Either leave `authenticate`
+  out or pass a hook: `authenticate: cond ? hook : undefined` no longer
+  compiles. `WebSocketBridgeOptions<Identity>` requires `authenticate`, and an
+  options object typed for one identity is not assignable to another's.
   `ConnectionIdentity` is gone; `Authenticate<Identity>` is the hook's type.
 - The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
   gone: call the connection's methods of the same names (`ClientSizeSurface`).

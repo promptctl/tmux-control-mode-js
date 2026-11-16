@@ -2868,7 +2868,12 @@ describe("WebSocket bridge — connection identity", () => {
     t.feed(STARTUP_GREETING);
     const seen: string[] = [];
     const bridge = createWebSocketBridge({
-      authenticate: () => ({ ok: true, identity: { user: "ada" } }),
+      // A hook that reads its request, written inline before the hooks that
+      // read the identity: the order TypeScript infers it in.
+      authenticate: (req) => ({
+        ok: true,
+        identity: { user: req.url ?? "ada" },
+      }),
       createClient: (ctx) => {
         seen.push(`createClient:${ctx.identity.user}`);
         return client;
@@ -2905,6 +2910,27 @@ describe("WebSocket bridge — connection identity", () => {
 
     expect(identities).toEqual([undefined]);
     expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(true);
+  });
+
+  it("a named identity type reaches a hook listed before authenticate", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const seen: string[] = [];
+    const bridge = createWebSocketBridge<User>({
+      createClient: (ctx) => {
+        seen.push(ctx.identity.user);
+        return client;
+      },
+      authenticate: (req) => ({
+        ok: true,
+        identity: { user: req.url ?? "ada" },
+      }),
+    });
+    connectRunning(bridge);
+    await flush();
+
+    expect(seen).toEqual(["ada"]);
   });
 
   it("an identity type is only reachable through an authenticate that attaches it", () => {
