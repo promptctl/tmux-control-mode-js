@@ -168,6 +168,21 @@ export class XtermSink implements TerminalSink {
         throw new Error("xterm opened without a screen element");
       }
       this.screen = screen;
+      {
+        const term = this.terminal;
+        const vp = term.element?.querySelector(".xterm-viewport") as HTMLElement | null;
+        const area = term.element?.querySelector(".xterm-scroll-area") as HTMLElement | null;
+        const st = (tag: string): void => {
+          const b = term.buffer.active;
+          (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+            `[DBG ${term.rows}r] ${tag} base=${b.baseY} vY=${b.viewportY} len=${b.length} top=${vp?.scrollTop} vpH=${vp?.clientHeight} areaH=${area?.style.height} sH=${vp?.scrollHeight}`,
+          );
+        };
+        (this as unknown as { dbg: (t: string) => void }).dbg = st;
+        vp?.addEventListener("scroll", () => st("domscroll"));
+        term.onScroll(() => st("onScroll"));
+        term.onResize((e) => st(`onResize ${e.cols}x${e.rows}`));
+      }
       addons = (opts.addons ?? (() => []))();
       for (const addon of addons) {
         taken += 1;
@@ -227,6 +242,7 @@ export class XtermSink implements TerminalSink {
   }
 
   private applySeed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    (this as unknown as { dbg: (t: string) => void }).dbg(`applySeed ${captured.byteLength}B`);
     // xterm.write accepts Uint8Array; the seed is raw bytes (same as the live
     // path) and xterm is the single decoding authority. The CUP below is an
     // ASCII string — xterm.write accepts either form.
@@ -243,6 +259,7 @@ export class XtermSink implements TerminalSink {
       // cursor (BufferingSink) ignore the cursor entirely.
       this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
         if (!this.isDisposed) this.terminal.scrollToBottom();
+        (this as unknown as { dbg: (t: string) => void }).dbg("seed parsed+scrollToBottom");
       });
     } else {
       this.terminal.write(captured, () => {
@@ -267,7 +284,9 @@ export class XtermSink implements TerminalSink {
       if (overflow !== null) this.performDrain(overflow);
       return;
     }
-    this.terminal.write(data);
+    this.terminal.write(data, () =>
+      (this as unknown as { dbg: (t: string) => void }).dbg(`wrote ${data.byteLength}B`),
+    );
   }
 
   // Apply a batch the gate released: the pending seed (if any) then the
@@ -325,6 +344,7 @@ export class XtermSink implements TerminalSink {
       });
       return;
     }
+    (this as unknown as { dbg: (t: string) => void }).dbg(`resize-> ${cols}x${rows}`);
     this.terminal.resize(cols, rows);
   }
 

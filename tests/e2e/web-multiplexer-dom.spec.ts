@@ -346,6 +346,10 @@ test("a pane resized again and again holds its history once and keeps following 
       "web-multiplexer-demo",
       "#{pane_id}",
     ]);
+    const dbg: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("[DBG")) dbg.push(`${Date.now() % 100000} ${m.text()}`);
+    });
     tmux(socket, ["send-keys", "-t", PANE, "seq 1 60", "Enter"]);
     // tmux's grid is the truth: its screen rows, and its lines (history and
     // screen, one each).
@@ -445,7 +449,11 @@ test("a pane resized again and again holds its history once and keeps following 
     // capture: the view still follows it to the bottom, and the history the
     // capture redrew under it is still there once.
     tmux(socket, ["send-keys", "-t", PANE, "printf '%s\\n' do''ne", "Enter"]);
-    await showsRow("done");
+    try {
+      await showsRow("done");
+    } finally {
+      console.log("DBGLOG\n" + dbg.slice(-120).join("\n"));
+    }
     await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
   } finally {
     await disposeApp(handle);
