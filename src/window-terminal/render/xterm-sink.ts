@@ -424,8 +424,8 @@ export class XtermSink implements TerminalSink {
   }
 
   /**
-   * The renderer drawing this terminal now. Each renderer addon (WebGL,
-   * canvas) draws links on its own canvas in xterm's screen element,
+   * The renderer drawing this terminal now. A renderer addon (WebGL) draws
+   * links on its own canvas in xterm's screen element,
    * `xterm-link-layer`; the DOM renderer draws none, and an addon that only
    * adds a layer (the image addon's `xterm-image-layer`) is not a renderer.
    */

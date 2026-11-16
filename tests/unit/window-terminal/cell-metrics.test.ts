@@ -1,4 +1,4 @@
-// Cell sizes measured the way xterm.js 5.5 measures them, through a stub
+// Cell sizes measured the way xterm.js 6 measures them, through a stub
 // window: an OffscreenCanvas whose "W" is 0.6em wide and 1.2em tall, a device
 // pixel ratio, a `document.fonts` and a resolution media query the test fires.
 
