@@ -144,6 +144,13 @@ export interface ByeFrame {
 
 export type ClientFrame = HelloFrame | CallFrame | PingFrame | ByeFrame;
 
+// [LAW:one-source-of-truth] A frame union keyed by its `k`: each kind names
+//   its own variant. Both connectors' handler tables map over it, so a
+//   handler looked up by kind is called with that kind's frame, no cast.
+export type FrameByKind<F extends { readonly k: string }> = {
+  readonly [G in F as G["k"]]: G;
+};
+
 // ---------------------------------------------------------------------------
 // Server → Client frames (JSON)
 // ---------------------------------------------------------------------------
@@ -325,6 +332,8 @@ export function decodePaneOutput(buf: Uint8Array): OutputMessage {
 // them reads a field. Downstream operates on typed unions.
 // ---------------------------------------------------------------------------
 
+// Extract, not FrameByKind: over a generic F only the conditional type is
+// assignable back to F, which parseFrame returns.
 type FrameParserTable<F extends { readonly k: string }> = {
   readonly [K in F["k"]]: (raw: unknown) => Extract<F, { k: K }>;
 };
