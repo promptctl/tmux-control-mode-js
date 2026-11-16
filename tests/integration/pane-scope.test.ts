@@ -46,11 +46,11 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 // Resolve once every pane in `paneIds` has delivered a chunk to `arrived`; a
 // timeout quotes the panes still silent.
-function waitForArrivals(
+async function waitForArrivals(
   arrived: { paneId: number }[],
   paneIds: number[],
-): Promise<number[]> {
-  return readUntil(
+): Promise<void> {
+  await readUntil(
     () => paneIds.filter((id) => !arrived.some((e) => e.paneId === id)),
     (silent) => silent.length === 0,
     "no output arrived from panes",

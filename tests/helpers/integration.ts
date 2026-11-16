@@ -299,10 +299,17 @@ export async function waitForPaneText(
   );
 }
 
-// Any value a read returns (circular, Map, bytes) renders, and a long one is
-// cut short so the failure stays legible.
-const quote = (value: unknown): string =>
-  inspect(value, { depth: 4, maxArrayLength: 20, maxStringLength: 2000 });
+// Any value a read returns (circular, Map, bytes) renders. A long one keeps
+// its end: reads that accumulate a stream hold the newest data last.
+const QUOTE_LIMIT = 2000;
+const quote = (value: unknown): string => {
+  const shown = inspect(value, {
+    depth: 4,
+    maxArrayLength: Infinity,
+    maxStringLength: Infinity,
+  });
+  return shown.length > QUOTE_LIMIT ? `…${shown.slice(-QUOTE_LIMIT)}` : shown;
+};
 
 /**
  * Call `read` until `done` holds for what it returns, and resolve with that;

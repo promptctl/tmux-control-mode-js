@@ -512,13 +512,22 @@ describe.skipIf(!RUN_INTEGRATION)(
         v.panes.every((p) => !p.resyncing),
       );
 
+      // Recorded from before the terminate: the 25ms reconnect can end the
+      // stale phase between two samples of engine.state.
+      // [LAW:no-ambient-temporal-coupling]
+      const states: (typeof engine.state)[] = [];
+      const offState = engine.onState((st) => states.push(st));
       (lastWs as unknown as WsClient).terminate();
       await readUntil(
-        () => engine.state.phase,
-        (phase) => phase === "stale",
+        () => states.map((st) => st.phase),
+        (phases) => phases.includes("stale"),
         "the engine never went stale",
       );
-      expect(engine.state).toMatchObject({ phase: "stale", window: before });
+      offState();
+      expect(states.find((st) => st.phase === "stale")).toMatchObject({
+        phase: "stale",
+        window: before,
+      });
 
       await untilLive(engine);
       await readUntil(

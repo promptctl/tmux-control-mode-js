@@ -91,7 +91,9 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
     const targetIdx = indices[0];
     const activeIndex = async () =>
       (await client!.execute("display-message -p '#{window_index}'")).output[0];
-    expect(await activeIndex()).not.toBe(targetIdx);
+    const activeBefore = await activeIndex();
+    expect(activeBefore).toMatch(/^\d+$/);
+    expect(activeBefore).not.toBe(targetIdx);
 
     bound.handleKey(parseChord("C-b"));
     bound.handleKey(parseChord(targetIdx));

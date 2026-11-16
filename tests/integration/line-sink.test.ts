@@ -61,11 +61,11 @@ function emitLineInPane(
 
 // Resolve once each pane's marker has arrived on a line tagged with that pane;
 // a timeout quotes the markers still missing.
-function waitForTaggedMarkers(
+async function waitForTaggedMarkers(
   lines: { line: string; paneId: number }[],
   markers: Map<number, string>,
-): Promise<string[]> {
-  return readUntil(
+): Promise<void> {
+  await readUntil(
     () =>
       [...markers.entries()]
         .filter(

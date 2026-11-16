@@ -125,7 +125,7 @@ const waitForAction = (sent: string[], paneId: number, action: PaneAction) =>
 
 const waitForArrival = (arrived: number[], paneId: number) =>
   readUntil(
-    () => arrived,
+    () => [...new Set(arrived)],
     (panes) => panes.includes(paneId),
     `no output from %${paneId} arrived`,
   );
