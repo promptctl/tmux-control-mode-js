@@ -701,8 +701,8 @@ export class TopologyRouter {
       );
     } catch (err) {
       // [LAW:single-enforcer] Same staleness authority as the success path: a
-      //   newer refresh, a window-close or the connection's loss owns this
-      //   window now.
+      //   newer refresh (a window-close's among them) or the connection's
+      //   loss owns this window now.
       if (!this.epoch.isListingCurrent(windowId, gen)) return;
       // A refresh is sent because the window's rows are suspect, so they go
       // whatever the failure; their panes are held, not misrouted.
@@ -733,9 +733,8 @@ export class TopologyRouter {
   //   flight is known to place it, and it can be lost again after it was
   //   asked about.
   private locate(paneId: number): void {
-    const conn = this.connection;
-    if (conn.phase !== "live" || this.inFlight > 0 || conn.located.has(paneId))
-      return;
+    const conn = this.queryConnection();
+    if (conn === null || this.inFlight > 0 || conn.located.has(paneId)) return;
     conn.located.add(paneId);
     void this.ask(paneId);
   }

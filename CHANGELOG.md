@@ -39,14 +39,16 @@ All notable changes to this project are documented here. Format follows
 - `TopologyEpochTracker.isLatestBootstrap` is also false after
   `supersedeAll()`.
 - `PaneTopologyManager.updateWindow` and `unplaceContradicted` return
-  `Contradiction.lost`, the tiled pane ids the listing or layout dropped,
-  in place of `lostTrack: boolean`. Ask about each lost pane
-  (`list-panes -t %P`) instead of re-querying the whole server.
+  `Contradiction.lostPanes`, the tiled pane ids the listing or layout
+  dropped, in place of `lostTrack: boolean`; `Contradiction.left` is now
+  `leftWindows`. Ask about each lost pane (`list-panes -t %P`) instead of
+  re-querying the whole server.
 - `TopologyEpochTracker.isWindowRefreshCurrent` is gone: call
   `isListingCurrent(windowId, gen)` with the gen of the query that listed the
   window, a window refresh's or a locate's. `startLocate()` returns a gen of
   its own, and `isLocateCurrent` is false only once something supersedes
-  every query.
+  every query. `invalidateWindow` no longer supersedes the window's listings
+  in flight: the window refresh you start after it does.
 
 ### Added
 

@@ -1265,6 +1265,22 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(asked(s.replies, "list-panes -a ")).toBe(0);
   });
 
+  it("asks about a pane that printed while nothing read topology once a reader needs it", async () => {
+    const router = new TopologyRouter(new DeliveryQueue(), () => undefined);
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    router.attachBytesSink(makeSink(), { scope: paneScope(7) });
+    router.dispatchBytes(makeChunk(7));
+    expect(locates).toEqual([]);
+    router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
+    replies.at(-1)!.reject(new Error("server busy"));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %7 "),
+    ]);
+  });
+
   it("asks once more about a pane a lost-pane ask placed when it prints unplaced", async () => {
     const s = await movedPane([[2, LAYOUT_4]]);
     answerRefresh(s.replies, 2);
