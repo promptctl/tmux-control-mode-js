@@ -269,6 +269,14 @@ test("an OSC 8 link with a custom scheme calls the page's link handler with its 
       .filter({ hasText: new RegExp(`^\\s*LINK_${TAG}\\s*$`) })
       .first();
     await expect(row).toBeVisible({ timeout: 15_000 });
+    // tmux's 80 columns can be wider than the demo's box at its font, so the
+    // window scrolls, and focusing xterm scrolled it toward the cursor. A
+    // person scrolls back to the link's start to click it.
+    await row.evaluate((r) => {
+      const root = r.closest(".wt-root");
+      if (root === null) throw new Error("link row is not in a window");
+      root.scrollLeft = 0;
+    });
     const box = await row.boundingBox();
     if (box === null) throw new Error("link row has no box");
     const x = box.x + (await cellWidth(page)) * 2.5;
