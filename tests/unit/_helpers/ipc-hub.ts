@@ -6,8 +6,13 @@
 //     reply) is delivered in a later task, in the order it was sent: the
 //     receiving process handles an IPC message as a task of its own, never
 //     inside the sender's call stack.
+//   - a page that has ended (a later document committed, its renderer
+//     crashed, or its WebContents was destroyed) hears nothing more from
+//     main: no send, and no invoke reply, which stays pending forever.
 //   - structuredClone on every cross-process arg (regressions that depend on
-//     shared identity fail here the same way they'd fail in production).
+//     shared identity fail here the same way they'd fail in production); an
+//     invoke handler's error crosses as a plain Error carrying only its
+//     message, under Electron's "Error invoking remote method" prefix.
 //   - ipcMain.handle throws on a second registration for the same channel.
 //   - page listeners (destroyed / did-navigate / render-process-gone /
 //     did-fail-load) are removable.
@@ -57,6 +62,11 @@ export interface FakeRenderer {
    */
   failLoad(options: { readonly commitErrorPage: boolean }): void;
   /**
+   * Every invoke reply main answered after its page ended: the value, or the
+   * Error the page would have been rejected with. No page heard these.
+   */
+  readonly unheardReplies: readonly unknown[];
+  /**
    * Visibility hook for leak regression tests: how many page listeners are
    * still attached to this fake's WebContents, over every event.
    */
@@ -85,10 +95,10 @@ export function createIpcHub(): IpcHub {
   let nextProcessId = 1;
 
   // [LAW:no-ambient-temporal-coupling] one hop for every crossing, so no test
-  // can rely on an ordering Electron never produces. Same-delay timers fire
-  // in FIFO order, which keeps each direction's messages in send order.
+  // can rely on an ordering Electron never produces. Immediates fire in FIFO
+  // order, which keeps each direction's messages in send order.
   const task = (): Promise<void> =>
-    new Promise((resolve) => setTimeout(resolve, 0));
+    new Promise((resolve) => setImmediate(resolve));
   let inFlight = 0;
   const nextTask = (): Promise<void> => {
     inFlight++;
@@ -142,6 +152,7 @@ export function createIpcHub(): IpcHub {
 
     let destroyed = false;
     let crashed = false;
+    const unheardReplies: unknown[] = [];
     // Each listener mapped to whether it was attached with `once`.
     const pageListeners = new Map<string, Map<() => void, boolean>>();
     const processId = nextProcessId++;
@@ -164,9 +175,12 @@ export function createIpcHub(): IpcHub {
       }
     };
 
+    // [LAW:one-source-of-truth] a document hears main only while it is the
+    // page shown in a live renderer; derived, never a flag of its own.
+    const hears = (d: Document): boolean => !destroyed && !crashed && d === doc;
+
     const sender: WebContentsLike = {
       send(channel, ...args) {
-        if (destroyed) return;
         const target = doc;
         // Real Electron sends args through structuredClone before they
         // reach the renderer. Mirroring that here means a test that mutates
@@ -174,7 +188,7 @@ export function createIpcHub(): IpcHub {
         // fails the same way it would in production.
         const payload = cloneArgs(args);
         void nextTask().then(() => {
-          if (destroyed) return;
+          if (!hears(target)) return;
           for (const h of target.listeners.get(channel) ?? [])
             h({}, ...payload);
         });
@@ -224,16 +238,34 @@ export function createIpcHub(): IpcHub {
           const e = event();
           const payload = cloneArgs(args);
           await nextTask();
-          try {
-            const handler = invokeHandlers.get(channel);
-            if (handler === undefined) {
-              throw new Error(`no handler registered for ${channel}`);
-            }
-            return cloneArgs([await handler(e, ...payload)])[0];
-          } finally {
-            // The reply, value or error, crosses back as a hop of its own.
-            await nextTask();
+          const handler = invokeHandlers.get(channel);
+          const reply = await Promise.resolve()
+            .then(() => {
+              if (handler === undefined) {
+                throw new Error(`No handler registered for '${channel}'`);
+              }
+              return handler(e, ...payload);
+            })
+            .then(
+              (value) => ({ ok: true, value: cloneArgs([value])[0] }) as const,
+              // Electron carries only the message across, under its prefix.
+              (err: unknown) =>
+                ({
+                  ok: false,
+                  error: new Error(
+                    `Error invoking remote method '${channel}': ${String(err)}`,
+                  ),
+                }) as const,
+            );
+          // The reply crosses back as a hop of its own, and a page that has
+          // ended never hears it.
+          await nextTask();
+          if (!hears(document)) {
+            unheardReplies.push(reply.ok ? reply.value : reply.error);
+            return new Promise<never>(() => {});
           }
+          if (!reply.ok) throw reply.error;
+          return reply.value;
         },
         send(channel, ...args) {
           const e = event();
@@ -266,6 +298,7 @@ export function createIpcHub(): IpcHub {
         return doc.ipcRenderer;
       },
       sender,
+      unheardReplies,
       get event() {
         return {
           sender,

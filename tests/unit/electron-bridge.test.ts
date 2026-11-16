@@ -764,7 +764,6 @@ describe("Electron IPC bridge — method dispatch", () => {
     // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hello".
     expect(t.sent[0]).toContain("68 65 6c 6c 6f");
 
-    await hub.settled();
     feedCommandResponse(t, 1, []);
     await pending;
   });
@@ -1263,7 +1262,9 @@ describe("Electron IPC bridge — dispose", () => {
 
     handle.dispose();
 
-    await expect(proxy.execute("list-windows")).rejects.toThrow(/no handler/);
+    await expect(proxy.execute("list-windows")).rejects.toThrow(
+      /No handler registered/,
+    );
   });
 });
 
@@ -1891,7 +1892,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const pa = createRendererBridge(a.ipcRenderer);
     const pb = createRendererBridge(b.ipcRenderer);
 
-    const aResult = pa.execute("list-windows").catch((err: unknown) => err);
+    void pa.execute("list-windows");
     await hub.settled();
     // tmux has not yet replied — kill A.
     a.destroy();
@@ -1903,13 +1904,13 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
     await hub.settled();
     feedCommandResponse(t, 2, ["%1 main 0 -"]);
+    await hub.settled();
 
-    // A's invoke surface MUST reject with a typed BridgeError (not silently
-    // resolve and not crash) so callers can localize.
-    const aErr = await aResult;
-    expect(aErr).toBeInstanceOf(Error);
-    expect((aErr as Error).message).toMatch(/ABORTED/);
-    expect((aErr as Error).message).toMatch(/method=execute/);
+    // A's page is gone, so nothing hears main's answer; main still settles
+    // A's invoke as aborted rather than holding it open.
+    expect(a.unheardReplies).toMatchObject([
+      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+    ]);
 
     // B's invoke MUST receive its own response (correlation intact).
     const bResp = await bResult;
@@ -2561,12 +2562,14 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     await r.navigate({ swapFrame: true });
     t.sent.length = 0;
-    await expect(
-      old.invoke(IPC.invoke, { method: "setWindowSize", args: [3, 100, 30] }),
-    ).resolves.toMatchObject({
-      status: "bridge-error",
-      error: { code: "BRIDGE_ABORTED" },
+    void old.invoke(IPC.invoke, {
+      method: "setWindowSize",
+      args: [3, 100, 30],
     });
+    await hub.settled();
+    expect(r.unheardReplies).toMatchObject([
+      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+    ]);
     expect(t.sent).toEqual([]);
     // No peer was minted for the WebContents.
     expect(r.pageListenerCount()).toBe(0);
@@ -2578,6 +2581,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     proxy.on("window-add", (ev) => windows.push(ev.windowId));
     t.sent.length = 0;
     old.send(IPC.unregister);
+    await hub.settled();
     t.feed("%window-add @2\n");
     await hub.settled();
     expect(t.sent).toEqual([]);
@@ -2592,17 +2596,16 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     createMainBridge(client, hub.ipcMain);
     const r = hub.createRenderer();
 
-    const reply = r.ipcRenderer.invoke(IPC.invoke, {
+    void r.ipcRenderer.invoke(IPC.invoke, {
       method: "execute",
       args: ["list-windows"],
     });
     await r.navigate();
-    await hub.settled();
     feedCommandResponse(t, 1, []);
-    await expect(reply).resolves.toMatchObject({
-      status: "bridge-error",
-      error: { code: "BRIDGE_ABORTED" },
-    });
+    await hub.settled();
+    expect(r.unheardReplies).toMatchObject([
+      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+    ]);
   });
 
   it("a renderer crash withdraws its page's window size", async () => {
@@ -2634,18 +2637,20 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
   });
 
   it("an invoke a crashed renderer had queued answers BRIDGE_ABORTED", async () => {
-    const { t, r } = rig();
+    const { hub, t, r } = rig();
     const dead = r.ipcRenderer;
     await createRendererBridge(dead).setWindowSize(3, 100, 30);
 
     r.crash();
     t.sent.length = 0;
-    await expect(
-      dead.invoke(IPC.invoke, { method: "setWindowSize", args: [3, 90, 20] }),
-    ).resolves.toMatchObject({
-      status: "bridge-error",
-      error: { code: "BRIDGE_ABORTED" },
+    void dead.invoke(IPC.invoke, {
+      method: "setWindowSize",
+      args: [3, 90, 20],
     });
+    await hub.settled();
+    expect(r.unheardReplies).toMatchObject([
+      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+    ]);
     expect(t.sent).not.toContain(line(refreshClientWindowSize(3, 90, 20)));
   });
 });

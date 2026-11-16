@@ -334,6 +334,10 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     const states: ConnectionState[] = [];
     proxy.on("connection-state", (ev) => states.push(ev.state));
 
+    // Registered first, so the proxy mirrors main's broadcast, not the
+    // snapshot a late register would be answered with.
+    await hub.settled();
+
     // Drive main to closed{exit}; proxy mirrors it.
     t.triggerClose();
     await hub.settled();
@@ -361,6 +365,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     t.triggerClose("EPIPE");
     await hub.settled();
