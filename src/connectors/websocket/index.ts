@@ -37,7 +37,6 @@ export {
   type SerializedEventMessage,
   type RpcMethod,
   type WelcomeLimits,
-  type PaneOutputMessage,
 } from "./protocol.js";
 
 export {

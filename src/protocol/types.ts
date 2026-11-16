@@ -73,9 +73,8 @@ export interface ExtendedOutputMessage {
  * a TmuxMessage whose discriminator says it carries pane bytes + a paneId;
  * the type system makes it impossible to construct one with any other shape.
  *
- * [LAW:one-source-of-truth] This is the canonical pane-output type. Connector
- * layers (electron, websocket) re-export it but never re-declare it — see
- * `src/connectors/websocket/protocol.ts`.
+ * [LAW:one-source-of-truth] This is the canonical pane-output type; it ships
+ * from `./protocol` and nowhere declares it again.
  */
 export type PaneOutputMessage = OutputMessage | ExtendedOutputMessage;
 

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed — breaking
+
+- `decodePaneOutput` (`./websocket`) returns `OutputMessage`, and a frame
+  with any flags bit set throws `BridgeProtocolError`. It used to accept an
+  "extended" frame carrying an `age` that `encodePaneOutput` never wrote, so
+  this package's bridge never sent one; a custom server that does now fails
+  every pane-output frame. `./websocket` and `./websocket/protocol` no longer
+  re-export `PaneOutputMessage`; import it from `./protocol`, where
+  `OutputMessage` and `ExtendedOutputMessage` already are.
+
 ## [0.4.0] - 2026-11-16
 
 ### Changed — breaking

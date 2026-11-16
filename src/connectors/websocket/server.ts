@@ -1164,7 +1164,7 @@ class Connection<Identity> {
   //     reply-stream report or a cross-session-layout event, so the JSON
   //     event frame never sees a lifecycle or byte message — the route type
   //     enforces it.
-  //   - `onByteOutput` handles `PaneOutputMessage` via the binary
+  //   - `onByteOutput` handles each `ChunkPayload` via the binary
   //     side-channel. Bytes are routed here via
   //     `client.attachBytesSink`, not through `client.on('*', …)`,
   //     because the emitter no longer carries byte messages.
