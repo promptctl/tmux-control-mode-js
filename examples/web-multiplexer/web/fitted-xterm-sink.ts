@@ -68,7 +68,7 @@ export class FittedXtermSink extends XtermSink {
         fit: "both",
       }),
       { width: this.box.clientWidth, height: this.box.clientHeight },
-      this.measure.cellAt(cellFontOf(this.terminal.options)),
+      this.measure.cellAt(cellFontOf(this.terminal.options), this.renderer),
       this.grid,
     );
     super.setFont(solution.font);

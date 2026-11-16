@@ -30,7 +30,7 @@ import { tmuxSocketDir } from "@promptctl/tmux-control-mode-js";
 
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { e2eSocketName } from "./socket-naming.js";
-import { cleanSessionArgs } from "./tmux-shell.js";
+import { cleanSessionArgs, E2E_SHELL } from "./tmux-shell.js";
 
 // [LAW:single-enforcer] All tmux subprocess invocations cross the
 // process boundary as argv arrays. Mirrors the wrapper in the Electron
@@ -311,6 +311,53 @@ test("an emoji takes two cells, as tmux counts it, with Unicode 11 loaded", asyn
     });
     const cell = await cellWidth(page);
     expect(Math.abs(offset - 2 * cell)).toBeLessThan(cell / 2);
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+test("each pane's xterm fills its pane box exactly, drawn by the DOM renderer or by WebGL", async () => {
+  const handle = await launchApp();
+  try {
+    const { page, socket } = handle;
+    // Two panes side by side: a cell width off by a fraction shows as the
+    // right pane's xterm falling short of its box, or running past it.
+    tmux(socket, [
+      "split-window",
+      "-h",
+      "-t",
+      "web-multiplexer-demo",
+      E2E_SHELL,
+    ]);
+    // xterm sizes its screen element to its grid (cols x the cell its
+    // renderer draws, rounded to whole CSS px); the pane's box is the
+    // window terminal's cols x the cell it laid out.
+    const fits = (): Promise<string[]> =>
+      page.evaluate(() =>
+        Array.from(
+          document.querySelectorAll<HTMLElement>(".wt-pane:not([hidden])"),
+          (pane) => {
+            const box = pane.getBoundingClientRect();
+            const screen = pane.querySelector(".xterm-screen");
+            if (screen === null) return `${pane.dataset.paneId}: no screen`;
+            const drawn = screen.getBoundingClientRect();
+            const renderer =
+              screen.querySelector("canvas") === null ? "dom" : "canvas";
+            const off = Math.max(
+              Math.abs(drawn.width - box.width),
+              Math.abs(drawn.height - box.height),
+            );
+            return `${renderer} ${off < 1 ? "fits" : `${drawn.width}x${drawn.height} in ${box.width}x${box.height}`}`;
+          },
+        ),
+      );
+    await expect
+      .poll(fits, { timeout: 15_000 })
+      .toEqual(["dom fits", "dom fits"]);
+    await page.getByText("WebGL", { exact: true }).click();
+    await expect
+      .poll(fits, { timeout: 15_000 })
+      .toEqual(["canvas fits", "canvas fits"]);
   } finally {
     await disposeApp(handle);
   }

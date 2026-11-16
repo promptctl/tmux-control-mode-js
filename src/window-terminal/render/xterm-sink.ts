@@ -52,6 +52,7 @@ import {
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
+import type { CellRenderer } from "../sizing/cell-metrics.js";
 
 const utf8Encoder = new TextEncoder();
 
@@ -390,6 +391,18 @@ export class XtermSink implements TerminalSink {
     const px = this.terminal.options.fontSize ?? DEFAULT_FONT_SIZE;
     this.terminal.options.fontSize = px + 1;
     this.terminal.options.fontSize = px;
+  }
+
+  /**
+   * The renderer drawing this terminal now. A renderer addon draws on
+   * canvases in xterm's screen element (xterm.css styles them there); the DOM
+   * renderer draws none. Read, not remembered: a host that disposes its WebGL
+   * addon on context loss hands the pane back to the DOM renderer.
+   */
+  get renderer(): CellRenderer {
+    return this.terminal.element?.querySelector(".xterm-screen canvas")
+      ? "canvas"
+      : "dom";
   }
 
   /** Focus the underlying xterm. Safe after dispose (no-op). */

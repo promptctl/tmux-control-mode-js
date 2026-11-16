@@ -247,8 +247,8 @@ the ones tmux or its layout decides, and the type refuses them: `cols` and
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads; it is read at mount. An addon that throws as a pane opens is
 an `onError` (`render`), and that pane stays empty. Panes are laid out in the
-cell xterm.js's DOM renderer draws, so a renderer addon (WebGL, canvas), which
-draws a different cell, misaligns them. xterm.js 5.5 makes an OSC 8 link with
+cell their renderer draws, xterm.js's DOM renderer or a renderer addon (WebGL,
+canvas). xterm.js 5.5 makes an OSC 8 link with
 a scheme other than `http:` or `https:` only when `linkHandler` allows it, and
 draws an emoji one cell wide where tmux counts two unless Unicode 11 is the
 version in use:

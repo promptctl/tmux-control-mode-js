@@ -151,7 +151,7 @@ export function createWindowTerminal(
   function render(): void {
     const state = engine.state;
     if (state.phase !== "live" && state.phase !== "stale") return;
-    const cell = measure.cellAt(xterm.font);
+    const cell = measure.cellAt(xterm.font, renderer.renderer);
     const solution = solve(sizing, box, cell, state.window.size);
     renderer.apply(renderPlan(state.window, solution));
     declarer.apply(state.phase === "live" ? solution.claim : { kind: "hold" });

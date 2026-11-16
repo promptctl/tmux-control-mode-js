@@ -17,7 +17,7 @@
 
 import { useCallback, useMemo, useRef, useState, type ElementRef } from "react";
 import { observer } from "mobx-react-lite";
-import { ActionIcon, Group, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Chip, Group, Text, Tooltip } from "@mantine/core";
 import type {
   WindowTerminalState,
   XtermAddons,
@@ -26,6 +26,7 @@ import type {
 import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/react";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 
@@ -71,6 +72,9 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   // `cc-candybar://…`) or a plain URL. The page shows it. Only a plain URL
   // opens: its text is the link, where an OSC 8 link's text can be anything.
   const [lastLink, setLastLink] = useState<string | null>(null);
+  // The panes draw with xterm's DOM renderer, or with WebGL. Addons are read
+  // at mount, so a switch mounts the terminal again.
+  const [webgl, setWebgl] = useState(false);
   const { xterm, addons } = useMemo(() => {
     const show = (_: MouseEvent, uri: string): void => setLastLink(uri);
     const open = (ev: MouseEvent, uri: string): void => {
@@ -85,9 +89,10 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
     const factory: XtermAddons = () => [
       ...unicode11(),
       new WebLinksAddon(open),
+      ...(webgl ? [new WebglAddon()] : []),
     ];
     return { xterm: options, addons: factory };
-  }, []);
+  }, [webgl]);
   const seen = useRef<Seen | null>(null);
   const onState = useCallback(
     (s: WindowTerminalState) => {
@@ -127,6 +132,16 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
             {lastLink}
           </Text>
         )}
+        <Tooltip label="Draw the panes with WebGL">
+          <Chip
+            size="xs"
+            checked={webgl}
+            onChange={setWebgl}
+            data-testid="webgl-toggle"
+          >
+            WebGL
+          </Chip>
+        </Tooltip>
         <Tooltip label="Smaller font">
           <ActionIcon
             size="xs"
@@ -150,6 +165,7 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
         </Tooltip>
       </Group>
       <WindowTerminal
+        key={webgl ? "webgl" : "dom"}
         ref={terminal}
         className="demo-window-terminal"
         connection={store.paneStreamClient}

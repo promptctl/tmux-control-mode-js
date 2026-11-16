@@ -100,9 +100,9 @@ describe("createCellMeasure", () => {
     const { win } = stubWindow(2);
     const m = createCellMeasure(win);
     // 10px: char 6 wide, 12 device px; +round(1.4) = 13 device px, / 2.
-    expect(m.cellAt(font("Mono", 1, 1.4))(10).width).toBe(6.5);
+    expect(m.cellAt(font("Mono", 1, 1.4), "dom")(10).width).toBe(6.5);
     // -round(-2.6) = -3: 9 device px.
-    expect(m.cellAt(font("Mono", 1, -2.6))(10).width).toBe(4.5);
+    expect(m.cellAt(font("Mono", 1, -2.6), "dom")(10).width).toBe(4.5);
     m.dispose();
   });
 
@@ -110,19 +110,41 @@ describe("createCellMeasure", () => {
     const { win } = stubWindow(2);
     const m = createCellMeasure(win);
     // 10px: char 6 x 12. dpr 2: ceil(24) = 24, x1.25 = 30, floor 30 / 2 = 15.
-    expect(m.cellAt(font("Mono", 1.25))(10)).toEqual({ width: 6, height: 15 });
+    expect(m.cellAt(font("Mono", 1.25), "dom")(10)).toEqual({
+      width: 6,
+      height: 15,
+    });
     // 13px: char 7.8 x 15.6. ceil(31.2) = 32, x1 = 32, / 2 = 16.
-    expect(m.cellAt(font("Mono", 1))(13)).toEqual({ width: 7.8, height: 16 });
+    expect(m.cellAt(font("Mono", 1), "dom")(13)).toEqual({
+      width: 7.8,
+      height: 16,
+    });
+    m.dispose();
+  });
+
+  it("a canvas renderer's cell is its char width floored to device pixels; its height is the DOM renderer's", () => {
+    const { win } = stubWindow(2);
+    const m = createCellMeasure(win);
+    // 13px: char 7.8 x 15.6. dpr 2: floor(15.6) = 15 device px, +round(1.4)
+    // = 16, / 2 = 8; the DOM renderer keeps 15.6 + 1 = 16.6, / 2 = 8.3.
+    expect(m.cellAt(font("Mono", 1, 1.4), "canvas")(13)).toEqual({
+      width: 8,
+      height: 16,
+    });
+    expect(m.cellAt(font("Mono", 1, 1.4), "dom")(13)).toEqual({
+      width: 8.3,
+      height: 16,
+    });
     m.dispose();
   });
 
   it("measures each font and size once", () => {
     const { win } = stubWindow(1);
     const m = createCellMeasure(win);
-    const at = m.cellAt(font("Mono", 1));
+    const at = m.cellAt(font("Mono", 1), "dom");
     at(12);
     at(12);
-    m.cellAt(font("Mono", 1))(12);
+    m.cellAt(font("Mono", 1), "dom")(12);
     at(14);
     expect(measured).toEqual(["12px Mono|W", "14px Mono|W"]);
     m.dispose();
@@ -133,11 +155,11 @@ describe("createCellMeasure", () => {
     const m = createCellMeasure(win);
     const changed = vi.fn();
     m.onChange(changed);
-    expect(m.cellAt(font("Mono", 1))(10).width).toBe(6);
+    expect(m.cellAt(font("Mono", 1), "dom")(10).width).toBe(6);
     charScale = { width: 0.5, height: 1.2 };
     fonts.dispatchEvent(new Event("loadingdone"));
     expect(changed).toHaveBeenCalledOnce();
-    expect(m.cellAt(font("Mono", 1))(10).width).toBe(5);
+    expect(m.cellAt(font("Mono", 1), "dom")(10).width).toBe(5);
     m.dispose();
   });
 
@@ -146,10 +168,10 @@ describe("createCellMeasure", () => {
     const m = createCellMeasure(stub.win);
     const changed = vi.fn();
     m.onChange(changed);
-    expect(m.cellAt(font("Mono", 1))(13).height).toBe(16); // ceil(15.6)
+    expect(m.cellAt(font("Mono", 1), "dom")(13).height).toBe(16); // ceil(15.6)
     stub.setDpr(2);
     expect(changed).toHaveBeenCalledOnce();
-    expect(m.cellAt(font("Mono", 1))(13).height).toBe(16); // ceil(31.2) / 2
+    expect(m.cellAt(font("Mono", 1), "dom")(13).height).toBe(16); // ceil(31.2) / 2
     expect(stub.queries.map((q) => [q.media, q.listeners])).toEqual([
       ["(resolution: 1dppx)", 0],
       ["(resolution: 2dppx)", 1],
@@ -162,11 +184,11 @@ describe("createCellMeasure", () => {
     const { win } = stubWindow(1);
     charScale = { width: 0, height: 0 };
     const m = createCellMeasure(win);
-    expect(() => m.cellAt(font("Missing", 1))(12)).toThrow(
+    expect(() => m.cellAt(font("Missing", 1), "dom")(12)).toThrow(
       /cannot lay out 12px Missing/,
     );
     // Letter spacing does not make a glyph that measured nothing a font.
-    expect(() => m.cellAt(font("Missing", 1, 2))(12)).toThrow(
+    expect(() => m.cellAt(font("Missing", 1, 2), "dom")(12)).toThrow(
       /cannot lay out 12px Missing/,
     );
     m.dispose();
@@ -176,7 +198,7 @@ describe("createCellMeasure", () => {
     const { win } = stubWindow(1);
     const m = createCellMeasure(win);
     // 10px: char 6 wide; -6 leaves a cell 0 wide.
-    expect(() => m.cellAt(font("Mono", 1, -6))(10)).toThrow(
+    expect(() => m.cellAt(font("Mono", 1, -6), "dom")(10)).toThrow(
       /cannot lay out 10px Mono: .* a cell of 0x/,
     );
     m.dispose();

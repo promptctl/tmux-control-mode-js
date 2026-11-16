@@ -18,6 +18,10 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `./window-terminal`: a host that loads a renderer addon (`@xterm/addon-webgl`,
+  the canvas addon) through `addons` gets panes laid out in the cell that
+  renderer draws. They were laid out in the DOM renderer's wider cell, so each
+  pane's xterm fell short of its box and the gap grew with its columns.
 - `tmuxSocketDir()` (and so `listTmuxSocketNames()`) honors `TMUX_TMPDIR`
   as tmux does: `$TMUX_TMPDIR/tmux-<UID>`, or `/tmp/tmux-<UID>` when it is
   unset or empty. It named `/tmp/tmux-<UID>` whatever the environment said.

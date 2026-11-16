@@ -23,6 +23,7 @@ import type { PaneSurface, PaneSurfaces } from "../engine/window-engine.js";
 import type { PaneId } from "../ids.js";
 import { parsePaneId } from "../ids.js";
 import type { TerminalSink } from "../engine/terminal-sink.js";
+import type { CellRenderer } from "../sizing/cell-metrics.js";
 import type { Box } from "../sizing/solve.js";
 import type { RenderPlan } from "./render-plan.js";
 import type { XtermAddons, XtermOptions } from "./xterm-options.js";
@@ -42,7 +43,10 @@ export interface WindowRendererOptions {
 
 /** What the renderer drives in a pane. */
 type PaneDrawing = TerminalSink &
-  Pick<XtermSink, "onInput" | "setFont" | "setOptions" | "remeasure" | "focus">;
+  Pick<
+    XtermSink,
+    "onInput" | "setFont" | "setOptions" | "remeasure" | "focus" | "renderer"
+  >;
 
 // [LAW:dataflow-not-control-flow] A pane with no xterm takes every call and
 //   draws nothing, so nothing that drives panes asks which kind it has.
@@ -57,6 +61,7 @@ const NOTHING_DRAWN: PaneDrawing = {
   setOptions: () => undefined,
   remeasure: () => undefined,
   focus: () => undefined,
+  renderer: "dom",
 };
 
 interface PaneEl {
@@ -255,6 +260,19 @@ export class WindowRenderer implements PaneSurfaces {
         return [{ pane, cause }];
       }
     });
+  }
+
+  /**
+   * The renderer the panes' cells are drawn by. Every pane loads the same
+   * addons, so they agree; where one does not (its renderer addon failed or
+   * was disposed), the window takes the DOM renderer's cell, never narrower
+   * than a canvas renderer's, so the canvas panes fall short of their boxes
+   * rather than the DOM panes losing columns past them.
+   */
+  get renderer(): CellRenderer {
+    return [...this.panes.values()].every((p) => p.sink.renderer === "canvas")
+      ? "canvas"
+      : "dom";
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */

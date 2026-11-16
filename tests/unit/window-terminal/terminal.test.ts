@@ -216,6 +216,46 @@ describe("window terminal — what is drawn", () => {
     expect(terminals.every((t) => t.options.fontSize === 16)).toBe(true);
   });
 
+  it("panes drawn by a renderer addon are laid out in the cell that renderer draws", async () => {
+    // A canvas renderer's cell is narrower here: 7 wide where the DOM's is 8.
+    const cellAt: ReturnType<WindowTerminalPorts["measure"]>["cellAt"] =
+      (_, renderer) => (px) => ({
+        width: renderer === "canvas" ? 7 : px / 2,
+        height: px,
+      });
+    // As the WebGL addon does: it draws on a canvas in xterm's screen.
+    const webgl = () => [
+      {
+        activate(t: { element: HTMLElement | undefined }) {
+          // Addons load after open: the terminal has its element.
+          const el = t.element as HTMLElement;
+          const screen = el.ownerDocument.createElement("div");
+          screen.className = "xterm-screen";
+          screen.appendChild(el.ownerDocument.createElement("canvas"));
+          el.appendChild(screen);
+        },
+        dispose: () => undefined,
+      },
+    ];
+    const cellWidth = async (
+      addons: WindowTerminalOptions["addons"],
+    ): Promise<string | undefined> => {
+      const m = mount({ window: "tmux", font: 16, fit: "none" }, cellAt, {
+        addons,
+      });
+      await settle();
+      observed?.(800, 480);
+      m.flush();
+      const w = m.host
+        .querySelector<HTMLElement>(".wt-grid")
+        ?.style.getPropertyValue("--wt-cell-w");
+      m.terminal.dispose();
+      return w;
+    };
+    expect(await cellWidth(webgl)).toBe("7px");
+    expect(await cellWidth(undefined)).toBe("8px");
+  });
+
   it("a zoom hides the other panes without closing them", async () => {
     const { client, pane, flush } = await live();
     client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
