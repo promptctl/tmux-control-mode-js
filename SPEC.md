@@ -162,7 +162,7 @@ That is every command, not only the ones the client wrote: §5.5.
 |------------------|----------------|-------------|
 | `guard`          | string         | `begin`, `end`, or `error` |
 | `timestamp`      | long           | Seconds since Unix epoch (`item->time`) |
-| `command-number` | unsigned int   | Monotonically increasing sequence number per client (`item->number`) |
+| `command-number` | unsigned int   | Monotonically increasing, counted across the whole server, so another client's commands leave gaps (`item->number`, a static counter in `cmd-queue.c`) |
 | `flags`          | int            | 1 if `CMDQ_STATE_CONTROL`, 0 otherwise |
 
 The `%begin`, `%end`/`%error` lines for a given command share the same
@@ -183,15 +183,20 @@ timestamp, command-number, and flags values.
 
 ### 5.3 Parse Errors
 
-If a command cannot be parsed, the response block contains:
+A line that cannot be parsed gets one block, flags 1, and tmux runs no
+command for it and fires no hook:
 
 ```
 %begin 1363006971 3 1
-parse error: unknown command
+parse error: unknown command: nonsense
 %error 1363006971 3 1
 ```
 
-**Source:** `control.c:522-533` (`control_error`)
+Each line is parsed alone: an open `{`, an open `%if` or an unterminated
+quote is `parse error: syntax error` and does not reach into the next line.
+
+**Source:** `control.c` (`control_read_callback`, `control_error`); text
+from `cmd.c` (`unknown command: %s`), the same in 3.2a and 3.8
 
 ### 5.4 Command Output Delivery
 
@@ -215,7 +220,8 @@ a line (§5.3). Every other block carries 0.
 The mark says a block answers the client's own lines, not which line. One line
 gets one block marked 1 per command tmux ran for it, and tmux runs nothing
 after a command that fails: `display-message -p a \; kill-session -t gone \;
-display-message -p c` writes two.
+display-message -p c` writes two. A line tmux runs no command for writes
+none: a blank line of spaces, a comment, `%hidden X=1`.
 
 Blocks marked 0, one per command:
 
@@ -247,6 +253,41 @@ command line is queued by `server-client.c` `server_client_dispatch_command`,
 hooks by `hooks.c` (`cmd-queue.c` `cmdq_insert_hook` in 3.2) and a background
 command by `cmd-if-shell.c` and `cmd-run-shell.c` (`cmdq_get_command(cmdlist,
 NULL)`), none with that flag.
+
+### 5.6 Where a Line's Reply Ends
+
+Nothing on the wire says which line a block marked 1 answers, and a line's
+block count is tmux's to decide (§5.5). So `execute()` numbers the lines it
+writes, from 1, and follows each with a sentinel line,
+`tmux-control-mode-js-sentinel-<number>`, which names no tmux command (no
+command name starts with it, so tmux's prefix matching finds none). tmux
+answers it with exactly one block (§5.3): runs nothing, fires no hook, logs
+nothing in `show-messages`. A caller owns every block marked 1 from its line's
+first through its sentinel's. A sentinel's reply closes with `%error`; a block
+closed by `%end` answers a command, whatever its output says.
+
+```
+display-message -p a ; display-message -p b
+tmux-control-mode-js-sentinel-7
+```
+
+```
+%begin 1363006971 7 1
+a
+%end 1363006971 7 1
+%begin 1363006971 8 1
+b
+%end 1363006971 8 1
+%begin 1363006971 9 1
+parse error: unknown command: tmux-control-mode-js-sentinel-7
+%error 1363006971 9 1
+```
+
+A sentinel's reply that names any line but the one being answered, or a
+block marked 1 with no line awaiting a reply, means a sentinel's reply was
+lost, damaged or forged (a command written to name one, a `command-alias`).
+No later reply can be matched to its caller, so the connection ends with a
+reason naming the lines, and every waiting caller rejects.
 
 ---
 

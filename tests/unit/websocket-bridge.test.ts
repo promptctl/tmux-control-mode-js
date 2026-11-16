@@ -40,6 +40,7 @@ import {
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { replyTo } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 import { isPaneOutput } from "../../src/protocol/types.js";
@@ -239,14 +240,10 @@ function createFakeTransport(): FakeTransport {
   };
 }
 
-function feedCommandResponse(
-  t: FakeTransport,
-  commandNumber: number,
-  outputLines: readonly string[] = [],
-): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
+// The command a line execute() wrote carries, without the sentinel line that
+// ends it.
+function commandOf(sent: string): string {
+  return sent.split("\n")[0];
 }
 
 function readJsonFrames(ws: FakeWs): ServerFrame[] {
@@ -293,7 +290,7 @@ describe("WebSocket bridge — qz5.5 C2 subscription scoping", () => {
     // client.subscribeRaw (which writes to the transport). Only then can the
     // fake transport feed the matching tmux response.
     await flush();
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
     const aResult = readJsonFrames(wsA).find(
       (f): f is ResultOkFrame =>
@@ -503,7 +500,7 @@ describe("WebSocket bridge — qz5.5 C1 divergent re-subscribe within one connec
       args: ["foo", "", "#{a}"],
     });
     await flush();
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
     expect(
       readJsonFrames(ws).some(
@@ -707,7 +704,7 @@ describe("WebSocket bridge — resume-failure observability", () => {
     }
     await flush();
     expect(t.sent.filter((c) => c.includes("%3:pause"))).toHaveLength(1);
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     // Drain the OS buffer → Continue (execute #2). Reject it as a tmux %error.
@@ -715,9 +712,7 @@ describe("WebSocket bridge — resume-failure observability", () => {
     t.feed(`%output %3 ${"x".repeat(1)}\n`);
     await flush();
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
-    t.feed(`%begin 2 2 1\n`);
-    t.feed(`no current target\n`);
-    t.feed(`%error 2 2 1\n`);
+    t.feed(replyTo(t.sent[1], ["no current target"], "error", 2));
     await flush();
 
     const failures = events.filter((e) => e.kind === "pane-resume-failed");
@@ -1273,9 +1268,7 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
 
     ws.feedClient({ k: "call", id: "x", method: "execute", args: ["bogus"] });
     await flush();
-    t.feed(`%begin 1 1 1\n`);
-    t.feed(`unknown command: bogus\n`);
-    t.feed(`%error 1 1 1\n`);
+    t.feed(replyTo(t.sent[0], ["unknown command: bogus"], "error", 1));
     await flush();
 
     const frame = readJsonFrames(ws).find(
@@ -1626,7 +1619,7 @@ describe.each<TextShape>(["bytes", "string"])(
         args: ["display-message 'café ✓ 日本'"],
       });
       await flush();
-      expect(t.sent).toContain("display-message 'café ✓ 日本'\n");
+      expect(t.sent.map(commandOf)).toContain("display-message 'café ✓ 日本'");
     });
 
     it("a peer's non-ASCII close reason is reported as the text it sent", async () => {
@@ -1725,7 +1718,7 @@ describe("WebSocket bridge — upstream close", () => {
       args: ["list-windows"],
     });
     await flush();
-    expect(t.sent).toContain("list-windows\n");
+    expect(t.sent.map(commandOf)).toContain("list-windows");
     expect(closedEvents(events)).toHaveLength(0);
 
     t.transport.close();

@@ -186,17 +186,50 @@ export function capturePane(paneId: number): string {
 // per-field refusal below both read this one pattern.
 const COMMAND_LINE_TERMINATOR = /[\n\0]/;
 
+// [LAW:one-source-of-truth] The end of a command line execute() writes
+// (SPEC §5.6). tmux writes one reply block per command it runs for a line —
+// none for `%hidden X=1`, two for `a ; b` or `if-shell -F 1 x` — and nothing
+// on the wire says which line a block answers. So each command line is
+// followed by a sentinel line naming no tmux command and carrying the line's
+// number: tmux answers it with exactly one block, its parse error, runs
+// nothing and fires no hook. That block ends the line, and its number says
+// which. tmux runs the command whose name the typed word uniquely prefixes,
+// so no command's name may start with the sentinel's.
+export const SENTINEL_PREFIX = "tmux-control-mode-js-sentinel-";
+const UNKNOWN_COMMAND = "parse error: unknown command: ";
+const SENTINEL_REPLY = new RegExp(
+  `^${UNKNOWN_COMMAND}${SENTINEL_PREFIX}([1-9][0-9]*)\\r*$`,
+);
+
+/** tmux's reply to a line naming no command it knows, `name` (SPEC §5.3). */
+export function unknownCommandReply(name: string): string {
+  return `${UNKNOWN_COMMAND}${name}`;
+}
+
+/** What execute() writes for `command`: the line, then its sentinel line. */
+export function commandLine(command: string, lineNumber: number): string {
+  return `${command}\n${SENTINEL_PREFIX}${lineNumber}\n`;
+}
+
 /**
- * Why tmux would not run `command` as one command with one reply, or `null`
- * when it would. A newline splits the line into several commands; a NUL ends
- * it early; an empty line detaches the control client (SPEC §4.1); a blank or
- * comment-only line gets no reply.
+ * The number of the command line a block's output ends — the reply to its
+ * sentinel line — or `null` when the output is not a sentinel's reply. A CRLF
+ * transport leaves a trailing `\r` run on a response line (see
+ * `CommandResponse.output`).
+ */
+export function sentinelLineNumber(output: readonly string[]): number | null {
+  const reply = output.length === 1 ? SENTINEL_REPLY.exec(output[0]) : null;
+  return reply === null ? null : Number(reply[1]);
+}
+
+/**
+ * Why execute() must not send `command`, or `null` when it may. A newline
+ * makes tmux read two lines; a NUL ends the line early; an empty line
+ * detaches the control client (SPEC §4.1).
  */
 export function commandLineFault(command: string): string | null {
   if (COMMAND_LINE_TERMINATOR.test(command)) return "it holds a newline or NUL";
-  const trimmed = command.trim();
-  if (trimmed === "") return "it is empty or blank";
-  return trimmed.startsWith("#") ? "it is only a comment" : null;
+  return command === "" ? "it is empty" : null;
 }
 
 // The refusal names the field and leaves the value out: an environment value

@@ -16,6 +16,7 @@ import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import { paneScope, serverScope, sessionScope } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { replyTo } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Test rigging
@@ -457,7 +458,7 @@ describe("TmuxClient — topology bootstrap failure is observable", () => {
 
     // tmux answers that command with a %error guard block → execute() rejects →
     // the router lifts the failure to the topology-error seam.
-    t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    t.feed(replyTo(t.sentCommands[0], [], "error"));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -473,7 +474,7 @@ describe("TmuxClient — topology bootstrap failure is observable", () => {
     client.attachBytesSink(createRecordingSink(), { scope: sessionScope(100) });
     t.feed(STARTUP_GREETING);
 
-    t.feed("%begin 1 1 1\n%1 @1 $100\nnot a pane\n%end 1 1 1\n");
+    t.feed(replyTo(t.sentCommands[0], ["%1 @1 $100", "not a pane"]));
     await Promise.resolve();
     await Promise.resolve();
 

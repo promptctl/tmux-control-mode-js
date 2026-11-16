@@ -35,6 +35,8 @@ import {
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { replyTo } from "./_helpers/wire.js";
+import { commandLine } from "../../src/protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Shared fakes
@@ -276,14 +278,15 @@ describe("fifo-correlation", () => {
     const p1 = client.execute("cmd-alpha");
     const p2 = client.execute("cmd-beta");
 
-    // Wire format: raw command string + newline, no id field, no wrapper.
-    expect(transport.sent[0]).toBe("cmd-alpha\n");
-    expect(transport.sent[1]).toBe("cmd-beta\n");
+    // Wire format: the raw command line, then the sentinel line that ends
+    // it — no id field, no wrapper.
+    expect(transport.sent[0]).toBe(commandLine("cmd-alpha", 1));
+    expect(transport.sent[1]).toBe(commandLine("cmd-beta", 2));
     expect(transport.sent[0]).not.toContain('"id"');
 
-    // Inject %begin/%end pairs in order; promises resolve FIFO.
-    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
-    transport.inject("%begin 1001 2 1\n%end 1001 2 1\n");
+    // Inject each line's reply in order; promises resolve FIFO.
+    transport.inject(replyTo(transport.sent[0], [], "end", 1));
+    transport.inject(replyTo(transport.sent[1], [], "end", 2));
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1.commandNumber).toBe(1);
@@ -310,7 +313,9 @@ describe("fifo-correlation", () => {
     // The next command correlates with the FIRST %begin/%end pair — proof
     // the failed entry did not leak a slot.
     const p = client.execute("cmd-beta");
-    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject(
+      replyTo(transport.sent[transport.sent.length - 1], [], "end", 1),
+    );
     expect((await p).commandNumber).toBe(1);
   });
 
@@ -332,7 +337,9 @@ describe("fifo-correlation", () => {
     await expect(client.execute("cmd-alpha")).rejects.toBeInstanceOf(TypeError);
 
     const p = client.execute("cmd-beta");
-    transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject(
+      replyTo(transport.sent[transport.sent.length - 1], [], "end", 1),
+    );
     expect((await p).commandNumber).toBe(1);
   });
 });

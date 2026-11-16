@@ -23,6 +23,7 @@ import type { TmuxTransport, SendResult } from "../transport/types.js";
 import { createCloseGate } from "../transport/close-gate.js";
 import { CONTROL_FLAGS, type TmuxMessage } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
+import { SENTINEL_PREFIX, unknownCommandReply } from "../protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Scenario — the policy seam
@@ -219,7 +220,10 @@ export class MockTmuxServer implements TmuxTransport {
     this.emit({ type: "output", paneId, data });
   }
 
-  /** The commands the client has sent, newline-stripped, in order. */
+  /**
+   * The commands the client has executed, newline-stripped, in order: every
+   * line but the sentinel lines that end them (SPEC §5.6).
+   */
   get sentCommands(): readonly string[] {
     return this.commandLog;
   }
@@ -236,21 +240,11 @@ export class MockTmuxServer implements TmuxTransport {
       return;
     }
 
-    this.commandLog.push(line);
-    // [LAW:no-defensive-null-guards] exception: MockScenario is a public
-    // policy seam consumers implement — a trust boundary, same reasoning as
-    // TmuxTransport.send()'s own contract-violation guards. A respond() that
-    // throws (violating its documented MUST-be-pure contract) must not make
-    // this method throw: send() promises SendResult, never a throw.
-    let reply: CommandReply;
-    try {
-      reply = this.scenario.respond?.(line) ?? { kind: "ok" as const };
-    } catch (err) {
-      reply = {
-        kind: "error",
-        output: [err instanceof Error ? err.message : String(err)],
-      };
-    }
+    // A sentinel line names no command, so it gets tmux's answer to every
+    // such line, its parse error; the scenario answers the commands.
+    const reply: CommandReply = line.startsWith(SENTINEL_PREFIX)
+      ? { kind: "error", output: [unknownCommandReply(line)] }
+      : this.commandReply(line);
     const number = ++this.commandNumber;
     const timestamp = this.now();
 
@@ -273,6 +267,23 @@ export class MockTmuxServer implements TmuxTransport {
     });
 
     this.flush();
+  }
+
+  private commandReply(line: string): CommandReply {
+    this.commandLog.push(line);
+    // [LAW:no-defensive-null-guards] exception: MockScenario is a public
+    // policy seam consumers implement — a trust boundary, same reasoning as
+    // TmuxTransport.send()'s own contract-violation guards. A respond() that
+    // throws (violating its documented MUST-be-pure contract) must not make
+    // this method throw: send() promises SendResult, never a throw.
+    try {
+      return this.scenario.respond?.(line) ?? { kind: "ok" as const };
+    } catch (err) {
+      return {
+        kind: "error",
+        output: [err instanceof Error ? err.message : String(err)],
+      };
+    }
   }
 
   private enqueueMessage(msg: TmuxMessage): void {

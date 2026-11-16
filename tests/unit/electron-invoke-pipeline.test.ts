@@ -17,6 +17,7 @@ import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js
 import type { IpcMainEventLike } from "../../src/connectors/electron/types.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { replyTo } from "./_helpers/wire.js";
 
 interface Rig {
   readonly pipeline: InvokePipeline;
@@ -95,14 +96,13 @@ describe("InvokePipeline — validation → envelope", () => {
 
 describe("InvokePipeline — outcome encoding", () => {
   it("encodes a successful command as an `ok` envelope with the response", async () => {
-    const { pipeline, event, feed } = makeRig();
+    const { pipeline, event, sent, feed } = makeRig();
 
     const p = pipeline.handle(event, {
       method: "execute",
       args: ["list-windows"],
     });
-    // First post-greeting command is numbered 1; resolve it successfully.
-    feed("%begin 1 1 1\n@0 zsh 1 -\n%end 1 1 1\n");
+    feed(replyTo(sent[0], ["@0 zsh 1 -"]));
 
     await expect(p).resolves.toMatchObject({
       status: "ok",
@@ -111,11 +111,11 @@ describe("InvokePipeline — outcome encoding", () => {
   });
 
   it("encodes a tmux %error as a `tmux-error` envelope (a successful bridge call)", async () => {
-    const { pipeline, event, feed } = makeRig();
+    const { pipeline, event, sent, feed } = makeRig();
 
     const p = pipeline.handle(event, { method: "execute", args: ["bogus"] });
     // The command reached tmux, which rejected it with an %error guard block.
-    feed("%begin 1 1 1\n%error 1 1 1\n");
+    feed(replyTo(sent[0], [], "error"));
 
     await expect(p).resolves.toMatchObject({ status: "tmux-error" });
   });
@@ -154,7 +154,7 @@ describe("InvokePipeline — destroyed sender", () => {
     registry.teardown(event.sender);
     // Now the command resolves; the pipeline sees the abort flag and returns
     // BRIDGE_ABORTED instead of delivering the result to a dead renderer.
-    feed("%begin 1 1 1\n%end 1 1 1\n");
+    feed(replyTo(sent[0]));
 
     await expect(p).resolves.toMatchObject({
       status: "bridge-error",

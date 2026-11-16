@@ -381,7 +381,9 @@ export interface CommandResponse {
   readonly commandNumber: number;
   readonly timestamp: number;
   /**
-   * Lines between the `%begin` and `%end`/`%error` guard pair.
+   * Lines between the `%begin` and `%end`/`%error` guard pair — of every
+   * block tmux wrote for the line, in order (`a ; b` writes two;
+   * SPEC §5.6). `commandNumber` and `timestamp` are the line's first block's.
    *
    * **Encoding:** Each string is a latin1-container byte-faithful string:
    * byte-containers, not decoded Unicode. ASCII-only output is transparent;

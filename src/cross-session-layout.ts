@@ -116,8 +116,10 @@ const EPOCH_FORMAT = `#{e|+:#{${EPOCH_OPTION_NAME}},0}`;
 const BUMP_EPOCH_COMMAND = `set-option -gF ${EPOCH_OPTION_NAME} "#{e|+:${EPOCH_FORMAT},1}"`;
 
 function installAndBumpCommand(): string {
-  // One command list: tmux applies both or reports the one that failed, so
-  // no relay can see the hook back without the epoch that announces it.
+  // One line: tmux runs its commands back to back, so no relay sees the hook
+  // back without the epoch that announces it. tmux runs nothing after the
+  // first that fails: a failed install bumps nothing, and execute() rejects
+  // with whichever failed.
   return `${installHookCommand()} ; ${BUMP_EPOCH_COMMAND}`;
 }
 

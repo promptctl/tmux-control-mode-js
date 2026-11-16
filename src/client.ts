@@ -5,7 +5,9 @@
 //   TmuxClient implements it. All tmux commands are free functions over execute
 //   in src/commands/.
 // [LAW:one-source-of-truth] Command correlation state lives exclusively here.
-// [LAW:single-enforcer] FIFO queue is the sole mechanism for matching responses.
+// [LAW:single-enforcer] The FIFO of callers, each command line ended by its
+//   numbered sentinel (SPEC §5.6), is the sole mechanism for matching
+//   responses.
 
 import {
   sameConnectionState,
@@ -14,12 +16,17 @@ import {
 import { DeliveryQueue } from "./delivery-queue.js";
 import { TmuxParser } from "./protocol/parser.js";
 import {
+  commandLine,
   detachClient,
   refreshClientSubscribe,
   refreshClientUnsubscribe,
+  sentinelLineNumber,
 } from "./protocol/encoder.js";
 import type {
+  BeginMessage,
   CommandResponse,
+  EndMessage,
+  ErrorMessage,
   ExitMessage,
   ProtocolErrorMessage,
   TmuxMessage,
@@ -122,6 +129,8 @@ export interface SubscriptionSurface {
 // transport's refusal to send at all, or the transport dying before tmux ever
 // replied.
 interface PendingEntry {
+  // Which command line this client wrote it is: its sentinel names it.
+  readonly lineNumber: number;
   readonly resolve: (response: CommandResponse) => void;
   readonly reject: (
     err:
@@ -132,26 +141,74 @@ interface PendingEntry {
   ) => void;
 }
 
-// [LAW:types-are-the-program] Narrower than PendingEntry.reject on purpose:
-// a transport refusal (TransportSendError) is caught at execute()'s send()
-// call, before an entry ever becomes inflight (see handleMessage's "begin"
-// branch), so the true theorem for what reaches an inflight entry is exactly
-// TmuxCommandError (a %error reply), TmuxProtocolError (a malformed
-// terminator), or TransportClosedError (the transport closed while this entry
-// was still awaiting %end/%error).
-interface InflightEntry {
-  readonly commandNumber: number;
-  readonly timestamp: number;
+// The reply block tmux is writing: its %begin, announced when it closes, and
+// its lines so far.
+interface OpenBlock {
+  readonly begin: BeginMessage;
   readonly output: string[];
-  readonly resolve: (response: CommandResponse) => void;
-  readonly reject: (
-    err: TmuxCommandError | TmuxProtocolError | TransportClosedError,
-  ) => void;
 }
 
-// Who a response block settles: a caller's `PendingEntry`, or the client's
-// own receiver of the replies no caller wrote the command for.
-type BlockOwner = Pick<InflightEntry, "resolve" | "reject">;
+type TerminatorError = Extract<ProtocolErrorMessage, { kind: "terminator" }>;
+
+// [LAW:types-are-the-program] How a block closed: %end (a reply), %error, or
+// a terminator the parser could not read.
+type BlockReply = CommandResponse | TmuxCommandError | TmuxProtocolError;
+
+function blockReply(
+  block: OpenBlock,
+  terminator: EndMessage | ErrorMessage | TerminatorError,
+): BlockReply {
+  const response: CommandResponse = {
+    commandNumber: block.begin.commandNumber,
+    timestamp: block.begin.timestamp,
+    output: block.output,
+    success: terminator.type === "end",
+  };
+  switch (terminator.type) {
+    case "end":
+      return response;
+    case "error":
+      return new TmuxCommandError(response);
+    case "protocol-error":
+      return new TmuxProtocolError(
+        terminator.commandNumber,
+        terminator.line,
+        block.output,
+      );
+  }
+}
+
+// The command line tmux is answering: its caller, what its commands replied
+// so far, and the first that failed — tmux runs nothing after it, so it is
+// the line's outcome.
+interface AnsweringLine {
+  readonly caller: PendingEntry;
+  readonly responses: CommandResponse[];
+  failure: TmuxCommandError | TmuxProtocolError | null;
+}
+
+// A line's reply, once its sentinel closes it: its failure, or every
+// command's output, numbered by its first block — by the sentinel's when tmux
+// ran no command for the line.
+function settleLine(line: AnsweringLine, sentinel: BeginMessage): void {
+  if (line.failure !== null) {
+    line.caller.reject(line.failure);
+    return;
+  }
+  const first = line.responses[0] ?? sentinel;
+  line.caller.resolve({
+    commandNumber: first.commandNumber,
+    timestamp: first.timestamp,
+    output: line.responses.flatMap((response) => response.output),
+    success: true,
+  });
+}
+
+function answeringWhat(line: AnsweringLine | null): string {
+  return line === null
+    ? "while no line was awaiting a reply"
+    : `while line ${line.caller.lineNumber} was awaiting its reply`;
+}
 
 // ---------------------------------------------------------------------------
 // TmuxClient
@@ -169,37 +226,18 @@ export class TmuxClient
   private readonly delivery = new DeliveryQueue();
   private readonly emit = (msg: EmitterMessage): void => this.emitter.emit(msg);
 
-  // [LAW:single-enforcer] FIFO queue and inflight slot are the sole correlation state.
-  // The FIFO holds one entry per execute() no %begin has claimed yet.
+  // [LAW:single-enforcer] The FIFO, the line being answered and the open
+  // block are the sole correlation state. The FIFO holds one entry per
+  // execute() whose line no %begin has claimed yet.
   private readonly pending: PendingEntry[] = [];
-  private inflight: InflightEntry | null = null;
+  private answering: AnsweringLine | null = null;
+  private openBlock: OpenBlock | null = null;
+  // How many command lines execute() has numbered.
+  private linesWritten = 0;
   // Commands a closing transport refused: never sent, so outside the FIFO —
   // no reply can claim one, whatever the transport sends next — and settled
   // by the close, with the connection's true end.
   private readonly awaitingClose: PendingEntry[] = [];
-
-  // [LAW:one-type-per-behavior] The owner of every block tmux marks as not
-  // answering a command this client wrote: the command line tmux was started
-  // with, a hook, a background command. Each becomes one
-  // `unsolicited-response`; whether it failed and what it said are in the
-  // response.
-  private readonly unsolicited: BlockOwner = {
-    resolve: (response) => {
-      this.startupReplied(undefined);
-      this.announce({ type: "unsolicited-response", response });
-    },
-    reject: (err) => {
-      // The transport closed before the block did: 'closed' follows.
-      if (err instanceof TransportClosedError) return;
-      // A malformed terminator leaves no response; 'protocol-error' said so.
-      if (err instanceof TmuxProtocolError) {
-        this.startupReplied(undefined);
-        return;
-      }
-      this.startupReplied(err.message);
-      this.announce({ type: "unsolicited-response", response: err.response });
-    },
-  };
 
   // [LAW:one-source-of-truth] connectionState is the single lifecycle field.
   private currentConnectionState: ConnectionState = { status: "connecting" };
@@ -265,7 +303,7 @@ export class TmuxClient
     );
 
     this.parser.onOutputLine = (_commandNumber, line) => {
-      this.inflight?.output.push(line);
+      this.openBlock?.output.push(line);
     };
     this.parser.onUnguardedLine = (line) => {
       if (this.currentConnectionState.status === "connecting" && line !== "") {
@@ -332,10 +370,16 @@ export class TmuxClient
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
       // may deliver %begin within send() and must find this entry in the FIFO.
-      const entry: PendingEntry = { resolve, reject };
+      const entry: PendingEntry = {
+        lineNumber: ++this.linesWritten,
+        resolve,
+        reject,
+      };
       this.pending.push(entry);
       try {
-        const sent = this.transport.send(command + "\n");
+        const sent = this.transport.send(
+          commandLine(command, entry.lineNumber),
+        );
         // [LAW:no-silent-failure] A refused send leaves the FIFO — the
         // command never reached tmux, so no %begin will ever claim this
         // entry. The `.ok` access stays inside this try: a contract-
@@ -501,18 +545,22 @@ export class TmuxClient
 
   // [LAW:no-silent-failure] The transport is gone — no %begin/%end/%error will
   // ever arrive for these commands. Reject them now instead of leaving their
-  // promises unsettled forever; clearing both collections first means a
+  // promises unsettled forever; clearing the correlation state first means a
   // message that somehow arrives after close (see endConnection's
   // terminal-state guard) cannot double-settle an already-rejected entry.
+  // A line whose sentinel never replied rejects with its failure when one
+  // came; otherwise tmux may have run some of its commands, and only the
+  // sentinel says it ran them all.
   private settlePendingOnClose(reason: string | undefined): void {
-    const inflight = this.inflight;
-    this.inflight = null;
+    const line = this.answering;
+    this.answering = null;
+    this.openBlock = null;
     const queued = [
       ...this.pending.splice(0, this.pending.length),
       ...this.awaitingClose.splice(0, this.awaitingClose.length),
     ];
 
-    inflight?.reject(new TransportClosedError(reason));
+    line?.caller.reject(line.failure ?? new TransportClosedError(reason));
     for (const entry of queued) {
       entry.reject(new TransportClosedError(reason));
     }
@@ -564,45 +612,25 @@ export class TmuxClient
     // endConnection): once committed, nothing more should reach
     // consumers. Without this, a chunk delivered after the transport already
     // closed — a real race under delayed/chaotic delivery — could still
-    // dispatch here: pending/inflight are already cleared and settled.
+    // dispatch here: the correlation state is already cleared and settled.
     if (this.currentConnectionState.status === "closed") return;
     if (msg.type === "begin") {
-      // [LAW:dataflow-not-control-flow] tmux says on the guard whether the
-      // block answers a command this client wrote, and that picks its owner;
-      // everything after treats every block alike. A reply to a command no
-      // caller wrote never takes a caller's entry.
-      const owner: BlockOwner | undefined =
-        msg.flags === CONTROL_FLAGS ? this.pending.shift() : this.unsolicited;
-      if (owner !== undefined) {
-        this.inflight = {
-          commandNumber: msg.commandNumber,
-          timestamp: msg.timestamp,
-          output: [],
-          resolve: owner.resolve,
-          reject: owner.reject,
-        };
+      // The first block of a line this client wrote claims the line's caller.
+      if (msg.flags === CONTROL_FLAGS && this.answering === null) {
+        const caller = this.pending.shift();
+        this.answering =
+          caller === undefined
+            ? null
+            : { caller, responses: [], failure: null };
       }
-    } else if (msg.type === "end") {
-      const entry = this.inflight;
-      this.inflight = null;
-      entry?.resolve({
-        commandNumber: entry.commandNumber,
-        timestamp: entry.timestamp,
-        output: entry.output,
-        success: true,
-      });
-    } else if (msg.type === "error") {
-      const entry = this.inflight;
-      this.inflight = null;
-      entry?.reject(
-        new TmuxCommandError({
-          commandNumber: entry.commandNumber,
-          timestamp: entry.timestamp,
-          output: entry.output,
-          success: false,
-        }),
-      );
-    } else if (msg.type === "exit") {
+      this.openBlock = { begin: msg, output: [] };
+      return;
+    }
+    if (msg.type === "end" || msg.type === "error") {
+      this.closeBlock(msg);
+      return;
+    }
+    if (msg.type === "exit") {
       // %exit is announced when tmux says it (SPEC §23 requires it observable
       // on its own), not when the transport later closes. A failed startup
       // command explains the end better than tmux's bare %exit; the same
@@ -629,6 +657,88 @@ export class TmuxClient
     this.announce(msg);
   }
 
+  // [LAW:single-enforcer] Every block closes here, however it ended.
+  // [LAW:dataflow-not-control-flow] tmux says on the guard whether the block
+  // answers a line this client wrote, and its output whether it is a line's
+  // sentinel; the two pick its owner. A reply to a command no caller wrote
+  // never reaches a caller.
+  // A block's %begin is announced with its close, so a sentinel's, which
+  // frames execute()'s line as its newline does, is never announced: no
+  // notification falls inside a block, so the order of events is tmux's.
+  // A protocol error is always announced.
+  private closeBlock(
+    terminator: EndMessage | ErrorMessage | TerminatorError,
+  ): void {
+    const block = this.openBlock;
+    this.openBlock = null;
+    // A guard tmux wrote with no block open closes nothing.
+    if (block === null) {
+      this.announce(terminator);
+      return;
+    }
+    if (block.begin.flags !== CONTROL_FLAGS) {
+      this.announce(block.begin);
+      this.settleUnsolicited(blockReply(block, terminator));
+      this.announce(terminator);
+      return;
+    }
+    const line = this.answering;
+    // tmux fails a sentinel's line, so a block closed by %end is a command's
+    // reply even when its output reads as a sentinel's: a pane title can.
+    const ended =
+      terminator.type === "end" ? null : sentinelLineNumber(block.output);
+    if (ended !== null) {
+      if (terminator.type === "protocol-error") this.announce(terminator);
+      if (line?.caller.lineNumber !== ended) {
+        this.lostLine(
+          `tmux ended command line ${ended} ${answeringWhat(line)}`,
+        );
+        return;
+      }
+      this.answering = null;
+      settleLine(line, block.begin);
+      return;
+    }
+    this.announce(block.begin);
+    this.announce(terminator);
+    if (line === null) {
+      this.lostLine(
+        "tmux answered a command line while no line was awaiting a reply",
+      );
+      return;
+    }
+    const reply = blockReply(block, terminator);
+    if (reply instanceof Error) line.failure ??= reply;
+    else line.responses.push(reply);
+  }
+
+  // [LAW:no-silent-failure] tmux's replies no longer follow the lines this
+  // client wrote: a sentinel's reply was lost, damaged or forged. No later
+  // reply can be matched to its caller, so none is handed to one: the
+  // connection ends, as on a malformed %begin.
+  private lostLine(reason: string): void {
+    this.endConnection(reason, "transport-error");
+    this.transport.close();
+  }
+
+  // [LAW:one-type-per-behavior] Every block tmux marks as not answering a
+  // line this client wrote — the command line tmux was started with, a hook,
+  // a background command — becomes one `unsolicited-response`; whether it
+  // failed and what it said are in the response.
+  private settleUnsolicited(reply: BlockReply): void {
+    // A malformed terminator leaves no response; 'protocol-error' said so.
+    if (reply instanceof TmuxProtocolError) {
+      this.startupReplied(undefined);
+      return;
+    }
+    const failed = reply instanceof TmuxCommandError;
+    this.startupReplied(failed ? reply.message : undefined);
+    this.announce({
+      type: "unsolicited-response",
+      response: failed ? reply.response : reply,
+    });
+  }
+
   // [LAW:no-silent-failure] Every line the parser could not read is observable
   // as 'protocol-error'; its kind decides what else it settles (see
   // ProtocolErrorMessage). The parser already recovered its own state before
@@ -639,17 +749,10 @@ export class TmuxClient
     // there is nothing left to settle here for a message arriving this late.
     if (this.currentConnectionState.status === "closed") return;
     switch (error.kind) {
-      case "terminator": {
-        // Mirrors handleMessage's "error" branch, with TmuxProtocolError
-        // instead of TmuxCommandError.
-        const entry = this.inflight;
-        this.inflight = null;
-        entry?.reject(
-          new TmuxProtocolError(error.commandNumber, error.line, entry.output),
-        );
-        this.announce(error);
+      case "terminator":
+        // A block that closed on a line the parser could not read.
+        this.closeBlock(error);
         return;
-      }
       case "begin": {
         // No later reply can be matched to its command, so none is handed
         // to a caller: the connection ends, and the report is announced

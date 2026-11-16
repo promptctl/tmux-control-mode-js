@@ -14,6 +14,7 @@ import {
 } from "../../src/connectors/bridge-connection.js";
 import { BridgeError } from "../../src/connectors/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { lineNumberOf, replyTo, sentinelBlock } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -51,26 +52,6 @@ function createFakeTransport(): FakeTransport {
       dataCb?.(chunk);
     },
   };
-}
-
-function feedCommandResponse(
-  t: FakeTransport,
-  commandNumber: number,
-  outputLines: readonly string[] = [],
-): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
-}
-
-function feedCommandError(
-  t: FakeTransport,
-  commandNumber: number,
-  msg: string,
-): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  t.feed(msg + "\n");
-  t.feed(`%error ${commandNumber} ${commandNumber} 1\n`);
 }
 
 async function flush(): Promise<void> {
@@ -112,10 +93,10 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     await flush();
 
     // Now release the subscribe response.
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
     // Then the unsubscribe response that the helper should have queued.
-    feedCommandResponse(t, 2);
+    t.feed(replyTo(t.sent[1], [], "end", 2));
     await flush();
 
     const subResponse = await subPromise;
@@ -161,7 +142,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     await flush();
 
     // Release the subscribe round-trip.
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     expect((await aSub).success).toBe(true);
@@ -185,7 +166,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     // B's subsequent unsubscribe IS the last owner — must fire client.unsubscribe.
     const bUnsub = bridge.unsubscribeForPeer(b, "focus");
     await flush();
-    feedCommandResponse(t, 2);
+    t.feed(replyTo(t.sent[1], [], "end", 2));
     expect((await bUnsub).success).toBe(true);
     expect(
       t.sent.filter(
@@ -214,7 +195,7 @@ describe("BridgeConnection — inflight subscribe/unsubscribe race", () => {
     // Reject the subscribe at tmux — the bridge knows the binding was never
     // installed, so unsubscribe-side rollback should swallow without
     // forwarding `client.unsubscribe` to tmux.
-    feedCommandError(t, 1, "subscription rejected");
+    t.feed(replyTo(t.sent[0], ["subscription rejected"], "error", 1));
     await flush();
 
     await expect(aSub).rejects.toThrow();
@@ -299,14 +280,14 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     // Cross the high watermark → one Pause (execute #1). Settle it cleanly.
     bridge.accountOutput(peer, 2, 150);
     expect(pauseCount(t, 2)).toBe(1);
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     // Drop below low → one Continue (execute #2). Reject it as a tmux %error:
     // tmux is alive and refused — the pane is still paused.
     bridge.ackOutput(peer, 2, 150);
     expect(continueCount(t, 2)).toBe(1);
-    feedCommandError(t, 2, "no current target");
+    t.feed(replyTo(t.sent[1], ["no current target"], "error", 2));
     await flush();
 
     // The failure is surfaced, not swallowed.
@@ -325,7 +306,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     // succeed → the ledger clears.
     bridge.ackOutput(peer, 2, 150);
     expect(continueCount(t, 2)).toBe(2);
-    feedCommandResponse(t, 3);
+    t.feed(replyTo(t.sent[2], [], "end", 3));
     await flush();
 
     // Ledger cleared: re-crossing high now fires a genuinely new Pause.
@@ -350,7 +331,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
 
     bridge.accountOutput(peer, 2, 150);
     expect(pauseCount(t, 2)).toBe(1);
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     // Continue (execute #2). Corrupt its %end terminator — only 2 of the 3
@@ -361,6 +342,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     expect(continueCount(t, 2)).toBe(1);
     t.feed("%begin 2 2 1\n");
     t.feed("%end 2 2\n");
+    t.feed(sentinelBlock(3, lineNumberOf(t.sent[1])));
     await flush();
 
     expect(failures).toHaveLength(1);
@@ -390,7 +372,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     const peer = bridge.registerPeer();
 
     bridge.accountOutput(peer, 2, 150);
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     // First ack fires Continue. A second sub-low ack while it is still in
@@ -421,7 +403,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     const peer = bridge.registerPeer();
 
     bridge.accountOutput(peer, 2, 150);
-    feedCommandResponse(t, 1);
+    t.feed(replyTo(t.sent[0], [], "end", 1));
     await flush();
 
     // Continue is in flight (execute #2). Close the transport → it rejects

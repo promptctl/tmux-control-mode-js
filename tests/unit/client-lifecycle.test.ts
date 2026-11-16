@@ -15,6 +15,7 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import type { ConnectionState } from "../../src/connection-state.js";
 import type { CommandResponse } from "../../src/protocol/types.js";
 import {
+  TmuxCommandError,
   TmuxInvalidCommandError,
   TmuxProtocolError,
   TransportClosedError,
@@ -23,17 +24,35 @@ import {
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { paneScope, sessionScope } from "../../src/pane-output.js";
 import { MockTmuxServer } from "../../src/mock/index.js";
+import {
+  block,
+  lineNumberOf,
+  replyTo,
+  sentinelBlock,
+} from "./_helpers/wire.js";
 
 interface FakeTransport extends TmuxTransport {
+  // What execute() wrote, one entry per command line.
+  readonly sent: string[];
   feed(chunk: string): void;
   triggerClose(reason?: string): void;
+}
+
+// The line the client wrote last.
+function lastSent(t: { readonly sent: readonly string[] }): string {
+  const line = t.sent.at(-1);
+  if (line === undefined) throw new Error("nothing was sent");
+  return line;
 }
 
 function createFakeTransport(): FakeTransport {
   const dataCallbacks: ((chunk: string) => void)[] = [];
   const closeCallbacks: ((reason?: string) => void)[] = [];
+  const sent: string[] = [];
   return {
-    send() {
+    sent,
+    send(command: string) {
+      sent.push(command);
       return { ok: true } as const;
     },
     onData(cb): void {
@@ -82,7 +101,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
     t.feed(STARTUP_GREETING);
 
     const done = client.execute("list-windows");
-    t.feed("%begin 1 1 1\n%end 1 1 1\n");
+    t.feed(replyTo(lastSent(t)));
     const hanging = client.execute("list-panes");
     t.triggerClose();
 
@@ -108,8 +127,6 @@ describe("TmuxClient — one command is one non-empty line", () => {
   it.each([
     ["new-window -c '/tmp/x\nkill-server\n'"],
     [""],
-    ["   "],
-    ["# comment only"],
     ["new-window -e 'A=x\0y' -- 'sleep 30'"],
   ])(
     "rejects %j without sending it, so correlation stays intact",
@@ -125,8 +142,25 @@ describe("TmuxClient — one command is one non-empty line", () => {
       expect(send).not.toHaveBeenCalled();
 
       const next = client.execute("list-windows");
-      t.feed("%begin 1 1 1\n%end 1 1 1\n");
+      t.feed(replyTo(lastSent(t)));
       await expect(next).resolves.toMatchObject({ success: true });
+    },
+  );
+
+  // tmux runs no command for these and writes no block; the line's sentinel
+  // still answers, so each is sent and resolves empty.
+  it.each([["   "], ["# comment only"]])(
+    "sends %j, which resolves with no output",
+    async (quiet) => {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t);
+      t.feed(STARTUP_GREETING);
+
+      const call = client.execute(quiet);
+      expect(lastSent(t).startsWith(`${quiet}\n`)).toBe(true);
+      t.feed(sentinelBlock(1, lineNumberOf(lastSent(t))));
+
+      await expect(call).resolves.toMatchObject({ output: [], success: true });
     },
   );
 
@@ -305,7 +339,7 @@ describe("TmuxClient — why the connection ended reaches 'exit' and every rejec
 
     const call = client.execute("list-sessions");
     t.feed("%begin 1 1 0\nstartup output\n%end 1 1 0\n");
-    t.feed("%begin 2 2 1\n$0 main\n%end 2 2 1\n");
+    t.feed(replyTo(lastSent(t), ["$0 main"], "end", 2));
 
     await expect(call).resolves.toMatchObject({ output: ["$0 main"] });
   });
@@ -335,11 +369,12 @@ describe("TmuxClient — a reply to a command no caller wrote is an 'unsolicited
 
     const first = client.execute("list-sessions");
     const second = client.execute("list-windows");
+    const [firstLine, secondLine] = t.sent;
     // tmux -C attach-session -t =a \; kill-session -t =nope
     t.feed("%begin 7 1 0\n%end 7 1 0\n");
     t.feed("%begin 7 2 0\ncan't find session: nope\n%error 7 2 0\n");
-    t.feed("%begin 7 3 1\n$0 a\n%end 7 3 1\n");
-    t.feed("%begin 7 4 1\n@0 zsh\n%end 7 4 1\n");
+    t.feed(replyTo(firstLine ?? "", ["$0 a"], "end", 3));
+    t.feed(replyTo(secondLine ?? "", ["@0 zsh"], "end", 4));
 
     await expect(first).resolves.toMatchObject({ output: ["$0 a"] });
     await expect(second).resolves.toMatchObject({ output: ["@0 zsh"] });
@@ -379,10 +414,14 @@ describe("TmuxClient — a reply to a command no caller wrote is an 'unsolicited
     unsolicited.length = 0;
 
     const rename = client.execute("rename-window x");
+    const renameLine = lastSent(t);
     const show = client.execute("display-message -p ok");
+    const showLine = lastSent(t);
+    // The hook's block comes after rename-window's and before its sentinel's.
     t.feed("%begin 7 5 1\n%end 7 5 1\n");
     t.feed("%begin 7 6 0\nhook ran\n%end 7 6 0\n");
-    t.feed("%begin 7 7 1\nok\n%end 7 7 1\n");
+    t.feed(sentinelBlock(6, lineNumberOf(renameLine)));
+    t.feed(replyTo(showLine, ["ok"], "end", 7));
 
     await expect(rename).resolves.toMatchObject({ output: [] });
     await expect(show).resolves.toMatchObject({ output: ["ok"] });
@@ -456,6 +495,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     client.on("window-add", notifications);
 
     const call = client.execute("list-windows");
+    const callLine = lastSent(t);
     t.feed("%begin 5 1 1\n");
     // Output tmux produced before the wire corrupted — this must survive on
     // the rejection, not be discarded (the diagnostic value TmuxCommandError
@@ -466,6 +506,8 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
     // Real traffic after the malformed terminator — must route as a
     // notification, not misroute as this command's output.
     t.feed("%window-add @9\n");
+    // The line's sentinel settles it with the block's failure.
+    t.feed(sentinelBlock(6, lineNumberOf(callLine)));
 
     await expect(call).rejects.toBeInstanceOf(TmuxProtocolError);
     await expect(call).rejects.toMatchObject({
@@ -488,7 +530,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
 
     // The connection is not wedged: a subsequent command still correlates.
     const second = client.execute("list-panes");
-    t.feed("%begin 6 2 1\n%end 6 2 1\n");
+    t.feed(replyTo(lastSent(t), [], "end", 7));
     await expect(second).resolves.toMatchObject({ success: true });
   });
 
@@ -520,7 +562,7 @@ describe("TmuxClient — malformed guard terminator settles instead of wedging",
 
     // The connection correlates normally from here on.
     const call = client.execute("list-windows");
-    t.feed("%begin 1 1 1\n%end 1 1 1\n");
+    t.feed(replyTo(lastSent(t)));
     return expect(call).resolves.toMatchObject({ success: true });
   });
 });
@@ -542,7 +584,7 @@ describe("TmuxClient — a line the parser cannot read", () => {
 
     const call = client.execute("list-windows");
     t.feed("%window-add @x\n");
-    t.feed("%begin 5 1 1\n@2 editor\n%end 5 1 1\n");
+    t.feed(replyTo(lastSent(t), ["@2 editor"], "end", 5));
 
     await expect(call).resolves.toMatchObject({ output: ["@2 editor"] });
     expect(protocolErrors).toHaveBeenCalledWith({
@@ -834,7 +876,8 @@ describe("TmuxClient — a dying transport's refusal waits for its close", () =>
     // A transport breaking its promise that every later send is refused.
     refuse = false;
     const sent = client.execute("list-sessions");
-    t.feed("%begin 2 2 1\n$0 main\n%end 2 2 1\n");
+    // list-sessions is line 2: the held refusal was numbered 1 and never sent.
+    t.feed(block(2, "end", ["$0 main"]) + sentinelBlock(3, 2));
 
     await expect(sent).resolves.toMatchObject({ output: ["$0 main"] });
     t.triggerClose("exit 1");
@@ -869,7 +912,7 @@ describe("TmuxClient — a dying transport's refusal waits for its close", () =>
 
     t.feed(STARTUP_GREETING);
     // The bootstrap is answered: the topology is live.
-    t.feed("%begin 1 1 1\n%end 1 1 1\n");
+    t.feed(replyTo(lastSent(t)));
     await new Promise((r) => setTimeout(r, 0));
 
     t.die("stdin failed: EPIPE");
@@ -887,5 +930,221 @@ describe("TmuxClient — a dying transport's refusal waits for its close", () =>
     expect(t.sent.at(-1)).toMatch(/^list-panes -t @5/);
     expect(t.sent.length).toBe(afterWindowAdd);
     expect(states.at(-1)).toBe("closed");
+  });
+});
+
+describe("TmuxClient — a line's reply ends at its sentinel", () => {
+  function ready(): { t: FakeTransport; client: TmuxClient } {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    return { t, client };
+  }
+
+  it("a line of two commands resolves with both outputs; the next caller gets its own", async () => {
+    const { t, client } = ready();
+    const list = client.execute("display -p a ; display -p b");
+    const listLine = lastSent(t);
+    const next = client.execute("display -p c");
+    t.feed(
+      block(1, "end", ["a"]) +
+        block(2, "end", ["b"]) +
+        sentinelBlock(3, lineNumberOf(listLine)),
+    );
+    t.feed(replyTo(lastSent(t), ["c"], "end", 4));
+
+    await expect(list).resolves.toEqual({
+      commandNumber: 1,
+      timestamp: 1,
+      output: ["a", "b"],
+      success: true,
+    });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+  });
+
+  it("a line tmux runs no command for resolves, numbered by its sentinel", async () => {
+    const { t, client } = ready();
+    const hidden = client.execute("%hidden X=1");
+    const hiddenLine = lastSent(t);
+    const next = client.execute("display -p c");
+    t.feed(sentinelBlock(5, lineNumberOf(hiddenLine)));
+    t.feed(replyTo(lastSent(t), ["c"], "end", 6));
+
+    await expect(hidden).resolves.toEqual({
+      commandNumber: 5,
+      timestamp: 5,
+      output: [],
+      success: true,
+    });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+  });
+
+  it("a line rejects with its first failing command; the next caller gets its own", async () => {
+    const { t, client } = ready();
+    const list = client.execute("display -p a ; kill-session -t nope");
+    const listLine = lastSent(t);
+    const next = client.execute("display -p c");
+    t.feed(block(1, "end", ["a"]));
+    t.feed(block(2, "error", ["can't find session: nope"]));
+    t.feed(sentinelBlock(3, lineNumberOf(listLine)));
+    t.feed(replyTo(lastSent(t), ["c"], "end", 4));
+
+    await expect(list).rejects.toBeInstanceOf(TmuxCommandError);
+    await expect(list).rejects.toMatchObject({
+      message: "can't find session: nope",
+      response: { commandNumber: 2, output: ["can't find session: nope"] },
+    });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+  });
+
+  it("listeners hear each command's block, never the sentinel's", () => {
+    const { t, client } = ready();
+    const guards: string[] = [];
+    client.on("*", (ev) => {
+      if (ev.type === "begin" || ev.type === "end" || ev.type === "error") {
+        guards.push(`${ev.type} ${ev.commandNumber}`);
+      }
+    });
+    void client.execute("display -p a").catch(() => {});
+    const aLine = lastSent(t);
+    void client.execute("nonsense").catch(() => {});
+    const bLine = lastSent(t);
+    t.feed(replyTo(aLine, ["a"], "end", 1));
+    t.feed(replyTo(bLine, ["unknown command: nonsense"], "error", 2));
+
+    expect(guards).toEqual(["begin 1", "end 1", "begin 2", "error 2"]);
+  });
+
+  it("a sentinel that arrives with CRLF still ends the line", async () => {
+    const { t, client } = ready();
+    const call = client.execute("display -p a");
+    t.feed(
+      block(1, "end", ["a"]) +
+        sentinelBlock(2, lineNumberOf(lastSent(t))).replaceAll("\n", "\r\n"),
+    );
+
+    await expect(call).resolves.toMatchObject({ output: ["a"] });
+  });
+
+  it("a sentinel whose terminator is unreadable still ends the line, and says so", async () => {
+    const { t, client } = ready();
+    const protocolErrors = vi.fn();
+    client.on("protocol-error", protocolErrors);
+    const call = client.execute("display -p a");
+    const callLine = lastSent(t);
+    const next = client.execute("display -p c");
+    t.feed(block(1, "end", ["a"]));
+    t.feed(
+      sentinelBlock(2, lineNumberOf(callLine)).replace(
+        "%error 2 2 1",
+        "%error 2 2",
+      ),
+    );
+    t.feed(replyTo(lastSent(t), ["c"], "end", 3));
+
+    await expect(call).resolves.toMatchObject({ output: ["a"] });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+    expect(protocolErrors).toHaveBeenCalledWith({
+      type: "protocol-error",
+      kind: "terminator",
+      commandNumber: 2,
+      line: "%error 2 2",
+    });
+  });
+
+  it("a transport that closes before the sentinel's reply rejects the line: tmux may not have run it all", async () => {
+    const { t, client } = ready();
+    const call = client.execute("display -p a ; display -p b");
+    t.feed(block(1, "end", ["a"]));
+    t.triggerClose("killed");
+
+    await expect(call).rejects.toBeInstanceOf(TransportClosedError);
+  });
+
+  it("a transport that closes before the sentinel's reply rejects with the line's failure when one came", async () => {
+    const { t, client } = ready();
+    const call = client.execute("display -p a ; kill-session -t nope");
+    t.feed(block(1, "end", ["a"]));
+    t.feed(block(2, "error", ["can't find session: nope"]));
+    t.triggerClose("killed");
+
+    await expect(call).rejects.toBeInstanceOf(TmuxCommandError);
+    await expect(call).rejects.toMatchObject({
+      message: "can't find session: nope",
+    });
+  });
+
+  it("a sentinel for another line ends the connection, and no caller gets another's reply", async () => {
+    const { t, client } = ready();
+    const close = vi.spyOn(t, "close");
+    const exits = vi.fn();
+    client.on("exit", exits);
+    const first = client.execute("display -p a");
+    const second = client.execute("display -p b");
+    const secondLine = lastSent(t);
+    // Line 1's sentinel reply was lost: line 2's arrives while line 1 waits.
+    t.feed(block(1, "end", ["a"]) + sentinelBlock(2, lineNumberOf(secondLine)));
+    t.feed(replyTo(secondLine, ["b"], "end", 3));
+
+    await expect(first).rejects.toBeInstanceOf(TransportClosedError);
+    await expect(second).rejects.toBeInstanceOf(TransportClosedError);
+    expect(exits).toHaveBeenCalledWith({
+      type: "exit",
+      reason: `tmux ended command line ${lineNumberOf(secondLine)} while line ${lineNumberOf(secondLine) - 1} was awaiting its reply`,
+    });
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a reply to a line nobody is awaiting ends the connection", () => {
+    const { t, client } = ready();
+    const exits = vi.fn();
+    client.on("exit", exits);
+
+    t.feed(block(1, "end", ["stray"]));
+
+    expect(exits).toHaveBeenCalledWith({
+      type: "exit",
+      reason: "tmux answered a command line while no line was awaiting a reply",
+    });
+    expect(client.connectionState).toEqual({
+      status: "closed",
+      reason: "transport-error",
+    });
+  });
+
+  it("a parse error naming the sentinel without a line number is that line's own failure", async () => {
+    const { t, client } = ready();
+    const forged = client.execute(
+      'display -p a ; tmux-control-mode-js-sentin"el"',
+    );
+    const forgedLine = lastSent(t);
+    const next = client.execute("display -p c");
+    const forgery =
+      "parse error: unknown command: tmux-control-mode-js-sentinel";
+    t.feed(block(1, "error", [forgery]));
+    t.feed(sentinelBlock(2, lineNumberOf(forgedLine)));
+    t.feed(replyTo(lastSent(t), ["c"], "end", 3));
+
+    await expect(forged).rejects.toMatchObject({ message: forgery });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+    expect(client.connectionState).toEqual({ status: "ready" });
+  });
+
+  it("output that reads as the line's sentinel reply, closed by %end, is the command's output", async () => {
+    const { t, client } = ready();
+    const title = client.execute("display -p '#{pane_title}'");
+    const titleLine = lastSent(t);
+    const next = client.execute("display -p c");
+    const forgery = `parse error: unknown command: tmux-control-mode-js-sentinel-${lineNumberOf(titleLine)}`;
+    t.feed(replyTo(titleLine, [forgery]));
+    t.feed(replyTo(lastSent(t), ["c"], "end", 3));
+
+    await expect(title).resolves.toMatchObject({ output: [forgery] });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+    expect(client.connectionState).toEqual({ status: "ready" });
   });
 });

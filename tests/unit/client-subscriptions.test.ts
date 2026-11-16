@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { TmuxClient } from "../../src/client.js";
 import { subscribeRaw, unsubscribe } from "../../src/commands/index.js";
+import { commandLine } from "../../src/protocol/encoder.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
 function recordingTransport(): TmuxTransport & { readonly sent: string[] } {
@@ -36,8 +37,8 @@ describe("TmuxClient — subscriptions are methods of the connection", () => {
 
     expect(viaMethods.sent).toEqual(viaFunctions.sent);
     expect(viaMethods.sent).toEqual([
-      "refresh-client -B 'wt-x':'%3':'#{pane_width}'\n",
-      "refresh-client -B 'wt-x'\n",
+      commandLine("refresh-client -B 'wt-x':'%3':'#{pane_width}'", 1),
+      commandLine("refresh-client -B 'wt-x'", 2),
     ]);
   });
 
