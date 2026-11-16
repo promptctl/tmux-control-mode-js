@@ -17,6 +17,11 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { CommandResponse } from "../../src/protocol/types.js";
+// The demo resolves the package to dist/, so its errors come from there too.
+import {
+  TmuxCommandError,
+  TransportClosedError,
+} from "@promptctl/tmux-control-mode-js";
 import { tapPaneToFifo } from "../../examples/web-multiplexer/server/pane-tap.js";
 import { PaneFirehose } from "../../examples/web-multiplexer/server/pane-firehose.js";
 
@@ -131,5 +136,50 @@ describe("PaneFirehose tap retry", () => {
     } finally {
       firehose.stop();
     }
+  });
+});
+
+describe("PaneFirehose refresh never rejects", () => {
+  // The refresh timer fires and forgets: a rejection here would be unhandled
+  // and end the host process.
+  it("warns when the connection is lost under a running firehose", async () => {
+    const firehose = new PaneFirehose(
+      () => Promise.reject(new TransportClosedError("server exited")),
+      () => undefined,
+    );
+    await firehose.start();
+    firehose.stop();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[firehose] list-panes failed: transport closed before command completed: server exited",
+    );
+  });
+
+  it("is quiet when the connection ends because the firehose stopped", async () => {
+    let reject: (err: unknown) => void = () => undefined;
+    const firehose = new PaneFirehose(
+      () =>
+        new Promise<CommandResponse>((_, r) => {
+          reject = r;
+        }),
+      () => undefined,
+    );
+    const started = firehose.start();
+    firehose.stop();
+    reject(new TransportClosedError(undefined));
+    await started;
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("reads a list-panes %error as a failed enumeration, leaving taps alone", async () => {
+    const firehose = new PaneFirehose(
+      () =>
+        Promise.reject(new TmuxCommandError(response(false, ["no server"]))),
+      () => undefined,
+    );
+    await firehose.start();
+    firehose.stop();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[firehose] list-panes failed; tap set unchanged",
+    );
   });
 });

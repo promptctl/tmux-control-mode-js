@@ -26,9 +26,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "../shared/command-response.js";
+import { warnUnlessOwnClose } from "./detached-failure.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 
-/** Run a tmux command (over the host's control connection) and resolve its response. */
+/**
+ * Run a tmux command over the host's control connection. Like the library's
+ * `execute`, a `%error` rejects with `TmuxCommandError`.
+ */
 export type FirehoseExecute = (command: string) => Promise<CommandResponse>;
 
 /** Forward one chunk of tapped pane bytes. */
@@ -116,12 +121,17 @@ export class PaneFirehose {
    * Re-enumerate panes: tap any not yet tapped, untap any that vanished. The
    * single source of "which panes exist" is `list-panes -a`; the tap set is a
    * derived projection kept in lock-step with it. [LAW:one-source-of-truth]
+   *
+   * Never rejects: the timer fires it and forgets, so a lost connection is
+   * reported here, quietly only once this firehose has been stopped.
    */
   private async refresh(): Promise<void> {
     if (this.refreshing || this.dir === null || this.stopped) return;
     this.refreshing = true;
     try {
-      const listed = await this.execute("list-panes -a -F '#{pane_id}'");
+      const listed = await this.execute("list-panes -a -F '#{pane_id}'").catch(
+        asCommandResponse,
+      );
       // [LAW:no-silent-failure] A failed enumeration is surfaced, not treated
       // as "zero panes" (which would untap everything). Leave taps as-is.
       if (!listed.success) {
@@ -148,6 +158,8 @@ export class PaneFirehose {
       for (const paneId of [...this.taps.keys()]) {
         if (!current.has(paneId)) this.untap(paneId);
       }
+    } catch (err) {
+      warnUnlessOwnClose("[firehose] list-panes", err, this.stopped);
     } finally {
       this.refreshing = false;
     }

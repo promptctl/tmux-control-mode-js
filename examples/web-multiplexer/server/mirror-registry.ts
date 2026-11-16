@@ -25,7 +25,11 @@ import { join } from "node:path";
 import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
-import { spawnReadyControlClient } from "./control-client.js";
+import { warnUnlessOwnClose } from "./detached-failure.js";
+import {
+  spawnReadyControlClient,
+  type ReadyControlClient,
+} from "./control-client.js";
 import {
   buildMirrorSeed,
   type MirrorControlFrame,
@@ -73,6 +77,10 @@ export class MirrorRegistry {
   private checking = false;
   private closed = false;
 
+  constructor(
+    private readonly spawn: () => ReadyControlClient = spawnReadyControlClient,
+  ) {}
+
   /**
    * Attach a viewer to a pane's mirror, seeding it with the pane's current
    * screen, then joining it to the live byte fan-out. Returns a disposer the
@@ -81,8 +89,29 @@ export class MirrorRegistry {
    * Failures to seed (bad pane id, pane already gone) send an `error` frame and
    * return a no-op disposer — the viewer is never silently joined to a stream
    * that will never produce bytes. [LAW:no-silent-failure]
+   *
+   * Never rejects: the endpoint fires and forgets, so a connection lost while
+   * seeding refuses the viewer the same way.
    */
-  async addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
+  addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
+    return this.seedAndJoin(paneId, viewer).catch((err: unknown) => {
+      warnUnlessOwnClose(`[mirror] join of %${paneId}`, err, this.closed);
+      viewer.sendControl({
+        kind: "error",
+        message: this.closed
+          ? "bridge is shutting down"
+          : `mirror of %${paneId} failed`,
+      });
+      const hub = this.hubs.get(paneId);
+      if (hub !== undefined) this.gcHub(hub);
+      return notJoined;
+    });
+  }
+
+  private async seedAndJoin(
+    paneId: number,
+    viewer: MirrorViewer,
+  ): Promise<() => void> {
     if (this.closed) {
       viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
       return notJoined;
@@ -168,7 +197,7 @@ export class MirrorRegistry {
   /** Lazily spawn the one control client + FIFO dir the registry shares. */
   private ensureClient(): { client: TmuxClient; dir: string } {
     if (this.client === null) {
-      const { client, ready } = spawnReadyControlClient();
+      const { client, ready } = this.spawn();
       this.client = client;
       this.ready = ready;
     }
@@ -299,6 +328,9 @@ export class MirrorRegistry {
       for (const hub of [...this.hubs.values()]) {
         if (!present.has(hub.paneId)) this.endHub(hub, { kind: "gone" });
       }
+    } catch (err) {
+      // The poll is fired from a timer, so its failure ends here.
+      warnUnlessOwnClose("[mirror] liveness check", err, this.closed);
     } finally {
       this.checking = false;
     }

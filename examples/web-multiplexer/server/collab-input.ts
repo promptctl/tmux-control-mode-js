@@ -17,6 +17,7 @@
 
 import { sendKeyBytes } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
+import { warnUnlessOwnClose } from "./detached-failure.js";
 import {
   spawnReadyControlClient,
   type ReadyControlClient,
@@ -25,6 +26,10 @@ import {
 export class CollabInput {
   private spawned: ReadyControlClient | null = null;
   private closed = false;
+
+  constructor(
+    private readonly spawn: () => ReadyControlClient = spawnReadyControlClient,
+  ) {}
 
   /**
    * Inject `bytes` (raw terminal input from a browser) into pane `%paneId`.
@@ -36,17 +41,28 @@ export class CollabInput {
    * independently tells the collaborator the pane is `gone` and closes them, so
    * the lost keystroke needs no second signal. [LAW:no-silent-failure] the
    * failure is logged, never swallowed into a phantom success.
+   *
+   * Never rejects: the caller fires and forgets, so a lost connection is
+   * reported here too, quietly only when it is this owner's own `close`.
    */
   async sendKeyBytes(paneId: number, bytes: Uint8Array): Promise<void> {
     if (this.closed) return;
     const { client, ready } = this.ensureClient();
     await ready;
     if (this.closed) return;
-    const response = await sendKeyBytes(client, `%${paneId}`, bytes).catch(
-      asCommandResponse,
-    );
-    if (!response.success) {
-      console.warn(`[collab] sendKeyBytes to %${paneId} failed`);
+    try {
+      const response = await sendKeyBytes(client, `%${paneId}`, bytes).catch(
+        asCommandResponse,
+      );
+      if (!response.success) {
+        console.warn(`[collab] sendKeyBytes to %${paneId} failed`);
+      }
+    } catch (err) {
+      warnUnlessOwnClose(
+        `[collab] sendKeyBytes to %${paneId}`,
+        err,
+        this.closed,
+      );
     }
   }
 
@@ -58,7 +74,7 @@ export class CollabInput {
   }
 
   private ensureClient(): ReadyControlClient {
-    this.spawned ??= spawnReadyControlClient();
+    this.spawned ??= this.spawn();
     return this.spawned;
   }
 }
