@@ -997,6 +997,31 @@ describe("TmuxClient — a line's reply ends at its sentinel", () => {
     await expect(next).resolves.toMatchObject({ output: ["c"] });
   });
 
+  // README "A slow command": a caller bounds a command with Promise.race;
+  // tmux still answers the line it abandoned, and that late reply is its own.
+  it("a caller that stops waiting leaves its late reply to its own line; the next caller gets its own", async () => {
+    const { t, client } = ready();
+    const slow = client.execute("capture-pane -p -S -");
+    const slowLine = lastSent(t);
+    const next = client.execute("display -p c");
+    const nextLine = lastSent(t);
+    const timedOut = new Error("timed out");
+    let giveUp!: () => void;
+    const deadline = new Promise<never>((_, reject) => {
+      giveUp = () => reject(timedOut);
+    });
+    const bounded = Promise.race([slow, deadline]);
+    giveUp();
+    await expect(bounded).rejects.toBe(timedOut);
+
+    t.feed(replyTo(slowLine, ["scrollback"], "end", 1));
+    t.feed(replyTo(nextLine, ["c"], "end", 3));
+
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+    await expect(slow).resolves.toMatchObject({ output: ["scrollback"] });
+    expect(client.connectionState).toEqual({ status: "ready" });
+  });
+
   it("listeners hear each command's block, never the sentinel's", () => {
     const { t, client } = ready();
     const guards: string[] = [];

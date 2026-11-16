@@ -295,6 +295,33 @@ everything live.
 - **Per-control-mode-client** — `pause`/`continue` only affect *this* client's
   view. Other tmux clients attached to the same session are untouched.
 
+## A slow command
+
+tmux runs one client's commands in the order they arrive, one at a time, so a
+slow command holds up every command sent after it on that connection. A
+`capturePane` of a pane with a very long scrollback is one such command, and so
+is a `run-shell` waiting on its process. The library sets no timeout: tmux cannot
+cancel a command it has already received, so a later command waits for the slow
+one however long the caller waits.
+
+To bound how long one caller waits, race the command against a timer:
+
+```ts
+const capture = await Promise.race([
+  capturePane(client, paneId),
+  new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error("capture timed out")), 5_000),
+  ),
+]);
+```
+
+The command keeps running in tmux. Its reply arrives later and settles the
+promise you stopped waiting on. It is never handed to another command's
+promise, because each command line `execute()` writes ends with a numbered
+marker that names its reply. To free the commands queued behind a command that
+will never finish, `close()` the connection: every pending command rejects with
+`TransportClosedError`.
+
 ## Testing
 
 ```bash
