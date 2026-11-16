@@ -501,8 +501,7 @@ export class WebSocketBridge implements TmuxBridge {
     }
     let chunk: ChunkPayload;
     try {
-      const { paneId, data } = decodePaneOutput(bytes);
-      chunk = { paneId, data };
+      chunk = decodePaneOutput(bytes);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "invalid pane-output frame";

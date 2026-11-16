@@ -1,12 +1,12 @@
 // examples/web-multiplexer/web/components/DebugPanel.tsx
 // Filterable event stream for the control-mode protocol. Rendered in the
 // aside. Category chips toggle visibility (click to hide, click again to
-// show); output bytes arrive as decoded Uint8Array, labeled by session:win.pane.
+// show); pane output rows are labeled by session:win.pane.
 //
-// [LAW:one-source-of-truth] Events are the `in-event` slice of
-// InspectorStore.entries — the one ring fed by `onWire` — not a second
-// subscription of their own. SD5 (tmux-complexity-lkg.15) retired the
-// parallel ring DemoStore/LogStore used to keep.
+// [LAW:one-source-of-truth] Rows are InspectorStore.notifications — the
+// `in-event` and `in-output` slice of the one ring fed by `onWire` — not a
+// second subscription of their own. SD5 (tmux-complexity-lkg.15) retired
+// the parallel ring DemoStore/LogStore used to keep.
 
 import { observer } from "mobx-react-lite";
 import {
@@ -18,11 +18,11 @@ import {
   Code,
   Button,
 } from "@mantine/core";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { InspectorStore } from "../inspector-store.ts";
-import { summarizeEvent } from "../event-summary.ts";
+import { notificationType, summarizeNotification } from "../event-summary.ts";
 
 interface Props {
   readonly demoStore: DemoStore;
@@ -43,15 +43,10 @@ export const DebugPanel = observer(function DebugPanel({
   // A MobX computed (see its header comment) — not a React `useMemo`.
   // `entries` is mutated in place on InspectorStore's hot path, so a
   // `useMemo` keyed on its reference would never see it change.
-  const events = inspectorStore.eventMessages;
+  const events = inspectorStore.notifications;
+  const types = inspectorStore.knownEventTypes;
 
-  const types = useMemo(() => {
-    const s = new Set<string>();
-    events.forEach((e) => s.add(e.type));
-    return [...s].sort();
-  }, [events]);
-
-  const shown = events.filter((e) => !uiStore.isHidden(e.type));
+  const shown = events.filter((n) => !uiStore.isHidden(notificationType(n)));
 
   async function copyToClipboard(): Promise<void> {
     // Render the visible events to plain text using the same one-line
@@ -60,7 +55,10 @@ export const DebugPanel = observer(function DebugPanel({
     // since we display newest-first on screen.
     const text = [...shown]
       .reverse()
-      .map((ev) => `%${ev.type} ${summarizeEvent(ev, paneLabels)}`)
+      .map(
+        (n) =>
+          `%${notificationType(n)} ${summarizeNotification(n, paneLabels)}`,
+      )
       .join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -134,7 +132,7 @@ export const DebugPanel = observer(function DebugPanel({
       </Group>
       <ScrollArea h="calc(100vh - 200px)" type="auto">
         <Stack gap={2}>
-          {shown.map((ev, i) => (
+          {shown.map((n, i) => (
             <Code
               key={i}
               block
@@ -146,9 +144,9 @@ export const DebugPanel = observer(function DebugPanel({
               }}
             >
               <Text span fw={600} size="xs">
-                %{ev.type}
+                %{notificationType(n)}
               </Text>{" "}
-              {summarizeEvent(ev, paneLabels)}
+              {summarizeNotification(n, paneLabels)}
             </Code>
           ))}
           {shown.length === 0 && (

@@ -23,7 +23,38 @@ import type {
   ChunkPayload,
   EmitterTmuxMessage,
 } from "@promptctl/tmux-control-mode-js/browser";
+import type { WireEntry } from "./bridge.ts";
 import { prettyBytes } from "./format-bytes.ts";
+
+/**
+ * An inbound tmux notification as the wire log records it: a parsed event,
+ * or a chunk of `%output` that rode the pane-bytes channel.
+ */
+export type Notification = Extract<
+  WireEntry,
+  { dir: "in-event" | "in-output" }
+>;
+
+export function isNotification(w: WireEntry): w is Notification {
+  return w.dir === "in-event" || w.dir === "in-output";
+}
+
+// [LAW:one-source-of-truth] The notification's tmux name — the key the
+//   event-type filter hides by — whichever channel carried it. Pane bytes
+//   are `output`, the name they had as an `in-event`, so a hidden `output`
+//   saved before the bytes got their own channel still hides them.
+export function notificationType(n: Notification): string {
+  return n.dir === "in-event" ? n.event.type : "output";
+}
+
+export function summarizeNotification(
+  n: Notification,
+  labels: Map<number, string>,
+): string {
+  return n.dir === "in-event"
+    ? summarizeEvent(n.event, labels)
+    : summarizeOutput(n.chunk, labels);
+}
 
 function paneLabel(id: number, labels: Map<number, string>): string {
   return labels.get(id) ?? `%${id}`;

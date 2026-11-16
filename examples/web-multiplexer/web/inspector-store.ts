@@ -18,9 +18,13 @@
 
 import { makeAutoObservable } from "mobx";
 import type { TmuxBridge, WireEntry } from "./bridge.ts";
-import type { EmitterTmuxMessage } from "@promptctl/tmux-control-mode-js/browser";
 import type { UiStore } from "./ui-store.ts";
-import { summarizeEvent, summarizeOutput } from "./event-summary.ts";
+import type { Notification } from "./event-summary.ts";
+import {
+  isNotification,
+  notificationType,
+  summarizeNotification,
+} from "./event-summary.ts";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -178,28 +182,28 @@ export class InspectorStore {
   // Derived
   // -------------------------------------------------------------------------
 
-  /** All unique event-type strings seen among in-event entries. Sorted. */
+  /** All unique notification types seen in `entries`. Sorted. */
   get knownEventTypes(): string[] {
     const s = new Set<string>();
     for (const e of this.entries) {
-      if (e.wire.dir === "in-event") s.add(e.wire.event.type);
+      if (isNotification(e.wire)) s.add(notificationType(e.wire));
     }
     return [...s].sort();
   }
 
   /**
-   * The `in-event` slice of `entries`, newest first — the showcase Debug
-   * tab's event list. A MobX computed, not a React `useMemo`: `entries` is
-   * mutated in place on the hot path (`.push()`/`.shift()` below), so its
-   * reference rarely changes even though its contents do, and a `useMemo`
-   * keyed on that reference would go stale after the first render.
-   * [LAW:one-source-of-truth]
+   * The notification slice of `entries` — events and pane output — newest
+   * first: the showcase Debug tab's list. A MobX computed, not a React
+   * `useMemo`: `entries` is mutated in place on the hot path
+   * (`.push()`/`.shift()` below), so its reference rarely changes even
+   * though its contents do, and a `useMemo` keyed on that reference would
+   * go stale after the first render. [LAW:one-source-of-truth]
    */
-  get eventMessages(): EmitterTmuxMessage[] {
-    const out: EmitterTmuxMessage[] = [];
+  get notifications(): Notification[] {
+    const out: Notification[] = [];
     for (let i = this.entries.length - 1; i >= 0; i--) {
       const wire = this.entries[i].wire;
-      if (wire.dir === "in-event") out.push(wire.event);
+      if (isNotification(wire)) out.push(wire);
     }
     return out;
   }
@@ -215,7 +219,10 @@ export class InspectorStore {
     const needle = this.search.trim().toLowerCase();
     return this.entries.filter((e) => {
       if (hiddenDirections[e.wire.dir]) return false;
-      if (e.wire.dir === "in-event" && uiStore.isHidden(e.wire.event.type)) {
+      if (
+        isNotification(e.wire) &&
+        uiStore.isHidden(notificationType(e.wire))
+      ) {
         return false;
       }
       if (needle.length === 0) return true;
@@ -272,11 +279,8 @@ function summarizeForSearch(w: WireEntry): string {
       return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
     return `out detach ${w.msg.id}`;
   }
-  if (w.dir === "in-event") {
-    return `in event %${w.event.type} ${summarizeEvent(w.event, NO_LABELS)}`;
-  }
-  if (w.dir === "in-output") {
-    return `in output %output ${summarizeOutput(w.chunk, NO_LABELS)}`;
+  if (isNotification(w)) {
+    return `${w.dir} %${notificationType(w)} ${summarizeNotification(w, NO_LABELS)}`;
   }
   if (w.dir === "in-response") {
     return `in response ${w.id} ${w.response.success ? "ok" : "err"} ${w.response.output.join(" ")}`;

@@ -15,13 +15,7 @@ import { BroadcastStore } from "./broadcast-store.ts";
 import { DemoStore, type SessionInfo } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
-
-const OK: CommandResponse = {
-  commandNumber: 0,
-  timestamp: 0,
-  output: [],
-  success: true,
-};
+import { fakeBridge, OK } from "./fake-bridge.ts";
 
 interface SendCall {
   readonly target: string;
@@ -30,41 +24,20 @@ interface SendCall {
 }
 
 /** A TmuxBridge double whose sendKeys() is controllable per-call. */
-function fakeBridge(): { bridge: TmuxBridge; calls: SendCall[] } {
+function sendKeysBridge(): { bridge: TmuxBridge; calls: SendCall[] } {
   const calls: SendCall[] = [];
-  const noop = (): void => {};
-  const noopUnsub = (): (() => void) => noop;
-  return {
-    bridge: {
-      execute: () => Promise.resolve(OK),
-      sendKeys: (target: string, keys: string) => {
-        const d = deferred<CommandResponse>();
-        calls.push({ target, keys, d });
-        return d.promise;
-      },
-      detach: noop,
-      connect: noop,
-      disconnect: noop,
-      onEvent: noopUnsub,
-      onPaneOutput: noopUnsub,
-      onError: noopUnsub,
-      onState: noopUnsub,
-      onWire: noopUnsub,
-      startFirehose: noop,
-      stopFirehose: noop,
-      onFirehose: noopUnsub,
-      setSize: () => Promise.reject(new Error("setSize: not modeled")),
-      setWindowSize: () =>
-        Promise.reject(new Error("setWindowSize: not modeled")),
-      clearWindowSize: () =>
-        Promise.reject(new Error("clearWindowSize: not modeled")),
+  const bridge = fakeBridge({
+    sendKeys: (target, keys) => {
+      const d = deferred<CommandResponse>();
+      calls.push({ target, keys, d });
+      return d.promise;
     },
-    calls,
-  };
+  });
+  return { bridge, calls };
 }
 
 function demoWithPanes(): DemoStore {
-  const demo = new DemoStore(fakeBridge().bridge);
+  const demo = new DemoStore(fakeBridge());
   const sessions: SessionInfo[] = [
     {
       id: 1,
@@ -105,7 +78,7 @@ function demoWithPanes(): DemoStore {
 
 describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", () => {
   it("does not set lastSend until sendKeys settles", async () => {
-    const { bridge } = fakeBridge();
+    const { bridge } = sendKeysBridge();
     const demo = demoWithPanes();
     const store = new BroadcastStore(bridge, demo);
     store.setTemplate("hi");
@@ -116,7 +89,7 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
   });
 
   it("counts only panes whose sendKeys resolved, with byte totals matching only those", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = sendKeysBridge();
     const demo = demoWithPanes();
     const store = new BroadcastStore(bridge, demo);
     store.setTemplate("hi");
@@ -141,7 +114,7 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
   });
 
   it("counts a tmux %error sendKeys as failed, not sent", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = sendKeysBridge();
     const demo = demoWithPanes();
     const store = new BroadcastStore(bridge, demo);
     store.setTemplate("hi");
@@ -167,7 +140,7 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
   });
 
   it("a stale send()'s settlement does not clobber a newer send()'s lastSend", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = sendKeysBridge();
     const demo = demoWithPanes();
     const store = new BroadcastStore(bridge, demo);
     store.setTemplate("hi");

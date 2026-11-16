@@ -24,18 +24,22 @@
 //   the same assemble→append→index pipeline. There is no "indexing on/off"
 //   branch — backfill is a one-shot enrichment layered on top, not a mode.
 //
-// [LAW:effects-at-boundaries] All IO (bridge.execute, the byte sink, the
+// [LAW:effects-at-boundaries] All IO (conn.execute, the byte sink, the
 //   ticker) lives in this store; the line store, ANSI stripping, and trigram
 //   index it drives are pure and tested in isolation.
 
 import { makeAutoObservable, runInAction } from "mobx";
 import { bytesToLatin1 } from "@promptctl/tmux-control-mode-js/protocol";
 import { asCommandResponse } from "../shared/command-response.ts";
-import type { TmuxBridge } from "./bridge.ts";
 import type { TmuxConnection } from "@promptctl/tmux-control-mode-js/browser";
 import { serverScope } from "@promptctl/tmux-control-mode-js/browser";
 import { LineAssembler } from "./ansi-text.ts";
 import { TrigramIndex } from "./trigram-index.ts";
+
+export type SearchConnection = Pick<
+  TmuxConnection,
+  "attachBytesSink" | "execute" | "on" | "off"
+>;
 
 /** Drain the live `%output` accumulator into the index at this cadence. */
 const TICK_INTERVAL_MS = 200;
@@ -83,14 +87,10 @@ export class SearchStore {
 
   private timerHandle: number | null = null;
   private readonly detachSink: () => void;
-  private readonly disposeOnState: () => void;
 
-  // [LAW:single-enforcer] Pane bytes come from the sink registry, the one
-  //   place the showcase routes them; the bridge serves commands and state.
-  constructor(
-    private readonly bridge: TmuxBridge,
-    bytes: Pick<TmuxConnection, "attachBytesSink">,
-  ) {
+  // [LAW:single-enforcer] One connection serves pane bytes (its sink
+  //   registry), commands, and the `reconnected` decision it alone makes.
+  constructor(private readonly conn: SearchConnection) {
     makeAutoObservable<
       this,
       | "index"
@@ -98,21 +98,23 @@ export class SearchStore {
       | "paneRing"
       | "assemblers"
       | "accum"
-      | "bridge"
+      | "conn"
       | "nextId"
       | "timerHandle"
+      | "onReconnected"
     >(this, {
       index: false,
       lines: false,
       paneRing: false,
       assemblers: false,
       accum: false,
-      bridge: false,
+      conn: false,
       nextId: false,
       timerHandle: false,
+      onReconnected: false,
     });
 
-    this.detachSink = bytes.attachBytesSink(
+    this.detachSink = conn.attachBytesSink(
       {
         write: ({ paneId, data }) => {
           let chunks = this.accum.get(paneId);
@@ -127,14 +129,7 @@ export class SearchStore {
       { scope: serverScope },
     );
 
-    // A reconnect can mean history changed underneath us; re-run backfill if
-    // search mode has already been activated this session.
-    this.disposeOnState = bridge.onState((state) => {
-      if (state === "ready" && this.backfilled) {
-        this.backfilled = false;
-        void this.ensureBackfilled();
-      }
-    });
+    conn.on("reconnected", this.onReconnected);
 
     this.timerHandle = setInterval(
       () => this.tick(),
@@ -142,9 +137,18 @@ export class SearchStore {
     ) as unknown as number;
   }
 
+  // A reconnect can mean history changed underneath us; re-run backfill if
+  // search mode has already been activated this session.
+  private readonly onReconnected = (): void => {
+    if (this.backfilled) {
+      this.backfilled = false;
+      void this.ensureBackfilled();
+    }
+  };
+
   dispose(): void {
     this.detachSink();
-    this.disposeOnState();
+    this.conn.off("reconnected", this.onReconnected);
     if (this.timerHandle !== null) {
       clearInterval(
         this.timerHandle as unknown as ReturnType<typeof setInterval>,
@@ -178,7 +182,7 @@ export class SearchStore {
     try {
       // [LAW:no-silent-failure] A failed enumeration rejects into the catch
       // below, never read as "zero panes".
-      const listed = await this.bridge.execute("list-panes -a -F '#{pane_id}'");
+      const listed = await this.conn.execute("list-panes -a -F '#{pane_id}'");
       const paneIds = listed.output.flatMap((line) => {
         const m = /^%(\d+)/.exec(line.trim());
         return m !== null ? [Number(m[1])] : [];
@@ -186,7 +190,7 @@ export class SearchStore {
 
       const captures = await Promise.all(
         paneIds.map((paneId) =>
-          this.bridge
+          this.conn
             .execute(`capture-pane -p -S - -E - -t %${paneId}`)
             .catch(asCommandResponse)
             .then((resp) => ({ paneId, resp })),

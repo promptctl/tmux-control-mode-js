@@ -11,7 +11,7 @@
 
 import type { WireEntry } from "./bridge.ts";
 import { prettyBytes, escapeByte } from "./format-bytes.ts";
-import { summarizeEvent, summarizeOutput } from "./event-summary.ts";
+import { notificationType, summarizeNotification } from "./event-summary.ts";
 
 export interface Presentation {
   readonly arrow: string;
@@ -20,10 +20,47 @@ export interface Presentation {
   readonly summary: string;
 }
 
+export interface WireDirection {
+  readonly arrow: string;
+  readonly label: string;
+  /** A Mantine color name. */
+  readonly color: string;
+}
+
+// [LAW:one-source-of-truth] Each direction's arrow, label and color, read by
+//   the timeline row, the detail badge and the filter chips alike.
+// [LAW:types-are-the-program] Keyed by every direction: a new direction
+//   without a row does not compile.
+export const WIRE_DIRECTIONS: Record<WireEntry["dir"], WireDirection> = {
+  out: { arrow: "↑", label: "out", color: "blue" },
+  "in-event": { arrow: "↓", label: "event", color: "teal" },
+  "in-output": { arrow: "↓", label: "output", color: "cyan" },
+  "in-response": { arrow: "↓", label: "resp", color: "grape" },
+  "in-error": { arrow: "⚠", label: "err", color: "red" },
+};
+
+// [LAW:types-are-the-program] exception: Object.keys widens to string[];
+//   these are exactly WIRE_DIRECTIONS' keys, in its order.
+export const WIRE_DIRECTION_ORDER = Object.keys(
+  WIRE_DIRECTIONS,
+) as readonly WireEntry["dir"][];
+
 export function presentFor(
   w: WireEntry,
   paneLabels: Map<number, string>,
 ): Presentation {
+  const { arrow, color } = WIRE_DIRECTIONS[w.dir];
+  return {
+    arrow,
+    color: `var(--mantine-color-${color}-6)`,
+    ...describe(w, paneLabels),
+  };
+}
+
+function describe(
+  w: WireEntry,
+  paneLabels: Map<number, string>,
+): Pick<Presentation, "type" | "summary"> {
   if (w.dir === "out") {
     const msg = w.msg;
     // [LAW:dataflow-not-control-flow] Every outbound kind labels the same
@@ -38,27 +75,12 @@ export function presentFor(
         : msg.kind === "sendKeys"
           ? `${msg.target}  ${escapeForDisplay(msg.keys)}`
           : "";
-    return {
-      arrow: "↑",
-      color: "var(--mantine-color-blue-6)",
-      type: `${msg.kind} #${msg.id}`,
-      summary,
-    };
+    return { type: `${msg.kind} #${msg.id}`, summary };
   }
-  if (w.dir === "in-event") {
+  if (w.dir === "in-event" || w.dir === "in-output") {
     return {
-      arrow: "↓",
-      color: "var(--mantine-color-teal-6)",
-      type: `%${w.event.type}`,
-      summary: summarizeEvent(w.event, paneLabels),
-    };
-  }
-  if (w.dir === "in-output") {
-    return {
-      arrow: "↓",
-      color: "var(--mantine-color-cyan-6)",
-      type: "%output",
-      summary: summarizeOutput(w.chunk, paneLabels),
+      type: `%${notificationType(w)}`,
+      summary: summarizeNotification(w, paneLabels),
     };
   }
   if (w.dir === "in-response") {
@@ -66,32 +88,18 @@ export function presentFor(
     const more =
       w.response.output.length > 1 ? ` …+${w.response.output.length - 1}` : "";
     return {
-      arrow: "↓",
-      color: "var(--mantine-color-grape-6)",
       type: `response #${w.id}${w.response.success ? "" : " !err"}`,
       summary: `${head}${more}`,
     };
   }
   return {
-    arrow: "⚠",
-    color: "var(--mantine-color-red-6)",
     type: `error${w.id !== null ? ` #${w.id}` : ""}`,
     summary: w.message,
   };
 }
 
-// [LAW:types-are-the-program] A record keyed by every direction: a new
-//   direction without a color does not compile.
-const BADGE_COLORS: Record<WireEntry["dir"], string> = {
-  out: "blue",
-  "in-event": "teal",
-  "in-output": "cyan",
-  "in-response": "grape",
-  "in-error": "red",
-};
-
 export function badgeColor(dir: WireEntry["dir"]): string {
-  return BADGE_COLORS[dir];
+  return WIRE_DIRECTIONS[dir].color;
 }
 
 export function renderPayload(w: WireEntry): string {

@@ -125,7 +125,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     [demoStore],
   );
   const searchStore = useMemo(
-    () => new SearchStore(demoStore.client, demoStore.paneStreamClient),
+    () => new SearchStore(demoStore.paneStreamClient),
     [demoStore],
   );
   // [LAW:one-source-of-truth] RegexMatcherStore drives the SAME bridge as the

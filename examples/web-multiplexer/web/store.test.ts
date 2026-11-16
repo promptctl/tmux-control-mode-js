@@ -16,6 +16,7 @@ import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import { DemoStore } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
+import { fakeBridge } from "./fake-bridge.ts";
 
 interface Call {
   readonly command: string;
@@ -24,43 +25,16 @@ interface Call {
 
 /** A TmuxBridge double whose execute() is controllable; every other method
  *  is an unexercised stub. */
-function fakeBridge(): { bridge: TmuxBridge; calls: Call[] } {
+function executeBridge(): { bridge: TmuxBridge; calls: Call[] } {
   const calls: Call[] = [];
-  const noop = (): void => {};
-  const noopUnsub = (): (() => void) => noop;
-  return {
-    bridge: {
-      execute: (command: string) => {
-        const d = deferred<CommandResponse>();
-        calls.push({ command, d });
-        return d.promise;
-      },
-      sendKeys: () =>
-        Promise.resolve({
-          commandNumber: 0,
-          timestamp: 0,
-          output: [],
-          success: true,
-        }),
-      detach: noop,
-      connect: noop,
-      disconnect: noop,
-      onEvent: noopUnsub,
-      onPaneOutput: noopUnsub,
-      onError: noopUnsub,
-      onState: noopUnsub,
-      onWire: noopUnsub,
-      startFirehose: noop,
-      stopFirehose: noop,
-      onFirehose: noopUnsub,
-      setSize: () => Promise.reject(new Error("setSize: not modeled")),
-      setWindowSize: () =>
-        Promise.reject(new Error("setWindowSize: not modeled")),
-      clearWindowSize: () =>
-        Promise.reject(new Error("clearWindowSize: not modeled")),
+  const bridge = fakeBridge({
+    execute: (command) => {
+      const d = deferred<CommandResponse>();
+      calls.push({ command, d });
+      return d.promise;
     },
-    calls,
-  };
+  });
+  return { bridge, calls };
 }
 
 function findCall(calls: readonly Call[], substr: string): Call {
@@ -71,7 +45,7 @@ function findCall(calls: readonly Call[], substr: string): Call {
 
 describe("DemoStore — optimistic clientSessionId settlement", () => {
   it("reverts clientSessionId to null when switch-client rejects, falling back to the attached session", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
@@ -88,7 +62,7 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   });
 
   it("reverts clientSessionId when switch-client rejects a tmux %error, falling back to the attached session", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
@@ -115,7 +89,7 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   });
 
   it("a stale switch-client rejection does not clobber a newer selectSession", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 5, name: "five", attached: false, windows: [] },
@@ -136,7 +110,7 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
   });
 
   it("jumpToPane reverts clientSessionId to null when switch-client rejects, falling back to the attached session", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
@@ -155,7 +129,7 @@ describe("DemoStore — optimistic clientSessionId settlement", () => {
 
 describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)", () => {
   it("does not issue select-window/select-pane when switch-client rejects", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
@@ -171,7 +145,7 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   });
 
   it("issues select-window/select-pane only after switch-client resolves", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
@@ -198,7 +172,7 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   });
 
   it("does not fire a superseded jump's select-window/select-pane once a newer jump has bumped the token", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
@@ -232,7 +206,7 @@ describe("DemoStore.jumpToPane — command sequencing (tmux-optimistic-ui-7ue)",
   });
 
   it("does not issue select-window/select-pane when switch-client rejects a tmux %error", async () => {
-    const { bridge, calls } = fakeBridge();
+    const { bridge, calls } = executeBridge();
     const store = new DemoStore(bridge);
     store.setSessionsForTest([
       { id: 9, name: "nine", attached: false, windows: [] },
