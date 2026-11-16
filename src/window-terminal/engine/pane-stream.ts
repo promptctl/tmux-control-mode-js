@@ -916,7 +916,8 @@ export class PaneStream implements ReseedTarget {
     // The subscription just delivered a pane size, so the subscribe seam is
     // demonstrably working — clear any outstanding subscribe failure.
     this.clearError("subscribe");
-    this.sink?.resize(dims.cols, dims.rows);
+    // The sink takes the new size with the recapture's seed, the one place a
+    // sink is sized: a report that changes nothing leaves it where it is.
     // The pane's program redraws for the new size as soon as tmux resizes it,
     // up to a second before this value arrives, and those bytes reached the
     // sink at the old size. tmux's screen is right: take it again. Detached

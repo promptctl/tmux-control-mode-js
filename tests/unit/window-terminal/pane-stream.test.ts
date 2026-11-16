@@ -987,6 +987,7 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
 
     // b still follows its pane's size.
     client.injectSubscriptionChanged(nameB, PANE_ID, "100;30");
+    await flushTicks();
     expect(sink.events).toContain("resize(100x30)");
     b.dispose();
   });
@@ -1147,7 +1148,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     failCapture = false;
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     await flushTicks();
-    expect(shape(sink)).toEqual(["resize(100x30)", "resize(100x30)", "seed"]);
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
     stream.dispose();
   });
 
@@ -1160,7 +1161,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     await flushTicks();
     expect(client.capturePaneCount()).toBe(2);
-    expect(shape(sink)).toEqual(["resize(100x30)", "resize(100x30)", "seed"]);
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
     stream.dispose();
   });
 

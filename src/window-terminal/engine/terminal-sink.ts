@@ -50,8 +50,8 @@ export interface Grid {
  *                                                          the live bytes
  *                                                          captured behind it)
  *   then, interleaved:      sink.write(data)             (live byte stream)
- *                           sink.resize(cols, rows)      (layout changes)
- *                           resize, then seed            (each recapture)
+ *                           resize, then seed            (each recapture,
+ *                                                          a new size's too)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
@@ -118,10 +118,10 @@ export interface TerminalSink {
   write(data: Uint8Array): void;
 
   /**
-   * Apply the current pane geometry, as tmux (the size authority) gave it:
-   * at attach when the stream already knows the size, before each seed, and
-   * on each `subscription-changed` for this pane while attached. Before
-   * tmux's first report the size is the one the newest seed was captured at.
+   * Apply the current pane geometry, as tmux (the size authority) gave it,
+   * before each seed (and before the bytes of a failed capture), so a new
+   * size arrives with the picture taken at it. Before tmux's first report the
+   * size is the one the newest seed was captured at.
    */
   resize(cols: number, rows: number): void;
 
