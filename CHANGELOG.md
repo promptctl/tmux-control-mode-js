@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
 ### Changed — breaking
 
 - `./window-terminal` takes the host's xterm.js options as `xterm`
@@ -157,6 +159,14 @@ All notable changes to this project are documented here. Format follows
 - In the window terminal, a click in a pane whose program asked for legacy
   (X10/normal) mouse reports reaches the program byte-exact. xterm.js emits
   those reports on `onBinary`, which the terminal did not forward.
+- A window terminal disposed from an `onError` or `onState` listener leaves
+  no pane stream attached and no subscription on the connection. The
+  terminal calls its listeners once its own work is done, with its state
+  already set, so an `onError` listener reads the state its error belongs to.
+- In the window terminal, a pane recaptured before its first resize no
+  longer draws twice the output that arrived behind the earlier capture, and
+  a failed capture no longer blanks the pane: the pane keeps what it shows
+  and the output that follows is written to it.
 
 - A `WebSocketTmuxClient` no longer retries a connection the bridge refused
   for good, which spawned a tmux client per attempt on the server and showed a
@@ -1091,7 +1101,8 @@ Zero runtime dependencies (enforced at publish time). Ships `dist/` only.
 - tmux ≥ 3.2. The 3.2 floor is load-bearing; see the Compatibility section of
   [`README.md`](./README.md) for details.
 
-[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/promptctl/tmux-control-mode-js/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/promptctl/tmux-control-mode-js/releases/tag/v0.1.0
