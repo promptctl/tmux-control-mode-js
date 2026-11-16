@@ -45,6 +45,17 @@ All notable changes to this project are documented here. Format follows
   `WebContents` and IPC events have them; a hand-written fake needs them.
   `./electron/main` exports these types.
   `WebContentsSink` needs only `send` and `isDestroyed`.
+- The Electron IPC interfaces type each channel's payload. `IPC.event`
+  carries `IpcEventMessage` (an `EmitterMessage` or an `OutputMessage`):
+  `WebContentsLike.send` takes `IPC.event` and one `IpcEventMessage`, and
+  `IpcRendererLike.on`/`removeListener` take `IPC.event` with a listener
+  `(event, msg: IpcEventMessage)`. `IpcRendererLike.send` takes
+  `IPC.register` or `IPC.unregister` alone, or `IPC.ack` with an
+  `AckMessage`; `invoke` takes `IPC.invoke` and an `InvokeRequest`.
+  Electron's `WebContents` and `ipcRenderer` are still assignable; a
+  hand-written fake or wrapper that sends other channels or arguments no
+  longer compiles. `./electron/main` and `./electron/renderer` export
+  `IpcEventMessage`.
 - The Electron main bridge refuses IPC from subframes (an invoke answers
   `BRIDGE_ABORTED`): a renderer's peer is its page's main frame.
 - A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the

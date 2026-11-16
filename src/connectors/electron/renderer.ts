@@ -31,7 +31,7 @@ import {
   isPaneOutput,
   type CommandResponse,
   type PaneAction,
-  type PaneOutputMessage,
+  type OutputMessage,
   type PaneRecord,
   type SessionRecord,
   type WindowRecord,
@@ -430,10 +430,8 @@ export class TmuxClientProxy
   }
 
   // [LAW:single-enforcer] Called from the byte-only branch of `eventHandler`,
-  // so `msg` is statically `PaneOutputMessage`. The accounting pipeline is
-  // the same for both `output` and `extended-output` — main credits them
-  // identically on the way out, so we mirror that on the way in.
-  private account(msg: PaneOutputMessage): void {
+  // so `msg` is statically the pane-output arm of `IpcEventMessage`.
+  private account(msg: OutputMessage): void {
     const next = (this.pendingAck.get(msg.paneId) ?? 0) + msg.data.byteLength;
     if (next < this.ackBatchBytes) {
       this.pendingAck.set(msg.paneId, next);

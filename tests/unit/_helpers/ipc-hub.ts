@@ -34,9 +34,22 @@ import type {
   WebFrameLike,
 } from "../../../src/connectors/electron/types.js";
 
+/**
+ * Electron's own `ipcRenderer`, untyped per channel, so a test playing a
+ * hostile renderer can send main what `IpcRendererLike` refuses. It is
+ * assignable to `IpcRendererLike`, as Electron's is.
+ */
+export interface RawIpcRenderer extends Pick<
+  IpcRendererLike,
+  "on" | "removeListener"
+> {
+  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
+  send(channel: string, ...args: unknown[]): void;
+}
+
 export interface FakeRenderer {
   /** The ipcRenderer of the document the WebContents shows now. */
-  readonly ipcRenderer: IpcRendererLike;
+  readonly ipcRenderer: RawIpcRenderer;
   readonly sender: WebContentsLike;
   /** The IPC event the current document's messages carry. */
   readonly event: IpcMainEventLike;
@@ -148,7 +161,7 @@ export function createIpcHub(): IpcHub {
     interface Document {
       readonly frame: WebFrameLike;
       readonly listeners: Map<string, Set<IpcRendererOnListener>>;
-      readonly ipcRenderer: IpcRendererLike;
+      readonly ipcRenderer: RawIpcRenderer;
       /** A fresh IPC event for each message from this document, as Electron builds. */
       readonly ipcEvent: () => IpcMainEventLike;
       /** False once the document's frame host was reused by a later one. */
@@ -268,7 +281,7 @@ export function createIpcHub(): IpcHub {
           );
         }
       };
-      const ipcRenderer: IpcRendererLike = {
+      const ipcRenderer: RawIpcRenderer = {
         invoke(channel, ...args) {
           mustSend();
           return answer(document, channel, args);

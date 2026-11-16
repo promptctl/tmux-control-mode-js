@@ -570,7 +570,7 @@ export enum PaneAction {
  * The generic parameter preserves the caller's input type so the else
  * branch narrows correctly for any union containing `PaneOutputMessage`:
  *   - `TmuxMessage` input → else is `EmitterTmuxMessage` (emitter accepts it)
- *   - `EmitterMessage | PaneOutputMessage` input (the IPC wire boundary)
+ *   - `IpcEventMessage` input (the Electron IPC wire boundary)
  *     → else is `EmitterMessage`
  *
  * The return type uses `Extract<M, PaneOutputMessage>` rather than

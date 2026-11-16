@@ -16,10 +16,7 @@
 // keep Electron out of the library's dependencies entirely.
 
 import type { EmitterMessage } from "../../emitter.js";
-import type {
-  CommandResponse,
-  PaneOutputMessage,
-} from "../../protocol/types.js";
+import type { CommandResponse, OutputMessage } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { ResumeFailure } from "../bridge-connection.js";
 import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
@@ -60,13 +57,14 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 /**
  * What main sends a renderer on `IPC.event`: an event of the main-side client
  * (`client.on("*")`, plus the connection-state snapshot a late joiner gets) or
- * a pane's output bytes from the renderer's `BytesSink`.
+ * a pane's output bytes from the renderer's `BytesSink`, which sends tmux's
+ * `%output` and `%extended-output` alike as `output`.
  *
  * [LAW:types-are-the-program] The channel's payload is declared once, here,
  * and both ends are typed against it: `WebContentsLike.send` checks every
  * producer, `IpcRendererOnListener` hands the renderer the union with no cast.
  */
-export type IpcEventMessage = EmitterMessage | PaneOutputMessage;
+export type IpcEventMessage = EmitterMessage | OutputMessage;
 
 // ---------------------------------------------------------------------------
 // Structural "like" interfaces for Electron.
@@ -175,8 +173,11 @@ export type IpcRendererOnListener = (
 ) => void;
 
 export interface IpcRendererLike {
-  invoke(channel: IpcChannel, ...args: unknown[]): Promise<unknown>;
-  send(channel: IpcChannel, ...args: unknown[]): void;
+  invoke(channel: typeof IPC.invoke, req: InvokeRequest): Promise<unknown>;
+  // A renderer's own sends are typed per channel; main still parses what
+  // arrives (`parseAckMessage`), since a renderer is untrusted.
+  send(channel: typeof IPC.register | typeof IPC.unregister): void;
+  send(channel: typeof IPC.ack, ack: AckMessage): void;
   /** `IPC.event` is the one channel a renderer listens on. */
   on(channel: typeof IPC.event, listener: IpcRendererOnListener): void;
   removeListener(

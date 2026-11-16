@@ -231,6 +231,7 @@ export { WebContentsSink, attachWebContentsSink } from "./sink.js";
 export type {
   BridgeErrorCode,
   BridgeErrorPayload,
+  IpcEventMessage,
   IpcMainEventLike,
   IpcMainLike,
   LoadFailedEvent,
