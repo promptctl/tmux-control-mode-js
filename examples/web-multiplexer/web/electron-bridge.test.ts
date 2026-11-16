@@ -5,8 +5,9 @@
 // is; only a bridge failure reaches onError; the bridge is ready while main's
 // tmux client is. The library's renderer proxy runs for real over a fake IPC.
 // Over the in-memory IPC hub to a real main bridge, a page's pane streams
-// follow every move the library does and survive a socket swap; those cases
-// drive real tmux and are gated behind TMUX_INTEGRATION=1.
+// follow every move the library does and re-route against the new server
+// after a socket swap; those cases drive real tmux and are gated behind
+// TMUX_INTEGRATION=1.
 //
 // The file reads the package's built dist/ as the demo does: run
 // `pnpm run build` first.
@@ -33,7 +34,6 @@ import {
 import { killTmuxServer } from "../../../tests/helpers/reap-test-sockets.ts";
 import {
   describeTopologyMoves,
-  listAllPanes,
   makeRecordingSink,
   sendOutputToPane,
   textOf,
@@ -149,6 +149,26 @@ describe("ElectronBridge state", () => {
     expect(states.at(-1)).toBe("closed");
     bridge.disconnect();
   });
+
+  it("is ready when main's ready snapshot answers the registration before connect() returns", () => {
+    const listeners: ((e: IpcRendererEventLike, ...args: unknown[]) => void)[] =
+      [];
+    const ipc: IpcRendererLike = {
+      invoke: () => Promise.resolve({ status: "ok" }),
+      send: () =>
+        listeners.forEach((l) => l({} as IpcRendererEventLike, READY)),
+      on: (_channel, listener) => listeners.push(listener),
+      removeListener: () => undefined,
+    };
+    const bridge = new ElectronBridge(ipc, demoIpc);
+    const states: ConnState[] = [];
+    bridge.onState((s) => states.push(s));
+
+    bridge.connect("");
+
+    expect(states.at(-1)).toBe("ready");
+    bridge.disconnect();
+  });
 });
 
 describe("BridgePaneStreamClient over ElectronBridge", () => {
@@ -176,21 +196,45 @@ describe("BridgePaneStreamClient over ElectronBridge", () => {
   });
 });
 
-// The demo's Electron main process, as electron/main.ts runs it: a TmuxClient
-// attached to `session`, exposed to renderers by the library's main bridge.
-// Swapping sockets there disposes both and installs a fresh pair.
-function attachMain(
+// The demo's Electron main process, as electron/main.ts's connectTo() runs it:
+// a TmuxClient attached to `session`, exposed to renderers by the library's
+// main bridge once tmux's attach handshake has settled. Every command main
+// sends to tmux lands in `sent`. Swapping sockets there disposes both and
+// installs a fresh pair.
+async function attachMain(
   hub: ReturnType<typeof createIpcHub>,
   socketName: string,
   session: string,
-): () => void {
-  const client = new TmuxClient(
-    spawnTmux(["attach-session", "-t", session], { socketPath: socketName }),
-  );
-  const handle = createMainBridge(client, hub.ipcMain);
-  return () => {
-    handle.dispose();
+): Promise<{ sent: string[]; close(): void }> {
+  const sent: string[] = [];
+  const inner = spawnTmux(["attach-session", "-t", session], {
+    socketPath: socketName,
+  });
+  const client = new TmuxClient({
+    send: (cmd) => {
+      const result = inner.send(cmd);
+      if (result.ok) sent.push(cmd);
+      return result;
+    },
+    onData: (cb) => inner.onData(cb),
+    onClose: (cb) => inner.onClose(cb),
+    close: () => inner.close(),
+  });
+  let attached = false;
+  client.on("session-changed", () => (attached = true));
+  try {
+    await pollUntil(() => attached);
+  } catch (err) {
     client.close();
+    throw new Error(`main never attached to ${session}`, { cause: err });
+  }
+  const handle = createMainBridge(client, hub.ipcMain);
+  return {
+    sent,
+    close: () => {
+      handle.dispose();
+      client.close();
+    },
   };
 }
 
@@ -200,20 +244,22 @@ async function electronPage(
   socketName: string,
   session: string,
 ): Promise<{
-  bridge: ElectronBridge;
   conn: BridgePaneStreamClient;
-  swapMain(): void;
+  /** What each main the page has been connected to sent to tmux, in order. */
+  sentByMain: string[][];
+  swapMain(socketName: string, session: string): Promise<void>;
   close(): void;
 }> {
   tmux(socketName, ["new-session", "-d", "-s", session]);
   const hub = createIpcHub();
-  let closeMain = attachMain(hub, socketName, session);
+  let main = await attachMain(hub, socketName, session);
+  const sentByMain = [main.sent];
   const bridge = new ElectronBridge(hub.createRenderer().ipcRenderer, demoIpc);
   const conn = new BridgePaneStreamClient(bridge);
   bridge.connect("");
   const close = (): void => {
     bridge.disconnect();
-    closeMain();
+    main.close();
   };
   try {
     await pollUntil(() => conn.connectionState.status === "ready");
@@ -222,14 +268,15 @@ async function electronPage(
     throw new Error("the Electron page never became ready", { cause: err });
   }
   return {
-    bridge,
     conn,
-    // SocketBadge's swap: the page lets go of main, main re-attaches, the
-    // page connects again.
-    swapMain: () => {
+    sentByMain,
+    // SocketBadge's swap: the page lets go of main, main re-attaches to the
+    // chosen server, the page connects again.
+    swapMain: async (nextSocket, nextSession) => {
       bridge.disconnect();
-      closeMain();
-      closeMain = attachMain(hub, socketName, session);
+      main.close();
+      main = await attachMain(hub, nextSocket, nextSession);
+      sentByMain.push(main.sent);
       bridge.connect("");
     },
     close,
@@ -240,33 +287,81 @@ describeTopologyMoves("BridgePaneStreamClient over ElectronBridge", (s, n) =>
   electronPage(s, n),
 );
 
+/** pane id -> window id for every pane on the server, read out of band. */
+function windowOfPane(socketName: string): Map<number, number> {
+  const out = tmux(socketName, [
+    "list-panes",
+    "-a",
+    "-F",
+    "#{pane_id} #{window_id}",
+  ]);
+  return new Map(
+    out
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const [pane, window] = line.split(" ");
+        return [Number(pane!.slice(1)), Number(window!.slice(1))];
+      }),
+  );
+}
+
 describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
   "a socket swap on the Electron page",
   () => {
-    it("keeps a window sink attached before it receiving its window's output after it", async () => {
-      const socketName = uniqueSocket("tmux-scope-test-", "electron-swap");
-      const page = await electronPage(socketName, uniqueName("swap"));
+    it("re-learns the new server's topology: a window sink attached before the swap routes the new server's panes, and each main gets one list-panes bootstrap", async () => {
+      const socketA = uniqueSocket("tmux-scope-test-", "electron-swap-a");
+      const socketB = uniqueSocket("tmux-scope-test-", "electron-swap-b");
+      const sessionB = uniqueName("swap-b");
+      const page = await electronPage(socketA, uniqueName("swap-a"));
       try {
-        const [pane] = await listAllPanes(page.conn);
+        // Pane %1 has a window of its own on A and shares %0's on B, so a
+        // router still holding A's table after the swap misroutes it. The
+        // page hears A's new window before any sink needs topology, so the
+        // only query on each server is the bootstrap.
+        let windowAdded = false;
+        page.conn.on("window-add", () => (windowAdded = true));
+        tmux(socketA, ["new-window", "-d"]);
+        await pollUntil(() => windowAdded);
+        tmux(socketB, ["new-session", "-d", "-s", sessionB]);
+        tmux(socketB, ["split-window", "-d"]);
+        const onA = windowOfPane(socketA);
+        const window = windowOfPane(socketB).get(1)!;
+        expect(onA.get(1)).not.toBe(window);
+        const paneOnA = [...onA].find(([, w]) => w === window)![0];
+
         const arrived: ArrivedChunk[] = [];
         let ended = false;
+        let reconnects = 0;
+        page.conn.on("reconnected", () => reconnects++);
         page.conn.attachBytesSink(
           { ...makeRecordingSink(arrived), end: () => (ended = true) },
-          { scope: windowScope(pane.windowId) },
+          { scope: windowScope(window) },
         );
-
-        page.swapMain();
-        await pollUntil(() => page.conn.connectionState.status === "ready");
-        await sendOutputToPane(page.conn, pane.paneId);
-
+        await sendOutputToPane(page.conn, paneOnA);
         await pollUntil(() =>
-          textOf(arrived, pane.paneId).includes(`scope-test-${pane.paneId}`),
+          textOf(arrived, paneOnA).includes(`scope-test-${paneOnA}`),
         );
+
+        await page.swapMain(socketB, sessionB);
+        await pollUntil(() => page.conn.connectionState.status === "ready");
+        await sendOutputToPane(page.conn, 1);
+        await pollUntil(() => textOf(arrived, 1).includes("scope-test-1"));
+
         expect(ended).toBe(false);
+        expect(reconnects).toBe(1);
+        // [LAW:one-source-of-truth] The page keeps one topology: only the
+        //   adapter's router queries tmux, once per connection.
+        expect(
+          page.sentByMain.map(
+            (sent) => sent.filter((c) => c.startsWith("list-panes")).length,
+          ),
+        ).toEqual([1, 1]);
       } finally {
         page.close();
-        killTmuxServer(socketName);
+        killTmuxServer(socketA);
+        killTmuxServer(socketB);
       }
-    });
+    }, 20000);
   },
 );

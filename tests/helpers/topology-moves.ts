@@ -1,10 +1,9 @@
 // tests/helpers/topology-moves.ts
 // The pane- and window-move cases every connection that routes scoped pane
 // output must follow, registered against whatever connection an opener
-// returns. tests/integration/pane-scope.test.ts runs them on TmuxClient and
-// examples/web-multiplexer/web/pane-stream-bridge.test.ts runs them through
-// the demo's browser path, so the demo cannot drift from the moves the library
-// follows.
+// returns. TmuxClient and each of the demo's connection paths run them (grep
+// describeTopologyMoves), so the demo cannot drift from the moves the library
+// follows; the demo's runners read dist/, so rebuild before running them.
 //
 // A tmux control client receives %output only for panes in its attached
 // session's windows, so every case provokes output from a pane in a window of
