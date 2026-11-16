@@ -139,47 +139,67 @@ describe("PaneFirehose tap retry", () => {
   });
 });
 
-describe("PaneFirehose refresh never rejects", () => {
-  // The refresh timer fires and forgets: a rejection here would be unhandled
-  // and end the host process.
-  it("warns when the connection is lost under a running firehose", async () => {
-    const firehose = new PaneFirehose(
-      () => Promise.reject(new TransportClosedError("server exited")),
-      () => undefined,
-    );
-    await firehose.start();
-    firehose.stop();
-    expect(console.warn).toHaveBeenCalledWith(
-      "[firehose] list-panes failed: transport closed before command completed: server exited",
-    );
-  });
-
-  it("is quiet when the connection ends because the firehose stopped", async () => {
-    let reject: (err: unknown) => void = () => undefined;
-    const firehose = new PaneFirehose(
-      () =>
-        new Promise<CommandResponse>((_, r) => {
-          reject = r;
-        }),
-      () => undefined,
-    );
-    const started = firehose.start();
-    firehose.stop();
-    reject(new TransportClosedError(undefined));
-    await started;
-    expect(console.warn).not.toHaveBeenCalled();
-  });
-
-  it("reads a list-panes %error as a failed enumeration, leaving taps alone", async () => {
+describe("PaneFirehose refresh failures", () => {
+  it("rejects start when the first enumeration fails", async () => {
     const firehose = new PaneFirehose(
       () =>
         Promise.reject(new TmuxCommandError(response(false, ["no server"]))),
       () => undefined,
     );
-    await firehose.start();
-    firehose.stop();
-    expect(console.warn).toHaveBeenCalledWith(
-      "[firehose] list-panes failed; tap set unchanged",
+    try {
+      await expect(firehose.start()).rejects.toBeInstanceOf(TmuxCommandError);
+    } finally {
+      firehose.stop();
+    }
+  });
+
+  // The refresh timer fires and forgets: a rejection there would be unhandled
+  // and end the host process.
+  it("warns of a failed timed refresh and leaves the taps alone", async () => {
+    let lists = 0;
+    const execute = vi.fn((command: string) => {
+      if (!command.startsWith("list-panes")) {
+        return Promise.resolve(response(true));
+      }
+      lists += 1;
+      return lists === 1
+        ? Promise.resolve(response(true, ["%1"]))
+        : Promise.reject(new TmuxCommandError(response(false, ["no server"])));
+    });
+    const firehose = new PaneFirehose(execute, () => undefined, {
+      refreshIntervalMs: 5,
+    });
+    try {
+      await firehose.start();
+      await vi.waitFor(() => expect(console.warn).toHaveBeenCalled());
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/^\[firehose\] refresh failed: /),
+      );
+      // Untapping %1 would turn its pipe-pane off.
+      expect(execute).not.toHaveBeenCalledWith("pipe-pane -t %1");
+    } finally {
+      firehose.stop();
+    }
+  });
+
+  it("leaves a lost connection to the connection's owner to report", async () => {
+    let lists = 0;
+    const firehose = new PaneFirehose(
+      () => {
+        lists += 1;
+        return Promise.reject(new TransportClosedError("server exited"));
+      },
+      () => undefined,
+      { refreshIntervalMs: 5 },
     );
+    try {
+      await expect(firehose.start()).rejects.toBeInstanceOf(
+        TransportClosedError,
+      );
+      await vi.waitFor(() => expect(lists).toBeGreaterThan(2));
+      expect(console.warn).not.toHaveBeenCalled();
+    } finally {
+      firehose.stop();
+    }
   });
 });

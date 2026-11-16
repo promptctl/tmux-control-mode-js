@@ -6,24 +6,19 @@
 // the process on an unhandled rejection, so each of those owners catches its
 // own failure and reports it HERE, and the `void` at its call site is honest.
 //
-// [LAW:single-enforcer] One rule for every detached command: the connection
-//   ending because its owner closed it is expected and quiet; anything else —
-//   tmux going away under a live owner, a command tmux refused — is warned.
-// [LAW:no-silent-failure] Only the owner's own close is silent, and it is
-//   recognised by the library's connection-gone predicate, not by assumption.
+// [LAW:single-enforcer] One rule for every detached command: a command lost
+//   with its connection is not reported, because the connection's end is
+//   reported once by whoever owns that connection (`DedicatedControlClient`,
+//   or the host that closes its socket on `exit`). Anything else — a command
+//   tmux refused, a fault in the owner's own bookkeeping — is warned.
+// [LAW:no-silent-failure] "Lost with its connection" is recognised by the
+//   library's connection-gone predicate, not by assumption.
 
 import { isConnectionGone } from "@promptctl/tmux-control-mode-js";
 
-/**
- * Report the failure of a command nobody awaits. `what` names the work for the
- * log line; `ownerClosed` is whether the owner has already closed its client.
- */
-export function warnUnlessOwnClose(
-  what: string,
-  err: unknown,
-  ownerClosed: boolean,
-): void {
-  if (ownerClosed && isConnectionGone(err)) return;
+/** Report the failure of a command nobody awaits; `what` names the work. */
+export function reportDetachedFailure(what: string, err: unknown): void {
+  if (isConnectionGone(err)) return;
   const detail = err instanceof Error ? err.message : String(err);
   console.warn(`${what} failed: ${detail}`);
 }

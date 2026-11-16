@@ -214,6 +214,12 @@ async function connectTo(socket: string, session: string): Promise<void> {
   ensureSession(socket, session);
   const transport = spawnTmux(["-L", socket, "attach-session", "-t", session]);
   const client = new TmuxClient(transport);
+  // tmux gone under the active client: its panes' taps went with it, so stop
+  // the firehose rather than poll a dead connection. The renderer hears the
+  // exit through the bridge.
+  client.on("exit", () => {
+    if (active?.client === client) stopFirehose();
+  });
   await waitUntilReady(client);
   const bridge = createMainBridge(client, ipcMain, bridgeOptions());
   active = { socket, session, client, bridge };

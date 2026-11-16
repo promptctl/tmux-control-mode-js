@@ -26,8 +26,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
-import { asCommandResponse } from "../shared/command-response.js";
-import { warnUnlessOwnClose } from "./detached-failure.js";
+import { reportDetachedFailure } from "./detached-failure.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 
 /**
@@ -83,15 +82,21 @@ export class PaneFirehose {
 
   /**
    * Tap every current pane and begin draining their FIFOs, then keep tapping
-   * panes that appear later. Idempotent: a second `start` while running is a
-   * no-op.
+   * panes that appear later. Rejects if the first enumeration fails; the
+   * refresh timer is already running and keeps trying. Idempotent: a second
+   * `start` while running is a no-op.
    */
   async start(): Promise<void> {
     if (this.dir !== null || this.stopped) return;
     this.dir = mkdtempSync(join(tmpdir(), "tmux-firehose-"));
-    await this.refresh();
     const interval = this.options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
-    this.timer = setInterval(() => void this.refresh(), interval);
+    // The timer fires and forgets, so a failed tick is reported here.
+    this.timer = setInterval(() => {
+      this.refresh().catch((err: unknown) => {
+        reportDetachedFailure("[firehose] refresh", err);
+      });
+    }, interval);
+    await this.refresh();
   }
 
   /**
@@ -122,22 +127,14 @@ export class PaneFirehose {
    * single source of "which panes exist" is `list-panes -a`; the tap set is a
    * derived projection kept in lock-step with it. [LAW:one-source-of-truth]
    *
-   * Never rejects: the timer fires it and forgets, so a lost connection is
-   * reported here, quietly only once this firehose has been stopped.
+   * [LAW:no-silent-failure] A failed enumeration rejects, so it is never read
+   * as "zero panes" (which would untap everything): the tap set is left as-is.
    */
   private async refresh(): Promise<void> {
     if (this.refreshing || this.dir === null || this.stopped) return;
     this.refreshing = true;
     try {
-      const listed = await this.execute("list-panes -a -F '#{pane_id}'").catch(
-        asCommandResponse,
-      );
-      // [LAW:no-silent-failure] A failed enumeration is surfaced, not treated
-      // as "zero panes" (which would untap everything). Leave taps as-is.
-      if (!listed.success) {
-        console.warn("[firehose] list-panes failed; tap set unchanged");
-        return;
-      }
+      const listed = await this.execute("list-panes -a -F '#{pane_id}'");
       const current = new Set(
         listed.output.flatMap((line) => {
           const m = /^%(\d+)/.exec(line.trim());
@@ -158,8 +155,6 @@ export class PaneFirehose {
       for (const paneId of [...this.taps.keys()]) {
         if (!current.has(paneId)) this.untap(paneId);
       }
-    } catch (err) {
-      warnUnlessOwnClose("[firehose] list-panes", err, this.stopped);
     } finally {
       this.refreshing = false;
     }

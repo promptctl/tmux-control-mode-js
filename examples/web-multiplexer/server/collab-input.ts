@@ -12,24 +12,30 @@
 //   one), explicit API (`sendKeyBytes` / `close`), documented invariant: one shared
 //   input client serves every collaborator, so tmux — not this class — is the
 //   serialiser of concurrent keystrokes. No CRDT, no per-browser ordering.
-// [LAW:no-ambient-temporal-coupling] The first `sendKeyBytes` gates on the client's
-//   `ready` promise (the cold-start race), owned by `spawnReadyControlClient`.
+// [LAW:no-ambient-temporal-coupling] Every keystroke goes to a client
+//   `DedicatedControlClient.ready()` has settled (the cold-start race).
 
 import { sendKeyBytes } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
-import { warnUnlessOwnClose } from "./detached-failure.js";
+import { reportDetachedFailure } from "./detached-failure.js";
 import {
-  spawnReadyControlClient,
-  type ReadyControlClient,
+  DedicatedControlClient,
+  spawnDemoClient,
+  type SpawnControlClient,
 } from "./control-client.js";
 
 export class CollabInput {
-  private spawned: ReadyControlClient | null = null;
-  private closed = false;
+  private readonly connection: DedicatedControlClient;
 
-  constructor(
-    private readonly spawn: () => ReadyControlClient = spawnReadyControlClient,
-  ) {}
+  constructor(spawn: SpawnControlClient = spawnDemoClient) {
+    // Keystrokes leave nothing behind on a lost connection; the next one
+    // reaches tmux over a fresh client.
+    this.connection = new DedicatedControlClient(
+      "[collab]",
+      () => undefined,
+      spawn,
+    );
+  }
 
   /**
    * Inject `bytes` (raw terminal input from a browser) into pane `%paneId`.
@@ -42,15 +48,12 @@ export class CollabInput {
    * the lost keystroke needs no second signal. [LAW:no-silent-failure] the
    * failure is logged, never swallowed into a phantom success.
    *
-   * Never rejects: the caller fires and forgets, so a lost connection is
-   * reported here too, quietly only when it is this owner's own `close`.
+   * Never rejects: the caller fires and forgets, so every other failure is
+   * reported here too.
    */
   async sendKeyBytes(paneId: number, bytes: Uint8Array): Promise<void> {
-    if (this.closed) return;
-    const { client, ready } = this.ensureClient();
-    await ready;
-    if (this.closed) return;
     try {
+      const client = await this.connection.ready();
       const response = await sendKeyBytes(client, `%${paneId}`, bytes).catch(
         asCommandResponse,
       );
@@ -58,23 +61,12 @@ export class CollabInput {
         console.warn(`[collab] sendKeyBytes to %${paneId} failed`);
       }
     } catch (err) {
-      warnUnlessOwnClose(
-        `[collab] sendKeyBytes to %${paneId}`,
-        err,
-        this.closed,
-      );
+      reportDetachedFailure(`[collab] sendKeyBytes to %${paneId}`, err);
     }
   }
 
   /** Tear down the dedicated input client. */
   close(): void {
-    this.closed = true;
-    this.spawned?.client.close();
-    this.spawned = null;
-  }
-
-  private ensureClient(): ReadyControlClient {
-    this.spawned ??= this.spawn();
-    return this.spawned;
+    this.connection.close();
   }
 }
