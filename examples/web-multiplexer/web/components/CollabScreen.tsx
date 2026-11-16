@@ -7,8 +7,8 @@
 //   and the terminal's input back to the bridge. It owns the sink lifecycle,
 //   attaches `onBytes` BEFORE `connect()` (so the seed is never missed), and
 //   resizes the sink when the server reports geometry.
-// [LAW:one-source-of-truth] There is no local echo. Every keystroke goes to
-//   tmux via `bridge.sendKeys`; what the user sees is the pane's `%output`
+// [LAW:one-source-of-truth] There is no local echo. Every input byte goes to
+//   tmux via `bridge.sendKeyBytes`; what the user sees is the pane's `%output`
 //   fanned back — so the screen can never disagree with the authoritative pane,
 //   no matter how many browsers type at once.
 

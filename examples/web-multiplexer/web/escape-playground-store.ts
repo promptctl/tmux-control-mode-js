@@ -293,7 +293,7 @@ export class EscapePlaygroundStore {
    * it displayed and classified. [LAW:one-source-of-truth] one interpreted
    * string drives display, classification, and the wire.
    *
-   * `sendKeys` encodes via `send-keys -H utf8HexBytes(s)`, delivering every byte
+   * `sendKeys` sends the string's UTF-8 bytes via `send-keys -H`, delivering every byte
    * verbatim — the whole point of the demo.
    */
   send(interpreted: string): void {

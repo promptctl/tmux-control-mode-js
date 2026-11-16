@@ -9,7 +9,7 @@
 //   Rendered cells  the live scratch pane those bytes were sent to
 //
 // THE HEADLINE: this is the only demo that exercises the *outbound* path. The
-// library's `sendKeys` encodes via `send-keys -H utf8HexBytes(s)`, so every byte
+// library's `sendKeys` sends the UTF-8 bytes via `send-keys -H`, so every byte
 // — ESC, C0 controls, the lot — arrives byte-for-byte. The round-trip you watch
 // here is the proof of that input fidelity.
 //

@@ -405,7 +405,7 @@ export function handleCollabConnection(
       ws.close(1003, "collab expects binary input frames");
       return;
     }
-    void input.sendKeyBytes(paneId, new Uint8Array(raw));
+    void input.sendKeyBytes(paneId, raw);
   });
 
   let dispose: (() => void) | null = null;
