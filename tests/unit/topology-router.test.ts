@@ -982,12 +982,12 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     const s = await seeded((e) => errors.push(e));
     s.router.dispatchBytes(makeChunk(7));
     s.router.onTransportLost(s.run);
+    // The next connection's bootstrap is out before the old locate settles.
+    const next = controlledRun();
+    s.router.onTransportReady(next.run);
     s.locates[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
     await settle();
     expect(s.replies).toEqual([]);
-
-    const next = controlledRun();
-    s.router.onTransportReady(next.run);
     next.replies[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
     await settle();
     // The next server's %7 is not the one that printed before the loss.

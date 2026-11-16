@@ -257,6 +257,37 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
+  // The router reads these two answers when it locates an unplaced pane.
+  it("SCOPE-03d: list-panes -t %P lists a live pane's window and refuses a killed pane with can't find pane", async () => {
+    const session = uniqueName("sess-locate");
+    client = await attachSession(socketName, session);
+    const [pane] = await listAllPanes(client);
+    expect(pane).toBeDefined();
+    const split = tmux(socketName, [
+      "split-window",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      `%${pane!.paneId}`,
+      "sleep 30",
+    ]).trim();
+    const locate = (id: string) =>
+      client!.execute(`list-panes -t ${id} -F '${PANE_LIST_FORMAT}'`);
+
+    const live = await locate(split);
+    expect(live.output.map(parsePaneListLine)).toContainEqual(
+      expect.objectContaining({
+        paneId: Number(split.slice(1)),
+        windowId: pane!.windowId,
+        sessionId: pane!.sessionId,
+      }),
+    );
+
+    tmux(socketName, ["kill-pane", "-t", split]);
+    await expect(locate(split)).rejects.toThrow(/^can't find pane/);
+  }, 15000);
+
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
 
   it("SCOPE-03c: sessionScope receives a split-window pane's only output, and placing it reports nothing", async () => {

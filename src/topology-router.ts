@@ -289,7 +289,11 @@ export class TopologyRouter {
     this.epoch.supersedeAll();
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.
+    // Output held for that server's panes goes with them: a new server's
+    // panes reuse its ids.
     this.topology.seed([]);
+    this.held = [];
+    this.heldBytes = 0;
   };
 
   /**
