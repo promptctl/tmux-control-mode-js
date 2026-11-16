@@ -124,6 +124,8 @@ export class FakeTmuxClient {
   //   undefined)` — tests attach at serverScope so topology-based routing
   //   is not exercised.
   private readonly sinks = new SinkRegistry();
+  // Every sink attached and not since detached, for `held()`.
+  private readonly attachedSinks = new Set<BytesSink>();
 
   // Capture-pane invocation log + scriptable response handler. The log lets a
   // consumer assert re-mount churn on one stream issues exactly one capture;
@@ -275,7 +277,12 @@ export class FakeTmuxClient {
   //   the fake's internal `dispatch` path — same shape as every other
   //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    return this.sinks.attach(sink, options?.scope ?? serverScope);
+    const detach = this.sinks.attach(sink, options?.scope ?? serverScope);
+    this.attachedSinks.add(sink);
+    return () => {
+      this.attachedSinks.delete(sink);
+      detach();
+    };
   }
 
   close(): void {
@@ -368,6 +375,35 @@ export class FakeTmuxClient {
       if (m !== null && m[2] === what) return m[1];
     }
     throw new Error(`no subscription on ${what} was issued`);
+  }
+
+  /**
+   * What consumers still hold on this connection: a listener's event type per
+   * listener (sorted), the byte sinks attached, and the subscription names
+   * issued and not since unsubscribed, in the order issued.
+   */
+  held(): {
+    readonly listeners: readonly string[];
+    readonly sinks: number;
+    readonly subscriptions: readonly string[];
+  } {
+    const listeners = [...this.listeners].flatMap(([type, set]) =>
+      [...set].map(() => type),
+    );
+    // `refresh-client -B 'name':'what':'format'` subscribes; `-B 'name'` alone
+    // unsubscribes.
+    const subscriptions = new Set<string>();
+    for (const command of this.commandLog) {
+      const m = /^refresh-client -B '([^']*)'(:?)/.exec(command);
+      if (m === null) continue;
+      if (m[2] === ":") subscriptions.add(m[1]);
+      else subscriptions.delete(m[1]);
+    }
+    return {
+      listeners: listeners.sort(),
+      sinks: this.attachedSinks.size,
+      subscriptions: [...subscriptions],
+    };
   }
 
   /** Deliver a tmux notification as tmux would. */

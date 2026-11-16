@@ -109,6 +109,12 @@ class FakeResizeObserver {
   unobserve() {}
 }
 
+// What a disposed terminal leaves on its connection: nothing, once a pane has
+// opened but the connection's reseed scheduler, which listens for as long as
+// the connection lives.
+const NOTHING_HELD = { listeners: [], sinks: 0, subscriptions: [] };
+const RELEASED = { ...NOTHING_HELD, listeners: ["reconnected"] };
+
 async function settle(): Promise<void> {
   for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
 }
@@ -122,7 +128,8 @@ function mount(
     }),
   given: Pick<WindowTerminalOptions, "xterm" | "addons"> = {},
 ) {
-  const client = scriptedTmux(world());
+  const w = world();
+  const client = scriptedTmux(w);
   client.setConnectionState({ status: "ready" });
   const host = document.createElement("div");
   document.body.appendChild(host);
@@ -160,6 +167,7 @@ function mount(
   const pane = (id: string) =>
     host.querySelector<HTMLElement>(`[data-pane-id="${id}"]`);
   return {
+    w,
     client,
     host,
     terminal,
@@ -372,6 +380,7 @@ describe("window terminal — what is drawn", () => {
     await settle();
     expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
     expect(m.host.querySelector(".wt-root")).toBeNull();
+    expect(m.client.held()).toEqual(RELEASED);
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {
@@ -599,9 +608,8 @@ describe("window terminal — where keys go", () => {
 
 describe("window terminal — dispose", () => {
   it("removes its DOM, releases the declared size, and stops scheduling", async () => {
-    const { host, terminal, frames, sizeCommands, measureDispose } = await live(
-      { window: "box", font: 14 },
-    );
+    const { client, host, terminal, frames, sizeCommands, measureDispose } =
+      await live({ window: "box", font: 14 });
     observed?.(900, 480);
     expect(frames).toHaveLength(1);
     terminal.dispose();
@@ -612,7 +620,66 @@ describe("window terminal — dispose", () => {
     );
     expect(measureDispose).toHaveBeenCalledOnce();
     await settle();
+    expect(client.held()).toEqual(RELEASED);
     expect(sizeCommands().at(-1)).toBe("refresh-client -C @1:");
     expect(observed).toBeNull();
+  });
+
+  // A listener runs while the terminal is mid-work: whatever the work does
+  // after it, nothing it opens outlives the dispose.
+  it("from onError(layout) while live, it leaves nothing on the connection", async () => {
+    const m = await live();
+    m.terminal.onError(() => m.terminal.dispose());
+    m.client.injectLayoutChange(1, "0000,80x24", "0000,80x24", "*");
+    await settle();
+    expect(m.errors.map((e) => e.seam)).toEqual(["layout"]);
+    expect(m.client.held()).toEqual(RELEASED);
+  });
+
+  it("from onError(layout) replayed over the arrival snapshot, it opens no pane", async () => {
+    const m = mount();
+    m.terminal.onError(() => m.terminal.dispose());
+    m.client.injectLayoutChange(1, "0000,80x24", "0000,80x24", "*");
+    await settle();
+    expect(m.errors.map((e) => e.seam)).toEqual(["layout"]);
+    expect(m.client.held()).toEqual(NOTHING_HELD);
+  });
+
+  it.each([
+    ["connecting", NOTHING_HELD],
+    ["live", RELEASED],
+  ] as const)(
+    "from onState(%s), it leaves nothing on the connection",
+    async (phase, released) => {
+      const m = mount();
+      m.terminal.onState((s) => {
+        if (s.phase === phase) m.terminal.dispose();
+      });
+      await settle();
+      expect(m.terminal.state.phase).toBe(phase);
+      expect(m.client.held()).toEqual(released);
+    },
+  );
+
+  it("from onState(gone), it ends each window subscription once", async () => {
+    const m = await live();
+    const names = [
+      m.client.subscriptionNamed("@1"),
+      m.client.subscriptionNamed("%*"),
+    ];
+    m.terminal.onState((s) => {
+      if (s.phase === "gone") m.terminal.dispose();
+    });
+    m.w.attached = [];
+    m.w.all = ["@2"];
+    m.client.injectNotification({ type: "window-close", windowId: 1 });
+    await settle();
+    expect(m.terminal.state.phase).toBe("gone");
+    for (const n of names) {
+      expect(
+        m.client.commands().filter((c) => c === `refresh-client -B '${n}'`),
+      ).toHaveLength(1);
+    }
+    expect(m.client.held()).toEqual(RELEASED);
   });
 });

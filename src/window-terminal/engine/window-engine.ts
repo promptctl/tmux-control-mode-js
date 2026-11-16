@@ -230,8 +230,7 @@ export class WindowEngine {
   }
 
   dispose(): void {
-    // A window that went gone has already ended; its listeners still go.
-    if (!this.ended) this.end();
+    this.end();
     this.stateListeners.clear();
     this.errorListeners.clear();
   }
@@ -367,9 +366,16 @@ export class WindowEngine {
       facts.panes.map((p) => p.id),
     );
     for (const id of removed) this.disposePane(id);
-    for (const id of added) this.createPane(id);
+    for (const id of added) {
+      // A host listener reached earlier in this work (a layout error, a pane
+      // that failed to open) may have disposed the terminal.
+      if (this.ended) return;
+      this.createPane(id);
+    }
   }
 
+  // [LAW:single-enforcer] The one place a pane's tmux resources are taken, so
+  //   the one place an ended engine is refused them.
   private createPane(id: PaneId): void {
     const stream = new PaneStream({
       client: this.connection,
@@ -383,6 +389,13 @@ export class WindowEngine {
         }
       });
     });
+    // The renderer reports a pane that failed to open from inside create(),
+    // and a listener there may dispose the terminal: this pane is not held yet.
+    if (this.ended) {
+      surface.dispose();
+      stream.dispose();
+      return;
+    }
     stream.on("error", (e) =>
       this.report({ seam: e.phase, paneId: id, cause: e.cause }),
     );
@@ -434,8 +447,12 @@ export class WindowEngine {
     deliver(this.errorListeners, { windowId: this.windowId, ...e });
   }
 
-  /** The one teardown: `gone` and `dispose` both end here. */
+  /**
+   * The one teardown: `gone` and `dispose` both end here, once. A listener
+   * that disposes on `gone` ends the engine before `publish` does.
+   */
   private end(): void {
+    if (this.ended) return;
     this.ended = true;
     this.epoch++;
     this.queue = null;
