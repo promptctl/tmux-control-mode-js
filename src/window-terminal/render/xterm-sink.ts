@@ -210,16 +210,14 @@ export class XtermSink implements TerminalSink {
       this.gate.bufferSeed({ captured, cursor });
     } else {
       // Gate open — apply the snapshot inline. This is authoritative by
-      // construction, WITHOUT a clear: a reseed's `captured` is a snapshot
-      // normalized to exactly `pane_height` rows (tested: PaneStream
-      // "normalizes the seed to exactly pane_height rows") led by a screen-mode
-      // preamble that homes the cursor, so writing it rewrites EVERY visible row
-      // — no stale visible row can survive underneath. That holds equally for a
-      // steady-state reseed and for one arriving in the post-cap-drain window
-      // (gate opened early because the pane-size subscription was silent), so it
-      // no longer rides on "this reseed's capture postdates the drained bytes"
-      // folklore. Scrollback above the visible screen is deliberately preserved
-      // (a clear would discard the history xterm accumulated during a drain).
+      // construction, WITHOUT terminal.clear(): `captured` carries its own clear
+      // in-band (see TerminalSink.seed), so it is ordered behind every byte
+      // xterm has queued, where a synchronous clear() would run ahead of them.
+      // It is then tmux's history plus a screen normalized to exactly
+      // `pane_height` rows, so no stale row, scrollback or screen, survives.
+      // That holds equally for a steady-state reseed and for one arriving in
+      // the post-cap-drain window (gate opened early because the pane-size
+      // subscription was silent).
       this.applySeed(captured, cursor);
     }
     for (const chunk of trailing) this.write(chunk);

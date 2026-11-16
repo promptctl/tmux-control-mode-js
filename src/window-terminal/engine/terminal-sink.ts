@@ -67,12 +67,16 @@ export interface TerminalSink {
    * for when it is called.
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
-   * them, wrapped by library-synthesized mode-restore escapes (alt-screen/
-   * autowrap before the grid, cursor/keypad/insert after) that PaneStream
-   * derives from `display-message` state — those escapes are injected by the
-   * library, not emitted by `capture-pane`. Each element of `trailing` is the
-   * same raw byte stream `write()` carries, so the renderer is the single
-   * decoding authority; the library never interprets the captured grid bytes.
+   * them, wrapped by library-synthesized escapes (before the grid: alt-screen,
+   * cursor home, SGR reset, an erase of the screen and of the scrollback,
+   * autowrap; after it: cursor/keypad/insert) that PaneStream derives from
+   * `display-message` state — those escapes are injected by the library, not
+   * emitted by `capture-pane`. The grid is the pane's history above its
+   * screen, so each seed replaces the sink's scrollback with tmux's: a pane
+   * recaptured any number of times holds its history once. Each element of
+   * `trailing` is the same raw byte stream `write()` carries, so the renderer
+   * is the single decoding authority; the library never interprets the
+   * captured grid bytes.
    *
    * `captured` is the pane's whole picture as of the capture: every byte the
    * sink was given before this call is already inside it, so nothing the sink
