@@ -75,7 +75,7 @@ export interface CellFont {
 
 /**
  * Which xterm.js renderer draws a cell: its own DOM renderer, or a renderer
- * addon that draws on a canvas (WebGL, canvas).
+ * addon that draws on a canvas (WebGL).
  */
 export type CellRenderer = "dom" | "canvas";
 
