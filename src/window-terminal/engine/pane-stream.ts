@@ -179,12 +179,12 @@ type Unsubscribe = () => void;
  * [LAW:types-are-the-program] Everything a capture needs lives on its
  *   `capturing` value and dies with it: no staleness, buffer or `%begin` cut
  *   exists without a capture in flight, and a new capture starts with none.
- *   [LAW:one-source-of-truth] `markSeedStale` is the single owner of the
- *   `stale` write.
+ *   [LAW:single-enforcer] `markSeedStale` is the single owner of the `stale`
+ *   write.
  *
- * A `capturing` value is its cycle's identity: the resolution resets to `idle`
- * only if the field still holds *its* cycle, so a stale re-issue that already
- * replaced the field is not clobbered. [LAW:single-enforcer]
+ * [LAW:no-ambient-temporal-coupling] The capture's resolution, in `seed()`,
+ *   returns the phase to `idle` before it does anything else, so no caller
+ *   ever sees a finished capture as one in flight.
  *
  * Distinct, orthogonal axes deliberately kept separate: `lastSeed` (the cached
  * picture a re-attach replays) and `ReseedScheduler.currentRun` (the
@@ -236,7 +236,8 @@ export class PaneStream implements ReseedTarget {
   // pick up `this.sink` whatever it is then) — required under React StrictMode,
   // where mount→cleanup→mount happens synchronously *inside* one rendered frame,
   // landing both attaches before the first capture-pane resolves. All writes
-  // live in `startSeedCycle` (start / resolution) and `markSeedStale`.
+  // live in `startSeedCycle` (start), `seed()` (resolution) and
+  // `markSeedStale`.
   private seedCycle: SeedCycle = { phase: "idle" };
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
@@ -641,8 +642,7 @@ export class PaneStream implements ReseedTarget {
 
     // A live sink draws the byte; otherwise a capture in flight takes it,
     // attached or not (Array.push doesn't allocate unless the backing store
-    // grows; bounded by seed time). `live` comes first: a capture's
-    // resolution goes live before its cycle returns to `idle`.
+    // grows; bounded by seed time). A capture is never in flight while live.
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
@@ -683,12 +683,8 @@ export class PaneStream implements ReseedTarget {
    *   capturing cycle records it. A fresh cycle is also what resets
    *   staleness — there is no separate flag to clear.
    *
-   * The resolution resets to `idle` only if the field still holds THIS cycle:
-   * the body may chain a stale re-issue, whose new cycle has already replaced
-   * ours and owns the field.
-   *
-   * [LAW:single-enforcer] Every `this.seedCycle` write for start/resolution
-   *   lives here; the only other writer is `markSeedStale`.
+   * [LAW:single-enforcer] The capture's start, here, and its resolution, in
+   *   `seed()`, are the only `this.seedCycle` writes besides `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
     const cycle: Capturing = {
@@ -698,11 +694,7 @@ export class PaneStream implements ReseedTarget {
       begins: new Map(),
     };
     this.seedCycle = cycle;
-    const p = this.seed(cycle);
-    void p.finally(() => {
-      if (this.seedCycle === cycle) this.seedCycle = { phase: "idle" };
-    });
-    return p;
+    return this.seed(cycle);
   }
 
   /**
@@ -786,6 +778,9 @@ export class PaneStream implements ReseedTarget {
       //   failure (%error, corrupted terminator) surfaces.
       this.reportError("seed", err);
     }
+    // The capture is no longer in flight. One capture flies at a time, so the
+    // field still holds `cycle`.
+    this.seedCycle = { phase: "idle" };
 
     // Re-check liveness after the await; consumer may have disposed in the
     // meantime.
