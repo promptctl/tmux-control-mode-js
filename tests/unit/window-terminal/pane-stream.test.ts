@@ -94,15 +94,24 @@ function makeStream(
   stream: PaneStream;
 } {
   const client = opts.client ?? new FakeTmuxClient();
-  client.setExecuteResponse((cmd) => {
-    if (cmd.startsWith("display-message")) return opts.cursor ?? "0;0";
-    return opts.capture ?? "";
-  });
+  client.setExecuteResponse(() => seedReply(opts.capture, opts.cursor));
   const stream = new PaneStream({
     client,
     paneId: opts.paneId ?? PANE_ID,
   });
   return { client, stream };
+}
+
+// The seed's one command line answers with the capture's lines, then the
+// state line.
+function seedReply(capture = "", cursor = "0;0"): string {
+  return capture === "" ? cursor : `${capture}\n${cursor}`;
+}
+
+// The fake announces a reply's `begin` at the microtask after `execute()`;
+// bytes injected after this resolves follow the capture, not precede it.
+async function replyBegun(): Promise<void> {
+  await Promise.resolve();
 }
 
 async function flushTicks(n = 4): Promise<void> {
@@ -131,6 +140,7 @@ describe("PaneStream — state machine", () => {
     const { client, stream } = makeStream();
     const sink = new RecordingSink();
     stream.attach(sink);
+    await replyBegun();
     // Inject TWO bytes during the seeding window (capture is in flight).
     client.injectOutput(PANE_ID, new Uint8Array([0x41]));
     client.injectOutput(PANE_ID, new Uint8Array([0x42]));
@@ -143,6 +153,48 @@ describe("PaneStream — state machine", () => {
     expect(order[1]).toBe("write(1B)");
     expect(order[2]).toBe("write(1B)");
     expect(sink.writes.map((w) => w[0])).toEqual([0x41, 0x42]);
+  });
+
+  it("bytes before the capture reply's begin are in the snapshot; only those after it trail the seed", async () => {
+    const { client, stream } = makeStream({ capture: "screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    // In flight when tmux ran the capture: already in its grid.
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await replyBegun();
+    client.injectOutput(PANE_ID, new Uint8Array([0x42]));
+    await flushTicks();
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes.map((w) => w[0])).toEqual([0x42]);
+  });
+
+  it("a capture whose bytes all came before its begin is cached as the pane's picture", async () => {
+    const { client, stream } = makeStream({ capture: "screen" });
+    stream.attach(new RecordingSink());
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+    stream.detach();
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(1);
+  });
+
+  it("a capture reply with no begin is a seed failure, and its bytes are written as they came", async () => {
+    const client = new FakeTmuxClient();
+    // A connection that never delivers the reply's begin.
+    const on = client.on.bind(client);
+    vi.spyOn(client, "on").mockImplementation(((
+      event: never,
+      handler: never,
+    ) => (event === "begin" ? undefined : on(event, handler))) as never);
+    const { stream } = makeStream({ client, capture: "screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.lastError?.phase).toBe("seed");
+    expect(sink.seedTexts).toHaveLength(0);
+    expect(sink.writes.map((w) => w[0])).toEqual([0x41]);
   });
 
   it("detach() → 'detached'; attach() again replays the cached seed without a fresh capture-pane", async () => {
@@ -208,6 +260,7 @@ describe("PaneStream — state machine", () => {
   it("a seed whose capture was followed by trailing bytes is not cached", async () => {
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
+    await replyBegun();
     client.injectOutput(7, new Uint8Array([0x41]));
     await flushTicks();
     expect(stream.state).toBe("live");
@@ -296,9 +349,7 @@ describe("PaneStream — state machine", () => {
 
     // Now wire a working capture, re-attach. The cache must be empty so
     // attach takes the slow path and recovers.
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "recovered",
-    );
+    client.setExecuteResponse(() => seedReply("recovered", "0;0"));
     const baselineCaptures = client.capturePaneCount();
 
     const sink2 = new RecordingSink();
@@ -415,10 +466,8 @@ describe("PaneStream — state machine", () => {
     // reseed for a main-screen pane must emit ?1049l + CUP so the seed
     // content lands on the main screen at row 0, not mid-alt-screen.
     const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message")
-        ? "0;0;1;1;0;0;0;1;3;0" // alt=1
-        : "alt-content",
+    client.setExecuteResponse(
+      () => seedReply("alt-content", "0;0;1;1;0;0;0;1;3;0"), // alt=1
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
 
@@ -431,10 +480,8 @@ describe("PaneStream — state machine", () => {
     stream.detach();
 
     // Reconnect: pane is now on main screen.
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message")
-        ? "0;0;0;1;0;0;0;1;3;0" // alt=0
-        : "main-content",
+    client.setExecuteResponse(
+      () => seedReply("main-content", "0;0;0;1;0;0;0;1;3;0"), // alt=0
     );
     client.setConnectionState({ status: "reconnecting", attempt: 1 });
     client.setConnectionState({ status: "ready" });
@@ -773,9 +820,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     // valid size proves the subscription is working, so lastError must clear.
     vi.useRealTimers();
     const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "",
-    );
+    client.setExecuteResponse(() => seedReply("", "0;0"));
     client.setExecuteFailure((cmd) =>
       isSubscribe(cmd) ? tmuxError("no such pane") : null,
     );
@@ -858,9 +903,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     let failCapture = true;
     const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "recovered-screen",
-    );
+    client.setExecuteResponse(() => seedReply("recovered-screen", "0;0"));
     client.setExecuteFailure((cmd) =>
       failCapture && cmd.startsWith("capture-pane")
         ? tmuxError("transient")
@@ -894,9 +937,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     let failCapture = true;
     const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "screen",
-    );
+    client.setExecuteResponse(() => seedReply("screen", "0;0"));
     client.setExecuteFailure((cmd) => {
       // subscribe fails permanently (no pane geometry will ever arrive)...
       if (isSubscribe(cmd)) return tmuxError("no such pane");

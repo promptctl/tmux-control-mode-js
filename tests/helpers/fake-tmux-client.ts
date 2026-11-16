@@ -30,6 +30,7 @@ import type {
 } from "../../src/browser.js";
 import { SinkRegistry, serverScope } from "../../src/browser.js";
 import type {
+  BeginMessage,
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
@@ -43,6 +44,7 @@ import type {
   ContinueMessage,
   SessionChangedMessage,
 } from "../../src/protocol/index.js";
+import { CONTROL_FLAGS } from "../../src/protocol/types.js";
 import {
   refreshClientClearWindowSize,
   refreshClientSize,
@@ -80,6 +82,7 @@ export type FakeNotification =
 
 export type FakeMessage =
   | FakeOutputMessage
+  | BeginMessage
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
   | SubscriptionChangedMessage
@@ -202,11 +205,26 @@ export class FakeTmuxClient {
    */
   execute(command: string): Promise<CommandResponse> {
     this.commandLog.push(command);
-    if (command.startsWith("capture-pane")) {
-      this.captureLog.push(command);
-    }
+    // A line's commands are separated by ` ; `; the log keeps a line's
+    // capture-pane command alone.
+    const capture = command
+      .split(" ; ")
+      .find((c) => c.startsWith("capture-pane"));
+    if (capture !== undefined) this.captureLog.push(capture);
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
+    // tmux runs the line as soon as it arrives, and a connection announces
+    // the reply's `begin` no sooner than after `execute()` returns: here, at
+    // the next microtask. Bytes injected before it are in the snapshot; bytes
+    // injected after an `await` follow it.
+    queueMicrotask(() =>
+      this.dispatch({
+        type: "begin",
+        timestamp: Date.now(),
+        commandNumber,
+        flags: CONTROL_FLAGS,
+      }),
+    );
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
@@ -426,6 +444,11 @@ export class FakeTmuxClient {
 
   capturePaneCount(): number {
     return this.captureLog.length;
+  }
+
+  /** Every capture-pane command sent, in order. */
+  captures(): readonly string[] {
+    return this.captureLog;
   }
 
   /** Set round-trip latency (ms) for `execute()`. Used by attach + reconnect benches. */

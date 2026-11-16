@@ -220,10 +220,22 @@ export class PaneStream implements ReseedTarget {
 
   private currentState: PaneStreamState = "idle";
   private sink: TerminalSink | null = null;
-  // Buffer for live bytes that arrive during seeding. Handed to the sink as the
-  // seed's `trailing` argument when the capture resolves, so the snapshot and
-  // the bytes captured behind it cross the seam as one ordered value.
+  // Buffer for live bytes that arrive during seeding. The ones after the
+  // capture's `%begin` are handed to the sink as the seed's `trailing`
+  // argument when the capture resolves, so the snapshot and the bytes behind
+  // it cross the seam as one ordered value.
   private buffer: Uint8Array[] = [];
+  // Chunks this stream has received, ever. The buffer always holds the latest
+  // `buffer.length` of them: nothing is dropped from a buffer that is still
+  // going to be used (a dropped byte marks the capture stale).
+  private received = 0;
+  // For each reply `%begin` seen while a capture is in flight, how many chunks
+  // had been received by then. tmux parses a pane's bytes into its grid as it
+  // writes them to the control client, and runs a whole command line between
+  // two of those writes, so every byte before the capture line's `%begin` is
+  // in the snapshot and none after it is: this is where `trailing` starts.
+  // Keyed by tmux's command number, which is how the reply names its block.
+  private readonly seedBegins = new Map<number, number>();
   // The pane's picture as of a capture nothing has followed — kept so a
   // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
   // round-trip (re-mount churn on an idle pane → exactly one capture). Set
@@ -290,6 +302,7 @@ export class PaneStream implements ReseedTarget {
   ) => void;
   private readonly onPause: (ev: TmuxEventMap["pause"]) => void;
   private readonly onContinue: (ev: TmuxEventMap["continue"]) => void;
+  private readonly onBegin: (ev: TmuxEventMap["begin"]) => void;
 
   // [LAW:one-source-of-truth] The byte path's only attach point. Set once in
   //   the constructor by `client.attachBytesSink(...)`; called exactly once
@@ -381,6 +394,15 @@ export class PaneStream implements ReseedTarget {
     };
     this.client.on("pause", this.onPause);
     this.client.on("continue", this.onContinue);
+
+    // Every connection delivers a reply's `begin` in the same order as pane
+    // bytes, and no byte falls inside a reply block, so the count of chunks
+    // received when it arrives is the cut in this stream's bytes.
+    this.onBegin = (ev) => {
+      if (this.seedCycle.phase !== "capturing") return;
+      this.seedBegins.set(ev.commandNumber, this.received);
+    };
+    this.client.on("begin", this.onBegin);
 
     // [LAW:one-source-of-truth] Per-client reseed scheduler. Registering at
     // construction means the scheduler can include this stream in its very
@@ -550,6 +572,7 @@ export class PaneStream implements ReseedTarget {
     this.client.off("subscription-changed", this.onSubscriptionChanged);
     this.client.off("pause", this.onPause);
     this.client.off("continue", this.onContinue);
+    this.client.off("begin", this.onBegin);
     // Any failure but an already-absent subscription has nobody left to
     // report to here, so it surfaces as an unhandled rejection.
     void this.client
@@ -627,6 +650,7 @@ export class PaneStream implements ReseedTarget {
     // Activity accounting (no allocation: number arithmetic + getters).
     this.currentLastByteAt = Date.now();
     this.currentBytesSinceAttach += data.byteLength;
+    this.received += 1;
 
     // [LAW:one-source-of-truth] The cached seed is the pane's picture as of
     // its capture; any byte moves the pane past it, in every state, so the
@@ -703,6 +727,7 @@ export class PaneStream implements ReseedTarget {
    *   lives here; the only other writer is `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
+    this.seedBegins.clear();
     const p = this.seed();
     this.seedCycle = { phase: "capturing", run: p, stale: false };
     void p.finally(() => {
@@ -762,15 +787,28 @@ export class PaneStream implements ReseedTarget {
     // input modes unless we restore them explicitly.
     const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag};#{pane_height};#{history_size}'`;
 
-    let reply: { output: readonly string[]; stateLine: string } | null = null;
+    // One command line: tmux runs both commands without parsing pane bytes
+    // in between, so the cursor and modes describe the captured grid. The
+    // line's output is the capture's lines, then the state line.
+    let reply: {
+      output: readonly string[];
+      stateLine: string;
+      begunAt: number;
+    } | null = null;
     try {
-      const [captureResp, stateResp] = await Promise.all([
-        this.client.execute(captureCmd),
-        this.client.execute(stateCmd),
-      ]);
+      const response = await this.client.execute(`${captureCmd} ; ${stateCmd}`);
+      const begunAt = this.seedBegins.get(response.commandNumber);
+      // [LAW:no-silent-failure] Without the reply's `begin` there is no
+      //   telling which buffered bytes the snapshot already holds.
+      if (begunAt === undefined) {
+        throw new Error(
+          `no begin event arrived for capture reply ${response.commandNumber}`,
+        );
+      }
       reply = {
-        output: captureResp.output,
-        stateLine: stateResp.output[0] ?? "",
+        output: response.output.slice(0, -1),
+        stateLine: response.output.at(-1) ?? "",
+        begunAt,
       };
     } catch (err) {
       // Capture failed. Fall through to live mode WITHOUT a seed; better to
@@ -834,13 +872,20 @@ export class PaneStream implements ReseedTarget {
       reply === null
         ? null
         : buildSeed(reply.output, reply.stateLine, this.historyLines);
+    // The buffered bytes tmux wrote before the capture's `%begin` are in the
+    // snapshot; `trailing` is the rest. A failed capture holds none of them.
+    const inSnapshot =
+      reply === null
+        ? 0
+        : Math.max(0, reply.begunAt - (this.received - this.buffer.length));
+    const trailing = this.buffer.slice(inSnapshot);
 
     // Cache for the next attach() — a re-attach reuses this without a fresh
     // capture-pane round-trip. A failed capture is no picture, so it is never
-    // cached and the next attach is the natural recovery point. Bytes
-    // buffered behind the capture already moved the pane past the snapshot,
-    // so only a capture nothing followed is the current picture.
-    this.lastSeed = this.buffer.length === 0 ? picture : null;
+    // cached and the next attach is the natural recovery point. Bytes behind
+    // the capture already moved the pane past the snapshot, so only a capture
+    // nothing followed is the current picture.
+    this.lastSeed = trailing.length === 0 ? picture : null;
     // The seed seam just succeeded (past the stale-drop guard above), so any
     // outstanding seed failure is moot — clear it so lastError stops
     // reporting a recovered transient failure.
@@ -853,17 +898,13 @@ export class PaneStream implements ReseedTarget {
     const liveSink = this.sink;
     if (liveSink === null) return;
 
-    // Hand the snapshot and the bytes captured behind it over as one ordered
-    // value. Clear the buffer AFTER the handoff, not before: a sink consumes
-    // `trailing` synchronously and never retains the array, so aliasing is safe
-    // for the duration of the call, and reassigning to a fresh array afterward
-    // means PaneStream never mutates the handed-off array in place. Clearing
-    // after also matches the pre-SD2 failure path — if the sink throws, the
+    // Hand the snapshot and the bytes behind it over as one ordered value.
+    // Clear the buffer AFTER the handoff, not before: if the sink throws, the
     // buffered bytes survive in `this.buffer` rather than being dropped.
     if (picture !== null) {
-      liveSink.seed(picture.captured, picture.cursor, this.buffer);
+      liveSink.seed(picture.captured, picture.cursor, trailing);
     } else {
-      for (const chunk of this.buffer) liveSink.write(chunk);
+      for (const chunk of trailing) liveSink.write(chunk);
     }
     this.buffer = [];
     this.setState("live");

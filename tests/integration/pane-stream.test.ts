@@ -189,5 +189,101 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
+
+    // A seed on a pane printing while the capture is in flight draws every
+    // byte once: the captured screen, then `trailing`, then live writes read
+    // as one unbroken run of the pane's output. The pane counts up one integer
+    // per line, so a byte drawn twice shows as a repeated number.
+    it("a seed taken while the pane prints draws no output twice", async () => {
+      session = uniqueName("race");
+      client = await createSession(socket, session);
+      const paneId = await getPrimaryPaneId(client);
+
+      const sink = new TranscriptSink();
+      stream = new PaneStream({ client, paneId, historyLines: 0 });
+      stream.attach(sink);
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
+
+      await sendKeys(
+        client,
+        `%${paneId}`,
+        "i=0; while [ $i -lt 2000000 ]; do i=$((i+1)); echo $i; done",
+      );
+      await client.execute(`send-keys -t %${paneId} Enter`);
+      // The counter has filled the screen once the bottom rows are numbers.
+      await readUntil(
+        () => sink.transcripts.at(-1) ?? "",
+        (text) => /\n\d+\n\d+\n\d+\n/.test(text),
+        "the counter never started",
+      );
+
+      for (let i = 0; i < 20; i += 1) {
+        await stream.reseed();
+        await readUntil(
+          () => stream!.state,
+          (state) => state === "live",
+          "PaneStream never went live after a reseed",
+        );
+      }
+      // Read before stopping the counter, whose `^C` and prompt would follow.
+      // The first transcript starts before the counter; the rest each begin
+      // at a seed taken mid-count.
+      const seeded = sink.transcripts.slice(1);
+      await client.execute(`send-keys -t %${paneId} C-c`);
+
+      expect(seeded.length).toBeGreaterThanOrEqual(20);
+      for (const transcript of seeded) {
+        // Whole lines only: the screen's top row may be cut by the capture's
+        // edge and the last line by the next seed.
+        const lines = transcript.split("\n").slice(1, -1);
+        const breaks = lines.flatMap((line, k) =>
+          k > 0 && Number(line) !== Number(lines[k - 1]) + 1
+            ? [lines.slice(Math.max(0, k - 3), k + 3).join(" ")]
+            : [],
+        );
+        expect(breaks).toEqual([]);
+      }
+    }, 60000);
   },
 );
+
+// Each `seed()` starts a transcript: the captured screen as the text a reader
+// sees (rows above the cursor as whole lines, the cursor's row as a line still
+// being written), then every byte drawn after it — `trailing`, then `write`s —
+// until the next seed.
+class TranscriptSink implements TerminalSink {
+  transcripts: string[] = [];
+  private readonly decoder = new TextDecoder();
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
+    if (cursor === null) throw new Error("seed arrived without a cursor");
+    const rows = this.decoder
+      .decode(captured)
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b(\[[0-9;?]*[A-Za-z]|[=>]|\([0-9A-Z])/g, "")
+      .split("\r\n")
+      .map((row) => row.trimEnd());
+    const above = rows.slice(0, cursor.row).filter((row) => row !== "");
+    this.transcripts.push(
+      above.map((row) => `${row}\n`).join("") + rows[cursor.row],
+    );
+    for (const chunk of trailing) this.write(chunk);
+  }
+  write(bytes: Uint8Array): void {
+    const last = this.transcripts.length - 1;
+    if (last < 0) return;
+    this.transcripts[last] += this.decoder.decode(bytes).replace(/\r/g, "");
+  }
+  resize(): void {}
+  isVisible(): boolean {
+    return true;
+  }
+  dispose(): void {}
+}

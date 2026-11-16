@@ -79,9 +79,11 @@ export interface TerminalSink {
    * `trailing` makes the seed-before-live ordering a property of THIS value:
    * the snapshot and the bytes that immediately follow it cross the seam as one
    * ordered unit, so no consumer re-establishes that order from the arrival
-   * sequence of separate calls. It is empty on a re-attach (the cached seed has
-   * no pending live bytes) and whenever nothing arrived during the capture
-   * window. A sink MUST apply `captured` then each `trailing` chunk in order.
+   * sequence of separate calls. It holds exactly the bytes tmux wrote after it
+   * ran the capture, none of which the snapshot holds: empty on a re-attach
+   * (the cached seed has no pending live bytes) and whenever the pane printed
+   * nothing since. A sink MUST apply `captured` then each `trailing` chunk in
+   * order.
    *
    * `cursor` is `null` when tmux did not return a parsable cursor reply;
    * sinks should leave the cursor at the natural end of the captured bytes
