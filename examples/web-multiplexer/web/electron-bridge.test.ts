@@ -82,8 +82,13 @@ function connectedBridge(
   const listeners: IpcRendererOnListener[] = [];
   // The one proxy's address, as its register names it.
   let to: ProxyId | undefined;
-  const fromMain = (msg: IpcEventMessage): void =>
-    listeners.forEach((l) => l({} as IpcRendererEventLike, { to: to!, msg }));
+  const fromMain = (msg: IpcEventMessage): void => {
+    // Main addresses nothing to a proxy before it registers.
+    if (to === undefined)
+      throw new Error("fromMain before the proxy registered");
+    const addressed = { to, msg };
+    listeners.forEach((l) => l({} as IpcRendererEventLike, addressed));
+  };
   const ipc: IpcRendererLike = {
     invoke: (_channel, { id }) => {
       fromMain({ type: "invoke-reply", id, result: envelope });

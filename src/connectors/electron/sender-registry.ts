@@ -16,7 +16,7 @@
 // [LAW:one-way-deps] This module knows nothing about the invoke pipeline. It
 // defines the per-proxy record — including the `pending` set of in-flight
 // invoke abort-flags — and flags them on release; the pipeline populates that
-// set through `getOrCreate`. The dependency runs one way (pipeline → registry),
+// set through `registered`. The dependency runs one way (pipeline → registry),
 // and there is exactly one record per proxy, so nothing can drift.
 
 import type { TmuxClient } from "../../client.js";
@@ -60,12 +60,8 @@ export interface ProxyPeer {
   /** In-flight invoke dispatches the proxy made. The pipeline adds/removes
    *  entries; release flags them all aborted. */
   readonly pending: Set<PendingDispatch>;
-  /**
-   * Disposer for the proxy's byte forwarder, attached by IPC.register. A
-   * proxy whose invoke landed before its register has none yet, and hears
-   * no events until it registers.
-   */
-  detachBytes: (() => void) | null;
+  /** Disposer for the proxy's byte forwarder, attached with its peer. */
+  readonly detachBytes: () => void;
 }
 
 /** A page a WebContents shows, and the proxies on it. */
@@ -141,32 +137,19 @@ export class SenderRegistry {
   constructor(private readonly deps: SenderRegistryDeps) {}
 
   /**
-   * The ProxyPeer for proxy `proxy` on the page that sent `event`, creating
-   * it (and its page, with the page-end handlers) on first sight. Called by
-   * both `register` and the invoke pipeline, since a proxy's first invoke can
-   * land before its register.
+   * The ProxyPeer the page that sent `event` registered as `proxy`.
    *
    * [LAW:types-are-the-program] [LAW:no-silent-failure] Returns `undefined`
-   * when the sending page has ended (see sentByLivePage): its page-end event
-   * has already fired, so a fresh peer would never be released — or, after a
-   * navigation, would be inherited by the next page. Callers abort instead of
-   * billing a peer and running a real command for a page that is gone.
+   * when the sending page has ended (see sentByLivePage) — its peers were
+   * released with it — or never registered `proxy`. A proxy registers in its
+   * constructor, and Electron delivers a frame's `send` and `invoke` in the
+   * order it made them, so a live proxy's invoke always finds its peer.
+   * Callers abort instead of minting a peer: one is created only by the
+   * register that opens it, never by whatever a renderer names.
    */
-  getOrCreate(event: IpcMainEventLike, proxy: ProxyId): ProxyPeer | undefined {
+  registered(event: IpcMainEventLike, proxy: ProxyId): ProxyPeer | undefined {
     if (!sentByLivePage(event)) return undefined;
-    const wc = event.sender;
-    const page = this.pages.get(wc) ?? this.openPage(event);
-    const existing = page.proxies.get(proxy);
-    if (existing !== undefined) return existing;
-    const state: ProxyPeer = {
-      wc,
-      id: proxy,
-      peer: this.deps.bridge.registerPeer(),
-      pending: new Set(),
-      detachBytes: null,
-    };
-    page.proxies.set(proxy, state);
-    return state;
+    return this.pages.get(event.sender)?.proxies.get(proxy);
   }
 
   private openPage(event: IpcMainEventLike): PageState {
@@ -190,9 +173,10 @@ export class SenderRegistry {
   }
 
   /**
-   * Handle a proxy's IPC.register: attach its byte forwarder, and send it the
-   * current connection-state snapshot so a late-joining proxy has the
-   * lifecycle state immediately.
+   * Handle a proxy's IPC.register: open its peer — registered with the
+   * bridge, with its byte forwarder attached — and send it the current
+   * connection-state snapshot so a late-joining proxy has the lifecycle state
+   * immediately. A repeated register keeps the peer it has.
    */
   register(event: IpcMainEventLike, rawProxy: unknown): void {
     const proxy = parseProxyId(rawProxy);
@@ -200,15 +184,31 @@ export class SenderRegistry {
     // one to answer, and neither has one not sent by the page shown (it has
     // ended, or a subframe sent it) — `wc.send` reaches only the main frame's
     // document.
-    if (proxy === null) return;
-    const state = this.getOrCreate(event, proxy);
-    if (state === undefined) return;
-    const { wc, id: to } = state;
+    if (proxy === null || !sentByLivePage(event)) return;
+    const wc = event.sender;
+    const page = this.pages.get(wc) ?? this.openPage(event);
+    const state = page.proxies.get(proxy) ?? this.openPeer(wc, proxy);
+    page.proxies.set(proxy, state);
+    // [LAW:dataflow-not-control-flow] Late-joining proxies need the current
+    // lifecycle state immediately, not just when the next transition happens.
+    // The snapshot rides the same IPC.event channel the live transitions use —
+    // the proxy treats it identically — addressed to this proxy alone, so the
+    // proxies already on the page hear no repeat of a state they have.
+    wc.send(IPC.event, {
+      to: proxy,
+      msg: {
+        type: "connection-state",
+        state: this.deps.client.connectionState,
+      },
+    });
+  }
+
+  private openPeer(wc: WebContentsLike, to: ProxyId): ProxyPeer {
+    const peer = this.deps.bridge.registerPeer();
     // [LAW:dataflow-not-control-flow] One forwarder per proxy: the substrate's
     // SinkRegistry fans each chunk out to every proxy's sink; no per-chunk
-    // broadcast loop exists in the bridge. A repeated register keeps the one
-    // it has.
-    state.detachBytes ??= this.deps.client.attachBytesSink(
+    // broadcast loop exists in the bridge.
+    const detachBytes = this.deps.client.attachBytesSink(
       {
         write: (chunk): void => {
           // [LAW:no-defensive-null-guards] Trust-boundary guard: never bill
@@ -218,7 +218,7 @@ export class SenderRegistry {
           // Account BEFORE the send so a synchronous ack during dispatch
           // subtracts from the right baseline.
           this.deps.bridge.accountOutput(
-            state.peer,
+            peer,
             chunk.paneId,
             chunk.data.byteLength,
           );
@@ -234,18 +234,7 @@ export class SenderRegistry {
       },
       { scope: serverScope },
     );
-    // [LAW:dataflow-not-control-flow] Late-joining proxies need the current
-    // lifecycle state immediately, not just when the next transition happens.
-    // The snapshot rides the same IPC.event channel the live transitions use —
-    // the proxy treats it identically — addressed to this proxy alone, so the
-    // proxies already on the page hear no repeat of a state they have.
-    wc.send(IPC.event, {
-      to,
-      msg: {
-        type: "connection-state",
-        state: this.deps.client.connectionState,
-      },
-    });
+    return { wc, id: to, peer, pending: new Set(), detachBytes };
   }
 
   /**
@@ -256,10 +245,8 @@ export class SenderRegistry {
   ack(event: IpcMainEventLike, rawProxy: unknown, rawAck: unknown): void {
     // An ack from a page that has ended releases nothing: its bytes were
     // released with its peers.
-    if (!sentByLivePage(event)) return;
     const proxy = parseProxyId(rawProxy);
-    if (proxy === null) return;
-    const state = this.pages.get(event.sender)?.proxies.get(proxy);
+    const state = proxy === null ? undefined : this.registered(event, proxy);
     if (state === undefined) return;
     // [LAW:single-enforcer] Validation happens at the IPC trust boundary.
     // Bad acks from a compromised renderer are dropped silently — they can
@@ -325,7 +312,7 @@ export class SenderRegistry {
     //     that is gone.
     for (const p of state.pending) p.aborted = true;
     // (2) Detach the proxy's byte forwarder.
-    state.detachBytes?.();
+    state.detachBytes();
     // (3) Drop helper-side accounting + subscription refcounts in one call.
     //     bridge.removePeer fires setPaneAction(Continue) for any pane this
     //     peer's outstanding bytes were keeping paused, and unsubscribes from
@@ -336,7 +323,7 @@ export class SenderRegistry {
   // -------------------------------------------------------------------------
   // Event fan-out.
   //
-  // The mechanism: send a message to every registered proxy on IPC.event.
+  // The mechanism: send a message to every proxy on IPC.event.
   // The forwarding *policy* (which messages reach which peer) is the
   // bridge's routeEvent/deliversTo; this method only fans out on its verdict.
   // [LAW:dataflow-not-control-flow]
@@ -357,7 +344,6 @@ export class SenderRegistry {
         continue;
       }
       for (const state of page.proxies.values()) {
-        if (state.detachBytes === null) continue;
         if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
         wc.send(IPC.event, { to: state.id, msg });
       }

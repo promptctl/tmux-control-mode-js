@@ -146,7 +146,7 @@ export function createMainBridge(
 
   // -------------------------------------------------------------------------
   // Collaborators. The dependency runs one way: the invoke pipeline resolves a
-  // proxy's peer through the registry (`getOrCreate`), and the registry flags
+  // proxy's peer through the registry (`registered`), and the registry flags
   // that proxy's in-flight dispatches aborted on release — both act on the
   // single per-proxy record, so there is no back-reference to wire.
   // [LAW:one-way-deps]

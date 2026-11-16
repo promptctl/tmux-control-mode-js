@@ -71,6 +71,8 @@ function makeRig(): Rig {
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });
   const renderer = createIpcHub().createRenderer();
+  // A proxy registers before it can invoke (in its constructor).
+  registry.register(renderer.event, RAW_PROXY);
   return { pipeline, registry, renderer, event: renderer.event, sent, feed };
 }
 
@@ -190,8 +192,8 @@ describe("InvokePipeline — destroyed sender", () => {
     const dead = createIpcHub().createRenderer();
     dead.destroy();
 
-    // The queued invoke lands after the renderer died. getOrCreate refuses to
-    // resurrect it, so the pipeline aborts BEFORE dispatching.
+    // The queued invoke lands after the renderer died. Its page's peers are
+    // gone, so the pipeline aborts BEFORE dispatching.
     await expect(
       answer(pipeline, dead, { method: "execute", args: ["ls"] }),
     ).resolves.toMatchObject({
@@ -200,6 +202,24 @@ describe("InvokePipeline — destroyed sender", () => {
     });
     // No real tmux command ran for the dead renderer.
     expect(sent).toEqual([]);
+  });
+
+  it("aborts an invoke naming a proxy its live page never registered, opening no peer", async () => {
+    const { pipeline, registry, event, sent } = makeRig();
+    const stranger = RAW_PROXY - 1;
+
+    await expect(
+      pipeline.handle(event, {
+        proxy: stranger,
+        id: 1,
+        request: { method: "execute", args: ["ls"] },
+      }),
+    ).resolves.toMatchObject({
+      via: "invoke",
+      result: { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+    });
+    expect(sent).toEqual([]);
+    expect(registry.registered(event, stranger)).toBeUndefined();
   });
 
   it("aborts an in-flight dispatch when its sender is torn down mid-flight", async () => {
@@ -225,7 +245,7 @@ describe("InvokePipeline — destroyed sender", () => {
   });
 
   it("answers in the return when the WebContents is destroyed before its teardown arrives", async () => {
-    const { pipeline, renderer, sent, feed } = makeRig();
+    const { pipeline, registry, renderer, sent, feed } = makeRig();
     // Electron reports `destroyed` a task after the WebContents dies, so the
     // sender is still registered when the dispatch settles.
     let destroyed = false;
@@ -233,6 +253,7 @@ describe("InvokePipeline — destroyed sender", () => {
       isDestroyed: { value: () => destroyed },
     }) as WebContentsLike;
     const event = { ...renderer.event, sender };
+    registry.register(event, RAW_PROXY);
 
     const p = pipeline.handle(event, {
       proxy: RAW_PROXY,

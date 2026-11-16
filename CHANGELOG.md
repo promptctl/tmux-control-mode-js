@@ -47,6 +47,15 @@ All notable changes to this project are documented here. Format follows
 - A closed `TmuxClientProxy` answers every call `BRIDGE_CLOSED`, as a closed
   WebSocket client does, so `isConnectionGone` reads it as gone. Calls in
   flight at `close()` used to get `BRIDGE_ABORTED` from main.
+- `./electron`, `./websocket`: `outputHighWatermark` and
+  `outputLowWatermark` apply to each peer's unacknowledged bytes for a pane:
+  a pane pauses when one peer is that far behind, and resumes when no peer
+  is. They used to apply to the total across peers, so a pane with many
+  viewers paused sooner, and Electron proxies each holding a partial ack
+  batch could keep a paused pane from ever resuming.
+- `./electron`: main opens a proxy's peer on its `IPC.register` only. An
+  invoke naming a proxy its page never registered answers `BRIDGE_ABORTED`
+  instead of opening a peer.
 
 ### Added
 

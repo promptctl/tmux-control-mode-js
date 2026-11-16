@@ -198,8 +198,9 @@ export interface WebSocketBridgeOptions<Identity = unknown> {
   readonly maxInflight?: number;
 
   /**
-   * Per-pane outstanding-byte threshold (summed across all peers connected
-   * to the same TmuxClient) at which the bridge issues
+   * Per-pane outstanding-byte threshold, met when any one peer connected to
+   * the same TmuxClient has that many bytes outstanding, at which the bridge
+   * issues
    * `setPaneAction(paneId, Pause)`. The threshold is also tripped by the
    * underlying `ws.bufferedAmount` exceeding it for connections whose OS
    * send buffer is filling up — without a per-call ack frame in protocol
@@ -1147,13 +1148,13 @@ class Connection<Identity> {
   //
   // [LAW:dataflow-not-control-flow] Backpressure runs the same shape on
   // every send: account bytes against this peer for the pane (the helper
-  // fires setPaneAction(Pause) when the per-pane sum crosses the high
-  // watermark), then sample `ws.bufferedAmount` to detect that the OS send
+  // fires setPaneAction(Pause) when the pane's slowest peer reaches
+  // the high watermark), then sample `ws.bufferedAmount` to detect that the OS send
   // buffer has drained — the only "in-flight bytes" signal protocol v1
   // exposes. When the buffered amount is below the low watermark, the
   // helper clears this peer's outstanding so paused panes resume. There is
   // no special "fast-client" branch — fast clients drain to 0 every send,
-  // which keeps the per-pane sum at 0, and pause never fires.
+  // which keeps their outstanding at 0, and pause never fires.
   // -------------------------------------------------------------------------
   //
   // Two channels, disjoint by message type:

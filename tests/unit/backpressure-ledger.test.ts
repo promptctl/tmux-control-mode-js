@@ -2,8 +2,8 @@
 // Isolation tests for BackpressureLedger. Like SubscriptionLedger, the GM4
 // split makes this a composable unit: it needs only a `{ execute }` runner plus
 // a resume-failure reporter, not a whole transport. These tests pin its ONE
-// invariant — a pane is paused iff the SUM of outstanding bytes across peers
-// crossed the high watermark and has not fallen back below the low — plus the
+// invariant — a pane is paused iff its slowest peer's outstanding bytes reached
+// the high watermark and have not fallen back to the low — plus the
 // no-silent-failure resume classification.
 
 import { describe, it, expect } from "vitest";
@@ -85,7 +85,7 @@ describe("BackpressureLedger (isolation)", () => {
     expect(() => new BackpressureLedger(h.deps)).toThrow(/BRIDGE_INVALID_ARG/);
   });
 
-  it("pauses a pane once when the summed outstanding crosses the high watermark", () => {
+  it("pauses a pane once when a peer's outstanding reaches the high watermark", () => {
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -101,7 +101,7 @@ describe("BackpressureLedger (isolation)", () => {
     expect(pauses(h.sent)).toHaveLength(1);
   });
 
-  it("sums outstanding across peers before deciding to pause", () => {
+  it("pauses for the slowest peer, not for the total across peers", () => {
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -113,11 +113,13 @@ describe("BackpressureLedger (isolation)", () => {
     ledger.register(b);
 
     ledger.account(a, 7, 600);
-    ledger.account(b, 7, 600); // neither alone crosses; the SUM (1200) does
+    ledger.account(b, 7, 600); // 1200 in total, but no one peer is behind
+    expect(pauses(h.sent)).toHaveLength(0);
+    ledger.account(b, 7, 600); // b alone has 1200 → pause
     expect(pauses(h.sent)).toHaveLength(1);
   });
 
-  it("resumes a paused pane when the summed outstanding drops below the low watermark", async () => {
+  it("resumes a paused pane when its peer's outstanding drops below the low watermark", async () => {
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -133,6 +135,26 @@ describe("BackpressureLedger (isolation)", () => {
     expect(continues(h.sent)).toHaveLength(1);
   });
 
+  it("resumes once every peer is at or below low, however many hold bytes unacked", async () => {
+    // An Electron proxy acks in batches, so each one keeps up to a batch
+    // unacked once its pane stops printing. Five such remainders add up past
+    // low; a total across peers would keep the pane paused with nothing left
+    // to fill a batch and ack it.
+    const h = createHarness({
+      outputHighWatermark: 1000,
+      outputLowWatermark: 400,
+    });
+    const ledger = new BackpressureLedger(h.deps);
+    const peers = [1, 2, 3, 4, 5].map((id) => ({ id }));
+    for (const p of peers) ledger.register(p);
+    for (const p of peers) ledger.account(p, 7, 1200);
+    expect(pauses(h.sent)).toHaveLength(1);
+
+    for (const p of peers) ledger.ack(p, 7, 801); // each keeps 399 unacked
+    await Promise.resolve();
+    expect(continues(h.sent)).toHaveLength(1);
+  });
+
   it("ignores accounting for an unregistered peer (no resurrection)", () => {
     const h = createHarness();
     const ledger = new BackpressureLedger(h.deps);
@@ -144,11 +166,10 @@ describe("BackpressureLedger (isolation)", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  it("clearPeer zeroes one peer's bytes and resumes only when the shared sum drops below low", async () => {
+  it("clearPeer zeroes one peer's bytes and resumes only when the slowest remaining peer is at or below low", async () => {
     // clearPeer (used by the WS bridge on ws.bufferedAmount → 0) zeroes just the
     // caller's slice and keeps others' accounting — distinct from releasePeer,
-    // which drops the peer entirely. The pane resumes only once the SHARED sum
-    // (across surviving peers) falls to or below the low watermark.
+    // which drops the peer entirely.
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -158,20 +179,20 @@ describe("BackpressureLedger (isolation)", () => {
     const b = { id: 2 };
     ledger.register(a);
     ledger.register(b);
-    ledger.account(a, 7, 600);
-    ledger.account(b, 7, 600); // sum 1200 → pause
+    ledger.account(b, 7, 600);
+    ledger.account(a, 7, 1200); // a reaches high → pause
     expect(pauses(h.sent)).toHaveLength(1);
 
-    ledger.clearPeer(a); // a → 0, but b's 600 keeps the sum above low → stays paused
+    ledger.clearPeer(a); // a → 0, but b's 600 is above low → stays paused
     await Promise.resolve();
     expect(continues(h.sent)).toHaveLength(0);
 
-    ledger.clearPeer(b); // sum now 0 ≤ low → resume
+    ledger.clearPeer(b); // every peer at 0 ≤ low → resume
     await Promise.resolve();
     expect(continues(h.sent)).toHaveLength(1);
   });
 
-  it("releasePeer drops a peer's bytes from the sum and resumes drained panes", async () => {
+  it("releasePeer drops a peer's bytes and resumes panes no remaining peer holds back", async () => {
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -182,14 +203,14 @@ describe("BackpressureLedger (isolation)", () => {
     ledger.register(a);
     ledger.register(b);
     ledger.account(a, 7, 600);
-    ledger.account(b, 7, 600); // sum 1200 → pause
+    ledger.account(b, 7, 1200); // b reaches high → pause
     expect(pauses(h.sent)).toHaveLength(1);
 
-    ledger.releasePeer(b); // sum now 600 > low → stays paused
+    ledger.releasePeer(b); // a's 600 > low → stays paused
     await Promise.resolve();
     expect(continues(h.sent)).toHaveLength(0);
 
-    ledger.releasePeer(a); // sum now 0 < low → resume
+    ledger.releasePeer(a); // no peer left → resume
     await Promise.resolve();
     expect(continues(h.sent)).toHaveLength(1);
   });
@@ -309,7 +330,7 @@ describe("BackpressureLedger (isolation)", () => {
     expect(() => ledger.register(a)).toThrow(/already registered/);
   });
 
-  it("dispose releases every peer, resuming panes whose sum drains to zero", async () => {
+  it("dispose releases every peer, resuming the panes they held paused", async () => {
     const h = createHarness({
       outputHighWatermark: 1000,
       outputLowWatermark: 400,
@@ -323,7 +344,7 @@ describe("BackpressureLedger (isolation)", () => {
     ledger.account(b, 8, 1200); // pane 8 paused; pane 7 stays below high
     expect(pauses(h.sent)).toHaveLength(1);
 
-    ledger.dispose(); // releases both peers → pane 8's sum hits 0 → resume
+    ledger.dispose(); // releases both peers → pane 8 has no peer behind → resume
     await Promise.resolve();
     expect(continues(h.sent).filter((c) => c.includes("%8:"))).toHaveLength(1);
   });

@@ -9,8 +9,8 @@
 //     `unsubscribe(name)` when the last one drops it.
 //   - BackpressureLedger (../backpressure-ledger.ts): per-peer per-pane
 //     outstanding-byte accounting + the watermark loop that pauses / resumes
-//     panes via `client.setPaneAction(...)` based on the SUM of outstanding
-//     bytes across every peer subscribed to a pane.
+//     panes via `client.setPaneAction(...)` based on the outstanding bytes
+//     of each pane's slowest peer.
 // The façade owns only the peer roster (token allocation + lifecycle) and wires
 // each public method to the ledger that owns it. It holds no ledger state.
 //
@@ -151,7 +151,7 @@ export interface BridgeConnection<L extends boolean = boolean> {
   /**
    * The claim this peer's sizes (`setSize`, `setWindowSize`,
    * `clearWindowSize`) go through. The claim is on the client, so every
-   * page sharing it sees the others' sizes, and `removePeer` withdraws this
+   * peer sharing it sees the others' sizes, and `removePeer` withdraws this
    * peer's.
    */
   sizeOf(peer: Peer): ClientSizeSurface;
@@ -177,16 +177,16 @@ export interface BridgeConnection<L extends boolean = boolean> {
 
   /**
    * Account `bytes` of pane output sent to `peer` for `paneId`. The transport
-   * calls this around the actual send. When the per-pane sum across all
-   * peers crosses `outputHighWatermark`, the helper fires
+   * calls this around the actual send. When the pane's slowest peer
+   * reaches `outputHighWatermark`, the helper fires
    * `client.setPaneAction(paneId, Pause)` exactly once.
    */
   accountOutput(peer: Peer, paneId: number, bytes: number): void;
 
   /**
    * Apply an ack: peer reports it has consumed `bytes` for `paneId`. The
-   * helper subtracts from the peer's outstanding tally and, when the per-pane
-   * sum drops to or below `outputLowWatermark`, fires
+   * helper subtracts from the peer's outstanding tally and, when the pane's
+   * slowest peer drops to or below `outputLowWatermark`, fires
    * `client.setPaneAction(paneId, Continue)` exactly once.
    *
    * Negative or oversized acks are clamped to the peer's current outstanding
@@ -197,8 +197,7 @@ export interface BridgeConnection<L extends boolean = boolean> {
 
   /**
    * Zero this peer's outstanding bytes for every pane and resume any pane
-   * whose remaining sum (across surviving peers) drops below the low
-   * watermark. Used by transports whose underlying drain signal is
+   * whose slowest remaining peer is at or below the low watermark. Used by transports whose underlying drain signal is
    * connection-wide rather than per-pane — notably the WebSocket bridge,
    * which observes `ws.bufferedAmount` reaching zero as the only available
    * "everything I sent has been flushed" signal.

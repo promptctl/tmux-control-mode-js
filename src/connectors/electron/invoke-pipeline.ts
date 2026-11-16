@@ -62,9 +62,9 @@ function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
 }
 
 // Why an invoke was aborted, as its reply states it.
-const NOT_FROM_PAGE_SHOWN =
-  "not sent by the page its WebContents shows (the page has ended, or a " +
-  "subframe sent it)";
+const NO_REGISTERED_PROXY =
+  "it names no proxy registered by the page its WebContents shows (the " +
+  "page has ended, a subframe sent it, or the proxy never registered)";
 const PEER_TORN_DOWN =
   "the proxy's peer was released while it ran (the proxy unregistered, " +
   "its page ended, or the bridge was disposed)";
@@ -154,7 +154,7 @@ export interface InvokePipelineDeps {
   // `dispatchBridgeRequest`, which accepts the `TmuxConnection` interface — so
   // that, not the concrete `TmuxClient` class, is the honest dependency type.
   readonly client: TmuxConnection;
-  readonly registry: Pick<SenderRegistry, "getOrCreate">;
+  readonly registry: Pick<SenderRegistry, "registered">;
 }
 
 export class InvokePipeline {
@@ -207,14 +207,13 @@ export class InvokePipeline {
       );
       return { via: "invoke", result: rpcErrorEnvelope(err) };
     }
-    const caller = this.deps.registry.getOrCreate(event, to.proxy);
+    const caller = this.deps.registry.registered(event, to.proxy);
     // [LAW:no-ambient-temporal-coupling] The sending page had already ended
-    // when this queued invoke ran (its teardown fired first), or a subframe
-    // sent it. There is no live peer to bill and no point running a real
-    // command for a page that is gone — the reply is moot. Abort before
-    // creating any state, so no peer is minted for the next page to inherit.
+    // when this queued invoke ran (its teardown fired first), a subframe sent
+    // it, or the renderer named a proxy it never registered. There is no peer
+    // to bill and no one to run a real command for.
     if (caller === undefined) {
-      const result = abortedEnvelope(methodLabel(raw), NOT_FROM_PAGE_SHOWN);
+      const result = abortedEnvelope(methodLabel(raw), NO_REGISTERED_PROXY);
       return { via: "invoke", result };
     }
     const dispatch: PendingDispatch = { aborted: false };

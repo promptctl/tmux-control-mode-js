@@ -348,8 +348,8 @@ export interface MainBridgeHandle {
 
 export interface MainBridgeOptions {
   /**
-   * Per-pane outstanding-byte threshold (summed across all subscribed
-   * renderers) at which main pauses the pane. Default: 1 MiB.
+   * Per-pane outstanding-byte threshold at which main pauses the pane, met
+   * when any one proxy has that many bytes unacked. Default: 1 MiB.
    */
   readonly outputHighWatermark?: number;
   /**
@@ -447,8 +447,8 @@ import { BridgeError } from "../errors.js";
 // RPC).
 //
 // [LAW:single-enforcer] Single trust boundary for what a renderer names on
-// its own channels. Bad acks are dropped silently by main.ts — they can only
-// starve the renderer that sent them, never reach tmux.
+// its own channels. SenderRegistry drops a bad ack silently — it can only
+// starve the proxy it names, never reach tmux.
 // ---------------------------------------------------------------------------
 
 /** The proxy address `raw` names, or null when it names none. */

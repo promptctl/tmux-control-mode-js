@@ -164,6 +164,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
 
     await expect(
       invokeRaw(renderer.ipcRenderer, {
@@ -185,6 +186,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
 
     await expect(
       invokeRaw(renderer.ipcRenderer, "not-an-object"),
@@ -218,6 +220,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
 
     const expectInvalidArg = async (req: object): Promise<void> => {
       await expect(invokeRaw(renderer.ipcRenderer, req)).resolves.toMatchObject(
@@ -257,6 +260,7 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
 
     for (const evil of [
       "constructor",
@@ -357,7 +361,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(t.sent.filter((c) => c.includes("%7:pause"))).toHaveLength(1);
   });
 
-  it("counts outstanding bytes per renderer separately (sum across renderers drives pause)", async () => {
+  it("counts outstanding bytes per renderer separately (the slowest renderer drives pause)", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -374,19 +378,23 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     r2.ipcRenderer.send(IPC.register, RAW_PROXY);
     await hub.settled();
 
-    // Each chunk fans out to BOTH renderers, so per-pane total grows by 60
-    // (2 × 30) per chunk. 2 chunks = 120 > 100 → pause.
-    t.feed(`%output %9 ${"x".repeat(30)}\n`);
+    // Each chunk fans out to BOTH renderers, 30 bytes to each. Three chunks
+    // put 180 in flight but only 90 at either renderer → no pause.
+    for (let i = 0; i < 3; i++) t.feed(`%output %9 ${"x".repeat(30)}\n`);
     expect(t.sent.filter((c) => c.includes("%9:pause"))).toHaveLength(0);
+
+    // r1 keeps up; r2 does not. A fourth chunk puts r2 at 120 ≥ 100 → pause.
+    r1.ipcRenderer.send(IPC.ack, RAW_PROXY, { paneId: 9, bytes: 90 });
+    await hub.settled();
     t.feed(`%output %9 ${"x".repeat(30)}\n`);
     expect(t.sent.filter((c) => c.includes("%9:pause"))).toHaveLength(1);
 
-    // Drop r2 → its 60 bytes evaporate → outstanding = 60 > low=25 → no resume.
+    // Drop r2 → its 120 bytes evaporate → r1's 30 > low=25 → no resume.
     r2.destroy();
     expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(0);
 
     // Ack the rest from r1 → outstanding = 0 → resume.
-    r1.ipcRenderer.send(IPC.ack, RAW_PROXY, { paneId: 9, bytes: 60 });
+    r1.ipcRenderer.send(IPC.ack, RAW_PROXY, { paneId: 9, bytes: 30 });
     await hub.settled();
     expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(1);
   });
@@ -896,6 +904,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     // Compile-time: TmuxClientProxy must not expose detach.
@@ -2454,6 +2463,7 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     createMainBridge(client, hub.ipcMain);
 
     const renderer = hub.createRenderer();
+    renderer.ipcRenderer.send(IPC.register, RAW_PROXY);
     // Skip the proxy and call ipc.invoke directly with a bogus method name.
     // The envelope shape was already verified in C2; here we focus on the
     // class identity by reconstructing manually — same code path the proxy
@@ -2648,6 +2658,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
     const r = hub.createRenderer();
+    r.ipcRenderer.send(IPC.register, RAW_PROXY);
 
     void invokeRaw(r.ipcRenderer, {
       method: "execute",
