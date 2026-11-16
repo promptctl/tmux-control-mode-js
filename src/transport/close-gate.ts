@@ -38,9 +38,8 @@ export interface CloseGate {
 }
 
 // [LAW:single-enforcer] The one formatting of "not sent, because the
-// connection ended", for every transport's `send()` and for a `TmuxClient`
-// that refuses before asking its transport.
-export const closedSendReason = (reason: string | undefined): string =>
+// connection ended", for every transport's `send()`.
+const closedSendReason = (reason: string | undefined): string =>
   reason === undefined ? "transport closed" : `transport closed: ${reason}`;
 
 export function createCloseGate(): CloseGate {

@@ -66,20 +66,18 @@ export class TmuxCommandError extends Error {
 
 /**
  * Thrown via Promise rejection when a command could not be handed to the
- * transport at all — the transport refused the send (dead process, closed
- * socket, failed pipe). Distinct from {@link TmuxCommandError}: the command
- * never reached tmux, so there is no `CommandResponse` to carry.
+ * transport at all and the transport is not ending — its refusal had
+ * `SendResult.closing` false (a socket still connecting). A command refused
+ * because the connection is ending or has ended gets
+ * {@link TransportClosedError} instead. Distinct from {@link TmuxCommandError}:
+ * the command never reached tmux, so there is no `CommandResponse` to carry.
  *
  * [LAW:types-are-the-program] "Never sent" is its own domain category with its
  * own shape (a transport reason, no command number), not a command failure
  * wearing fake response fields.
  */
 export class TransportSendError extends Error {
-  /**
-   * The transport's stated refusal reason, verbatim. For a command issued
-   * after the connection ended: `transport closed`, followed by `: ` and the
-   * `exit` event's `reason` when it had one.
-   */
+  /** The transport's stated refusal reason, verbatim. */
   readonly reason: string;
 
   constructor(reason: string) {
@@ -91,10 +89,11 @@ export class TransportSendError extends Error {
 
 /**
  * Thrown via Promise rejection when a command was accepted by the transport
- * (queued, or already inflight awaiting `%end`/`%error`), or refused by a
- * transport that was closing (`SendResult.closing`), and the transport
- * closed before tmux ever replied. Distinct from {@link TransportSendError}
- * (the transport refused the command outright — it never left this process)
+ * (queued, or already inflight awaiting `%end`/`%error`), refused by a
+ * transport that was closing (`SendResult.closing`), or issued after the
+ * connection closed — the connection ended before tmux ever replied.
+ * Distinct from {@link TransportSendError} (a transport that is not ending
+ * refused the command)
  * and {@link TmuxCommandError} (tmux replied, and the reply was `%error`):
  * here tmux never got the chance to decide the command's fate at all.
  *

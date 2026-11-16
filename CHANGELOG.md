@@ -32,6 +32,12 @@ All notable changes to this project are documented here. Format follows
 - A `SendResult` refusal states `closing`: `true` when the transport is
   ending (its `onClose` has fired or will, and it refuses every later send),
   `false` otherwise. A `TmuxTransport` of your own must set it.
+- `TmuxClient.execute()` after the connection closed rejects with
+  `TransportClosedError` and the `exit` reason, as a command pending at the
+  close does; it was `TransportSendError`. `TransportSendError` now means a
+  transport that is not ending refused the send.
+- `TopologyEpochTracker.isLatestBootstrap` is also false after
+  `supersedeAll()`.
 
 ### Added
 
@@ -45,6 +51,9 @@ All notable changes to this project are documented here. Format follows
   outside 1..10000 is refused before it is sent.
 - `TmuxClientOptions.ignoreSize` and `watchServerOptions`: a client spawned
   with `ignore-size` keeps it whatever sizes it sets.
+- `TopologyEpochTracker.supersedeAll()`: makes every query in flight stale
+  without starting a bootstrap, for a connection that was replaced, lost or
+  closed.
 
 ### Fixed
 

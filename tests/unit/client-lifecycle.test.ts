@@ -99,7 +99,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
     t.triggerClose();
 
     await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
-      TransportSendError,
+      TransportClosedError,
     );
   });
 });
@@ -293,13 +293,10 @@ describe("TmuxClient — why the connection ended reaches 'exit' and every rejec
     expect(states.some((s) => s.status === "ready")).toBe(ready);
 
     const late = client.execute("list-sessions");
-    await expect(late).rejects.toBeInstanceOf(TransportSendError);
-    await expect(late).rejects.toMatchObject({
-      reason:
-        reason === undefined
-          ? "transport closed"
-          : `transport closed: ${reason}`,
-    });
+    // Issued after the close, it gets the answer a command pending at the
+    // close got.
+    await expect(late).rejects.toBeInstanceOf(TransportClosedError);
+    await expect(late).rejects.toMatchObject({ reason });
   });
 
   it("a command issued before the startup reply gets its own reply, not the startup one", async () => {
@@ -604,7 +601,7 @@ describe("TmuxClient — a line the parser cannot read", () => {
     expect(order).toEqual(["protocol-error", "exit", "connection-state"]);
     expect(send).not.toHaveBeenCalled();
     for (const refused of later) {
-      await expect(refused).rejects.toBeInstanceOf(TransportSendError);
+      await expect(refused).rejects.toBeInstanceOf(TransportClosedError);
     }
     expect(exits).toHaveBeenCalledWith({
       type: "exit",
@@ -685,7 +682,7 @@ describe("TmuxClient — consumer code runs between messages", () => {
     });
     expect(topologyErrors).not.toHaveBeenCalled();
     await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
-      TransportSendError,
+      TransportClosedError,
     );
   });
 

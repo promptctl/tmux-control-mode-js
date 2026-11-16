@@ -41,7 +41,6 @@ import {
 } from "./client-size.js";
 import { CONTROL_FLAGS, isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
-import { closedSendReason } from "./transport/close-gate.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
@@ -322,9 +321,9 @@ export class TmuxClient
       // closed," so this consults it rather than trusting a third-party
       // transport to get its own closed bookkeeping right.
       if (this.currentConnectionState.status === "closed") {
-        reject(
-          new TransportSendError(closedSendReason(this.announcedExit?.reason)),
-        );
+        // The same answer a command held at the close got: the connection
+        // ended before tmux could take it.
+        reject(new TransportClosedError(this.announcedExit?.reason));
         return;
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
