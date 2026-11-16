@@ -10,6 +10,7 @@ import {
   refreshClientSubscribe,
   refreshClientUnsubscribe,
   sendKeys,
+  sendKeyBytes,
   splitWindow,
   refreshClientSetFlags,
   refreshClientClearFlags,
@@ -208,6 +209,19 @@ describe("sendKeys", () => {
     if (result === null)
       throw new Error("non-empty keys must produce a command");
     expect(result.endsWith("\n")).toBe(false);
+  });
+});
+
+describe("sendKeyBytes", () => {
+  it("each byte becomes one hex key, including bytes ≥ 0x80 that are not UTF-8", () => {
+    // A DEFAULT-encoded mouse press at column 129: ESC [ M, button, 0xa1, row.
+    expect(
+      sendKeyBytes("%3", new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21])),
+    ).toBe("send-keys -H -t '%3' 1b 5b 4d 20 a1 21");
+  });
+
+  it("no bytes returns null", () => {
+    expect(sendKeyBytes("%3", new Uint8Array())).toBeNull();
   });
 });
 

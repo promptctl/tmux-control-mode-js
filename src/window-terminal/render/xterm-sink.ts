@@ -45,6 +45,9 @@ import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
 import type { Appearance } from "./appearance.js";
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
+import { latin1ToBytes } from "../../protocol/index.js";
+
+const utf8Encoder = new TextEncoder();
 
 /**
  * Default monospace stack. The list is platform-spanning so XtermSink is
@@ -306,16 +309,25 @@ export class XtermSink implements TerminalSink {
   // ---------------------------------------------------------------------------
 
   /**
-   * Subscribe to keystrokes the user types into the xterm DOM. The returned
-   * function detaches the listener when called. Called by consumers that
-   * want to forward keys to tmux via `PaneStream.sendKeys()`.
+   * Subscribe to the bytes the user's input produces: keystrokes, pastes, and
+   * the mouse reports xterm generates once the pane's program asks for mouse
+   * tracking. The returned function detaches the listener. Called by consumers
+   * that forward input to tmux via `PaneStream.sendKeyBytes()`.
+   *
+   * xterm emits input on two events: `onData` carries text (UTF-16, sent as
+   * its UTF-8 bytes) and `onBinary` carries raw bytes, one per code unit — the
+   * DEFAULT mouse encoding (`CSI M Cb Cx Cy`) always arrives there, with
+   * coordinate bytes ≥ 0x80 that no text encoding round-trips.
    */
-  onData(handler: (data: string) => void): () => void {
+  onInput(handler: (bytes: Uint8Array) => void): () => void {
     if (this.isDisposed) {
       return () => undefined;
     }
-    const d: IDisposable = this.terminal.onData(handler);
-    return () => d.dispose();
+    const subs: IDisposable[] = [
+      this.terminal.onData((text) => handler(utf8Encoder.encode(text))),
+      this.terminal.onBinary((data) => handler(latin1ToBytes(data))),
+    ];
+    return () => subs.forEach((d) => d.dispose());
   }
 
   /** In-place font-size set. NEVER reconstructs the Terminal. */

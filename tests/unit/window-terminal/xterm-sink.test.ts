@@ -45,7 +45,28 @@ interface MockTerminal {
   clear: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   focus: ReturnType<typeof vi.fn>;
-  onData: ReturnType<typeof vi.fn>;
+  onData: MockEvent;
+  onBinary: MockEvent;
+}
+
+// xterm's `IEvent<string>`: subscribe returns a disposable; `fire` stands in
+// for xterm emitting the event, `listeners` counts live subscriptions.
+interface MockEvent {
+  (h: (data: string) => void): { dispose: () => void };
+  fire(data: string): void;
+  listeners(): number;
+}
+
+function mockEvent(): MockEvent {
+  const hs = new Set<(data: string) => void>();
+  const subscribe = (h: (data: string) => void) => {
+    hs.add(h);
+    return { dispose: () => hs.delete(h) };
+  };
+  return Object.assign(subscribe, {
+    fire: (data: string) => hs.forEach((h) => h(data)),
+    listeners: () => hs.size,
+  });
 }
 
 // Single live mock instance accessible to tests; reset in beforeEach.
@@ -60,9 +81,8 @@ vi.mock("@xterm/xterm", () => {
     clear = vi.fn<() => void>();
     dispose = vi.fn<() => void>();
     focus = vi.fn<() => void>();
-    onData = vi.fn<(h: (data: string) => void) => { dispose: () => void }>(
-      () => ({ dispose: vi.fn() }),
-    );
+    onData = mockEvent();
+    onBinary = mockEvent();
     constructor(opts: { fontSize?: number; theme?: object } = {}) {
       this.options = {
         fontSize: opts.fontSize ?? 14,
@@ -575,7 +595,7 @@ describe("XtermSink: isVisible (IntersectionObserver + document visibility)", ()
   });
 });
 
-describe("XtermSink: focus + onData", () => {
+describe("XtermSink: focus + onInput", () => {
   it("focus delegates to terminal.focus when alive", () => {
     const { sink, term } = newSink();
     sink.focus();
@@ -583,16 +603,36 @@ describe("XtermSink: focus + onData", () => {
     sink.dispose();
   });
 
-  it("onData returns an unsubscribe function that disposes the listener", () => {
+  it("typed text arrives as its UTF-8 bytes", () => {
     const { sink, term } = newSink();
-    const handler = vi.fn();
-    const unsub = sink.onData(handler);
-    expect(term.onData).toHaveBeenCalledWith(handler);
-    expect(typeof unsub).toBe("function");
-    // The returned function should not throw; we cannot easily assert that
-    // it disposes the listener without leaking mock internals — the spec is
-    // that it's a function and can be called safely.
-    expect(() => unsub()).not.toThrow();
+    const got: Uint8Array[] = [];
+    sink.onInput((b) => got.push(b));
+    term.onData.fire("a\x1b[<0;10;5Mé");
+    expect(got).toEqual([enc("a\x1b[<0;10;5Mé")]);
+    sink.dispose();
+  });
+
+  it("a DEFAULT-encoded mouse report (onBinary) arrives byte-exact, coordinates ≥ 0x80 included", () => {
+    // xterm sends `CSI M Cb Cx Cy` on onBinary, one byte per code unit. Column
+    // 129 encodes as 0xa1 (32 + 129); as text it would become UTF-8 c2 a1.
+    const { sink, term } = newSink();
+    const got: Uint8Array[] = [];
+    sink.onInput((b) => got.push(b));
+    term.onBinary.fire("\x1b[M \xa1!");
+    expect(got).toEqual([new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21])]);
+    sink.dispose();
+  });
+
+  it("unsubscribing detaches from both input events", () => {
+    const { sink, term } = newSink();
+    const unsub = sink.onInput(() => undefined);
+    expect([term.onData.listeners(), term.onBinary.listeners()]).toEqual([
+      1, 1,
+    ]);
+    unsub();
+    expect([term.onData.listeners(), term.onBinary.listeners()]).toEqual([
+      0, 0,
+    ]);
     sink.dispose();
   });
 });

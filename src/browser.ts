@@ -59,6 +59,7 @@ export type {
   WindowRecord,
 } from "./protocol/types.js";
 export { parseWindowLayout } from "./protocol/layout.js";
+export { latin1ToBytes } from "./protocol/byte-codec.js";
 export type { ConnectionState } from "./connection-state.js";
 export type {
   TmuxConnection,
@@ -112,6 +113,7 @@ export {
   listPanes,
   listSessions,
   sendKeys,
+  sendKeyBytes,
   splitWindow,
   setPaneAction,
   subscribeRaw,

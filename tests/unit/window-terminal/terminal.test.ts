@@ -33,6 +33,7 @@ vi.mock("@xterm/xterm", () => {
     clear = vi.fn();
     scrollToBottom = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
+    onBinary = vi.fn(() => ({ dispose: vi.fn() }));
     constructor(opts: Record<string, unknown>) {
       this.options = { ...opts };
       terminals.push(this as unknown as MockTerminal);

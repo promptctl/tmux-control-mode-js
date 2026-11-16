@@ -45,7 +45,8 @@ import {
   type Page,
 } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -227,14 +228,73 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
 
     // Phase 2 + 3: type a sentinel into the active pane and watch it land
     // back in the rendered xterm grid. xterm forwards the keystrokes through
-    // its hidden helper textarea; the window terminal's onData wiring calls
-    // stream.sendKeys → ElectronBridge.sendKeys → preload IPC → main → tmux
+    // its hidden helper textarea; the window terminal's onInput wiring calls
+    // stream.sendKeyBytes → ElectronBridge.execute → preload IPC → main → tmux
     // send-keys → shell, and the shell's printf output returns via %output →
     // IPC event → xterm.write. The unique sentinel rules out a stale echo.
     await expectKeystrokeRoundTrip(
       page,
       `E2E_${Date.now().toString(36).toUpperCase()}`,
     );
+  } finally {
+    await app.close();
+  }
+});
+
+// A click reaches the pane's program when that program asked for legacy mouse
+// reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
+// not `onData` — a path the window terminal must forward as raw bytes. The
+// program here copies its raw tty's input to a file, so the test reads the
+// exact bytes it received.
+test("a real click in legacy mouse mode reaches the pane's program", async () => {
+  const app = await electron.launch({
+    args: [APP_ROOT],
+    cwd: APP_ROOT,
+    env: APP_ENV,
+  });
+
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".xterm").first()).toBeVisible({
+      timeout: 20_000,
+    });
+    await expectKeystrokeRoundTrip(
+      page,
+      `E2E_${Date.now().toString(36).toUpperCase()}`,
+    );
+
+    // The pane's program records the raw bytes its pty receives to a file.
+    const capture = join(mkdtempSync(join(tmpdir(), "e2e-mouse-")), "input");
+    writeFileSync(capture, "");
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.pressSequentially(
+      `clear; printf '\\033[?1000h'; stty raw -echo; exec cat > '${capture}'\n`,
+      { delay: 10 },
+    );
+    await expect
+      .poll(() =>
+        execFileSync(
+          "tmux",
+          [
+            "-L",
+            SOCKET,
+            "display-message",
+            "-p",
+            "-t",
+            SESSION,
+            "#{pane_current_command}",
+          ],
+          { encoding: "utf8" },
+        ).trim(),
+      )
+      .toBe("cat");
+
+    const screen = page.locator(".xterm-screen").first();
+    await screen.click({ position: { x: 20, y: 20 } });
+    // A DEFAULT-encoded press (button 0, 0x20) and its release (0x23).
+    await expect
+      .poll(() => readFileSync(capture).toString("hex"), { timeout: 15_000 })
+      .toMatch(/^1b5b4d20....1b5b4d23/);
   } finally {
     await app.close();
   }

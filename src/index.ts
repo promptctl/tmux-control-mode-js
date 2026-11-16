@@ -127,6 +127,7 @@ export {
   listPanes,
   listSessions,
   sendKeys,
+  sendKeyBytes,
   splitWindow,
   setPaneAction,
   subscribeRaw,

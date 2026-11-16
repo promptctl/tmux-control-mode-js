@@ -12,7 +12,7 @@
 //
 // The playground is string-native by deliberate design. [LAW:one-source-of-truth]
 //   the send path is the library's `sendKeys`, which transmits `send-keys -H`
-//   over `utf8HexBytes(s)` — the UTF-8 encoding of the JS string. So the bytes
+//   over the UTF-8 encoding of the JS string. So the bytes
 //   this demo *displays and parses* are exactly `TextEncoder.encode(s)`, the
 //   same bytes the library puts on the wire. For the entire 7-bit ANSI
 //   repertoire (every escape sequence in the showcase) that encoding is the

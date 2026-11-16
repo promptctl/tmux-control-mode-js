@@ -76,6 +76,12 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `sendKeyBytes(client, target, bytes)` (`.`, `./browser`; the encoder in
+  `./protocol`) sends raw bytes to a pane through `send-keys -H`, for input no
+  text can carry, such as a legacy mouse report's coordinates ≥ 0x80. An
+  xterm.js host forwards `onData` as its UTF-8 bytes and `onBinary` through
+  `latin1ToBytes`, which `./browser` now exports too (`KEYMAP.md`).
+
 - `ConnectionState` gains `{ status: "closed", reason: "refused", error }`:
   the server refused the connection for good, and `error` is the bridge's
   fatal error (`BRIDGE_AUTH_DENIED`, `BRIDGE_REFUSED`), or a `BRIDGE_CLOSED`
@@ -100,6 +106,10 @@ All notable changes to this project are documented here. Format follows
   closed.
 
 ### Fixed
+
+- In the window terminal, a click in a pane whose program asked for legacy
+  (X10/normal) mouse reports reaches the program byte-exact. xterm.js emits
+  those reports on `onBinary`, which the terminal did not forward.
 
 - A `WebSocketTmuxClient` no longer retries a connection the bridge refused
   for good, which spawned a tmux client per attempt on the server and showed a

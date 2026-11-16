@@ -61,6 +61,7 @@ export { bytesToLatin1, latin1ToBytes } from "./byte-codec.js";
 export {
   tmuxEscape,
   sendKeys,
+  sendKeyBytes,
   refreshClientSize,
   refreshClientWindowSize,
   refreshClientClearWindowSize,

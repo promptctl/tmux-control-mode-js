@@ -13,6 +13,8 @@ import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
+  hexBytes,
+  rawInputCapture,
   readUntil,
   tmux,
   uniqueName,
@@ -44,18 +46,23 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 interface Recorder extends PaneSurfaces {
   readonly sinks: Map<PaneId, BufferingSink>;
-  readonly keys: Map<PaneId, (data: string) => void>;
+  /** Input bytes into a pane's surface; throws when the engine never created it. */
+  send(pane: PaneId, bytes: Uint8Array): void;
   readonly disposed: PaneId[];
 }
 
 function recorder(): Recorder {
   const sinks = new Map<PaneId, BufferingSink>();
-  const keys = new Map<PaneId, (data: string) => void>();
+  const keys = new Map<PaneId, (bytes: Uint8Array) => void>();
   const disposed: PaneId[] = [];
   return {
     sinks,
-    keys,
     disposed,
+    send(pane, bytes) {
+      const send = keys.get(pane);
+      if (send === undefined) throw new Error(`no surface for pane ${pane}`);
+      send(bytes);
+    },
     create(pane, send) {
       const sink = new BufferingSink();
       sinks.set(pane, sink);
@@ -308,7 +315,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     engine = engineOver(c, window, s);
     await untilLive(engine, (v) => v.panes.length === 2);
 
-    s.keys.get(first as PaneId)?.("WT_KEYS_MARK");
+    s.send(first as PaneId, new TextEncoder().encode("WT_KEYS_MARK"));
     const captured = (pane: string) =>
       q(socket, ["capture-pane", "-p", "-t", pane]);
     await readUntil(
@@ -320,6 +327,46 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     expect(
       q(socket, ["display-message", "-p", "-t", window, "#{pane_id}"]),
     ).toBe(active);
+  });
+
+  it("input bytes typed into a pane reach its program byte-exact, a legacy mouse report included", async () => {
+    const { c, window } = await start();
+    const capture = rawInputCapture();
+    q(socket, ["split-window", "-h", "-t", window, capture.command]);
+    const pane = q(socket, [
+      "display-message",
+      "-p",
+      "-t",
+      window,
+      "#{pane_id}",
+    ]);
+    const s = recorder();
+    engine = engineOver(c, window, s);
+    await untilLive(engine, (v) => v.panes.length === 2);
+    await readUntil(
+      () =>
+        q(socket, [
+          "display-message",
+          "-p",
+          "-t",
+          pane,
+          "#{pane_current_command}",
+        ]),
+      (cmd) => cmd === "cat",
+      "the pane never reached cat",
+    );
+
+    // A DEFAULT-encoded press at column 129 (0xa1), then "é" as UTF-8.
+    const mouse = new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21]);
+    const text = new TextEncoder().encode("é");
+    s.send(pane as PaneId, mouse);
+    s.send(pane as PaneId, text);
+    const expected = hexBytes([...mouse, ...text]);
+    await readUntil(
+      capture.hex,
+      (got) => got === expected,
+      `the pane never received exactly ${expected}`,
+    );
   });
 
   it("kill-window is gone(window-closed)", async () => {

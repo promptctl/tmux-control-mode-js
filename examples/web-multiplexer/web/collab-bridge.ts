@@ -5,7 +5,7 @@
 // [LAW:types-are-the-program] This is a DIFFERENT type from the mirror viewer,
 //   not the same one with a flag. It has everything the mirror has — `onBytes`
 //   (inbound pane bytes), observable lifecycle, connect/disconnect — PLUS one
-//   capability the mirror is structurally without: `sendKeys`. A consumer
+//   capability the mirror is structurally without: `sendKeyBytes`. A consumer
 //   holding a `MirrorViewerBridge` cannot write to the pane because the method
 //   does not exist; a consumer holding a `CollabBridge` can, because it does.
 //   The read-only guarantee of .14 is never loosened; collaboration is a new,
@@ -14,11 +14,10 @@
 //   discriminator: ArrayBuffer → pane bytes (seed then live, written to the
 //   sink unchanged); string → a JSON `MirrorControlFrame` (lifecycle). The
 //   server→browser shape is the mirror's verbatim; only the browser→server
-//   `keys` frame is new (shared/collab-frame.ts).
+//   input frames are new (shared/collab-frame.ts).
 
 import { makeAutoObservable, runInAction } from "mobx";
 import { collabSocketUrl } from "../shared/collab-frame.ts";
-import type { CollabKeysFrame } from "../shared/collab-frame.ts";
 import type { MirrorControlFrame } from "../shared/mirror-frame.ts";
 
 /**
@@ -45,7 +44,7 @@ export class CollabBridge {
   private readonly byteHandlers = new Set<(data: Uint8Array) => void>();
   // Keystrokes produced before the socket is OPEN are buffered, not dropped, and
   // flushed in order on open. [LAW:no-silent-failure] early input is never lost.
-  private readonly pendingKeys: string[] = [];
+  private readonly pendingKeys: Uint8Array[] = [];
 
   constructor(
     private readonly wsBase: string,
@@ -120,31 +119,26 @@ export class CollabBridge {
   }
 
   /**
-   * Send raw terminal input (xterm's `onData` string) to the pane. tmux applies
+   * Send raw terminal input bytes (`XtermSink.onInput`) to the pane. tmux applies
    * it and the result fans back to every collaborator through the byte stream —
    * there is no local echo, so the screen is always the server's truth.
    * [LAW:one-source-of-truth] the pane, not the browser, decides what was typed.
    */
-  sendKeys(keys: string): void {
+  sendKeyBytes(bytes: Uint8Array): void {
     if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
-      this.writeKeys(this.ws, keys);
+      this.ws.send(bytes);
     } else {
-      this.pendingKeys.push(keys);
+      this.pendingKeys.push(bytes);
     }
   }
 
   private flushKeys(): void {
     if (this.ws === null || this.ws.readyState !== WebSocket.OPEN) return;
     while (this.pendingKeys.length > 0) {
-      const keys = this.pendingKeys.shift();
-      if (keys === undefined) break;
-      this.writeKeys(this.ws, keys);
+      const bytes = this.pendingKeys.shift();
+      if (bytes === undefined) break;
+      this.ws.send(bytes);
     }
-  }
-
-  private writeKeys(ws: WebSocket, keys: string): void {
-    const frame: CollabKeysFrame = { kind: "keys", keys };
-    ws.send(JSON.stringify(frame));
   }
 
   private handleControl(raw: string): void {

@@ -288,14 +288,18 @@ With this setup:
 
 The trade-off: you're now responsible for the "is this a form input?" check, and for focusing the right xterm when panes change so typed text still lands somewhere sensible. The demo does both — see `examples/web-multiplexer/web/App.tsx` (the document listener + input filter) and `examples/web-multiplexer/web/components/PaneView.tsx` (the `useEffect` that calls `terminal.focus()` whenever `pane.active` flips true).
 
-Either way, xterm's `onData` fires after the keymap handler decides:
+Either way, xterm's input events fire after the keymap handler decides. xterm emits input on two events, and the pane needs both: `onData` carries text, sent as its UTF-8 bytes, and `onBinary` carries one byte per character, which is how a legacy mouse report (`CSI M Cb Cx Cy`, coordinates ≥ 0x80) arrives:
 
 ```ts
-term.onData((data) => {
-  // Reached only for keys the keymap did NOT consume.
-  client.sendKeys(`%${paneId}`, data);
-});
+import { latin1ToBytes, sendKeyBytes } from "@promptctl/tmux-control-mode-js";
+
+// Reached only for input the keymap did NOT consume.
+const send = (bytes: Uint8Array) => sendKeyBytes(client, `%${paneId}`, bytes);
+term.onData((text) => send(new TextEncoder().encode(text)));
+term.onBinary((data) => send(latin1ToBytes(data)));
 ```
+
+The window terminal's `XtermSink.onInput` does exactly this.
 
 ### Plain DOM / React (no xterm)
 

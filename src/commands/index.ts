@@ -41,6 +41,7 @@ import {
   listPanesCommand,
   listSessionsCommand,
   sendKeys as encodeSendKeys,
+  sendKeyBytes as encodeSendKeyBytes,
   splitWindow as encodeSplitWindow,
   capturePane as encodeCapturePane,
   newWindow as encodeNewWindow,
@@ -287,14 +288,30 @@ export async function paneCwd(
 // immediately with a synthetic success so callers never see a branch.
 // [LAW:one-source-of-truth] The synthetic response is built by the canonical
 // emptyKeysResponse(); this function does not mint its own.
+function executeKeys(
+  client: TmuxConnection,
+  cmd: string | null,
+): Promise<CommandResponse> {
+  return cmd === null
+    ? Promise.resolve(emptyKeysResponse())
+    : client.execute(cmd);
+}
+
 export function sendKeys(
   client: TmuxConnection,
   target: string,
   keys: string,
 ): Promise<CommandResponse> {
-  const cmd = encodeSendKeys(target, keys);
-  if (cmd === null) return Promise.resolve(emptyKeysResponse());
-  return client.execute(cmd);
+  return executeKeys(client, encodeSendKeys(target, keys));
+}
+
+/** Send raw bytes to the pane's pty, e.g. a mouse report's binary coordinates. */
+export function sendKeyBytes(
+  client: TmuxConnection,
+  target: string,
+  bytes: Uint8Array,
+): Promise<CommandResponse> {
+  return executeKeys(client, encodeSendKeyBytes(target, bytes));
 }
 
 export function splitWindow(
