@@ -1,6 +1,6 @@
 {
   "name": "@promptctl/tmux-control-mode-js",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Node.js client for tmux control mode protocol",
   "repository": {
     "type": "git",
