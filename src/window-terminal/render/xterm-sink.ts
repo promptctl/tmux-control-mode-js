@@ -145,8 +145,8 @@ export class XtermSink implements TerminalSink {
     // because they arrive together and in order here.
     if (this.gate.buffering) {
       // First resize not yet fired: hold the snapshot; the trailing chunks land
-      // in the same gate buffer via write() below, after it. Latest-wins — a
-      // later reseed's snapshot overwrites this one.
+      // in the same gate buffer via write() below, after it. A later reseed
+      // supersedes this snapshot and every byte buffered behind it.
       this.gate.bufferSeed({ captured, cursor });
     } else {
       // Gate open — apply the snapshot inline. This is authoritative by

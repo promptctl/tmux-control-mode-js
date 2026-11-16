@@ -76,6 +76,21 @@ describe("FirstResizeGate: release ordering", () => {
     });
   });
 
+  it("a reseed supersedes the live bytes buffered behind the previous seed", () => {
+    // A seed is the pane's whole picture as of its handoff (TerminalSink.seed),
+    // so bytes buffered before it are already inside it; replaying them after
+    // the new snapshot would duplicate output.
+    const gate = new FirstResizeGate();
+    gate.bufferSeed({ captured: enc("old"), cursor: null });
+    gate.bufferWrite(enc("before-reseed"));
+    gate.bufferSeed({ captured: enc("new"), cursor: null });
+    gate.bufferWrite(enc("after-reseed"));
+    expect(gate.release()).toEqual({
+      seed: { captured: enc("new"), cursor: null },
+      writes: [enc("after-reseed")],
+    });
+  });
+
   it("release() is idempotent — a second call after open returns an empty batch", () => {
     const gate = new FirstResizeGate();
     gate.bufferSeed({ captured: enc("s"), cursor: null });

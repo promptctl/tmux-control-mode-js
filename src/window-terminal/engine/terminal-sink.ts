@@ -66,6 +66,10 @@ export interface TerminalSink {
    * same raw byte stream `write()` carries, so the renderer is the single
    * decoding authority; the library never interprets the captured grid bytes.
    *
+   * `captured` is the pane's whole picture as of the capture: every byte the
+   * sink was given before this call is already inside it, so a sink drops
+   * whatever it still holds from earlier rather than replaying it after.
+   *
    * `trailing` makes the seed-before-live ordering a property of THIS value:
    * the snapshot and the bytes that immediately follow it cross the seam as one
    * ordered unit, so no consumer re-establishes that order from the arrival

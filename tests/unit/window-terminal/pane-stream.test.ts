@@ -186,6 +186,37 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
+  it("output a live sink received invalidates the cached seed", async () => {
+    // The cache is the pane's picture as of its capture; a live byte moves
+    // the pane past it, so a later sink must not be handed the older screen.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    client.injectOutput(7, new Uint8Array([0x41]));
+    stream.detach();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding"); // fresh capture, not the stale cache
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a seed whose capture was followed by trailing bytes is not cached", async () => {
+    // `trailing` arrived after capture-pane ran, so the snapshot alone is
+    // already behind the pane; caching it would replay a stale screen.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    client.injectOutput(7, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    stream.detach();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
   it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
     const { client, stream } = makeStream();
     // Make execute() reject so the seed Promise.all throws.

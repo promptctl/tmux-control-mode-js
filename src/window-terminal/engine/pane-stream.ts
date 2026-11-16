@@ -632,18 +632,19 @@ export class PaneStream implements ReseedTarget {
     this.currentLastByteAt = Date.now();
     this.currentBytesSinceAttach += data.byteLength;
 
+    // [LAW:one-source-of-truth] The cached seed is the pane's picture as of
+    // its capture; any byte moves the pane past it, in every state, so the
+    // next attach() captures afresh instead of replaying an older screen. That
+    // is what lets a seed mean "the whole picture now" at the sink seam. A
+    // single property write, allocation-free, so the [HOT-PATH] rule holds.
+    this.lastSeed = null;
+
     // State-driven dispatch:
     //   live:     forward to sink (sink.write must be allocation-free per O3).
     //   seeding:  push into the seed buffer (Array.push doesn't allocate
     //             unless the backing store grows; bounded by seed time).
-    //   idle:     only the activity counter is updated above (no cached seed
-    //             yet, so nothing to invalidate).
-    //   detached: counter, plus null out lastSeed so the next attach() takes
-    //             the slow path (capture-pane). Without this, a re-attach
-    //             would paint a stale screen and silently miss the bytes
-    //             that arrived during detach. Cheap (single property write
-    //             to null) and allocation-free, so the [HOT-PATH] rule
-    //             still holds.
+    //   idle:     only the activity counter is updated above.
+    //   detached: mark any in-flight capture stale (below).
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
@@ -652,7 +653,6 @@ export class PaneStream implements ReseedTarget {
     } else if (this.currentState === "seeding") {
       this.buffer.push(data);
     } else if (this.currentState === "detached") {
-      this.lastSeed = null;
       // If a capture-pane is in flight, its snapshot is now older than the
       // bytes that just arrived — the result must not become the cache.
       // Allocation-free (in-place `stale` write, or a no-op when idle), so the
@@ -836,10 +836,12 @@ export class PaneStream implements ReseedTarget {
     // Cache for the next attach() — a re-attach reuses this without a fresh
     // capture-pane round-trip. Only cached on success: a failed seed left
     // in the cache would let subsequent re-attaches paint a blank screen
-    // forever, and the next attach is the natural recovery point.
-    // Invalidated by the reconnect handler and by detached-mode bytes.
+    // forever, and the next attach is the natural recovery point. Bytes
+    // buffered behind the capture already moved the pane past the snapshot,
+    // so only a capture nothing followed is the current picture. Invalidated
+    // by the reconnect handler and by every later byte.
     if (captureSucceeded) {
-      this.lastSeed = { captured, cursor };
+      this.lastSeed = this.buffer.length === 0 ? { captured, cursor } : null;
       // The seed seam just succeeded (past the stale-drop guard above), so any
       // outstanding seed failure is moot — clear it so lastError stops
       // reporting a recovered transient failure.
