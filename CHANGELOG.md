@@ -74,13 +74,12 @@ All notable changes to this project are documented here. Format follows
 - `./window-terminal`: a pane's scrollback holds its history once, however
   often it is captured again. Each resize, `%continue` or reconnect wrote
   the history in again under what was already there, so a pane resized
-  three times scrolled back through it three times. A seed now resets SGR
-  and erases the screen before it draws (`ESC[H ESC[0m ESC[2J` after its
-  `ESC[?1049h`/`ESC[?1049l`), and a main-screen seed erases the scrollback
-  too (`ESC[3J`), so a custom `TerminalSink` gets the same reset in the
-  bytes. Because a seed now replaces the scrollback with the captured
-  history, `XtermSink`'s default `scrollback` is 2000, the capture depth
-  `PaneStream` defaults to, rather than 10000.
+  three times scrolled back through it three times. Every seed now homes,
+  resets SGR and erases the screen before it draws (`ESC[H ESC[0m ESC[2J`),
+  and a main-screen seed that carries history erases the scrollback first
+  (`ESC[?1049l ESC[3J`), so a custom `TerminalSink` gets the same reset in
+  the bytes. A sink's scrollback therefore holds at most `historyLines`
+  across a recapture; a `PaneStream` with `historyLines: 0` leaves it alone.
 
 - `./window-terminal`: a pane seeded while its program prints draws each
   line once. Every byte that reached the client during the capture was

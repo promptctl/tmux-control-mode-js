@@ -369,7 +369,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    expect(sink.seedTexts[0]).toBe("row-0\r\nrow-1");
+    expect(sink.seedTexts[0]).toBe("\x1b[H\x1b[0m\x1b[2Jrow-0\r\nrow-1");
     expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
   });
 
@@ -405,7 +405,7 @@ describe("PaneStream — state machine", () => {
     expect(rows[7]?.startsWith("\x1b")).toBe(true);
   });
 
-  it("seed preamble emits ?1049l + CUP home for main-screen pane (alternate_on=0)", async () => {
+  it("seed preamble emits ?1049l, a scrollback erase and CUP home for main-screen pane (alternate_on=0)", async () => {
     // Regression: the original preamble emitted nothing for alternate_on=0,
     // so a reseed on a terminal still in alt screen drew content into the
     // wrong buffer. The fix emits ?1049l (exit alt screen) + CUP home before
@@ -421,7 +421,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     const text = sink.seedTexts[0] ?? "";
-    expect(text.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+    expect(text.startsWith("\x1b[?1049l\x1b[3J\x1b[H")).toBe(true);
   });
 
   it("seed preamble emits ?1049h + CUP home for alt-screen pane (alternate_on=1)", async () => {
@@ -473,7 +473,9 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     // Reseed must exit alt screen and home cursor before drawing main content.
-    expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+    expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l\x1b[3J\x1b[H")).toBe(
+      true,
+    );
   });
 
   it("dispose() → 'disposed' and is idempotent", () => {

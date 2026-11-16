@@ -11,7 +11,7 @@
 //   whose arm says who owns the window's size. `fit` exists only where tmux
 //   owns it, the floors only where the box does, so no field is ever dead.
 
-import { DEFAULT_HISTORY } from "./engine/seed-builder.js";
+import { DEFAULT_HISTORY } from "./engine/pane-stream.js";
 
 /** One font size in CSS px, or the range the solver picks from. */
 export type FontRange = number | { readonly min: number; readonly max: number };

@@ -16,6 +16,8 @@ import { Terminal } from "@xterm/headless";
 import { buildSeed } from "../../../src/window-terminal/engine/seed-builder.js";
 
 const ESC = "\x1b";
+// Every seed opens with cursor home, SGR reset and an erase of the screen.
+const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J`;
 // Seed bytes are raw (same kind as live write()); decode Latin-1 losslessly to
 // inspect them as text — mirrors how a TerminalSink treats the payload.
 const text = (bytes: Uint8Array): string =>
@@ -24,14 +26,16 @@ const text = (bytes: Uint8Array): string =>
 describe("buildSeed: byte fidelity", () => {
   it("round-trips raw 8-bit bytes without UTF-8 substitution", () => {
     // An empty state line yields no cursor, no modes, no padding — so the
-    // captured bytes are exactly the screen content.
+    // captured bytes are the clear, then exactly the screen content.
     const { captured } = buildSeed(["\x80\xff\x00"], "", 2000);
-    expect(Array.from(captured)).toEqual([0x80, 0xff, 0x00]);
+    expect(Array.from(captured.subarray(CLEAR.length))).toEqual([
+      0x80, 0xff, 0x00,
+    ]);
   });
 
   it("joins multiple capture rows with CRLF", () => {
     const { captured } = buildSeed(["a", "b", "c"], "", 0);
-    expect(text(captured)).toBe("a\r\nb\r\nc");
+    expect(text(captured)).toBe(CLEAR + "a\r\nb\r\nc");
   });
 });
 
@@ -39,7 +43,7 @@ describe("buildSeed: trailing-artifact strip", () => {
   it("drops the single trailing empty row (capture-pane's trailing \\n)", () => {
     // No height reported (empty state) → no padding, so the strip is observable.
     const { captured } = buildSeed(["row-0", "row-1", ""], "", 0);
-    expect(text(captured)).toBe("row-0\r\nrow-1");
+    expect(text(captured)).toBe(CLEAR + "row-0\r\nrow-1");
     expect(text(captured).endsWith("\r\n")).toBe(false);
   });
 });
@@ -108,7 +112,7 @@ describe("buildSeed: terminal-mode escapes", () => {
     // cursor_flag=1, insert=0, app-cursor=1, keypad=1 → ?25h, 4l, ?1h, ESC=.
     const { captured } = buildSeed(["x"], "0;0;0;1;0;1;1;0;;", 0);
     expect(text(captured)).toBe(
-      `${ESC}[?1049l${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}[?7l` + // preamble: main screen, home, SGR reset, erased + wrap off
+      `${ESC}[?1049l${ESC}[H${ESC}[0m${ESC}[2J${ESC}[?7l` + // preamble: main screen, home, SGR reset, erase + wrap off
         "x" +
         `${ESC}[?25h${ESC}[4l${ESC}[?1h${ESC}=`, // epilogue
     );
@@ -118,8 +122,8 @@ describe("buildSeed: terminal-mode escapes", () => {
     // An older tmux emits "" for an unexpanded format; "" must NOT be read as
     // "0" and actively reset the mode. Empty wrap/cursor fields → no escape.
     const { captured } = buildSeed(["x"], ";;;;;;;;;", 0);
-    // No cursor, no modes → captured is exactly the content.
-    expect(text(captured)).toBe("x");
+    // No modes → only the clear every seed starts with, then the content.
+    expect(text(captured)).toBe(CLEAR + "x");
   });
 });
 
@@ -173,6 +177,17 @@ describe("buildSeed: a seed written over a terminal replaces its picture", () =>
     await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
     await write(term, seed.captured);
     expect(lines(term)).toEqual([...HISTORY, ...SCREEN]);
+    term.dispose();
+  });
+
+  it("a seed without history leaves the scrollback the terminal holds", async () => {
+    // It draws only the screen, which pushes nothing into the scrollback, so
+    // there is nothing to stack and nothing to replace.
+    const term = terminal();
+    await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
+    const screenOnly = buildSeed([...SCREEN, ""], STATE, 0);
+    await write(term, screenOnly.captured);
+    expect(lines(term)).toEqual(["old0", "old1", ...SCREEN]);
     term.dispose();
   });
 
