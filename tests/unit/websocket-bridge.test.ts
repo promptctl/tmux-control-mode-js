@@ -1732,6 +1732,32 @@ describe("WebSocket bridge — a text frame's payload", () => {
   });
 });
 
+describe("WebSocket bridge — a client frame's kind", () => {
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])(
+    "a kind named by Object.prototype (%s) is a protocol error, not a handler",
+    async (k) => {
+      const t = createFakeTransport();
+      const client = new TmuxClient(t.transport);
+      t.feed(STARTUP_GREETING);
+      const bridge = createWebSocketBridge({ createClient: () => client });
+      const ws = connectRunning(bridge);
+      await flush();
+
+      ws.feedClient({ k });
+      expect(fatalFrames(ws)).toEqual([
+        {
+          k: "error",
+          fatal: true,
+          error: {
+            code: "BRIDGE_PROTOCOL_ERROR",
+            message: `[BRIDGE_PROTOCOL_ERROR] unknown client frame kind: ${k}`,
+          },
+        },
+      ]);
+    },
+  );
+});
+
 describe("WebSocket bridge — upstream close", () => {
   it("a call refused while the upstream tmux is dying gets no result frame; the upstream's close ends the connection", async () => {
     const t = createFakeTransport();

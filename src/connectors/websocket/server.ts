@@ -49,6 +49,7 @@ import {
   type BridgeErrorCode,
   type CallFrame,
   type ClientFrame,
+  type FrameByKind,
   type ServerFrame,
 } from "./protocol.js";
 import { thrownMessage } from "../errors.js";
@@ -675,7 +676,7 @@ class Connection<Identity> {
   private dispatch(frame: ClientFrame): void {
     // Hello is the one frame allowed pre-hello; this single guard is the only
     // load-bearing protocol invariant left in this function. Everything else
-    // is absorbed by CLIENT_FRAME_HANDLERS below. "handshaking" counts as
+    // is absorbed by readClientFrame's per-kind handlers. "handshaking" counts as
     // pre-hello too — the handshake in flight hasn't produced a client yet.
     if (
       frame.k !== "hello" &&
@@ -1513,16 +1514,14 @@ class Connection<Identity> {
 // ---------------------------------------------------------------------------
 // Per-kind ClientFrame handlers.
 //
-// [LAW:dataflow-not-control-flow] One entry per ClientFrame variant; the
-// dispatcher (Connection.dispatch) does a single indexed lookup. The mapped
+// [LAW:dataflow-not-control-flow] One entry per ClientFrame variant;
+// readClientFrame does a single indexed lookup. The mapped
 // type forces exhaustiveness — adding a new ClientFrame kind without a
 // handler is a compile-time error, not a runtime "unknown kind" branch.
 // [LAW:single-enforcer] readClientFrame is the only call site.
 // ---------------------------------------------------------------------------
 
-type ClientFrameByKind = {
-  readonly [F in ClientFrame as F["k"]]: F;
-};
+type ClientFrameByKind = FrameByKind<ClientFrame>;
 
 type ClientFrameHandlers = {
   readonly [K in keyof ClientFrameByKind]: <Identity>(

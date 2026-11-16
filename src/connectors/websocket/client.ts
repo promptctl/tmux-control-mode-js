@@ -79,6 +79,7 @@ import {
   toBridgeProtocolError,
   truncateCloseReason,
   type ReceivedResultFrame,
+  type FrameByKind,
   type ReceivedServerFrame,
   type RpcMethod,
   type WelcomeFrame,
@@ -1160,26 +1161,24 @@ interface PhaseReader<Ctx> {
   readonly frames: FrameHandlers<Ctx>;
 }
 
-type FrameByKind = {
-  readonly [F in ReceivedServerFrame as F["k"]]: F;
-};
+type ServerFrameByKind = FrameByKind<ReceivedServerFrame>;
 
 type FrameHandlers<Ctx> = {
-  readonly [K in keyof FrameByKind]: (
+  readonly [K in keyof ServerFrameByKind]: (
     self: WebSocketTmuxClient,
     ctx: Ctx,
-    frame: FrameByKind[K],
+    frame: ServerFrameByKind[K],
   ) => void;
 };
 
 // [LAW:types-are-the-program] The handler is looked up by the frame's own
 //   kind, and generic over it, so the compiler pairs each handler with its
 //   frame (a correlated union) and no cast does it.
-function readFrame<Ctx, K extends keyof FrameByKind>(
+function readFrame<Ctx, K extends keyof ServerFrameByKind>(
   frames: FrameHandlers<Ctx>,
   self: WebSocketTmuxClient,
   ctx: Ctx,
-  frame: FrameByKind[K] & { readonly k: K },
+  frame: ServerFrameByKind[K] & { readonly k: K },
 ): void {
   const kind: K = frame.k;
   frames[kind](self, ctx, frame);
