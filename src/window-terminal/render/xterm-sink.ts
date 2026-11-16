@@ -17,8 +17,7 @@
 //     through xterm's in-place option setters; we never
 //     tear-down-and-rebuild (O10).
 //  2. `resize()`, `seed()` and `write()` reach xterm when they are called;
-//     nothing is held back. (xterm.js 5 threw on a resize before its first
-//     render tick; xterm.js 6 does not.)
+//     nothing is held back.
 //  3. `write(Uint8Array)` forwards directly to `term.write()` — no
 //     `TextDecoder` in the live path. The byte-fidelity guarantee
 //     comes from this single line.

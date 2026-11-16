@@ -121,7 +121,7 @@ export interface TerminalSink {
    * Apply the current pane geometry, as tmux (the size authority) gave it:
    * at attach when the stream already knows the size, before each seed, and
    * on each `subscription-changed` for this pane while attached. Before
-   * tmux's first report the size is the one the first seed was captured at.
+   * tmux's first report the size is the one the newest seed was captured at.
    */
   resize(cols: number, rows: number): void;
 
