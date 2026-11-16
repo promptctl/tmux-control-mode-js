@@ -13,6 +13,7 @@
 //     shared identity fail here the same way they'd fail in production); an
 //     invoke handler's error crosses as a plain Error carrying only its
 //     message, under Electron's "Error invoking remote method" prefix.
+//   - webContents.send throws once the WebContents is destroyed.
 //   - ipcMain.handle throws on a second registration for the same channel.
 //   - page listeners (destroyed / did-navigate / render-process-gone /
 //     did-fail-load) are removable.
@@ -78,7 +79,9 @@ export interface IpcHub {
   createRenderer(): FakeRenderer;
   /**
    * Resolves once no IPC message is in flight: every send and invoke leg
-   * made so far, and any it caused, has been delivered.
+   * made so far, and any its delivery made before the next task, has been
+   * delivered. A message a handler makes after a timer of its own is not
+   * yet made, so it is not waited for.
    */
   settled(): Promise<void>;
 }
@@ -146,6 +149,8 @@ export function createIpcHub(): IpcHub {
       readonly frame: WebFrameLike;
       readonly listeners: Map<string, Set<RendererHandler>>;
       readonly ipcRenderer: IpcRendererLike;
+      /** The IPC event every message from this document carries. */
+      readonly ipcEvent: IpcMainEventLike;
       /** False once the document's frame host was reused by a later one. */
       sends: boolean;
     }
@@ -179,8 +184,43 @@ export function createIpcHub(): IpcHub {
     // page shown in a live renderer; derived, never a flag of its own.
     const hears = (d: Document): boolean => !destroyed && !crashed && d === doc;
 
+    // An invoke's request lands in main, and its reply, value or error,
+    // crosses back as a hop of its own; a page that has ended never hears it.
+    async function answer(
+      from: Document,
+      channel: string,
+      payload: unknown[],
+    ): Promise<unknown> {
+      await nextTask();
+      const reply = await (async () => {
+        const handler = invokeHandlers.get(channel);
+        if (handler === undefined) {
+          throw new Error(`No handler registered for '${channel}'`);
+        }
+        return cloneArgs([await handler(from.ipcEvent, ...payload)])[0];
+      })().then(
+        (value) => ({ ok: true, value }) as const,
+        // Electron carries only the message across, under its prefix.
+        (err: unknown) =>
+          ({
+            ok: false,
+            error: new Error(
+              `Error invoking remote method '${channel}': ${String(err)}`,
+            ),
+          }) as const,
+      );
+      await nextTask();
+      if (!hears(from)) {
+        unheardReplies.push(reply.ok ? reply.value : reply.error);
+        return new Promise<never>(() => {});
+      }
+      if (!reply.ok) throw reply.error;
+      return reply.value;
+    }
+
     const sender: WebContentsLike = {
       send(channel, ...args) {
+        if (destroyed) throw new Error("Object has been destroyed");
         const target = doc;
         // Real Electron sends args through structuredClone before they
         // reach the renderer. Mirroring that here means a test that mutates
@@ -220,59 +260,25 @@ export function createIpcHub(): IpcHub {
 
     function createDocument(frame: WebFrameLike): Document {
       const listeners = new Map<string, Set<RendererHandler>>();
-      const event = (): IpcMainEventLike => {
+      const mustSend = (): void => {
         if (!document.sends) {
           throw new Error(
             "this document's frame host was reused by a later document; " +
               "Chromium delivered its IPC before the navigation committed",
           );
         }
-        return {
-          sender,
-          processId: frame.processId,
-          frameId: frame.routingId,
-        };
       };
       const ipcRenderer: IpcRendererLike = {
-        async invoke(channel, ...args) {
-          const e = event();
-          const payload = cloneArgs(args);
-          await nextTask();
-          const handler = invokeHandlers.get(channel);
-          const reply = await Promise.resolve()
-            .then(() => {
-              if (handler === undefined) {
-                throw new Error(`No handler registered for '${channel}'`);
-              }
-              return handler(e, ...payload);
-            })
-            .then(
-              (value) => ({ ok: true, value: cloneArgs([value])[0] }) as const,
-              // Electron carries only the message across, under its prefix.
-              (err: unknown) =>
-                ({
-                  ok: false,
-                  error: new Error(
-                    `Error invoking remote method '${channel}': ${String(err)}`,
-                  ),
-                }) as const,
-            );
-          // The reply crosses back as a hop of its own, and a page that has
-          // ended never hears it.
-          await nextTask();
-          if (!hears(document)) {
-            unheardReplies.push(reply.ok ? reply.value : reply.error);
-            return new Promise<never>(() => {});
-          }
-          if (!reply.ok) throw reply.error;
-          return reply.value;
+        invoke(channel, ...args) {
+          mustSend();
+          return answer(document, channel, cloneArgs(args));
         },
         send(channel, ...args) {
-          const e = event();
+          mustSend();
           const payload = cloneArgs(args);
           void nextTask().then(() => {
             for (const h of mainOnListeners.get(channel) ?? [])
-              h(e, ...payload);
+              h(document.ipcEvent, ...payload);
           });
         },
         on(channel, listener) {
@@ -287,7 +293,17 @@ export function createIpcHub(): IpcHub {
           listeners.get(channel)?.delete(listener as RendererHandler);
         },
       };
-      const document: Document = { frame, listeners, ipcRenderer, sends: true };
+      const document: Document = {
+        frame,
+        listeners,
+        ipcRenderer,
+        ipcEvent: {
+          sender,
+          processId: frame.processId,
+          frameId: frame.routingId,
+        },
+        sends: true,
+      };
       return document;
     }
 
@@ -300,11 +316,7 @@ export function createIpcHub(): IpcHub {
       sender,
       unheardReplies,
       get event() {
-        return {
-          sender,
-          processId: doc.frame.processId,
-          frameId: doc.frame.routingId,
-        };
+        return doc.ipcEvent;
       },
       destroy() {
         destroyed = true;
