@@ -11,8 +11,9 @@
 // pane by changing two values. Each xterm draws at its pane's top left. tmux
 // leaves one cell between panes for its border; an outline in
 // `--wt-border-color` (tmux's active pane: `--wt-active-border-color`) is drawn
-// into it. Styles are inline: the only stylesheet is xterm's own
-// (`@xterm/xterm/css/xterm.css`), which the consumer imports.
+// into it. Styles are inline, beside xterm's own stylesheet
+// (`@xterm/xterm/css/xterm.css`, which the consumer imports) and the root's
+// one rule hiding xterm's scrollbars.
 //
 // [LAW:effects-at-boundaries] Every DOM effect of the terminal lives here;
 //   what to draw arrives as a value.
@@ -132,10 +133,13 @@ export class WindowRenderer implements PaneSurfaces {
     // A pane's box is exactly its cells wide; xterm's scrollbar, drawn over
     // the screen's right edge, would cover its last column and take the
     // pointer there. xterm has no option for it, so one rule hides it in
-    // every pane, as xterm opens or rebuilds it. Wheel scrolling still works.
+    // every pane, as xterm opens or rebuilds it, and hides the native
+    // scrollbar of the viewport under it, which shows wherever the theme's
+    // background is transparent. Wheel scrolling still works.
     const style = doc.createElement("style");
     style.textContent =
-      ".wt-root .xterm-scrollable-element > .scrollbar.vertical { display: none; }";
+      ".wt-root .xterm-scrollable-element > .scrollbar.vertical { display: none; }" +
+      " .wt-root .xterm-viewport { scrollbar-width: none; }";
     this.root.append(style, this.grid);
     host.appendChild(this.root);
 

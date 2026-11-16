@@ -8,11 +8,7 @@
 //   a new xterm option needs no change here.
 
 import { Terminal } from "@xterm/xterm";
-import type {
-  ITerminalAddon,
-  ITerminalInitOnlyOptions,
-  ITerminalOptions,
-} from "@xterm/xterm";
+import type { ITerminalAddon, ITerminalOptions } from "@xterm/xterm";
 import type { CellFont } from "../sizing/cell-metrics.js";
 
 /**
@@ -25,7 +21,9 @@ export type XtermAddons = () => readonly ITerminalAddon[];
 /**
  * The xterm.js options the window terminal sets itself, because tmux or the
  * terminal decides them: tmux sizes the window (cols, rows), its bytes are
- * written as sent (convertEol), its panes keep 8-column tab stops
+ * written as sent and wrapped as tmux wraps them (convertEol, windowsMode,
+ * which xterm.js 6 still acts on though its typings dropped it), its panes
+ * keep 8-column tab stops
  * (tabStopWidth) and answer the window reports themselves (windowOptions),
  * the sizing solver picks the font size from `sizing.font` (fontSize),
  * `history` is the scrollback (scrollback), a pane's box is exactly its
@@ -37,6 +35,7 @@ export const TERMINAL_OWNED = [
   "cols",
   "rows",
   "convertEol",
+  "windowsMode",
   "windowsPty",
   "documentOverride",
   "fontSize",
@@ -45,12 +44,7 @@ export const TERMINAL_OWNED = [
   "windowOptions",
   "overviewRuler",
   "allowProposedApi",
-  // [LAW:types-are-the-program] Each key is one xterm.js has: a key a new
-  //   xterm drops stops the build instead of being refused for nothing.
-] as const satisfies readonly (
-  | keyof ITerminalOptions
-  | keyof ITerminalInitOnlyOptions
-)[];
+] as const;
 
 /** xterm.js's options for every pane, less the ones the terminal owns. */
 export type XtermOptions = Omit<
