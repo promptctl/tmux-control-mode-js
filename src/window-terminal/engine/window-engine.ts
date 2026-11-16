@@ -66,11 +66,12 @@ export interface PaneSurface {
 }
 
 /**
- * The renderer, as the engine sees it. `keys` sends what is typed into the
- * pane's surface to that pane, and to no other.
+ * The renderer, as the engine sees it. `keys` sends the input bytes produced
+ * in the pane's surface (typing, pastes, mouse reports) to that pane, and to
+ * no other.
  */
 export interface PaneSurfaces {
-  create(pane: PaneId, keys: (data: string) => void): PaneSurface;
+  create(pane: PaneId, keys: (bytes: Uint8Array) => void): PaneSurface;
 }
 
 export interface WindowEngineOptions {
@@ -375,8 +376,8 @@ export class WindowEngine {
       paneId: paneNumber(id),
       historyLines: this.history,
     });
-    const surface = this.surfaces.create(id, (data) => {
-      void stream.sendKeys(data).catch((err: unknown) => {
+    const surface = this.surfaces.create(id, (bytes) => {
+      void stream.sendKeys(bytes).catch((err: unknown) => {
         if (!isConnectionGone(err)) {
           this.report({ seam: "send-keys", paneId: id, cause: err });
         }

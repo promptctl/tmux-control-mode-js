@@ -25,14 +25,16 @@ import type {
 } from "../../../src/window-terminal/engine/window-model.js";
 import type { PaneId } from "../../../src/window-terminal/ids.js";
 
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
 interface Surfaces extends PaneSurfaces {
-  readonly live: Map<PaneId, (data: string) => void>;
+  readonly live: Map<PaneId, (bytes: Uint8Array) => void>;
   readonly created: PaneId[];
   readonly disposed: PaneId[];
 }
 
 function surfaces(): Surfaces {
-  const live = new Map<PaneId, (data: string) => void>();
+  const live = new Map<PaneId, (bytes: Uint8Array) => void>();
   const created: PaneId[] = [];
   const disposed: PaneId[] = [];
   return {
@@ -447,7 +449,7 @@ describe("WindowEngine — keys and focus", () => {
   it("keys typed into a pane's surface go to that pane only, and nothing selects a pane", async () => {
     const { client, engine, s } = mount();
     await settle();
-    s.live.get("%0")?.("ls\r");
+    s.live.get("%0")?.(enc("ls\r"));
     await settle();
     const sends = client.commands().filter((c) => c.startsWith("send-keys"));
     expect(sends).toEqual(["send-keys -H -t '%0' 6c 73 0d"]);
@@ -471,8 +473,8 @@ describe("WindowEngine — keys and focus", () => {
           ? new TransportClosedError("gone")
           : null,
     );
-    s.live.get("%0")?.("a");
-    s.live.get("%1")?.("b");
+    s.live.get("%0")?.(enc("a"));
+    s.live.get("%1")?.(enc("b"));
     await settle();
     expect(errors.map((e) => [e.seam, e.paneId])).toEqual([
       ["send-keys", "%0"],

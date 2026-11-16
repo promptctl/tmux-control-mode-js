@@ -39,12 +39,8 @@ import type {
   TmuxConnection,
   TmuxEventMap,
 } from "../../browser.js";
-import { paneScope, isConnectionGone } from "../../browser.js";
-import {
-  sendKeys as encodeSendKeys,
-  emptyKeysResponse,
-  type CommandResponse,
-} from "../../protocol/index.js";
+import { paneScope, isConnectionGone, sendKeyBytes } from "../../browser.js";
+import type { CommandResponse } from "../../protocol/index.js";
 
 /**
  * What a window terminal runs over: a connection whose format subscriptions
@@ -507,23 +503,11 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Send keystrokes to the underlying pane via tmux `send-keys`.
+   * Send input bytes to the underlying pane via tmux `send-keys`.
    * Convenience wrapper so consumers don't need to format pane targets.
    */
-  sendKeys(data: string): Promise<CommandResponse> {
-    // [LAW:one-source-of-truth] The send-keys wire format AND its empty-input
-    // precondition live in the library encoder (send -H hex bytes). This mirrors
-    // the canonical `commands.sendKeys`: encodeSendKeys returns null for empty
-    // input (no command — synthesize the no-op response) or the bare wire line
-    // (NO trailing LF — execute() is the sole enforcer of LF-termination). Pass
-    // the wire straight through; execute() appends the single LF. (A prior
-    // version sliced the last char to "strip the encoder's trailing LF" — but
-    // the encoder never emits one, so the slice dropped the last hex DIGIT,
-    // corrupting every keystroke's final byte into a stray control code.)
-    const wire = encodeSendKeys(`%${this.paneId}`, data);
-    return wire === null
-      ? Promise.resolve(emptyKeysResponse())
-      : this.client.execute(wire);
+  sendKeys(bytes: Uint8Array): Promise<CommandResponse> {
+    return sendKeyBytes(this.client, `%${this.paneId}`, bytes);
   }
 
   on<E extends EventName>(event: E, handler: Listener<E>): Unsubscribe {

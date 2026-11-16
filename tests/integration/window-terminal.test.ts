@@ -44,13 +44,13 @@ const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 interface Recorder extends PaneSurfaces {
   readonly sinks: Map<PaneId, BufferingSink>;
-  readonly keys: Map<PaneId, (data: string) => void>;
+  readonly keys: Map<PaneId, (bytes: Uint8Array) => void>;
   readonly disposed: PaneId[];
 }
 
 function recorder(): Recorder {
   const sinks = new Map<PaneId, BufferingSink>();
-  const keys = new Map<PaneId, (data: string) => void>();
+  const keys = new Map<PaneId, (bytes: Uint8Array) => void>();
   const disposed: PaneId[] = [];
   return {
     sinks,
@@ -308,7 +308,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     engine = engineOver(c, window, s);
     await untilLive(engine, (v) => v.panes.length === 2);
 
-    s.keys.get(first as PaneId)?.("WT_KEYS_MARK");
+    s.keys.get(first as PaneId)?.(new TextEncoder().encode("WT_KEYS_MARK"));
     const captured = (pane: string) =>
       q(socket, ["capture-pane", "-p", "-t", pane]);
     await readUntil(
@@ -320,6 +320,55 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     expect(
       q(socket, ["display-message", "-p", "-t", window, "#{pane_id}"]),
     ).toBe(active);
+  });
+
+  it("input bytes typed into a pane reach its program byte-exact, a legacy mouse report included", async () => {
+    const { c, window } = await start();
+    // A raw tty and od: the program sees exactly the bytes its pty received.
+    q(socket, [
+      "split-window",
+      "-h",
+      "-t",
+      window,
+      "stty raw -echo; od -An -tx1 -v",
+    ]);
+    const pane = q(socket, [
+      "display-message",
+      "-p",
+      "-t",
+      window,
+      "#{pane_id}",
+    ]);
+    const s = recorder();
+    engine = engineOver(c, window, s);
+    await untilLive(engine, (v) => v.panes.length === 2);
+    await readUntil(
+      () =>
+        q(socket, [
+          "display-message",
+          "-p",
+          "-t",
+          pane,
+          "#{pane_current_command}",
+        ]),
+      (cmd) => cmd === "od",
+      "the pane never reached od",
+    );
+
+    // A DEFAULT-encoded press at column 129 (0xa1), then "é" as UTF-8, then
+    // padding to od's 16-byte line.
+    const mouse = [0x1b, 0x5b, 0x4d, 0x20, 0xa1, 0x21];
+    const text = new TextEncoder().encode("éABCDEFGH");
+    s.keys.get(pane as PaneId)?.(new Uint8Array(mouse));
+    s.keys.get(pane as PaneId)?.(text);
+    const expected = [...mouse, ...text]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join(" ");
+    await readUntil(
+      () => q(socket, ["capture-pane", "-p", "-t", pane]).replace(/\s+/g, " "),
+      (dump) => dump.includes(expected),
+      `the pane never received ${expected}`,
+    );
   });
 
   it("kill-window is gone(window-closed)", async () => {

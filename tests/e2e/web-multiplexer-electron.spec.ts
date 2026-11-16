@@ -227,13 +227,71 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
 
     // Phase 2 + 3: type a sentinel into the active pane and watch it land
     // back in the rendered xterm grid. xterm forwards the keystrokes through
-    // its hidden helper textarea; the window terminal's onData wiring calls
+    // its hidden helper textarea; the window terminal's onInput wiring calls
     // stream.sendKeys → ElectronBridge.sendKeys → preload IPC → main → tmux
     // send-keys → shell, and the shell's printf output returns via %output →
     // IPC event → xterm.write. The unique sentinel rules out a stale echo.
     await expectKeystrokeRoundTrip(
       page,
       `E2E_${Date.now().toString(36).toUpperCase()}`,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+// A click reaches the pane's program when that program asked for legacy mouse
+// reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
+// not `onData` — a path the window terminal must forward as raw bytes. The
+// program here is od on a raw tty, so the grid shows the exact bytes it read:
+// two clicks are a press (`1b 5b 4d 20 …`) and a release (`1b 5b 4d 23 …`)
+// each, 24 bytes, enough for od's first 16-byte line.
+test("a real click in legacy mouse mode reaches the pane's program", async () => {
+  const app = await electron.launch({
+    args: [APP_ROOT],
+    cwd: APP_ROOT,
+    env: APP_ENV,
+  });
+
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".xterm").first()).toBeVisible({
+      timeout: 20_000,
+    });
+    await expectKeystrokeRoundTrip(
+      page,
+      `E2E_${Date.now().toString(36).toUpperCase()}`,
+    );
+
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.pressSequentially(
+      "clear; printf '\\033[?1000h'; stty raw -echo; od -An -tx1 -v\n",
+      { delay: 10 },
+    );
+    await expect
+      .poll(() =>
+        execFileSync(
+          "tmux",
+          [
+            "-L",
+            SOCKET,
+            "display-message",
+            "-p",
+            "-t",
+            SESSION,
+            "#{pane_current_command}",
+          ],
+          { encoding: "utf8" },
+        ).trim(),
+      )
+      .toBe("od");
+
+    const screen = page.locator(".xterm-screen").first();
+    await screen.click({ position: { x: 20, y: 20 } });
+    await screen.click({ position: { x: 20, y: 20 } });
+    await expect(page.locator(".xterm-rows").first()).toContainText(
+      /1b\s+5b\s+4d\s+20.*1b\s+5b\s+4d\s+23/,
+      { timeout: 15_000 },
     );
   } finally {
     await app.close();

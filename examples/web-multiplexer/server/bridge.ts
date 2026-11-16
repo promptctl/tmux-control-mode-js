@@ -33,7 +33,7 @@ import {
   MIRROR_WS_PATH,
   type MirrorControlFrame,
 } from "../shared/mirror-frame.js";
-import { COLLAB_WS_PATH, parseCollabKeys } from "../shared/collab-frame.js";
+import { COLLAB_WS_PATH } from "../shared/collab-frame.js";
 import {
   COPILOT_PATH,
   parseCopilotRequest,
@@ -369,7 +369,7 @@ function handleMirrorConnection(
  * is not a well-formed `keys` frame closes the socket loudly (1003) rather than
  * being ignored.
  */
-function handleCollabConnection(
+export function handleCollabConnection(
   ws: WebSocket,
   registry: MirrorRegistry,
   input: CollabInput,
@@ -399,16 +399,14 @@ function handleCollabConnection(
     },
   };
 
-  // The collaborative channel's ONE inbound capability: keystrokes → pane. A
-  // frame that is not a valid `keys` frame is misuse, not data. [LAW:no-silent-
-  // failure]
-  ws.on("message", (raw: Buffer) => {
-    const keys = parseCollabKeys(raw.toString("utf8"));
-    if (keys === null) {
-      ws.close(1003, "collab expects { kind: 'keys' } frames");
+  // The collaborative channel's ONE inbound capability: input bytes → pane. A
+  // text frame is misuse, not data. [LAW:no-silent-failure]
+  ws.on("message", (raw: Buffer, isBinary: boolean) => {
+    if (!isBinary) {
+      ws.close(1003, "collab expects binary input frames");
       return;
     }
-    void input.sendKeys(paneId, keys);
+    void input.sendKeys(paneId, new Uint8Array(raw));
   });
 
   let dispose: (() => void) | null = null;

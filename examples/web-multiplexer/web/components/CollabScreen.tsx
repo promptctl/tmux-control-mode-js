@@ -54,7 +54,7 @@ export const CollabScreen = observer(function CollabScreen({
     const detachBytes = bridge.onBytes((data) => sink.write(data));
     // [LAW:effects-at-boundaries] The view's only outbound effect: forward raw
     // terminal input to the bridge. No interpretation, no echo.
-    const detachInput = sink.onData((data) => bridge.sendKeys(data));
+    const detachInput = sink.onInput((bytes) => bridge.sendKeys(bytes));
     bridge.connect();
     sink.focus();
 

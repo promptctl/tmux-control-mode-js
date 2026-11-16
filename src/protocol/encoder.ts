@@ -366,22 +366,22 @@ export function refreshClientUnsubscribe(name: string): string {
 
 const utf8Encoder = new TextEncoder();
 
-function utf8HexBytes(s: string): string {
-  const bytes = utf8Encoder.encode(s);
-  const hex = new Array<string>(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    hex[i] = bytes[i].toString(16).padStart(2, "0");
-  }
-  return hex.join(" ");
-}
-
-// [LAW:one-source-of-truth] send-keys wire format lives here only.
+// [LAW:one-source-of-truth] send-keys wire format lives here only. `-H` takes
+// each key as one hex byte, which tmux writes to the pane's pty unchanged — so
+// any byte sequence crosses intact, including a mouse report's raw
+// coordinate bytes (≥ 0x80) that no text encoding can carry.
 // Returns null for empty input — no valid wire form exists for zero keys.
 // [LAW:types-are-the-program] string | null carries the command/no-command
 // variability; callers handle the null case by structure.
+export function sendKeyBytes(target: string, bytes: Uint8Array): string | null {
+  if (bytes.length === 0) return null;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+  return `send-keys -H -t ${tmuxEscape(target)} ${hex.join(" ")}`;
+}
+
+// Text keys are their UTF-8 bytes.
 export function sendKeys(target: string, keys: string): string | null {
-  if (keys === "") return null;
-  return `send-keys -H -t ${tmuxEscape(target)} ${utf8HexBytes(keys)}`;
+  return sendKeyBytes(target, utf8Encoder.encode(keys));
 }
 
 // [LAW:one-source-of-truth] split-window wire format lives here only.

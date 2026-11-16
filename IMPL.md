@@ -183,7 +183,8 @@ not a command-function because its bare-newline signal cannot be correlated.)
 | `execute(command)` | `TmuxClient` method (`src/client.ts`) | raw passthrough — the escape hatch for any command without a named wrapper |
 | `listWindows(client)` | `src/commands/index.ts` | `list-windows` |
 | `listPanes(client)` | `src/commands/index.ts` | `list-panes` |
-| `sendKeys(client, target, keys)` | `src/commands/index.ts` | `send-keys -H -t …` (hex bytes; empty keys → synthetic success, no wire send) |
+| `sendKeys(client, target, keys)` | `src/commands/index.ts` | `send-keys -H -t …` (the text's UTF-8 bytes as hex; empty keys → synthetic success, no wire send) |
+| `sendKeyBytes(client, target, bytes)` | `src/commands/index.ts` | `send-keys -H -t …` from raw bytes, e.g. a legacy mouse report's coordinates ≥ 0x80 |
 | `splitWindow(client, options?)` | `src/commands/index.ts` | `split-window -h`/`-v` |
 | `setSize`, `setWindowSize`, `clearWindowSize` | `TmuxClient` methods (`ClientSizeSurface`), through the client's size claims (`src/client-size.ts`) | `refresh-client -C <w>x<h>`, `-C @<id>:<w>x<h>`, `-C @<id>:`, and `-f [!]ignore-size` |
 | `setPaneAction(client, paneId, action)` | `src/commands/index.ts` | `refresh-client -A` (pane flow control) |

@@ -575,8 +575,8 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
       appearance: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
-    const offKeys = sink.onData((data) => {
-      stream.sendKeys(data).catch((err: unknown) => {
+    const offKeys = sink.onInput((bytes) => {
+      stream.sendKeys(bytes).catch((err: unknown) => {
         // A key sent as the connection drops has nowhere to go; anything else
         // is a real failure.
         if (!isConnectionGone(err)) console.error("send-keys failed", err);

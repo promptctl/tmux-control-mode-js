@@ -15,7 +15,7 @@
 // [LAW:no-ambient-temporal-coupling] The first `sendKeys` gates on the client's
 //   `ready` promise (the cold-start race), owned by `spawnReadyControlClient`.
 
-import { sendKeys } from "@promptctl/tmux-control-mode-js";
+import { sendKeyBytes } from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
 import {
   spawnReadyControlClient,
@@ -27,8 +27,8 @@ export class CollabInput {
   private closed = false;
 
   /**
-   * Inject `keys` (raw terminal input from a browser) into pane `%paneId`. The
-   * keystrokes go out byte-for-byte via `send-keys -H`; tmux applies them to the
+   * Inject `bytes` (raw terminal input from a browser) into pane `%paneId`.
+   * They go out byte-for-byte via `send-keys -H`; tmux applies them to the
    * pane's pty and the result fans back to every browser through the mirror tap.
    *
    * A failed send (the pane closed between a keystroke and its delivery) is
@@ -37,12 +37,12 @@ export class CollabInput {
    * the lost keystroke needs no second signal. [LAW:no-silent-failure] the
    * failure is logged, never swallowed into a phantom success.
    */
-  async sendKeys(paneId: number, keys: string): Promise<void> {
+  async sendKeys(paneId: number, bytes: Uint8Array): Promise<void> {
     if (this.closed) return;
     const { client, ready } = this.ensureClient();
     await ready;
     if (this.closed) return;
-    const response = await sendKeys(client, `%${paneId}`, keys).catch(
+    const response = await sendKeyBytes(client, `%${paneId}`, bytes).catch(
       asCommandResponse,
     );
     if (!response.success) {

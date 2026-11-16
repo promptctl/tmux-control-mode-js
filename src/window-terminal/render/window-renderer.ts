@@ -103,7 +103,7 @@ export class WindowRenderer implements PaneSurfaces {
   // PaneSurfaces
   // -------------------------------------------------------------------------
 
-  create(pane: PaneId, keys: (data: string) => void): PaneSurface {
+  create(pane: PaneId, keys: (bytes: Uint8Array) => void): PaneSurface {
     const el = this.grid.ownerDocument.createElement("div");
     el.className = "wt-pane";
     el.dataset.paneId = pane;
@@ -126,12 +126,12 @@ export class WindowRenderer implements PaneSurfaces {
     if (viewport !== null && viewport !== undefined) {
       viewport.style.scrollbarWidth = "none";
     }
-    const offData = sink.onData(keys);
+    const offInput = sink.onInput(keys);
     this.panes.set(pane, { el, sink });
     return {
       sink,
       dispose: () => {
-        offData();
+        offInput();
         sink.dispose();
         el.remove();
         this.panes.delete(pane);
