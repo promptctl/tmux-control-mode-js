@@ -8,17 +8,27 @@
 // tmux produces. Guard numbers are opaque to the client.
 
 import { SENTINEL_PREFIX } from "../../../src/protocol/encoder.js";
+import { serializeMessage } from "../../../src/protocol/serializer.js";
+import { CONTROL_FLAGS } from "../../../src/protocol/types.js";
 
-/** One guard block, flags=1: it answers a line this client wrote. */
+/** One guard block, flags=1: it answers a line this client wrote. Its
+ * timestamp is its number, so a test can tell which block numbered a reply. */
 export function block(
   commandNumber: number,
   terminator: "end" | "error",
   output: readonly string[] = [],
 ): string {
-  const guard = `${commandNumber} ${commandNumber} 1`;
-  return [`%begin ${guard}`, ...output, `%${terminator} ${guard}`, ""].join(
-    "\n",
-  );
+  const guard = {
+    timestamp: commandNumber,
+    commandNumber,
+    flags: CONTROL_FLAGS,
+  };
+  return [
+    serializeMessage({ type: "begin", ...guard }),
+    ...output,
+    serializeMessage({ type: terminator, ...guard }),
+    "",
+  ].join("\n");
 }
 
 /** The number execute() gave the line it wrote as `sent`. */
@@ -40,7 +50,8 @@ export function sentinelBlock(
   ]);
 }
 
-/** tmux's reply to `sent`, a one-command line that ended with `terminator`. */
+/** tmux's reply to `sent`, a one-command line that ended with `terminator`:
+ * block `commandNumber`, then its sentinel's, numbered next as tmux does. */
 export function replyTo(
   sent: string,
   output: readonly string[] = [],
@@ -49,6 +60,6 @@ export function replyTo(
 ): string {
   return (
     block(commandNumber, terminator, output) +
-    sentinelBlock(commandNumber, lineNumberOf(sent))
+    sentinelBlock(commandNumber + 1, lineNumberOf(sent))
   );
 }

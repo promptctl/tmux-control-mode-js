@@ -193,8 +193,8 @@ const COMMAND_LINE_TERMINATOR = /[\n\0]/;
 // followed by a sentinel line naming no tmux command and carrying the line's
 // number: tmux answers it with exactly one block, its parse error, runs
 // nothing and fires no hook. That block ends the line, and its number says
-// which. tmux matches a unique command prefix, so the name starts with no
-// command's.
+// which. tmux runs the command whose name the typed word uniquely prefixes,
+// so no command's name may start with the sentinel's.
 export const SENTINEL_PREFIX = "tmux-control-mode-js-sentinel-";
 const SENTINEL_REPLY = new RegExp(
   `^parse error: unknown command: ${SENTINEL_PREFIX}([1-9][0-9]*)\\r*$`,

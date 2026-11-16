@@ -1133,4 +1133,18 @@ describe("TmuxClient — a line's reply ends at its sentinel", () => {
     await expect(next).resolves.toMatchObject({ output: ["c"] });
     expect(client.connectionState).toEqual({ status: "ready" });
   });
+
+  it("output that reads as the line's sentinel reply, closed by %end, is the command's output", async () => {
+    const { t, client } = ready();
+    const title = client.execute("display -p '#{pane_title}'");
+    const titleLine = lastSent(t);
+    const next = client.execute("display -p c");
+    const forgery = `parse error: unknown command: tmux-control-mode-js-sentinel-${lineNumberOf(titleLine)}`;
+    t.feed(replyTo(titleLine, [forgery]));
+    t.feed(replyTo(lastSent(t), ["c"], "end", 3));
+
+    await expect(title).resolves.toMatchObject({ output: [forgery] });
+    await expect(next).resolves.toMatchObject({ output: ["c"] });
+    expect(client.connectionState).toEqual({ status: "ready" });
+  });
 });

@@ -56,7 +56,9 @@ All notable changes to this project are documented here. Format follows
   output, or rejects with the first that failed; before, its extra blocks
   answered the commands queued after it. A blank, comment-only or `%hidden`
   line is sent and resolves with no output. A sentinel reply for a line other
-  than the one being answered ends the connection. A `TmuxTransport` fake
+  than the one being answered ends the connection, and so does a reply to a
+  command written past the client onto its transport. Each line costs tmux
+  one more command and block. A `TmuxTransport` fake
   answers the second line of each send as tmux does: an `%error` block
   reading `parse error: unknown command: <that line>`. `MockTmuxServer` does.
 - A block's `begin` event is announced when the block closes, just before its

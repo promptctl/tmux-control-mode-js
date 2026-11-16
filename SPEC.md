@@ -263,7 +263,8 @@ writes, from 1, and follows each with a sentinel line,
 command name starts with it, so tmux's prefix matching finds none). tmux
 answers it with exactly one block (§5.3): runs nothing, fires no hook, logs
 nothing in `show-messages`. A caller owns every block marked 1 from its line's
-first through its sentinel's.
+first through its sentinel's. A sentinel's reply closes with `%error`; a block
+closed by `%end` answers a command, whatever its output says.
 
 ```
 display-message -p a ; display-message -p b

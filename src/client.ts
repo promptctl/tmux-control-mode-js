@@ -683,7 +683,10 @@ export class TmuxClient
       return;
     }
     const line = this.answering;
-    const ended = sentinelLineNumber(block.output);
+    // tmux fails a sentinel's line, so a block closed by %end is a command's
+    // reply even when its output reads as a sentinel's: a pane title can.
+    const ended =
+      terminator.type === "end" ? null : sentinelLineNumber(block.output);
     if (ended !== null) {
       if (terminator.type === "protocol-error") this.announce(terminator);
       if (line?.caller.lineNumber !== ended) {
@@ -699,7 +702,9 @@ export class TmuxClient
     this.announce(block.begin);
     this.announce(terminator);
     if (line === null) {
-      this.lostLine(`tmux answered a command line ${answeringWhat(line)}`);
+      this.lostLine(
+        "tmux answered a command line while no line was awaiting a reply",
+      );
       return;
     }
     const reply = blockReply(block, terminator);
