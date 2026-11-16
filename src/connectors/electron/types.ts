@@ -44,15 +44,11 @@ export const IPC = {
   ack: "tmux:ack",
 } as const;
 
-/**
- * Every channel the bridge talks on is one of the values of `IPC`. Narrowing
- * the structural-Electron interfaces below to this type makes channel typos a
- * compile error at the bridge boundary instead of a silent runtime mismatch.
- *
- * [LAW:one-source-of-truth] `IPC` is the only place channel strings are spelled;
- * `IpcChannel` is derived from it. Adding a new channel = one edit.
- */
-export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+/** The channels a renderer sends main on with `ipcRenderer.send`. */
+export type RendererSendChannel =
+  | typeof IPC.register
+  | typeof IPC.unregister
+  | typeof IPC.ack;
 
 /**
  * What main sends a renderer on `IPC.event`: an event of the main-side client
@@ -70,8 +66,9 @@ export type IpcEventMessage = EmitterMessage | OutputMessage;
 // Structural "like" interfaces for Electron.
 //
 // [LAW:locality-or-seam] These structural interfaces keep `electron` out of
-// the library's runtime dependencies. `IpcChannel` narrows the channel-name
-// parameter so a typo at the call site is a compile error.
+// the library's runtime dependencies. Each method takes only the channels its
+// side uses, with that channel's arguments, so a wrong channel or payload at
+// the call site is a compile error.
 //
 // [LAW:one-type-per-behavior] `on` and `removeListener` use the SAME listener
 // shape so a registered handler can be passed verbatim to removeListener
@@ -159,8 +156,12 @@ export interface IpcMainLike {
   /** `IPC.invoke` is the one channel main handles. */
   handle(channel: typeof IPC.invoke, listener: IpcMainInvokeListener): void;
   removeHandler(channel: typeof IPC.invoke): void;
-  on(channel: IpcChannel, listener: IpcMainOnListener): void;
-  removeListener(channel: IpcChannel, listener: IpcMainOnListener): void;
+  /** The channels a renderer sends main on; main parses what arrives. */
+  on(channel: RendererSendChannel, listener: IpcMainOnListener): void;
+  removeListener(
+    channel: RendererSendChannel,
+    listener: IpcMainOnListener,
+  ): void;
 }
 
 // [LAW:types-are-the-program] No fields required from the renderer event —

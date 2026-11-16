@@ -1,7 +1,7 @@
 // tests/integration/bytes-sink.test.ts
 // Integration test 22 for the Electron BytesSink destination against real tmux.
 //
-// INT-22: attachWebContentsSink delivers real tmux bytes as PaneOutputMessage
+// INT-22: attachWebContentsSink delivers real tmux bytes as OutputMessage
 //         on IPC.event to a fake WebContents.
 //
 // [LAW:verifiable-goals] Gated behind TMUX_INTEGRATION=1. All tests use
@@ -62,7 +62,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       killTmuxServer(socketName);
     });
 
-    it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
+    it("INT-22: an OutputMessage arrives on IPC.event when tmux produces output", async () => {
       // Fake WebContents that records messages sent on any channel.
       const ipcMessages: IpcEventMessage[] = [];
       const fakeWc: Pick<WebContentsLike, "send" | "isDestroyed"> = {

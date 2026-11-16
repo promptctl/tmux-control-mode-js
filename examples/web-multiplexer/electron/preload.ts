@@ -4,8 +4,8 @@
 // Exposes two API surfaces, each on its own contextBridge name:
 //
 //   window.tmuxIpc — the ipcRenderer surface required by the library's
-//     `createRendererBridge`. Structurally assignable to IpcRendererLike
-//     so the multiplexer's main-electron.tsx hands it straight to
+//     `createRendererBridge`. Typed as IpcRendererLike, so the compiler
+//     checks it against the contract main-electron.tsx hands to
 //     ElectronBridge with no casts.
 //
 //   window.demoIpc — demo-specific RPC for the socket picker. Strict
@@ -13,6 +13,11 @@
 //     separate object so the library's bridge contract stays clean.
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type {
+  IpcEventMessage,
+  IpcRendererLike,
+  IpcRendererOnListener,
+} from "@promptctl/tmux-control-mode-js/electron/renderer";
 import { createWrapperTracker } from "./wrapper-tracker.ts";
 
 const TMUX_CHANNELS = new Set([
@@ -31,15 +36,15 @@ function assertChannel(channel: string): void {
   }
 }
 
-type Wrapper = (event: IpcRendererEvent, ...args: unknown[]) => void;
-type Listener = (...args: unknown[]) => void;
+type Wrapper = (event: IpcRendererEvent, msg: IpcEventMessage) => void;
 
-const tracker = createWrapperTracker<Listener, Wrapper>();
+const tracker = createWrapperTracker<IpcRendererOnListener, Wrapper>();
 
-contextBridge.exposeInMainWorld("tmuxIpc", {
-  invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+// assertChannel still runs on every call: the page calling it is untrusted.
+const tmuxIpc: IpcRendererLike = {
+  invoke(channel, req) {
     assertChannel(channel);
-    return ipcRenderer.invoke(channel, ...args);
+    return ipcRenderer.invoke(channel, req);
   },
 
   send(channel: string, ...args: unknown[]): void {
@@ -47,22 +52,23 @@ contextBridge.exposeInMainWorld("tmuxIpc", {
     ipcRenderer.send(channel, ...args);
   },
 
-  on(channel: string, listener: Listener): void {
+  on(channel, listener) {
     assertChannel(channel);
-    const wrapped: Wrapper = (_event, ...args): void => {
-      listener(_event, ...args);
+    const wrapped: Wrapper = (event, msg): void => {
+      listener(event, msg);
     };
     tracker.add(channel, listener, wrapped);
     ipcRenderer.on(channel, wrapped);
   },
 
-  removeListener(channel: string, listener: Listener): void {
+  removeListener(channel, listener) {
     assertChannel(channel);
     const wrapped = tracker.remove(channel, listener);
     if (wrapped === null) return;
     ipcRenderer.removeListener(channel, wrapped);
   },
-});
+};
+contextBridge.exposeInMainWorld("tmuxIpc", tmuxIpc);
 
 // Demo-only RPC for the socket picker. Each method is a fixed wrapper
 // over its own ipcRenderer.invoke channel — no generic invoke surface
