@@ -95,6 +95,7 @@ vi.mock("@xterm/xterm", () => {
     focus = noop;
     scrollToBottom = noop;
     onData = (): { dispose: () => void } => ({ dispose: noop });
+    unicode = { register: noop, activeVersion: "" };
     constructor(opts: { fontSize?: number; theme?: object } = {}) {
       this.options = {
         fontSize: opts.fontSize ?? 14,

@@ -40,6 +40,7 @@ vi.mock("@xterm/xterm", () => {
     loadAddon = vi.fn((addon: { activate(t: unknown): void }) =>
       addon.activate(this),
     );
+    unicode = { register: vi.fn(), activeVersion: "6" };
     // As xterm does: every option has a value, its default where not given,
     // and the setter refuses a cursor style it does not know.
     constructor(opts: Record<string, unknown>) {
@@ -49,6 +50,7 @@ vi.mock("@xterm/xterm", () => {
           lineHeight: 1,
           letterSpacing: 0,
           cursorStyle: "block",
+          cursorWidth: 1,
           theme: {},
           linkHandler: null,
           allowProposedApi: false,
@@ -356,15 +358,15 @@ describe("window terminal — what is drawn", () => {
       return [addon];
     });
     const m = mount(undefined, undefined, {
-      xterm: { cursorStyle: "bar", allowProposedApi: true },
+      xterm: { cursorStyle: "bar", cursorWidth: 3 },
       addons,
     });
     await settle();
     expect(
-      terminals.map((t) => [t.options.cursorStyle, t.options.allowProposedApi]),
+      terminals.map((t) => [t.options.cursorStyle, t.options.cursorWidth]),
     ).toEqual([
-      ["bar", true],
-      ["bar", true],
+      ["bar", 3],
+      ["bar", 3],
     ]);
     expect(addons).toHaveBeenCalledTimes(2);
     expect(terminals.map((t) => t.loadAddon.mock.calls)).toEqual([

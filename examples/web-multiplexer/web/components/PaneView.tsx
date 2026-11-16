@@ -25,7 +25,6 @@ import type {
   XtermOptions,
 } from "@promptctl/tmux-control-mode-js/window-terminal";
 import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/react";
-import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import type { DemoStore } from "../store.ts";
@@ -33,20 +32,6 @@ import type { UiStore } from "../ui-store.ts";
 
 const FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
-
-// Unicode 11's widths are tmux's: an emoji takes two cells in both, so the
-// cursor xterm draws stays where tmux has it. Loading the provider registers
-// it; the second addon makes it the version in use.
-const unicode11 = (): ReturnType<XtermAddons> => [
-  new Unicode11Addon(),
-  {
-    activate: (t) => {
-      t.unicode.activeVersion = "11";
-    },
-    // Nothing to release: the version goes with the terminal.
-    dispose: () => undefined,
-  },
-];
 
 // A page holds a few WebGL contexts at most, and the browser takes the
 // oldest when a pane wants one more (or the GPU resets). A pane whose context
@@ -96,11 +81,9 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
     };
     const options: XtermOptions = {
       fontFamily: FONT_FAMILY,
-      allowProposedApi: true, // Unicode 11 uses xterm's proposed API
       linkHandler: { allowNonHttpProtocols: true, activate: show },
     };
     const factory: XtermAddons = () => [
-      ...unicode11(),
       new WebLinksAddon(open),
       ...(webgl ? [webglAddon()] : []),
     ];

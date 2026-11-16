@@ -53,6 +53,7 @@ import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
 import type { CellRenderer } from "../sizing/cell-metrics.js";
+import { TMUX_CELLS } from "./tmux-cells.js";
 
 const utf8Encoder = new TextEncoder();
 
@@ -135,6 +136,8 @@ export class XtermSink implements TerminalSink {
     this.terminal = new Terminal({
       ...TERMINAL_DEFAULTS,
       convertEol: false,
+      // The Unicode provider below is xterm's proposed API.
+      allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
       scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
@@ -153,8 +156,11 @@ export class XtermSink implements TerminalSink {
     let addons: readonly ITerminalAddon[] = [];
     let taken = 0;
     try {
-      // Before the addons load: one may need an option (Unicode 11 needs
-      // `allowProposedApi`).
+      // [LAW:single-enforcer] A character's cells are counted as tmux counts
+      //   them, in every pane, before a byte is written.
+      this.terminal.unicode.register(TMUX_CELLS);
+      this.terminal.unicode.activeVersion = TMUX_CELLS.version;
+      // Before the addons load: one may need an option.
       this.setOptions(opts.xterm ?? {});
       this.terminal.open(this.container);
       const screen = this.terminal.element?.querySelector(".xterm-screen");
@@ -166,6 +172,12 @@ export class XtermSink implements TerminalSink {
       for (const addon of addons) {
         taken += 1;
         this.terminal.loadAddon(addon);
+      }
+      const counted = this.terminal.unicode.activeVersion;
+      if (counted !== TMUX_CELLS.version) {
+        throw new Error(
+          `an addon made xterm count cells by Unicode ${counted}; a pane counts them as tmux does`,
+        );
       }
       // Watched once the terminal stands: the renderer it opened with is
       // read at the first layout, and only a later change needs telling.

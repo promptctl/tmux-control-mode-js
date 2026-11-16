@@ -24,8 +24,10 @@ export type XtermAddons = () => readonly ITerminalAddon[];
  * written as sent (convertEol), its panes keep 8-column tab stops
  * (tabStopWidth) and answer the window reports themselves (windowOptions),
  * the sizing solver picks the font size from `sizing.font` (fontSize),
- * `history` is the scrollback (scrollback), and a pane's box is exactly its
- * cells wide, so a ruler would cover its last columns (overviewRulerWidth).
+ * `history` is the scrollback (scrollback), a pane's box is exactly its
+ * cells wide, so a ruler would cover its last columns (overviewRulerWidth),
+ * and a character's cells are counted as tmux counts them, through xterm's
+ * proposed Unicode API (allowProposedApi).
  */
 export const TERMINAL_OWNED = [
   "cols",
@@ -39,6 +41,7 @@ export const TERMINAL_OWNED = [
   "tabStopWidth",
   "windowOptions",
   "overviewRulerWidth",
+  "allowProposedApi",
 ] as const;
 
 /** xterm.js's options for every pane, less the ones the terminal owns. */
