@@ -19,6 +19,7 @@ import {
   TmuxReplyFormatError,
   isConnectionGone,
   listPanes,
+  sendKeyBytes,
 } from "../../browser.js";
 import { latin1ToText } from "../../protocol/byte-codec.js";
 import {
@@ -260,13 +261,12 @@ export class WindowEngine {
       this.queue = null;
       // A lost connection re-bootstraps when it is ready again.
       if (isConnectionGone(err)) return;
-      this.report({ seam: "bootstrap", cause: err });
       this.sync = {
         kind: "gone",
         reason: "bootstrap-failed",
         detail: err instanceof Error ? err.message : String(err),
       };
-      this.publish();
+      this.publish([{ seam: "bootstrap", cause: err }]);
     });
   }
 
@@ -312,7 +312,7 @@ export class WindowEngine {
     this.queue = null;
     this.facts = facts;
     this.sync = { kind: "synced" };
-    this.tell([...reports, ...this.reconcilePanes()]);
+    this.publish([...reports, ...this.reconcilePanes()]);
   }
 
   /**
@@ -344,7 +344,7 @@ export class WindowEngine {
     if (this.facts === null || this.sync.kind !== "synced") return;
     const next = reduce(this.facts, ev);
     this.facts = next.facts;
-    this.tell([...next.reports, ...this.reconcilePanes()]);
+    this.publish([...next.reports, ...this.reconcilePanes()]);
   }
 
   private malformedValue(value: string): void {
@@ -374,17 +374,19 @@ export class WindowEngine {
   }
 
   private createPane(id: PaneId): Report[] {
-    const stream = new PaneStream({
-      client: this.connection,
-      paneId: paneNumber(id),
-      historyLines: this.history,
-    });
+    // The surface before the stream: a renderer that throws leaves nothing on
+    // the connection, and the keys go to the pane, not through its stream.
     const surface = this.surfaces.create(id, (bytes) => {
-      void stream.sendKeyBytes(bytes).catch((err: unknown) => {
+      void sendKeyBytes(this.connection, id, bytes).catch((err: unknown) => {
         if (!isConnectionGone(err)) {
           this.report({ seam: "send-keys", paneId: id, cause: err });
         }
       });
+    });
+    const stream = new PaneStream({
+      client: this.connection,
+      paneId: paneNumber(id),
+      historyLines: this.history,
     });
     stream.on("error", (e) =>
       this.report({ seam: e.phase, paneId: id, cause: e.cause }),
@@ -423,7 +425,12 @@ export class WindowEngine {
     return deriveView(this.facts, this.policy, resyncing);
   }
 
-  private publish(): void {
+  // [LAW:no-ambient-temporal-coupling] The host hears a unit of work once it
+  //   is done, never in the middle of it: the state is the work's own before
+  //   any listener runs, so an error listener reads the state its report
+  //   belongs to. A listener that disposes the terminal ends a whole engine,
+  //   and nothing is delivered after that.
+  private publish(reports: readonly Report[] = []): void {
     if (this.ended) return;
     this.current = phaseFor(
       this.connection.connectionState,
@@ -433,6 +440,7 @@ export class WindowEngine {
       this.now(),
     );
     const final = this.current.phase === "gone";
+    for (const r of reports) this.report(r);
     deliver(this.stateListeners, this.current);
     if (final) this.end();
   }
@@ -440,15 +448,6 @@ export class WindowEngine {
   private report(e: Report): void {
     if (this.ended) return;
     deliver(this.errorListeners, { windowId: this.windowId, ...e });
-  }
-
-  // [LAW:no-ambient-temporal-coupling] The host hears a unit of work once it
-  //   is done, never in the middle of it: a listener that disposes the
-  //   terminal ends a whole engine, and `report` and `publish` deliver nothing
-  //   after that.
-  private tell(reports: readonly Report[]): void {
-    for (const r of reports) this.report(r);
-    this.publish();
   }
 
   /**

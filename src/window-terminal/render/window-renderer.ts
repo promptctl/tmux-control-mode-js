@@ -38,11 +38,6 @@ export interface WindowRendererOptions {
   readonly onBox: (box: Box) => void;
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
-  /**
-   * `pane`'s xterm failed to take options xterm accepted (an addon refused
-   * them). A pane that fails to open says so on its surface instead.
-   */
-  readonly onError: (pane: PaneId, cause: unknown) => void;
 }
 
 /** What the renderer drives in a pane. */
@@ -76,7 +71,6 @@ export class WindowRenderer implements PaneSurfaces {
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
   private readonly observer: ResizeObserver;
-  private readonly onError: (pane: PaneId, cause: unknown) => void;
   private readonly addons: XtermAddons | undefined;
   private xterm: XtermOptions;
   private font: number;
@@ -96,7 +90,6 @@ export class WindowRenderer implements PaneSurfaces {
     this.history = opts.history;
     this.xterm = opts.xterm;
     this.addons = opts.addons;
-    this.onError = opts.onError;
     this.font = opts.font;
     this.onFocusPane = opts.onFocusPane;
     const doc = host.ownerDocument;
@@ -248,17 +241,20 @@ export class WindowRenderer implements PaneSurfaces {
   }
 
   // A pane's xterm or addon that throws on an option xterm accepted is that
-  // pane's failure, under the seam a pane that fails to open is reported
-  // under; every other pane still takes the options.
-  setOptions(xterm: XtermOptions): void {
+  // pane's failure, returned like a pane's failure to open; every other pane
+  // still takes the options.
+  setOptions(
+    xterm: XtermOptions,
+  ): readonly { readonly pane: PaneId; readonly cause: unknown }[] {
     this.xterm = xterm;
-    for (const [pane, { sink }] of this.panes) {
+    return [...this.panes].flatMap(([pane, { sink }]) => {
       try {
         sink.setOptions(xterm);
+        return [];
       } catch (cause) {
-        this.onError(pane, cause);
+        return [{ pane, cause }];
       }
-    }
+    });
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */
