@@ -101,7 +101,8 @@ function proxyClosed(): BridgeErrorPayload {
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.
  *
  * All methods are 1-line wrappers that send a typed `InvokeRequest` over
- * `ipcRenderer.invoke` and return the resolved `CommandResponse`. Events
+ * `ipcRenderer.invoke` and return the `CommandResponse` main replies with,
+ * on `IPC.event` (see `InvokeReplyMessage`). Events
  * arrive on `IPC.event` and are dispatched through an internal `TypedEmitter`
  * so `on`/`off` work identically to `TmuxClient`.
  *
@@ -132,8 +133,8 @@ export class TmuxClientProxy
   /**
    * Positive value enables the per-call timeout in `invoke`. 0 means disabled
    * (the default). The renderer-side promise rejects with
-   * `BridgeError("BRIDGE_TIMEOUT")` if the underlying `ipcRenderer.invoke`
-   * does not settle in time; the underlying main-side dispatch is NOT
+   * `BridgeError("BRIDGE_TIMEOUT")` if main's reply does not arrive in time;
+   * the underlying main-side dispatch is NOT
    * cancelled — it will resolve in order against the TmuxClient FIFO and its
    * result is discarded by the renderer.
    */

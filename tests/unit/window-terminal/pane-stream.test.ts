@@ -260,8 +260,8 @@ describe("PaneStream — state machine", () => {
   });
 
   it("a sink re-attaching mid-capture is seeded with the snapshot, then exactly the bytes after its begin", async () => {
-    // StrictMode's mount→cleanup→mount on a printing pane: one capture, and
-    // the bytes that arrived while detached are kept, not dropped.
+    // StrictMode's mount→cleanup→mount on a printing pane, synchronous: one
+    // capture, and the bytes from before the detach are cut at the begin.
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
     client.injectOutput(PANE_ID, new Uint8Array([0x41]));

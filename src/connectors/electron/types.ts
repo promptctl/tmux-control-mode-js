@@ -374,8 +374,8 @@ export interface RendererBridgeOptions {
   readonly ackBatchBytes?: number;
   /**
    * Optional per-call timeout for proxy invokes. When a positive number, the
-   * proxy rejects with `BridgeError("BRIDGE_TIMEOUT")` if the underlying
-   * `ipcRenderer.invoke` does not settle within `invokeTimeoutMs`. Disabled
+   * proxy rejects with `BridgeError("BRIDGE_TIMEOUT")` if main's reply does
+   * not arrive within `invokeTimeoutMs`. Disabled
    * (default) — proxy.execute() inherits whatever timeout the underlying
    * `client.execute()` has, which today is none. Set this when the calling
    * window must distinguish "main is wedged" from "tmux is slow" (e.g. a

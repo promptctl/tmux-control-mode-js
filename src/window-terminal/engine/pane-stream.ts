@@ -197,8 +197,9 @@ type SeedCycle = { readonly phase: "idle" } | Capturing;
 interface Capturing {
   readonly phase: "capturing";
   stale: boolean;
-  // Every chunk of the pane's bytes since the capture was issued, attached or
-  // not. The ones after the capture's `%begin` are the seed's `trailing`.
+  // Every chunk of the pane's bytes since the capture was issued, while a sink
+  // waits for it (a byte while detached marks the capture stale instead). The
+  // ones after the capture's `%begin` are the seed's `trailing`.
   readonly buffer: Uint8Array[];
   // Each reply `%begin` seen while the capture flies, by tmux's command
   // number, and how many chunks the buffer held when it came. tmux parses a
@@ -770,6 +771,9 @@ export class PaneStream implements ReseedTarget {
     // Re-check liveness after the await; consumer may have disposed in the
     // meantime.
     if (this.currentState === "disposed") return;
+    // Every failed capture reports, even one dropped below: a failure is true
+    // of the pane whether or not this capture is used.
+    const reply = this.readCapture(cycle, outcome);
 
     // A capture taken while tmux has the pane paused misses what tmux dropped:
     // drop it and stay seeding. `%continue` reseeds.
@@ -792,9 +796,6 @@ export class PaneStream implements ReseedTarget {
       if (this.sink !== null) void this.startSeedCycle();
       return;
     }
-
-    // Read (and report a failure of) only the capture that is used.
-    const reply = this.readCapture(cycle, outcome);
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — nothing can push to the buffer
