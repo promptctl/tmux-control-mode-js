@@ -1041,6 +1041,28 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
+  it("a size change while detached invalidates the cached seed, with no output", async () => {
+    // A program that prints nothing on SIGWINCH leaves no byte to clear the
+    // cache; the size change alone moves the pane past the cached picture.
+    const { client, stream } = makeStream({ capture: "hello" });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    stream.detach();
+
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures); // nobody to capture for
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding"); // not the cached fast path
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
   it("a continue for a pane with no sink drops a capture still in flight", async () => {
     const { client, stream } = makeStream({ capture: "hello" });
     stream.attach(new RecordingSink());
