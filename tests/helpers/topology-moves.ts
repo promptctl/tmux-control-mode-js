@@ -1,10 +1,10 @@
 // tests/helpers/topology-moves.ts
 // The pane- and window-move cases every connection that routes scoped pane
 // output must follow, registered against whatever connection an opener
-// returns. tests/integration/pane-scope.test.ts runs them on TmuxClient and
-// examples/web-multiplexer/web/pane-stream-bridge.test.ts runs them through
-// the demo's browser path, so the demo cannot drift from the moves the library
-// follows.
+// returns. TmuxClient and each of the demo's connection paths run them (every
+// test file that imports this one), so the demo cannot drift from the moves
+// the library follows; the demo's runners read dist/, so rebuild before
+// running them.
 //
 // A tmux control client receives %output only for panes in its attached
 // session's windows, so every case provokes output from a pane in a window of
@@ -41,13 +41,28 @@ export interface ArrivedChunk {
   readonly data: Uint8Array;
 }
 
+interface PanePlace {
+  paneId: number;
+  windowId: number;
+  sessionId: number;
+}
+
+const LIST_ALL_PANES = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
+
 /** `{paneId, windowId, sessionId}` for every pane on the server. */
 export async function listAllPanes(
   conn: Pick<TmuxConnection, "execute">,
-): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
-  const response = await conn.execute(command);
-  return parseListReply(command, response.output, parsePaneListLine);
+): Promise<PanePlace[]> {
+  const response = await conn.execute(LIST_ALL_PANES);
+  return parseListReply(LIST_ALL_PANES, response.output, parsePaneListLine);
+}
+
+/** The same list, read out of band through the tmux CLI, so no connection
+ *  under test sends the query. */
+export function listAllPanesOn(socketName: string): PanePlace[] {
+  const argv = ["list-panes", "-a", "-F", PANE_LIST_FORMAT];
+  const out = tmux(socketName, argv);
+  return parseListReply(argv.join(" "), out.split("\n"), parsePaneListLine);
 }
 
 /** Make the pane print `scope-test-<paneId>`, typed into that pane by id. */
