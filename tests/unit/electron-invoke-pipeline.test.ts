@@ -14,14 +14,20 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
 import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js";
 import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js";
-import type { IpcMainEventLike } from "../../src/connectors/electron/types.js";
-import { createIpcHub } from "./_helpers/ipc-hub.js";
+import {
+  IPC,
+  type InvokeResultEnvelope,
+  type IpcMainEventLike,
+  type IpcRendererOnListener,
+} from "../../src/connectors/electron/types.js";
+import { createIpcHub, type FakeRenderer } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { replyTo } from "./_helpers/wire.js";
 
 interface Rig {
   readonly pipeline: InvokePipeline;
   readonly registry: SenderRegistry;
+  readonly renderer: FakeRenderer;
   readonly event: IpcMainEventLike;
   readonly sent: string[];
   /** Feed a raw control-mode chunk (e.g. a command's %begin/%end reply). */
@@ -60,16 +66,43 @@ function makeRig(): Rig {
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });
-  const event: IpcMainEventLike = createIpcHub().createRenderer().event;
-  return { pipeline, registry, event, sent, feed };
+  const renderer = createIpcHub().createRenderer();
+  return { pipeline, registry, renderer, event: renderer.event, sent, feed };
+}
+
+let lastId = 0;
+
+// Hand `req` to the pipeline as `renderer`'s invoke, and resolve with the reply
+// wherever main put it: on `IPC.event` under the invoke's id, or in the
+// handler's return.
+function answer(
+  pipeline: InvokePipeline,
+  renderer: FakeRenderer,
+  req: unknown,
+): Promise<InvokeResultEnvelope> {
+  const id = ++lastId;
+  const ipc = renderer.ipcRenderer;
+  return new Promise((resolve, reject) => {
+    const hear: IpcRendererOnListener = (_e, msg) => {
+      if (msg.type !== "invoke-reply" || msg.id !== id) return;
+      ipc.removeListener(IPC.event, hear);
+      resolve(msg.result);
+    };
+    ipc.on(IPC.event, hear);
+    pipeline.handle(renderer.event, id, req).then((ret) => {
+      if (ret.via === "event") return;
+      ipc.removeListener(IPC.event, hear);
+      resolve(ret.result);
+    }, reject);
+  });
 }
 
 describe("InvokePipeline — validation → envelope", () => {
   it("maps an unknown method to a BRIDGE_UNKNOWN_METHOD envelope without dispatching", async () => {
-    const { pipeline, event, sent } = makeRig();
+    const { pipeline, renderer, sent } = makeRig();
 
     await expect(
-      pipeline.handle(event, { method: "kill-server", args: [] }),
+      answer(pipeline, renderer, { method: "kill-server", args: [] }),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_UNKNOWN_METHOD" },
@@ -77,16 +110,33 @@ describe("InvokePipeline — validation → envelope", () => {
     expect(sent).toEqual([]);
   });
 
-  it("maps a malformed request envelope to a BRIDGE_INVALID_REQUEST envelope", async () => {
+  it("answers an invoke whose id is not an integer in the invoke's return, without dispatching", async () => {
     const { pipeline, event, sent } = makeRig();
 
     await expect(
-      pipeline.handle(event, "not-an-object"),
+      pipeline.handle(event, "7", { method: "execute", args: ["ls"] }),
+    ).resolves.toMatchObject({
+      via: "invoke",
+      result: {
+        status: "bridge-error",
+        error: { code: "BRIDGE_INVALID_REQUEST" },
+      },
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("maps a malformed request envelope to a BRIDGE_INVALID_REQUEST envelope", async () => {
+    const { pipeline, renderer, sent } = makeRig();
+
+    await expect(
+      answer(pipeline, renderer, "not-an-object"),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });
-    await expect(pipeline.handle(event, { args: [] })).resolves.toMatchObject({
+    await expect(
+      answer(pipeline, renderer, { args: [] }),
+    ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });
@@ -96,9 +146,9 @@ describe("InvokePipeline — validation → envelope", () => {
 
 describe("InvokePipeline — outcome encoding", () => {
   it("encodes a successful command as an `ok` envelope with the response", async () => {
-    const { pipeline, event, sent, feed } = makeRig();
+    const { pipeline, renderer, sent, feed } = makeRig();
 
-    const p = pipeline.handle(event, {
+    const p = answer(pipeline, renderer, {
       method: "execute",
       args: ["list-windows"],
     });
@@ -111,9 +161,12 @@ describe("InvokePipeline — outcome encoding", () => {
   });
 
   it("encodes a tmux %error as a `tmux-error` envelope (a successful bridge call)", async () => {
-    const { pipeline, event, sent, feed } = makeRig();
+    const { pipeline, renderer, sent, feed } = makeRig();
 
-    const p = pipeline.handle(event, { method: "execute", args: ["bogus"] });
+    const p = answer(pipeline, renderer, {
+      method: "execute",
+      args: ["bogus"],
+    });
     // The command reached tmux, which rejected it with an %error guard block.
     feed(replyTo(sent[0], [], "error"));
 
@@ -125,13 +178,12 @@ describe("InvokePipeline — destroyed sender", () => {
   it("aborts an invoke whose sender is already destroyed, without dispatching", async () => {
     const { pipeline, sent } = makeRig();
     const dead = createIpcHub().createRenderer();
-    const deadEvent = dead.event;
     dead.destroy();
 
     // The queued invoke lands after the renderer died. getOrCreate refuses to
     // resurrect it, so the pipeline aborts BEFORE dispatching.
     await expect(
-      pipeline.handle(deadEvent, { method: "execute", args: ["ls"] }),
+      answer(pipeline, dead, { method: "execute", args: ["ls"] }),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_ABORTED" },
@@ -141,10 +193,10 @@ describe("InvokePipeline — destroyed sender", () => {
   });
 
   it("aborts an in-flight dispatch when its sender is torn down mid-flight", async () => {
-    const { pipeline, registry, event, sent, feed } = makeRig();
+    const { pipeline, registry, renderer, event, sent, feed } = makeRig();
 
     // Dispatch is in flight, awaiting the command's %begin/%end.
-    const p = pipeline.handle(event, {
+    const p = answer(pipeline, renderer, {
       method: "execute",
       args: ["list-windows"],
     });
@@ -175,7 +227,7 @@ describe("InvokePipeline — drain", () => {
     // A valid execute dispatches to the client and awaits a %begin/%end that
     // never arrives (the fake transport records but never replies), so the
     // handler promise stays pending — proving the pipeline tracked it for drain.
-    void pipeline.handle(event, { method: "execute", args: ["ls"] });
+    void pipeline.handle(event, 1, { method: "execute", args: ["ls"] });
     expect(sent.length).toBeGreaterThan(0);
 
     // Without tracking, drain() would hang; the timeout path returns.

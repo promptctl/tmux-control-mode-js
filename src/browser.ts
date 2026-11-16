@@ -37,6 +37,7 @@ export type {
 export { TopologyRouter } from "./topology-router.js";
 export type { RunCommand } from "./topology-router.js";
 export { DeliveryQueue } from "./delivery-queue.js";
+export type { Outcome } from "./delivery-queue.js";
 
 export { isTmuxMessage } from "./emitter.js";
 export type {

@@ -30,6 +30,7 @@ import type {
 } from "../../src/browser.js";
 import { SinkRegistry, serverScope } from "../../src/browser.js";
 import type {
+  BeginMessage,
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
@@ -83,6 +84,7 @@ export type FakeMessage =
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
   | SubscriptionChangedMessage
+  | BeginMessage
   | FakeNotification;
 
 export type FakeMessageType = FakeMessage["type"];
@@ -151,6 +153,12 @@ export class FakeTmuxClient {
   // simulated tmux response time. Default 0 = next-macrotask resolution.
   private roundTripMs = 0;
 
+  // When the reply's `begin` is announced: with the reply, as `TmuxClient`
+  // does; inside `execute()`, as a synchronous connection (the mock server,
+  // the chaos transport) does; or never — a connection that breaks the order
+  // `TerminalConnection` relies on.
+  private beginAnnounced: "with-reply" | "in-execute" | "never" = "with-reply";
+
   // -------------------------------------------------------------------------
   // Public TmuxClient-shaped surface (subset)
   // -------------------------------------------------------------------------
@@ -196,9 +204,13 @@ export class FakeTmuxClient {
   /**
    * Mimics `TmuxClient.execute(cmd)` — used by PaneStream for capture-pane.
    * The `captureHandler` is the seam tests use to script payloads (e.g. a
-   * fake scrollback dump). Resolution is scheduled via `setTimeout(...,
+   * fake scrollback dump), called once per command of a `a ; b` command line,
+   * whose output is each command's in turn; `display-message` prints exactly
+   * one line, as tmux's does. Resolution is scheduled via `setTimeout(...,
    * roundTripMs)` so every value (including 0) yields a single, deterministic
-   * macrotask boundary between the call site and the response.
+   * macrotask boundary between the call site and the response, and the
+   * reply's `begin` is announced in that task before it resolves, as
+   * `TmuxClient` does.
    */
   execute(command: string): Promise<CommandResponse> {
     this.commandLog.push(command);
@@ -207,12 +219,23 @@ export class FakeTmuxClient {
     }
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
+    const announceBegin = (when: typeof this.beginAnnounced): void => {
+      if (this.beginAnnounced !== when) return;
+      this.dispatch({
+        type: "begin",
+        timestamp: Date.now(),
+        commandNumber,
+        flags: 1,
+      });
+    };
+    announceBegin("in-execute");
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
         // TmuxClient.execute, which rejects with a typed error on %error /
         // transport loss. Resolution and rejection share the one macrotask
         // boundary so timing stays deterministic across both paths.
+        announceBegin("with-reply");
         if (failure !== null) {
           reject(failure);
           return;
@@ -224,9 +247,13 @@ export class FakeTmuxClient {
         // timer as an unhandled exception, and never resolve a bogus body). This
         // keeps execute() total: it ALWAYS returns a promise that settles, like
         // the real TmuxClient.execute, which never throws synchronously.
-        let payload: string;
+        let output: string[];
         try {
-          payload = this.captureHandler(command);
+          output = command.split(" ; ").flatMap((cmd) => {
+            const payload = this.captureHandler(cmd);
+            if (cmd.startsWith("display-message")) return [payload];
+            return payload === "" ? [] : payload.split("\n");
+          });
         } catch (err) {
           reject(
             err instanceof Error ? err : new Error("capture handler failed"),
@@ -236,7 +263,7 @@ export class FakeTmuxClient {
         resolve({
           commandNumber,
           timestamp: Date.now(),
-          output: payload === "" ? [] : payload.split("\n"),
+          output,
           success: true,
         });
       }, this.roundTripMs);
@@ -369,6 +396,18 @@ export class FakeTmuxClient {
   /** Every command `execute()` has been called with, in call order. */
   commands(): readonly string[] {
     return this.commandLog;
+  }
+
+  /** Set when a reply's `begin` is announced (default: with the reply). */
+  setBeginAnnounced(when: "with-reply" | "in-execute" | "never"): void {
+    this.beginAnnounced = when;
+  }
+
+  /** The command whose reply carries `commandNumber` (as its `begin` does). */
+  commandNumbered(commandNumber: number): string {
+    const command = this.commandLog[commandNumber - 1];
+    if (command === undefined) throw new Error(`no command ${commandNumber}`);
+    return command;
   }
 
   /**

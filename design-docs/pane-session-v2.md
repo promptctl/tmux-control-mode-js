@@ -122,8 +122,9 @@
   2. Seed-then-live state machine in the stream
 
   States: idle → seeding → live, plus detached and disposed. During seeding, live output events buffer into
-  Uint8Array[]. When capture-pane and cursor query both resolve, the sink receives seed(captured, cursor, trailing)
-  in one synchronous step — the buffered live bytes ARE the `trailing` argument, so the snapshot and the bytes
+  Uint8Array[]. When the one capture-pane ; display-message line resolves, the sink receives seed(captured, cursor, trailing)
+  in one synchronous step — the buffered live bytes from the reply's %begin on ARE the `trailing` argument (those
+  before it tmux had already drawn into the snapshot), so the snapshot and the bytes
   captured behind it cross the seam as one ordered value — and state flips to live. No await between the handoff and
   the state flip — nothing mutates the buffer between reading it as `trailing` and handing it over.
 

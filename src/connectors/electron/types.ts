@@ -26,7 +26,10 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
 // ---------------------------------------------------------------------------
 
 export const IPC = {
-  /** main → renderer: every `IpcEventMessage` — client events and pane bytes. */
+  /**
+   * main → renderer: every `IpcEventMessage` — client events, pane bytes and
+   * invoke replies.
+   */
   event: "tmux:event",
   /** renderer → main: method dispatch via ipcRenderer.invoke. */
   invoke: "tmux:invoke",
@@ -52,15 +55,33 @@ export type RendererSendChannel =
 
 /**
  * What main sends a renderer on `IPC.event`: an event of the main-side client
- * (`client.on("*")`, plus the connection-state snapshot a late joiner gets) or
- * a pane's output bytes from the renderer's `BytesSink`, which sends tmux's
- * `%output` and `%extended-output` alike as `output`.
+ * (`client.on("*")`, plus the connection-state snapshot a late joiner gets), a
+ * pane's output bytes from the renderer's `BytesSink`, which sends tmux's
+ * `%output` and `%extended-output` alike as `output`, or an invoke's reply.
  *
  * [LAW:types-are-the-program] The channel's payload is declared once, here,
  * and both ends are typed against it: `WebContentsLike.send` checks every
  * producer, `IpcRendererOnListener` hands the renderer the union with no cast.
  */
-export type IpcEventMessage = EmitterMessage | OutputMessage;
+export type IpcEventMessage =
+  | EmitterMessage
+  | OutputMessage
+  | InvokeReplyMessage;
+
+/**
+ * The reply to the renderer's invoke `id`.
+ *
+ * [LAW:no-ambient-temporal-coupling] Electron returns an invoke's own reply on
+ * a pipe apart from `webContents.send`, and can deliver it ahead of events
+ * main sent before it. `IPC.event` delivers in the order main sends, so a
+ * reply sent on it follows every event tmux wrote ahead of it (a command's
+ * `%begin`, the pane bytes before it), as on every other connector.
+ */
+export interface InvokeReplyMessage {
+  readonly type: "invoke-reply";
+  readonly id: number;
+  readonly result: InvokeResultEnvelope;
+}
 
 // ---------------------------------------------------------------------------
 // Structural "like" interfaces for Electron.
@@ -146,11 +167,11 @@ export type IpcMainOnListener = (
   ...args: unknown[]
 ) => void;
 
-/** Main answers every `IPC.invoke` with an envelope, whatever the renderer sent. */
+/** Main answers every `IPC.invoke`, whatever the renderer sent. */
 export type IpcMainInvokeListener = (
   event: IpcMainEventLike,
   ...args: unknown[]
-) => Promise<InvokeResultEnvelope>;
+) => Promise<InvokeReturn>;
 
 export interface IpcMainLike {
   /** `IPC.invoke` is the one channel main handles. */
@@ -176,10 +197,12 @@ export type IpcRendererOnListener = (
 ) => void;
 
 export interface IpcRendererLike {
+  /** `id` names the invoke's reply; one proxy's ids never repeat another's. */
   invoke(
     channel: typeof IPC.invoke,
+    id: number,
     req: InvokeRequest,
-  ): Promise<InvokeResultEnvelope>;
+  ): Promise<InvokeReturn>;
   // A renderer's own sends are typed per channel; main still parses what
   // arrives (`parseAckMessage`), since a renderer is untrusted.
   send(channel: typeof IPC.register | typeof IPC.unregister): void;
@@ -200,8 +223,7 @@ export interface IpcRendererLike {
 export type InvokeRequest = RpcRequest;
 
 // ---------------------------------------------------------------------------
-// InvokeResultEnvelope — the wire shape `ipcMain.handle("tmux:invoke")`
-// returns and `ipcRenderer.invoke(...)` resolves to.
+// InvokeResultEnvelope — what an invoke came to, as main replies it.
 //
 // [LAW:one-source-of-truth] Both main.ts (which constructs envelopes) and
 // renderer.ts (which dispatches on `status` and reconstructs typed errors)
@@ -225,6 +247,16 @@ export type InvokeResultEnvelope =
       readonly status: "bridge-error";
       readonly error: BridgeErrorPayloadType;
     };
+
+/**
+ * Where main put an invoke's reply: on `IPC.event` (an `InvokeReplyMessage`)
+ * when the page its WebContents shows asked, or else in the invoke's own
+ * return — a subframe or an ended page hears nothing on `IPC.event`, and a
+ * request with no usable id has no reply to name.
+ */
+export type InvokeReturn =
+  | { readonly via: "event" }
+  | { readonly via: "invoke"; readonly result: InvokeResultEnvelope };
 
 // ---------------------------------------------------------------------------
 // Renderer → main: output-byte ack frame.

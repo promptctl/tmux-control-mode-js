@@ -26,10 +26,16 @@ import type { BridgeConnection } from "../bridge-connection.js";
 import { waitAtMost } from "../wait-at-most.js";
 import {
   BridgeError,
+  IPC,
   type InvokeResultEnvelope,
+  type InvokeReturn,
   type IpcMainEventLike,
 } from "./types.js";
-import type { PendingDispatch, SenderRegistry } from "./sender-registry.js";
+import type {
+  PendingDispatch,
+  SenderRegistry,
+  SenderState,
+} from "./sender-registry.js";
 
 // ---------------------------------------------------------------------------
 // RpcError → BridgeError mapping + envelope construction at the IPC boundary.
@@ -128,7 +134,7 @@ export class InvokePipeline {
   // set (owned by SenderRegistry, flagged on teardown) — not duplicated here.
   // This Set carries only the await targets for `drain`; it is populated on
   // invoke and self-cleans when each call settles.
-  private readonly handlerCalls = new Set<Promise<InvokeResultEnvelope>>();
+  private readonly handlerCalls = new Set<Promise<InvokeReturn>>();
 
   constructor(private readonly deps: InvokePipelineDeps) {}
 
@@ -136,8 +142,8 @@ export class InvokePipeline {
   handle = (
     event: IpcMainEventLike,
     ...args: unknown[]
-  ): Promise<InvokeResultEnvelope> => {
-    const p = this.run(event, ...args);
+  ): Promise<InvokeReturn> => {
+    const p = this.answer(event, args[0], args[1]);
     this.handlerCalls.add(p);
     // The envelope-returning handler never rejects under normal flow, but keep
     // the symmetric cleanup so a programming error (a rejection that somehow
@@ -161,9 +167,46 @@ export class InvokePipeline {
     await waitAtMost(all, timeoutMs);
   }
 
-  private async run(
+  private async answer(
     event: IpcMainEventLike,
-    ...args: unknown[]
+    rawId: unknown,
+    raw: unknown,
+  ): Promise<InvokeReturn> {
+    if (typeof rawId !== "number" || !Number.isSafeInteger(rawId)) {
+      const err = new RpcError(
+        "INVALID_REQUEST",
+        "invoke id is not an integer",
+      );
+      return { via: "invoke", result: rpcErrorEnvelope(err) };
+    }
+    const sender = this.deps.registry.getOrCreate(event);
+    // [LAW:no-ambient-temporal-coupling] The sending page had already ended
+    // when this queued invoke ran (its teardown fired first), or a subframe
+    // sent it. There is no live sender to bill and no point running a real
+    // command for a page that is gone — the reply is moot. Abort before
+    // creating any state, so no peer is minted for the next page to inherit.
+    if (sender === undefined) {
+      const result = abortedEnvelope(methodLabel(raw), NOT_FROM_PAGE_SHOWN);
+      return { via: "invoke", result };
+    }
+    const dispatch: PendingDispatch = { aborted: false };
+    sender.pending.add(dispatch);
+    const result = await this.run(sender, dispatch, raw).finally(() =>
+      sender.pending.delete(dispatch),
+    );
+    // [LAW:no-ambient-temporal-coupling] The reply rides `IPC.event`, behind
+    //   every event main sent the page before it — unless the sender was
+    //   torn down meanwhile: `IPC.event` now reaches whatever document the
+    //   WebContents shows next, so the reply goes back in the return.
+    if (dispatch.aborted) return { via: "invoke", result };
+    sender.wc.send(IPC.event, { type: "invoke-reply", id: rawId, result });
+    return { via: "event" };
+  }
+
+  private async run(
+    sender: SenderState,
+    dispatch: PendingDispatch,
+    raw: unknown,
   ): Promise<InvokeResultEnvelope> {
     // [LAW:dataflow-not-control-flow] The handler ALWAYS returns an
     // InvokeResultEnvelope — every outcome (success, tmux %error, bridge
@@ -180,39 +223,23 @@ export class InvokePipeline {
     //
     // [LAW:single-enforcer] parseRpcRequest is still the only validation site;
     // RpcError never escapes — it is mapped to BridgeError at this seam.
-    const sender = this.deps.registry.getOrCreate(event);
-    // [LAW:no-ambient-temporal-coupling] The sending page had already ended
-    // when this queued invoke ran (its teardown fired first). There is no live
-    // sender to bill and no point running a real command for a page that is
-    // gone — the reply is moot. Abort before creating any state, so no peer is
-    // minted for the next page to inherit.
-    if (sender === undefined) {
-      return abortedEnvelope(methodLabel(args[0]), NOT_FROM_PAGE_SHOWN);
-    }
-    const dispatch: PendingDispatch = { aborted: false };
-    sender.pending.add(dispatch);
-
+    let req: RpcRequest;
     try {
-      let req: RpcRequest;
-      try {
-        req = parseRpcRequest(args[0]);
-      } catch (err) {
-        if (err instanceof RpcError) return rpcErrorEnvelope(err);
-        return internalErrorEnvelope("<unknown>", err);
-      }
-      const outcome = await dispatchBridgeRequest(
-        this.deps.bridge,
-        this.deps.client,
-        sender.peer,
-        req,
-      );
-      // [LAW:no-ambient-temporal-coupling] If the sender was torn down while
-      // the dispatch was in flight, the abort flag is the single owner of
-      // "this reply is moot" — it overrides any outcome.
-      if (dispatch.aborted) return abortedEnvelope(req.method, PEER_TORN_DOWN);
-      return encodeOutcome(outcome);
-    } finally {
-      sender.pending.delete(dispatch);
+      req = parseRpcRequest(raw);
+    } catch (err) {
+      if (err instanceof RpcError) return rpcErrorEnvelope(err);
+      return internalErrorEnvelope("<unknown>", err);
     }
+    const outcome = await dispatchBridgeRequest(
+      this.deps.bridge,
+      this.deps.client,
+      sender.peer,
+      req,
+    );
+    // [LAW:no-ambient-temporal-coupling] If the sender was torn down while
+    // the dispatch was in flight, the abort flag is the single owner of
+    // "this reply is moot" — it overrides any outcome.
+    if (dispatch.aborted) return abortedEnvelope(req.method, PEER_TORN_DOWN);
+    return encodeOutcome(outcome);
   }
 }
