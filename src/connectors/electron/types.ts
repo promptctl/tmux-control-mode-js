@@ -33,9 +33,10 @@ export const IPC = {
   event: "tmux:event",
   /** renderer → main: method dispatch via ipcRenderer.invoke. */
   invoke: "tmux:invoke",
-  /** renderer → main: "send me events". */
+  /** renderer → main: one proxy on the page wants events. */
   register: "tmux:register",
-  /** renderer → main: "stop sending me events". */
+  /** renderer → main: that proxy is done. The page's sender ends with its
+   *  last proxy's unregister, or with the page. */
   unregister: "tmux:unregister",
   /**
    * renderer → main: "I processed N output bytes for pane P". Drives the

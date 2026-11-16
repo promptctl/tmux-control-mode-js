@@ -38,7 +38,7 @@ import { WebContentsSink } from "./sink.js";
 // Subscription ownership, refcount, and outstanding-byte accounting all live
 // inside the shared BridgeConnection helper, keyed by the `peer` token below.
 // SenderState carries only what is electron-specific: the WebContents, the
-// page-end listener handle, the isSubscribed flag that gates event forwarding,
+// page-end listener handle, the registration count that gates event forwarding,
 // and the in-flight invoke abort-flags. The invoke pipeline creates the
 // PendingDispatch objects and owns their lifecycle; this record is where they
 // live and where teardown flags them, so there is one place a sender's fate is
@@ -61,9 +61,10 @@ export interface SenderState {
   /** Token returned by BridgeConnection.registerPeer — the Map key the helper
    *  uses internally for refcount + outstanding-byte accounting. */
   readonly peer: Peer;
-  /** True once the page has sent IPC.register; a sender an invoke created
-   *  gets no events until then. */
-  isSubscribed: boolean;
+  /** How many proxies on the page have sent IPC.register and not yet
+   *  IPC.unregister. The page hears events while any is held; a sender an
+   *  invoke created holds none until one registers. */
+  registrations: number;
   /**
    * The exact listeners registered on `wc`: `onPageEnd` with `once` for every
    * PAGE_END_EVENTS entry, `onLoadFailed` with `on` for `did-fail-load`.
@@ -171,7 +172,7 @@ export class SenderRegistry {
     const state: SenderState = {
       wc,
       peer,
-      isSubscribed: false,
+      registrations: 0,
       onPageEnd,
       onLoadFailed,
       pending: new Set(),
@@ -184,7 +185,7 @@ export class SenderRegistry {
   }
 
   /**
-   * Handle a renderer's IPC.register: mark it subscribed, attach the per-peer
+   * Handle a renderer's IPC.register: count one more registration, attach the per-peer
    * byte forwarder exactly once, and send the current connection-state snapshot
    * so a late-joining renderer has the lifecycle state immediately.
    */
@@ -195,7 +196,7 @@ export class SenderRegistry {
     // reaches only the main frame's document.
     if (state === undefined) return;
     const wc = state.wc;
-    state.isSubscribed = true;
+    state.registrations++;
     // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
     // exactly once per registration. Each renderer's sink is the routing
     // primitive — the substrate's SinkRegistry.dispatch fans out; no per-chunk
@@ -266,12 +267,18 @@ export class SenderRegistry {
   }
 
   /**
-   * Handle a renderer's IPC.unregister. An unregister from a page that has
-   * ended must not tear down the page shown now.
+   * Handle a renderer's IPC.unregister: release one registration, and end the
+   * sender with its last. Every proxy on the page shares this sender, so one
+   * proxy closing must leave the others theirs. A sender holding no
+   * registration has none to release; its page's end tears it down. An
+   * unregister from a page that has ended must not touch the page shown now.
    */
   unregister(event: IpcMainEventLike): void {
     if (!sentByLivePage(event)) return;
-    this.teardown(event.sender);
+    const state = this.senders.get(event.sender);
+    if (state === undefined || state.registrations === 0) return;
+    state.registrations--;
+    if (state.registrations === 0) this.teardown(state.wc);
   }
 
   /**
@@ -341,7 +348,7 @@ export class SenderRegistry {
         this.teardown(wc);
         continue;
       }
-      if (!state.isSubscribed) continue;
+      if (state.registrations === 0) continue;
       if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
       wc.send(IPC.event, msg);
     }

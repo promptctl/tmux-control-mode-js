@@ -1513,6 +1513,54 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Every proxy on a page shares the page's one sender: closing one leaves the
+// others hearing events, with each reply's %begin ahead of it (what a
+// PaneStream seed pairs its capture with).
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — two proxies on one page", () => {
+  it("closing one proxy leaves the other its events, %begins and subscriptions", async () => {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+
+    const r = hub.createRenderer();
+    const closing = createRendererBridge(r.ipcRenderer);
+    const staying = createRendererBridge(r.ipcRenderer);
+    const sub = staying.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
+    t.answer();
+    await sub;
+
+    closing.close();
+    await hub.settled();
+    expect(t.commands()).not.toContain(refreshClientUnsubscribe("focus"));
+
+    const windows: number[] = [];
+    staying.on("window-add", (ev) => windows.push(ev.windowId));
+    t.feed("%window-add @2\n");
+    const begins: number[] = [];
+    staying.on("begin", (ev) => begins.push(ev.commandNumber));
+    const reply = staying.execute("list-windows");
+    await hub.settled();
+    t.answer(["@1"]);
+    const response = await reply;
+    await hub.settled();
+
+    expect(windows).toEqual([2]);
+    expect(begins).toEqual([response.commandNumber]);
+
+    // The page's last proxy closing ends its sender.
+    staying.close();
+    await hub.settled();
+    expect(r.pageListenerCount()).toBe(0);
+    expect(t.commands()).toContain(refreshClientUnsubscribe("focus"));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // M8 — invokeTimeoutMs.
 // ---------------------------------------------------------------------------
 

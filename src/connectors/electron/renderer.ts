@@ -375,7 +375,10 @@ export class TmuxClientProxy
   }
 
   /**
-   * Unsubscribe this renderer from further events and stop listening locally.
+   * Stop listening locally and release this proxy's registration with main.
+   * Other proxies on the page keep hearing events: main serves the page one
+   * sender, ended by its last proxy's close or by the page ending. What the
+   * page holds — subscriptions, size claims — it holds until then.
    * Does NOT close the main-side TmuxClient — the main process owns that
    * lifecycle (closing a renderer shouldn't tear down tmux for other windows).
    *

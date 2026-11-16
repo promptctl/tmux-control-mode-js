@@ -395,6 +395,34 @@ describe("SenderRegistry — ack", () => {
   });
 });
 
+describe("SenderRegistry — unregister", () => {
+  it("ends a sender with its last registration, not its first", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    registry.register(r.event);
+    registry.register(r.event);
+
+    registry.unregister(r.event);
+    expect(bridge.removePeer).not.toHaveBeenCalled();
+    registry.unregister(r.event);
+    expect(bridge.removePeer).toHaveBeenCalledTimes(1);
+    expect(r.pageListenerCount()).toBe(0);
+  });
+
+  it("leaves a sender holding no registration to its page's end", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    mustCreate(registry, r.event); // an invoke's sender: never registered
+
+    registry.unregister(r.event);
+    expect(bridge.removePeer).not.toHaveBeenCalled();
+    r.destroy();
+    expect(bridge.removePeer).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("SenderRegistry — teardown", () => {
   it("detaches bytes, removes the destroyed listener, and removePeers exactly once", () => {
     const bridge = makeBridge();
@@ -459,7 +487,7 @@ describe("SenderRegistry — broadcast", () => {
     const subEvents = captureEvents(subscribed);
     const unsubEvents = captureEvents(unsubscribed);
 
-    registry.register(subscribed.event); // isSubscribed = true
+    registry.register(subscribed.event); // one registration: hears events
     registry.getOrCreate(unsubscribed.event); // never register → not subscribed
     await hub.settled();
     subEvents.length = 0; // drop the register-time connection-state snapshot
