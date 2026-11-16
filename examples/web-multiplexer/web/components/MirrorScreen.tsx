@@ -15,7 +15,7 @@
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react-lite";
 import type { XtermSink } from "../window-terminal-internals.ts";
-import { FittedXtermSink } from "../fitted-xterm-sink.ts";
+import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
 import type { MirrorViewerBridge } from "../mirror-viewer-bridge.ts";
 
 const FONT_FAMILY =
@@ -38,6 +38,7 @@ export const MirrorScreen = observer(function MirrorScreen({
     if (container === null) return undefined;
     const sink = new FittedXtermSink({
       container,
+      scrollback: SCROLLBACK,
       // Read-only: the projection must not accept keystrokes.
       xterm: {
         fontFamily: FONT_FAMILY,

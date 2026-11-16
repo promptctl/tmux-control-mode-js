@@ -72,8 +72,11 @@ export interface TerminalSink {
    * autowrap; after it: cursor/keypad/insert) that PaneStream derives from
    * `display-message` state — those escapes are injected by the library, not
    * emitted by `capture-pane`. The grid is the pane's history above its
-   * screen, so each seed replaces the sink's scrollback with tmux's: a pane
-   * recaptured any number of times holds its history once. Each element of
+   * screen, and the erase acts on the screen buffer the seed draws into: a
+   * main-screen seed replaces the sink's scrollback with tmux's, so a pane
+   * recaptured any number of times holds its history once. (The alternate
+   * screen has no scrollback; the main buffer keeps what it held until the
+   * next main-screen seed.) Each element of
    * `trailing` is the same raw byte stream `write()` carries, so the renderer
    * is the single decoding authority; the library never interprets the
    * captured grid bytes.

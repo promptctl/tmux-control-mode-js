@@ -55,7 +55,10 @@ export interface WindowTerminalOptions {
   /** `TmuxClient`, `WebSocketTmuxClient` or the Electron renderer client. */
   readonly connection: TerminalConnection;
   readonly window: WindowId;
-  /** Scrollback lines per pane, captured on arrival and kept. Default 2000. */
+  /**
+   * Scrollback lines per pane, taken from tmux each time the pane is
+   * captured (arrival, resize, `%continue`, reconnect). Default 2000.
+   */
   readonly history?: number;
   /** Default `{ window: "box", font: 14 }`. */
   readonly sizing?: Sizing;

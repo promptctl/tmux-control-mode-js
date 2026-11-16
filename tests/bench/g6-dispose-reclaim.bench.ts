@@ -156,7 +156,7 @@ function runCycle(): void {
   const streams: PaneStream[] = [];
   for (let i = 0; i < STREAM_COUNT; i++) {
     const container = makeContainer();
-    const sink = new XtermSink({ container });
+    const sink = new XtermSink({ scrollback: 2000, container });
     const stream = new PaneStream({
       client,
       paneId: i + 1,

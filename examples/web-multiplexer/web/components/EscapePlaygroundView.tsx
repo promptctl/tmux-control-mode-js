@@ -35,7 +35,7 @@ import {
 } from "@mantine/core";
 import { isConnectionGone } from "@promptctl/tmux-control-mode-js/browser";
 import type { XtermSink } from "../window-terminal-internals.ts";
-import { FittedXtermSink } from "../fitted-xterm-sink.ts";
+import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
@@ -561,7 +561,8 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
   // [LAW:single-enforcer] One ObservablePaneStream per pane id, stable across
   // re-renders; disposed when the pane unmounts.
   const obs = useMemo(
-    () => new ObservablePaneStream({ client, paneId }),
+    () =>
+      new ObservablePaneStream({ client, paneId, historyLines: SCROLLBACK }),
     [client, paneId],
   );
   useEffect(() => () => obs.dispose(), [obs]);
@@ -572,6 +573,7 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
     const { stream } = obs;
     const sink = new FittedXtermSink({
       container,
+      scrollback: SCROLLBACK,
       xterm: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });

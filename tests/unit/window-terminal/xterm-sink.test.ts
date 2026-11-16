@@ -186,7 +186,7 @@ function newSink(): {
   term: MockTerminal;
 } {
   const container = makeContainer();
-  const sink = new XtermSink({ container });
+  const sink = new XtermSink({ scrollback: 2000, container });
   if (lastTerm === null) throw new Error("Terminal mock not constructed");
   return { sink, container, term: lastTerm };
 }
@@ -578,7 +578,10 @@ describe("XtermSink: in-place option setters (O10)", () => {
   });
 
   it("the renderer is read from the screen, and a listener hears it change until it detaches or the sink is disposed", async () => {
-    const sink = new XtermSink({ container: makeContainer() });
+    const sink = new XtermSink({
+      scrollback: 2000,
+      container: makeContainer(),
+    });
     const screen = lastTerm?.element?.querySelector(".xterm-screen");
     if (screen === null || screen === undefined) {
       throw new Error("the terminal opened no screen");
@@ -615,6 +618,7 @@ describe("XtermSink: in-place option setters (O10)", () => {
     const b = { activate: vi.fn(), dispose: vi.fn() };
     const addons = vi.fn(() => [a, b]);
     new XtermSink({
+      scrollback: 2000,
       container: makeContainer(),
       xterm: { cursorStyle: "bar" },
       addons,
@@ -635,7 +639,7 @@ describe("XtermSink: in-place option setters (O10)", () => {
   });
 
   it("counts a character's cells as tmux does, with no option or addon from the host", () => {
-    new XtermSink({ container: makeContainer() });
+    new XtermSink({ scrollback: 2000, container: makeContainer() });
     const term = lastTerm;
     if (term === null) throw new Error("Terminal mock not constructed");
     expect(term.activeUnicode).toBe(TMUX_CELLS.version);
@@ -657,6 +661,7 @@ describe("XtermSink: in-place option setters (O10)", () => {
     expect(
       () =>
         new XtermSink({
+          scrollback: 2000,
           container: makeContainer(),
           addons: () => [unicode11],
         }),
@@ -678,7 +683,11 @@ describe("XtermSink: in-place option setters (O10)", () => {
     const c = { activate: vi.fn(), dispose: vi.fn() };
     expect(
       () =>
-        new XtermSink({ container: makeContainer(), addons: () => [a, b, c] }),
+        new XtermSink({
+          scrollback: 2000,
+          container: makeContainer(),
+          addons: () => [a, b, c],
+        }),
     ).toThrow(refused);
     const term = lastTerm;
     if (term === null) throw new Error("Terminal mock not constructed");
@@ -707,7 +716,11 @@ describe("XtermSink: in-place option setters (O10)", () => {
     const d = { activate: vi.fn(), dispose: vi.fn() };
     let thrown: unknown;
     try {
-      new XtermSink({ container: makeContainer(), addons: () => [b, c, d] });
+      new XtermSink({
+        scrollback: 2000,
+        container: makeContainer(),
+        addons: () => [b, c, d],
+      });
     } catch (e) {
       thrown = e;
     }
@@ -726,9 +739,9 @@ describe("XtermSink: in-place option setters (O10)", () => {
       }),
     );
     try {
-      expect(() => new XtermSink({ container: makeContainer() })).toThrow(
-        broken,
-      );
+      expect(
+        () => new XtermSink({ scrollback: 2000, container: makeContainer() }),
+      ).toThrow(broken);
       expect(lastTerm?.dispose).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();

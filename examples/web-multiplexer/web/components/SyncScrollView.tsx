@@ -37,7 +37,7 @@ import {
   Tooltip,
 } from "@mantine/core";
 import type { XtermSink } from "../window-terminal-internals.ts";
-import { FittedXtermSink } from "../fitted-xterm-sink.ts";
+import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 import {
@@ -469,6 +469,7 @@ function SyncSurface({
     if (container === null) return undefined;
     const sink = new FittedXtermSink({
       container,
+      scrollback: SCROLLBACK,
       xterm: { fontFamily: FONT_FAMILY },
       fontSize: initial.current.fontSize,
     });

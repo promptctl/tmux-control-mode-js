@@ -20,6 +20,9 @@ import {
 
 const FONT_MIN = 6;
 const DEFAULT_FONT_MAX = 14;
+// Scrollback for every demo screen. A screen fed by a PaneStream captures this
+// many lines too, since each seed replaces the scrollback with the capture.
+export const SCROLLBACK = 10000;
 
 export class FittedXtermSink extends XtermSink {
   private readonly box: HTMLElement;
