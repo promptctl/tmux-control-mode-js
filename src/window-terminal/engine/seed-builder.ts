@@ -164,8 +164,18 @@ function parseSeedState(line: string): SeedState {
   //   content; ?1049h enters alt screen before drawing alt-screen content.
   //   Without explicit CUP-home, ?1049l restores the cursor saved at the
   //   matching ?1049h entry point rather than row 0 — content draws mid-screen.
+  // A main-screen seed is the pane's whole picture, history included, so it
+  //   erases the screen (ED 2) and the scrollback (ED 3) before drawing: a
+  //   recapture written over an earlier one replaces its history rather than
+  //   stacking another copy into the scrollback. An alt-screen seed leaves the
+  //   main screen's scrollback alone — the alternate buffer has none to stack,
+  //   and that scrollback is what the user returns to when the program exits.
   const preamble =
-    mode(f[2], `${ESC}[?1049h${ESC}[H`, `${ESC}[?1049l${ESC}[H`) + // screen + CUP home
+    mode(
+      f[2],
+      `${ESC}[?1049h${ESC}[H`,
+      `${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J`,
+    ) + // screen + CUP home (+ erase, main screen)
     mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
 
   // After content: input/cursor modes that the captured grid can't carry.

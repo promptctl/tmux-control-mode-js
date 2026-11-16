@@ -209,17 +209,14 @@ export class XtermSink implements TerminalSink {
       // supersedes this snapshot and the bytes buffered behind it.
       this.gate.bufferSeed({ captured, cursor });
     } else {
-      // Gate open — apply the snapshot inline. This is authoritative by
-      // construction, WITHOUT a clear: a reseed's `captured` is a snapshot
-      // normalized to exactly `pane_height` rows (tested: PaneStream
-      // "normalizes the seed to exactly pane_height rows") led by a screen-mode
-      // preamble that homes the cursor, so writing it rewrites EVERY visible row
-      // — no stale visible row can survive underneath. That holds equally for a
-      // steady-state reseed and for one arriving in the post-cap-drain window
-      // (gate opened early because the pane-size subscription was silent), so it
-      // no longer rides on "this reseed's capture postdates the drained bytes"
-      // folklore. Scrollback above the visible screen is deliberately preserved
-      // (a clear would discard the history xterm accumulated during a drain).
+      // Gate open — apply the snapshot inline, with no `terminal.clear()`. The
+      // snapshot replaces what the terminal shows by its own bytes: its
+      // preamble erases the main screen and scrollback before drawing (see
+      // buildSeed), and it holds every byte this sink was given before it — a
+      // cap-forced drain's included — so nothing the erase removes is lost.
+      // [LAW:dataflow-not-control-flow] The reset rides in the value, in order
+      //   with the writes before it; `terminal.clear()` acts at once, ahead of
+      //   whatever xterm has queued but not yet parsed.
       this.applySeed(captured, cursor);
     }
     for (const chunk of trailing) this.write(chunk);

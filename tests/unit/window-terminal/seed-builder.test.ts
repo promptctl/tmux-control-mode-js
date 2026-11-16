@@ -12,6 +12,7 @@
 //   both proves the extraction was behavior-preserving.
 
 import { describe, it, expect } from "vitest";
+import { Terminal } from "@xterm/headless";
 import { buildSeed } from "../../../src/window-terminal/engine/seed-builder.js";
 
 const ESC = "\x1b";
@@ -107,10 +108,17 @@ describe("buildSeed: terminal-mode escapes", () => {
     // cursor_flag=1, insert=0, app-cursor=1, keypad=1 → ?25h, 4l, ?1h, ESC=.
     const { captured } = buildSeed(["x"], "0;0;0;1;0;1;1;0;;", 0);
     expect(text(captured)).toBe(
-      `${ESC}[?1049l${ESC}[H${ESC}[?7l` + // preamble: main screen + home + wrap off
+      `${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J${ESC}[?7l` + // preamble: main screen, home, erased + wrap off
         "x" +
         `${ESC}[?25h${ESC}[4l${ESC}[?1h${ESC}=`, // epilogue
     );
+  });
+
+  it("a main-screen pane's preamble erases the screen and its scrollback before drawing", () => {
+    const { captured } = buildSeed(["hi"], "0;0;0;0;0;0;0;0;;", 0);
+    expect(
+      text(captured).startsWith(`${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J`),
+    ).toBe(true);
   });
 
   it("treats an empty mode field as a no-op (never forces the mode off)", () => {
@@ -119,5 +127,59 @@ describe("buildSeed: terminal-mode escapes", () => {
     const { captured } = buildSeed(["x"], ";;;;;;;;;", 0);
     // No cursor, no modes → captured is exactly the content.
     expect(text(captured)).toBe("x");
+  });
+});
+
+describe("buildSeed: a seed applied again leaves the pane's history once", () => {
+  // Every recapture (resize, %continue, reconnect) hands the sink a fresh seed
+  // carrying the pane's history, written over whatever the terminal shows. Each
+  // seed must leave tmux's picture there once, not stack its history on the
+  // scrollback an earlier seed left. @xterm/headless runs the browser
+  // terminal's own input handler, so this is what an XtermSink shows.
+  // The pane holds less history than the capture asks for, as most do: a
+  // history deeper than the scrollback would push every earlier copy out.
+  const DEPTH = 100;
+  const HISTORY = ["h0", "h1", "h2", "h3", "h4"];
+  const SCREEN = ["s0", "s1", "s2"];
+  // Cursor 0;2, main screen, pane_height 3, history_size 5.
+  const STATE = `0;2;0;1;0;0;0;1;${SCREEN.length};${HISTORY.length}`;
+  const seed = buildSeed([...HISTORY, ...SCREEN, ""], STATE, DEPTH);
+
+  // A terminal whose scrollback is the capture depth, as WindowRenderer builds
+  // each pane's (one `history` number for both). Headless xterm's buffer API
+  // is proposed.
+  const terminal = (): Terminal =>
+    new Terminal({
+      cols: 10,
+      rows: SCREEN.length,
+      scrollback: DEPTH,
+      allowProposedApi: true,
+    });
+
+  const write = (term: Terminal, data: Uint8Array | string): Promise<void> =>
+    new Promise((resolve) => term.write(data, resolve));
+
+  const lines = (term: Terminal): string[] => {
+    const buf = term.buffer.normal;
+    return Array.from({ length: buf.length }, (_, i) =>
+      (buf.getLine(i)?.translateToString(true) ?? "").trimEnd(),
+    );
+  };
+
+  it("holds the history then the screen exactly once after three seeds", async () => {
+    const term = terminal();
+    for (let i = 0; i < 3; i++) await write(term, seed.captured);
+    expect(lines(term)).toEqual([...HISTORY, ...SCREEN]);
+    term.dispose();
+  });
+
+  it("replaces what the terminal showed before it, scrollback included", async () => {
+    // Every byte the sink got before a seed is inside it (TerminalSink.seed),
+    // so the seed's history is the truth and nothing printed earlier survives.
+    const term = terminal();
+    await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
+    await write(term, seed.captured);
+    expect(lines(term)).toEqual([...HISTORY, ...SCREEN]);
+    term.dispose();
   });
 });

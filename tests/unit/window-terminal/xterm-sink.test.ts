@@ -528,15 +528,12 @@ describe("XtermSink: pre-resize write buffer is bounded (kwv.3)", () => {
     sink.dispose();
   });
 
-  it("a reseed after a cap-forced drain applies inline WITHOUT clearing (SD2)", () => {
+  it("a reseed after a cap-forced drain applies inline, in order behind the drained bytes (SD2)", () => {
     // After a cap-forced drain the gate is open but the first real resize has
-    // not happened, so drained content + its scrollback sit on screen. A seed
-    // arriving now is always a RESEED — a full pane_height-normalized snapshot
-    // led by a screen-mode preamble, so writing it rewrites every visible row
-    // by construction. It must NOT clear: a clear would blank the screen on a
-    // failed (empty) reseed and discard the scrollback xterm accumulated during
-    // the drain. Correctness rides on the tested normalization invariant, not a
-    // reset. [LAW:no-ambient-temporal-coupling]
+    // not happened, so drained content sits on screen. A seed arriving now is
+    // written inline, in order behind it: the seed's own preamble does the
+    // reset (buildSeed), so the sink never calls terminal.clear(), which would
+    // act ahead of the bytes xterm has queued. [LAW:no-ambient-temporal-coupling]
     const { sink, term } = newSink();
     const chunk = new Uint8Array(MiB);
     for (let i = 0; i < 8; i++) sink.write(chunk); // overflow → cap-forced drain

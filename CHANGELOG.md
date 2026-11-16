@@ -71,6 +71,14 @@ All notable changes to this project are documented here. Format follows
   had not drained. `close()` releases the proxy's own subscriptions, size
   claims and unacked bytes, and nothing of the others'.
 
+- `./window-terminal`: a pane's scrollback holds its history once, however
+  often it is captured again. Each resize, `%continue` or reconnect wrote
+  the history in again under what was already there, so a pane resized
+  three times scrolled back through it three times. A main-screen seed now
+  erases the screen and the scrollback before it draws (`ESC[2J ESC[3J`
+  after its `ESC[?1049l ESC[H`), so a custom `TerminalSink` gets the same
+  reset in the bytes.
+
 - `./window-terminal`: a pane seeded while its program prints draws each
   line once. Every byte that reached the client during the capture was
   replayed after the snapshot, so lines tmux had already drawn into it
