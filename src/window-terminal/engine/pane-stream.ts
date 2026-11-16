@@ -730,8 +730,11 @@ export class PaneStream implements ReseedTarget {
    * The pane moved past every picture of it this stream holds: drop the cache
    * and mark an in-flight capture stale. The triggers are a reconnect,
    * `%pause`, a recapture (`%continue`, a new size), a byte while detached,
-   * and a detach that drops buffered bytes. [LAW:single-enforcer] One method
-   * for both, so a stale capture never has a cache to fall back on.
+   * and a detach that drops buffered bytes. [LAW:single-enforcer] The only
+   * place a capture is marked stale, and it always drops the cache with it, so
+   * a stale capture never has a cache to fall back on. (A byte buffered behind
+   * an attached capture moves the pane past the cache but not the capture, so
+   * the byte path drops only the cache.)
    * [LAW:no-mode-explosion] Staleness is only meaningful mid-capture: a no-op
    * when `idle`. In-place field writes, so the detached-byte [HOT-PATH] stays
    * allocation-free.

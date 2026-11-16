@@ -582,16 +582,17 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
         if (!isConnectionGone(err)) console.error("send-keys failed", err);
       });
     });
-    stream.attach(sink);
-    sinkRef.current = sink;
     // Give the sink its first resize directly from the pane's known geometry.
     // This is what drains the buffered seed + live bytes and paints them — the
-    // XtermSink holds everything until its first resize, and the per-pane size
-    // subscription (the only other resize source) never fires for a freshly
-    // created window. [LAW:no-ambient-temporal-coupling] the first-resize owner
-    // is explicit and local, not a race against a subscription that may never
-    // emit.
+    // XtermSink holds everything until its first resize, and the stream has no
+    // size to hand it until its subscription reports, which may never happen
+    // for a freshly created window. [LAW:no-ambient-temporal-coupling] the
+    // first-resize owner is explicit and local, not a race against a
+    // subscription that may never emit. Before attach(), so a size the stream
+    // already holds from tmux lands after it and wins.
     sink.resize(initialSize.current.cols, initialSize.current.rows);
+    stream.attach(sink);
+    sinkRef.current = sink;
     return () => {
       offKeys();
       stream.detach();

@@ -102,8 +102,9 @@ export interface TerminalSink {
   write(data: Uint8Array): void;
 
   /**
-   * Apply the current pane geometry. Called when the stream observes a
-   * `subscription-changed` for this pane (tmux is the size authority).
+   * Apply the current pane geometry, as tmux (the size authority) reported
+   * it: at attach when the stream already knows the size, and on each
+   * `subscription-changed` for this pane while attached.
    */
   resize(cols: number, rows: number): void;
 
