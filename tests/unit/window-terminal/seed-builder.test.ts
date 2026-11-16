@@ -70,6 +70,33 @@ describe("buildSeed: cursor parse", () => {
   });
 });
 
+describe("buildSeed: size parse", () => {
+  it("is the pane_width;pane_height the capture was taken at", () => {
+    const { size } = buildSeed([], "0;0;0;0;0;0;0;0;24;0;0;23;80", 0);
+    expect(size).toEqual({ cols: 80, rows: 24 });
+  });
+
+  it("is null unless both are positive integers written in digits", () => {
+    for (const [height, width] of [
+      ["24", ""],
+      ["", "80"],
+      ["24", "0"],
+      ["24", "8e1"],
+      [" 24", "80"],
+      ["24.0", "80"],
+    ]) {
+      const state = `0;0;0;0;0;0;0;0;${height};0;0;23;${width}`;
+      expect(buildSeed([], state, 0).size).toBeNull();
+    }
+  });
+
+  it("reads pane_height once: a height too malformed to size the seed does not pad it either", () => {
+    const { captured, size } = buildSeed(["row"], "0;0;0;0;0;0;0;0; 8;0", 5);
+    expect(size).toBeNull();
+    expect(text(captured).split("\r\n")).toHaveLength(1);
+  });
+});
+
 describe("buildSeed: row-exact normalization", () => {
   it("pads trailing blank rows up to history+height so the grid is exact", () => {
     // pane_height=8, history_size=0, all modes 0. Two content rows → 6 padded

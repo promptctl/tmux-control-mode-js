@@ -38,7 +38,8 @@ import type {
 import { isConnectionGone } from "../../browser.js";
 import { rethrowUnlessGone } from "../engine/teardown.js";
 import { windowNumber, type WindowId } from "../ids.js";
-import type { Grid, SizeClaim } from "./solve.js";
+import type { SizeClaim } from "./solve.js";
+import type { Grid } from "../engine/terminal-sink.js";
 
 // [LAW:no-shared-mutable-globals] exception: the slots belong to the tmux
 //   client behind a connection, which every terminal on it shares, so the

@@ -34,18 +34,24 @@ export interface SeedCursor {
   readonly row: number;
 }
 
+/** A grid's size in cells: a pane's (`pane_width`, `pane_height`) or a window's. */
+export interface Grid {
+  readonly cols: number;
+  readonly rows: number;
+}
+
 /**
  * Renderer-side seam consumed by `PaneStream`.
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.resize(cols, rows)      (if the size is known)
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (once the size is known)
  *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
  *                                                          the live bytes
  *                                                          captured behind it)
  *   then, interleaved:      sink.write(data)             (live byte stream)
- *                           sink.resize(cols, rows)      (layout changes)
- *                           sink.seed(...)               (each recapture)
+ *                           resize, then seed            (each recapture,
+ *                                                          a new size's too)
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
@@ -112,9 +118,10 @@ export interface TerminalSink {
   write(data: Uint8Array): void;
 
   /**
-   * Apply the current pane geometry, as tmux (the size authority) reported
-   * it: at attach when the stream already knows the size, and on each
-   * `subscription-changed` for this pane while attached.
+   * Apply the current pane geometry, as tmux (the size authority) gave it,
+   * before each seed (and before the bytes of a failed capture), so a new
+   * size arrives with the picture taken at it. Before tmux's first report the
+   * size is the one the newest seed was captured at.
    */
   resize(cols: number, rows: number): void;
 
@@ -160,12 +167,6 @@ export interface SeedCall {
   readonly cursor: SeedCursor | null;
 }
 
-/** A recorded `resize()` call. */
-export interface ResizeCall {
-  readonly cols: number;
-  readonly rows: number;
-}
-
 export interface BufferingSinkOptions {
   /**
    * Initial visibility for `isVisible()`. Default `true` (matches the
@@ -181,7 +182,7 @@ export class BufferingSink implements TerminalSink {
   /** Every `write()` call's bytes, in order. Reset by `clear()`. */
   readonly writes: Uint8Array[] = [];
   /** Every `resize()` call in order. Reset by `clear()`. */
-  readonly resizeCalls: ResizeCall[] = [];
+  readonly resizeCalls: Grid[] = [];
 
   private isDisposed = false;
   private visible: boolean;

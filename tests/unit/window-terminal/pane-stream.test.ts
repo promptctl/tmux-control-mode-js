@@ -987,6 +987,7 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
 
     // b still follows its pane's size.
     client.injectSubscriptionChanged(nameB, PANE_ID, "100;30");
+    await flushTicks();
     expect(sink.events).toContain("resize(100x30)");
     b.dispose();
   });
@@ -1064,7 +1065,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
-  it("a pane whose size changes is captured again; its first size and a repeat are not", async () => {
+  it("a pane whose size changes is captured again; a repeat is not", async () => {
     const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     const sink = new RecordingSink();
@@ -1084,6 +1085,169 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(client.capturePaneCount()).toBe(captures + 1);
     expect(stream.state).toBe("live");
     expect(sink.events).toContain("resize(100x30)");
+    stream.dispose();
+  });
+
+  // The display-message reply for an 80x24 pane: pane_height (field 9) 24,
+  // pane_width (field 13) 80.
+  const SIZED = "0;0;0;1;0;0;0;1;24;0;0;23;80";
+  const shape = (sink: RecordingSink): string[] =>
+    sink.events
+      .filter((e) => !e.startsWith("write"))
+      .map((e) => e.replace(/^seed\(.*/s, "seed"));
+
+  it("before tmux reports, a seed is drawn at the size it was captured at", async () => {
+    // A pane outside the control client's session is never reported; any
+    // other waits up to a second for its first report.
+    const { stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
+    stream.dispose();
+  });
+
+  it("before tmux reports, each seed is drawn at its own capture's size", async () => {
+    // A pane outside the control client's session is never reported, so a
+    // resize of it is known only from the next capture.
+    let cursor = SIZED;
+    const client = new FakeTmuxClient();
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message") ? cursor : "hello",
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    cursor = "0;0;0;1;0;0;0;1;30;0;0;29;100";
+    client.injectOutput(PANE_ID, new TextEncoder().encode("x")); // drops the cache
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("tmux's first report after a failed capture captures again", async () => {
+    // The bytes behind the failed capture reached the sink at whatever size
+    // it had; nothing else would redraw them at tmux's.
+    let failCapture = true;
+    const client = new FakeTmuxClient();
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message") ? SIZED : "hello",
+    );
+    client.setExecuteFailure((cmd) =>
+      failCapture && cmd.startsWith("capture-pane") ? tmuxError("x") : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual([]);
+    failCapture = false;
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("tmux's first report while the first capture is in flight takes it again", async () => {
+    // The capture may have run before the resize the report says.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("once tmux has reported, a seed is drawn at the reported size", async () => {
+    // The capture caught 80x24, but tmux said 100;30 and will not say it
+    // again if the pane went back to it.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("tmux's first report recaptures when it differs from the size the seed was drawn at", async () => {
+    // The pane moved on before tmux's first check; its program's redraw
+    // reached the sink at 80x24.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "120;40");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
+  it("tmux's first report does not recapture when it is the size the seed was drawn at", async () => {
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+    stream.dispose();
+  });
+
+  it("a seed resolved with no sink attached still sets the size a first report is compared with", async () => {
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    stream.attach(new RecordingSink());
+    stream.detach(); // the capture resolves into the cache
+    await flushTicks();
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "120;40");
+    await flushTicks();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    expect(stream.state).toBe("seeding"); // the cached 80x24 picture is gone
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
+  it("after a reconnect, a seed is drawn at its own size, not the old connection's report", async () => {
+    // The new control client may never report this pane (not in its
+    // session), so the old report says nothing about the pane now.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
+    stream.dispose();
+  });
+
+  it("takes only a decimal width;height from the subscription", () => {
+    const { client, stream } = makeStream();
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    for (const value of ["0x50;24", "1e2;24", "80;24;1", "80;0", " 80;24"]) {
+      client.injectSubscriptionChanged(name, PANE_ID, value);
+    }
+    expect(sink.events.filter((e) => e.startsWith("resize"))).toEqual([]);
     stream.dispose();
   });
 
@@ -1109,8 +1273,11 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(stream.state).toBe("seeding"); // not the cached fast path
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures + 1);
-    expect(sink.events[0]).toBe("resize(100x30)");
-    expect(sink.events[1]).toMatch(/^seed/);
+    const seedAt = sink.events.findIndex((e) => e.startsWith("seed"));
+    expect(seedAt).toBeGreaterThan(0);
+    expect(new Set(sink.events.slice(0, seedAt))).toEqual(
+      new Set(["resize(100x30)"]),
+    );
     stream.dispose();
   });
 

@@ -76,6 +76,13 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `./window-terminal`: a pane draws at tmux's size from its first frame.
+  tmux reports a pane's size to a control client only for a pane in that
+  client's session, and only at its next check, up to a second later, so a
+  pane in another session stayed blank and any other pane waited for the
+  report. Each capture now reads the pane's size with its contents; until
+  tmux reports, the pane is drawn at that size.
+
 - `./electron`: proxies on one page no longer share what they hold.
   Closing one left the page's other proxies deaf to every event, so a
   `PaneStream` over one failed every seed; one proxy's `unsubscribe` ended a
