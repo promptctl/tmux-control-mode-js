@@ -40,7 +40,7 @@ function recordingViewer(): {
 }
 
 describe.skipIf(!RUN_INTEGRATION)("demo mirror across a tmux restart", () => {
-  const socket = uniqueSocket("tmux-bridge-test-", "mirror-recovery");
+  const socket = uniqueSocket("mirror-recovery");
   let registry: MirrorRegistry;
 
   /** Start tmux on the socket; resolve the new pane's number. */

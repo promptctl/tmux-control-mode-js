@@ -94,7 +94,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       );
 
     beforeEach(async () => {
-      socketName = uniqueSocket("tmux-js-test-", "watch");
+      socketName = uniqueSocket("watch");
       for (const s of ["a", "b"]) {
         tmux(socketName, [
           "new-session",
@@ -159,7 +159,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     });
 
     it("starts no server: with none running, it ends saying so, and a config that would create a session is never loaded", async () => {
-      const idleSocket = uniqueSocket("tmux-js-test-", "watch-idle");
+      const idleSocket = uniqueSocket("watch-idle");
       const dir = mkdtempSync(join(tmpdir(), "tmux-js-watch-"));
       const config = join(dir, "tmux.conf");
       writeFileSync(config, "new-session -d -s from-config\n");

@@ -31,7 +31,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let dir: string;
 
     beforeEach(async () => {
-      socketName = uniqueSocket("tmux-js-test-", "line");
+      socketName = uniqueSocket("line");
       dir = mkdtempSync(join(tmpdir(), "tmux-js-line-"));
       tmux(socketName, ["new-session", "-d", "-s", "a"]);
       client = new TmuxClient(

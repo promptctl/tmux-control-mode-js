@@ -19,7 +19,11 @@
 import type { TmuxConnection } from "./client.js";
 import { subscribeRaw, unsubscribe } from "./commands/index.js";
 import type { DeliveryQueue } from "./delivery-queue.js";
-import { isConnectionGone, TmuxCommandError } from "./errors.js";
+import {
+  isAlreadyUnsubscribed,
+  isConnectionGone,
+  TmuxCommandError,
+} from "./errors.js";
 import { tmuxEscape } from "./protocol/encoder.js";
 import { windowLayoutFields } from "./protocol/layout.js";
 import type { SubscriptionChangedMessage } from "./protocol/types.js";
@@ -416,7 +420,11 @@ export class CrossSessionLayoutRelay {
     this.subscribed = false;
     this.generation += 1;
     this.client.off("subscription-changed", this.onSubscriptionChanged);
-    await unsubscribe(this.client, SUBSCRIPTION_NAME);
+    // A connection that is gone took the subscription with it: the state
+    // disable() asks for already holds.
+    await unsubscribe(this.client, SUBSCRIPTION_NAME).catch((err: unknown) => {
+      if (!isAlreadyUnsubscribed(err)) throw err;
+    });
   }
 
   private async handleDelivery(value: string): Promise<void> {

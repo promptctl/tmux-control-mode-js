@@ -16,6 +16,15 @@ All notable changes to this project are documented here. Format follows
   re-export `PaneOutputMessage`; import it from `./protocol`, where
   `OutputMessage` and `ExtendedOutputMessage` already are.
 
+### Fixed
+
+- `tmuxSocketDir()` (and so `listTmuxSocketNames()`) honors `TMUX_TMPDIR`
+  as tmux does: `$TMUX_TMPDIR/tmux-<UID>`, or `/tmp/tmux-<UID>` when it is
+  unset or empty. It named `/tmp/tmux-<UID>` whatever the environment said.
+- `disableCrossSessionLayoutChange()` resolves when the connection is
+  already gone, since the subscription went with it, instead of rejecting
+  with `TransportClosedError`. A refusal from a live tmux still rejects.
+
 ## [0.4.0] - 2026-11-16
 
 ### Changed — breaking

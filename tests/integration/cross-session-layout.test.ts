@@ -57,7 +57,7 @@ describe.skipIf(!RUN_INTEGRATION)("CrossSessionLayoutRelay (real tmux)", () => {
   let socketName: string;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "xsl");
+    socketName = uniqueSocket("xsl");
   });
 
   afterEach(() => {

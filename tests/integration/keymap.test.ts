@@ -25,7 +25,7 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-js-test-", "keymap");
+    socketName = uniqueSocket("keymap");
   });
 
   afterEach(() => {

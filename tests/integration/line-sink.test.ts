@@ -87,7 +87,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
   let client: TmuxClient | null = null;
 
   beforeEach(() => {
-    socketName = uniqueSocket("tmux-line-test-", "line");
+    socketName = uniqueSocket("line");
   });
 
   afterEach(() => {

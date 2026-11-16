@@ -302,8 +302,8 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
   "a socket swap on the Electron page",
   () => {
     it("re-learns the new server's topology: a window sink attached before the swap routes the new server's panes, and each main gets one list-panes bootstrap", async () => {
-      const socketA = uniqueSocket("tmux-scope-test-", "electron-swap-a");
-      const socketB = uniqueSocket("tmux-scope-test-", "electron-swap-b");
+      const socketA = uniqueSocket("electron-swap-a");
+      const socketB = uniqueSocket("electron-swap-b");
       const sessionB = uniqueName("swap-b");
       try {
         const page = await electronPage(socketA, uniqueName("swap-a"));

@@ -96,7 +96,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let stream: PaneStream | null;
 
     beforeEach(() => {
-      socket = uniqueSocket("tmux-js-pstream-", "ps");
+      socket = uniqueSocket("ps");
       stream = null;
     });
 

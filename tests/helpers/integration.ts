@@ -19,23 +19,18 @@ import {
   type TmuxConnection,
 } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
-import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 import { paneNumber, parsePaneId } from "../../src/window-terminal/ids.js";
-
-/** A socket family the reaper collects; any other prefix would leak. */
-export type TestSocketPrefix = (typeof TEST_SOCKET_PREFIXES)[number];
 
 function uniqueSuffix(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 /**
- * A fresh `tmux -L` socket name in `family`. Typing `family` from the reaper's
- * registry makes an unregistered prefix a compile error rather than a silent
- * leak. [LAW:types-are-the-program]
+ * A fresh `tmux -L` socket name. It lands in this run's own tmux namespace
+ * (tests/helpers/reap-test-sockets.ts), so it needs no prefix to be reaped.
  */
-export function uniqueSocket(family: TestSocketPrefix, tag: string): string {
-  return `${family}${tag}-${uniqueSuffix()}`;
+export function uniqueSocket(tag: string): string {
+  return `${tag}-${uniqueSuffix()}`;
 }
 
 export { tmux };

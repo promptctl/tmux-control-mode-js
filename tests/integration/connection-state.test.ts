@@ -24,7 +24,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient | null;
 
     beforeEach(() => {
-      socketName = uniqueSocket("tmux-js-test-", "connstate");
+      socketName = uniqueSocket("connstate");
       client = null;
     });
 

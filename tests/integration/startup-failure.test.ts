@@ -45,7 +45,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     };
 
     beforeEach(() => {
-      socketName = uniqueSocket("tmux-js-test-", "startfail");
+      socketName = uniqueSocket("startfail");
       client = undefined;
       tmux(socketName, ["new-session", "-d", "-s", "a"]);
     });

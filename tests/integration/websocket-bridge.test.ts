@@ -83,7 +83,7 @@ async function startFixture(
   sessionPrefix: string,
   options: BridgeOptions = {},
 ): Promise<Fixture> {
-  const socketName = uniqueSocket("tmux-bridge-test-", sessionPrefix);
+  const socketName = uniqueSocket(sessionPrefix);
   const sessionName = `s-${sessionPrefix}`;
   const tmux = await attachSession(socketName, sessionName);
 

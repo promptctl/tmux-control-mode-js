@@ -28,7 +28,7 @@ import { CollabBridge } from "./collab-bridge.ts";
 const integration = process.env.TMUX_INTEGRATION === "1";
 
 describe.skipIf(!integration)("CollabBridge input → pane", () => {
-  const socket = uniqueSocket("tmux-bridge-test-", "collab");
+  const socket = uniqueSocket("collab");
   const registry = new MirrorRegistry();
   const input = new CollabInput();
   const capture = rawInputCapture();

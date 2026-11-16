@@ -1,28 +1,32 @@
-// vitest globalSetup: reap leaked test sockets before AND after the whole run.
+// vitest globalSetup: give this run a tmux namespace of its own, and reap.
 //
-// `setup()` clears stale sockets a *previous* killed run left behind (so this
-// run starts on a clean machine); `teardown()` clears anything *this* run leaks
-// if it is killed before per-test afterEach hooks complete. Registered via
-// `test.globalSetup` in vitest.config.ts. Safe for the unit-only `pnpm test`
-// path too: with no socket dir or no tmux, the reaper finds nothing and no-ops.
+// `setup()` reaps the namespaces of runs that were killed before their own
+// teardown, then points TMUX_TMPDIR at this run's — the workers vitest starts
+// next inherit it, so every tmux they spawn lands there. `teardown()` reaps
+// this run's namespace. Registered via `test.globalSetup` in vitest.config.ts.
+// See reap-test-sockets.ts for why ownership is a directory.
 
-import { reapTestSockets } from "./reap-test-sockets.js";
+import { mkdirSync } from "node:fs";
+import { reapDeadRuns, reapRun, runDir } from "./reap-test-sockets.js";
 
-function reap(phase: "pre-run" | "post-run"): void {
-  const reaped = reapTestSockets();
-  // Loud only when it actually reaped — a recurring nonzero count is the signal
-  // that some run is being killed and leaking. [LAW:no-silent-failure]
+const dir = runDir(process.pid);
+
+function report(phase: "pre-run" | "post-run", reaped: string[]): void {
+  // Loud only when it reaped — a recurring nonzero count is the signal that
+  // runs are being killed, or tests are leaving servers. [LAW:no-silent-failure]
   if (reaped.length > 0) {
     console.log(
-      `[reap-test-sockets] ${phase}: reaped ${reaped.length} leaked test socket(s)`,
+      `[reap-test-sockets] ${phase}: killed ${reaped.length} tmux server(s) left running: ${reaped.join(" ")}`,
     );
   }
 }
 
 export function setup(): void {
-  reap("pre-run");
+  report("pre-run", reapDeadRuns());
+  mkdirSync(dir, { recursive: true });
+  process.env.TMUX_TMPDIR = dir;
 }
 
 export function teardown(): void {
-  reap("post-run");
+  report("post-run", reapRun(dir));
 }
