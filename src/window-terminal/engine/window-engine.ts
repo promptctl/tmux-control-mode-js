@@ -425,11 +425,12 @@ export class WindowEngine {
     return deriveView(this.facts, this.policy, resyncing);
   }
 
-  // [LAW:no-ambient-temporal-coupling] The host hears a unit of work once it
-  //   is done, never in the middle of it: the state is the work's own before
-  //   any listener runs, so an error listener reads the state its report
-  //   belongs to. A listener that disposes the terminal ends a whole engine,
-  //   and nothing is delivered after that.
+  // [LAW:no-ambient-temporal-coupling] A unit of work the engine runs (a
+  //   bootstrap, a window event) reaches the host once it is done, never in
+  //   the middle of it: its state is set before any listener runs, so a
+  //   listener to the reports it gathered reads the state they came with. A
+  //   listener that disposes the terminal ends a whole engine, and nothing is
+  //   delivered after that.
   private publish(reports: readonly Report[] = []): void {
     if (this.ended) return;
     this.current = phaseFor(
