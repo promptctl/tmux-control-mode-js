@@ -1,9 +1,10 @@
 // tests/helpers/topology-moves.ts
 // The pane- and window-move cases every connection that routes scoped pane
 // output must follow, registered against whatever connection an opener
-// returns. TmuxClient and each of the demo's connection paths run them (grep
-// describeTopologyMoves), so the demo cannot drift from the moves the library
-// follows; the demo's runners read dist/, so rebuild before running them.
+// returns. TmuxClient and each of the demo's connection paths run them (every
+// test file that imports this one), so the demo cannot drift from the moves
+// the library follows; the demo's runners read dist/, so rebuild before
+// running them.
 //
 // A tmux control client receives %output only for panes in its attached
 // session's windows, so every case provokes output from a pane in a window of
@@ -59,12 +60,9 @@ export async function listAllPanes(
 /** The same list, read out of band through the tmux CLI, so no connection
  *  under test sends the query. */
 export function listAllPanesOn(socketName: string): PanePlace[] {
-  const out = tmux(socketName, ["list-panes", "-a", "-F", PANE_LIST_FORMAT]);
-  return parseListReply(
-    LIST_ALL_PANES,
-    out.trim().split("\n"),
-    parsePaneListLine,
-  );
+  const argv = ["list-panes", "-a", "-F", PANE_LIST_FORMAT];
+  const out = tmux(socketName, argv);
+  return parseListReply(argv.join(" "), out.split("\n"), parsePaneListLine);
 }
 
 /** Make the pane print `scope-test-<paneId>`, typed into that pane by id. */

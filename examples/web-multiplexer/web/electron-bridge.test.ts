@@ -24,6 +24,7 @@ import type {
   IpcRendererEventLike,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { IPC } from "../../../src/connectors/electron/types.ts";
 import { createIpcHub } from "../../../tests/unit/_helpers/ipc-hub.ts";
 import {
   pollUntil,
@@ -57,7 +58,13 @@ const demoIpc: DemoIpc = {
   onFirehose: () => () => undefined,
 };
 
-function connectedBridge(envelope: unknown = { status: "ok" }): {
+/** A bridge connected over a fake IPC: main answers every invoke with
+ *  `envelope`, and answers the proxy's registration with `onRegister`, as it
+ *  happens, before `send` returns. */
+function connectedBridge(
+  envelope: unknown = { status: "ok" },
+  onRegister: readonly unknown[] = [],
+): {
   bridge: ElectronBridge;
   errors: string[];
   wire: WireEntry["dir"][];
@@ -66,9 +73,13 @@ function connectedBridge(envelope: unknown = { status: "ok" }): {
 } {
   const listeners: ((e: IpcRendererEventLike, ...args: unknown[]) => void)[] =
     [];
+  const fromMain = (msg: unknown): void =>
+    listeners.forEach((l) => l({} as IpcRendererEventLike, msg));
   const ipc: IpcRendererLike = {
     invoke: () => Promise.resolve(envelope),
-    send: () => undefined,
+    send: (channel) => {
+      if (channel === IPC.register) onRegister.forEach(fromMain);
+    },
     on: (_channel, listener) => listeners.push(listener),
     removeListener: () => undefined,
   };
@@ -85,8 +96,7 @@ function connectedBridge(envelope: unknown = { status: "ok" }): {
     errors,
     wire,
     states,
-    fromMain: (msg) =>
-      listeners.forEach((l) => l({} as IpcRendererEventLike, msg)),
+    fromMain,
   };
 }
 
@@ -152,20 +162,7 @@ describe("ElectronBridge state", () => {
   });
 
   it("is ready when main's ready snapshot answers the registration before connect() returns", () => {
-    const listeners: ((e: IpcRendererEventLike, ...args: unknown[]) => void)[] =
-      [];
-    const ipc: IpcRendererLike = {
-      invoke: () => Promise.resolve({ status: "ok" }),
-      send: () =>
-        listeners.forEach((l) => l({} as IpcRendererEventLike, READY)),
-      on: (_channel, listener) => listeners.push(listener),
-      removeListener: () => undefined,
-    };
-    const bridge = new ElectronBridge(ipc, demoIpc);
-    const states: ConnState[] = [];
-    bridge.onState((s) => states.push(s));
-
-    bridge.connect("");
+    const { bridge, states } = connectedBridge({ status: "ok" }, [READY]);
 
     expect(states.at(-1)).toBe("ready");
     bridge.disconnect();
@@ -197,7 +194,7 @@ describe("BridgePaneStreamClient over ElectronBridge", () => {
   });
 });
 
-// The demo's Electron main process, as electron/main.ts's connectTo() runs it:
+// The demo's Electron main process, attached as electron/main.ts attaches it:
 // a TmuxClient attached to `session`, exposed to renderers by the library's
 // main bridge once tmux's attach handshake has settled. Every command main
 // sends to tmux lands in `sent`. Swapping sockets there disposes both and
@@ -223,13 +220,14 @@ async function attachMain(
   });
   let attached = false;
   client.on("session-changed", () => (attached = true));
+  let handle: ReturnType<typeof createMainBridge>;
   try {
     await pollUntil(() => attached);
+    handle = createMainBridge(client, hub.ipcMain);
   } catch (err) {
     client.close();
-    throw new Error(`main never attached to ${session}`, { cause: err });
+    throw new Error(`main never came up on ${session}`, { cause: err });
   }
-  const handle = createMainBridge(client, hub.ipcMain);
   return {
     sent,
     close: () => {
@@ -335,11 +333,13 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
 
           expect(ended).toBe(false);
           expect(reconnects).toBe(1);
-          // [LAW:one-source-of-truth] The page keeps one topology: only the
-          //   adapter's router queries tmux, once per connection.
+          // [LAW:one-source-of-truth] The page keeps one topology: one
+          //   whole-server bootstrap per connection, where a second router
+          //   needing topology would send its own.
           expect(
             page.sentByMain.map(
-              (sent) => sent.filter((c) => c.startsWith("list-panes")).length,
+              (sent) =>
+                sent.filter((c) => c.startsWith("list-panes -a ")).length,
             ),
           ).toEqual([1, 1]);
         } finally {

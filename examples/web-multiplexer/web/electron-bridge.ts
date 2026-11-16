@@ -257,10 +257,11 @@ export class ElectronBridge implements TmuxBridge {
       { scope: serverScope },
     );
     this.proxy = proxy;
-    // [LAW:no-ambient-temporal-coupling] The proxy registers with main as it
-    //   is created, and main's connection-state snapshot can land before the
-    //   subscription above; the proxy keeps it, so the state is read from
-    //   there, and every later transition arrives as an event.
+    // [LAW:one-source-of-truth] The proxy holds main's connection state; the
+    //   bridge reads it once subscribed and follows its transitions after,
+    //   so the result does not depend on when main's snapshot is delivered
+    //   (Electron delivers it in a later task; the in-memory test hub
+    //   delivers it before the subscription exists).
     this.setState(toConnState(proxy.connectionState));
   }
 
