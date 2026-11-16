@@ -15,7 +15,11 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
-import type { CommandResponse } from "../../protocol/types.js";
+import type { EmitterMessage } from "../../emitter.js";
+import type {
+  CommandResponse,
+  PaneOutputMessage,
+} from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { ResumeFailure } from "../bridge-connection.js";
 import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
@@ -25,7 +29,7 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
 // ---------------------------------------------------------------------------
 
 export const IPC = {
-  /** main → renderer: forwarded TmuxMessage (all notifications, including `exit`). */
+  /** main → renderer: every `IpcEventMessage` — client events and pane bytes. */
   event: "tmux:event",
   /** renderer → main: method dispatch via ipcRenderer.invoke. */
   invoke: "tmux:invoke",
@@ -52,6 +56,17 @@ export const IPC = {
  * `IpcChannel` is derived from it. Adding a new channel = one edit.
  */
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+
+/**
+ * What main sends a renderer on `IPC.event`: an event of the main-side client
+ * (`client.on("*")`, plus the connection-state snapshot a late joiner gets) or
+ * a pane's output bytes from the renderer's `BytesSink`.
+ *
+ * [LAW:types-are-the-program] The channel's payload is declared once, here,
+ * and both ends are typed against it: `WebContentsLike.send` checks every
+ * producer, `IpcRendererOnListener` hands the renderer the union with no cast.
+ */
+export type IpcEventMessage = EmitterMessage | PaneOutputMessage;
 
 // ---------------------------------------------------------------------------
 // Structural "like" interfaces for Electron.
@@ -99,7 +114,8 @@ export type PageEndEvent = (typeof PAGE_END_EVENTS)[number];
 export type LoadFailedEvent = "did-fail-load";
 
 export interface WebContentsLike {
-  send(channel: IpcChannel, ...args: unknown[]): void;
+  /** `IPC.event` is the one channel main sends a renderer on. */
+  send(channel: typeof IPC.event, msg: IpcEventMessage): void;
   /**
    * The frame host of the page this WebContents shows. After `destroy()` it
    * still reads the last host; before Electron 34, reading it after a
@@ -155,14 +171,18 @@ export type IpcRendererEventLike = object;
 
 export type IpcRendererOnListener = (
   event: IpcRendererEventLike,
-  ...args: unknown[]
+  msg: IpcEventMessage,
 ) => void;
 
 export interface IpcRendererLike {
   invoke(channel: IpcChannel, ...args: unknown[]): Promise<unknown>;
   send(channel: IpcChannel, ...args: unknown[]): void;
-  on(channel: IpcChannel, listener: IpcRendererOnListener): void;
-  removeListener(channel: IpcChannel, listener: IpcRendererOnListener): void;
+  /** `IPC.event` is the one channel a renderer listens on. */
+  on(channel: typeof IPC.event, listener: IpcRendererOnListener): void;
+  removeListener(
+    channel: typeof IPC.event,
+    listener: IpcRendererOnListener,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------

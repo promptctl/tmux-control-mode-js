@@ -50,6 +50,7 @@ import {
   type AckMessage,
   type InvokeRequest,
   type InvokeResultEnvelope,
+  type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
   type RendererBridgeOptions,
@@ -139,14 +140,9 @@ export class TmuxClientProxy
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
-    // [LAW:locality-or-seam] IPC wire format is the boundary type; widened
-    //   to admit byte messages here, narrowed into the two channels in
-    //   onEvent. Each IPC event is one step.
-    this.eventHandler = (_event, ...args) =>
-      this.delivery.step(
-        this.onEvent,
-        args[0] as EmitterMessage | PaneOutputMessage,
-      );
+    // [LAW:locality-or-seam] `IpcEventMessage` is the boundary type; onEvent
+    //   splits it into bytes and events. Each IPC event is one step.
+    this.eventHandler = (_event, msg) => this.delivery.step(this.onEvent, msg);
     this.ipc.on(IPC.event, this.eventHandler);
 
     // Register this renderer as an event subscriber. Fire-and-forget.
@@ -161,9 +157,7 @@ export class TmuxClientProxy
   //   `PaneOutputMessage`, so announcing a byte message is a compile error,
   //   which is what enforces the split on the renderer side.
   // Bound once: an IPC event steps with no closure.
-  private readonly onEvent = (
-    msg: EmitterMessage | PaneOutputMessage,
-  ): void => {
+  private readonly onEvent = (msg: IpcEventMessage): void => {
     if (isPaneOutput(msg)) {
       this.account(msg);
       // [LAW:single-enforcer] Byte dispatch routes through the router.
@@ -468,7 +462,9 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,
+  IpcRendererOnListener,
   RendererBridgeOptions,
 } from "./types.js";

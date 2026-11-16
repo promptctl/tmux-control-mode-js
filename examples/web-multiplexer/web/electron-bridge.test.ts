@@ -20,8 +20,10 @@ import {
 } from "@promptctl/tmux-control-mode-js/browser";
 import { createMainBridge } from "@promptctl/tmux-control-mode-js/electron/main";
 import type {
+  IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,
+  IpcRendererOnListener,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { IPC } from "../../../src/connectors/electron/types.ts";
@@ -64,17 +66,16 @@ const demoIpc: DemoIpc = {
  *  happens, before `send` returns. */
 function connectedBridge(
   envelope: unknown = { status: "ok" },
-  onRegister: readonly unknown[] = [],
+  onRegister: readonly IpcEventMessage[] = [],
 ): {
   bridge: ElectronBridge;
   errors: string[];
   wire: WireEntry["dir"][];
   states: ConnState[];
-  fromMain(msg: unknown): void;
+  fromMain(msg: IpcEventMessage): void;
 } {
-  const listeners: ((e: IpcRendererEventLike, ...args: unknown[]) => void)[] =
-    [];
-  const fromMain = (msg: unknown): void =>
+  const listeners: IpcRendererOnListener[] = [];
+  const fromMain = (msg: IpcEventMessage): void =>
     listeners.forEach((l) => l({} as IpcRendererEventLike, msg));
   const ipc: IpcRendererLike = {
     invoke: () => Promise.resolve(envelope),
@@ -101,7 +102,10 @@ function connectedBridge(
   };
 }
 
-const READY = { type: "connection-state", state: { status: "ready" } };
+const READY: IpcEventMessage = {
+  type: "connection-state",
+  state: { status: "ready" },
+};
 
 const settle = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0));
