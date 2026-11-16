@@ -35,18 +35,15 @@ export interface Seed {
  * @param stateLine — the `display-message` reply carrying cursor position, the
  *   terminal modes the grid content can't encode, and the grid dimensions.
  * @param historyLines — the scrollback depth the caller requested in the
- *   capture (`-S -<N>`); caps the padded history-row count. A seed that
- *   carries history (any depth above 0) replaces the scrollback with it.
+ *   capture (`-S -<N>`); caps the padded history-row count.
  */
 export function buildSeed(
   captureOutput: readonly string[],
   stateLine: string,
   historyLines: number,
 ): Seed {
-  const { cursor, height, historySize, preamble, epilogue } = parseSeedState(
-    stateLine,
-    historyLines,
-  );
+  const { cursor, height, historySize, preamble, epilogue } =
+    parseSeedState(stateLine);
 
   // [LAW:dataflow-not-control-flow] The cursor lands correctly by making the
   // seed the exact shape tmux's grid has — not by adjusting the CUP. The sink
@@ -132,10 +129,10 @@ function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
 }
 
 const ESC = "\x1b";
-// Cursor home, SGR reset, erase the screen (ED 2).
-const CLEAR_SCREEN = `${ESC}[H${ESC}[0m${ESC}[2J`;
+// Cursor home, SGR reset, erase the screen (ED 2), erase the scrollback (ED 3).
+const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
 
-function parseSeedState(line: string, historyLines: number): SeedState {
+function parseSeedState(line: string): SeedState {
   // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
   // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag;pane_height;
   // history_size. cursor_x/y are 0-indexed; the middle fields are 0/1 mode
@@ -164,25 +161,23 @@ function parseSeedState(line: string, historyLines: number): SeedState {
   //   autowrap — all of which affect how screen content lays out.
   //   On a reseed, ?1049l exits a stale alt screen before drawing main-screen
   //   content; ?1049h enters alt screen before drawing alt-screen content.
-  // A seed is the pane's whole picture, so it always homes the cursor and
-  //   erases the screen (ED 2) before drawing: capture-pane drops trailing
-  //   blanks, so a row drawn over an old one would otherwise leave the old
-  //   row's tail, and ?1049l restores the cursor ?1049h saved rather than row
-  //   0. SGR 0 comes before the erase, because ED 2 erases with the current
-  //   background and ?1049l's DECRC restores whatever attributes ?1049h saved.
-  // A main-screen seed that carries history also erases the scrollback (ED 3):
-  //   writing its history pushes it into the scrollback, so a recapture written
-  //   over an earlier one replaces that history rather than stacking another
-  //   copy. A seed without history draws only the screen, which pushes
-  //   nothing, so the scrollback stays. An alt-screen seed leaves the main
-  //   screen's scrollback alone — that is what the user returns to when the
-  //   program exits.
-  // [LAW:dataflow-not-control-flow] Every seed runs the same clear; the flag
-  //   and the depth select only which escapes the table yields.
-  const replacesHistory = historyLines > 0 ? `${ESC}[3J` : "";
+  // A seed is the pane's whole picture, so every seed clears what the
+  //   terminal shows before drawing it:
+  //   - CUP home: ?1049l restores the cursor ?1049h saved, not row 0.
+  //   - SGR 0: ED 2 erases with the current background, and ?1049l's DECRC
+  //     restores whatever attributes ?1049h saved.
+  //   - ED 2: capture-pane drops trailing blanks, so a row drawn over an old
+  //     one would otherwise keep the old row's tail.
+  //   - ED 3, after ED 2 so a renderer that scrolls the erased screen into the
+  //     scrollback loses that too: the seed's history replaces the scrollback
+  //     rather than stacking another copy under it. On the alt screen it
+  //     erases the alt buffer's scrollback, which is empty, and the main
+  //     screen's scrollback waits for the program to exit.
+  // [LAW:dataflow-not-control-flow] The clear is the same bytes for every
+  //   seed; the flags select only the screen buffer and the modes.
   const preamble =
-    mode(f[2], `${ESC}[?1049h`, `${ESC}[?1049l${replacesHistory}`) + // screen (+ scrollback erase)
-    CLEAR_SCREEN +
+    mode(f[2], `${ESC}[?1049h`, `${ESC}[?1049l`) + // alt / main screen
+    CLEAR +
     mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
 
   // After content: input/cursor modes that the captured grid can't carry.

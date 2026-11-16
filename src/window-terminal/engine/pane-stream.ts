@@ -27,6 +27,7 @@
 
 import type { TerminalSink } from "./terminal-sink.js";
 import { buildSeed, type Seed } from "./seed-builder.js";
+import { DEFAULT_HISTORY } from "../options.js";
 import { uniqueToken } from "./token.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
@@ -126,12 +127,6 @@ export interface PaneStreamError {
 // state. PaneStream delegates to `sink.isVisible()` when computing reseed
 // priority. There is no stream-side `Visibility` type or setter.
 
-/**
- * The capture depth a pane gets when nobody says otherwise: tmux's default
- * `history-limit`, so a pane arrives with as much history as tmux keeps for it.
- */
-export const DEFAULT_HISTORY = 2000;
-
 export interface PaneStreamOptions {
   readonly client: TerminalConnection;
   readonly paneId: number;
@@ -142,8 +137,8 @@ export interface PaneStreamOptions {
    * no seeded scrollback has nothing to scroll into). Set 0 for a
    * visible-screen-only seed when minimum attach latency matters more than
    * history; higher values capture deeper history at more attach cost.
-   * Each seed with history replaces the sink's scrollback with it, so a
-   * sink keeps no more scrollback across a recapture than this depth.
+   * Each seed replaces the sink's scrollback with the history it carries,
+   * so this is also the deepest scrollback a sink keeps across a recapture.
    */
   readonly historyLines?: number;
   /**

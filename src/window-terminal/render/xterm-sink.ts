@@ -43,6 +43,7 @@
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ITerminalAddon } from "@xterm/xterm";
 import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
+import { DEFAULT_HISTORY } from "../options.js";
 import {
   optionWrites,
   TERMINAL_DEFAULTS,
@@ -58,7 +59,6 @@ import { TMUX_CELLS } from "./tmux-cells.js";
 const utf8Encoder = new TextEncoder();
 
 const DEFAULT_FONT_SIZE = 14;
-const DEFAULT_SCROLLBACK = 10000;
 
 // Dispose each of `owned`, then throw `err`. A dispose that throws as well
 // is not lost: the error leaves as an AggregateError, `err` first.
@@ -83,9 +83,9 @@ export interface XtermSinkOptions {
   readonly container: HTMLElement;
   readonly fontSize?: number;
   /**
-   * Lines of scrollback xterm keeps. A seed with history replaces the
-   * scrollback with the pane's history, so across a recapture the sink keeps
-   * at most the feeding `PaneStream`'s `historyLines`.
+   * Lines of scrollback xterm keeps. Each seed replaces the scrollback with
+   * the pane's history, so set it to the feeding `PaneStream`'s
+   * `historyLines`; both default to `DEFAULT_HISTORY`.
    */
   readonly scrollback?: number;
   readonly xterm?: XtermOptions;
@@ -144,7 +144,7 @@ export class XtermSink implements TerminalSink {
       // The Unicode provider below is xterm's proposed API.
       allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
-      scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
+      scrollback: opts.scrollback ?? DEFAULT_HISTORY,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
@@ -216,9 +216,10 @@ export class XtermSink implements TerminalSink {
     } else {
       // Gate open — apply the snapshot inline, with no `terminal.clear()`. The
       // snapshot replaces what the terminal shows by its own bytes: its
-      // preamble erases the main screen and scrollback before drawing (see
+      // preamble erases the screen and scrollback before drawing (see
       // buildSeed), and it holds every byte this sink was given before it — a
-      // cap-forced drain's included — so nothing the erase removes is lost.
+      // cap-forced drain's included — down to the capture depth, which is
+      // this sink's scrollback when both take their depth from one `history`.
       // [LAW:dataflow-not-control-flow] The reset rides in the value, in order
       //   with the writes before it; `terminal.clear()` acts at once, ahead of
       //   whatever xterm has queued but not yet parsed.

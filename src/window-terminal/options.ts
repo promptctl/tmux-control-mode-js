@@ -11,8 +11,6 @@
 //   whose arm says who owns the window's size. `fit` exists only where tmux
 //   owns it, the floors only where the box does, so no field is ever dead.
 
-import { DEFAULT_HISTORY } from "./engine/pane-stream.js";
-
 /** One font size in CSS px, or the range the solver picks from. */
 export type FontRange = number | { readonly min: number; readonly max: number };
 
@@ -144,6 +142,13 @@ export function parseSizing(raw: Sizing): ResolvedSizing {
 }
 
 /** Scrollback lines per pane: captured on arrival and kept by xterm. */
+/**
+ * A pane's history depth when nobody says otherwise: tmux's default
+ * `history-limit`, so a pane arrives with as much history as tmux keeps for
+ * it. Both the capture depth and the terminal's scrollback default to it.
+ */
+export const DEFAULT_HISTORY = 2000;
+
 export function parseHistory(raw: number | undefined): number {
   const n = raw ?? DEFAULT_HISTORY;
   if (!Number.isInteger(n) || n < 0) {

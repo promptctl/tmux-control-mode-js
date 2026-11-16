@@ -68,8 +68,8 @@ export interface TerminalSink {
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
    * them, wrapped by library-synthesized escapes (before the grid: alt-screen,
-   * cursor home, SGR reset, an erase of the screen — and of the scrollback on
-   * the main screen — then autowrap; after it: cursor/keypad/insert) that
+   * cursor home, SGR reset, an erase of the screen and of the scrollback, then
+   * autowrap; after it: cursor/keypad/insert) that
    * PaneStream derives from `display-message` state — those escapes are
    * injected by the library, not emitted by `capture-pane`. Writing `captured`
    * therefore replaces what the terminal shows, history included; a sink

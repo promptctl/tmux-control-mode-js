@@ -16,8 +16,9 @@ import { Terminal } from "@xterm/headless";
 import { buildSeed } from "../../../src/window-terminal/engine/seed-builder.js";
 
 const ESC = "\x1b";
-// Every seed opens with cursor home, SGR reset and an erase of the screen.
-const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J`;
+// Every seed opens with cursor home, SGR reset, then erases the screen and
+// the scrollback.
+const CLEAR = `${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
 // Seed bytes are raw (same kind as live write()); decode Latin-1 losslessly to
 // inspect them as text — mirrors how a TerminalSink treats the payload.
 const text = (bytes: Uint8Array): string =>
@@ -112,7 +113,7 @@ describe("buildSeed: terminal-mode escapes", () => {
     // cursor_flag=1, insert=0, app-cursor=1, keypad=1 → ?25h, 4l, ?1h, ESC=.
     const { captured } = buildSeed(["x"], "0;0;0;1;0;1;1;0;;", 0);
     expect(text(captured)).toBe(
-      `${ESC}[?1049l${ESC}[H${ESC}[0m${ESC}[2J${ESC}[?7l` + // preamble: main screen, home, SGR reset, erase + wrap off
+      `${ESC}[?1049l${CLEAR}${ESC}[?7l` + // preamble: main screen, clear, wrap off
         "x" +
         `${ESC}[?25h${ESC}[4l${ESC}[?1h${ESC}=`, // epilogue
     );
@@ -177,17 +178,6 @@ describe("buildSeed: a seed written over a terminal replaces its picture", () =>
     await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
     await write(term, seed.captured);
     expect(lines(term)).toEqual([...HISTORY, ...SCREEN]);
-    term.dispose();
-  });
-
-  it("a seed without history leaves the scrollback the terminal holds", async () => {
-    // It draws only the screen, which pushes nothing into the scrollback, so
-    // there is nothing to stack and nothing to replace.
-    const term = terminal();
-    await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
-    const screenOnly = buildSeed([...SCREEN, ""], STATE, 0);
-    await write(term, screenOnly.captured);
-    expect(lines(term)).toEqual(["old0", "old1", ...SCREEN]);
     term.dispose();
   });
 
