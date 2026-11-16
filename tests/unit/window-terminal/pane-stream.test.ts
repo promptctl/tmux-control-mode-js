@@ -369,7 +369,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    expect(sink.seedTexts[0]).toBe("row-0\r\nrow-1");
+    expect(sink.seedTexts[0]).toBe("\x1b[H\x1b[0m\x1b[2Jrow-0\r\nrow-1");
     expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
   });
 
@@ -1208,5 +1208,41 @@ describe("PaneStream — event listeners", () => {
     expect(kept).toEqual(["seeding", "live"]);
     expect(dropped).toEqual([]);
     stream.dispose();
+  });
+});
+
+describe("PaneStream — a sink is handed the pane's history once", () => {
+  // Main screen, pane_height 2, history_size 2.
+  const HISTORY = {
+    capture: "h0\nh1\ns0\ns1\n",
+    cursor: "0;1;0;1;0;0;0;1;2;2",
+  };
+
+  it("seeds a sink with the history, and redraws only the screen on a recapture", async () => {
+    const { client, stream } = makeStream(HISTORY);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    await flushTicks();
+    expect(sink.seedTexts).toHaveLength(2);
+    expect(sink.seedTexts[0]).toContain("h0\r\nh1\r\ns0\r\ns1");
+    expect(sink.seedTexts[1]).toContain("s0\r\ns1");
+    expect(sink.seedTexts[1]).not.toContain("h0");
+  });
+
+  it("re-seeds a sink attached again with the screen only, and a new sink with the history", async () => {
+    const { stream } = makeStream(HISTORY);
+    const first = new RecordingSink();
+    stream.attach(first);
+    await flushTicks();
+    stream.detach();
+    stream.attach(first); // the cached capture, onto a sink that kept its history
+    stream.detach();
+    const second = new RecordingSink();
+    stream.attach(second);
+    expect(first.seedTexts).toHaveLength(2);
+    expect(first.seedTexts[1]).not.toContain("h0");
+    expect(second.seedTexts[0]).toContain("h0\r\nh1\r\ns0\r\ns1");
   });
 });
