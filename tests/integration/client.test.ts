@@ -1340,21 +1340,12 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     const decoder = new TextDecoder();
     const received = (): string =>
       chunks.map((c) => decoder.decode(c)).join("");
-    await new Promise<void>((resolve, reject) => {
-      const deadline = Date.now() + 8000;
-      const check = () => {
-        if (received().includes("cmd-test-marker")) {
-          resolve();
-          return;
-        }
-        if (Date.now() >= deadline) {
-          reject(new Error("timeout: cmd-test-marker not received"));
-          return;
-        }
-        setTimeout(check, 5);
-      };
-      check();
-    });
+    await readUntil(
+      received,
+      (text) => text.includes("cmd-test-marker"),
+      "cmd-test-marker never reached the pane-scoped sink",
+      8000,
+    );
 
     dispose();
     expect(received()).toContain("cmd-test-marker");
@@ -1396,20 +1387,19 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     // eslint-disable-next-line no-control-regex -- the ESC byte is what tmux's -e capture emits
     const redMarker = /\x1b\[[0-9;]*31mcapture-test-marker/;
     const decoder = new TextDecoder();
-    const deadline = Date.now() + 8000;
-    let capture: Awaited<ReturnType<typeof capturePane>> | undefined;
-    for (;;) {
-      capture = await capturePane(client, paneId);
-      if (redMarker.test(decoder.decode(capture.bytes))) {
-        break;
-      }
-      if (Date.now() >= deadline) {
-        throw new Error("timeout: capture-test-marker not captured");
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    const { text, lineCount } = await readUntil(
+      async () => {
+        const capture = await capturePane(client!, paneId);
+        return {
+          text: decoder.decode(capture.bytes),
+          lineCount: capture.lineCount,
+        };
+      },
+      (capture) => redMarker.test(capture.text),
+      "capture-test-marker was never captured in red",
+      8000,
+    );
 
-    const text = decoder.decode(capture!.bytes);
     expect(text).toContain("capture-test-marker");
     // -e: the coloured marker survived capture with its SGR escape
     // sequence intact, not just the plain text.
@@ -1417,7 +1407,7 @@ describe.skipIf(!RUN_INTEGRATION)("Free-function command surface", () => {
     // The one invariant join("\n") + lineCount must hold regardless of
     // pane geometry or shell prompt content: lineCount is exactly the
     // number of "\n"-separated lines actually present in bytes.
-    expect(capture!.lineCount).toBe(text.split("\n").length);
+    expect(lineCount).toBe(text.split("\n").length);
   }, 15000);
 
   it("CMD-05: newWindow() opens a window in the session with the given id, not the client's own, with the given cwd and command", async () => {

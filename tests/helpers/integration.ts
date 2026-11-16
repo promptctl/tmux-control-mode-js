@@ -6,10 +6,15 @@
 // already armed first). Integration tests import these; they do not redeclare
 // them.
 
+import { inspect } from "node:util";
 import { tmux } from "./tmux-cli.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
-import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
+import {
+  TmuxClient,
+  type TmuxClientOptions,
+  type TmuxConnection,
+} from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 import { paneNumber, parsePaneId } from "../../src/window-terminal/ids.js";
@@ -46,7 +51,7 @@ export function uniqueName(tag: string): string {
  * [LAW:no-ambient-temporal-coupling] Observation is armed before provocation.
  */
 export function waitForEvent<K extends keyof TmuxEventMap>(
-  client: TmuxClient,
+  client: TmuxConnection,
   type: K,
   match: (ev: TmuxEventMap[K]) => boolean = () => true,
   ms = 12000,
@@ -294,13 +299,29 @@ export async function waitForPaneText(
   );
 }
 
+// Any value a read returns (circular, Map, bytes) renders. A long one keeps
+// its end: reads that accumulate a stream hold the newest data last.
+const QUOTE_LIMIT = 2000;
+const quote = (value: unknown): string => {
+  const shown = inspect(value, {
+    depth: 4,
+    maxArrayLength: Infinity,
+    maxStringLength: Infinity,
+  });
+  return shown.length > QUOTE_LIMIT ? `…${shown.slice(-QUOTE_LIMIT)}` : shown;
+};
+
 /**
  * Call `read` until `done` holds for what it returns, and resolve with that;
  * reject as `what`, quoting the last value read, if none does within `ms`. A
  * rejection from `read` propagates.
+ *
+ * [LAW:one-source-of-truth] The one poll loop. A wait on state the test
+ * already holds reads that state (`() => stream.state`), so a timeout quotes
+ * what was observed, not just that a condition was false.
  */
 export async function readUntil<T>(
-  read: () => Promise<T>,
+  read: () => T | Promise<T>,
   done: (value: T) => boolean,
   what: string,
   ms = 8000,
@@ -310,30 +331,8 @@ export async function readUntil<T>(
     const value = await read();
     if (done(value)) return value;
     if (Date.now() >= deadline) {
-      throw new Error(
-        `${what} within ${ms}ms; last read: ${JSON.stringify(value)}`,
-      );
+      throw new Error(`${what} within ${ms}ms; last read: ${quote(value)}`);
     }
     await new Promise<void>((r) => setTimeout(r, 10));
   }
-}
-
-/** Poll `pred` until it holds; reject if it has not within `ms`. */
-export function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
-  return new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const check = () => {
-      let held: boolean;
-      try {
-        held = pred();
-      } catch (err) {
-        return reject(err);
-      }
-      if (held) return resolve();
-      if (Date.now() >= deadline)
-        return reject(new Error(`pollUntil: condition not met within ${ms}ms`));
-      setTimeout(check, 5);
-    };
-    check();
-  });
 }

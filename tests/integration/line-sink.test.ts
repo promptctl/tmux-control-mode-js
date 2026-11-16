@@ -14,7 +14,7 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
-  pollUntil,
+  readUntil,
   attachSession,
   waitForPaneText,
 } from "../helpers/integration.js";
@@ -59,6 +59,25 @@ function emitLineInPane(
     .then(() => undefined);
 }
 
+// Resolve once each pane's marker has arrived on a line tagged with that pane;
+// a timeout quotes the markers still missing.
+async function waitForTaggedMarkers(
+  lines: { line: string; paneId: number }[],
+  markers: Map<number, string>,
+): Promise<void> {
+  await readUntil(
+    () =>
+      [...markers.entries()]
+        .filter(
+          ([paneId, m]) =>
+            !lines.some((l) => l.paneId === paneId && l.line.includes(m)),
+        )
+        .map(([, m]) => m),
+    (missing) => missing.length === 0,
+    "markers never arrived tagged with their pane",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -95,15 +114,16 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `LINE10-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await pollUntil(() => lines.some((l) => l.line.includes(marker)));
-
-    const matched = lines.find((l) => l.line.includes(marker));
-    expect(matched).toBeDefined();
+    const [matched] = await readUntil(
+      () => lines.filter((l) => l.line.includes(marker)),
+      (hits) => hits.length > 0,
+      `no line carrying ${marker} arrived`,
+    );
     // Whatever line ultimately contains the marker, it must NOT end with \n
     // or \r — line sink strips both.
-    expect(matched!.line.endsWith("\n")).toBe(false);
-    expect(matched!.line.endsWith("\r")).toBe(false);
-    expect(matched!.paneId).toBe(paneA);
+    expect(matched.line.endsWith("\n")).toBe(false);
+    expect(matched.line.endsWith("\r")).toBe(false);
+    expect(matched.paneId).toBe(paneA);
 
     dispose();
   }, 15000);
@@ -132,20 +152,15 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `LINE13-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await pollUntil(
-      () =>
-        a.some((l) => l.includes(marker)) &&
-        b.some((l) => l.includes(marker)) &&
-        c.some((l) => l.includes(marker)),
+    const [seenA, seenB, seenC] = await readUntil(
+      () => [a, b, c].map((got) => got.filter((l) => l.includes(marker))),
+      (seen) => seen.every((hits) => hits.length > 0),
+      `not every consumer received ${marker}`,
     );
 
     // All three consumers saw the same line set (shared buffer).
-    expect(a.filter((l) => l.includes(marker))).toEqual(
-      b.filter((l) => l.includes(marker)),
-    );
-    expect(b.filter((l) => l.includes(marker))).toEqual(
-      c.filter((l) => l.includes(marker)),
-    );
+    expect(seenA).toEqual(seenB);
+    expect(seenB).toEqual(seenC);
 
     dispA();
     dispB();
@@ -177,11 +192,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
       await emitLineInPane(client, p.paneId, marker);
     }
 
-    await pollUntil(() =>
-      [...markers.entries()].every(([paneId, m]) =>
-        lines.some((l) => l.paneId === paneId && l.line.includes(m)),
-      ),
-    );
+    await waitForTaggedMarkers(lines, markers);
 
     const knownIds = new Set(after.map((p) => p.paneId));
     expect(lines.every((l) => knownIds.has(l.paneId))).toBe(true);
@@ -211,10 +222,12 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     await emitLineInPane(client, paneA, markerA);
     await emitLineInPane(client, paneB, markerB);
 
-    await pollUntil(
-      () =>
-        lines.some((l) => l.paneId === paneA && l.line.includes(markerA)) &&
-        lines.some((l) => l.paneId === paneB && l.line.includes(markerB)),
+    await waitForTaggedMarkers(
+      lines,
+      new Map([
+        [paneA, markerA],
+        [paneB, markerB],
+      ]),
     );
 
     // No marker arrives tagged with the wrong paneId.
@@ -254,7 +267,11 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     await emitLineInPane(client, wantPane, wantMarker);
     await emitLineInPane(client, otherPane, otherMarker);
 
-    await pollUntil(() => lines.some((l) => l.line.includes(wantMarker)));
+    await readUntil(
+      () => lines.filter((l) => l.line.includes(wantMarker)),
+      (hits) => hits.length > 0,
+      `no line carrying ${wantMarker} arrived`,
+    );
     // Give other-window output a fair chance to (incorrectly) arrive.
     await new Promise<void>((r) => setTimeout(r, 250));
 
@@ -326,7 +343,11 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `NOFLUSH-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await pollUntil(() => lines.some((l) => l.includes(marker)));
+    await readUntil(
+      () => lines.filter((l) => l.includes(marker)),
+      (hits) => hits.length > 0,
+      `no line carrying ${marker} arrived`,
+    );
 
     // Wait for the shell to settle (prompt redraw etc) so the buffer
     // empties as much as possible before we measure. We can't drive tmux
@@ -372,9 +393,10 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
 
     const marker = `DUR-${Math.random().toString(36).slice(2, 8)}`;
     await emitLineInPane(client, paneA, marker);
-    await pollUntil(
-      () =>
-        a.some((l) => l.includes(marker)) && b.some((l) => l.includes(marker)),
+    await readUntil(
+      () => [a, b].map((got) => got.filter((l) => l.includes(marker))),
+      (seen) => seen.every((hits) => hits.length > 0),
+      `not every consumer received ${marker}`,
     );
 
     // A and B both saw the line containing the marker — A didn't starve B

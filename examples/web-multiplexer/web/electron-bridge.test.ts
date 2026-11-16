@@ -27,8 +27,9 @@ import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { IPC } from "../../../src/connectors/electron/types.ts";
 import { createIpcHub } from "../../../tests/unit/_helpers/ipc-hub.ts";
 import {
-  pollUntil,
+  readUntil,
   tmux,
+  waitForEvent,
   uniqueName,
   uniqueSocket,
 } from "../../../tests/helpers/integration.ts";
@@ -218,11 +219,10 @@ async function attachMain(
     onClose: (cb) => inner.onClose(cb),
     close: () => inner.close(),
   });
-  let attached = false;
-  client.on("session-changed", () => (attached = true));
+  const attached = waitForEvent(client, "session-changed");
   let handle: ReturnType<typeof createMainBridge>;
   try {
-    await pollUntil(() => attached);
+    await attached;
     handle = createMainBridge(client, hub.ipcMain);
   } catch (err) {
     client.close();
@@ -261,10 +261,14 @@ async function electronPage(
     main.close();
   };
   try {
-    await pollUntil(() => conn.connectionState.status === "ready");
+    await readUntil(
+      () => conn.connectionState.status,
+      (status) => status === "ready",
+      "the Electron page never became ready",
+    );
   } catch (err) {
     close();
-    throw new Error("the Electron page never became ready", { cause: err });
+    throw err;
   }
   return {
     conn,
@@ -300,10 +304,9 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
           // router still holding A's table after the swap misroutes it. The
           // page hears A's new window before any sink needs topology, so the
           // only query on each server is the bootstrap.
-          let windowAdded = false;
-          page.conn.on("window-add", () => (windowAdded = true));
+          const windowAdded = waitForEvent(page.conn, "window-add");
           tmux(socketA, ["new-window", "-d"]);
-          await pollUntil(() => windowAdded);
+          await windowAdded;
           tmux(socketB, ["new-session", "-d", "-s", sessionB]);
           tmux(socketB, ["split-window", "-d"]);
           const onA = listAllPanesOn(socketA);
@@ -322,14 +325,24 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
             { scope: windowScope(window) },
           );
           await sendOutputToPane(page.conn, paneOnA);
-          await pollUntil(() =>
-            textOf(arrived, paneOnA).includes(`scope-test-${paneOnA}`),
+          await readUntil(
+            () => textOf(arrived, paneOnA),
+            (text) => text.includes(`scope-test-${paneOnA}`),
+            `pane %${paneOnA}'s marker never reached the window sink on A`,
           );
 
           await page.swapMain(socketB, sessionB);
-          await pollUntil(() => page.conn.connectionState.status === "ready");
+          await readUntil(
+            () => page.conn.connectionState.status,
+            (status) => status === "ready",
+            "the page never became ready on B",
+          );
           await sendOutputToPane(page.conn, 1);
-          await pollUntil(() => textOf(arrived, 1).includes("scope-test-1"));
+          await readUntil(
+            () => textOf(arrived, 1),
+            (text) => text.includes("scope-test-1"),
+            "pane %1's marker never reached the window sink on B",
+          );
 
           expect(ended).toBe(false);
           expect(reconnects).toBe(1);

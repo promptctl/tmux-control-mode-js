@@ -9,6 +9,7 @@ import {
   uniqueName,
   waitForEvent,
   attachSession,
+  readUntil,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import {
@@ -88,19 +89,20 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
       .filter((x): x is string => x !== undefined);
     expect(indices.length).toBe(3);
     const targetIdx = indices[0];
-    const activeLineBefore = before.output.find((l) => /^\d+:.*\*/.test(l));
-    expect(activeLineBefore?.startsWith(`${targetIdx}:`)).toBe(false);
+    const activeIndex = async () =>
+      (await client!.execute("display-message -p '#{window_index}'")).output[0];
+    const activeBefore = await activeIndex();
+    expect(activeBefore).toMatch(/^\d+$/);
+    expect(activeBefore).not.toBe(targetIdx);
 
     bound.handleKey(parseChord("C-b"));
     bound.handleKey(parseChord(targetIdx));
 
-    for (let attempts = 0; attempts < 20; attempts++) {
-      const list = await client.execute("list-windows");
-      const active = list.output.find((line) => /^\d+:.*\*/.test(line));
-      if (active && active.startsWith(`${targetIdx}:`)) return;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    throw new Error(`window ${targetIdx} never became active`);
+    await readUntil(
+      activeIndex,
+      (idx) => idx === targetIdx,
+      `window ${targetIdx} never became active`,
+    );
   }, 15000);
 
   it("non-prefix key in root mode returns handled=false and does not dispatch", async () => {

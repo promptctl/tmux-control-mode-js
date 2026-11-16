@@ -13,6 +13,11 @@ export default defineConfig({
     // code under test. 4 workers keeps peak concurrent servers at 4 (vs 10+),
     // which eliminates the contention while staying well under serial speed.
     maxWorkers: 4,
+    // [LAW:one-source-of-truth] The integration helpers' own deadlines
+    // (readUntil 8s, waitForEvent 12s) fail with a message naming what they
+    // last saw; the test's deadline must outlast them or vitest's generic
+    // timeout fires first and that message never appears.
+    testTimeout: 15_000,
     include: [
       "src/**/*.test.ts",
       // window-terminal unit tests live under tests/unit/window-terminal. Node

@@ -19,6 +19,8 @@ import {
   uniqueName,
   attachSession,
   getPrimaryPaneId,
+  readUntil,
+  waitForPaneText,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys } from "../../src/commands/index.js";
@@ -110,11 +112,12 @@ describe.skipIf(!RUN_INTEGRATION)(
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
 
-      // Put a known marker on the pane so the seed is non-empty.
-      await sendKeys(client, `%${paneId}`, "echo HELLO_SEED_MARKER");
+      // Put a known marker on the pane so the seed is non-empty. printf
+      // assembles it, so only the command's output, not the typed command
+      // line, carries the whole marker.
+      await sendKeys(client, `%${paneId}`, "printf 'HELLO_%s\\n' SEED_MARKER");
       await client.execute(`send-keys -t %${paneId} Enter`);
-      // Give the shell a moment to render.
-      await new Promise((r) => setTimeout(r, 200));
+      await waitForPaneText(client, paneId, "HELLO_SEED_MARKER");
 
       const sink = new CollectorSink();
       stream = new PaneStream({
@@ -124,10 +127,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
 
       // Wait for capture + cursor responses + state transition.
-      for (let i = 0; i < 20 && stream.state !== "live"; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(stream.state).toBe("live");
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
       expect(sink.seedCalls).toHaveLength(1);
       expect(sink.seedCalls[0].byteLength).toBeGreaterThan(0);
       // Cursor should be present and inside the 80x24 viewport.
@@ -150,14 +154,17 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
       // Wait for live + the initial subscription-changed (tmux delivers
       // the current value on subscribe).
-      for (let i = 0; i < 20 && stream.state !== "live"; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
       // Initial subscription delivery — at least one resize call.
-      for (let i = 0; i < 20 && sink.resizeCalls.length === 0; i++) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      expect(sink.resizeCalls.length).toBeGreaterThanOrEqual(1);
+      await readUntil(
+        () => sink.resizeCalls,
+        (calls) => calls.length > 0,
+        "no resize reached the sink",
+      );
       // The expected geometry is what tmux reports for the pane, not the
       // requested size: tmux 3.2 gives an 80x24 session a 23-row pane.
       expect(sink.resizeCalls[sink.resizeCalls.length - 1]).toEqual(
@@ -166,22 +173,19 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
+      const priorCalls = sink.resizeCalls.length;
       await client.setSize(120, 30);
-      for (
-        let i = 0;
-        i < 30 &&
-        (sink.resizeCalls.length === 1 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].cols !== 120 ||
-          sink.resizeCalls[sink.resizeCalls.length - 1].rows < 30 - 1);
-        i++
-      ) {
-        await new Promise((r) => setTimeout(r, 50));
-      }
-      const after = sink.resizeCalls[sink.resizeCalls.length - 1];
-      expect(after.cols).toBe(120);
       // The requested height lands, less at most the status line's row
       // (tmux 3.2 takes it from the initial session but not after setSize).
-      expect(after.rows).toBeGreaterThanOrEqual(30 - 1);
+      const since = await readUntil(
+        () => sink.resizeCalls.slice(priorCalls),
+        (seen) => {
+          const last = seen.at(-1);
+          return last !== undefined && last.cols === 120 && last.rows >= 30 - 1;
+        },
+        "the sink never saw the 120x30 resize",
+      );
+      const after = since[since.length - 1];
       expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);

@@ -13,7 +13,7 @@ import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
-  pollUntil,
+  readUntil,
   attachSession,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -96,10 +96,10 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       // The wait keys on the marker itself: the first output message can be
       // the shell's prompt redraw, which arrives before the echo under load.
-      await pollUntil(() =>
-        Buffer.concat(outputs().map((o) => o.data))
-          .toString()
-          .includes("int22-hello"),
+      await readUntil(
+        () => Buffer.concat(outputs().map((o) => o.data)).toString(),
+        (text) => text.includes("int22-hello"),
+        "int22-hello never arrived on IPC.event",
       );
       expect(outputs().every((o) => o.paneId === paneId)).toBe(true);
 
