@@ -755,7 +755,7 @@ export class PaneStream implements ReseedTarget {
     } catch (error) {
       outcome = { ok: false, error };
     }
-    // [LAW:no-ambient-temporal-coupling] This capture is no longer in flight;
+    // [LAW:stale-rejection-guard-identity] This capture is no longer in flight;
     // it idles the field only while the field is still its own, so a resolution
     // never ends a capture issued after it.
     if (this.seedCycle === cycle) this.seedCycle = { phase: "idle" };

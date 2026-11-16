@@ -556,6 +556,24 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect((err as Error & { cause?: unknown }).cause).toBeDefined();
   });
 
+  it("fails a call whose invoke returns no InvokeReturn, rather than hang", async () => {
+    // A main of an older version returns the bare envelope.
+    const ipc: IpcRendererLike = {
+      on: () => undefined,
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: () =>
+        Promise.resolve({
+          status: "ok",
+          response: { output: [] },
+        } as unknown as InvokeReturn),
+    };
+    const proxy = createRendererBridge(ipc);
+    await expect(proxy.execute("list-windows")).rejects.toMatchObject({
+      code: "BRIDGE_PROTOCOL_ERROR",
+    });
+  });
+
   it("does not report a bootstrap whose BRIDGE_CLOSED reply beats main's closed event", async () => {
     // The race: main rejects the in-flight invoke as BRIDGE_CLOSED, and that
     // reply reaches the renderer while its last connection-state is still ready.

@@ -51,6 +51,7 @@ import {
   type BridgeErrorPayload,
   type InvokeRequest,
   type InvokeResultEnvelope,
+  type InvokeReturn,
   type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
@@ -78,6 +79,25 @@ import {
 // lands, so a reply main sent just before a navigation can reach the next
 // page: a random start keeps one document's ids from naming another's calls.
 let lastInvokeId = Math.floor(Math.random() * 2 ** 52);
+
+// The reply an invoke's return carries, or null when it rides `IPC.event`.
+// [LAW:no-silent-failure] A main of another version returns some other shape:
+// the call fails on it rather than wait for a reply that never comes.
+function replyInReturn(ret: unknown): InvokeResultEnvelope | null {
+  const via = (ret as { via?: unknown } | null | undefined)?.via;
+  if (via === "event") return null;
+  if (via === "invoke") {
+    return (ret as Extract<InvokeReturn, { via: "invoke" }>).result;
+  }
+  return {
+    status: "bridge-error",
+    error: new BridgeError(
+      "BRIDGE_PROTOCOL_ERROR",
+      "main answered the invoke with no InvokeReturn; main and renderer " +
+        "must come from the same version",
+    ).toPayload(),
+  };
+}
 
 // A closed proxy answers as a closed WebSocket client does: the connection is
 // gone (`isConnectionGone`), so teardown calls made after `close()` are moot.
@@ -423,7 +443,8 @@ export class TmuxClientProxy
       }
       this.awaitingReply.set(id, resolve);
       this.ipc.invoke(IPC.invoke, { id, request: req }).then((ret) => {
-        if (ret.via === "invoke") this.settle(id, ret.result);
+        const result = replyInReturn(ret);
+        if (result !== null) this.settle(id, result);
       }, reject);
     });
     const result = await (

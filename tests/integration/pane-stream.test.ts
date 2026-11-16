@@ -272,7 +272,17 @@ describe.skipIf(!RUN_INTEGRATION)(
         (state) => state === "live",
         "PaneStream never went live",
       );
-      for (let i = 0; i < 20; i++) await stream.reseed();
+      // One more seed each round. A reseed can resolve with no seed (a
+      // capture tmux paused is dropped; `%continue` captures again), so each
+      // round waits for the seed, not for the reseed.
+      for (let seeds = 2; seeds <= 21; seeds++) {
+        await stream.reseed();
+        await readUntil(
+          () => sink.seeds.length,
+          (n) => n >= seeds,
+          `seed ${seeds} never came`,
+        );
+      }
 
       expect(sink.seeds).toHaveLength(21);
       expect(sink.seeds.map(drawnAgain)).toEqual(sink.seeds.map(() => []));

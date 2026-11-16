@@ -29,9 +29,18 @@ All notable changes to this project are documented here. Format follows
   answers invokes itself, such as a test fake, returns
   `{ via: "invoke", result }`. Main and renderer must come from the same
   version.
+- `./window-terminal`: a `TerminalConnection` must emit each command's
+  `begin` event in tmux's order with the pane bytes, before the command's
+  reply resolves. `TmuxClient`, `WebSocketTmuxClient` and the Electron
+  `TmuxClientProxy` do. A seed over a connection that does not fails with
+  `lastError`, and the pane goes live with no picture.
 - A closed `TmuxClientProxy` answers every call `BRIDGE_CLOSED`, as a closed
   WebSocket client does, so `isConnectionGone` reads it as gone. Calls in
   flight at `close()` used to get `BRIDGE_ABORTED` from main.
+
+### Added
+
+- `Outcome` is exported from `./browser`, as from the root entry.
 
 ### Fixed
 
