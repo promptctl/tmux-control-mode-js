@@ -572,7 +572,7 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
     const { stream } = obs;
     const sink = new FittedXtermSink({
       container,
-      appearance: { fontFamily: FONT_FAMILY },
+      xterm: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
     const offKeys = sink.onInput((bytes) => {

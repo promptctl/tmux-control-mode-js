@@ -231,8 +231,52 @@ import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/
 ```
 
 A new `connection`, `window` or `history` mounts a new terminal; `sizing` and
-`appearance` (`theme`, `fontFamily`, `lineHeight`, `cursorStyle`) update the
-one there is, as `terminal.update()` does.
+`xterm` update the one there is, each on its own, as `terminal.update()` does.
+A prop taken away returns to its default.
+
+`xterm` is xterm.js's options for every pane (`ITerminalOptions`): `theme`,
+`fontFamily`, `linkHandler`, `cursorStyle`, `disableStdin` and the rest. An
+option left out returns to its default. A key xterm.js does not have, a value it refuses, or a `lineHeight` or `letterSpacing` that is not finite throws
+`RangeError` at the call that passed it, changing nothing. The terminal sets
+the ones tmux or its layout decides, and the type refuses them: `cols` and
+`rows`, `fontSize` (`sizing.font`), `scrollback` (`history`), `tabStopWidth`
+(tmux's tab stops), `windowOptions` (tmux answers the window reports),
+`overviewRulerWidth` (a pane is exactly its cells wide), `convertEol`,
+`windowsMode`, `windowsPty` and `documentOverride`.
+
+`addons` is a factory each pane calls once, when it opens, for the xterm.js
+addons it loads; it is read at mount. An addon that throws as a pane opens is
+an `onError` (`render`), and that pane stays empty. Panes are laid out in the
+cell xterm.js's DOM renderer draws, so a renderer addon (WebGL, canvas), which
+draws a different cell, misaligns them. xterm.js 5.5 makes an OSC 8 link with
+a scheme other than `http:` or `https:` only when `linkHandler` allows it, and
+draws an emoji one cell wide where tmux counts two unless Unicode 11 is the
+version in use:
+
+```tsx
+import type {
+  XtermAddons,
+  XtermOptions,
+} from "@promptctl/tmux-control-mode-js/window-terminal";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+
+const activate = (_: MouseEvent, uri: string) => openLink(uri);
+const xterm: XtermOptions = {
+  allowProposedApi: true, // Unicode 11 uses xterm's proposed API
+  linkHandler: { allowNonHttpProtocols: true, activate },
+};
+const addons: XtermAddons = () => [
+  new Unicode11Addon(),
+  { activate: (t) => (t.unicode.activeVersion = "11"), dispose: () => {} },
+  new WebLinksAddon(activate),
+];
+
+<WindowTerminal connection={connection} window="@3" xterm={xterm} addons={addons} />;
+```
+
+An OSC 8 link's text need not be its URI, so a host that opens one should
+show where it goes first.
 
 `sizing` says who decides the window's size:
 

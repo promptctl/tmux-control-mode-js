@@ -5,28 +5,34 @@
 //
 // [LAW:one-source-of-truth] The terminal owns every behaviour; this only maps
 //   React's lifecycle onto it. Identity (connection, window, history) mounts a
-//   new terminal; settings (sizing, appearance) go through `update`; the
-//   callbacks and the forwarded ref are read through refs, so a new function
-//   each render neither remounts nor resubscribes.
+//   new terminal; each setting (sizing, xterm) goes through `update` alone,
+//   so a new value for one never touches the other (which may have been set
+//   through the ref); the addons are read at mount; the callbacks and the
+//   forwarded ref are read through refs, so a new function each render
+//   neither remounts nor resubscribes.
 
 import { forwardRef, useEffect, useRef, type ForwardedRef } from "react";
 import {
   mountWindowTerminal,
-  type Appearance,
   type Sizing,
   type WindowId,
   type WindowTerminal as Terminal,
   type WindowTerminalError,
   type WindowTerminalOptions,
   type WindowTerminalState,
+  type XtermAddons,
+  type XtermOptions,
 } from "../index.js";
+import { DEFAULT_SIZING } from "../options.js";
 
 export interface WindowTerminalProps {
   readonly connection: WindowTerminalOptions["connection"];
   readonly window: WindowId;
   readonly history?: number;
   readonly sizing?: Sizing;
-  readonly appearance?: Appearance;
+  readonly xterm?: XtermOptions;
+  /** Read when the terminal mounts; a new factory does not remount it. */
+  readonly addons?: XtermAddons;
   readonly onState?: (state: WindowTerminalState) => void;
   readonly onError?: (error: WindowTerminalError) => void;
   readonly className?: string;
@@ -43,7 +49,7 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
     const terminal = useRef<Terminal | null>(null);
     const latest = useRef(props);
     latest.current = props;
-    const { connection, window, history, sizing, appearance } = props;
+    const { connection, window, history, sizing, xterm } = props;
 
     useEffect(() => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -53,7 +59,8 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
         window,
         history,
         sizing: latest.current.sizing,
-        appearance: latest.current.appearance,
+        xterm: latest.current.xterm,
+        addons: latest.current.addons,
       });
       terminal.current = t;
       const offState = t.onState((s) => latest.current.onState?.(s));
@@ -74,9 +81,13 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
       return () => assign(ref, null);
     }, [ref, connection, window, history]);
 
+    // A prop is the whole setting: one taken away is the default.
     useEffect(() => {
-      terminal.current?.update({ sizing, appearance });
-    }, [sizing, appearance]);
+      terminal.current?.update({ sizing: sizing ?? DEFAULT_SIZING });
+    }, [sizing]);
+    useEffect(() => {
+      terminal.current?.update({ xterm: xterm ?? {} });
+    }, [xterm]);
 
     return <div ref={host} className={props.className} />;
   },

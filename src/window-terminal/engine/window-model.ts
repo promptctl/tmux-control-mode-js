@@ -86,7 +86,8 @@ export type WindowTerminalState =
 
 /**
  * A tmux command the terminal issued failed while tmux was reachable, or a
- * frame failed to draw (`render`: cells that measure as nothing, say). A lost
+ * frame or a pane failed to draw (`render`: cells that measure as nothing, or
+ * a host addon that threw as the pane opened, which leaves it empty). A lost
  * connection is never one of these: it is the `stale` phase.
  */
 export interface WindowTerminalError {

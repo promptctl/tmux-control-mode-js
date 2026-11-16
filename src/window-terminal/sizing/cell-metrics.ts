@@ -7,8 +7,11 @@
 //   char  — CharSizeService: an OffscreenCanvas `measureText("W")` (width,
 //           fontBoundingBoxAscent + fontBoundingBoxDescent), else a DOM span
 //           of 32 "W"s (offsetWidth / 32, offsetHeight).
-//   cell  — DomRenderer: width = char width; height =
+//   cell  — DomRenderer: width =
+//           (char width × dpr + round(letterSpacing)) / dpr; height =
 //           floor(ceil(char height × dpr) × lineHeight) / dpr.
+//           Only the DOM renderer: a renderer addon (WebGL, canvas) draws
+//           a different cell.
 //
 // [LAW:no-shared-mutable-globals] The cache belongs to one measure (one
 //   terminal), not the module.
@@ -62,9 +65,16 @@ function charSizeInDom(doc: Document, family: string, px: number): CellSize {
   return size;
 }
 
+/** The font a cell is drawn in, as xterm.js's options set it. */
+export interface CellFont {
+  readonly fontFamily: string;
+  readonly lineHeight: number;
+  readonly letterSpacing: number;
+}
+
 export interface CellMeasure {
-  /** The cell size at each font size for this family and line height. */
-  cellAt(family: string, lineHeight: number): CellAt;
+  /** The cell size at each font size in this font. */
+  cellAt(font: CellFont): CellAt;
   /**
    * Called when cell sizes may have changed under the same settings: a font
    * finished loading, or the device pixel ratio moved (a zoom, a monitor).
@@ -99,23 +109,25 @@ export function createCellMeasure(win: Window): CellMeasure {
   doc.fonts.addEventListener("loadingdone", changed);
 
   return {
-    cellAt(family, lineHeight) {
+    cellAt({ fontFamily: family, lineHeight, letterSpacing }) {
       return (px) => {
-        const key = `${px}|${lineHeight}|${family}`;
+        const key = `${px}|${lineHeight}|${letterSpacing}|${family}`;
         const hit = cache.get(key);
         if (hit !== undefined) return hit;
         const char =
           charSizeOnCanvas(ctx, family, px) ?? charSizeInDom(doc, family, px);
-        if (!(char.width > 0 && char.height > 0)) {
-          throw new Error(
-            `cannot measure ${px}px ${family}: the document measured it as ${char.width}x${char.height}`,
-          );
-        }
         const dpr = win.devicePixelRatio;
         const cell = {
-          width: char.width,
+          width: (char.width * dpr + Math.round(letterSpacing)) / dpr,
           height: Math.floor(Math.ceil(char.height * dpr) * lineHeight) / dpr,
         };
+        // A glyph measured as nothing is no font, whatever the spacing; a
+        // letterSpacing that eats a real glyph's width leaves no column.
+        if (!(char.width > 0 && char.height > 0 && cell.width > 0)) {
+          throw new Error(
+            `cannot lay out ${px}px ${family}: the document measured its glyph as ${char.width}x${char.height}, a cell of ${cell.width}x${cell.height}`,
+          );
+        }
         cache.set(key, cell);
         return cell;
       };

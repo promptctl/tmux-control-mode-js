@@ -7,6 +7,9 @@
 //   1. multi-line output renders onto distinct xterm rows
 //   2. ANSI foreground escapes produce styled spans in the DOM
 //   3. carriage-return overwrite renders correctly
+//   4. the host's xterm options and addons reach the panes: an OSC 8 link
+//      with a custom scheme reaches its link handler, and Unicode 11's
+//      widths are tmux's
 //
 // All three categories are from IMPL §11.3. The original §11.3 catalog
 // listed these as "Playwright + xterm.js" because they can only be
@@ -234,6 +237,80 @@ test("carriage-return overwrite renders the post-CR characters in place", async 
       );
     }, PRE);
     expect(preCrRowExists).toBe(false);
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+// The cell width the window terminal lays the grid out in, in CSS px.
+async function cellWidth(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const grid = document.querySelector<HTMLElement>(".wt-grid");
+    return parseFloat(grid?.style.getPropertyValue("--wt-cell-w") ?? "");
+  });
+}
+
+test("an OSC 8 link with a custom scheme calls the page's link handler with its URI on click", async () => {
+  const handle = await launchApp();
+  try {
+    const { page } = handle;
+    const TAG = Date.now().toString(36).toUpperCase();
+    const URI = `cc-candybar://dispatch/${TAG}`;
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.focus();
+    // The link text is printed from two arguments, so only the output row
+    // holds it whole; the typed command shows "LINK_ <tag>".
+    await textarea.pressSequentially(
+      `printf '\\033]8;;${URI}\\033\\\\%s%s\\033]8;;\\033\\\\\\n' LINK_ ${TAG}\n`,
+      { delay: 10 },
+    );
+    const row = page
+      .locator(".xterm-rows > div")
+      .filter({ hasText: new RegExp(`^\\s*LINK_${TAG}\\s*$`) })
+      .first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    const box = await row.boundingBox();
+    if (box === null) throw new Error("link row has no box");
+    const x = box.x + (await cellWidth(page)) * 2.5;
+    const y = box.y + box.height / 2;
+    // xterm finds a link under the pointer as it moves, then activates it.
+    await page.mouse.move(x - 4, y);
+    await page.mouse.move(x, y);
+    await page.mouse.click(x, y);
+    await expect(page.getByTestId("last-link")).toHaveText(URI, {
+      timeout: 5_000,
+    });
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+test("an emoji takes two cells, as tmux counts it, with Unicode 11 loaded", async () => {
+  const handle = await launchApp();
+  try {
+    const { page } = handle;
+    const SENTINEL = `W${Date.now().toString(36).toUpperCase()}`;
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.focus();
+    // U+1F600 (UTF-8 F0 9F 98 80), then the sentinel in red: under xterm's
+    // default Unicode 6 table the emoji is one cell, under Unicode 11 two.
+    await textarea.pressSequentially(
+      `printf '\\360\\237\\230\\200\\033[31m${SENTINEL}\\033[0m\\n'\n`,
+      { delay: 10 },
+    );
+    const red = page
+      .locator('.xterm-rows span[class*="xterm-fg-"]', { hasText: SENTINEL })
+      .first();
+    await expect(red).toBeVisible({ timeout: 15_000 });
+    const offset = await red.evaluate((span) => {
+      const rowEl = span.closest(".xterm-rows > div");
+      if (rowEl === null) throw new Error("span outside a row");
+      return (
+        span.getBoundingClientRect().left - rowEl.getBoundingClientRect().left
+      );
+    });
+    const cell = await cellWidth(page);
+    expect(Math.abs(offset - 2 * cell)).toBeLessThan(cell / 2);
   } finally {
     await disposeApp(handle);
   }

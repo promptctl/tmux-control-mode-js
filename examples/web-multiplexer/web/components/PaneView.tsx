@@ -15,17 +15,36 @@
 //   library keeps the two apart on purpose, for a watcher whose keys must not
 //   follow another client's select-pane; this page is the person's own client.
 
-import { useCallback, useMemo, useRef, type ElementRef } from "react";
+import { useCallback, useMemo, useRef, useState, type ElementRef } from "react";
 import { observer } from "mobx-react-lite";
 import { ActionIcon, Group, Text, Tooltip } from "@mantine/core";
-import type { WindowTerminalState } from "@promptctl/tmux-control-mode-js/window-terminal";
+import type {
+  WindowTerminalState,
+  XtermAddons,
+  XtermOptions,
+} from "@promptctl/tmux-control-mode-js/window-terminal";
 import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/react";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
 
 const FONT_FAMILY =
   '"JetBrainsMono Nerd Font Mono", "JetBrains Mono", Menlo, "DejaVu Sans Mono", monospace';
-const APPEARANCE = { fontFamily: FONT_FAMILY } as const;
+
+// Unicode 11's widths are tmux's: an emoji takes two cells in both, so the
+// cursor xterm draws stays where tmux has it. Loading the provider registers
+// it; the second addon makes it the version in use.
+const unicode11 = (): ReturnType<XtermAddons> => [
+  new Unicode11Addon(),
+  {
+    activate: (t) => {
+      t.unicode.activeVersion = "11";
+    },
+    // Nothing to release: the version goes with the terminal.
+    dispose: () => undefined,
+  },
+];
 
 interface Props {
   readonly store: DemoStore;
@@ -48,6 +67,27 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
     [font],
   );
   const terminal = useRef<ElementRef<typeof WindowTerminal>>(null);
+  // A link clicked in a pane: an OSC 8 link of any scheme (a statusline's
+  // `cc-candybar://…`) or a plain URL. The page shows it. Only a plain URL
+  // opens: its text is the link, where an OSC 8 link's text can be anything.
+  const [lastLink, setLastLink] = useState<string | null>(null);
+  const { xterm, addons } = useMemo(() => {
+    const show = (_: MouseEvent, uri: string): void => setLastLink(uri);
+    const open = (ev: MouseEvent, uri: string): void => {
+      show(ev, uri);
+      window.open(uri, "_blank", "noopener");
+    };
+    const options: XtermOptions = {
+      fontFamily: FONT_FAMILY,
+      allowProposedApi: true, // Unicode 11 uses xterm's proposed API
+      linkHandler: { allowNonHttpProtocols: true, activate: show },
+    };
+    const factory: XtermAddons = () => [
+      ...unicode11(),
+      new WebLinksAddon(open),
+    ];
+    return { xterm: options, addons: factory };
+  }, []);
   const seen = useRef<Seen | null>(null);
   const onState = useCallback(
     (s: WindowTerminalState) => {
@@ -75,6 +115,18 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   return (
     <>
       <Group gap={4} justify="flex-end" wrap="nowrap">
+        {lastLink !== null && (
+          <Text
+            size="xs"
+            c="dimmed"
+            ff="monospace"
+            truncate
+            mr="auto"
+            data-testid="last-link"
+          >
+            {lastLink}
+          </Text>
+        )}
         <Tooltip label="Smaller font">
           <ActionIcon
             size="xs"
@@ -103,7 +155,8 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
         connection={store.paneStreamClient}
         window={`@${win.id}`}
         sizing={sizing}
-        appearance={APPEARANCE}
+        xterm={xterm}
+        addons={addons}
         onState={onState}
       />
     </>

@@ -8,6 +8,14 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed — breaking
 
+- `./window-terminal` takes the host's xterm.js options as `xterm`
+  (`XtermOptions`: `ITerminalOptions` less the ones the terminal sets) in
+  place of `appearance` (`Appearance` is gone), at mount and through
+  `update()`, and every pane has them. A key xterm.js does not have, a value it refuses, or a non-finite `lineHeight` or `letterSpacing` throws
+  `RangeError` there. `xterm` refuses `scrollback` (`history` sets it),
+  `tabStopWidth`, `windowOptions` and `overviewRulerWidth`, as well as the
+  sizes and modes tmux owns. The React component updates each setting on
+  its own, and a prop taken away returns to its default.
 - The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
   gone: call the connection's methods of the same names (`ClientSizeSurface`).
   They sent `refresh-client -C` through `execute()`, past the client's size
@@ -76,6 +84,13 @@ All notable changes to this project are documented here. Format follows
 
 ### Added
 
+- `addons` (`./window-terminal`, and the React component): a factory each
+  pane calls once for the xterm.js addons it loads (Unicode 11, web links).
+  With `xterm.linkHandler`, an OSC 8 link with a custom scheme reaches the
+  host's `activate`. An addon that throws as a pane opens is an `onError`
+  (`render`), and that pane stays empty (README).
+- `letterSpacing` is part of the measured cell, so the sizing solver lays
+  out the grid xterm draws at any spacing.
 - `sendKeyBytes(client, target, bytes)` (`.`, `./browser`; the encoder in
   `./protocol`) sends raw bytes to a pane through `send-keys -H`, for input no
   text can carry, such as a legacy mouse report's coordinates ≥ 0x80. An

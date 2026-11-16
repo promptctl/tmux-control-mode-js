@@ -22,25 +22,51 @@
 import type { PaneSurface, PaneSurfaces } from "../engine/window-engine.js";
 import type { PaneId } from "../ids.js";
 import { parsePaneId } from "../ids.js";
+import type { TerminalSink } from "../engine/terminal-sink.js";
 import type { Box } from "../sizing/solve.js";
-import type { Appearance } from "./appearance.js";
 import type { RenderPlan } from "./render-plan.js";
+import type { XtermAddons, XtermOptions } from "./xterm-options.js";
 import { XtermSink } from "./xterm-sink.js";
 
 export interface WindowRendererOptions {
   readonly history: number;
-  readonly appearance: Appearance;
+  readonly xterm: XtermOptions;
+  readonly addons: XtermAddons | undefined;
   /** The font a pane opens at, before the first plan reaches it. */
   readonly font: number;
   /** The box the terminal has to draw in, on every change. */
   readonly onBox: (box: Box) => void;
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
+  /**
+   * `pane`'s xterm failed: to open (a host addon threw; it draws nothing), or
+   * to take options xterm accepted (an addon refused them).
+   */
+  readonly onError: (pane: PaneId, cause: unknown) => void;
 }
+
+/** What the renderer drives in a pane. */
+type PaneDrawing = TerminalSink &
+  Pick<XtermSink, "onInput" | "setFont" | "setOptions" | "remeasure" | "focus">;
+
+// [LAW:dataflow-not-control-flow] A pane with no xterm takes every call and
+//   draws nothing, so nothing that drives panes asks which kind it has.
+const NOTHING_DRAWN: PaneDrawing = {
+  seed: () => undefined,
+  write: () => undefined,
+  resize: () => undefined,
+  isVisible: () => false,
+  dispose: () => undefined,
+  onInput: () => () => undefined,
+  setFont: () => undefined,
+  setOptions: () => undefined,
+  remeasure: () => undefined,
+  focus: () => undefined,
+};
 
 interface PaneEl {
   readonly el: HTMLDivElement;
-  readonly sink: XtermSink;
+  readonly sink: PaneDrawing;
 }
 
 export class WindowRenderer implements PaneSurfaces {
@@ -50,7 +76,9 @@ export class WindowRenderer implements PaneSurfaces {
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
   private readonly observer: ResizeObserver;
-  private appearance: Appearance;
+  private readonly onError: (pane: PaneId, cause: unknown) => void;
+  private readonly addons: XtermAddons | undefined;
+  private xterm: XtermOptions;
   private font: number;
   // Set while this renderer moves DOM focus itself, so the focus it moves is
   // not read back as a person choosing a pane.
@@ -66,7 +94,9 @@ export class WindowRenderer implements PaneSurfaces {
 
   constructor(host: HTMLElement, opts: WindowRendererOptions) {
     this.history = opts.history;
-    this.appearance = opts.appearance;
+    this.xterm = opts.xterm;
+    this.addons = opts.addons;
+    this.onError = opts.onError;
     this.font = opts.font;
     this.onFocusPane = opts.onFocusPane;
     const doc = host.ownerDocument;
@@ -113,21 +143,12 @@ export class WindowRenderer implements PaneSurfaces {
       outline: "1px solid var(--wt-border-color, #555)",
     });
     this.grid.appendChild(el);
-    const sink = new XtermSink({
-      container: el,
-      fontSize: this.font,
-      scrollback: this.history,
-      appearance: this.appearance,
-    });
-    // The pane's own box clips the terminal to its cell rect; a viewport
-    // scrollbar would cover its last columns. Wheel scrolling still works.
-    const viewport =
-      sink.terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
-    if (viewport !== null && viewport !== undefined) {
-      viewport.style.scrollbarWidth = "none";
-    }
+    const { sink, failures } = this.open(el);
     const offInput = sink.onInput(keys);
     this.panes.set(pane, { el, sink });
+    // Reported once the pane is held: a listener that disposes the terminal
+    // finds the renderer whole, and disposes this pane with the rest.
+    for (const cause of failures) this.onError(pane, cause);
     return {
       sink,
       dispose: () => {
@@ -137,6 +158,34 @@ export class WindowRenderer implements PaneSurfaces {
         this.panes.delete(pane);
       },
     };
+  }
+
+  // A pane's xterm, or nothing drawn where it failed to open (a host addon
+  // threw): the pane is still the window's, an empty box, reported once.
+  private open(el: HTMLDivElement): {
+    readonly sink: PaneDrawing;
+    readonly failures: readonly unknown[];
+  } {
+    let sink: XtermSink;
+    try {
+      sink = new XtermSink({
+        container: el,
+        fontSize: this.font,
+        scrollback: this.history,
+        xterm: this.xterm,
+        addons: this.addons,
+      });
+    } catch (cause) {
+      return { sink: NOTHING_DRAWN, failures: [cause] };
+    }
+    // The pane's own box clips the terminal to its cell rect; a viewport
+    // scrollbar would cover its last columns. Wheel scrolling still works.
+    const viewport =
+      sink.terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport !== null && viewport !== undefined) {
+      viewport.style.scrollbarWidth = "none";
+    }
+    return { sink, failures: [] };
   }
 
   // -------------------------------------------------------------------------
@@ -200,9 +249,18 @@ export class WindowRenderer implements PaneSurfaces {
     }
   }
 
-  setAppearance(a: Appearance): void {
-    this.appearance = a;
-    for (const { sink } of this.panes.values()) sink.setAppearance(a);
+  // A pane's xterm or addon that throws on an option xterm accepted is that
+  // pane's failure, reported as a pane that fails to open is; every other
+  // pane still takes the options.
+  setOptions(xterm: XtermOptions): void {
+    this.xterm = xterm;
+    for (const [pane, { sink }] of this.panes) {
+      try {
+        sink.setOptions(xterm);
+      } catch (cause) {
+        this.onError(pane, cause);
+      }
+    }
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */
