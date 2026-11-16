@@ -13,25 +13,18 @@
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { createServer } from "node:http";
-import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
   attachSession,
+  browserOverBridge,
   getPrimaryPaneId,
   readUntil,
   waitForPaneText,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys } from "../../src/commands/index.js";
-import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
-import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
-import type {
-  BrowserWebSocketLike,
-  ServerWebSocketLike,
-} from "../../src/connectors/websocket/types.js";
 import {
   PaneStream,
   type TerminalConnection,
@@ -295,34 +288,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     it("over a WebSocket bridge", async () => {
       const client = await attachSession(socket, uniqueName("race"));
       teardown.push(() => client.close());
-      const bridge = createWebSocketBridge({ createClient: () => client });
-      const http = createServer();
-      const wss = new WebSocketServer({ server: http, path: "/tmux" });
-      wss.on("connection", (ws, req) => {
-        void bridge.handleConnection(ws as unknown as ServerWebSocketLike, {
-          url: req.url,
-          headers: {},
-          remoteAddress: undefined,
-        });
-      });
-      const port = await new Promise<number>((resolve) => {
-        http.listen(0, "127.0.0.1", () => {
-          const addr = http.address();
-          resolve(typeof addr === "object" && addr !== null ? addr.port : 0);
-        });
-      });
-      teardown.push(async () => {
-        await bridge.shutdown(1_000);
-        await new Promise<void>((r) => wss.close(() => r()));
-        await new Promise<void>((r) => http.close(() => r()));
-      });
-      const browser = new WebSocketTmuxClient({
-        url: `ws://127.0.0.1:${port}/tmux`,
-        createWebSocket: (u) =>
-          new WsClient(u) as unknown as BrowserWebSocketLike,
-        heartbeatIntervalMs: 0,
-      });
-      teardown.push(() => browser.close());
+      const { browser } = await browserOverBridge(() => client, teardown);
       await readUntil(
         () => browser.connectionState.status,
         (status) => status === "ready",

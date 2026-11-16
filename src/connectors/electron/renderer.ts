@@ -73,14 +73,16 @@ import {
 
 // [LAW:no-shared-mutable-globals] The invoke-id allocator: written only by
 // `TmuxClientProxy.invoke`. Main replies on `IPC.event`, which every proxy on
-// the page hears, so ids are unique across the realm, not per proxy.
-let lastInvokeId = 0;
+// the page hears, so ids are unique across the realm, not per proxy. And
+// `IPC.event` reaches whatever document the WebContents shows when the reply
+// lands, so a reply main sent just before a navigation can reach the next
+// page: a random start keeps one document's ids from naming another's calls.
+let lastInvokeId = Math.floor(Math.random() * 2 ** 52);
 
+// A closed proxy answers as a closed WebSocket client does: the connection is
+// gone (`isConnectionGone`), so teardown calls made after `close()` are moot.
 function proxyClosed(): BridgeErrorPayload {
-  return new BridgeError(
-    "BRIDGE_ABORTED",
-    "the proxy was closed before the call's reply arrived",
-  ).toPayload();
+  return new BridgeError("BRIDGE_CLOSED", "the proxy is closed").toPayload();
 }
 
 /**
@@ -420,7 +422,7 @@ export class TmuxClientProxy
         return;
       }
       this.awaitingReply.set(id, resolve);
-      this.ipc.invoke(IPC.invoke, id, req).then((ret) => {
+      this.ipc.invoke(IPC.invoke, { id, request: req }).then((ret) => {
         if (ret.via === "invoke") this.settle(id, ret.result);
       }, reject);
     });
@@ -504,7 +506,10 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  InvokeCall,
+  InvokeReplyMessage,
   InvokeResultEnvelope,
+  InvokeReturn,
   IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,

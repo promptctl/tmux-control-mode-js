@@ -14,13 +14,16 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
 import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js";
 import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js";
-import {
-  IPC,
-  type InvokeResultEnvelope,
-  type IpcMainEventLike,
-  type IpcRendererOnListener,
+import type {
+  InvokeResultEnvelope,
+  IpcMainEventLike,
+  WebContentsLike,
 } from "../../src/connectors/electron/types.js";
-import { createIpcHub, type FakeRenderer } from "./_helpers/ipc-hub.js";
+import {
+  createIpcHub,
+  invokeRaw,
+  type FakeRenderer,
+} from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { replyTo } from "./_helpers/wire.js";
 
@@ -70,31 +73,15 @@ function makeRig(): Rig {
   return { pipeline, registry, renderer, event: renderer.event, sent, feed };
 }
 
-let lastId = 0;
-
-// Hand `req` to the pipeline as `renderer`'s invoke, and resolve with the reply
-// wherever main put it: on `IPC.event` under the invoke's id, or in the
-// handler's return.
+// Hand `req` to the pipeline as `renderer`'s invoke, and resolve with its reply.
 function answer(
   pipeline: InvokePipeline,
   renderer: FakeRenderer,
   req: unknown,
 ): Promise<InvokeResultEnvelope> {
-  const id = ++lastId;
-  const ipc = renderer.ipcRenderer;
-  return new Promise((resolve, reject) => {
-    const hear: IpcRendererOnListener = (_e, msg) => {
-      if (msg.type !== "invoke-reply" || msg.id !== id) return;
-      ipc.removeListener(IPC.event, hear);
-      resolve(msg.result);
-    };
-    ipc.on(IPC.event, hear);
-    pipeline.handle(renderer.event, id, req).then((ret) => {
-      if (ret.via === "event") return;
-      ipc.removeListener(IPC.event, hear);
-      resolve(ret.result);
-    }, reject);
-  });
+  return invokeRaw(renderer.ipcRenderer, req, (call) =>
+    pipeline.handle(renderer.event, call),
+  );
 }
 
 describe("InvokePipeline — validation → envelope", () => {
@@ -114,7 +101,10 @@ describe("InvokePipeline — validation → envelope", () => {
     const { pipeline, event, sent } = makeRig();
 
     await expect(
-      pipeline.handle(event, "7", { method: "execute", args: ["ls"] }),
+      pipeline.handle(event, {
+        id: "7",
+        request: { method: "execute", args: ["ls"] },
+      }),
     ).resolves.toMatchObject({
       via: "invoke",
       result: {
@@ -213,6 +203,29 @@ describe("InvokePipeline — destroyed sender", () => {
       error: { code: "BRIDGE_ABORTED" },
     });
   });
+
+  it("answers in the return when the WebContents is destroyed before its teardown arrives", async () => {
+    const { pipeline, renderer, sent, feed } = makeRig();
+    // Electron reports `destroyed` a task after the WebContents dies, so the
+    // sender is still registered when the dispatch settles.
+    let destroyed = false;
+    const sender = Object.create(renderer.sender, {
+      isDestroyed: { value: () => destroyed },
+    }) as WebContentsLike;
+    const event = { ...renderer.event, sender };
+
+    const p = pipeline.handle(event, {
+      id: 1,
+      request: { method: "execute", args: ["list-windows"] },
+    });
+    destroyed = true;
+    feed(replyTo(sent[0]));
+
+    await expect(p).resolves.toMatchObject({
+      via: "invoke",
+      result: { status: "ok" },
+    });
+  });
 });
 
 describe("InvokePipeline — drain", () => {
@@ -227,7 +240,10 @@ describe("InvokePipeline — drain", () => {
     // A valid execute dispatches to the client and awaits a %begin/%end that
     // never arrives (the fake transport records but never replies), so the
     // handler promise stays pending — proving the pipeline tracked it for drain.
-    void pipeline.handle(event, 1, { method: "execute", args: ["ls"] });
+    void pipeline.handle(event, {
+      id: 1,
+      request: { method: "execute", args: ["ls"] },
+    });
     expect(sent.length).toBeGreaterThan(0);
 
     // Without tracking, drain() would hang; the timeout path returns.

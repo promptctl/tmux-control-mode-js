@@ -843,9 +843,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
-        ? tmuxError("capture failed")
-        : null,
+      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
     const errors: PaneStreamError[] = [];
@@ -883,7 +881,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
+      cmd.startsWith("capture-pane")
         ? new TransportClosedError("socket closed")
         : null,
     );

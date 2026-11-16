@@ -21,7 +21,24 @@ All notable changes to this project are documented here. Format follows
   re-export `PaneOutputMessage`; import it from `./protocol`, where
   `OutputMessage` and `ExtendedOutputMessage` already are.
 
+- `./electron`: main replies to an invoke on `IPC.event`, as an
+  `InvokeReplyMessage`, so the reply follows every event sent before it.
+  `IpcRendererLike.invoke` takes one `InvokeCall` (`{ id, request }`) and
+  resolves to an `InvokeReturn`. A preload that forwards
+  `invoke(channel, arg)` as is keeps working. A custom `IpcRendererLike` that
+  answers invokes itself, such as a test fake, returns
+  `{ via: "invoke", result }`. Main and renderer must come from the same
+  version.
+- A closed `TmuxClientProxy` answers every call `BRIDGE_CLOSED`, as a closed
+  WebSocket client does, so `isConnectionGone` reads it as gone. Calls in
+  flight at `close()` used to get `BRIDGE_ABORTED` from main.
+
 ### Fixed
+
+- `./window-terminal`: a pane seeded while its program prints draws each
+  line once. Every byte that reached the client during the capture was
+  replayed after the snapshot, so lines tmux had already drawn into it
+  appeared twice.
 
 - A pane counts a character's cells as tmux does, with nothing from the host:
   an emoji two, a character with VS16 two (⚠️), an emoji newer than Unicode

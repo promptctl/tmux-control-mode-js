@@ -88,6 +88,18 @@ function methodLabel(raw: unknown): string {
   }
 }
 
+// The renderer's `InvokeCall`, as far as main reads it here: `id` is null when
+// the call names no usable reply id; `raw` is the request, which
+// `parseRpcRequest` alone validates.
+function readInvokeCall(call: unknown): { id: number | null; raw: unknown } {
+  if (typeof call !== "object" || call === null) return { id: null, raw: call };
+  const { id, request } = call as Partial<Record<"id" | "request", unknown>>;
+  return {
+    id: typeof id === "number" && Number.isSafeInteger(id) ? id : null,
+    raw: request,
+  };
+}
+
 // [LAW:single-enforcer] The BRIDGE_INTERNAL construction (method-labelled
 // message + chained cause stack) lives once in `../bridge-dispatch.js`. This
 // fallback covers only the pre-parse path, where the method is not yet known
@@ -143,7 +155,7 @@ export class InvokePipeline {
     event: IpcMainEventLike,
     ...args: unknown[]
   ): Promise<InvokeReturn> => {
-    const p = this.answer(event, args[0], args[1]);
+    const p = this.answer(event, args[0]);
     this.handlerCalls.add(p);
     // The envelope-returning handler never rejects under normal flow, but keep
     // the symmetric cleanup so a programming error (a rejection that somehow
@@ -169,13 +181,13 @@ export class InvokePipeline {
 
   private async answer(
     event: IpcMainEventLike,
-    rawId: unknown,
-    raw: unknown,
+    call: unknown,
   ): Promise<InvokeReturn> {
-    if (typeof rawId !== "number" || !Number.isSafeInteger(rawId)) {
+    const { id, raw } = readInvokeCall(call);
+    if (id === null) {
       const err = new RpcError(
         "INVALID_REQUEST",
-        "invoke id is not an integer",
+        "invoke call names no integer id",
       );
       return { via: "invoke", result: rpcErrorEnvelope(err) };
     }
@@ -196,10 +208,14 @@ export class InvokePipeline {
     );
     // [LAW:no-ambient-temporal-coupling] The reply rides `IPC.event`, behind
     //   every event main sent the page before it — unless the sender was
-    //   torn down meanwhile: `IPC.event` now reaches whatever document the
-    //   WebContents shows next, so the reply goes back in the return.
-    if (dispatch.aborted) return { via: "invoke", result };
-    sender.wc.send(IPC.event, { type: "invoke-reply", id: rawId, result });
+    //   torn down meanwhile, or its WebContents destroyed ahead of the
+    //   teardown Electron has yet to deliver: `IPC.event` then reaches
+    //   whatever document the WebContents shows next, or nothing, so the
+    //   reply goes back in the return.
+    if (dispatch.aborted || sender.wc.isDestroyed()) {
+      return { via: "invoke", result };
+    }
+    sender.wc.send(IPC.event, { type: "invoke-reply", id, result });
     return { via: "event" };
   }
 

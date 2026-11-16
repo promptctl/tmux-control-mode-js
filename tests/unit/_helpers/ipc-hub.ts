@@ -378,10 +378,13 @@ let lastRawId = 0;
 /**
  * Invoke main with `req`, sent as is, and resolve with the reply wherever main
  * put it: on `IPC.event` under the invoke's id, or in the invoke's return.
+ * `invoke` carries the call to main: `ipc`'s own, or a handler driven directly.
  */
 export function invokeRaw(
   ipc: RawIpcRenderer,
   req: unknown,
+  invoke: (call: unknown) => Promise<InvokeReturn> = (call) =>
+    ipc.invoke(IPC.invoke, call),
 ): Promise<InvokeResultEnvelope> {
   const id = --lastRawId;
   return new Promise((resolve, reject) => {
@@ -391,7 +394,7 @@ export function invokeRaw(
       resolve(msg.result);
     };
     ipc.on(IPC.event, hear);
-    ipc.invoke(IPC.invoke, id, req).then((ret) => {
+    invoke({ id, request: req }).then((ret) => {
       if (ret.via === "event") return;
       ipc.removeListener(IPC.event, hear);
       resolve(ret.result);

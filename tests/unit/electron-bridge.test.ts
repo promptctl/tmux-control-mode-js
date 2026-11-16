@@ -17,7 +17,11 @@ import ts from "typescript";
 
 import { TmuxClient } from "../../src/client.js";
 import { isTmuxMessage } from "../../src/emitter.js";
-import { TmuxCommandError, TmuxInvalidCommandError } from "../../src/errors.js";
+import {
+  isConnectionGone,
+  TmuxCommandError,
+  TmuxInvalidCommandError,
+} from "../../src/errors.js";
 import { dispatchBridgeRequest } from "../../src/connectors/bridge-dispatch.js";
 import type {
   BridgeConnection,
@@ -1934,10 +1938,10 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     expect(bResp.output).toEqual(["%1 main 0 -"]);
   });
 
-  it("aborts in-flight invoke when sender unregisters mid-request", async () => {
-    // close() on the proxy sends IPC.unregister. The bridge treats this as
-    // a teardown for the sender (matching the destroyed-handler path) so any
-    // in-flight invoke is aborted with a typed error rather than orphaned.
+  it("settles an in-flight invoke as a gone connection when the proxy closes mid-request", async () => {
+    // close() on the proxy sends IPC.unregister, and main tears the sender
+    // down; the proxy no longer hears IPC.event, so it settles the call
+    // itself rather than leave it orphaned.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -1953,9 +1957,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     await hub.settled();
     t.answer();
 
-    const err = await pending;
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/ABORTED/);
+    expect(isConnectionGone(await pending)).toBe(true);
   });
 
   it("dispose aborts every in-flight invoke", async () => {
@@ -2723,17 +2725,16 @@ describe("Electron IPC bridge — a reply follows the events before it", () => {
     expect((await rb).output).toEqual(["b"]);
   });
 
-  it("close settles a call in flight as BRIDGE_ABORTED, and a later call too", async () => {
+  it("close settles a call in flight as a gone connection, and a later call too", async () => {
     const { hub, r } = rig();
     const proxy = createRendererBridge(r.ipcRenderer);
     await hub.settled();
 
-    const inFlight = proxy.execute("list-windows");
+    const inFlight = proxy.execute("list-windows").catch((e: unknown) => e);
     proxy.close();
-    await expect(inFlight).rejects.toMatchObject({ code: "BRIDGE_ABORTED" });
-    await expect(proxy.execute("list-windows")).rejects.toMatchObject({
-      code: "BRIDGE_ABORTED",
-    });
+    const later = proxy.execute("list-windows").catch((e: unknown) => e);
+    expect(isConnectionGone(await inFlight)).toBe(true);
+    expect(isConnectionGone(await later)).toBe(true);
   });
 });
 
@@ -2755,10 +2756,16 @@ describe("IpcRendererLike", () => {
       // @ts-expect-error a renderer sends main nothing on IPC.event
       () => ipc.send(IPC.event),
       // @ts-expect-error invoke is the one channel a renderer invokes on
-      () => ipc.invoke(IPC.ack, 1, { paneId: 1, bytes: 1 }),
+      () => ipc.invoke(IPC.ack, { paneId: 1, bytes: 1 }),
+      // @ts-expect-error an invoke names the id its reply carries
+      () => ipc.invoke(IPC.invoke, { method: "listWindows", args: [] }),
       async (): Promise<InvokeReturn["via"]> =>
-        (await ipc.invoke(IPC.invoke, 1, { method: "listWindows", args: [] }))
-          .via,
+        (
+          await ipc.invoke(IPC.invoke, {
+            id: 1,
+            request: { method: "listWindows", args: [] },
+          })
+        ).via,
     ];
     expect(calls).toBeTypeOf("function");
   });

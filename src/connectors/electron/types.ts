@@ -197,12 +197,7 @@ export type IpcRendererOnListener = (
 ) => void;
 
 export interface IpcRendererLike {
-  /** `id` names the invoke's reply; one proxy's ids never repeat another's. */
-  invoke(
-    channel: typeof IPC.invoke,
-    id: number,
-    req: InvokeRequest,
-  ): Promise<InvokeReturn>;
+  invoke(channel: typeof IPC.invoke, call: InvokeCall): Promise<InvokeReturn>;
   // A renderer's own sends are typed per channel; main still parses what
   // arrives (`parseAckMessage`), since a renderer is untrusted.
   send(channel: typeof IPC.register | typeof IPC.unregister): void;
@@ -221,6 +216,16 @@ export interface IpcRendererLike {
 // ---------------------------------------------------------------------------
 
 export type InvokeRequest = RpcRequest;
+
+/**
+ * What a renderer invokes with: the request, and the `id` its reply names.
+ * One argument, so a preload that forwards `invoke(channel, arg)` carries it
+ * whole.
+ */
+export interface InvokeCall {
+  readonly id: number;
+  readonly request: InvokeRequest;
+}
 
 // ---------------------------------------------------------------------------
 // InvokeResultEnvelope — what an invoke came to, as main replies it.

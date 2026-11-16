@@ -82,7 +82,7 @@ function connectedBridge(
   const fromMain = (msg: IpcEventMessage): void =>
     listeners.forEach((l) => l({} as IpcRendererEventLike, msg));
   const ipc: IpcRendererLike = {
-    invoke: (_channel, id) => {
+    invoke: (_channel, { id }) => {
       fromMain({ type: "invoke-reply", id, result: envelope });
       return Promise.resolve({ via: "event" });
     },
