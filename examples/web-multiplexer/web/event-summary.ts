@@ -2,7 +2,8 @@
 //
 // One-line summary of a control-mode notification, or of a chunk of pane
 // output, for the Protocol Inspector's timeline. Pure: the message plus a
-// pane-label lookup in, a single display line out — no MobX, no client, no effects. [LAW:effects-at-boundaries]
+// pane-label lookup in, a single display line out — no MobX, no client, no
+// effects. [LAW:effects-at-boundaries]
 //
 // This is the shared home for inspector-style event summarization. The
 // summary stays on ONE line (the timeline is a dense table), which is why

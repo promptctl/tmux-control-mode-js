@@ -832,7 +832,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
         >
           <Tabs.List>
             <Tabs.Tab value="debug">
-              Debug ({inspectorStore.counts["in-event"]})
+              Debug ({inspectorStore.notifications.length})
             </Tabs.Tab>
             <Tabs.Tab
               value="errors"

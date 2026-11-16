@@ -101,3 +101,16 @@ describe("InspectorStore event-type filter", () => {
     expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-event"]);
   });
 });
+
+describe("InspectorStore search", () => {
+  it("finds notifications by `in event` and `in output`, as it does `in response`", () => {
+    const { store, emit } = inspector();
+    emit({ dir: "in-event", ts: 0, event: { type: "sessions-changed" } });
+    emit({ dir: "in-output", ts: 1, chunk: outputChunk });
+
+    store.setSearch("in output");
+    expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-output"]);
+    store.setSearch("in event");
+    expect(store.visibleEntries.map((e) => e.wire.dir)).toEqual(["in-event"]);
+  });
+});

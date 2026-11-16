@@ -57,7 +57,8 @@ import { toConnectionState } from "./bridge.ts";
  * share across all `PaneStream` instances for the same session.
  *
  * The adapter subscribes to `bridge.onPaneOutput`, `bridge.onEvent` and
- * `bridge.onState` in its constructor. These subscriptions live for the adapter's lifetime (which is
+ * `bridge.onState` in its constructor. These subscriptions live for the
+ * adapter's lifetime (which is
  * the app's lifetime in the demo — the bridge is never replaced).
  */
 export class BridgePaneStreamClient

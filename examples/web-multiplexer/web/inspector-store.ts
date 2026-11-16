@@ -25,6 +25,7 @@ import {
   notificationType,
   summarizeNotification,
 } from "./event-summary.ts";
+import { WIRE_DIRECTIONS } from "./inspector-presentation.ts";
 
 /**
  * One row in the inspector timeline. Wraps a raw WireEntry with a
@@ -254,8 +255,8 @@ export class InspectorStore {
 // ---------------------------------------------------------------------------
 
 // [LAW:single-enforcer] No pane-label lookup is threaded into the search
-// path — search matches raw ids (summarizeEvent's own fallback for an
-// unknown pane), not pretty labels — so one shared empty map suffices
+// path — search matches raw ids (summarizeNotification's own fallback for
+// an unknown pane), not pretty labels — so one shared empty map suffices
 // instead of allocating one per filter pass.
 const NO_LABELS = new Map<number, string>();
 
@@ -266,10 +267,10 @@ const NO_LABELS = new Map<number, string>();
  * box matches against this string so users can type `resize-pane`,
  * `%output`, `r12`, or a pane id like `%5` and get hits.
  *
- * [LAW:single-enforcer] The in-event branch routes through the one shared
- * `summarizeEvent` (event-summary.ts) instead of a parallel hand-maintained
- * switch — SD5 (tmux-complexity-lkg.15) collapsed the three copies that
- * used to exist.
+ * [LAW:single-enforcer] The notification branch — events and pane output —
+ * routes through the one shared `summarizeNotification` (event-summary.ts)
+ * instead of a parallel hand-maintained switch — SD5
+ * (tmux-complexity-lkg.15) collapsed the three copies that used to exist.
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
@@ -280,7 +281,7 @@ function summarizeForSearch(w: WireEntry): string {
     return `out detach ${w.msg.id}`;
   }
   if (isNotification(w)) {
-    return `${w.dir} %${notificationType(w)} ${summarizeNotification(w, NO_LABELS)}`;
+    return `in ${WIRE_DIRECTIONS[w.dir].label} %${notificationType(w)} ${summarizeNotification(w, NO_LABELS)}`;
   }
   if (w.dir === "in-response") {
     return `in response ${w.id} ${w.response.success ? "ok" : "err"} ${w.response.output.join(" ")}`;

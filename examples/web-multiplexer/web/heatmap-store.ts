@@ -2,8 +2,8 @@
 //
 // HeatmapStore — reactive byte-rate tracker per pane.
 //
-// Every chunk of pane output contributes to a per-pane byte accumulator. A 200ms ticker turns those accumulators into a
-// bytes-per-second rate and writes it to an observable Map. Each tick
+// Every chunk of pane output contributes to a per-pane byte accumulator.
+// A 200ms ticker turns those accumulators into a bytes-per-second rate and writes it to an observable Map. Each tick
 // also decays existing rates so quiet panes smoothly fade out, giving
 // the UI a pulsing-heatmap feel without per-event re-renders.
 //
