@@ -69,6 +69,7 @@ function connectedBridge(
   envelope: InvokeResultEnvelope = {
     status: "ok",
     response: { commandNumber: 0, timestamp: 0, output: [], success: true },
+    eventsBefore: 0,
   },
   onRegister: readonly IpcEventMessage[] = [],
 ): {
@@ -125,6 +126,7 @@ describe("ElectronBridge command contract", () => {
     const { bridge, errors, wire } = connectedBridge({
       status: "tmux-error",
       response: failed,
+      eventsBefore: 0,
     });
 
     const p = bridge.execute("list-panes -t @9");
@@ -139,6 +141,7 @@ describe("ElectronBridge command contract", () => {
     const { bridge, errors, wire } = connectedBridge({
       status: "bridge-error",
       error: { code: "BRIDGE_CLOSED", message: "main went away" },
+      eventsBefore: 0,
     });
 
     await expect(bridge.execute("list-panes")).rejects.toThrow(
@@ -209,6 +212,7 @@ describe("BridgePaneStreamClient over ElectronBridge", () => {
     const { bridge, fromMain } = connectedBridge({
       status: "bridge-error",
       error: { code: "BRIDGE_CLOSED", message: "main went away" },
+      eventsBefore: 0,
     });
     fromMain(READY);
     await settle();

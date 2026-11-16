@@ -49,6 +49,7 @@ import {
   IPC,
   type AckMessage,
   type InvokeRequest,
+  type InvokeResultEnvelope,
   type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
@@ -68,6 +69,12 @@ import {
 // Bridge-level failures ride a `BridgeErrorPayload` (not a raw Error) so
 // `.code` survives Electron's structured-clone IPC serializer, which would
 // otherwise drop subclass properties.
+
+// A reply that arrived ahead of the events main sent before it.
+interface ParkedReply {
+  readonly eventsBefore: number;
+  readonly release: () => void;
+}
 
 /**
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.
@@ -114,6 +121,13 @@ export class TmuxClientProxy
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
   private readonly pendingAck = new Map<number, number>();
+  // [LAW:no-ambient-temporal-coupling] A reply settles only once the events
+  //   main sent before it are delivered (`InvokeResultEnvelope.eventsBefore`).
+  //   `delivered` counts IPC.event messages since construction; `parked`
+  //   holds replies that arrived ahead of their events, ordered by the count
+  //   each awaits.
+  private delivered = 0;
+  private readonly parked: ParkedReply[] = [];
   // [LAW:single-enforcer] One teardown per proxy: `closed` gates `close()`
   // so a second invocation is a true noop (no duplicate IPC.unregister send,
   // no double removeListener). The host renderer-side decision is "tear down
@@ -157,6 +171,10 @@ export class TmuxClientProxy
   //   which is what enforces the split on the renderer side.
   // Bound once: an IPC event steps with no closure.
   private readonly onEvent = (msg: IpcEventMessage): void => {
+    // A released reply resumes its caller after this step has delivered the
+    // event.
+    this.delivered++;
+    this.releaseDue();
     if (isPaneOutput(msg)) {
       this.account(msg);
       // [LAW:single-enforcer] Byte dispatch routes through the router.
@@ -351,6 +369,10 @@ export class TmuxClientProxy
     this.ipc.removeListener(IPC.event, this.eventHandler);
     this.ipc.send(IPC.unregister);
     this.pendingAck.clear();
+    // No event is delivered after close, so every reply, parked or still to
+    // come, is due.
+    this.delivered = Number.POSITIVE_INFINITY;
+    this.releaseDue();
     this.router.onTransportClose();
     // The proxy's lifecycle is over even though main keeps running. Report
     // `closed{disposed}` so consumers know this proxy will not emit again
@@ -385,7 +407,7 @@ export class TmuxClientProxy
     // await happens. The timeout branch races the IPC call against a timer;
     // when timeout is disabled (the default), the IPC promise is awaited
     // directly with no timer overhead.
-    const ipcPromise = this.ipc.invoke(IPC.invoke, req);
+    const ipcPromise = this.ipc.invoke(IPC.invoke, req).then(this.inOrder);
     const result =
       this.invokeTimeoutMs > 0
         ? await this.withTimeout(ipcPromise, req.method)
@@ -402,6 +424,32 @@ export class TmuxClientProxy
     // structured-clone serializer drops `.code` on Error subclasses, so the
     // payload pair is what keeps the error machine-distinguishable.
     throw BridgeError.fromPayload(result.error);
+  }
+
+  // The reply, once every event main sent before it has been delivered.
+  private readonly inOrder = (
+    envelope: InvokeResultEnvelope,
+  ): Promise<InvokeResultEnvelope> =>
+    new Promise((resolve) => {
+      const at = this.parked.findIndex(
+        (r) => r.eventsBefore > envelope.eventsBefore,
+      );
+      this.parked.splice(at === -1 ? this.parked.length : at, 0, {
+        eventsBefore: envelope.eventsBefore,
+        release: () => resolve(envelope),
+      });
+      this.releaseDue();
+    });
+
+  private releaseDue(): void {
+    for (
+      let next = this.parked[0];
+      next !== undefined && next.eventsBefore <= this.delivered;
+      next = this.parked[0]
+    ) {
+      this.parked.shift();
+      next.release();
+    }
   }
 
   private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {

@@ -109,6 +109,19 @@ async function flushTicks(n = 4): Promise<void> {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
+// Run `print` when the next capture's `%begin` arrives: after the stream
+// marks it and before the reply resolves, so what it prints is output tmux
+// wrote after it ran the capture. The fake numbers commands in call order.
+function afterNextBegin(client: FakeTmuxClient, print: () => void): void {
+  const once = (ev: { readonly commandNumber: number }): void => {
+    if (!client.commands()[ev.commandNumber - 1]?.startsWith("capture-pane"))
+      return;
+    client.off("begin", once);
+    print();
+  };
+  client.on("begin", once);
+}
+
 describe("PaneStream — state machine", () => {
   it("starts in 'idle'", () => {
     const { stream } = makeStream();
@@ -127,22 +140,36 @@ describe("PaneStream — state machine", () => {
     expect(states).toEqual(["seeding", "live"]);
   });
 
-  it("seed() drains buffered live bytes BEFORE flipping to live", async () => {
+  it("a seed is followed by exactly the output tmux wrote after its capture ran", async () => {
     const { client, stream } = makeStream();
     const sink = new RecordingSink();
     stream.attach(sink);
-    // Inject TWO bytes during the seeding window (capture is in flight).
+    // Written before tmux ran the capture: in the snapshot.
     client.injectOutput(PANE_ID, new Uint8Array([0x41]));
-    client.injectOutput(PANE_ID, new Uint8Array([0x42]));
+    afterNextBegin(client, () => {
+      client.injectOutput(PANE_ID, new Uint8Array([0x42]));
+      client.injectOutput(PANE_ID, new Uint8Array([0x43]));
+    });
     await flushTicks();
-    // Sink received: seed first, then the buffered writes in order.
     const order = sink.events.filter(
       (e) => e.startsWith("seed") || e.startsWith("write"),
     );
+    expect(order).toHaveLength(3);
     expect(order[0]).toMatch(/^seed/);
-    expect(order[1]).toBe("write(1B)");
-    expect(order[2]).toBe("write(1B)");
-    expect(sink.writes.map((w) => w[0])).toEqual([0x41, 0x42]);
+    expect(sink.writes.map((w) => w[0])).toEqual([0x42, 0x43]);
+  });
+
+  it("a reply that resolves before its %begin fails the seed rather than waiting", async () => {
+    const { client, stream } = makeStream({ capture: "screen" });
+    client.withholdBegins();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(stream.lastError?.phase).toBe("seed");
+    expect(sink.seedTexts).toEqual([]);
+    expect(sink.writes.map((w) => w[0])).toEqual([0x41]);
   });
 
   it("detach() → 'detached'; attach() again replays the cached seed without a fresh capture-pane", async () => {
@@ -205,10 +232,12 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
-  it("a seed whose capture was followed by trailing bytes is not cached", async () => {
+  it("a seed whose capture was followed by output is not cached", async () => {
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
-    client.injectOutput(7, new Uint8Array([0x41]));
+    afterNextBegin(client, () =>
+      client.injectOutput(7, new Uint8Array([0x41])),
+    );
     await flushTicks();
     expect(stream.state).toBe("live");
     stream.detach();
@@ -219,12 +248,25 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
-  it("a detach that drops bytes buffered behind a capture keeps that capture out of the cache", async () => {
-    // The dropped bytes postdate the snapshot, so it is already behind the pane.
+  it("output before the capture ran is in its snapshot, so the capture is cached", async () => {
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
     client.injectOutput(7, new Uint8Array([0x41]));
     stream.detach();
+    await flushTicks();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(1);
+  });
+
+  it("a detached capture followed by output is not cached", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    stream.detach();
+    afterNextBegin(client, () =>
+      client.injectOutput(7, new Uint8Array([0x41])),
+    );
     await flushTicks();
 
     stream.attach(new RecordingSink());
@@ -233,20 +275,24 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
-  it("a sink re-attaching after a detach dropped buffered bytes is seeded by a fresh capture", async () => {
-    // The in-flight capture plus the bytes after the re-attach would miss the
-    // dropped ones; a fresh capture contains them.
+  it("a sink re-attaching mid-capture is seeded by that capture and the output after it", async () => {
+    // StrictMode's mount→cleanup→mount on a printing pane: one capture, and
+    // the output written before and after the detach each drawn once.
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
     client.injectOutput(7, new Uint8Array([0x41]));
     stream.detach();
     const sink = new RecordingSink();
     stream.attach(sink);
+    afterNextBegin(client, () =>
+      client.injectOutput(7, new Uint8Array([0x42])),
+    );
     await flushTicks();
 
     expect(stream.state).toBe("live");
-    expect(client.capturePaneCount()).toBe(2);
+    expect(client.capturePaneCount()).toBe(1);
     expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes.map((w) => w[0])).toEqual([0x42]);
   });
 
   it("a sink attaching while a capture is in flight waits for it rather than replaying the older cache", async () => {
@@ -500,49 +546,37 @@ describe("PaneStream — state machine", () => {
     expect(sink.events.some((e) => e.startsWith("seed"))).toBe(false);
   });
 
-  it("stale mid-flight seed clears the buffer before reissuing capture-pane", async () => {
-    // Regression: detach while seed1 is pending → bytes arrive while detached
-    // (lastSeed dropped, seedStaleMidFlight = true) → reattach (state →
-    // seeding under the still-pending seed1) → more bytes arrive and are
-    // pushed to the seed buffer → seed1 resolves stale and starts seed cycle 2.
-    // Those buffered bytes are also in seed2's snapshot, so the buffer MUST be
-    // cleared before the new capture-pane is issued — otherwise they get
-    // replayed after seed2 and duplicate the on-screen output.
-    const { client, stream } = makeStream({ capture: "second-screen" });
-    const sink1 = new RecordingSink();
-    const sink2 = new RecordingSink();
-
-    stream.attach(sink1);
-    expect(stream.state).toBe("seeding");
-    expect(client.capturePaneCount()).toBe(1);
-
-    // Detach before seed1 resolves; inject bytes to mark the seed stale.
-    stream.detach();
-    expect(stream.state).toBe("detached");
-    client.injectOutput(PANE_ID, new Uint8Array([0x41, 0x42]));
-
-    // Reattach — seed1 is still in flight, so PaneStream short-circuits to
-    // 'seeding' without issuing a second RPC yet.
-    stream.attach(sink2);
-    expect(stream.state).toBe("seeding");
-    expect(client.capturePaneCount()).toBe(1);
-
-    // These bytes arrive during the second seeding window and would be
-    // pushed to the buffer. seed2's snapshot will also contain them, so
-    // replaying the buffer after seed2 would duplicate them on screen.
-    client.injectOutput(PANE_ID, new Uint8Array([0x43, 0x44]));
-
-    // Let seed1 resolve (sees stale → clears buffer → starts seed2) and then
-    // seed2 resolve (drains the now-empty buffer → seeds sink2 → goes live).
+  it("a reseed in flight when the stream is disposed still settles", async () => {
+    // The reconnect sweep awaits each reseed; one that never settled would
+    // stall every later sweep on the connection.
+    const { stream } = makeStream();
+    stream.attach(new RecordingSink());
     await flushTicks();
+    const reseed = stream.reseed();
+    stream.dispose();
+    let settled = false;
+    void reseed.then(() => (settled = true));
+    await flushTicks();
+    expect(settled).toBe(true);
+  });
+
+  it("a stale capture's output is in the capture that replaces it, so none of it is drawn again", async () => {
+    const { client, stream } = makeStream({ capture: "second-screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    // The pane changes under the capture in flight: it is stale.
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    // Output after the stale capture ran, but before the new one is issued.
+    afterNextBegin(client, () =>
+      client.injectOutput(PANE_ID, new Uint8Array([0x42])),
+    );
+    await flushTicks();
+
     expect(stream.state).toBe("live");
     expect(client.capturePaneCount()).toBe(2);
-
-    // sink2 received exactly one seed (from seed2's snapshot) and ZERO writes
-    // — the bytes that landed during the second seeding window were not
-    // replayed, because seed2's capture already includes them.
-    expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
-    expect(sink2.writes).toHaveLength(0);
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes).toHaveLength(0);
   });
 
   it("sendKeyBytes(no bytes) is a no-op: resolves success without issuing a command", async () => {

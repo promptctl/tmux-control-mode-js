@@ -26,6 +26,7 @@ import type { BridgeConnection } from "../bridge-connection.js";
 import { waitAtMost } from "../wait-at-most.js";
 import {
   BridgeError,
+  type InvokeResult,
   type InvokeResultEnvelope,
   type IpcMainEventLike,
 } from "./types.js";
@@ -49,7 +50,7 @@ function rpcErrorToBridge(err: RpcError): BridgeError {
   return new BridgeError(mapRpcCode(err.code), err.original);
 }
 
-function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
+function rpcErrorEnvelope(err: RpcError): InvokeResult {
   return { status: "bridge-error", error: rpcErrorToBridge(err).toPayload() };
 }
 
@@ -61,7 +62,7 @@ const PEER_TORN_DOWN =
   "the page's peer was torn down while it ran (the page ended or " +
   "unregistered, or the bridge was disposed)";
 
-function abortedEnvelope(method: string, reason: string): InvokeResultEnvelope {
+function abortedEnvelope(method: string, reason: string): InvokeResult {
   return {
     status: "bridge-error",
     error: new BridgeError(
@@ -88,10 +89,7 @@ function methodLabel(raw: unknown): string {
 // (`parseRpcRequest` threw something other than RpcError — defensive: it only
 // ever throws RpcError). The post-parse dispatch path is classified inside
 // dispatchBridgeRequest.
-function internalErrorEnvelope(
-  method: string,
-  err: unknown,
-): InvokeResultEnvelope {
+function internalErrorEnvelope(method: string, err: unknown): InvokeResult {
   return {
     status: "bridge-error",
     error: internalError(method, err).toPayload(),
@@ -103,7 +101,7 @@ function internalErrorEnvelope(
 // `status` tags; `bridge-error` serializes the typed BridgeError via
 // `toPayload()` (structured-clone drops Error subclass fields, so the payload
 // is what survives the IPC hop).
-function encodeOutcome(outcome: BridgeOutcome): InvokeResultEnvelope {
+function encodeOutcome(outcome: BridgeOutcome): InvokeResult {
   switch (outcome.kind) {
     case "ok":
       return { status: "ok", response: outcome.response };
@@ -120,7 +118,7 @@ export interface InvokePipelineDeps {
   // `dispatchBridgeRequest`, which accepts the `TmuxConnection` interface — so
   // that, not the concrete `TmuxClient` class, is the honest dependency type.
   readonly client: TmuxConnection;
-  readonly registry: Pick<SenderRegistry, "getOrCreate">;
+  readonly registry: Pick<SenderRegistry, "getOrCreate" | "eventsSent">;
 }
 
 export class InvokePipeline {
@@ -137,7 +135,14 @@ export class InvokePipeline {
     event: IpcMainEventLike,
     ...args: unknown[]
   ): Promise<InvokeResultEnvelope> => {
-    const p = this.run(event, ...args);
+    // The reply carries every event main has sent the page by the time it
+    // is returned — at least those tmux wrote before the reply.
+    const p = this.run(event, ...args).then(
+      (result): InvokeResultEnvelope => ({
+        ...result,
+        eventsBefore: this.deps.registry.eventsSent(event.sender),
+      }),
+    );
     this.handlerCalls.add(p);
     // The envelope-returning handler never rejects under normal flow, but keep
     // the symmetric cleanup so a programming error (a rejection that somehow
@@ -164,7 +169,7 @@ export class InvokePipeline {
   private async run(
     event: IpcMainEventLike,
     ...args: unknown[]
-  ): Promise<InvokeResultEnvelope> {
+  ): Promise<InvokeResult> {
     // [LAW:dataflow-not-control-flow] The handler ALWAYS returns an
     // InvokeResultEnvelope — every outcome (success, tmux %error, bridge
     // failure) becomes a value in the envelope's discriminated union. The

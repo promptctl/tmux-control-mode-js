@@ -26,6 +26,7 @@ import {
   IPC,
   PAGE_END_EVENTS,
   parseAckMessage,
+  type IpcEventMessage,
   type IpcMainEventLike,
   type WebContentsLike,
   type WebFrameLike,
@@ -56,8 +57,31 @@ export interface PendingDispatch {
   aborted: boolean;
 }
 
+/**
+ * A page's `IPC.event` channel, counting what main sends on it.
+ *
+ * [LAW:single-enforcer] Every message main sends a page — events, the
+ * connection-state snapshot, pane bytes — goes through one channel's `send`,
+ * so `sent` is exactly what the page delivers before an invoke reply that
+ * carries it as `eventsBefore`.
+ */
+export class PageEvents {
+  /** Sent since the page's latest IPC.register. */
+  sent = 0;
+  constructor(private readonly wc: WebContentsLike) {}
+  send(channel: typeof IPC.event, msg: IpcEventMessage): void {
+    this.sent++;
+    this.wc.send(channel, msg);
+  }
+  isDestroyed(): boolean {
+    return this.wc.isDestroyed();
+  }
+}
+
 export interface SenderState {
   readonly wc: WebContentsLike;
+  /** The page's event channel: every send to the page goes through it. */
+  readonly events: PageEvents;
   /** Token returned by BridgeConnection.registerPeer — the Map key the helper
    *  uses internally for refcount + outstanding-byte accounting. */
   readonly peer: Peer;
@@ -171,6 +195,7 @@ export class SenderRegistry {
     const state: SenderState = {
       wc,
       peer,
+      events: new PageEvents(wc),
       isSubscribed: false,
       onPageEnd,
       onLoadFailed,
@@ -196,6 +221,10 @@ export class SenderRegistry {
     if (state === undefined) return;
     const wc = state.wc;
     state.isSubscribed = true;
+    // A proxy counts the events it delivers from its construction, which
+    // sends this register; counting from here keeps main's count no higher
+    // than any proxy's on the page, so no reply waits on events never sent.
+    state.events.sent = 0;
     // [LAW:dataflow-not-control-flow] Attach the per-renderer byte forwarder
     // exactly once per registration. Each renderer's sink is the routing
     // primitive — the substrate's SinkRegistry.dispatch fans out; no per-chunk
@@ -206,7 +235,7 @@ export class SenderRegistry {
       // this internal sink wraps that one forwarder and adds backpressure
       // accounting. Previously both paths hand-built the envelope and could
       // silently diverge.
-      const forwarder = new WebContentsSink(wc);
+      const forwarder = new WebContentsSink(state.events);
       const rendererSink: BytesSink = {
         write: (msg): void => {
           // [LAW:no-defensive-null-guards] Trust-boundary guard gating the
@@ -235,7 +264,7 @@ export class SenderRegistry {
     // lifecycle state immediately, not just when the next transition happens.
     // Send a snapshot through the same IPC.event channel the live transitions
     // use — receivers treat it identically.
-    wc.send(IPC.event, {
+    state.events.send(IPC.event, {
       type: "connection-state",
       state: this.deps.client.connectionState,
     });
@@ -343,7 +372,15 @@ export class SenderRegistry {
       }
       if (!state.isSubscribed) continue;
       if (!this.deps.bridge.deliversTo(state.peer, route)) continue;
-      wc.send(IPC.event, msg);
+      state.events.send(IPC.event, msg);
     }
+  }
+
+  /**
+   * How many `IPC.event` messages main has sent the page `wc` shows: none
+   * when it has no sender, as a page that has ended hears nothing.
+   */
+  eventsSent(wc: WebContentsLike): number {
+    return this.senders.get(wc)?.events.sent ?? 0;
   }
 }

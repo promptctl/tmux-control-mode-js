@@ -566,6 +566,7 @@ describe("Electron IPC bridge — event forwarding", () => {
         return Promise.resolve({
           status: "bridge-error",
           error: new BridgeError("BRIDGE_CLOSED", "exited").toPayload(),
+          eventsBefore: 0,
         });
       },
     };
@@ -583,6 +584,100 @@ describe("Electron IPC bridge — event forwarding", () => {
     // The fake replies through microtasks only; one macrotask drains them all.
     await new Promise((r) => setTimeout(r, 0));
     expect(errors).toEqual([]);
+  });
+
+  it("a reply that outruns the events main sent before it settles after them", async () => {
+    // Electron returns an invoke's reply apart from IPC.event and can deliver
+    // it first; the proxy holds it until the events before it are delivered.
+    let listener: IpcRendererOnListener | undefined;
+    const ipc: IpcRendererLike = {
+      on: (_c, l) => {
+        listener = l;
+      },
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: () =>
+        Promise.resolve({
+          status: "ok",
+          response: {
+            commandNumber: 9,
+            timestamp: 0,
+            output: [],
+            success: true,
+          },
+          eventsBefore: 2,
+        }),
+    };
+    const proxy = createRendererBridge(ipc);
+    const heard: string[] = [];
+    proxy.on("begin", (ev) => heard.push(`begin ${ev.commandNumber}`));
+    const reply = proxy.execute("display-message -p x").then((r) => {
+      heard.push(`reply ${r.commandNumber}`);
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    listener!({}, { type: "connection-state", state: { status: "ready" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(heard).toEqual([]);
+
+    listener!({}, { type: "begin", timestamp: 0, commandNumber: 9, flags: 1 });
+    await reply;
+    expect(heard).toEqual(["begin 9", "reply 9"]);
+  });
+
+  it("close() settles a reply still waiting for the events before it", async () => {
+    const ipc: IpcRendererLike = {
+      on: () => undefined,
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: () =>
+        Promise.resolve({
+          status: "ok",
+          response: {
+            commandNumber: 3,
+            timestamp: 0,
+            output: [],
+            success: true,
+          },
+          eventsBefore: 5,
+        }),
+    };
+    const proxy = createRendererBridge(ipc);
+    const parked = proxy.execute("display-message -p x");
+    await new Promise((r) => setTimeout(r, 0));
+    proxy.close();
+    await expect(parked).resolves.toMatchObject({ commandNumber: 3 });
+    // A reply that lands after close is due at once: no event will come.
+    await expect(proxy.execute("display-message -p y")).resolves.toMatchObject({
+      commandNumber: 3,
+    });
+  });
+
+  it("main's replies carry how many events it sent the page before them", async () => {
+    // The hub delivers in send order, so this checks the count main stamps:
+    // a reply's begin and every byte before it are counted.
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+    const renderer = hub.createRenderer();
+    const heard: string[] = [];
+    renderer.ipcRenderer.on(IPC.event, (_e, msg) => heard.push(msg.type));
+    renderer.ipcRenderer.send(IPC.register);
+    await hub.settled();
+    const invoked = renderer.ipcRenderer.invoke(IPC.invoke, {
+      method: "execute",
+      args: ["display-message -p x"],
+    });
+    await hub.settled();
+    t.answer(["x"]);
+    const envelope = await invoked;
+    expect(heard).toContain("begin");
+    expect(envelope).toMatchObject({
+      status: "ok",
+      eventsBefore: heard.length,
+    });
   });
 
   it("a listener that closes on main's closed hears one closed{disposed}, after it", () => {
@@ -1521,6 +1616,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     resolveStuck({
       status: "bridge-error",
       error: new BridgeError("BRIDGE_CLOSED", "late").toPayload(),
+      eventsBefore: 0,
     });
     await new Promise((r) => setTimeout(r, 5));
   });

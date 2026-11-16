@@ -30,6 +30,7 @@ import type {
 } from "../../src/browser.js";
 import { SinkRegistry, serverScope } from "../../src/browser.js";
 import type {
+  BeginMessage,
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
@@ -80,6 +81,7 @@ export type FakeNotification =
 
 export type FakeMessage =
   | FakeOutputMessage
+  | BeginMessage
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
   | SubscriptionChangedMessage
@@ -145,6 +147,9 @@ export class FakeTmuxClient {
   // Default: never fail.
   private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
+  // Whether a reply's `begin` is announced before it resolves, as every real
+  // connection does. Off models a connection that breaks that promise.
+  private announcesBegins = true;
 
   // Round-trip latency injected into `execute()`. A consumer varies this to
   // measure visibility-toggle / reconnect-burst timing against a known
@@ -199,13 +204,20 @@ export class FakeTmuxClient {
    * fake scrollback dump). Resolution is scheduled via `setTimeout(...,
    * roundTripMs)` so every value (including 0) yields a single, deterministic
    * macrotask boundary between the call site and the response.
+   *
+   * A command line runs as tmux runs one: each `;`-separated command is
+   * scripted on its own, the line fails on the first that fails, and the
+   * reply is their outputs in order, announced by its `begin` first.
    */
   execute(command: string): Promise<CommandResponse> {
     this.commandLog.push(command);
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
-    const failure = this.executeFailure(command);
+    const commands = command.split(" ; ");
+    const failure =
+      commands.map((c) => this.executeFailure(c)).find((e) => e !== null) ??
+      null;
     const commandNumber = ++this.commandCounter;
     return new Promise((resolve, reject) => {
       setTimeout(() => {
@@ -224,21 +236,23 @@ export class FakeTmuxClient {
         // timer as an unhandled exception, and never resolve a bogus body). This
         // keeps execute() total: it ALWAYS returns a promise that settles, like
         // the real TmuxClient.execute, which never throws synchronously.
-        let payload: string;
+        let output: string[];
         try {
-          payload = this.captureHandler(command);
+          output = commands.flatMap((c) => {
+            const payload = this.captureHandler(c);
+            return payload === "" ? [] : payload.split("\n");
+          });
         } catch (err) {
           reject(
             err instanceof Error ? err : new Error("capture handler failed"),
           );
           return;
         }
-        resolve({
-          commandNumber,
-          timestamp: Date.now(),
-          output: payload === "" ? [] : payload.split("\n"),
-          success: true,
-        });
+        const timestamp = Date.now();
+        if (this.announcesBegins) {
+          this.dispatch({ type: "begin", timestamp, commandNumber, flags: 1 });
+        }
+        resolve({ commandNumber, timestamp, output, success: true });
       }, this.roundTripMs);
     });
   }
@@ -364,6 +378,12 @@ export class FakeTmuxClient {
    */
   setExecuteFailure(handler: (command: string) => Error | null): void {
     this.executeFailure = handler;
+  }
+
+  /** Resolve replies without announcing their `begin`: a connection that
+   *  breaks the order every real one keeps. */
+  withholdBegins(): void {
+    this.announcesBegins = false;
   }
 
   /** Every command `execute()` has been called with, in call order. */

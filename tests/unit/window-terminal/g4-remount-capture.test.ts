@@ -20,9 +20,8 @@ const PANE_ID = 1;
 const REMOUNT_COUNT = 100;
 
 async function flushSeed(): Promise<void> {
-  // Two ticks: capture-pane + cursor display-message both resolve via
-  // FakeTmuxClient.execute() on the next macrotask each.
-  await new Promise((r) => setTimeout(r, 0));
+  // The seed's one command line resolves via FakeTmuxClient.execute() on
+  // the next macrotask.
   await new Promise((r) => setTimeout(r, 0));
 }
 

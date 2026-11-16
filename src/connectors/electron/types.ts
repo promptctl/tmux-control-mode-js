@@ -214,9 +214,17 @@ export type InvokeRequest = RpcRequest;
 // Error subclass through Electron's structured-clone serializer (which
 // would drop `.code` on `BridgeError` and `.response` on
 // `TmuxCommandError`).
+//
+// [LAW:no-ambient-temporal-coupling] Electron returns an invoke's reply apart
+// from the `IPC.event` messages main sent the page before it, and can deliver
+// it first. `eventsBefore` is how many `IPC.event` messages main had sent the
+// page when it returned the reply; the renderer settles the reply only once it
+// has delivered that many, so a reply follows every event tmux wrote ahead of
+// it (a command's `%begin`, the pane bytes before it), as on every connector.
 // ---------------------------------------------------------------------------
 
-export type InvokeResultEnvelope =
+/** What an invoke came to: the outcome half of `InvokeResultEnvelope`. */
+export type InvokeResult =
   // RpcResponseMap[RpcMethod]: a CommandResponse for most methods, but the
   // structured records for listWindows/listPanes/listSessions (see rpc.ts).
   | { readonly status: "ok"; readonly response: RpcResponseMap[RpcMethod] }
@@ -225,6 +233,10 @@ export type InvokeResultEnvelope =
       readonly status: "bridge-error";
       readonly error: BridgeErrorPayloadType;
     };
+
+export type InvokeResultEnvelope = InvokeResult & {
+  readonly eventsBefore: number;
+};
 
 // ---------------------------------------------------------------------------
 // Renderer → main: output-byte ack frame.

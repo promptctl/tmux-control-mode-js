@@ -241,6 +241,43 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
   }
 });
 
+// Output the pane printed before the app launched reaches the page only in
+// the pane's seed. Over Electron a command's reply can outrun its `%begin`
+// event; the bridge holds the reply until the events before it are delivered,
+// so the seed knows which bytes its snapshot holds and draws.
+test("output printed before launch is drawn by the pane's seed", async () => {
+  const id = Date.now().toString(36).toUpperCase();
+  // printf assembles the marker, so only the output carries it whole.
+  tmux(SOCKET, ["send-keys", "-t", SESSION, `printf '%s_%s\\n' PRE ${id}`]);
+  tmux(SOCKET, ["send-keys", "-t", SESSION, "Enter"]);
+  await expect
+    .poll(
+      () =>
+        execFileSync(
+          "tmux",
+          ["-L", SOCKET, "capture-pane", "-p", "-t", SESSION],
+          { encoding: "utf8" },
+        ),
+      { timeout: 10_000 },
+    )
+    .toContain(`PRE_${id}`);
+
+  const app = await electron.launch({
+    args: [APP_ROOT],
+    cwd: APP_ROOT,
+    env: APP_ENV,
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".xterm-rows").first()).toContainText(
+      `PRE_${id}`,
+      { timeout: 20_000 },
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 // A click reaches the pane's program when that program asked for legacy mouse
 // reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
 // not `onData` — a path the window terminal must forward as raw bytes. The

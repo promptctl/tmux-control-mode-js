@@ -15,8 +15,8 @@
 //   is just a snapshot of the same terminal byte stream the live path delivers,
 //   so it has the same type — and the terminal emulator is the single decoding
 //   authority for both. `seed` adds a cursor because the snapshot also restores
-//   a position, and `trailing` — the live bytes that arrived while the snapshot
-//   was in flight — so that the snapshot→live ORDERING is one value's shape, not
+//   a position, and `trailing` — the live bytes tmux wrote after the
+//   snapshot — so that the snapshot→live ORDERING is one value's shape, not
 //   a convention re-enforced across separate `seed()`/`write()` calls.
 
 /**
@@ -61,8 +61,8 @@ export interface SeedCursor {
 export interface TerminalSink {
   /**
    * Seed the view with a snapshot captured from tmux, followed by `trailing` —
-   * the live bytes that arrived while that snapshot was being fetched, in
-   * arrival order. See the lifecycle above for when it is called.
+   * the live bytes tmux wrote after the capture, in order. See the lifecycle
+   * above for when it is called.
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
    * them, wrapped by library-synthesized mode-restore escapes (alt-screen/
@@ -79,9 +79,11 @@ export interface TerminalSink {
    * `trailing` makes the seed-before-live ordering a property of THIS value:
    * the snapshot and the bytes that immediately follow it cross the seam as one
    * ordered unit, so no consumer re-establishes that order from the arrival
-   * sequence of separate calls. It is empty on a re-attach (the cached seed has
-   * no pending live bytes) and whenever nothing arrived during the capture
-   * window. A sink MUST apply `captured` then each `trailing` chunk in order.
+   * sequence of separate calls. It holds exactly the bytes tmux wrote after it
+   * ran the capture, none of which the snapshot holds: empty on a re-attach
+   * (the cached seed has no pending live bytes) and whenever the pane printed
+   * nothing since. A sink MUST apply `captured` then each `trailing` chunk in
+   * order.
    *
    * `cursor` is `null` when tmux did not return a parsable cursor reply;
    * sinks should leave the cursor at the natural end of the captured bytes
