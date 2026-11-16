@@ -193,6 +193,35 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
+
+    it("draws a pane outside the client's session at its size, which tmux never reports", async () => {
+      // tmux sends a size subscription's values only for a pane whose window
+      // is in the control client's session, so this pane's size can come
+      // only with its seed.
+      session = uniqueName("near");
+      client = await createSession(socket, session);
+      const far = uniqueName("far");
+      await client.execute(`new-session -d -s ${far} -x 100 -y 30`);
+      const r = await client.execute(
+        `display-message -p -t ${far}: '#{pane_id}'`,
+      );
+      const paneId = Number((r.output[0] ?? "").replace(/^%/, ""));
+      const size = await paneSize(client, paneId);
+      expect(size.cols).toBe(100);
+
+      const order: string[] = [];
+      const sink = new CollectorSink();
+      sink.resize = (cols, rows) => void order.push(`resize(${cols}x${rows})`);
+      sink.seed = () => void order.push("seed");
+      stream = new PaneStream({ client, paneId });
+      stream.attach(sink);
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
+      expect(order).toEqual([`resize(${size.cols}x${size.rows})`, "seed"]);
+    }, 15000);
   },
 );
 

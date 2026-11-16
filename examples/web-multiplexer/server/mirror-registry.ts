@@ -132,9 +132,8 @@ export class MirrorRegistry {
     const client = await this.connection.ready();
     let hub = this.ensureHub(paneId, client);
 
-    // Geometry first: a fresh XtermSink buffers every write until its first
-    // resize (the `.4` first-paint finding), so the viewer needs cols/rows
-    // before the seed bytes mean anything.
+    // Geometry first: the viewer's XtermSink draws at the size it was last
+    // given, so the viewer needs cols/rows before the seed bytes.
     const size = await this.querySize(client, paneId);
     if (size === null) {
       refuse(viewer, `pane %${paneId} not found`);

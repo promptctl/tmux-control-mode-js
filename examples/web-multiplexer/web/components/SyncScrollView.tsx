@@ -474,7 +474,7 @@ function SyncSurface({
       fontSize: initial.current.fontSize,
     });
     sinkRef.current = sink;
-    // First resize drains the buffer and unblocks painting (the .4/.5 findings).
+    // Sized before the first byte is written.
     sink.resize(initial.current.cols, initial.current.rows);
     rendered.current = null;
     return () => {

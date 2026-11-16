@@ -64,19 +64,6 @@ export type PlaygroundStatus = "idle" | "spawning" | "ready" | "error";
 const PLAYGROUND_COLS = 80;
 const PLAYGROUND_ROWS = 24;
 
-/** Parse a `#{pane_width};#{pane_height}` reply (e.g. `80;24`). */
-function parsePaneSize(
-  line: string | undefined,
-): { cols: number; rows: number } | null {
-  if (line === undefined) return null;
-  const m = /^(\d+);(\d+)/.exec(line.trim());
-  if (m === null) return null;
-  const cols = Number(m[1]);
-  const rows = Number(m[2]);
-  if (cols <= 0 || rows <= 0) return null;
-  return { cols, rows };
-}
-
 /** Parse a `#{pane_id} #{window_id}` reply (e.g. `%5 @3`) into numeric ids. */
 function parseSpawnReply(output: readonly string[]): {
   paneId: number;
@@ -98,16 +85,6 @@ export class EscapePlaygroundStore {
    * stream and the xterm sink are created together with no attach-timing gap.
    */
   paneId: number | null = null;
-  /**
-   * The scratch pane's geometry, queried at spawn. The view hands this straight
-   * to the XtermSink's `resize()` so the terminal gets its first resize (which
-   * drains the seed/live buffer and paints) WITHOUT waiting on the per-pane size
-   * subscription — that subscription emits only on a size *change*, which a
-   * freshly created window never sees, so on its own it leaves the terminal
-   * blank (verified live).
-   */
-  paneCols: number | null = null;
-  paneRows: number | null = null;
   errorMsg: string | null = null;
   /** Bytes of the most recent send — a small "sent N bytes" confirmation. */
   lastSentBytes: number | null = null;
@@ -236,24 +213,15 @@ export class EscapePlaygroundStore {
       await this.bridge.execute(`select-window -t @${ids.windowId}`);
 
       // Give the scratch window a compact, fixed geometry so it fits the
-      // playground column, then read back the geometry tmux actually applied.
-      // The view feeds this to the XtermSink's first resize. [LAW:no-silent-
-      // failure] if the size query comes back unparseable we fall back to a
-      // sane default rather than leaving the terminal unsized (blank) forever.
+      // playground column. The pane's seed brings that size to the terminal.
       await this.bridge.execute(
         `resize-window -t @${ids.windowId} -x ${PLAYGROUND_COLS} -y ${PLAYGROUND_ROWS}`,
       );
-      const sizeReply = await this.bridge.execute(
-        `display-message -p -t %${ids.paneId} '#{pane_width};#{pane_height}'`,
-      );
-      const size = parsePaneSize(sizeReply.output[0]);
 
       runInAction(() => {
         this.prevWindowId = prev;
         this.paneId = ids.paneId;
         this.windowId = ids.windowId;
-        this.paneCols = size?.cols ?? PLAYGROUND_COLS;
-        this.paneRows = size?.rows ?? PLAYGROUND_ROWS;
         this.status = "ready";
       });
     } catch (err) {
@@ -274,8 +242,6 @@ export class EscapePlaygroundStore {
   private teardownLocalState(): void {
     runInAction(() => {
       this.paneId = null;
-      this.paneCols = null;
-      this.paneRows = null;
       this.windowId = null;
       this.prevWindowId = null;
       this.status = "idle";

@@ -7,7 +7,8 @@
 
 import type { WindowView } from "../engine/window-model.js";
 import type { PaneId } from "../ids.js";
-import type { CellSize, Grid, Solution } from "../sizing/solve.js";
+import type { CellSize, Solution } from "../sizing/solve.js";
+import type { Grid } from "../engine/terminal-sink.js";
 
 export interface PanePlan {
   readonly id: PaneId;

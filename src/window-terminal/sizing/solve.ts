@@ -12,11 +12,7 @@
 //   claim, which are values.
 
 import { WINDOW_MAXIMUM, type ResolvedSizing } from "../options.js";
-
-export interface Grid {
-  readonly cols: number;
-  readonly rows: number;
-}
+import type { Grid } from "../engine/terminal-sink.js";
 
 export interface Box {
   readonly width: number;

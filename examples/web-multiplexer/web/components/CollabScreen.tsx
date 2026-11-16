@@ -13,6 +13,7 @@
 //   no matter how many browsers type at once.
 
 import { useEffect, useRef } from "react";
+import { autorun } from "mobx";
 import { observer } from "mobx-react-lite";
 import type { XtermSink } from "../window-terminal-internals.ts";
 import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
@@ -48,9 +49,17 @@ export const CollabScreen = observer(function CollabScreen({
     // into a local buffer.
     sinkRef.current = sink;
 
-    if (bridge.cols > 0 && bridge.rows > 0) {
-      sink.resize(bridge.cols, bridge.rows);
-    }
+    // Size the sink from each size frame the server sends (none before the
+    // first: the bridge reads 0x0 until then).
+    // [LAW:no-ambient-temporal-coupling] An autorun reruns as the frame's
+    //   action ends, so the size reaches the sink ahead of the seed bytes the
+    //   server sends after it; a React effect could run after them, and the
+    //   seed would be drawn at xterm's default size.
+    const stopSize = autorun(() => {
+      if (bridge.cols > 0 && bridge.rows > 0) {
+        sink.resize(bridge.cols, bridge.rows);
+      }
+    });
 
     const detachBytes = bridge.onBytes((data) => sink.write(data));
     // [LAW:effects-at-boundaries] The view's only outbound effect: forward raw
@@ -62,20 +71,12 @@ export const CollabScreen = observer(function CollabScreen({
     return () => {
       detachInput();
       detachBytes();
+      stopSize();
       bridge.disconnect();
       sink.dispose();
       sinkRef.current = null;
     };
   }, [bridge]);
-
-  // Resize the sink whenever the server reports (or re-reports) pane geometry.
-  // A fresh XtermSink buffers writes until its first resize, so this is what
-  // unblocks the seed paint.
-  useEffect(() => {
-    const sink = sinkRef.current;
-    if (sink === null || bridge.cols === 0 || bridge.rows === 0) return;
-    sink.resize(bridge.cols, bridge.rows);
-  }, [bridge.cols, bridge.rows]);
 
   useEffect(() => {
     sinkRef.current?.setFont(fontSize);
