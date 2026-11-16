@@ -235,6 +235,10 @@ export class ElectronBridge implements TmuxBridge {
     // message and delivers them through its event fan-out + wire log). Without
     // this, BridgePaneStreamClient — which consumes pane bytes via
     // `bridge.onEvent("output")` — would never see live pane output.
+    // [LAW:one-source-of-truth] With only this server-scope sink, the proxy's
+    //   router keeps no topology and sends no query: BridgePaneStreamClient's
+    //   router is the page's one topology, and it outlives the proxy that a
+    //   socket swap replaces.
     this.byteSinkDisposer = proxy.attachBytesSink(
       {
         write: (chunk: ChunkPayload): void => {

@@ -4,20 +4,41 @@
 // a tmux %error rejects with TmuxCommandError and is logged as the response it
 // is; only a bridge failure reaches onError; the bridge is ready while main's
 // tmux client is. The library's renderer proxy runs for real over a fake IPC.
+// Over the in-memory IPC hub to a real main bridge, a page's pane streams
+// follow every move the library does and survive a socket swap; those cases
+// drive real tmux and are gated behind TMUX_INTEGRATION=1.
 //
 // The file reads the package's built dist/ as the demo does: run
 // `pnpm run build` first.
 
 import { describe, it, expect } from "vitest";
+import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 import {
   TmuxCommandError,
   windowScope,
 } from "@promptctl/tmux-control-mode-js/browser";
+import { createMainBridge } from "@promptctl/tmux-control-mode-js/electron/main";
 import type {
   IpcRendererLike,
   IpcRendererEventLike,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { createIpcHub } from "../../../tests/unit/_helpers/ipc-hub.ts";
+import {
+  pollUntil,
+  tmux,
+  uniqueName,
+  uniqueSocket,
+} from "../../../tests/helpers/integration.ts";
+import { killTmuxServer } from "../../../tests/helpers/reap-test-sockets.ts";
+import {
+  describeTopologyMoves,
+  listAllPanes,
+  makeRecordingSink,
+  sendOutputToPane,
+  textOf,
+  type ArrivedChunk,
+} from "../../../tests/helpers/topology-moves.ts";
 import type { ConnState, WireEntry } from "./bridge.ts";
 import type { DemoIpc } from "./demo-ipc.ts";
 import { ElectronBridge } from "./electron-bridge.ts";
@@ -154,3 +175,98 @@ describe("BridgePaneStreamClient over ElectronBridge", () => {
     bridge.disconnect();
   });
 });
+
+// The demo's Electron main process, as electron/main.ts runs it: a TmuxClient
+// attached to `session`, exposed to renderers by the library's main bridge.
+// Swapping sockets there disposes both and installs a fresh pair.
+function attachMain(
+  hub: ReturnType<typeof createIpcHub>,
+  socketName: string,
+  session: string,
+): () => void {
+  const client = new TmuxClient(
+    spawnTmux(["attach-session", "-t", session], { socketPath: socketName }),
+  );
+  const handle = createMainBridge(client, hub.ipcMain);
+  return () => {
+    handle.dispose();
+    client.close();
+  };
+}
+
+/** A page in the Electron demo: the renderer's bridge and the adapter every
+ *  PaneStream on the page shares, over in-process IPC to a real main. */
+async function electronPage(
+  socketName: string,
+  session: string,
+): Promise<{
+  bridge: ElectronBridge;
+  conn: BridgePaneStreamClient;
+  swapMain(): void;
+  close(): void;
+}> {
+  tmux(socketName, ["new-session", "-d", "-s", session]);
+  const hub = createIpcHub();
+  let closeMain = attachMain(hub, socketName, session);
+  const bridge = new ElectronBridge(hub.createRenderer().ipcRenderer, demoIpc);
+  const conn = new BridgePaneStreamClient(bridge);
+  bridge.connect("");
+  const close = (): void => {
+    bridge.disconnect();
+    closeMain();
+  };
+  try {
+    await pollUntil(() => conn.connectionState.status === "ready");
+  } catch (err) {
+    close();
+    throw new Error("the Electron page never became ready", { cause: err });
+  }
+  return {
+    bridge,
+    conn,
+    // SocketBadge's swap: the page lets go of main, main re-attaches, the
+    // page connects again.
+    swapMain: () => {
+      bridge.disconnect();
+      closeMain();
+      closeMain = attachMain(hub, socketName, session);
+      bridge.connect("");
+    },
+    close,
+  };
+}
+
+describeTopologyMoves("BridgePaneStreamClient over ElectronBridge", (s, n) =>
+  electronPage(s, n),
+);
+
+describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
+  "a socket swap on the Electron page",
+  () => {
+    it("keeps a window sink attached before it receiving its window's output after it", async () => {
+      const socketName = uniqueSocket("tmux-scope-test-", "electron-swap");
+      const page = await electronPage(socketName, uniqueName("swap"));
+      try {
+        const [pane] = await listAllPanes(page.conn);
+        const arrived: ArrivedChunk[] = [];
+        let ended = false;
+        page.conn.attachBytesSink(
+          { ...makeRecordingSink(arrived), end: () => (ended = true) },
+          { scope: windowScope(pane.windowId) },
+        );
+
+        page.swapMain();
+        await pollUntil(() => page.conn.connectionState.status === "ready");
+        await sendOutputToPane(page.conn, pane.paneId);
+
+        await pollUntil(() =>
+          textOf(arrived, pane.paneId).includes(`scope-test-${pane.paneId}`),
+        );
+        expect(ended).toBe(false);
+      } finally {
+        page.close();
+        killTmuxServer(socketName);
+      }
+    });
+  },
+);
