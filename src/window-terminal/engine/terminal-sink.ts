@@ -68,8 +68,9 @@ export interface TerminalSink {
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
    * them, wrapped by library-synthesized escapes (before the grid: alt-screen,
-   * cursor home, SGR reset, an erase of the screen and of the scrollback,
-   * autowrap; after it: cursor/keypad/insert) that PaneStream derives from
+   * a scroll-region reset, cursor home, SGR reset, an erase of the screen and
+   * of the scrollback, autowrap; after it: tmux's scroll region, which homes
+   * the cursor, then cursor/keypad/insert) that PaneStream derives from
    * `display-message` state — those escapes are injected by the library, not
    * emitted by `capture-pane`. The grid is the pane's history above its
    * screen, and the erase acts on the screen buffer the seed draws into: a

@@ -129,6 +129,11 @@ describe("buildSeed: terminal-mode escapes", () => {
     expect(body(captured)).toBe(`x${ESC}[2;3r`);
   });
 
+  it("restores no scroll region from a field that is not an integer", () => {
+    const { captured } = buildSeed(["x"], ";;;;;;;;;;1;x", 0);
+    expect(body(captured)).toBe("x");
+  });
+
   it("treats an empty mode field as a no-op (never forces the mode off)", () => {
     // An older tmux emits "" for an unexpanded format; "" must NOT be read as
     // "0" and actively reset the mode. Empty wrap/cursor fields → no escape.
@@ -184,6 +189,23 @@ describe("buildSeed: drawn into xterm.js", () => {
     const seed = buildSeed([...history, "s0", "s1", "s2", ""], state, 2000);
     for (let i = 0; i < 2; i++) await draw(term, seed.captured);
     expect(rowsOf(term)).toEqual([...history, "s0", "s1", "s2"]);
+  });
+
+  it("leaves tmux's scroll region in force, with the cursor where tmux has it", async () => {
+    const term = newTerm();
+    // As `state`, plus scroll_region_upper=1, scroll_region_lower=2.
+    const seed = buildSeed(
+      [...history, "s0", "s1", "s2", ""],
+      `${state};1;2`,
+      2000,
+    );
+    // The seed, then the CUP a sink writes from its cursor (row 2, col 0).
+    await draw(term, seed.captured);
+    await draw(term, `${ESC}[3;1H`);
+    expect(term.buffer.active.cursorY).toBe(2);
+    // A line feed on the region's bottom row scrolls the region alone.
+    await draw(term, "\r\nnew");
+    expect(rowsOf(term)).toEqual([...history, "s0", "s2", "new"]);
   });
 
   it("clears with the default background, not attributes DECRC restores", async () => {

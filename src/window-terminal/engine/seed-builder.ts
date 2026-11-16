@@ -33,7 +33,8 @@ export interface Seed {
  *   (Latin-1 code units, one per raw byte). No `-J`, so line count equals the
  *   screen row count — the row-exact normalization below depends on that.
  * @param stateLine — the `display-message` reply carrying cursor position, the
- *   terminal modes the grid content can't encode, and the grid dimensions.
+ *   terminal modes and scroll region the grid content can't encode, and the
+ *   grid dimensions.
  * @param historyLines — the scrollback depth the caller requested in the
  *   capture (`-S -<N>`); caps the padded history-row count.
  */
@@ -141,17 +142,16 @@ const ESC = "\x1b";
 //   - ED 3: erases the scrollback, which the history rows then rewrite.
 const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
 
-// DECSTBM for tmux's 0-indexed scroll region; missing or empty fields leave
-// the region as the clear set it, like mode().
+// DECSTBM for tmux's 0-indexed scroll region. A field that is missing, empty
+// or not an integer leaves the region as the clear set it, like mode(): an
+// escape built from it would print as text.
 function region(upper: string | undefined, lower: string | undefined): string {
-  if (
-    upper === undefined ||
-    upper === "" ||
-    lower === undefined ||
-    lower === ""
-  )
-    return "";
-  return `${ESC}[${Number(upper) + 1};${Number(lower) + 1}r`;
+  const [top, bottom] = [upper, lower].map((v) =>
+    v === undefined || v === "" ? NaN : Number(v),
+  );
+  return Number.isInteger(top) && Number.isInteger(bottom)
+    ? `${ESC}[${top + 1};${bottom + 1}r`
+    : "";
 }
 
 function parseSeedState(line: string): SeedState {
