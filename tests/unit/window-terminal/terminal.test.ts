@@ -297,6 +297,23 @@ describe("window terminal — what is drawn", () => {
     ]);
   });
 
+  it("a pane that refuses options xterm accepted is reported; the other panes take them", async () => {
+    const { terminal, errors } = await live();
+    const refused = new Error("an addon refused the theme");
+    const plain = terminals[0].options;
+    terminals[0].options = new Proxy(plain, {
+      set(o, key, value) {
+        if (key === "theme") throw refused;
+        return Reflect.set(o, key, value);
+      },
+    });
+    terminal.update({ xterm: { theme: { background: "#111" } } });
+    expect(errors.map((e) => [e.seam, e.paneId, e.cause])).toEqual([
+      ["render", "%0", refused],
+    ]);
+    expect(terminals[1].options.theme).toEqual({ background: "#111" });
+  });
+
   it("the cell the solver measures is the one xterm draws: family, line height and letter spacing", async () => {
     const fonts: unknown[] = [];
     const m = mount(

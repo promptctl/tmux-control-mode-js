@@ -75,6 +75,9 @@ describe("parseXtermOptions", () => {
     expect(() =>
       parseXtermOptions({ cursorStle: "bar" } as unknown as XtermOptions),
     ).toThrow(new RangeError("xterm.cursorStle is not an xterm.js option"));
+    expect(() =>
+      parseXtermOptions({ toString: 1 } as unknown as XtermOptions),
+    ).toThrow(new RangeError("xterm.toString is not an xterm.js option"));
   });
 
   it.each([

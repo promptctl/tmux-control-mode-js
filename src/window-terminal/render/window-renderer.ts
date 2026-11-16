@@ -38,7 +38,10 @@ export interface WindowRendererOptions {
   readonly onBox: (box: Box) => void;
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
-  /** `pane`'s xterm failed to open (a host addon threw); it draws nothing. */
+  /**
+   * `pane`'s xterm failed: to open (a host addon threw; it draws nothing), or
+   * to take options xterm accepted (an addon refused them).
+   */
   readonly onError: (pane: PaneId, cause: unknown) => void;
 }
 
@@ -246,9 +249,18 @@ export class WindowRenderer implements PaneSurfaces {
     }
   }
 
+  // A pane's xterm or addon that throws on an option xterm accepted is that
+  // pane's failure, reported as a pane that fails to open is; every other
+  // pane still takes the options.
   setOptions(xterm: XtermOptions): void {
     this.xterm = xterm;
-    for (const { sink } of this.panes.values()) sink.setOptions(xterm);
+    for (const [pane, { sink }] of this.panes) {
+      try {
+        sink.setOptions(xterm);
+      } catch (cause) {
+        this.onError(pane, cause);
+      }
+    }
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */

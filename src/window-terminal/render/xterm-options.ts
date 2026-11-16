@@ -115,7 +115,7 @@ export function parseXtermOptions(raw: XtermOptions | undefined): ParsedXterm {
   try {
     const o = probe.options as Record<string, unknown>;
     for (const [key, value] of Object.entries(given)) {
-      if (!(key in o)) {
+      if (!Object.hasOwn(o, key)) {
         throw new RangeError(`xterm.${key} is not an xterm.js option`);
       }
       try {
