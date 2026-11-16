@@ -369,8 +369,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    expect(sink.seedTexts[0]).toBe("row-0\r\nrow-1");
-    expect(sink.seedTexts[0]?.endsWith("\r\n")).toBe(false);
+    expect(sink.seedTexts[0]?.endsWith("row-0\r\nrow-1")).toBe(true);
   });
 
   it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
@@ -405,12 +404,12 @@ describe("PaneStream — state machine", () => {
     expect(rows[7]?.startsWith("\x1b")).toBe(true);
   });
 
-  it("seed preamble emits ?1049l + CUP home for main-screen pane (alternate_on=0)", async () => {
+  it("seed preamble opens with ?1049l for main-screen pane (alternate_on=0)", async () => {
     // Regression: the original preamble emitted nothing for alternate_on=0,
     // so a reseed on a terminal still in alt screen drew content into the
-    // wrong buffer. The fix emits ?1049l (exit alt screen) + CUP home before
-    // any screen content so the correct screen and cursor row are established
-    // deterministically, even on a reconnect reseed.
+    // wrong buffer. The seed now opens with ?1049l (exit alt screen), so the
+    // content lands in the main buffer even on a reconnect reseed. What the
+    // clear after it does is seed-builder.test's to check.
     const { stream } = makeStream({
       capture: "row-0\nrow-1",
       // alternate_on=0, cursor visible, no insert/keypad, autowrap, 3 rows
@@ -421,10 +420,10 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     const text = sink.seedTexts[0] ?? "";
-    expect(text.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+    expect(text.startsWith("\x1b[?1049l")).toBe(true);
   });
 
-  it("seed preamble emits ?1049h + CUP home for alt-screen pane (alternate_on=1)", async () => {
+  it("seed preamble opens with ?1049h for alt-screen pane (alternate_on=1)", async () => {
     const { stream } = makeStream({
       capture: "alt-row-0\nalt-row-1",
       cursor: "0;0;1;1;0;0;0;1;3;0", // alternate_on=1
@@ -434,7 +433,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     const text = sink.seedTexts[0] ?? "";
-    expect(text.startsWith("\x1b[?1049h\x1b[H")).toBe(true);
+    expect(text.startsWith("\x1b[?1049h")).toBe(true);
   });
 
   it("reseed from alt screen to main screen: preamble switches screen buffer", async () => {
@@ -455,7 +454,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     // First seed established alt screen.
-    expect(sink1.seedTexts[0]?.startsWith("\x1b[?1049h\x1b[H")).toBe(true);
+    expect(sink1.seedTexts[0]?.startsWith("\x1b[?1049h")).toBe(true);
     stream.detach();
 
     // Reconnect: pane is now on main screen.
@@ -472,8 +471,8 @@ describe("PaneStream — state machine", () => {
     expect(stream.state).toBe("seeding");
     await flushTicks();
     expect(stream.state).toBe("live");
-    // Reseed must exit alt screen and home cursor before drawing main content.
-    expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l\x1b[H")).toBe(true);
+    // Reseed must exit alt screen before drawing main content.
+    expect(sink2.seedTexts[0]?.startsWith("\x1b[?1049l")).toBe(true);
   });
 
   it("dispose() → 'disposed' and is idempotent", () => {

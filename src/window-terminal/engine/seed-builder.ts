@@ -33,7 +33,8 @@ export interface Seed {
  *   (Latin-1 code units, one per raw byte). No `-J`, so line count equals the
  *   screen row count — the row-exact normalization below depends on that.
  * @param stateLine — the `display-message` reply carrying cursor position, the
- *   terminal modes the grid content can't encode, and the grid dimensions.
+ *   terminal modes and scroll region the grid content can't encode, and the
+ *   grid dimensions.
  * @param historyLines — the scrollback depth the caller requested in the
  *   capture (`-S -<N>`); caps the padded history-row count.
  */
@@ -129,12 +130,36 @@ function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
 }
 
 const ESC = "\x1b";
+// The clear every seed starts with, after the screen-buffer switch:
+//   - DECSTBM reset: under a scroll region left by the live stream, the rows
+//     would scroll only inside it, and none would reach the scrollback.
+//   - CUP home: ?1049l restores the cursor saved at the matching ?1049h, not
+//     row 0, so content would draw mid-screen.
+//   - SGR 0: an erase fills with the current background, and ?1049l's DECRC
+//     restores whatever attributes ?1049h saved.
+//   - ED 2: capture-pane drops trailing blanks, so a row drawn over an old one
+//     would otherwise keep the old row's tail.
+//   - ED 3: erases the scrollback, which the history rows then rewrite.
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+
+// DECSTBM for tmux's 0-indexed scroll region. A field that is missing, empty
+// or not an integer leaves the region as the clear set it, like mode(): an
+// escape built from it would print as text.
+function region(upper: string | undefined, lower: string | undefined): string {
+  const [top, bottom] = [upper, lower].map((v) =>
+    v === undefined || v === "" ? NaN : Number(v),
+  );
+  return Number.isInteger(top) && Number.isInteger(bottom)
+    ? `${ESC}[${top + 1};${bottom + 1}r`
+    : "";
+}
 
 function parseSeedState(line: string): SeedState {
   // Reply layout (see stateCmd): cursor_x;cursor_y;alternate_on;cursor_flag;
   // insert_flag;keypad_cursor_flag;keypad_flag;wrap_flag;pane_height;
-  // history_size. cursor_x/y are 0-indexed; the middle fields are 0/1 mode
-  // flags; the trailing two are grid dimensions.
+  // history_size;scroll_region_upper;scroll_region_lower. cursor_x/y and the
+  // region rows are 0-indexed; the mode flags are 0/1; pane_height and
+  // history_size are grid dimensions.
   const f = line.split(";");
   const cx = Number(f[0]);
   const cy = Number(f[1]);
@@ -155,21 +180,26 @@ function parseSeedState(line: string): SeedState {
   const height = f[8] !== undefined && f[8] !== "" ? Number(f[8]) : NaN;
   const historySize = f[9] !== undefined && f[9] !== "" ? Number(f[9]) : NaN;
 
-  // Before content: establish the correct screen buffer and cursor home, then
-  // set autowrap — all three affect how screen content lays out.
-  // [LAW:dataflow-not-control-flow] CUP-home is embedded in each branch of
-  //   mode() so both screen paths always home the cursor. The value selects
-  //   the full preamble sequence; no extra branching outside the table lookup.
+  // Before content: establish the correct screen buffer, clear it, then set
+  // autowrap — all of which affect how screen content lays out.
   //   On a reseed, ?1049l exits a stale alt screen before drawing main-screen
   //   content; ?1049h enters alt screen before drawing alt-screen content.
-  //   Without explicit CUP-home, ?1049l restores the cursor saved at the
-  //   matching ?1049h entry point rather than row 0 — content draws mid-screen.
+  // [LAW:one-source-of-truth] tmux holds the pane's history; a seed replaces
+  //   the buffer it draws into with tmux's copy. On the main screen that is
+  //   the scrollback and the screen, so however often a pane is recaptured,
+  //   its history is there once; the alternate screen has no scrollback.
+  // [LAW:dataflow-not-control-flow] The clear is the same bytes for every
+  //   seed; the flags select only the screen buffer and the modes.
   const preamble =
-    mode(f[2], `${ESC}[?1049h${ESC}[H`, `${ESC}[?1049l${ESC}[H`) + // screen + CUP home
+    mode(f[2], `${ESC}[?1049h`, `${ESC}[?1049l`) + // alt / main screen
+    CLEAR +
     mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
 
-  // After content: input/cursor modes that the captured grid can't carry.
+  // After content: the scroll region and the input/cursor modes that the
+  // captured grid can't carry. DECSTBM homes the cursor; the sink's CUP
+  // follows the epilogue.
   const epilogue =
+    region(f[10], f[11]) +
     mode(f[3], `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM cursor visibility
     mode(f[4], `${ESC}[4h`, `${ESC}[4l`) + // IRM insert mode
     mode(f[5], `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM application cursor keys

@@ -141,7 +141,7 @@ export function parseSizing(raw: Sizing): ResolvedSizing {
   }
 }
 
-/** Scrollback lines per pane: captured on arrival and kept by xterm. */
+/** Scrollback lines per pane: xterm's scrollback, refilled from tmux on each capture. */
 export function parseHistory(raw: number | undefined): number {
   const n = raw ?? DEFAULT_HISTORY;
   if (!Number.isInteger(n) || n < 0) {

@@ -20,6 +20,9 @@ import {
 
 const FONT_MIN = 6;
 const DEFAULT_FONT_MAX = 14;
+// Scrollback for the screens that write their own bytes (mirror, collab,
+// recorder, time machine, sync scroll).
+export const SCROLLBACK = 10000;
 
 export class FittedXtermSink extends XtermSink {
   private readonly box: HTMLElement;

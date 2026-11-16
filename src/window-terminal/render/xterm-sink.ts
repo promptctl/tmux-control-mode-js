@@ -58,7 +58,6 @@ import { TMUX_CELLS } from "./tmux-cells.js";
 const utf8Encoder = new TextEncoder();
 
 const DEFAULT_FONT_SIZE = 14;
-const DEFAULT_SCROLLBACK = 10000;
 
 // Dispose each of `owned`, then throw `err`. A dispose that throws as well
 // is not lost: the error leaves as an AggregateError, `err` first.
@@ -82,7 +81,11 @@ function release(err: unknown, owned: readonly IDisposable[]): never {
 export interface XtermSinkOptions {
   readonly container: HTMLElement;
   readonly fontSize?: number;
-  readonly scrollback?: number;
+  /**
+   * Lines of scrollback. Fed by a PaneStream, give it the stream's
+   * `historyLines`: each seed replaces the scrollback with that many lines.
+   */
+  readonly scrollback: number;
   readonly xterm?: XtermOptions;
   readonly addons?: XtermAddons;
 }
@@ -139,7 +142,7 @@ export class XtermSink implements TerminalSink {
       // The Unicode provider below is xterm's proposed API.
       allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
-      scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
+      scrollback: opts.scrollback,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
@@ -210,16 +213,15 @@ export class XtermSink implements TerminalSink {
       this.gate.bufferSeed({ captured, cursor });
     } else {
       // Gate open — apply the snapshot inline. This is authoritative by
-      // construction, WITHOUT a clear: a reseed's `captured` is a snapshot
-      // normalized to exactly `pane_height` rows (tested: PaneStream
-      // "normalizes the seed to exactly pane_height rows") led by a screen-mode
-      // preamble that homes the cursor, so writing it rewrites EVERY visible row
-      // — no stale visible row can survive underneath. That holds equally for a
-      // steady-state reseed and for one arriving in the post-cap-drain window
-      // (gate opened early because the pane-size subscription was silent), so it
-      // no longer rides on "this reseed's capture postdates the drained bytes"
-      // folklore. Scrollback above the visible screen is deliberately preserved
-      // (a clear would discard the history xterm accumulated during a drain).
+      // construction, WITHOUT terminal.clear(): `captured` carries its own clear
+      // in-band (see TerminalSink.seed), so it is ordered behind every byte
+      // xterm has queued, where a synchronous clear() would run ahead of them.
+      // It is then tmux's history plus a screen normalized to exactly
+      // `pane_height` rows, so no stale row survives in the buffer it draws
+      // into.
+      // That holds equally for a steady-state reseed and for one arriving in
+      // the post-cap-drain window (gate opened early because the pane-size
+      // subscription was silent).
       this.applySeed(captured, cursor);
     }
     for (const chunk of trailing) this.write(chunk);

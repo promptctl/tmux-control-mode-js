@@ -216,9 +216,11 @@ terminal.onState((s) => console.log(s.phase)); // connecting | live | stale | go
 ```
 
 `connection` is a `TmuxClient`, a `WebSocketTmuxClient` or the Electron
-renderer client. Each pane arrives with `history` lines of scrollback (default
-2000) and follows splits, closes and zoom. A click, or `terminal.focus(paneId)`,
-picks the pane this page's keys go to; tmux's active pane never moves.
+renderer client. Each pane shows up to `history` lines of tmux's scrollback
+(default 2000), copied again from tmux whenever the pane is resized or
+reconnects, and follows splits, closes and zoom. A click, or
+`terminal.focus(paneId)`, picks the pane this page's keys go to; tmux's
+active pane never moves.
 `terminal.dispose()` releases every subscription the terminal holds.
 
 `./window-terminal/react` is the same terminal as a component, and also needs

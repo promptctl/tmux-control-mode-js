@@ -15,7 +15,7 @@
 import { useEffect, useRef } from "react";
 import { observer } from "mobx-react-lite";
 import type { XtermSink } from "../window-terminal-internals.ts";
-import { FittedXtermSink } from "../fitted-xterm-sink.ts";
+import { FittedXtermSink, SCROLLBACK } from "../fitted-xterm-sink.ts";
 import type { CollabBridge } from "../collab-bridge.ts";
 
 const FONT_FAMILY =
@@ -39,6 +39,7 @@ export const CollabScreen = observer(function CollabScreen({
     if (container === null) return undefined;
     const sink = new FittedXtermSink({
       container,
+      scrollback: SCROLLBACK,
       xterm: { fontFamily: FONT_FAMILY },
       fontSize: initialFontSize.current,
     });
