@@ -52,7 +52,7 @@ Layered architecture, built as TS project references and shipped as subpath expo
 
 - `src/protocol/` — **pure**, zero Node.js deps. Parses tmux control-mode lines into a discriminated-union `TmuxMessage`, encodes outbound commands, decodes octal escapes. Usable in browser/Deno/Bun. Declared `"sideEffects": false`.
 - `src/transport/` — Node-only. `spawnTmux()` forks `tmux -C` via `child_process`; `TmuxTransport` is the interface every consumer writes against (so tests can substitute a fake transport).
-- `src/client.ts` — `TmuxClient` orchestrates transport + parser + `TypedEmitter`. Owns the **sole** command-correlation state : `execute()` numbers each command line and follows it with a sentinel line, and every block up to that sentinel's parse error answers that line's caller, however many commands tmux ran for it (`SPEC.md` §5.6).
+- `src/client.ts` — `TmuxClient` orchestrates transport + parser + `TypedEmitter`. Owns the **sole** command-correlation state: `execute()` numbers each command line and follows it with a sentinel line, and every block up to that sentinel's parse error answers that line's caller, however many commands tmux ran for it (`SPEC.md` §5.6).
 
 Public API is declared only in `src/index.ts`; everything else is internal. The browser-side of the demo imports **types only** from this package — all protocol work stays in Node.
 

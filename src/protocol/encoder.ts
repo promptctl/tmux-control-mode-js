@@ -196,9 +196,15 @@ const COMMAND_LINE_TERMINATOR = /[\n\0]/;
 // which. tmux runs the command whose name the typed word uniquely prefixes,
 // so no command's name may start with the sentinel's.
 export const SENTINEL_PREFIX = "tmux-control-mode-js-sentinel-";
+const UNKNOWN_COMMAND = "parse error: unknown command: ";
 const SENTINEL_REPLY = new RegExp(
-  `^parse error: unknown command: ${SENTINEL_PREFIX}([1-9][0-9]*)\\r*$`,
+  `^${UNKNOWN_COMMAND}${SENTINEL_PREFIX}([1-9][0-9]*)\\r*$`,
 );
+
+/** tmux's reply to a line naming no command it knows, `name` (SPEC §5.3). */
+export function unknownCommandReply(name: string): string {
+  return `${UNKNOWN_COMMAND}${name}`;
+}
 
 /** What execute() writes for `command`: the line, then its sentinel line. */
 export function commandLine(command: string, lineNumber: number): string {

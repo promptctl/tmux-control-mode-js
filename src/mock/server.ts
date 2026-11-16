@@ -23,7 +23,7 @@ import type { TmuxTransport, SendResult } from "../transport/types.js";
 import { createCloseGate } from "../transport/close-gate.js";
 import { CONTROL_FLAGS, type TmuxMessage } from "../protocol/types.js";
 import { serializeMessage } from "../protocol/serializer.js";
-import { SENTINEL_PREFIX } from "../protocol/encoder.js";
+import { SENTINEL_PREFIX, unknownCommandReply } from "../protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Scenario — the policy seam
@@ -243,7 +243,7 @@ export class MockTmuxServer implements TmuxTransport {
     // A sentinel line names no command, so it gets tmux's answer to every
     // such line, its parse error; the scenario answers the commands.
     const reply: CommandReply = line.startsWith(SENTINEL_PREFIX)
-      ? { kind: "error", output: [`parse error: unknown command: ${line}`] }
+      ? { kind: "error", output: [unknownCommandReply(line)] }
       : this.commandReply(line);
     const number = ++this.commandNumber;
     const timestamp = this.now();

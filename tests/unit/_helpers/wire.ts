@@ -7,7 +7,10 @@
 // transport answers with these, or it asserts against a wire trace no real
 // tmux produces. Guard numbers are opaque to the client.
 
-import { SENTINEL_PREFIX } from "../../../src/protocol/encoder.js";
+import {
+  SENTINEL_PREFIX,
+  unknownCommandReply,
+} from "../../../src/protocol/encoder.js";
 import { serializeMessage } from "../../../src/protocol/serializer.js";
 import { CONTROL_FLAGS } from "../../../src/protocol/types.js";
 
@@ -46,7 +49,7 @@ export function sentinelBlock(
   lineNumber: number,
 ): string {
   return block(commandNumber, "error", [
-    `parse error: unknown command: ${SENTINEL_PREFIX}${lineNumber}`,
+    unknownCommandReply(`${SENTINEL_PREFIX}${lineNumber}`),
   ]);
 }
 
