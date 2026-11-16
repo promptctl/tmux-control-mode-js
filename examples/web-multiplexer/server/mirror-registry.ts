@@ -22,10 +22,19 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
+import {
+  isConnectionGone,
+  TransportClosedError,
+  type TmuxClient,
+} from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
-import { spawnReadyControlClient } from "./control-client.js";
+import { reportDetachedFailure } from "./detached-failure.js";
+import {
+  DedicatedControlClient,
+  spawnDemoClient,
+  type SpawnControlClient,
+} from "./control-client.js";
 import {
   buildMirrorSeed,
   type MirrorControlFrame,
@@ -62,49 +71,73 @@ function notJoined(): void {
 
 export class MirrorRegistry {
   private readonly hubs = new Map<number, Hub>();
-  private client: TmuxClient | null = null;
-  // Resolves when the dedicated client has reached `ready` (first byte from
-  // tmux). Gating the first viewer's tap + seed behind this avoids the
-  // control-mode cold-start race; the gate itself is owned by
-  // `spawnReadyControlClient`. [LAW:no-ambient-temporal-coupling]
-  private ready: Promise<void> | null = null;
+  // Every tap, seed and liveness poll goes to a client this has settled, so
+  // none races the control-mode cold start. [LAW:no-ambient-temporal-coupling]
+  private readonly connection: DedicatedControlClient;
   private dir: string | null = null;
   private liveness: ReturnType<typeof setInterval> | null = null;
   private checking = false;
   private closed = false;
+
+  constructor(spawn: SpawnControlClient = spawnDemoClient) {
+    // Every tap died with the connection: end each hub, so its viewers learn
+    // the stream is over and the next viewer re-taps over a fresh client.
+    this.connection = new DedicatedControlClient(
+      "[mirror]",
+      () => {
+        for (const hub of [...this.hubs.values()]) {
+          this.endHub(hub, { kind: "error", message: "tmux connection lost" });
+        }
+      },
+      spawn,
+    );
+  }
 
   /**
    * Attach a viewer to a pane's mirror, seeding it with the pane's current
    * screen, then joining it to the live byte fan-out. Returns a disposer the
    * endpoint calls when the viewer's socket closes.
    *
-   * Failures to seed (bad pane id, pane already gone) send an `error` frame and
-   * return a no-op disposer — the viewer is never silently joined to a stream
-   * that will never produce bytes. [LAW:no-silent-failure]
+   * A viewer that cannot be seeded (bad pane id, pane already gone, tmux
+   * unreachable, bridge shutting down) is refused: sent an `error` frame and
+   * closed, with a no-op disposer — never silently joined to a stream that
+   * will never produce bytes. [LAW:no-silent-failure]
+   *
+   * Never rejects: the endpoint fires and forgets, so a failure anywhere in
+   * the join refuses the viewer here.
    */
-  async addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
-    if (this.closed) {
-      viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
+  addViewer(paneId: number, viewer: MirrorViewer): Promise<() => void> {
+    return this.seedAndJoin(paneId, viewer).catch((err: unknown) => {
+      // The failure may come after the viewer joined; take it back out.
+      this.removeViewer(paneId, viewer);
+      if (this.closed) {
+        refuse(viewer, "bridge is shutting down");
+      } else {
+        reportDetachedFailure(`[mirror] join of %${paneId}`, err);
+        refuse(
+          viewer,
+          isConnectionGone(err)
+            ? "tmux connection lost"
+            : `mirror of %${paneId} failed`,
+        );
+      }
       return notJoined;
-    }
-    // Settle the dedicated client before the first tap/seed (cold-start race).
-    const { client } = this.ensureClient();
-    await this.ready;
-    if (this.closed) {
-      viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return notJoined;
-    }
-    let hub = this.ensureHub(paneId);
+    });
+  }
+
+  private async seedAndJoin(
+    paneId: number,
+    viewer: MirrorViewer,
+  ): Promise<() => void> {
+    const client = await this.connection.ready();
+    let hub = this.ensureHub(paneId, client);
 
     // Geometry first: a fresh XtermSink buffers every write until its first
     // resize (the `.4` first-paint finding), so the viewer needs cols/rows
     // before the seed bytes mean anything.
     const size = await this.querySize(client, paneId);
     if (size === null) {
-      viewer.sendControl({
-        kind: "error",
-        message: `pane %${paneId} not found`,
-      });
+      refuse(viewer, `pane %${paneId} not found`);
       this.gcHub(hub);
       return notJoined;
     }
@@ -116,24 +149,17 @@ export class MirrorRegistry {
       .execute(`capture-pane -e -p -t %${paneId}`)
       .catch(asCommandResponse);
     if (!capture.success) {
-      viewer.sendControl({
-        kind: "error",
-        message: `capture-pane failed for %${paneId}`,
-      });
+      refuse(viewer, `capture-pane failed for %${paneId}`);
       this.gcHub(hub);
       return notJoined;
     }
     viewer.sendBytes(buildMirrorSeed(capture.output));
 
-    if (this.closed) {
-      viewer.sendControl({ kind: "error", message: "bridge is shutting down" });
-      return notJoined;
-    }
     // While this viewer awaited, the hub may have been dropped: another
     // joiner's failed seed GC'd it, or its tap died. Joining the dropped hub
     // would leave this viewer on a stream that never produces bytes and that
     // liveness no longer watches, so join the pane's current hub instead.
-    if (this.hubs.get(paneId) !== hub) hub = this.ensureHub(paneId);
+    if (this.hubs.get(paneId) !== hub) hub = this.ensureHub(paneId, client);
 
     // Join the live stream. From here every tapped byte reaches this viewer.
     hub.viewers.add(viewer);
@@ -151,8 +177,7 @@ export class MirrorRegistry {
       for (const v of hub.viewers) v.close();
     }
     this.hubs.clear();
-    this.client?.close();
-    this.client = null;
+    this.connection.close();
     if (this.dir !== null) {
       try {
         rmSync(this.dir, { recursive: true, force: true });
@@ -165,23 +190,21 @@ export class MirrorRegistry {
 
   // -------------------------------------------------------------------------
 
-  /** Lazily spawn the one control client + FIFO dir the registry shares. */
-  private ensureClient(): { client: TmuxClient; dir: string } {
-    if (this.client === null) {
-      const { client, ready } = spawnReadyControlClient();
-      this.client = client;
-      this.ready = ready;
-    }
-    this.dir ??= mkdtempSync(join(tmpdir(), "tmux-mirror-"));
-    return { client: this.client, dir: this.dir };
-  }
-
-  /** Get the hub for a pane, creating (and tapping) it on first viewer. */
-  private ensureHub(paneId: number): Hub {
+  /**
+   * Get the hub for a pane, creating (and tapping) it over `client` on first
+   * viewer. [LAW:single-enforcer] The one place a hub comes into being, so the
+   * one place a closed registry, or a client whose connection has ended under
+   * a joiner still seeding, is refused a new one.
+   */
+  private ensureHub(paneId: number, client: TmuxClient): Hub {
+    if (this.closed) throw new Error("mirror registry is closed");
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;
+    if (!this.connection.isLive(client))
+      throw new TransportClosedError(undefined);
 
-    const { client, dir } = this.ensureClient();
+    this.dir ??= mkdtempSync(join(tmpdir(), "tmux-mirror-"));
+    const dir = this.dir;
     const viewers = new Set<MirrorViewer>();
     const hub: Hub = {
       paneId,
@@ -216,8 +239,7 @@ export class MirrorRegistry {
   private removeViewer(paneId: number, viewer: MirrorViewer): void {
     const hub = this.hubs.get(paneId);
     if (hub === undefined) return;
-    hub.viewers.delete(viewer);
-    this.broadcastViewers(hub);
+    if (hub.viewers.delete(viewer)) this.broadcastViewers(hub);
     this.gcHub(hub);
   }
 
@@ -281,10 +303,11 @@ export class MirrorRegistry {
   }
 
   private async checkLiveness(): Promise<void> {
-    if (this.checking || this.client === null || this.hubs.size === 0) return;
+    if (this.checking || this.hubs.size === 0) return;
     this.checking = true;
     try {
-      const r = await this.client
+      const client = await this.connection.ready();
+      const r = await client
         .execute("list-panes -a -F '#{pane_id}'")
         .catch(asCommandResponse);
       // [LAW:no-silent-failure] A failed enumeration is left alone, never read
@@ -299,8 +322,17 @@ export class MirrorRegistry {
       for (const hub of [...this.hubs.values()]) {
         if (!present.has(hub.paneId)) this.endHub(hub, { kind: "gone" });
       }
+    } catch (err) {
+      // The poll is fired from a timer, so its failure ends here.
+      reportDetachedFailure("[mirror] liveness check", err);
     } finally {
       this.checking = false;
     }
   }
+}
+
+/** Tell a viewer why it was not joined, then close it: it will get nothing more. */
+function refuse(viewer: MirrorViewer, message: string): void {
+  viewer.sendControl({ kind: "error", message });
+  viewer.close();
 }

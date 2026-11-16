@@ -17,6 +17,11 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { CommandResponse } from "../../src/protocol/types.js";
+// The demo resolves the package to dist/, so its errors come from there too.
+import {
+  TmuxCommandError,
+  TransportClosedError,
+} from "@promptctl/tmux-control-mode-js";
 import { tapPaneToFifo } from "../../examples/web-multiplexer/server/pane-tap.js";
 import { PaneFirehose } from "../../examples/web-multiplexer/server/pane-firehose.js";
 
@@ -128,6 +133,75 @@ describe("PaneFirehose tap retry", () => {
       now += 5;
       await new Promise((r) => setTimeout(r, 50));
       expect(pipeAttempts()).toBe(3);
+    } finally {
+      firehose.stop();
+    }
+  });
+});
+
+describe("PaneFirehose refresh failures", () => {
+  it("rejects start when the first enumeration fails", async () => {
+    const firehose = new PaneFirehose(
+      () =>
+        Promise.reject(new TmuxCommandError(response(false, ["no server"]))),
+      () => undefined,
+    );
+    try {
+      await expect(firehose.start()).rejects.toBeInstanceOf(TmuxCommandError);
+    } finally {
+      firehose.stop();
+    }
+  });
+
+  // The refresh timer fires and forgets: a rejection there would be unhandled
+  // and end the host process.
+  it("warns of a failed timed refresh and leaves the taps alone", async () => {
+    let lists = 0;
+    const execute = vi.fn((command: string) => {
+      if (!command.startsWith("list-panes")) {
+        return Promise.resolve(response(true));
+      }
+      lists += 1;
+      return lists === 1
+        ? Promise.resolve(response(true, ["%1"]))
+        : Promise.reject(new TmuxCommandError(response(false, ["no server"])));
+    });
+    const firehose = new PaneFirehose(execute, () => undefined, {
+      refreshIntervalMs: 5,
+    });
+    try {
+      await firehose.start();
+      await vi.waitFor(() => expect(console.warn).toHaveBeenCalled());
+      expect(console.warn).toHaveBeenCalledWith(
+        expect.stringMatching(/^\[firehose\] refresh failed: /),
+      );
+      // Untapping %1 would turn its pipe-pane off.
+      expect(execute).not.toHaveBeenCalledWith("pipe-pane -t %1");
+    } finally {
+      firehose.stop();
+    }
+  });
+
+  it("ends on a lost connection, leaving the report to the connection's owner", async () => {
+    let lists = 0;
+    const firehose = new PaneFirehose(
+      () => {
+        lists += 1;
+        return Promise.reject(new TransportClosedError("server exited"));
+      },
+      () => undefined,
+      { refreshIntervalMs: 5 },
+    );
+    try {
+      await expect(firehose.start()).rejects.toBeInstanceOf(
+        TransportClosedError,
+      );
+      // Many refresh intervals pass; a dead connection is not polled again.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(lists).toBe(1);
+      expect(console.warn).not.toHaveBeenCalled();
+      // A host still holding it hears that it has ended, not a silent success.
+      await expect(firehose.start()).rejects.toThrow("firehose has ended");
     } finally {
       firehose.stop();
     }

@@ -25,10 +25,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isConnectionGone } from "@promptctl/tmux-control-mode-js";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { reportDetachedFailure } from "./detached-failure.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 
-/** Run a tmux command (over the host's control connection) and resolve its response. */
+/**
+ * Run a tmux command over the host's control connection. A `%error` may reject
+ * (the library's `execute`) or resolve unsuccessful; both are a failure.
+ */
 export type FirehoseExecute = (command: string) => Promise<CommandResponse>;
 
 /** Forward one chunk of tapped pane bytes. */
@@ -78,15 +83,23 @@ export class PaneFirehose {
 
   /**
    * Tap every current pane and begin draining their FIFOs, then keep tapping
-   * panes that appear later. Idempotent: a second `start` while running is a
-   * no-op.
+   * panes that appear later. Rejects if the first enumeration fails; the
+   * refresh timer is already running and keeps trying. Idempotent: a second
+   * `start` while running is a no-op. Rejects once the firehose has ended —
+   * stopped, or its connection gone — since it will never tap again.
    */
   async start(): Promise<void> {
-    if (this.dir !== null || this.stopped) return;
+    if (this.stopped) throw new Error("firehose has ended; start a new one");
+    if (this.dir !== null) return;
     this.dir = mkdtempSync(join(tmpdir(), "tmux-firehose-"));
-    await this.refresh();
     const interval = this.options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
-    this.timer = setInterval(() => void this.refresh(), interval);
+    // The timer fires and forgets, so a failed tick is reported here.
+    this.timer = setInterval(() => {
+      this.refresh().catch((err: unknown) => {
+        reportDetachedFailure("[firehose] refresh", err);
+      });
+    }, interval);
+    await this.refresh();
   }
 
   /**
@@ -116,17 +129,24 @@ export class PaneFirehose {
    * Re-enumerate panes: tap any not yet tapped, untap any that vanished. The
    * single source of "which panes exist" is `list-panes -a`; the tap set is a
    * derived projection kept in lock-step with it. [LAW:one-source-of-truth]
+   *
+   * [LAW:no-silent-failure] A failed enumeration rejects, so it is never read
+   * as "zero panes" (which would untap everything): the tap set is left as-is.
    */
   private async refresh(): Promise<void> {
     if (this.refreshing || this.dir === null || this.stopped) return;
     this.refreshing = true;
     try {
-      const listed = await this.execute("list-panes -a -F '#{pane_id}'");
-      // [LAW:no-silent-failure] A failed enumeration is surfaced, not treated
-      // as "zero panes" (which would untap everything). Leave taps as-is.
+      const listed = await this.execute("list-panes -a -F '#{pane_id}'").catch(
+        (err: unknown) => {
+          // A gone connection never answers again and took every tap with
+          // it: the firehose ends rather than poll it unseen.
+          if (isConnectionGone(err)) this.stop();
+          throw err;
+        },
+      );
       if (!listed.success) {
-        console.warn("[firehose] list-panes failed; tap set unchanged");
-        return;
+        throw new Error(`list-panes failed: ${listed.output.join(" ")}`);
       }
       const current = new Set(
         listed.output.flatMap((line) => {
