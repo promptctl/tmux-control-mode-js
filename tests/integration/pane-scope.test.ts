@@ -259,7 +259,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
 
-  it("SCOPE-03c: sessionScope receives a new pane's first output, which can beat the layout-change announcing it", async () => {
+  it("SCOPE-03c: sessionScope receives a split-window pane's only output, and placing it reports nothing", async () => {
     const session = uniqueName("sess-split");
     client = await attachSession(socketName, session);
     const errors: Error[] = [];
@@ -285,7 +285,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
         Buffer.from(e.data).toString().includes("first-split"),
       ),
     );
-    // Locating the new pane got an answer the router could read.
+    // Whichever query placed the new pane, its answer was one the router read.
     await listAllPanes(client);
     expect(errors).toEqual([]);
 

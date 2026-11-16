@@ -468,25 +468,18 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     const sink = makeSink();
     router.attachBytesSink(sink, { scope: sessionScope(100) });
     router.onTransportReady(run);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Failure surfaced, and the sink is (correctly) starved: topology is empty,
-    // so a session-scoped chunk matches nothing.
+    await new Promise((r) => setTimeout(r, 0));
     expect(errors).toHaveLength(1);
-    router.dispatchBytes(makeChunk(1));
-    expect(sink.chunks).toHaveLength(0);
 
     // (b) Recovery: the command heals and an existing re-bootstrap trigger fires.
     recover();
     router.handleNotification({ type: "sessions-changed" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
 
-    // Pane 1 (session 100) is now in topology, so the session sink receives
-    // it — after the chunk held while its pane was being located.
+    // Pane 1 (session 100) is now in topology, so the session sink receives it.
     router.dispatchBytes(makeChunk(1));
-    expect(sink.chunks).toHaveLength(2);
+    expect(sink.chunks).toHaveLength(1);
+    expect(errors).toHaveLength(1);
   });
 
   // A router driving a NON-FIFO transport: bootstrap A hangs while a newer
@@ -914,19 +907,59 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(s.sink)).toEqual([7]);
   });
 
-  it("locates a pane once per connection however many chunks it prints", async () => {
+  it("a failed locate reports once and re-places the pane server-wide", async () => {
     const errors: Error[] = [];
     const s = await seeded((e) => errors.push(e));
     s.router.dispatchBytes(makeChunk(7));
     s.locates[0]!.reject(new Error("boom"));
     await settle();
-    for (let i = 0; i < 3; i++) s.router.dispatchBytes(makeChunk(7));
+    expect(s.replies.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -a "),
+    ]);
+    // More output while the bootstrap is out asks nothing more about %7.
+    s.router.dispatchBytes(makeChunk(7));
+    s.replies[0]!.resolve(makeOkResponse(["%1 @1 $1", "%7 @1 $1"]));
     await settle();
+    expect(paneIdsOf(s.sink)).toEqual([7, 7]);
     expect(s.locates).toHaveLength(1);
-    expect(s.replies).toEqual([]);
     expect(errors.map((e) => e.message)).toEqual([
       "topology locate of %7 failed: boom",
     ]);
+  });
+
+  it("locates no pane a query already in flight places", async () => {
+    const router = newRouter();
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    // Busy panes print while the bootstrap is out; it places all of them.
+    for (const id of [5, 6, 7]) router.dispatchBytes(makeChunk(id));
+    replies[0]!.resolve(makeOkResponse(["%5 @1 $1", "%6 @1 $1", "%7 @1 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([5, 6, 7]);
+    expect(locates).toEqual([]);
+  });
+
+  it("a pane the bootstrap missed is located once it has answered", async () => {
+    const router = newRouter();
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    // %7 was created after the bootstrap ran, and prints before its
+    // announcement arrives.
+    router.dispatchBytes(makeChunk(7));
+    replies[0]!.resolve(makeOkResponse(["%1 @1 $1"]));
+    await settle();
+    expect(locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %7 "),
+    ]);
+    locates[0]!.resolve(makeOkResponse(["%1 @1 $1", "%7 @1 $1"]));
+    await settle();
+    replies[1]!.resolve(makeOkResponse(["%1 @1 $1", "%7 @1 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([7]);
   });
 
   it("drops a gone pane's output without reporting it", async () => {
@@ -935,6 +968,10 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     s.router.dispatchBytes(makeChunk(7));
     s.locates[0]!.reject(paneGone("%7"));
     await settle();
+    // Its id is never reused, so the answer stands: no more asking about %7.
+    s.router.dispatchBytes(makeChunk(7));
+    await settle();
+    expect(s.locates).toHaveLength(1);
     expect(errors).toEqual([]);
     expect(s.replies).toEqual([]);
     expect(s.sink.chunks).toEqual([]);
@@ -1405,11 +1442,10 @@ describe("TopologyRouter — what a sink hears after a callback ends it", () => 
   function withHeldChunks(sinks: BytesSink[]) {
     const router = newRouter();
     let answer: (r: CommandResponse) => void = () => {};
-    // Only the bootstrap answers; the held pane's locate stays in flight.
     router.onTransportReady(
-      (cmd) =>
+      () =>
         new Promise<CommandResponse>((resolve) => {
-          if (cmd.includes("list-panes -a")) answer = resolve;
+          answer = resolve;
         }),
     );
     for (const s of sinks)

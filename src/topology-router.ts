@@ -105,20 +105,13 @@ function topologyError(query: string, value: unknown): Error {
 // Where a detached sink's still-queued writes go: nowhere.
 const DETACHED: BytesSink = { write: () => undefined, end: () => undefined };
 
-// tmux's %error answer to `list-panes -t @W` for a window that no longer exists.
-function isWindowGone(err: unknown): boolean {
+// tmux's %error answer to `list-panes -t @W` / `-t %P` for a window or pane
+// that no longer exists. (`display-message -p -t %P` cannot say this: for a
+// gone pane it prints an empty line and succeeds.)
+function isTargetGone(err: unknown, target: "window" | "pane"): boolean {
   return (
     err instanceof TmuxCommandError &&
-    err.message.startsWith("can't find window")
-  );
-}
-
-// tmux's %error answer to `list-panes -t %P` for a pane that no longer exists.
-// (`display-message -p -t %P` cannot say this: for a gone pane it prints an
-// empty line and succeeds.)
-function isPaneGone(err: unknown): boolean {
-  return (
-    err instanceof TmuxCommandError && err.message.startsWith("can't find pane")
+    err.message.startsWith(`can't find ${target}`)
   );
 }
 
@@ -402,14 +395,11 @@ export class TopologyRouter {
   private readonly route = (payload: ChunkPayload): void => {
     const meta = this.topology.get(payload.paneId);
     this.sinks.dispatch(payload, meta);
-    // A pane topology does not know yet matched no window/session scope. If a
-    // query in flight may still place it, hold the chunk for replay instead of
-    // losing it: output provoked from another tmux client is not ordered with
-    // our command stream, so it can land before the attach-triggered
-    // bootstrap does, and a new pane's can land before its %window-add or
-    // %layout-change refresh is asked when that notification is delayed.
-    // Locating the pane is such a query, so the chunk always waits for an
-    // answer about its own pane.
+    // A pane topology does not know yet matched no window/session scope. Hold
+    // the chunk for replay instead of losing it: output provoked from another
+    // tmux client is not ordered with our command stream, so it can land
+    // before the attach-triggered bootstrap does, and a new pane's can land
+    // before its %window-add or %layout-change refresh is asked.
     if (meta === undefined && this.sinks.hasTopologyDependentSinks()) {
       void this.locate(payload.paneId);
       if (this.inFlight > 0) this.hold(payload);
@@ -438,9 +428,10 @@ export class TopologyRouter {
   // Replay every held chunk whose pane topology now knows, in arrival order,
   // to the window/session attachments that existed when it arrived. Chunks
   // still unplaced wait while a query remains outstanding; once none does,
-  // nothing can place them and they are dropped (pane/server sinks already got
-  // them live). Runs synchronously at the end of every query, so per-pane
-  // order holds against any chunk dispatched after it.
+  // their pane is located, and once that has answered too, nothing can place
+  // them and they are dropped (pane/server sinks already got them live). Runs
+  // synchronously at the end of every query, so per-pane order holds against
+  // any chunk dispatched after it.
   // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
@@ -463,7 +454,10 @@ export class TopologyRouter {
           kind: "replay",
           attachedBy: h.attachedBy,
         });
-      } else if (this.inFlight > 0) {
+        continue;
+      }
+      void this.locate(h.chunk.paneId);
+      if (this.inFlight > 0) {
         // Already copied and counted once; re-holding cannot exceed the cap.
         this.held.push(h);
         this.heldBytes += h.chunk.data.byteLength;
@@ -689,7 +683,7 @@ export class TopologyRouter {
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
-      if (!isWindowGone(err)) {
+      if (!isTargetGone(err, "window")) {
         if (this.needsTopology()) void this.bootstrap();
         this.reportError(topologyError(`refresh of @${windowId}`, err));
       }
@@ -704,9 +698,14 @@ export class TopologyRouter {
   // pane's window, or "can't find pane" — gone, along with any output it could
   // still print. Asking once bounds a failing ask to one report per pane, not
   // one per chunk it prints.
+  // [LAW:single-enforcer] Asked only once nothing else is outstanding: any
+  //   query in flight may place the pane itself (the bootstrap, or the refresh
+  //   its %window-add/%layout-change started), and a pane placed that way
+  //   costs no query of its own. Arrival and every release both ask here.
   private async locate(paneId: number): Promise<void> {
     const conn = this.connection;
-    if (conn.phase !== "live" || conn.located.has(paneId)) return;
+    if (conn.phase !== "live" || this.inFlight > 0 || conn.located.has(paneId))
+      return;
     conn.located.add(paneId);
     this.inFlight++;
     const command = `list-panes -t %${paneId} -F '${PANE_LIST_FORMAT}'`;
@@ -740,7 +739,11 @@ export class TopologyRouter {
         void this.refreshWindow(row.windowId);
       }
     } catch (err) {
-      if (!isPaneGone(err)) {
+      // A gone pane is the answer that ends its hold. Any other failure leaves
+      // a live pane unplaced, so — as a failed window refresh does — re-place
+      // it with the server-wide query, asked after its output, and report it.
+      if (!isTargetGone(err, "pane")) {
+        if (this.needsTopology()) void this.bootstrap();
         this.reportError(topologyError(`locate of %${paneId}`, err));
       }
     } finally {
