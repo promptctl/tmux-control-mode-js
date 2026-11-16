@@ -59,11 +59,18 @@ import {
   type WindowView,
 } from "./window-model.js";
 
-/** What the renderer gives a pane: where its picture goes, and its teardown. */
+/**
+ * What the renderer gives a pane: where its picture goes, why it failed to
+ * open (empty when it opened; the engine reports each), and its teardown.
+ */
 export interface PaneSurface {
   readonly sink: TerminalSink;
+  readonly failures: readonly unknown[];
   dispose(): void;
 }
+
+/** What the engine tells the host's `onError`, before the window is named. */
+type Report = Omit<WindowTerminalError, "windowId">;
 
 /**
  * The renderer, as the engine sees it. `keys` sends the input bytes produced
@@ -230,8 +237,7 @@ export class WindowEngine {
   }
 
   dispose(): void {
-    // A window that went gone has already ended; its listeners still go.
-    if (!this.ended) this.end();
+    this.end();
     this.stateListeners.clear();
     this.errorListeners.clear();
   }
@@ -297,12 +303,16 @@ export class WindowEngine {
       );
     }
     let facts = first.facts;
-    for (const ev of this.queue ?? []) facts = this.reduce(facts, ev);
+    const reports: Report[] = [];
+    for (const ev of this.queue ?? []) {
+      const next = reduce(facts, ev);
+      facts = next.facts;
+      reports.push(...next.reports);
+    }
     this.queue = null;
     this.facts = facts;
     this.sync = { kind: "synced" };
-    this.reconcilePanes();
-    this.publish();
+    this.tell([...reports, ...this.reconcilePanes()]);
   }
 
   /**
@@ -332,16 +342,9 @@ export class WindowEngine {
     if (this.sync.kind === "gone") return;
     this.queue?.push(ev);
     if (this.facts === null || this.sync.kind !== "synced") return;
-    this.facts = this.reduce(this.facts, ev);
-    this.reconcilePanes();
-    this.publish();
-  }
-
-  private reduce(facts: WindowFacts, ev: WindowEvent): WindowFacts {
-    const next = reduceWindow(facts, ev);
-    if (next.kind === "facts") return next.facts;
-    this.report({ seam: "layout", cause: new Error(next.reason) });
-    return facts;
+    const next = reduce(this.facts, ev);
+    this.facts = next.facts;
+    this.tell([...next.reports, ...this.reconcilePanes()]);
   }
 
   private malformedValue(value: string): void {
@@ -359,18 +362,18 @@ export class WindowEngine {
    * One stream and one surface per pane in the layout. A zoom hides panes; it
    * never removes them, so zooming detaches nothing.
    */
-  private reconcilePanes(): void {
+  private reconcilePanes(): Report[] {
     const facts = this.facts;
-    if (facts === null) return;
+    if (facts === null) return [];
     const { added, removed } = paneDiff(
       [...this.panes.keys()],
       facts.panes.map((p) => p.id),
     );
     for (const id of removed) this.disposePane(id);
-    for (const id of added) this.createPane(id);
+    return added.flatMap((id) => this.createPane(id));
   }
 
-  private createPane(id: PaneId): void {
+  private createPane(id: PaneId): Report[] {
     const stream = new PaneStream({
       client: this.connection,
       paneId: paneNumber(id),
@@ -391,6 +394,11 @@ export class WindowEngine {
     stream.attach(surface.sink);
     const offState = stream.on("state-changed", () => this.publish());
     this.panes.set(id, { stream, surface, offState });
+    return surface.failures.map((cause) => ({
+      seam: "render",
+      paneId: id,
+      cause,
+    }));
   }
 
   private disposePane(id: PaneId): void {
@@ -429,13 +437,26 @@ export class WindowEngine {
     if (final) this.end();
   }
 
-  private report(e: Omit<WindowTerminalError, "windowId">): void {
+  private report(e: Report): void {
     if (this.ended) return;
     deliver(this.errorListeners, { windowId: this.windowId, ...e });
   }
 
-  /** The one teardown: `gone` and `dispose` both end here. */
+  // [LAW:no-ambient-temporal-coupling] The host hears a unit of work once it
+  //   is done, never in the middle of it: a listener that disposes the
+  //   terminal ends a whole engine, and `report` and `publish` deliver nothing
+  //   after that.
+  private tell(reports: readonly Report[]): void {
+    for (const r of reports) this.report(r);
+    this.publish();
+  }
+
+  /**
+   * The one teardown: `gone` and `dispose` both end here, once. A state
+   * listener that disposes on `gone` ends the engine before `publish` does.
+   */
   private end(): void {
+    if (this.ended) return;
     this.ended = true;
     this.epoch++;
     this.queue = null;
@@ -455,4 +476,18 @@ export class WindowEngine {
       void c.unsubscribe(this.metaName).catch(rethrowUnlessUnsubscribed);
     }
   }
+}
+
+/**
+ * One event over the facts. An event they cannot take leaves them as they
+ * were, and is reported.
+ */
+function reduce(
+  facts: WindowFacts,
+  ev: WindowEvent,
+): { readonly facts: WindowFacts; readonly reports: readonly Report[] } {
+  const next = reduceWindow(facts, ev);
+  return next.kind === "facts"
+    ? { facts: next.facts, reports: [] }
+    : { facts, reports: [{ seam: "layout", cause: new Error(next.reason) }] };
 }

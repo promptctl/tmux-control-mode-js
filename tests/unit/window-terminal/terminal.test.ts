@@ -372,6 +372,12 @@ describe("window terminal — what is drawn", () => {
     await settle();
     expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
     expect(m.host.querySelector(".wt-root")).toBeNull();
+    expect(m.client.held()).toEqual({
+      // The connection's reseed scheduler, for as long as it lives.
+      listeners: ["reconnected"],
+      sinks: 0,
+      subscriptions: [],
+    });
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {

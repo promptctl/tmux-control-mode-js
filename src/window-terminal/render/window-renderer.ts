@@ -39,8 +39,8 @@ export interface WindowRendererOptions {
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
   /**
-   * `pane`'s xterm failed: to open (a host addon threw; it draws nothing), or
-   * to take options xterm accepted (an addon refused them).
+   * `pane`'s xterm failed to take options xterm accepted (an addon refused
+   * them). A pane that fails to open says so on its surface instead.
    */
   readonly onError: (pane: PaneId, cause: unknown) => void;
 }
@@ -146,11 +146,9 @@ export class WindowRenderer implements PaneSurfaces {
     const { sink, failures } = this.open(el);
     const offInput = sink.onInput(keys);
     this.panes.set(pane, { el, sink });
-    // Reported once the pane is held: a listener that disposes the terminal
-    // finds the renderer whole, and disposes this pane with the rest.
-    for (const cause of failures) this.onError(pane, cause);
     return {
       sink,
+      failures,
       dispose: () => {
         offInput();
         sink.dispose();
@@ -250,8 +248,8 @@ export class WindowRenderer implements PaneSurfaces {
   }
 
   // A pane's xterm or addon that throws on an option xterm accepted is that
-  // pane's failure, reported as a pane that fails to open is; every other
-  // pane still takes the options.
+  // pane's failure, under the seam a pane that fails to open is reported
+  // under; every other pane still takes the options.
   setOptions(xterm: XtermOptions): void {
     this.xterm = xterm;
     for (const [pane, { sink }] of this.panes) {

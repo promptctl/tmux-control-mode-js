@@ -124,6 +124,11 @@ export class FakeTmuxClient {
   //   undefined)` — tests attach at serverScope so topology-based routing
   //   is not exercised.
   private readonly sinks = new SinkRegistry();
+  // For `held()`: a token per sink attachment not since detached (one sink
+  //   may be attached more than once), and the subscriptions issued and not
+  //   since released.
+  private readonly attachments = new Set<object>();
+  private readonly subscriptions = new Set<string>();
 
   // Capture-pane invocation log + scriptable response handler. The log lets a
   // consumer assert re-mount churn on one stream issues exactly one capture;
@@ -246,10 +251,12 @@ export class FakeTmuxClient {
     what: string,
     format: string,
   ): Promise<CommandResponse> {
+    this.subscriptions.add(name);
     return this.execute(refreshClientSubscribe(name, what, format));
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {
+    this.subscriptions.delete(name);
     return this.execute(refreshClientUnsubscribe(name));
   }
 
@@ -275,12 +282,20 @@ export class FakeTmuxClient {
   //   the fake's internal `dispatch` path — same shape as every other
   //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
-    return this.sinks.attach(sink, options?.scope ?? serverScope);
+    const detach = this.sinks.attach(sink, options?.scope ?? serverScope);
+    const attachment = {};
+    this.attachments.add(attachment);
+    return () => {
+      this.attachments.delete(attachment);
+      detach();
+    };
   }
 
   close(): void {
     this.setConnectionState({ status: "closed", reason: "disposed" });
     this.listeners.clear();
+    // tmux drops a control client's subscriptions with the client.
+    this.subscriptions.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -368,6 +383,26 @@ export class FakeTmuxClient {
       if (m !== null && m[2] === what) return m[1];
     }
     throw new Error(`no subscription on ${what} was issued`);
+  }
+
+  /**
+   * What consumers still claim on this connection: a listener's event type
+   * per listener (sorted), the sink attachments, and the subscriptions issued
+   * and not since released, in the order issued.
+   */
+  held(): {
+    readonly listeners: readonly string[];
+    readonly sinks: number;
+    readonly subscriptions: readonly string[];
+  } {
+    const listeners = [...this.listeners].flatMap(([type, set]) =>
+      [...set].map(() => type),
+    );
+    return {
+      listeners: listeners.sort(),
+      sinks: this.attachments.size,
+      subscriptions: [...this.subscriptions],
+    };
   }
 
   /** Deliver a tmux notification as tmux would. */
