@@ -625,6 +625,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(browser.connectionState).toMatchObject({
         status: "closed",
         reason: "refused",
+        error: expect.objectContaining({ code: "BRIDGE_REFUSED" }),
       });
       await pastRetryBudget();
       expect(factory.calls()).toBe(1);
@@ -672,6 +673,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(browser.connectionState).toMatchObject({
         status: "closed",
         reason: "refused",
+        error: expect.objectContaining({ code: "BRIDGE_REFUSED" }),
       });
       await pastRetryBudget();
       expect(factory.calls()).toBe(2);

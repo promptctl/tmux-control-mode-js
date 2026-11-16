@@ -764,6 +764,34 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(c.reason).toMatch(/no credentials/);
   });
 
+  it("an auth hook that throws is a fault: BRIDGE_INTERNAL, closed 1011, not a denial", async () => {
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        throw new Error("unreachable: auth never passed");
+      },
+      authenticate: () => {
+        throw new Error("db down");
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    const message = "authenticate failed: db down";
+    expect(ws.closeCalls).toEqual([{ code: 1011, reason: message }]);
+    expect(fatalFrames(ws)).toEqual([
+      { k: "error", fatal: true, error: { code: "BRIDGE_INTERNAL", message } },
+    ]);
+    ws.fireClose(1011, message);
+    const c = events.find((e) => e.kind === "connection-closed");
+    if (c?.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_INTERNAL");
+  });
+
   // A denial ends the connection with a close whatever code its hook named:
   // `ws` throws on a code it may not send, so a code reaching close()
   // unchecked would leave the socket open until the heartbeat deadline.
@@ -846,6 +874,13 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
       "BRIDGE_INTERNAL",
       1011,
       "createClient failed: tmux spawn failed",
+    ],
+    [
+      "any other BridgeError is a fault, its message carried without its code",
+      new BridgeError("BRIDGE_INTERNAL", "spawn failed"),
+      "BRIDGE_INTERNAL",
+      1011,
+      "createClient failed: spawn failed",
     ],
     [
       "a BRIDGE_REFUSED is a refusal: BRIDGE_REFUSED, closed 4403",

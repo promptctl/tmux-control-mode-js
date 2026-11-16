@@ -65,7 +65,9 @@ export type ConnectionState =
        *  auth denial, or a `createClient` that names a target that does not
        *  exist), so no retry was made: one would be refused again. */
       readonly reason: "refused";
-      /** The server's account of the refusal, as its close carried it. */
+      /** The server's account of the refusal: the WebSocket bridge's fatal
+       *  error (`BRIDGE_AUTH_DENIED`, `BRIDGE_REFUSED`), or its close's
+       *  reason when no fatal frame arrived. */
       readonly error: Error;
     };
 

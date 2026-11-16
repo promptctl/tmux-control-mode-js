@@ -46,9 +46,10 @@ export const AUTH_DENIED = 4401 as ServerCloseCode;
 export const REFUSED = 4403 as ServerCloseCode;
 
 /** Whether a close refuses the connection for good: a code in 4400–4499,
- *  read as HTTP reads 4xx — the same request would be refused again, so a
- *  client does not retry it. Any other code, or none, is a close a retry
- *  may outlast.
+ *  the range this bridge reserves for refusals — the same connection would
+ *  be refused again, so a client does not retry it. Any other code, or
+ *  none, is a close a retry may outlast; a denial that is only for now (a
+ *  rate limit) closes outside the range, with 1013 (Try Again Later), say.
  *  [LAW:one-source-of-truth] The bridge decides finality by the code it
  *  closes with; this range is the one place both sides read it. */
 export function isRefusal(code: number | undefined): boolean {

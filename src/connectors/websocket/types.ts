@@ -168,7 +168,9 @@ export type AuthResult =
        *  (see `ServerCloseCode`). Default 4401. A code in 4400–4499 refuses
        *  the connection for good: a `WebSocketTmuxClient` ends `closed` /
        *  `refused` and does not retry. Any other code is retried under the
-       *  client's reconnect policy. A number the socket may not send is the
+       *  client's reconnect policy, so a denial a retry may outlast (a rate
+       *  limit, credentials minted afresh per attempt) names one outside
+       *  the range — 1013, Try Again Later, say. A number the socket may not send is the
        *  hook's defect: the socket closes with 4401 and the denial's reason
        *  names the value. */
       readonly code?: number;

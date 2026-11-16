@@ -102,11 +102,14 @@ import {
 } from "./reconnect-controller.js";
 import { isRefusal } from "./close-code.js";
 
-// How a connection the client did not keep ends: the consumer closed it, the
-// server refused it for good, or the reconnect controller's decision.
+// How a connection the client did not keep ends: closed for good in the
+// state it names (the consumer closed it, or the server refused it), or the
+// reconnect controller's decision.
 type ConnectionEnding =
-  | { readonly kind: "disposed" }
-  | { readonly kind: "refused" }
+  | {
+      readonly kind: "closed";
+      readonly state: Extract<ConnectionState, { status: "closed" }>;
+    }
   | ReconnectDecision;
 
 // ---------------------------------------------------------------------------
@@ -623,6 +626,7 @@ export class WebSocketTmuxClient
         ws.removeEventListener("error", onError);
       },
       phase: { kind: "handshake", deadline },
+      fatal: undefined,
     };
     this.connection = conn;
     ws.addEventListener("open", onOpen);
@@ -725,7 +729,10 @@ export class WebSocketTmuxClient
       WebSocketTmuxClient.beforeWelcome(self, at, { k: "output" }),
     frames: {
       welcome: (self, at, f) => self.onWelcome(at, f),
-      error: (self, _at, f) => self.emitError(BridgeError.fromPayload(f.error)),
+      error: (self, at, f) => {
+        at.conn.fatal = BridgeError.fromPayload(f.error);
+        self.emitError(at.conn.fatal);
+      },
       event: WebSocketTmuxClient.beforeWelcome,
       result: WebSocketTmuxClient.beforeWelcome,
       pong: WebSocketTmuxClient.beforeWelcome,
@@ -868,23 +875,24 @@ export class WebSocketTmuxClient
     // [LAW:no-ambient-temporal-coupling] Every end but a scheduled retry is
     //   permanent: it ends all sinks and retires the runner. Sinks survive a
     //   reconnect.
+    // A refusal reads the server's own account when its fatal frame arrived,
+    //   else the close's reason, which says the same, cut short.
     const ending: ConnectionEnding = this.userRequestedClose
-      ? { kind: "disposed" }
+      ? { kind: "closed", state: { status: "closed", reason: "disposed" } }
       : isRefusal(serverCloseCode)
-        ? { kind: "refused" }
+        ? {
+            kind: "closed",
+            state: {
+              status: "closed",
+              reason: "refused",
+              error: conn?.fatal ?? err,
+            },
+          }
         : this.reconnect.schedule();
     switch (ending.kind) {
-      case "disposed":
+      case "closed":
         this.router.onTransportClose();
-        this.setConnectionState({ status: "closed", reason: "disposed" });
-        return;
-      case "refused":
-        this.router.onTransportClose();
-        this.setConnectionState({
-          status: "closed",
-          reason: "refused",
-          error: err,
-        });
+        this.setConnectionState(ending.state);
         return;
       case "disabled":
         this.router.onTransportClose();
@@ -1092,6 +1100,10 @@ interface Connection {
   readonly ws: BrowserWebSocketLike;
   readonly detach: () => void;
   phase: Phase;
+  /** The fatal error the server sent before its welcome: its own account of
+   *  the close that follows, under its code and uncut by the close reason's
+   *  123-byte limit. */
+  fatal: BridgeError | undefined;
 }
 
 /** The close codes the client sends: a normal closure, and two in the

@@ -74,6 +74,7 @@ describe("Handshake — authenticate()", () => {
     const result = await hs.authenticate();
     expect(result).toEqual({
       ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
       closeCode: 4401,
       reason: "token expired",
     });
@@ -85,15 +86,21 @@ describe("Handshake — authenticate()", () => {
       .mockResolvedValue({ ok: false, reason: "policy", code: 1008 });
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
-    expect(result).toEqual({ ok: false, closeCode: 1008, reason: "policy" });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
+      closeCode: 1008,
+      reason: "policy",
+    });
   });
 
-  it("a hook that throws is a fault: still denied, under 1011, which a client retries", async () => {
+  it("a hook that throws is a fault, not a denial: BRIDGE_INTERNAL under 1011, which a client retries", async () => {
     const hook = vi.fn().mockRejectedValue(new Error("db down"));
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
     expect(result).toMatchObject({
       ok: false,
+      errorCode: "BRIDGE_INTERNAL",
       closeCode: 1011,
       reason: expect.stringContaining("db down"),
     });
@@ -107,6 +114,7 @@ describe("Handshake — authenticate()", () => {
     const result = await hs.authenticate();
     expect(result).toMatchObject({
       ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
       closeCode: 4401,
       reason: expect.stringContaining("1005"),
     });

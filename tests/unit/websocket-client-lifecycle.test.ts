@@ -1630,13 +1630,16 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
       });
       hub.fireClose(-1, code, message);
 
-      const closed = client.connectionState;
-      expect(closed).toMatchObject({ status: "closed", reason: "refused" });
-      expect(
-        closed.status === "closed" && closed.reason === "refused"
-          ? closed.error.message
-          : undefined,
-      ).toContain(message);
+      // The state carries the bridge's fatal error, so a consumer can tell
+      // an auth denial from a target that is gone by its code.
+      expect(client.connectionState).toMatchObject({
+        status: "closed",
+        reason: "refused",
+        error: expect.objectContaining({
+          code: errorCode,
+          message: `[${errorCode}] ${message}`,
+        }),
+      });
       expect(states.map((s) => s.status)).toEqual(["closed"]);
       // Past the policy's whole 1 ms backoff: no second socket was opened.
       await new Promise((r) => setTimeout(r, 20));

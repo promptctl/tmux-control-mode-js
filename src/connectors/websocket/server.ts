@@ -704,13 +704,13 @@ class Connection {
         // already pending — sendFatalAndClose's write-once guard would
         // otherwise silently drop this denial. [LAW:no-silent-failure]
         this.emitUnreportedHandshakeFailure(
-          "BRIDGE_AUTH_DENIED",
+          authResult.errorCode,
           authResult.reason,
         );
         return;
       }
       this.sendFatalAndClose(
-        "BRIDGE_AUTH_DENIED",
+        authResult.errorCode,
         authResult.reason,
         authResult.closeCode,
       );
@@ -768,7 +768,7 @@ class Connection {
       const code: BridgeErrorCode = refused
         ? "BRIDGE_REFUSED"
         : "BRIDGE_INTERNAL";
-      const message = `createClient failed: ${refused ? err.toPayload().message : err instanceof Error ? err.message : String(err)}`;
+      const message = `createClient failed: ${err instanceof BridgeError ? err.toPayload().message : err instanceof Error ? err.message : String(err)}`;
       if (this.isTearingDown()) {
         // Either finalize already ran for an unrelated reason (the peer
         // disconnected while createClient() was still in flight, reporting
