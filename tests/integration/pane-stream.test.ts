@@ -19,7 +19,7 @@ import {
   uniqueName,
   attachSession,
   getPrimaryPaneId,
-  pollUntil,
+  readUntil,
   waitForPaneText,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -112,8 +112,10 @@ describe.skipIf(!RUN_INTEGRATION)(
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
 
-      // Put a known marker on the pane so the seed is non-empty.
-      await sendKeys(client, `%${paneId}`, "echo HELLO_SEED_MARKER");
+      // Put a known marker on the pane so the seed is non-empty. printf
+      // assembles it, so only the command's output, not the typed command
+      // line, carries the whole marker.
+      await sendKeys(client, `%${paneId}`, "printf 'HELLO_%s\\n' SEED_MARKER");
       await client.execute(`send-keys -t %${paneId} Enter`);
       await waitForPaneText(client, paneId, "HELLO_SEED_MARKER");
 
@@ -125,7 +127,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
 
       // Wait for capture + cursor responses + state transition.
-      await pollUntil(() => stream!.state === "live");
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
       expect(sink.seedCalls).toHaveLength(1);
       expect(sink.seedCalls[0].byteLength).toBeGreaterThan(0);
       // Cursor should be present and inside the 80x24 viewport.
@@ -148,9 +154,17 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream.attach(sink);
       // Wait for live + the initial subscription-changed (tmux delivers
       // the current value on subscribe).
-      await pollUntil(() => stream!.state === "live");
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
       // Initial subscription delivery — at least one resize call.
-      await pollUntil(() => sink.resizeCalls.length > 0);
+      await readUntil(
+        () => sink.resizeCalls,
+        (calls) => calls.length > 0,
+        "no resize reached the sink",
+      );
       // The expected geometry is what tmux reports for the pane, not the
       // requested size: tmux 3.2 gives an 80x24 session a 23-row pane.
       expect(sink.resizeCalls[sink.resizeCalls.length - 1]).toEqual(
@@ -160,19 +174,17 @@ describe.skipIf(!RUN_INTEGRATION)(
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
       await client.setSize(120, 30);
-      await pollUntil(() => {
-        const last = sink.resizeCalls[sink.resizeCalls.length - 1];
-        return (
-          sink.resizeCalls.length > 1 &&
-          last.cols === 120 &&
-          last.rows >= 30 - 1
-        );
-      });
-      const after = sink.resizeCalls[sink.resizeCalls.length - 1];
-      expect(after.cols).toBe(120);
       // The requested height lands, less at most the status line's row
       // (tmux 3.2 takes it from the initial session but not after setSize).
-      expect(after.rows).toBeGreaterThanOrEqual(30 - 1);
+      const calls = await readUntil(
+        () => sink.resizeCalls,
+        (seen) => {
+          const last = seen[seen.length - 1];
+          return seen.length > 1 && last.cols === 120 && last.rows >= 30 - 1;
+        },
+        "the sink never saw the 120x30 resize",
+      );
+      const after = calls[calls.length - 1];
       expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);

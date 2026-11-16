@@ -89,18 +89,16 @@ describe.skipIf(!RUN_INTEGRATION)("keymap integration", () => {
       .filter((x): x is string => x !== undefined);
     expect(indices.length).toBe(3);
     const targetIdx = indices[0];
-    const activeLineBefore = before.output.find((l) => /^\d+:.*\*/.test(l));
-    expect(activeLineBefore?.startsWith(`${targetIdx}:`)).toBe(false);
+    const activeIndex = async () =>
+      (await client!.execute("display-message -p '#{window_index}'")).output[0];
+    expect(await activeIndex()).not.toBe(targetIdx);
 
     bound.handleKey(parseChord("C-b"));
     bound.handleKey(parseChord(targetIdx));
 
     await readUntil(
-      () => client!.execute("list-windows"),
-      (list) =>
-        list.output.some(
-          (line) => /^\d+:.*\*/.test(line) && line.startsWith(`${targetIdx}:`),
-        ),
+      activeIndex,
+      (idx) => idx === targetIdx,
       `window ${targetIdx} never became active`,
     );
   }, 15000);

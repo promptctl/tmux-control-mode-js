@@ -20,7 +20,7 @@ import {
   windowScope,
 } from "@promptctl/tmux-control-mode-js/browser";
 import { encodePaneOutput } from "@promptctl/tmux-control-mode-js/websocket/protocol";
-import { pollUntil, tmux } from "../../../tests/helpers/integration.ts";
+import { readUntil, tmux } from "../../../tests/helpers/integration.ts";
 import { describeTopologyMoves } from "../../../tests/helpers/topology-moves.ts";
 import {
   announceReadyOnAttach,
@@ -143,7 +143,11 @@ async function openBridged(
   };
   socket.open();
   try {
-    await pollUntil(() => conn.connectionState.status === "ready");
+    await readUntil(
+      () => conn.connectionState.status,
+      (status) => status === "ready",
+      "the bridged connection never became ready",
+    );
   } catch (err) {
     close();
     throw new Error("the bridged connection never became ready", {

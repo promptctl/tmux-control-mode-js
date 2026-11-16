@@ -14,7 +14,6 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
-  pollUntil,
   readUntil,
   attachSession,
   attachClient,
@@ -108,16 +107,28 @@ async function waitForNewPane(
     "waitForNewPane: no new pane appeared",
     timeoutMs,
   );
-  return panes.filter(isNew)[0];
+  // readUntil resolved only on a listing holding a new pane.
+  return panes.find(isNew)!;
 }
 
-// Did a pause / continue command for this pane reach the wire?
-const pausePat = (paneId: number) => `%${paneId}:${PaneAction.Pause}`;
-const continuePat = (paneId: number) => `%${paneId}:${PaneAction.Continue}`;
-const paused = (sent: string[], paneId: number) =>
-  sent.some((c) => c.includes(pausePat(paneId)));
-const continued = (sent: string[], paneId: number) =>
-  sent.some((c) => c.includes(continuePat(paneId)));
+// Did this pause / continue for this pane reach the wire?
+const sentAction = (sent: string[], paneId: number, action: PaneAction) =>
+  sent.some((c) => c.includes(`%${paneId}:${action}`));
+
+// Resolve once it has; a timeout quotes every pause / continue sent for the pane.
+const waitForAction = (sent: string[], paneId: number, action: PaneAction) =>
+  readUntil(
+    () => sent.filter((c) => c.includes(`%${paneId}:`)),
+    (forPane) => sentAction(forPane, paneId, action),
+    `%${paneId} was never sent ${action}`,
+  );
+
+const waitForArrival = (arrived: number[], paneId: number) =>
+  readUntil(
+    () => arrived,
+    (panes) => panes.includes(paneId),
+    `no output from %${paneId} arrived`,
+  );
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -150,8 +161,7 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
     const panes = await listAllPanes(client);
     const paneX = panes[0].paneId;
     // Bootstrap learns %X, finds no admitting attachment, pauses it.
-    await pollUntil(() => paused(sent, paneX));
-    expect(paused(sent, paneX)).toBe(true);
+    await waitForAction(sent, paneX, PaneAction.Pause);
   }, 15000);
 
   // ── #28: Suppression releases on attach ─────────────────────────────────
@@ -164,19 +174,17 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
     clients.push(client);
 
     const paneX = (await listAllPanes(client))[0].paneId;
-    await pollUntil(() => paused(sent, paneX));
+    await waitForAction(sent, paneX, PaneAction.Pause);
 
     sent.length = 0;
     const arrived: number[] = [];
     const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
       scope: paneScope(paneX),
     });
-    await pollUntil(() => continued(sent, paneX));
-    expect(continued(sent, paneX)).toBe(true);
+    await waitForAction(sent, paneX, PaneAction.Continue);
 
     await sendOutputToPane(client, paneX);
-    await pollUntil(() => arrived.includes(paneX));
-    expect(arrived).toContain(paneX);
+    await waitForArrival(arrived, paneX);
     dispose();
   }, 15000);
 
@@ -193,12 +201,11 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
     const dispose = client.attachBytesSink(makeRecordingSink([]), {
       scope: paneScope(paneX),
     });
-    await pollUntil(() => continued(sent, paneX));
+    await waitForAction(sent, paneX, PaneAction.Continue);
 
     sent.length = 0;
     dispose();
-    await pollUntil(() => paused(sent, paneX));
-    expect(paused(sent, paneX)).toBe(true);
+    await waitForAction(sent, paneX, PaneAction.Pause);
   }, 15000);
 
   // ── #30: Cross-scope interaction (serverScope admits everything) ─────────
@@ -226,14 +233,13 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
     ).paneId;
 
     // serverScope admits %Y: it must be continued, never paused.
-    await pollUntil(() => continued(sent, paneY));
-    expect(paused(sent, paneY)).toBe(false);
+    await waitForAction(sent, paneY, PaneAction.Continue);
+    expect(sentAction(sent, paneY, PaneAction.Pause)).toBe(false);
 
     // Detaching the serverScope sink leaves %Y with no admitting attachment.
     sent.length = 0;
     serverDispose();
-    await pollUntil(() => paused(sent, paneY));
-    expect(paused(sent, paneY)).toBe(true);
+    await waitForAction(sent, paneY, PaneAction.Pause);
   }, 20000);
 
   // ── #31: Topology-driven transitions ────────────────────────────────────
@@ -276,8 +282,8 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
 
     // The new pane is admitted by windowScope(A): continued immediately,
     // never paused-then-unpaused.
-    await pollUntil(() => continued(sent, paneNew));
-    expect(paused(sent, paneNew)).toBe(false);
+    await waitForAction(sent, paneNew, PaneAction.Continue);
+    expect(sentAction(sent, paneNew, PaneAction.Pause)).toBe(false);
 
     // Create a second window in the same session and move the pane into it.
     await client.execute("new-window");
@@ -288,8 +294,7 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
     sent.length = 0;
     await client.execute(`move-pane -s %${paneNew} -t @${windowB}`);
     // Now in window B, no longer admitted by windowScope(A): paused.
-    await pollUntil(() => paused(sent, paneNew));
-    expect(paused(sent, paneNew)).toBe(true);
+    await waitForAction(sent, paneNew, PaneAction.Pause);
   }, 25000);
 
   // ── #32: No effect on the user's other tmux clients ─────────────────────
@@ -312,11 +317,10 @@ describe.skipIf(!RUN_INTEGRATION)("Idle pane suppression", () => {
 
     const paneX = (await listAllPanes(c1.client))[0].paneId;
     // Client 1 pauses %X for itself.
-    await pollUntil(() => paused(c1.sent, paneX));
+    await waitForAction(c1.sent, paneX, PaneAction.Pause);
 
     // Drive output; client 2 (which never paused) must still receive it.
     await sendOutputToPane(c2.client, paneX);
-    await pollUntil(() => arrived.includes(paneX));
-    expect(arrived).toContain(paneX);
+    await waitForArrival(arrived, paneX);
   }, 20000);
 });

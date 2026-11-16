@@ -38,7 +38,7 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
   getPrimaryPaneId,
-  pollUntil,
+  readUntil,
   uniqueName,
   uniqueSocket,
 } from "../helpers/integration.js";
@@ -121,7 +121,12 @@ describe.skipIf(!integrationOn)(
           // The seed lands once capture-pane + display-message round-trip;
           // seedAt is stamped inside the sink's seed() callback, so the poll
           // interval never enters the sample.
-          await pollUntil(() => sink.hasSeed, 2000);
+          await readUntil(
+            () => sink.hasSeed,
+            (seeded) => seeded,
+            "the sink never received its seed",
+            2000,
+          );
           samples.push(sink.seedAt - t0);
         } finally {
           stream.dispose();

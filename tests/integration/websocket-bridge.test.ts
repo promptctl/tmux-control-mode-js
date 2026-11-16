@@ -19,7 +19,6 @@ import { ClientSizeDeclarer } from "../../src/window-terminal/sizing/client-size
 import type { WindowId } from "../../src/window-terminal/ids.js";
 import {
   uniqueSocket,
-  pollUntil,
   attachSession,
   readUntil,
   withSecondClient,
@@ -203,8 +202,13 @@ function waitForState(
   client: WebSocketTmuxClient,
   target: ConnectionState["status"],
   timeoutMs = 5_000,
-): Promise<void> {
-  return pollUntil(() => client.connectionState.status === target, timeoutMs);
+): Promise<ConnectionState["status"]> {
+  return readUntil(
+    () => client.connectionState.status,
+    (status) => status === target,
+    `connection never reached "${target}"`,
+    timeoutMs,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -260,11 +264,13 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     await client.execute(`send-keys 'echo websocket-bridge-ok' Enter`);
 
     // Poll for the printf to appear in the byte stream.
-    const isMatch = (): boolean =>
-      seen.some((data) =>
-        new TextDecoder().decode(data).includes("websocket-bridge-ok"),
-      );
-    await pollUntil(isMatch, 5_000);
+    const decoder = new TextDecoder();
+    await readUntil(
+      () => seen.map((data) => decoder.decode(data)).join(""),
+      (text) => text.includes("websocket-bridge-ok"),
+      "websocket-bridge-ok never reached the byte stream",
+      5_000,
+    );
 
     detach();
     await client.close();
@@ -279,7 +285,12 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
 
     await client.execute("new-window");
 
-    await pollUntil(() => windowAdds.length > 0, 3_000);
+    await readUntil(
+      () => windowAdds.length,
+      (n) => n > 0,
+      "no window-add arrived",
+      3_000,
+    );
     expect(windowAdds[0].type).toBe("window-add");
 
     await client.close();
@@ -300,7 +311,12 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — round-trip", () => {
     const rename = await client.execute("rename-window renamed");
 
     expect(rename.output).toEqual([]);
-    await pollUntil(() => unsolicited.length > 0, 3_000);
+    await readUntil(
+      () => unsolicited.length,
+      (n) => n > 0,
+      "no unsolicited-response arrived",
+      3_000,
+    );
     expect(
       unsolicited.map(({ success, output }) => ({ success, output })),
     ).toEqual([{ success: true, output: ["hook-ran"] }]);
@@ -316,16 +332,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
       const { client, errors } = createWsBackedClient(fx.url, {
         "x-auth-token": "wrong",
       });
-      await new Promise<void>((resolve) => {
-        const iv = setInterval(() => {
-          if (client.connectionState.status === "closed") {
-            clearInterval(iv);
-            resolve();
-          }
-        }, 20);
-        setTimeout(resolve, 3_000);
-      });
-      expect(client.connectionState.status).toBe("closed");
+      await waitForState(client, "closed", 3_000);
       // The errors list should carry at least one BRIDGE_AUTH_DENIED
       // OR the connection should have been closed without producing
       // any successful call; both are valid observable outcomes.
@@ -354,9 +361,10 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — policy hooks", () => {
       await new Promise<void>((resolve) => peer.on("open", () => resolve()));
       peer.send(encodeClientFrame({ k: "hello" }));
       expect(await closed).toBe(4401);
-      await pollUntil(
-        () =>
-          fx.observabilityEvents.some((e) => e.kind === "connection-closed"),
+      await readUntil(
+        () => fx.observabilityEvents.map((e) => e.kind),
+        (kinds) => kinds.includes("connection-closed"),
+        "the bridge never observed connection-closed",
         2_000,
       );
       const ended = fx.observabilityEvents.find(
@@ -457,11 +465,12 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
       // server announced its deadline, the socket is still open) is the
       // state under test.
       const shutdownDone = fx.shutdown();
-      const noticeDeadline = Date.now() + 2_000;
-      while (drainingDeadline === null && Date.now() < noticeDeadline) {
-        await new Promise<void>((r) => setTimeout(r, 20));
-      }
-      expect(drainingDeadline).not.toBeNull();
+      await readUntil(
+        () => drainingDeadline,
+        (dl) => dl !== null,
+        "the draining notice never arrived",
+        2_000,
+      );
 
       // At notice delivery the connection was still "ready" (the socket
       // was open, in-flight calls being served) and a new call was
@@ -476,14 +485,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — timeouts + drain", () =>
 
       // Once the server actually closes the socket, the client reaches
       // "closed" and calls reject with the closed reason.
-      const deadline = Date.now() + 2_000;
-      while (
-        client.connectionState.status !== "closed" &&
-        Date.now() < deadline
-      ) {
-        await new Promise<void>((r) => setTimeout(r, 20));
-      }
-      expect(client.connectionState.status).toBe("closed");
+      await waitForState(client, "closed", 2_000);
       expect(drainingDeadline).not.toBeNull();
     } finally {
       // fx.shutdown already called
@@ -569,14 +571,12 @@ describe.skipIf(!RUN_INTEGRATION)(
         // async close event and fire the call while the client still
         // thinks the socket is live, which would just reject through
         // the old connection's finalize with "close 1006".
-        const leftReady = Date.now() + 2_000;
-        while (
-          client.connectionState.status === "ready" &&
-          Date.now() < leftReady
-        ) {
-          await new Promise<void>((r) => setTimeout(r, 5));
-        }
-        expect(client.connectionState.status).not.toBe("ready");
+        await readUntil(
+          () => client.connectionState.status,
+          (status) => status !== "ready",
+          "the client never saw the terminated socket close",
+          2_000,
+        );
 
         // Fire a call while the client is mid-flux. With the fix the
         // call is added to pending; flushOutbox transmits it on the
@@ -784,21 +784,17 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await fx.tmux.execute(`send-keys -t %${pane0} 'echo ws-int20-p0' Enter`);
     await fx.tmux.execute(`send-keys -t %${pane1} 'echo ws-int20-p1' Enter`);
 
-    const deadline = Date.now() + 8_000;
-    const hasP0 = () =>
-      (received.get(pane0) ?? []).some((d) =>
-        Buffer.from(d).toString().includes("ws-int20-p0"),
-      );
-    const hasP1 = () =>
-      (received.get(pane1) ?? []).some((d) =>
-        Buffer.from(d).toString().includes("ws-int20-p1"),
-      );
-    while ((!hasP0() || !hasP1()) && Date.now() < deadline) {
-      await new Promise<void>((r) => setTimeout(r, 30));
-    }
-
-    expect(hasP0()).toBe(true);
-    expect(hasP1()).toBe(true);
+    const textOf = (paneId: number) =>
+      (received.get(paneId) ?? [])
+        .map((d) => Buffer.from(d).toString())
+        .join("");
+    await readUntil(
+      () => ({ p0: textOf(pane0), p1: textOf(pane1) }),
+      (seen) =>
+        seen.p0.includes("ws-int20-p0") && seen.p1.includes("ws-int20-p1"),
+      "serverScope never delivered both panes' markers",
+      8_000,
+    );
 
     dispose();
     await client.close();
@@ -856,18 +852,19 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     // resolves over the WebSocket after attachBytesSink returns, and output
     // that beats it must still reach the scope. A's arrival is also the proof
     // the scope is live, so B's provocation below tests exclusion.
-    const hasA = () =>
-      (received.get(paneA!) ?? []).some((d) =>
-        Buffer.from(d).toString().includes("ws-int21-a"),
-      );
+    const textOf = (paneId: number) =>
+      (received.get(paneId) ?? [])
+        .map((d) => Buffer.from(d).toString())
+        .join("");
     await fx.tmux.execute(
       `send-keys -t %${paneA} "printf 'ws-%s' int21-a" Enter`,
     );
-    const deadline = Date.now() + 8_000;
-    while (!hasA() && Date.now() < deadline) {
-      await new Promise<void>((r) => setTimeout(r, 30));
-    }
-    expect(hasA()).toBe(true);
+    await readUntil(
+      () => textOf(paneA!),
+      (text) => text.includes("ws-int21-a"),
+      "sessionScope never delivered session A's marker",
+      8_000,
+    );
 
     await fx.tmux.execute(
       `send-keys -t %${paneB!} "printf 'ws-%s' int21-b" Enter`,
@@ -876,10 +873,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await new Promise<void>((r) => setTimeout(r, 500));
 
     // Session B's pane should not have delivered bytes to this scope.
-    const hasB = (received.get(paneB!) ?? []).some((d) =>
-      Buffer.from(d).toString().includes("ws-int21-b"),
-    );
-    expect(hasB).toBe(false);
+    expect(textOf(paneB!)).not.toContain("ws-int21-b");
 
     dispose();
     await client.close();
@@ -930,11 +924,13 @@ describe.skipIf(!RUN_INTEGRATION)(
         // Frozen, tmux never reads the command: it is in flight at the bridge
         // and stays so until the kill. The bridge's `call` event and its
         // write to the tmux transport are one macrotask apart from nothing;
-        // pollUntil observes from a later one.
+        // readUntil observes from a later one.
         process.kill(serverPid, "SIGSTOP");
         const pending = client.execute("list-windows").catch((e: unknown) => e);
-        await pollUntil(() =>
-          fx.observabilityEvents.some((e) => e.kind === "call"),
+        await readUntil(
+          () => fx.observabilityEvents.map((e) => e.kind),
+          (kinds) => kinds.includes("call"),
+          "the bridge never observed the call",
         );
 
         process.kill(serverPid, "SIGKILL");
@@ -956,8 +952,10 @@ describe.skipIf(!RUN_INTEGRATION)(
         );
         // The bridge's own close event lands once the close handshake has
         // round-tripped, after the client already observed the close.
-        await pollUntil(() =>
-          fx.observabilityEvents.some((e) => e.kind === "connection-closed"),
+        await readUntil(
+          () => fx.observabilityEvents.map((e) => e.kind),
+          (kinds) => kinds.includes("connection-closed"),
+          "the bridge never observed connection-closed",
         );
         expect(
           fx.observabilityEvents.filter((e) => e.kind === "connection-closed"),
@@ -1142,12 +1140,19 @@ describe.skipIf(!RUN_INTEGRATION)(
           }),
       );
       declarers.forEach((d, i) => d.apply({ kind: "declare", grid: grids[i] }));
-      await pollUntil(() =>
-        grids.every((g, i) => sizeOf(ids[i]) === `${g.cols}x${g.rows}`),
+      await readUntil(
+        () => grids.map((_, i) => sizeOf(ids[i])),
+        (sizes) =>
+          sizes.every((s, i) => s === `${grids[i].cols}x${grids[i].rows}`),
+        "the windows never took their declared sizes",
       );
 
       declarers[1].dispose();
-      await pollUntil(() => sizeOf(ids[1]) !== "60x20");
+      await readUntil(
+        () => sizeOf(ids[1]),
+        (size) => size !== "60x20",
+        "the disposed terminal's window kept its declared size",
+      );
       expect(sizeOf(ids[0])).toBe("100x30");
       expect(sizeOf(ids[2])).toBe("80x24");
       expect(errors).toEqual([]);

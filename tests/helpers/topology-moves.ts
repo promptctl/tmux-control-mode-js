@@ -12,7 +12,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { killTmuxServer } from "./reap-test-sockets.js";
-import { uniqueSocket, uniqueName, pollUntil, tmux } from "./integration.js";
+import { uniqueSocket, uniqueName, readUntil, tmux } from "./integration.js";
 import type { TmuxConnection } from "../../src/client.js";
 import {
   sessionScope,
@@ -158,7 +158,11 @@ export function describeTopologyMoves(
         await sendOutputToPane(conn, movedPane);
 
         const marker = `scope-test-${movedPane}`;
-        await pollUntil(() => textOf(inTo, movedPane).includes(marker));
+        await readUntil(
+          () => textOf(inTo, movedPane),
+          (text) => text.includes(marker),
+          `${marker} never reached the destination window's sink`,
+        );
         expect(textOf(inFrom, movedPane)).not.toContain(marker);
         disposeFrom();
         disposeTo();
@@ -188,7 +192,11 @@ export function describeTopologyMoves(
         await sendOutputToPane(conn, movedPane);
 
         const marker = `scope-test-${movedPane}`;
-        await pollUntil(() => textOf(inSession, movedPane).includes(marker));
+        await readUntil(
+          () => textOf(inSession, movedPane),
+          (text) => text.includes(marker),
+          `${marker} never reached the session's sink`,
+        );
         expect(textOf(inFrom, movedPane)).not.toContain(marker);
         disposeFrom();
         disposeSession();
@@ -240,8 +248,10 @@ export function describeTopologyMoves(
         ]);
         await stall;
 
-        await pollUntil(() =>
-          textOf(inAttached, moved.paneId).includes(marker),
+        await readUntil(
+          () => textOf(inAttached, moved.paneId),
+          (text) => text.includes(marker),
+          `${marker} never reached the attached session's sink`,
         );
         expect(textOf(inOld, moved.paneId)).not.toContain(marker);
         disposeAttached();
@@ -288,10 +298,14 @@ export function describeTopologyMoves(
         await sendOutputToPane(conn, paneId);
 
         const marker = `scope-test-${paneId}`;
-        await pollUntil(
-          () =>
-            textOf(inWindow, paneId).includes(marker) &&
-            textOf(inAttached, paneId).includes(marker),
+        await readUntil(
+          () => ({
+            window: textOf(inWindow, paneId),
+            attached: textOf(inAttached, paneId),
+          }),
+          (seen) =>
+            seen.window.includes(marker) && seen.attached.includes(marker),
+          `${marker} never reached both the window and the session sinks`,
         );
         disposeWindow();
         disposeAttached();

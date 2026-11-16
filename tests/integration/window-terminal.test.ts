@@ -13,7 +13,7 @@ import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
-  pollUntil,
+  readUntil,
   tmux,
   uniqueName,
   uniqueSocket,
@@ -91,11 +91,15 @@ async function untilLive(
   engine: WindowEngine,
   pred: (v: WindowView) => boolean = () => true,
 ): Promise<WindowView> {
-  await pollUntil(() => {
-    const v = liveView(engine.state);
-    return v !== null && pred(v);
-  });
-  return liveView(engine.state) as WindowView;
+  const state = await readUntil(
+    () => engine.state,
+    (st) => {
+      const v = liveView(st);
+      return v !== null && pred(v);
+    },
+    "the window never went live in the expected shape",
+  );
+  return liveView(state) as WindowView;
 }
 
 function q(socket: string, args: readonly string[]): string {
@@ -184,7 +188,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "cat",
     ]) as PaneId;
     await untilLive(engine, (v) => v.panes.some((p) => p.id === added));
-    await pollUntil(() => (s.sinks.get(added)?.seedCalls.length ?? 0) === 1);
+    await readUntil(
+      () => s.sinks.get(added)?.seedCalls.length ?? 0,
+      (seeds) => seeds === 1,
+      "the split's new pane was not seeded once",
+    );
 
     q(socket, ["resize-pane", "-Z", "-t", added]);
     const zoomed = await untilLive(engine, (v) => v.zoomed === added);
@@ -222,7 +230,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     );
 
     q(socket, ["resize-pane", "-t", added, "-x", "30"]);
-    await pollUntil(() => s.sinks.get(added)?.resizeCalls.at(-1)?.cols === 30);
+    await readUntil(
+      () => s.sinks.get(added)?.resizeCalls.at(-1),
+      (last) => last?.cols === 30,
+      "the pane's surface never resized to 30 columns",
+    );
   });
 
   it("the pane-meta format reads a control byte in a command as ?, on the running tmux", async () => {
@@ -259,10 +271,10 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "#{pane_id}",
       "true",
     ]);
-    await pollUntil(
-      () =>
-        q(socket, ["display-message", "-p", "-t", dead, "#{pane_dead}"]) ===
-        "1",
+    await readUntil(
+      () => q(socket, ["display-message", "-p", "-t", dead, "#{pane_dead}"]),
+      (paneDead) => paneDead === "1",
+      "the split's pane never died",
       3000,
     );
     q(socket, ["set-option", "-p", "-t", dead, "@hostile", "x"]);
@@ -298,7 +310,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     s.keys.get(first as PaneId)?.("WT_KEYS_MARK");
     const captured = (pane: string) =>
       q(socket, ["capture-pane", "-p", "-t", pane]);
-    await pollUntil(() => captured(first).includes("WT_KEYS_MARK"));
+    await readUntil(
+      () => captured(first),
+      (text) => text.includes("WT_KEYS_MARK"),
+      "the keys never reached the first pane",
+    );
     expect(captured(active)).not.toContain("WT_KEYS_MARK");
     expect(
       q(socket, ["display-message", "-p", "-t", window, "#{pane_id}"]),
@@ -311,7 +327,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     engine = engineOver(c, window, recorder());
     await untilLive(engine);
     q(socket, ["kill-window", "-t", window]);
-    await pollUntil(() => engine?.state.phase === "gone");
+    await readUntil(
+      () => engine?.state,
+      (st) => st?.phase === "gone",
+      "the engine never went gone",
+    );
     expect(engine.state).toEqual({ phase: "gone", reason: "window-closed" });
   });
 
@@ -328,7 +348,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "cat",
     ]) as WindowId;
     engine = engineOver(c, elsewhere, recorder());
-    await pollUntil(() => engine?.state.phase === "gone");
+    await readUntil(
+      () => engine?.state,
+      (st) => st?.phase === "gone",
+      "the engine never went gone",
+    );
     expect(engine.state).toEqual({
       phase: "gone",
       reason: "window-unreachable",
@@ -373,7 +397,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     const { c, a, b, size, visit } = await twoWindows();
     expect(size(b)).toBe("120x40");
     await c.setWindowSize(Number(a.slice(1)), 100, 30);
-    await pollUntil(() => size(a) === "100x30");
+    await readUntil(
+      () => size(a),
+      (sz) => sz === "100x30",
+      "window A never took its declared size",
+    );
     await visit(b);
     expect(size(b)).toBe("80x24");
     await c.clearWindowSize(Number(a.slice(1)));
@@ -388,7 +416,11 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       onError: (e) => errors.push(e),
     });
     declarer.apply({ kind: "declare", grid: { cols: 110, rows: 35 } });
-    await pollUntil(() => size(a) === "110x35");
+    await readUntil(
+      () => size(a),
+      (sz) => sz === "110x35",
+      "window A never took its declared size",
+    );
     await visit(b);
     expect(size(b)).toBe("110x35");
     await visit(a);
@@ -471,20 +503,28 @@ describe.skipIf(!RUN_INTEGRATION)(
       const engine = engineOver(browser, window, s);
       teardown.push(() => engine.dispose());
       await untilLive(engine, (v) => v.panes.length === 2);
-      await pollUntil(() =>
-        [...s.sinks.values()].every((sink) => sink.seedCalls.length === 1),
+      await readUntil(
+        () => [...s.sinks.values()].map((sink) => sink.seedCalls.length),
+        (seeds) => seeds.every((n) => n === 1),
+        "every pane was not seeded once",
       );
       const before = await untilLive(engine, (v) =>
         v.panes.every((p) => !p.resyncing),
       );
 
       (lastWs as unknown as WsClient).terminate();
-      await pollUntil(() => engine.state.phase === "stale");
+      await readUntil(
+        () => engine.state.phase,
+        (phase) => phase === "stale",
+        "the engine never went stale",
+      );
       expect(engine.state).toMatchObject({ phase: "stale", window: before });
 
       await untilLive(engine);
-      await pollUntil(() =>
-        [...s.sinks.values()].every((sink) => sink.seedCalls.length === 2),
+      await readUntil(
+        () => [...s.sinks.values()].map((sink) => sink.seedCalls.length),
+        (seeds) => seeds.every((n) => n === 2),
+        "every pane was not reseeded once",
       );
       await new Promise((r) => setTimeout(r, 300));
       expect(

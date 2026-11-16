@@ -18,7 +18,7 @@ import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
   uniqueName,
-  pollUntil,
+  readUntil,
   attachSession,
   attachClient,
   recordingTransport,
@@ -43,6 +43,23 @@ import {
 } from "../../src/pane-output.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
+
+// Resolve once every pane in `paneIds` has delivered a chunk to `arrived`; a
+// timeout quotes the panes still silent.
+function waitForArrivals(
+  arrived: { paneId: number }[],
+  paneIds: number[],
+): Promise<number[]> {
+  return readUntil(
+    () => paneIds.filter((id) => !arrived.some((e) => e.paneId === id)),
+    (silent) => silent.length === 0,
+    "no output arrived from panes",
+  );
+}
+
+// Every chunk in `arrived`, whichever pane sent it, decoded as one string.
+const allText = (arrived: ArrivedChunk[]) =>
+  arrived.map((e) => Buffer.from(e.data).toString()).join("");
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -77,7 +94,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(panesInit.length).toBeGreaterThan(0);
     const paneA = panesInit[0].paneId;
     await sendOutputToPane(client, paneA);
-    await pollUntil(() => arrived.some((e) => e.paneId === paneA));
+    await waitForArrivals(arrived, [paneA]);
 
     // Create a second window and produce output in its pane. Server scope
     // must deliver bytes from BOTH windows — it is not scoped to a session,
@@ -90,7 +107,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(newPanes.length).toBeGreaterThan(0);
     const paneB = newPanes[0].paneId;
     await sendOutputToPane(client, paneB);
-    await pollUntil(() => arrived.some((e) => e.paneId === paneB));
+    await waitForArrivals(arrived, [paneB]);
 
     dispose();
   }, 15000);
@@ -122,7 +139,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Output from %X must arrive.
     await sendOutputToPane(client, paneX);
-    await pollUntil(() => arrived.some((e) => e.paneId === paneX));
+    await waitForArrivals(arrived, [paneX]);
 
     // Output from %Y must not arrive (wait briefly and assert empty for Y).
     await sendOutputToPane(client, paneY);
@@ -164,8 +181,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesAfter) {
       await sendOutputToPane(client, p.paneId);
     }
-    await pollUntil(() =>
-      panesAfter.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+    await waitForArrivals(
+      arrived,
+      panesAfter.map((p) => p.paneId),
     );
 
     // Verify no extraneous pane IDs arrive (only IDs in this session).
@@ -196,11 +214,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       "printf 'early-%s' scope",
       "Enter",
     ]);
-    const has = () =>
-      arrived.some((e) =>
-        Buffer.from(e.data).toString().includes("early-scope"),
-      );
-    await pollUntil(has);
+    await readUntil(
+      () => allText(arrived),
+      (text) => text.includes("early-scope"),
+      "early-scope never reached the session sink",
+    );
 
     dispose();
   }, 15000);
@@ -279,8 +297,10 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
   // Wait until the router has asked about `paneId` and had the answer.
   async function locatedAfter(sent: string[], paneId: string) {
-    await pollUntil(() =>
-      sent.some((c) => c.startsWith(`list-panes -t ${paneId} `)),
+    await readUntil(
+      () => sent.filter((c) => c.startsWith("list-panes ")),
+      (asked) => asked.some((c) => c.startsWith(`list-panes -t ${paneId} `)),
+      `the router never asked about ${paneId}`,
     );
     await client!.execute("display-message -p ok");
   }
@@ -296,8 +316,10 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // The surviving pane still routes to its session: its echo, typed after
     // the kill, is not output it printed before.
     await sendOutputToPane(client!, s.pane.paneId);
-    await pollUntil(() =>
-      textOf(s.arrived, s.pane.paneId).includes(`scope-test-${s.pane.paneId}`),
+    await readUntil(
+      () => textOf(s.arrived, s.pane.paneId),
+      (text) => text.includes(`scope-test-${s.pane.paneId}`),
+      `%${s.pane.paneId}'s echo never reached the session sink`,
     );
     expect(s.errors).toEqual([]);
   }, 15000);
@@ -342,10 +364,10 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
       `%${pane!.paneId}`,
       "printf 'first-%s' split; sleep 30",
     ]);
-    await pollUntil(() =>
-      arrived.some((e) =>
-        Buffer.from(e.data).toString().includes("first-split"),
-      ),
+    await readUntil(
+      () => allText(arrived),
+      (text) => text.includes("first-split"),
+      "the split pane's first-split never reached the session sink",
     );
     // Whichever query placed the new pane, its answer was one the router read.
     await listAllPanes(client);
@@ -385,7 +407,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     // Output in the new pane must arrive via the existing sessionScope subscription.
     await sendOutputToPane(client, newPane);
-    await pollUntil(() => arrived.some((e) => e.paneId === newPane));
+    await waitForArrivals(arrived, [newPane]);
 
     dispose();
   }, 15000);
@@ -425,8 +447,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesInN) {
       await sendOutputToPane(client, p.paneId);
     }
-    await pollUntil(() =>
-      panesInN.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+    await waitForArrivals(
+      arrived,
+      panesInN.map((p) => p.paneId),
     );
 
     // Pane(s) in @M must NOT arrive.
@@ -475,7 +498,11 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     await sendOutputToPane(client, paneX);
     // Wait until at least one chunk arrived via each path.
-    await pollUntil(() => serverCount > 0 && paneCount > 0);
+    await readUntil(
+      () => ({ serverCount, paneCount }),
+      (counts) => counts.serverCount > 0 && counts.paneCount > 0,
+      "a chunk never reached both sinks",
+    );
 
     // Both sinks fired; neither double-fired relative to the other.
     // (Counts equal because each chunk routes through each matching scope exactly once.)
@@ -525,8 +552,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of allPanes) {
       await sendOutputToPane(c, p.paneId);
     }
-    await pollUntil(() =>
-      allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+    await waitForArrivals(
+      arrived,
+      allPanes.map((p) => p.paneId),
     );
 
     dispose();
@@ -583,7 +611,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     // Output from A's pane must arrive.
     const paneA = panesA[0].paneId;
     await sendOutputToPane(client, paneA);
-    await pollUntil(() => arrived.some((e) => e.paneId === paneA));
+    await waitForArrivals(arrived, [paneA]);
 
     // Output from B's pane — sent via the same control-mode client which has
     // server-wide command authority — must NOT arrive to A's sessionScope sink.
@@ -629,8 +657,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of allPanes) {
       await sendOutputToPane(client, p.paneId);
     }
-    await pollUntil(() =>
-      allPanes.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+    await waitForArrivals(
+      arrived,
+      allPanes.map((p) => p.paneId),
     );
     arrived.length = 0; // reset
 
@@ -647,8 +676,9 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     for (const p of panesInKept) {
       await sendOutputToPane(client, p.paneId);
     }
-    await pollUntil(() =>
-      panesInKept.every((p) => arrived.some((e) => e.paneId === p.paneId)),
+    await waitForArrivals(
+      arrived,
+      panesInKept.map((p) => p.paneId),
     );
 
     dispose();

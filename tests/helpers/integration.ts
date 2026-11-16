@@ -298,9 +298,13 @@ export async function waitForPaneText(
  * Call `read` until `done` holds for what it returns, and resolve with that;
  * reject as `what`, quoting the last value read, if none does within `ms`. A
  * rejection from `read` propagates.
+ *
+ * [LAW:one-source-of-truth] The one poll loop. A wait on state the test
+ * already holds reads that state (`() => stream.state`), so a timeout quotes
+ * what was observed, not just that a condition was false.
  */
 export async function readUntil<T>(
-  read: () => Promise<T>,
+  read: () => T | Promise<T>,
   done: (value: T) => boolean,
   what: string,
   ms = 8000,
@@ -316,20 +320,4 @@ export async function readUntil<T>(
     }
     await new Promise<void>((r) => setTimeout(r, 10));
   }
-}
-
-/**
- * Poll `pred` until it holds; reject if it has not within `ms`. A throw from
- * `pred` rejects.
- *
- * [LAW:one-source-of-truth] readUntil is the one poll loop; this is its form
- * for a predicate over state the test already holds.
- */
-export async function pollUntil(pred: () => boolean, ms = 8000): Promise<void> {
-  await readUntil(
-    async () => pred(),
-    (held) => held,
-    "pollUntil: condition not met",
-    ms,
-  );
 }

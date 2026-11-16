@@ -14,7 +14,7 @@ import {
   uniqueSocket,
   waitForEvent,
   waitReady,
-  pollUntil,
+  readUntil,
   tmux,
 } from "../helpers/integration.js";
 import { TmuxClient } from "../../src/client.js";
@@ -75,7 +75,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(reason).toMatch(/attach-session/);
       await expect(command).rejects.toBeInstanceOf(TransportClosedError);
       await expect(command).rejects.toMatchObject({ reason });
-      await pollUntil(() => client.connectionState.status === "closed");
+      await readUntil(
+        () => client.connectionState.status,
+        (status) => status === "closed",
+        "client never closed",
+      );
       expect(states).toEqual(["closed"]);
     });
 
@@ -96,7 +100,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       ).rejects.toBeInstanceOf(TmuxCommandError);
       // run-shell's output arrives as a line outside any guard block.
       await client.execute('run-shell "echo unguarded-marker"');
-      await pollUntil(() => wire.includes("\nunguarded-marker\n"));
+      await readUntil(
+        () => wire,
+        (seen) => seen.includes("\nunguarded-marker\n"),
+        "run-shell's unguarded-marker line never reached the wire",
+      );
 
       client.detach();
       const unanswered = client.execute("list-sessions");
