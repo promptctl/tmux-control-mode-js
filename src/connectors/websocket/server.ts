@@ -246,12 +246,18 @@ export interface WebSocketBridge {
 // Implementation
 // ---------------------------------------------------------------------------
 
+/** Every option but `authenticate`, which the bridge takes on its own: the
+ *  caller's object, as passed, so a hook keeps its `this`. */
+type ConnectionOptions<Identity> = Omit<
+  WebSocketBridgeOptions<Identity>,
+  "authenticate"
+>;
+
 /** A bridge without `authenticate`: every connection is accepted, with no
  *  identity. */
-type UnauthenticatedBridgeOptions = Omit<
-  WebSocketBridgeOptions<undefined>,
-  "authenticate"
-> & { readonly authenticate?: undefined };
+type UnauthenticatedBridgeOptions = ConnectionOptions<undefined> & {
+  readonly authenticate?: undefined;
+};
 
 // [LAW:types-are-the-program] Two call shapes, one overload each: with
 // `authenticate`, the identity it attaches is the one every other hook
@@ -280,8 +286,8 @@ export function createWebSocketBridge<Identity>(
   opts: WebSocketBridgeOptions<Identity> | UnauthenticatedBridgeOptions,
 ): WebSocketBridge {
   return opts.authenticate === undefined
-    ? startBridge({ ...opts, authenticate: acceptWithoutIdentity })
-    : startBridge(opts);
+    ? startBridge(opts, acceptWithoutIdentity)
+    : startBridge(opts, opts.authenticate);
 }
 
 const acceptWithoutIdentity: Authenticate<undefined> = () => ({
@@ -290,7 +296,8 @@ const acceptWithoutIdentity: Authenticate<undefined> = () => ({
 });
 
 function startBridge<Identity>(
-  opts: WebSocketBridgeOptions<Identity>,
+  opts: ConnectionOptions<Identity>,
+  authenticate: Authenticate<Identity>,
 ): WebSocketBridge {
   const defaults = resolveDefaults(opts);
   const connections = new Set<Connection<Identity>>();
@@ -308,7 +315,14 @@ function startBridge<Identity>(
     // [LAW:single-enforcer] Every socket is a Connection, a refused one too:
     // its close handshake is then under the heartbeat's deadline and in the
     // set the drain terminates, like every other close the bridge opens.
-    const conn = new Connection(ws, request, opts, defaults, drainDeadlineMs);
+    const conn = new Connection(
+      ws,
+      request,
+      opts,
+      authenticate,
+      defaults,
+      drainDeadlineMs,
+    );
     connections.add(conn);
     try {
       await conn.run();
@@ -431,7 +445,7 @@ interface ResolvedDefaults {
 // the shapes Heartbeat, CallPump, Handshake and RateLimiter take, so no caller
 // re-packs them and none checks again.
 function resolveDefaults<Identity>(
-  opts: WebSocketBridgeOptions<Identity>,
+  opts: ConnectionOptions<Identity>,
 ): ResolvedDefaults {
   return {
     heartbeat: {
@@ -462,7 +476,9 @@ class Connection<Identity> {
   // the variant that needs them, not as parallel nullable fields.
   private state: ConnectionState<Identity> = { kind: "pending-hello" };
   // The identity this connection's events report: none until authenticate()
-  // accepts. Written once, from the value the hooks receive in `ctx`.
+  // accepts, then `ctx.identity`. A field rather than a read of `state`,
+  // because events fire while handshaking and after a close whose `final` is
+  // null, and neither state carries a `ctx`.
   private identity: Identity | undefined = undefined;
   // Set by sendFatalAndClose; read by the "close" listener once the real
   // close event lands, so finalize's one connection-closed emission can
@@ -493,7 +509,8 @@ class Connection<Identity> {
   constructor(
     private readonly ws: ServerWebSocketLike,
     private readonly request: UpgradeRequest | undefined,
-    private readonly opts: WebSocketBridgeOptions<Identity>,
+    private readonly opts: ConnectionOptions<Identity>,
+    authenticate: Authenticate<Identity>,
     private readonly defaults: ResolvedDefaults,
     // The bridge's drain deadline, read at the welcome. [LAW:one-source-of-truth]
     private readonly drainDeadlineMs: () => number | undefined,
@@ -547,7 +564,7 @@ class Connection<Identity> {
     this.handshake = new Handshake(
       defaults.helloTimeoutMs,
       request,
-      opts.authenticate,
+      authenticate,
     );
   }
 
@@ -768,11 +785,11 @@ class Connection<Identity> {
       );
       return;
     }
-    this.identity = authResult.identity;
     const ctx: ConnectionContext<Identity> = {
       identity: authResult.identity,
       request: this.request,
     };
+    this.identity = ctx.identity;
 
     // [LAW:single-enforcer] [LAW:carrying-cost] onHello acquires a strict
     // prefix of { client, bridge, peer+listeners } and must leave nothing
@@ -1545,7 +1562,7 @@ function sendFatal(
 // [LAW:single-enforcer] The one place an onEvent hook is called, for the
 // bridge's own events and every connection's.
 function emitObservability<Identity>(
-  opts: WebSocketBridgeOptions<Identity>,
+  opts: ConnectionOptions<Identity>,
   ev: BridgeObservabilityEvent<Identity>,
 ): void {
   if (opts.onEvent === undefined) return;
