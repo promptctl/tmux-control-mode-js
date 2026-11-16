@@ -2931,6 +2931,28 @@ describe("WebSocket bridge — connection identity", () => {
     expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(true);
   });
 
+  it("an authenticate written as a class method is called on its own object", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    class Hooks {
+      readonly user = "ada";
+      readonly seen: string[] = [];
+      authenticate(): AuthResult<User> {
+        return { ok: true, identity: { user: this.user } };
+      }
+      createClient(ctx: { readonly identity: User }): TmuxClient {
+        this.seen.push(ctx.identity.user);
+        return client;
+      }
+    }
+    const hooks = new Hooks();
+    connectRunning(createWebSocketBridge(hooks));
+    await flush();
+
+    expect(hooks.seen).toEqual(["ada"]);
+  });
+
   it("a named identity type reaches a hook listed before authenticate", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);

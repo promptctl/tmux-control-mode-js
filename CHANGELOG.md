@@ -23,8 +23,11 @@ All notable changes to this project are documented here. Format follows
   `createWebSocketBridge<User>(…)`. An accept names its identity
   (`{ ok: true, identity: undefined }` for none). Either leave `authenticate`
   out or pass a hook: `authenticate: cond ? hook : undefined` no longer
-  compiles. `WebSocketBridgeOptions<Identity>` requires `authenticate`, and an
-  options object typed for one identity is not assignable to another's.
+  compiles. `WebSocketBridgeOptions<Identity>` requires `authenticate`: an
+  options object typed `WebSocketBridgeOptions` with none becomes
+  `WebSocketBridgeOptions<undefined>` with
+  `authenticate: () => ({ ok: true, identity: undefined })`. An options object
+  typed for one identity is not assignable to another's.
   `ConnectionIdentity` is gone; `Authenticate<Identity>` is the hook's type.
 - The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
   gone: call the connection's methods of the same names (`ClientSizeSurface`).

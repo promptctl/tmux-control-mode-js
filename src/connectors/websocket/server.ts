@@ -130,8 +130,9 @@ export interface ConnectionContext<Identity = unknown> {
 /** `Identity` is the shape `authenticate()` attaches to a connection. */
 export interface WebSocketBridgeOptions<Identity = unknown> {
   /** Pre-handshake auth: whether a connection may proceed, and as whom.
-   *  `createWebSocketBridge` called without it accepts every connection,
-   *  with no identity. */
+   *  An options object written inline in the `createWebSocketBridge` call
+   *  may leave it out; the bridge then accepts every connection, with no
+   *  identity. */
   readonly authenticate: Authenticate<Identity>;
 
   /**
@@ -269,11 +270,11 @@ type UnauthenticatedBridgeOptions = ConnectionOptions<undefined> & {
 // unauthenticated overload would type the hook's `ok: true` as `boolean`, and
 // the generic overload would then refuse the hook.
 /**
- * `Identity` is inferred from `authenticate`. When `authenticate` is written
- * inline, it has to come before the hooks that read the identity
- * (`createClient`, `disposeClient`, `authorize`, `onEvent`): TypeScript infers
- * from an object literal's function properties in order, so a hook listed
- * earlier sees `unknown`. Otherwise, name the type:
+ * `Identity` is inferred from `authenticate`. An inline `authenticate` whose
+ * `req` has no type annotation has to come before the hooks that read the
+ * identity (`createClient`, `disposeClient`, `authorize`, `onEvent`):
+ * TypeScript infers from such function properties in order, so a hook listed
+ * earlier sees `unknown`. Otherwise, annotate `req` or name the type:
  * `createWebSocketBridge<User>({ … })`.
  */
 export function createWebSocketBridge<Identity>(
@@ -287,7 +288,7 @@ export function createWebSocketBridge<Identity>(
 ): WebSocketBridge {
   return opts.authenticate === undefined
     ? startBridge(opts, acceptWithoutIdentity)
-    : startBridge(opts, opts.authenticate);
+    : startBridge(opts, opts.authenticate.bind(opts));
 }
 
 const acceptWithoutIdentity: Authenticate<undefined> = () => ({
