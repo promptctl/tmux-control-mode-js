@@ -167,10 +167,11 @@ type Unsubscribe = () => void;
  * a fresh one owed?" as a single value.
  *
  * - `idle` — no capture-pane RPC outstanding.
- * - `capturing` — a capture is in flight. `stale` records whether reconnect or
- *   a detached-mode byte has invalidated the snapshot it is fetching; when set,
- *   `seed()` drops the result on resolution (and re-issues if anyone is still
- *   attached).
+ * - `capturing` — a capture is in flight. `stale` records whether the pane
+ *   changed outside its byte stream (reconnect, `%continue`, a new size) since
+ *   the capture was issued; when set, `seed()` drops the result on resolution
+ *   (and re-issues if anyone is still attached). Bytes never make a capture
+ *   stale: every byte behind it is buffered as its `trailing`.
  *
  * [LAW:types-are-the-program] Formerly two fields — a `Promise|null` read as a
  *   boolean and a free-floating `stale` boolean — whose fourth combination
@@ -178,12 +179,6 @@ type Unsubscribe = () => void;
  *   invalidate). Folding `stale` INTO the `capturing` variant makes that state
  *   unrepresentable: staleness exists exactly where the domain permits it, on an
  *   in-flight capture and nowhere else. [LAW:one-source-of-truth]
- *
- * `stale` is a mutable field (not a third `capturing-stale` tag) on purpose:
- *   the detached-byte path marks staleness per byte and is a [HOT-PATH] that
- *   must not allocate — an in-place `stale = true` write is allocation-free,
- *   whereas swapping to a new variant object per byte is not. `markSeedStale`
- *   is the single owner of that write.
  *
  * `run` is the cycle's own promise, carried so the single-flight guard
  * (`phase !== "idle"`) and the resolution `.finally` share one identity token:
@@ -200,7 +195,7 @@ type SeedCycle =
   | {
       readonly phase: "capturing";
       readonly run: Promise<void>;
-      stale: boolean;
+      readonly stale: boolean;
     };
 
 // ---------------------------------------------------------------------------
@@ -217,14 +212,17 @@ export class PaneStream implements ReseedTarget {
 
   private currentState: PaneStreamState = "idle";
   private sink: TerminalSink | null = null;
-  // Buffer for live bytes that arrive during seeding. Handed to the sink as the
-  // seed's `trailing` argument when the capture resolves, so the snapshot and
-  // the bytes captured behind it cross the seam as one ordered value.
+  // Every byte that arrived behind the in-flight capture, attached or not.
+  // Handed to the sink as the seed's `trailing` argument when the capture
+  // resolves, so the snapshot and the bytes behind it cross the seam as one
+  // ordered value. [LAW:single-enforcer] Reset only where a capture is issued
+  // (`startSeedCycle`): the bytes before that point are inside the capture.
   private buffer: Uint8Array[] = [];
-  // Last successful seed payload — kept so subsequent re-attaches can hand
-  // the new sink the same starting picture WITHOUT a fresh capture-pane
-  // round-trip (re-mount churn on one stream → exactly one capture). Set inside
-  // seed(); cleared by reconnect (the underlying pane state has moved).
+  // The pane's picture as of a capture nothing has followed — kept so a
+  // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
+  // round-trip (re-mount churn on an idle pane → exactly one capture). Set
+  // inside seed(); cleared by every byte and by anything else that moves the
+  // pane (reconnect, `%pause`, a recapture).
   private lastSeed: Seed | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a time,
   // plus its staleness, as a single value (see {@link SeedCycle}). attach() and
@@ -370,7 +368,6 @@ export class PaneStream implements ReseedTarget {
       this.paused = true;
       this.lastSeed = null;
       if (this.sink === null) return;
-      this.buffer = [];
       this.setState("seeding");
     };
     this.onContinue = (ev) => {
@@ -454,8 +451,9 @@ export class PaneStream implements ReseedTarget {
    *   the cached seed to the new sink synchronously, no tmux round-trip.
    *   State path: `detached → live`. This is the re-attach contract: mount churn
    *   (visibility flicker, React strict-mode, tab restore) must not multiply
-   *   tmux load. The cached seed is invalidated on `reconnected`, where the
-   *   `ReseedScheduler` re-issues capture-pane in priority order.
+   *   tmux load on an idle pane. Any byte invalidates the cache (the pane has
+   *   moved past it), as do reconnect, `%pause` and a recapture.
+   * - **Capture in flight** — waits for it; its resolution seeds this sink.
    */
   attach(sink: TerminalSink): void {
     if (this.currentState === "disposed") return;
@@ -469,23 +467,24 @@ export class PaneStream implements ReseedTarget {
     // looking", not "since the universe began."
     this.currentBytesSinceAttach = 0;
 
-    if (this.lastSeed !== null) {
-      // Re-attach fast path. Synchronous: hand the new sink the cached
-      // payload and flip straight to live. No capture-pane is issued, and no
-      // live bytes are pending (detach() drained the buffer), so `trailing` is
-      // empty — the cached snapshot is the whole picture.
-      sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
-      this.setState("live");
-      return;
-    }
-
     if (this.seedCycle.phase !== "idle") {
       // A capture-pane is already in flight from a previous attach (e.g.
       // React StrictMode's mount→cleanup→remount happens before the first
       // RPC resolves). Don't issue a second capture — when the in-flight
       // one resolves, it will read `this.sink` and seed it. The exactly-one-
       // capture guarantee under StrictMode depends on this short-circuit.
+      // Checked before the cache: the capture is newer than any cached seed.
       this.setState("seeding");
+      return;
+    }
+
+    if (this.lastSeed !== null) {
+      // Re-attach fast path. Synchronous: hand the new sink the cached
+      // payload and flip straight to live. No capture-pane is issued, and no
+      // byte has arrived since the capture (any byte clears the cache), so
+      // `trailing` is empty — the cached snapshot is the whole picture.
+      sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
+      this.setState("live");
       return;
     }
 
@@ -501,8 +500,9 @@ export class PaneStream implements ReseedTarget {
   detach(): void {
     if (this.currentState === "disposed") return;
     if (this.sink === null && this.currentState === "detached") return;
+    // The buffer is kept: bytes behind an in-flight capture belong to it
+    // whether or not anyone is attached when it resolves.
     this.sink = null;
-    this.buffer = [];
     this.setState("detached");
   }
 
@@ -639,25 +639,19 @@ export class PaneStream implements ReseedTarget {
     // single property write, allocation-free, so the [HOT-PATH] rule holds.
     this.lastSeed = null;
 
-    // State-driven dispatch:
-    //   live:     forward to sink (sink.write must be allocation-free per O3).
-    //   seeding:  push into the seed buffer (Array.push doesn't allocate
-    //             unless the backing store grows; bounded by seed time).
-    //   idle:     only the activity counter is updated above.
-    //   detached: mark any in-flight capture stale (below).
-    if (this.currentState === "live") {
+    // A byte behind an in-flight capture is that capture's `trailing`,
+    // attached or not (Array.push doesn't allocate unless the backing store
+    // grows; bounded by capture time). Otherwise a live sink renders it
+    // (sink.write must be allocation-free per O3). Any other byte — idle,
+    // detached, or paused — is already covered by the next capture, and the
+    // cache clear above forces that capture.
+    if (this.seedCycle.phase === "capturing") {
+      this.buffer.push(data);
+    } else if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       this.sink!.write(data);
-    } else if (this.currentState === "seeding") {
-      this.buffer.push(data);
-    } else if (this.currentState === "detached") {
-      // If a capture-pane is in flight, its snapshot is now older than the
-      // bytes that just arrived — the result must not become the cache.
-      // Allocation-free (in-place `stale` write, or a no-op when idle), so the
-      // [HOT-PATH] rule holds.
-      this.markSeedStale();
     }
 
     // Schedule the activity-changed flush at most once per window.
@@ -702,12 +696,16 @@ export class PaneStream implements ReseedTarget {
    * Lifting the assignment out of the async body fixes the race.
    *
    * Entering `capturing` here (not stale) is also what resets staleness for the
-   * new cycle — there is no separate flag to clear.
+   * new cycle — there is no separate flag to clear. Likewise the buffer: bytes
+   * before this point are inside the new capture (seed() issues the RPC
+   * synchronously before its first await), so draining them after it would
+   * duplicate output; bytes from here on are its `trailing`.
    *
    * [LAW:single-enforcer] Every `this.seedCycle` write for start/resolution
    *   lives here; the only other writer is `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
+    this.buffer = [];
     const p = this.seed();
     this.seedCycle = { phase: "capturing", run: p, stale: false };
     void p.finally(() => {
@@ -722,21 +720,20 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Mark an in-flight capture stale (reconnect, or a byte during detached
-   * mode). [LAW:no-mode-explosion] Staleness is only meaningful mid-capture:
-   * a no-op when `idle`. An in-place field write, so the detached-byte
-   * [HOT-PATH] stays allocation-free.
+   * Mark an in-flight capture stale (reconnect, `%continue`, a new size).
+   * [LAW:no-mode-explosion] Staleness is only meaningful mid-capture: a no-op
+   * when `idle`.
    */
   private markSeedStale(): void {
     if (this.seedCycle.phase === "capturing") {
-      this.seedCycle.stale = true;
+      this.seedCycle = { ...this.seedCycle, stale: true };
     }
   }
 
   private async seed(): Promise<void> {
     // This cycle starts non-stale: `startSeedCycle` enters `capturing` (with
-    // `stale: false`) around this call. If reconnect or a detached-mode byte
-    // arrives between here and the resolution below, `markSeedStale` sets the
+    // `stale: false`) around this call. If the pane changes outside its byte
+    // stream between here and the resolution below, `markSeedStale` sets the
     // in-flight cycle's `stale` and we drop the result.
 
     // Capture flags: -p stdout, -e SGR escapes, -q quiet (no error if the pane
@@ -759,25 +756,22 @@ export class PaneStream implements ReseedTarget {
     // input modes unless we restore them explicitly.
     const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag};#{pane_height};#{history_size}'`;
 
-    let captureOutput: readonly string[] = [];
-    let stateLine = "";
-    let captureSucceeded = false;
+    let reply: { capture: readonly string[]; state: string } | null = null;
     try {
       const [captureResp, stateResp] = await Promise.all([
         this.client.execute(captureCmd),
         this.client.execute(stateCmd),
       ]);
-      captureOutput = captureResp.output;
-      stateLine = stateResp.output[0] ?? "";
-      captureSucceeded = true;
+      reply = { capture: captureResp.output, state: stateResp.output[0] ?? "" };
     } catch (err) {
-      // Capture failed. Fall through to live mode with an empty seed; better
-      // to render live output than to wedge in 'seeding' forever. Activity
-      // events keep flowing. We deliberately do NOT cache this empty payload
-      // below — a transient failure must not become "sticky" and prevent the
-      // next attach / reseed from retrying (that retry is the recovery path).
+      // Capture failed. Fall through to live mode WITHOUT a seed; better to
+      // render live output than to wedge in 'seeding' forever. A failed
+      // capture is no picture of the pane, so it is never handed over as one:
+      // the sink keeps what it shows and the trailing bytes reach it as plain
+      // writes. Nothing is cached, so the next attach / reseed retries (that
+      // retry is the recovery path).
       //
-      // [LAW:no-silent-failure] But "went live with a blank seed" is
+      // [LAW:no-silent-failure] But "went live without a picture" is
       //   indistinguishable from "the pane is genuinely blank" — so lift the
       //   failure to the 'error' seam. `reportError` classifies connection-gone
       //   as quiet (the reconnect handler re-drives the seed); a live tmux
@@ -793,29 +787,21 @@ export class PaneStream implements ReseedTarget {
     // drop it and stay seeding. `%continue` reseeds.
     if (this.paused) return;
 
-    // Stale mid-flight: a reconnect or a detached-mode byte arrived between
-    // RPC issue and now, so the snapshot is older than the current pane
-    // state. Drop it. If anyone is still attached, kick off a fresh seed —
-    // through `startSeedCycle` so `this.seedCycle` follows the new cycle.
+    // Stale mid-flight: the pane changed outside its byte stream between RPC
+    // issue and now, so the snapshot is older than the current pane state.
+    // Drop it. If anyone is still attached, kick off a fresh seed — through
+    // `startSeedCycle` so `this.seedCycle` follows the new cycle (and the
+    // buffer restarts behind the new capture).
     if (this.seedCycle.phase === "capturing" && this.seedCycle.stale) {
       // No `lastSeed === null` guard: every stale trigger (`onReconnected`,
-      // the detached-byte path) unconditionally invalidates the cache BEFORE
+      // `recapture`) unconditionally invalidates the cache BEFORE
       // marking stale, so a stale in-flight capture provably has no cache to
       // fall back on. Guarding on it here would be dead control-flow whose
       // only reachable-false behavior — silently skipping the re-issue and
       // leaving a stale screen — is exactly the [LAW:no-silent-failure] trap
       // to avoid; re-issuing when a sink is still attached is the fail-safe
       // direction regardless.
-      if (this.sink !== null) {
-        // [LAW:one-source-of-truth] Clear the buffer before issuing the new
-        // capture-pane. Bytes buffered during the stale seeding window arrived
-        // before the new capture is issued and will be included in the new
-        // snapshot — draining them after would duplicate. seed() issues the
-        // RPC synchronously before its first await, so bytes arriving after
-        // this clear are correctly post-capture and belong in the buffer.
-        this.buffer = [];
-        void this.startSeedCycle();
-      }
+      if (this.sink !== null) void this.startSeedCycle();
       return;
     }
 
@@ -827,31 +813,24 @@ export class PaneStream implements ReseedTarget {
     // padding, Latin-1→bytes) lives in `buildSeed`; PaneStream owns only the
     // effects around it — the RPCs that produced these inputs, the cache, and
     // the sink handoff below.
-    const { captured, cursor } = buildSeed(
-      captureOutput,
-      stateLine,
-      this.historyLines,
-    );
+    const seed =
+      reply === null
+        ? null
+        : buildSeed(reply.capture, reply.state, this.historyLines);
 
     // Cache for the next attach() — a re-attach reuses this without a fresh
-    // capture-pane round-trip. Only cached on success: a failed seed left
-    // in the cache would let subsequent re-attaches paint a blank screen
-    // forever, and the next attach is the natural recovery point. Bytes
-    // buffered behind the capture already moved the pane past the snapshot,
-    // so only a capture nothing followed is the current picture. Invalidated
-    // by the reconnect handler and by every later byte.
-    if (captureSucceeded) {
-      this.lastSeed = this.buffer.length === 0 ? { captured, cursor } : null;
-      // The seed seam just succeeded (past the stale-drop guard above), so any
-      // outstanding seed failure is moot — clear it so lastError stops
-      // reporting a recovered transient failure.
-      this.clearError("seed");
-    }
+    // capture-pane round-trip. Bytes buffered behind the capture already moved
+    // the pane past the snapshot, so only a capture nothing followed is the
+    // current picture; a failed capture is no picture at all.
+    this.lastSeed = this.buffer.length === 0 ? seed : null;
+    // The seed seam just succeeded (past the stale-drop guard above), so any
+    // outstanding seed failure is moot — clear it so lastError stops reporting
+    // a recovered transient failure.
+    if (seed !== null) this.clearError("seed");
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
-    // issued), the cache above will serve the next attach() — no extra
-    // capture-pane round-trip. The buffer is empty in that case because
-    // detach() drains it.
+    // issued), the cache above serves the next attach() when nothing followed
+    // the capture; otherwise that attach captures afresh.
     const liveSink = this.sink;
     if (liveSink === null) return;
 
@@ -862,7 +841,8 @@ export class PaneStream implements ReseedTarget {
     // means PaneStream never mutates the handed-off array in place. Clearing
     // after also matches the pre-SD2 failure path — if the sink throws, the
     // buffered bytes survive in `this.buffer` rather than being dropped.
-    liveSink.seed(captured, cursor, this.buffer);
+    if (seed !== null) liveSink.seed(seed.captured, seed.cursor, this.buffer);
+    else for (const chunk of this.buffer) liveSink.write(chunk);
     this.buffer = [];
     this.setState("live");
   }

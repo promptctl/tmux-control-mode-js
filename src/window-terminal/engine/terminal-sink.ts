@@ -47,8 +47,11 @@ export interface SeedCursor {
  *                        →  stream.detach()              (no further calls)
  *                        →  sink.dispose()               (consumer-driven)
  *
- * `seed` is called exactly once per attach, BEFORE any `write`. The snapshot and
- * its `trailing` bytes are one ordered unit, so the seed-before-live guarantee
+ * `seed` is called once per successful capture: at attach, and again whenever
+ * the stream recaptures (reconnect, `%continue`, a new pane size), so it can
+ * follow `write`s. A failed capture produces no seed — the trailing bytes
+ * arrive as `write`s and the sink keeps what it shows. The snapshot and its
+ * `trailing` bytes are one ordered unit, so the seed-before-live guarantee
  * rides on the value's shape — a sink applies `captured` then `trailing` in
  * order and nothing downstream re-derives that order from call sequencing.
  */
@@ -56,7 +59,7 @@ export interface TerminalSink {
   /**
    * Seed the view with a snapshot captured from tmux, followed by `trailing` —
    * the live bytes that arrived while that snapshot was being fetched, in
-   * arrival order. Called exactly once per `attach()`, BEFORE any `write()`.
+   * arrival order. Called once per successful capture (see the lifecycle above).
    *
    * `captured` is RAW BYTES: the joined `capture-pane` rows as tmux produced
    * them, wrapped by library-synthesized mode-restore escapes (alt-screen/
@@ -67,8 +70,8 @@ export interface TerminalSink {
    * decoding authority; the library never interprets the captured grid bytes.
    *
    * `captured` is the pane's whole picture as of the capture: every byte the
-   * sink was given before this call is already inside it, so a sink drops
-   * whatever it still holds from earlier rather than replaying it after.
+   * sink was given before this call is already inside it, so nothing the sink
+   * received earlier needs to be applied after it.
    *
    * `trailing` makes the seed-before-live ordering a property of THIS value:
    * the snapshot and the bytes that immediately follow it cross the seam as one
