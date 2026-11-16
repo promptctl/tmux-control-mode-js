@@ -49,6 +49,18 @@ All notable changes to this project are documented here. Format follows
   its own, and `isLocateCurrent` is false only once something supersedes
   every query. `invalidateWindow` no longer supersedes the window's listings
   in flight: the window refresh you start after it does.
+- `execute()` numbers the command lines it writes and follows each with a
+  sentinel line, `tmux-control-mode-js-sentinel-<number>`, whose parse error
+  ends the line's reply (SPEC §5.6). A line tmux runs several commands for
+  (`a ; b`, `if-shell`, `source-file`, `run-shell -C`) resolves with all their
+  output, or rejects with the first that failed; before, its extra blocks
+  answered the commands queued after it. A blank, comment-only or `%hidden`
+  line is sent and resolves with no output. A sentinel reply for a line other
+  than the one being answered ends the connection. A `TmuxTransport` fake
+  answers the second line of each send as tmux does: an `%error` block
+  reading `parse error: unknown command: <that line>`. `MockTmuxServer` does.
+- A block's `begin` event is announced when the block closes, just before its
+  `end` or `error`. A sentinel's block is never announced.
 
 ### Added
 

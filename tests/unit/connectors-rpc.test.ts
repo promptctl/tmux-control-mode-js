@@ -23,6 +23,7 @@ import {
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { replyTo } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
@@ -57,16 +58,6 @@ function createFakeTransport(): {
       dataCb?.(chunk);
     },
   };
-}
-
-function feedOk(
-  feed: (s: string) => void,
-  commandNumber: number,
-  lines: readonly string[] = [],
-): void {
-  feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const l of lines) feed(l + "\n");
-  feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +234,7 @@ describe("dispatchRpcRequest — routing", () => {
     t.feed(STARTUP_GREETING);
     const p = dispatchRpcRequest(client, { method: "listWindows", args: [] });
     expect(t.sent[0]).toContain("list-windows");
-    feedOk(t.feed, 1, ["$1\tmain\t@0\tzsh\t80\t24"]);
+    t.feed(replyTo(t.sent[0], ["$1\tmain\t@0\tzsh\t80\t24"]));
     const r = await p;
     expect(r).toEqual([
       {
@@ -266,7 +257,7 @@ describe("dispatchRpcRequest — routing", () => {
       args: [],
     });
     expect(t.sent[0]).toContain("list-sessions");
-    feedOk(t.feed, 1, ["$1\tmain\t2\t1"]);
+    t.feed(replyTo(t.sent[0], ["$1\tmain\t2\t1"]));
     const r = await p;
     expect(r).toEqual([
       {
@@ -290,7 +281,7 @@ describe("dispatchRpcRequest — routing", () => {
     expect(t.sent[0]).toContain("%0");
     // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hi" → "68 69".
     expect(t.sent[0]).toContain("68 69");
-    feedOk(t.feed, 1);
+    t.feed(replyTo(t.sent[0]));
     await p;
   });
 
@@ -304,7 +295,7 @@ describe("dispatchRpcRequest — routing", () => {
     });
     expect(t.sent[0]).toContain("refresh-client");
     expect(t.sent[0]).toContain("%3:pause");
-    feedOk(t.feed, 1);
+    t.feed(replyTo(t.sent[0]));
     await p;
   });
 
@@ -318,7 +309,7 @@ describe("dispatchRpcRequest — routing", () => {
     });
     expect(t.sent[0]).toContain("refresh-client");
     expect(t.sent[0]).toContain("sub");
-    feedOk(t.feed, 1);
+    t.feed(replyTo(t.sent[0]));
     await p;
   });
 });
@@ -375,9 +366,7 @@ describe("dispatchRpcRequest — error propagation", () => {
       method: "execute",
       args: ["bogus"],
     });
-    t.feed("%begin 1 1 1\n");
-    t.feed("unknown command\n");
-    t.feed("%error 1 1 1\n");
+    t.feed(replyTo(t.sent[0], ["unknown command"], "error"));
 
     await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(p).rejects.toMatchObject({

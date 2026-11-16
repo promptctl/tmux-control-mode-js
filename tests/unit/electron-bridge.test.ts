@@ -41,8 +41,10 @@ import {
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { lineNumberOf, replyTo } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import {
+  commandLine,
   refreshClientClearFlags,
   refreshClientClearWindowSize,
   refreshClientSetFlags,
@@ -59,8 +61,13 @@ import {
 
 interface FakeTransport {
   readonly transport: TmuxTransport;
+  /** Every string the client sent, verbatim. */
   readonly sent: string[];
+  /** The command each sent line carried, without its sentinel line. */
+  commands(): string[];
   feed(chunk: string): void;
+  /** tmux's reply to the oldest line it has not answered yet. */
+  answer(output?: readonly string[], terminator?: "end" | "error"): void;
   fireClose(reason?: string): void;
 }
 
@@ -68,10 +75,12 @@ function createFakeTransport(): FakeTransport {
   let dataCb: ((chunk: string) => void) | null = null;
   let closeCb: ((reason?: string) => void) | null = null;
   const sent: string[] = [];
+  const unanswered: string[] = [];
 
   const transport: TmuxTransport = {
     send(cmd) {
       sent.push(cmd);
+      unanswered.push(cmd);
       return { ok: true };
     },
     onData(cb) {
@@ -85,30 +94,21 @@ function createFakeTransport(): FakeTransport {
     },
   };
 
+  const feed = (chunk: string): void => dataCb?.(chunk);
   return {
     transport,
     sent,
-    feed(chunk) {
-      dataCb?.(chunk);
+    commands: () => sent.map((line) => line.split("\n")[0]),
+    feed,
+    answer(output = [], terminator = "end") {
+      const line = unanswered.shift();
+      if (line === undefined) throw new Error("no line is awaiting a reply");
+      feed(replyTo(line, output, terminator));
     },
     fireClose(reason) {
       closeCb?.(reason);
     },
   };
-}
-
-/**
- * Feed tmux's response to the most recently sent command.
- * Matches the begin/end flanking used across the codebase.
- */
-function feedCommandResponse(
-  t: FakeTransport,
-  commandNumber: number,
-  outputLines: readonly string[],
-): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +507,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
 
     // Reject that bootstrap → the MAIN client emits topology-error locally.
-    t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    t.answer([], "error");
     await hub.settled();
 
     // The renderer proxy has its own router and reports its own failures; the
@@ -543,7 +543,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     // Reject that bootstrap invoke with an %error guard block. The rejection
     // round-trips over IPC back to the proxy's router, which reports it.
-    t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    t.answer([], "error");
 
     const err = await topologyError;
     expect(err).toBeInstanceOf(Error);
@@ -738,9 +738,9 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     const pending = proxy.execute("list-windows");
     await hub.settled();
-    expect(t.sent).toEqual(["list-windows\n"]);
+    expect(t.sent).toEqual([commandLine("list-windows", 1)]);
 
-    feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
+    t.answer(["@0 zsh 1 -"]);
 
     const response = await pending;
     expect(response.success).toBe(true);
@@ -764,7 +764,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hello".
     expect(t.sent[0]).toContain("68 65 6c 6c 6f");
 
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await pending;
   });
 
@@ -784,7 +784,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     expect(t.sent[0]).toContain("-v");
     expect(t.sent[0]).toContain("%0");
 
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await pending;
   });
 
@@ -804,7 +804,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     expect(t.sent[0]).toContain("pause-after=2");
     expect(t.sent[0]).toContain("no-output");
 
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await pending;
   });
 
@@ -819,13 +819,11 @@ describe("Electron IPC bridge — method dispatch", () => {
     // command is answered as it is sent (version probe → "3.6a", everything
     // else → empty success). The test then awaits requestReport to full
     // resolution and inspects t.sent at the end.
-    let respNum = 0;
     const record = t.transport.send.bind(t.transport);
     t.transport.send = (cmd: string) => {
       const result = record(cmd);
-      respNum += 1;
       const output = cmd.includes("#{version}") ? ["3.6a"] : [];
-      feedCommandResponse(t, respNum, output);
+      t.answer(output);
       return result;
     };
 
@@ -967,7 +965,7 @@ describe("Electron IPC bridge — method dispatch", () => {
   );
 
   it.each([
-    ["# comment only", "it is only a comment"],
+    ["", "it is empty"],
     ["# note\nkill-server", "it holds a newline or NUL"],
     ["new-window -e 'TOKEN=s3cr3t\0' -- cmd", "it holds a newline or NUL"],
   ])(
@@ -1008,9 +1006,7 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     const pending = proxy.execute("bogus-cmd");
     await hub.settled();
-    t.feed("%begin 1 1 1\n");
-    t.feed("unknown command\n");
-    t.feed("%error 1 1 1\n");
+    t.answer(["unknown command"], "error");
 
     await expect(pending).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(pending).rejects.toMatchObject({
@@ -1179,7 +1175,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     await hub.settled();
     expect(drainResolved).toBe(false);
 
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await drainPromise;
     expect(drainResolved).toBe(true);
 
@@ -1452,21 +1448,21 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const sub = proxy.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await sub;
 
     // First unregister: refcount 1 → 0 → tmux unsubscribe fires.
     r.ipcRenderer.send(IPC.unregister);
     await hub.settled();
     expect(
-      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
+      t.commands().filter((c) => c === "refresh-client -B 'focus'"),
     ).toHaveLength(1);
 
     // Second unregister: noop, no additional unsubscribe.
     r.ipcRenderer.send(IPC.unregister);
     await hub.settled();
     expect(
-      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
+      t.commands().filter((c) => c === "refresh-client -B 'focus'"),
     ).toHaveLength(1);
   });
 
@@ -1540,7 +1536,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
 
     const p = proxy.listPanes();
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     const resp = await p;
     expect(resp).toEqual([]);
   });
@@ -1848,16 +1844,16 @@ describe("Electron IPC bridge — two-window scenario", () => {
     // shared handler.
     const p1Pending = p1.execute("list-windows");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await p1Pending;
 
     const p2Pending = p2.execute("list-panes");
     await hub.settled();
-    feedCommandResponse(t, 2, []);
+    t.answer();
     await p2Pending;
 
-    expect(t.sent).toContain("list-windows\n");
-    expect(t.sent).toContain("list-panes\n");
+    expect(t.commands()).toContain("list-windows");
+    expect(t.commands()).toContain("list-panes");
   });
 
   it("regression — fake hub mirrors real Electron: second handle() throws", () => {
@@ -1901,9 +1897,9 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
 
     // Tmux replies to A's command first (still in FIFO), then B's.
     await hub.settled();
-    feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
+    t.answer(["@0 zsh 1 -"]);
     await hub.settled();
-    feedCommandResponse(t, 2, ["%1 main 0 -"]);
+    t.answer(["%1 main 0 -"]);
     await hub.settled();
 
     // A's page is gone, so nothing hears main's answer; main still settles
@@ -1941,7 +1937,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     await hub.settled();
     proxy.close();
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
 
     const err = await pending;
     expect(err).toBeInstanceOf(Error);
@@ -1967,7 +1963,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     // resolves the underlying promise, but the post-await branch sees
     // aborted and throws.
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
 
     const err = await pending;
     expect(err).toBeInstanceOf(Error);
@@ -1985,7 +1981,9 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
 // ---------------------------------------------------------------------------
 
 function isUnsubscribeWire(line: string, name: string): boolean {
-  return line === `refresh-client -B '${name}'\n`;
+  return (
+    line === commandLine(`refresh-client -B '${name}'`, lineNumberOf(line))
+  );
 }
 
 function isSubscribeWire(line: string, name: string): boolean {
@@ -2010,7 +2008,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     // A subscribes — bridge forwards the subscribe to tmux.
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await aSub;
     expect(t.sent.some((c) => isSubscribeWire(c, "focus"))).toBe(true);
 
@@ -2039,11 +2037,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await aSub;
+    // Same (what, format): the refcount bumps and tmux is not asked.
     const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 2, []);
     await bSub;
 
     // Two senders own "focus" → refcount = 2.
@@ -2059,7 +2057,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     // B unsubscribes — refcount hits 0 → tmux call.
     const bUnsub = pb.unsubscribe("focus");
     await hub.settled();
-    feedCommandResponse(t, 3, []);
+    t.answer();
     await bUnsub;
     expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
   });
@@ -2078,7 +2076,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     const sub = pa.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await sub;
 
     a.destroy();
@@ -2101,11 +2099,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await aSub;
+    // Same (what, format): the refcount bumps and tmux is not asked.
     const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 2, []);
     await bSub;
 
     a.destroy();
@@ -2129,11 +2127,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     const aSub1 = pa.subscribeRaw("focus", "", "#{pane_id}");
     await hub.settled();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await aSub1;
     const aSub2 = pa.subscribeRaw("layout", "", "#{window_id}");
     await hub.settled();
-    feedCommandResponse(t, 2, []);
+    t.answer();
     await aSub2;
 
     handle.dispose();
@@ -2179,7 +2177,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       // A claims (foo, '', '#{a}'); bridge forwards to tmux with '#{a}'.
       const aSub = pa.subscribeRaw("foo", "", "#{a}");
       await hub.settled();
-      feedCommandResponse(t, 1, []);
+      t.answer();
       await aSub;
 
       // B attempts to claim (foo, '', '#{b}') — different format.
@@ -2212,7 +2210,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       const aSub = pa.subscribeRaw("foo", "", "#{x}");
       await hub.settled();
-      feedCommandResponse(t, 1, []);
+      t.answer();
       await aSub;
 
       // B subscribes the SAME (what, format). Helper synthesizes ok and
@@ -2254,9 +2252,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       // tmux rejects A's subscribe. Both A and B must reject — B was
       // queued on the inflight promise, not optimistically resolved.
-      t.feed("%begin 1 1 1\n");
-      t.feed("nope\n");
-      t.feed("%error 1 1 1\n");
+      t.answer(["nope"], "error");
 
       await expect(aSub).rejects.toBeInstanceOf(TmuxCommandError);
       await expect(bSub).rejects.toBeInstanceOf(TmuxCommandError);
@@ -2289,12 +2285,12 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       const sub1 = pa.subscribeRaw("foo", "", "#{a}");
       await hub.settled();
-      feedCommandResponse(t, 1, []);
+      t.answer();
       await sub1;
 
       const unsub = pa.unsubscribe("foo");
       await hub.settled();
-      feedCommandResponse(t, 2, []);
+      t.answer();
       await unsub;
 
       // Now re-subscribe with a different format — refcount is 0 again, so
@@ -2302,7 +2298,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       // conflict.
       const sub2 = pa.subscribeRaw("foo", "", "#{b}");
       await hub.settled();
-      feedCommandResponse(t, 3, []);
+      t.answer();
       const resp2 = await sub2;
       expect(resp2.success).toBe(true);
       const fooSubs = t.sent.filter((c) =>
@@ -2494,21 +2490,18 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
 // ---------------------------------------------------------------------------
 
 describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
-  const line = (command: string): string => `${command}\n`;
-  const INTO_SIZING = line(refreshClientClearFlags(["ignore-size"]));
-  const OUT_OF_SIZING = line(refreshClientSetFlags(["ignore-size"]));
+  const INTO_SIZING = refreshClientClearFlags(["ignore-size"]);
+  const OUT_OF_SIZING = refreshClientSetFlags(["ignore-size"]);
 
   // tmux answers every command with an empty success, as it is sent.
   function rig() {
     const hub = createIpcHub();
     const t = createFakeTransport();
-    let commandNumber = 0;
     const transport: TmuxTransport = {
       ...t.transport,
       send(cmd) {
         const result = t.transport.send(cmd);
-        const n = ++commandNumber;
-        queueMicrotask(() => feedCommandResponse(t, n, []));
+        queueMicrotask(() => t.answer());
         return result;
       },
     };
@@ -2525,18 +2518,18 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     await r.navigate();
     await vi.waitFor(() =>
-      expect(t.sent).toEqual([
+      expect(t.commands()).toEqual([
         OUT_OF_SIZING,
-        line(refreshClientClearWindowSize(3)),
+        refreshClientClearWindowSize(3),
       ]),
     );
 
     t.sent.length = 0;
     await createRendererBridge(r.ipcRenderer).setWindowSize(3, 90, 20);
     // Back into window sizing: no claim of the old page is left.
-    expect(t.sent).toEqual([
+    expect(t.commands()).toEqual([
       INTO_SIZING,
-      line(refreshClientWindowSize(3, 90, 20)),
+      refreshClientWindowSize(3, 90, 20),
     ]);
   });
 
@@ -2549,7 +2542,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     );
 
     await r.navigate();
-    expect(t.sent).toContain(line(refreshClientUnsubscribe("focus")));
+    expect(t.commands()).toContain(refreshClientUnsubscribe("focus"));
 
     // The new page has not registered: nothing is forwarded to it.
     const received: unknown[] = [];
@@ -2607,7 +2600,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
       args: ["list-windows"],
     });
     await r.navigate();
-    feedCommandResponse(t, 1, []);
+    t.answer();
     await hub.settled();
     expect(r.unheardReplies).toMatchObject([
       { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
@@ -2621,9 +2614,9 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     r.crash();
     await vi.waitFor(() =>
-      expect(t.sent).toEqual([
+      expect(t.commands()).toEqual([
         OUT_OF_SIZING,
-        line(refreshClientClearWindowSize(3)),
+        refreshClientClearWindowSize(3),
       ]),
     );
   });
@@ -2635,9 +2628,9 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     r.failLoad({ commitErrorPage: true });
     await vi.waitFor(() =>
-      expect(t.sent).toEqual([
+      expect(t.commands()).toEqual([
         OUT_OF_SIZING,
-        line(refreshClientClearWindowSize(3)),
+        refreshClientClearWindowSize(3),
       ]),
     );
   });
@@ -2657,6 +2650,6 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     expect(r.unheardReplies).toMatchObject([
       { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
     ]);
-    expect(t.sent).not.toContain(line(refreshClientWindowSize(3, 90, 20)));
+    expect(t.commands()).not.toContain(refreshClientWindowSize(3, 90, 20));
   });
 });
