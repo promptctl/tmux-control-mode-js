@@ -38,11 +38,6 @@ export interface WindowRendererOptions {
   readonly onBox: (box: Box) => void;
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
-  /**
-   * `pane`'s xterm failed: to open (a host addon threw; it draws nothing), or
-   * to take options xterm accepted (an addon refused them).
-   */
-  readonly onError: (pane: PaneId, cause: unknown) => void;
 }
 
 /** What the renderer drives in a pane. */
@@ -76,7 +71,6 @@ export class WindowRenderer implements PaneSurfaces {
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
   private readonly observer: ResizeObserver;
-  private readonly onError: (pane: PaneId, cause: unknown) => void;
   private readonly addons: XtermAddons | undefined;
   private xterm: XtermOptions;
   private font: number;
@@ -96,7 +90,6 @@ export class WindowRenderer implements PaneSurfaces {
     this.history = opts.history;
     this.xterm = opts.xterm;
     this.addons = opts.addons;
-    this.onError = opts.onError;
     this.font = opts.font;
     this.onFocusPane = opts.onFocusPane;
     const doc = host.ownerDocument;
@@ -146,11 +139,9 @@ export class WindowRenderer implements PaneSurfaces {
     const { sink, failures } = this.open(el);
     const offInput = sink.onInput(keys);
     this.panes.set(pane, { el, sink });
-    // Reported once the pane is held: a listener that disposes the terminal
-    // finds the renderer whole, and disposes this pane with the rest.
-    for (const cause of failures) this.onError(pane, cause);
     return {
       sink,
+      failures,
       dispose: () => {
         offInput();
         sink.dispose();
@@ -250,17 +241,20 @@ export class WindowRenderer implements PaneSurfaces {
   }
 
   // A pane's xterm or addon that throws on an option xterm accepted is that
-  // pane's failure, reported as a pane that fails to open is; every other
-  // pane still takes the options.
-  setOptions(xterm: XtermOptions): void {
+  // pane's failure, returned like a pane's failure to open; every other pane
+  // still takes the options.
+  setOptions(
+    xterm: XtermOptions,
+  ): readonly { readonly pane: PaneId; readonly cause: unknown }[] {
     this.xterm = xterm;
-    for (const [pane, { sink }] of this.panes) {
+    return [...this.panes].flatMap(([pane, { sink }]) => {
       try {
         sink.setOptions(xterm);
+        return [];
       } catch (cause) {
-        this.onError(pane, cause);
+        return [{ pane, cause }];
       }
-    }
+    });
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */

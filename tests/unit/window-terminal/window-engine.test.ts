@@ -33,7 +33,10 @@ interface Surfaces extends PaneSurfaces {
   readonly disposed: PaneId[];
 }
 
-function surfaces(): Surfaces {
+// `failures`: why a pane's surface failed to open, as a renderer says so.
+function surfaces(
+  failures: (pane: PaneId) => readonly unknown[] = () => [],
+): Surfaces {
   const live = new Map<PaneId, (bytes: Uint8Array) => void>();
   const created: PaneId[] = [];
   const disposed: PaneId[] = [];
@@ -46,6 +49,7 @@ function surfaces(): Surfaces {
       live.set(pane, keys);
       return {
         sink: new NullSink(),
+        failures: failures(pane),
         dispose() {
           disposed.push(pane);
           live.delete(pane);
@@ -59,10 +63,9 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
 }
 
-function mount(w: World = world(), ready = true) {
+function mount(w: World = world(), ready = true, s: Surfaces = surfaces()) {
   const client = scriptedTmux(w);
   if (ready) client.setConnectionState({ status: "ready" });
-  const s = surfaces();
   let t = 100;
   const engine = new WindowEngine({
     connection: client,
@@ -198,7 +201,7 @@ describe("WindowEngine — arrival", () => {
     expect(engine.state).toEqual({ phase: "gone", reason: "window-closed" });
   });
 
-  it("a bootstrap tmux refuses reaches onError(bootstrap) and is gone(bootstrap-failed), not a wait", async () => {
+  it("a bootstrap tmux refuses is gone(bootstrap-failed), not a wait, and then reaches onError(bootstrap)", async () => {
     const client = scriptedTmux(world());
     client.setExecuteFailure((cmd) =>
       cmd.startsWith("display-message -p -t @1")
@@ -211,7 +214,7 @@ describe("WindowEngine — arrival", () => {
         : null,
     );
     client.setConnectionState({ status: "ready" });
-    const errors: WindowTerminalError[] = [];
+    const errors: [string, string, string][] = [];
     const engine = new WindowEngine({
       connection: client,
       windowId: "@1",
@@ -219,11 +222,11 @@ describe("WindowEngine — arrival", () => {
       surfaces: surfaces(),
       now: () => 0,
     });
-    engine.onError((e) => errors.push(e));
+    engine.onError((e) =>
+      errors.push([e.seam, e.windowId, engine.state.phase]),
+    );
     await settle();
-    expect(errors.map((e) => [e.seam, e.windowId])).toEqual([
-      ["bootstrap", "@1"],
-    ]);
+    expect(errors).toEqual([["bootstrap", "@1", "gone"]]);
     expect(engine.state).toEqual({
       phase: "gone",
       reason: "bootstrap-failed",
@@ -568,5 +571,107 @@ describe("WindowEngine — the connection", () => {
       expect(client.commands()).toContain(`refresh-client -B '${n}'`);
     }
     await settle();
+  });
+});
+
+// What an engine leaves on its connection once disposed: nothing but the
+// connection's reseed scheduler, which listens for as long as the connection
+// lives once any pane stream has run on it.
+const RELEASED = { listeners: ["reconnected"], sinks: 0, subscriptions: [] };
+
+describe("WindowEngine — disposed by a listener it calls", () => {
+  it("on a layout error while live, it reports it, opens no pane and leaves nothing on the connection", async () => {
+    const { client, engine, errors, s } = mount();
+    await settle();
+    engine.onError(() => engine.dispose());
+    client.injectLayoutChange(1, "0000,80x24", "0000,80x24", "*");
+    await settle();
+    expect(errors.map((e) => e.seam)).toEqual(["layout"]);
+    expect(s.created).toEqual(["%0", "%1"]);
+    expect(s.disposed).toEqual(["%0", "%1"]);
+    expect(client.held()).toEqual(RELEASED);
+  });
+
+  it("on a layout error replayed over the arrival snapshot, it leaves nothing on the connection", async () => {
+    const { client, engine, errors, s } = mount();
+    engine.onError(() => engine.dispose());
+    client.injectLayoutChange(1, "0000,80x24", "0000,80x24", "*");
+    await settle();
+    expect(errors.map((e) => e.seam)).toEqual(["layout"]);
+    expect(s.disposed).toEqual(s.created);
+    expect(client.held()).toEqual(RELEASED);
+  });
+
+  it("on a pane that failed to open, it reports it with the pane and leaves nothing on the connection", async () => {
+    const refused = new Error("addon threw");
+    const { client, engine, errors, s } = mount(
+      world(),
+      true,
+      surfaces((pane) => (pane === "%0" ? [refused] : [])),
+    );
+    engine.onError(() => engine.dispose());
+    await settle();
+    expect(errors).toEqual([
+      { windowId: "@1", seam: "render", paneId: "%0", cause: refused },
+    ]);
+    expect(s.disposed).toEqual(["%0", "%1"]);
+    expect(client.held()).toEqual(RELEASED);
+  });
+
+  it("on gone, it ends each window subscription once", async () => {
+    const w = world();
+    const { client, engine } = mount(w);
+    await settle();
+    const names = [
+      client.subscriptionNamed("@1"),
+      client.subscriptionNamed("%*"),
+    ];
+    engine.onState((st) => {
+      if (st.phase === "gone") engine.dispose();
+    });
+    w.attached = [];
+    w.all = ["@2"];
+    client.injectNotification({ type: "window-close", windowId: 1 });
+    await settle();
+    expect(engine.state.phase).toBe("gone");
+    for (const n of names) {
+      expect(
+        client.commands().filter((c) => c === `refresh-client -B '${n}'`),
+      ).toHaveLength(1);
+    }
+    expect(client.held()).toEqual(RELEASED);
+  });
+});
+
+describe("WindowEngine — the host hears a unit of work once it is done", () => {
+  it("an error listener reads the state its report belongs to", async () => {
+    const { engine } = mount(
+      world(),
+      true,
+      surfaces((pane) => (pane === "%0" ? [new Error("addon threw")] : [])),
+    );
+    const panes: (readonly PaneId[])[] = [];
+    engine.onError(() => {
+      panes.push(live(engine.state).panes.map((p) => p.id));
+    });
+    await settle();
+    expect(panes).toEqual([["%0", "%1"]]);
+    engine.dispose();
+  });
+
+  it("a renderer that throws opening a pane leaves nothing on the connection", async () => {
+    const opens = surfaces();
+    const throwing: Surfaces = {
+      ...opens,
+      create(pane, keys) {
+        if (pane === "%1") throw new Error("renderer broke");
+        return opens.create(pane, keys);
+      },
+    };
+    const { client, errors, s } = mount(world(), true, throwing);
+    await settle();
+    expect(errors.map((e) => e.seam)).toEqual(["bootstrap"]);
+    expect(s.disposed).toEqual(s.created);
+    expect(client.held()).toEqual(RELEASED);
   });
 });

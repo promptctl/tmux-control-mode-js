@@ -69,6 +69,7 @@ function recorder(): Recorder {
       keys.set(pane, send);
       return {
         sink,
+        failures: [],
         dispose() {
           disposed.push(pane);
         },

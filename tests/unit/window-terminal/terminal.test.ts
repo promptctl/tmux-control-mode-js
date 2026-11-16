@@ -314,6 +314,28 @@ describe("window terminal — what is drawn", () => {
     expect(terminals[1].options.theme).toEqual({ background: "#111" });
   });
 
+  it("an onError listener that updates on a refused option leaves every pane on its options", async () => {
+    const { terminal } = await live();
+    const plain = terminals[0].options;
+    terminals[0].options = new Proxy(plain, {
+      set(o, key, value: { background?: string }) {
+        if (key === "theme" && value.background === "#111") {
+          throw new Error("an addon refused the theme");
+        }
+        return Reflect.set(o, key, value);
+      },
+    });
+    const off = terminal.onError(() => {
+      off();
+      terminal.update({ xterm: { theme: { background: "#222" } } });
+    });
+    terminal.update({ xterm: { theme: { background: "#111" } } });
+    expect(terminals.map((t) => t.options.theme)).toEqual([
+      { background: "#222" },
+      { background: "#222" },
+    ]);
+  });
+
   it("the cell the solver measures is the one xterm draws: family, line height and letter spacing", async () => {
     const fonts: unknown[] = [];
     const m = mount(
@@ -372,6 +394,12 @@ describe("window terminal — what is drawn", () => {
     await settle();
     expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
     expect(m.host.querySelector(".wt-root")).toBeNull();
+    expect(m.client.held()).toEqual({
+      // The connection's reseed scheduler, for as long as it lives.
+      listeners: ["reconnected"],
+      sinks: 0,
+      subscriptions: [],
+    });
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {

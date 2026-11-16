@@ -120,8 +120,6 @@ export function createWindowTerminal(
       schedule();
     },
     onFocusPane: (pane) => engine.focus(pane),
-    onError: (paneId, cause) =>
-      reportError({ seam: "render", windowId, paneId, cause }),
   });
   const declarer = new ClientSizeDeclarer({
     connection,
@@ -181,9 +179,14 @@ export function createWindowTerminal(
       if (disposed) return;
       sizing = nextSizing;
       xterm = nextXterm;
-      // Each pane writes only the options that changed.
-      renderer.setOptions(xterm.given);
+      // Each pane writes only the options that changed. Its failures reach
+      // the host once every pane has the options: a listener that calls
+      // `update` again starts from a whole window.
+      const failures = renderer.setOptions(xterm.given);
       schedule();
+      for (const { pane, cause } of failures) {
+        reportError({ seam: "render", windowId, paneId: pane, cause });
+      }
     },
     get state() {
       return engine.state;
