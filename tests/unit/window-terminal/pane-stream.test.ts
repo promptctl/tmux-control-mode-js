@@ -22,6 +22,8 @@ import {
   TransportSendError,
 } from "../../../src/browser.js";
 import { BridgeError } from "../../../src/connectors/errors.js";
+import { MockTmuxServer } from "../../../src/mock/index.js";
+import { TmuxClient } from "../../../src/client.js";
 
 // A live-tmux command failure (tmux replied %error). `reportError` must SURFACE
 // this class — tmux was alive, so the blank pane is a real failure.
@@ -179,14 +181,30 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(1);
   });
 
+  it("a connection that announces the capture's begin inside execute() seeds the first attach", async () => {
+    // The mock server answers from inside send(), so TmuxClient delivers the
+    // reply's begin before execute() returns.
+    const server = new MockTmuxServer({
+      respond: (cmd) =>
+        cmd.startsWith("capture-pane")
+          ? { kind: "ok", output: ["screen", "0;0"] }
+          : undefined,
+    });
+    const client = new TmuxClient(server);
+    server.start();
+    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.lastError).toBeNull();
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.seedTexts[0]).toContain("screen");
+    stream.dispose();
+  });
+
   it("a capture reply with no begin is a seed failure, and its bytes are written as they came", async () => {
     const client = new FakeTmuxClient();
-    // A connection that never delivers the reply's begin.
-    const on = client.on.bind(client);
-    vi.spyOn(client, "on").mockImplementation(((
-      event: never,
-      handler: never,
-    ) => (event === "begin" ? undefined : on(event, handler))) as never);
+    client.withholdBegins();
     const { stream } = makeStream({ client, capture: "screen" });
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -611,13 +629,8 @@ describe("PaneStream — state machine", () => {
     // stray control code; against a shell that exits on EOF this killed the
     // session outright. Assert the exact, untruncated wire reaches execute().
     const { client, stream } = makeStream();
-    const seen: string[] = [];
-    client.setExecuteResponse((cmd) => {
-      seen.push(cmd);
-      return cmd.startsWith("display-message") ? "0;0" : "";
-    });
     await stream.sendKeyBytes(new Uint8Array([0x41]));
-    expect(seen.find((c) => c.startsWith("send-keys"))).toBe(
+    expect(client.commands().find((c) => c.startsWith("send-keys"))).toBe(
       `send-keys -H -t '%${PANE_ID}' 41`,
     );
   });
@@ -843,9 +856,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
-        ? tmuxError("capture failed")
-        : null,
+      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
     const errors: PaneStreamError[] = [];
@@ -883,7 +894,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
+      cmd.startsWith("capture-pane")
         ? new TransportClosedError("socket closed")
         : null,
     );

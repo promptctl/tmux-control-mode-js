@@ -143,11 +143,14 @@ export class FakeTmuxClient {
   // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
   // (modelling tmux's `%error`/transport failures), or `null` to resolve
   // normally. Both of PaneStream's tmux seams — the pane-size subscription
-  // (`refresh-client -B …`) and the seed (`capture-pane`/`display-message`) —
+  // (`refresh-client -B …`) and the seed (the `capture-pane …` line) —
   // flow through `execute()`, so this one knob drives both failure paths.
   // Default: never fail.
   private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
+  // A faulty connection that answers commands but never announces a
+  // reply's `begin`.
+  private beginsWithheld = false;
 
   // Round-trip latency injected into `execute()`. A consumer varies this to
   // measure visibility-toggle / reconnect-burst timing against a known
@@ -213,18 +216,19 @@ export class FakeTmuxClient {
     if (capture !== undefined) this.captureLog.push(capture);
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
-    // tmux runs the line as soon as it arrives, and a connection announces
-    // the reply's `begin` no sooner than after `execute()` returns: here, at
-    // the next microtask. Bytes injected before it are in the snapshot; bytes
-    // injected after an `await` follow it.
-    queueMicrotask(() =>
+    // tmux runs the line as soon as it arrives; this fake announces the
+    // reply's `begin` at the next microtask (a synchronous transport would
+    // announce it inside `execute()`). Bytes injected before it are in the
+    // snapshot; bytes injected after an `await` follow it.
+    queueMicrotask(() => {
+      if (this.beginsWithheld) return;
       this.dispatch({
         type: "begin",
         timestamp: Date.now(),
         commandNumber,
         flags: CONTROL_FLAGS,
-      }),
-    );
+      });
+    });
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
@@ -377,8 +381,8 @@ export class FakeTmuxClient {
    * Script which `execute()` commands REJECT and with what error. The handler
    * receives the full command string and returns an `Error` to reject with, or
    * `null` to resolve normally. Match on the command prefix to target a seam —
-   * `refresh-client -B` for the pane-size subscription, `capture-pane` /
-   * `display-message` for the seed. Persistent, like `setExecuteResponse`.
+   * `refresh-client -B` for the pane-size subscription, `capture-pane` for
+   * the seed's line. Persistent, like `setExecuteResponse`.
    */
   setExecuteFailure(handler: (command: string) => Error | null): void {
     this.executeFailure = handler;
@@ -444,6 +448,11 @@ export class FakeTmuxClient {
 
   capturePaneCount(): number {
     return this.captureLog.length;
+  }
+
+  /** Stop announcing replies' `begin`; replies still resolve. */
+  withholdBegins(): void {
+    this.beginsWithheld = true;
   }
 
   /** Every capture-pane command sent, in order. */

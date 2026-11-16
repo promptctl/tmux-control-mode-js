@@ -188,23 +188,28 @@ type Unsubscribe = () => void;
  *   whereas swapping to a new variant object per byte is not. `markSeedStale`
  *   is the single owner of that write.
  *
- * `run` is the cycle's own promise, carried so the single-flight guard
- * (`phase !== "idle"`) and the resolution `.finally` share one identity token:
- * the `.finally` resets to `idle` only if `run` still points at *its* cycle, so
- * a stale re-issue that already replaced the field is not clobbered.
- * [LAW:stale-rejection-guard-identity]
+ * A `capturing` value is its cycle's identity: the resolution resets to `idle`
+ * only if the field still holds *its* cycle, so a stale re-issue that already
+ * replaced the field is not clobbered. [LAW:stale-rejection-guard-identity]
  *
  * Distinct, orthogonal axes deliberately kept separate: `lastSeed` (the cached
  * picture a re-attach replays) and `ReseedScheduler.currentRun` (the
  * cross-stream sweep guard, one per client). Neither is a capture *phase*.
  */
-type SeedCycle =
-  | { readonly phase: "idle" }
-  | {
-      readonly phase: "capturing";
-      readonly run: Promise<void>;
-      stale: boolean;
-    };
+type SeedCycle = { readonly phase: "idle" } | Capturing;
+
+interface Capturing {
+  readonly phase: "capturing";
+  stale: boolean;
+  // For each reply `%begin` seen while this capture is in flight, how many
+  // chunks the buffer held by then. tmux parses a pane's bytes into its grid
+  // as it writes them to the control client, and runs a whole command line
+  // between two of those writes, so every byte before the capture line's
+  // `%begin` is in the snapshot and none after it is: this is where
+  // `trailing` starts. Keyed by tmux's command number, which is how the reply
+  // names its block.
+  readonly begins: Map<number, number>;
+}
 
 // ---------------------------------------------------------------------------
 // PaneStream
@@ -223,19 +228,11 @@ export class PaneStream implements ReseedTarget {
   // Buffer for live bytes that arrive during seeding. The ones after the
   // capture's `%begin` are handed to the sink as the seed's `trailing`
   // argument when the capture resolves, so the snapshot and the bytes behind
-  // it cross the seam as one ordered value.
+  // it cross the seam as one ordered value. While a capture is in flight the
+  // buffer only grows: whatever empties it (a detach holding bytes, `%pause`,
+  // a stale re-issue) marks the capture stale or starts a new one, so a
+  // length recorded at a `%begin` indexes the buffer the resolution slices.
   private buffer: Uint8Array[] = [];
-  // Chunks this stream has received, ever. The buffer always holds the latest
-  // `buffer.length` of them: nothing is dropped from a buffer that is still
-  // going to be used (a dropped byte marks the capture stale).
-  private received = 0;
-  // For each reply `%begin` seen while a capture is in flight, how many chunks
-  // had been received by then. tmux parses a pane's bytes into its grid as it
-  // writes them to the control client, and runs a whole command line between
-  // two of those writes, so every byte before the capture line's `%begin` is
-  // in the snapshot and none after it is: this is where `trailing` starts.
-  // Keyed by tmux's command number, which is how the reply names its block.
-  private readonly seedBegins = new Map<number, number>();
   // The pane's picture as of a capture nothing has followed — kept so a
   // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
   // round-trip (re-mount churn on an idle pane → exactly one capture). Set
@@ -396,11 +393,11 @@ export class PaneStream implements ReseedTarget {
     this.client.on("continue", this.onContinue);
 
     // Every connection delivers a reply's `begin` in the same order as pane
-    // bytes, and no byte falls inside a reply block, so the count of chunks
-    // received when it arrives is the cut in this stream's bytes.
+    // bytes, and no byte falls inside a reply block, so the buffer's length
+    // when it arrives is the cut in this stream's bytes.
     this.onBegin = (ev) => {
       if (this.seedCycle.phase !== "capturing") return;
-      this.seedBegins.set(ev.commandNumber, this.received);
+      this.seedCycle.begins.set(ev.commandNumber, this.buffer.length);
     };
     this.client.on("begin", this.onBegin);
 
@@ -469,9 +466,10 @@ export class PaneStream implements ReseedTarget {
   /**
    * Attach a sink.
    *
-   * - **First attach** (no cached seed) — issues capture-pane + cursor query,
-   *   buffers any live bytes that arrive in the meantime, and synchronously
-   *   seeds + drains the buffer once both responses resolve. State path:
+   * - **First attach** (no cached seed) — issues one command line, capture-pane
+   *   then the cursor-and-modes query, buffers any live bytes that arrive in
+   *   the meantime, and synchronously seeds + drains the buffer once the
+   *   line's reply resolves. State path:
    *   `idle → seeding → live`.
    * - **Re-attach** (a prior attach already seeded successfully) — replays
    *   the cached seed to the new sink synchronously, no tmux round-trip.
@@ -650,7 +648,6 @@ export class PaneStream implements ReseedTarget {
     // Activity accounting (no allocation: number arithmetic + getters).
     this.currentLastByteAt = Date.now();
     this.currentBytesSinceAttach += data.byteLength;
-    this.received += 1;
 
     // [LAW:one-source-of-truth] The cached seed is the pane's picture as of
     // its capture; any byte moves the pane past it, in every state, so the
@@ -702,41 +699,31 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * Begin a new seed cycle. Owns every write to `this.pendingSeed`; the
-   * inner `seed()` body never touches the field.
+   * Begin a new seed cycle: enter `capturing`, then issue the capture.
    *
-   * Bookkeeping order: invoke `seed()` (which, as an async function, runs
-   * its body synchronously until the first `await` and then yields a
-   * promise), assign the returned promise to `this.pendingSeed`, attach a
-   * `.finally` that clears the field iff it still points at *this* cycle.
-   * That last clause matters because the body may chain a stale-re-issue
-   * (`if (seedStaleMidFlight) startSeedCycle()`), in which case the new
-   * cycle's promise has already replaced ours and our `.finally` must
-   * leave it alone.
+   * [LAW:no-ambient-temporal-coupling] The cycle exists before `seed()` sends
+   *   the RPC, because a synchronous connection (the mock server, the chaos
+   *   transport) delivers the reply's `%begin` inside `execute()`, and only a
+   *   capturing cycle records it. A fresh cycle is also what resets
+   *   staleness — there is no separate flag to clear.
    *
-   * Why the wrapper exists: an earlier version assigned the in-flight field
-   * from inside `seed()` itself. When `execute()` threw synchronously the
-   * body ran fully sync — and the outer caller's assignment then overwrote the
-   * body's reset, leaving the field pointing at a resolved promise forever.
-   * Lifting the assignment out of the async body fixes the race.
-   *
-   * Entering `capturing` here (not stale) is also what resets staleness for the
-   * new cycle — there is no separate flag to clear.
+   * The resolution resets to `idle` only if the field still holds THIS cycle:
+   * the body may chain a stale re-issue, whose new cycle has already replaced
+   * ours and owns the field. [LAW:stale-rejection-guard-identity]
    *
    * [LAW:single-enforcer] Every `this.seedCycle` write for start/resolution
    *   lives here; the only other writer is `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
-    this.seedBegins.clear();
-    const p = this.seed();
-    this.seedCycle = { phase: "capturing", run: p, stale: false };
+    const cycle: Capturing = {
+      phase: "capturing",
+      stale: false,
+      begins: new Map(),
+    };
+    this.seedCycle = cycle;
+    const p = this.seed(cycle);
     void p.finally(() => {
-      // [LAW:stale-rejection-guard-identity] Reset to idle only if the field
-      // still points at THIS cycle's run. A stale re-issue replaces it with a
-      // new run before our `.finally` fires; that new cycle owns the field.
-      if (this.seedCycle.phase === "capturing" && this.seedCycle.run === p) {
-        this.seedCycle = { phase: "idle" };
-      }
+      if (this.seedCycle === cycle) this.seedCycle = { phase: "idle" };
     });
     return p;
   }
@@ -761,11 +748,9 @@ export class PaneStream implements ReseedTarget {
     }
   }
 
-  private async seed(): Promise<void> {
-    // This cycle starts non-stale: `startSeedCycle` enters `capturing` (with
-    // `stale: false`) around this call. If the pane moves before the
-    // resolution below, `markSeedStale` sets the in-flight cycle's `stale` and
-    // we drop the result.
+  private async seed(cycle: Capturing): Promise<void> {
+    // `cycle` starts non-stale. If the pane moves before the resolution
+    // below, `markSeedStale` sets its `stale` and we drop the result.
 
     // Capture flags: -p stdout, -e SGR escapes, -q quiet (no error if the pane
     // is in copy/view mode), -N preserve trailing spaces. We deliberately do
@@ -797,7 +782,7 @@ export class PaneStream implements ReseedTarget {
     } | null = null;
     try {
       const response = await this.client.execute(`${captureCmd} ; ${stateCmd}`);
-      const begunAt = this.seedBegins.get(response.commandNumber);
+      const begunAt = cycle.begins.get(response.commandNumber);
       // [LAW:no-silent-failure] Without the reply's `begin` there is no
       //   telling which buffered bytes the snapshot already holds.
       if (begunAt === undefined) {
@@ -839,7 +824,7 @@ export class PaneStream implements ReseedTarget {
     // `markSeedStale`), so the snapshot is not the current pane state. Drop
     // it. If anyone is still attached, kick off a fresh seed — through
     // `startSeedCycle` so `this.seedCycle` follows the new cycle.
-    if (this.seedCycle.phase === "capturing" && this.seedCycle.stale) {
+    if (cycle.stale) {
       // No `lastSeed === null` guard: `markSeedStale` drops the cache as it
       // marks the capture stale, so a stale in-flight
       // capture provably has no cache to fall back on. Guarding on it here
@@ -874,11 +859,7 @@ export class PaneStream implements ReseedTarget {
         : buildSeed(reply.output, reply.stateLine, this.historyLines);
     // The buffered bytes tmux wrote before the capture's `%begin` are in the
     // snapshot; `trailing` is the rest. A failed capture holds none of them.
-    const inSnapshot =
-      reply === null
-        ? 0
-        : Math.max(0, reply.begunAt - (this.received - this.buffer.length));
-    const trailing = this.buffer.slice(inSnapshot);
+    const trailing = this.buffer.slice(reply === null ? 0 : reply.begunAt);
 
     // Cache for the next attach() — a re-attach reuses this without a fresh
     // capture-pane round-trip. A failed capture is no picture, so it is never
