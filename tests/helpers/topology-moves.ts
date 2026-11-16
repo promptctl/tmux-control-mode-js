@@ -40,13 +40,31 @@ export interface ArrivedChunk {
   readonly data: Uint8Array;
 }
 
+interface PanePlace {
+  paneId: number;
+  windowId: number;
+  sessionId: number;
+}
+
+const LIST_ALL_PANES = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
+
 /** `{paneId, windowId, sessionId}` for every pane on the server. */
 export async function listAllPanes(
   conn: Pick<TmuxConnection, "execute">,
-): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
-  const response = await conn.execute(command);
-  return parseListReply(command, response.output, parsePaneListLine);
+): Promise<PanePlace[]> {
+  const response = await conn.execute(LIST_ALL_PANES);
+  return parseListReply(LIST_ALL_PANES, response.output, parsePaneListLine);
+}
+
+/** The same list, read out of band through the tmux CLI, so no connection
+ *  under test sends the query. */
+export function listAllPanesOn(socketName: string): PanePlace[] {
+  const out = tmux(socketName, ["list-panes", "-a", "-F", PANE_LIST_FORMAT]);
+  return parseListReply(
+    LIST_ALL_PANES,
+    out.trim().split("\n"),
+    parsePaneListLine,
+  );
 }
 
 /** Make the pane print `scope-test-<paneId>`, typed into that pane by id. */

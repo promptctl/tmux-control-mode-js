@@ -34,6 +34,7 @@ import {
 import { killTmuxServer } from "../../../tests/helpers/reap-test-sockets.ts";
 import {
   describeTopologyMoves,
+  listAllPanesOn,
   makeRecordingSink,
   sendOutputToPane,
   textOf,
@@ -287,25 +288,6 @@ describeTopologyMoves("BridgePaneStreamClient over ElectronBridge", (s, n) =>
   electronPage(s, n),
 );
 
-/** pane id -> window id for every pane on the server, read out of band. */
-function windowOfPane(socketName: string): Map<number, number> {
-  const out = tmux(socketName, [
-    "list-panes",
-    "-a",
-    "-F",
-    "#{pane_id} #{window_id}",
-  ]);
-  return new Map(
-    out
-      .trim()
-      .split("\n")
-      .map((line) => {
-        const [pane, window] = line.split(" ");
-        return [Number(pane!.slice(1)), Number(window!.slice(1))];
-      }),
-  );
-}
-
 describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
   "a socket swap on the Electron page",
   () => {
@@ -313,52 +295,57 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
       const socketA = uniqueSocket("tmux-scope-test-", "electron-swap-a");
       const socketB = uniqueSocket("tmux-scope-test-", "electron-swap-b");
       const sessionB = uniqueName("swap-b");
-      const page = await electronPage(socketA, uniqueName("swap-a"));
       try {
-        // Pane %1 has a window of its own on A and shares %0's on B, so a
-        // router still holding A's table after the swap misroutes it. The
-        // page hears A's new window before any sink needs topology, so the
-        // only query on each server is the bootstrap.
-        let windowAdded = false;
-        page.conn.on("window-add", () => (windowAdded = true));
-        tmux(socketA, ["new-window", "-d"]);
-        await pollUntil(() => windowAdded);
-        tmux(socketB, ["new-session", "-d", "-s", sessionB]);
-        tmux(socketB, ["split-window", "-d"]);
-        const onA = windowOfPane(socketA);
-        const window = windowOfPane(socketB).get(1)!;
-        expect(onA.get(1)).not.toBe(window);
-        const paneOnA = [...onA].find(([, w]) => w === window)![0];
+        const page = await electronPage(socketA, uniqueName("swap-a"));
+        try {
+          // Pane %1 has a window of its own on A and shares %0's on B, so a
+          // router still holding A's table after the swap misroutes it. The
+          // page hears A's new window before any sink needs topology, so the
+          // only query on each server is the bootstrap.
+          let windowAdded = false;
+          page.conn.on("window-add", () => (windowAdded = true));
+          tmux(socketA, ["new-window", "-d"]);
+          await pollUntil(() => windowAdded);
+          tmux(socketB, ["new-session", "-d", "-s", sessionB]);
+          tmux(socketB, ["split-window", "-d"]);
+          const onA = listAllPanesOn(socketA);
+          const window = listAllPanesOn(socketB).find(
+            (p) => p.paneId === 1,
+          )!.windowId;
+          expect(onA.find((p) => p.paneId === 1)!.windowId).not.toBe(window);
+          const paneOnA = onA.find((p) => p.windowId === window)!.paneId;
 
-        const arrived: ArrivedChunk[] = [];
-        let ended = false;
-        let reconnects = 0;
-        page.conn.on("reconnected", () => reconnects++);
-        page.conn.attachBytesSink(
-          { ...makeRecordingSink(arrived), end: () => (ended = true) },
-          { scope: windowScope(window) },
-        );
-        await sendOutputToPane(page.conn, paneOnA);
-        await pollUntil(() =>
-          textOf(arrived, paneOnA).includes(`scope-test-${paneOnA}`),
-        );
+          const arrived: ArrivedChunk[] = [];
+          let ended = false;
+          let reconnects = 0;
+          page.conn.on("reconnected", () => reconnects++);
+          page.conn.attachBytesSink(
+            { ...makeRecordingSink(arrived), end: () => (ended = true) },
+            { scope: windowScope(window) },
+          );
+          await sendOutputToPane(page.conn, paneOnA);
+          await pollUntil(() =>
+            textOf(arrived, paneOnA).includes(`scope-test-${paneOnA}`),
+          );
 
-        await page.swapMain(socketB, sessionB);
-        await pollUntil(() => page.conn.connectionState.status === "ready");
-        await sendOutputToPane(page.conn, 1);
-        await pollUntil(() => textOf(arrived, 1).includes("scope-test-1"));
+          await page.swapMain(socketB, sessionB);
+          await pollUntil(() => page.conn.connectionState.status === "ready");
+          await sendOutputToPane(page.conn, 1);
+          await pollUntil(() => textOf(arrived, 1).includes("scope-test-1"));
 
-        expect(ended).toBe(false);
-        expect(reconnects).toBe(1);
-        // [LAW:one-source-of-truth] The page keeps one topology: only the
-        //   adapter's router queries tmux, once per connection.
-        expect(
-          page.sentByMain.map(
-            (sent) => sent.filter((c) => c.startsWith("list-panes")).length,
-          ),
-        ).toEqual([1, 1]);
+          expect(ended).toBe(false);
+          expect(reconnects).toBe(1);
+          // [LAW:one-source-of-truth] The page keeps one topology: only the
+          //   adapter's router queries tmux, once per connection.
+          expect(
+            page.sentByMain.map(
+              (sent) => sent.filter((c) => c.startsWith("list-panes")).length,
+            ),
+          ).toEqual([1, 1]);
+        } finally {
+          page.close();
+        }
       } finally {
-        page.close();
         killTmuxServer(socketA);
         killTmuxServer(socketB);
       }
