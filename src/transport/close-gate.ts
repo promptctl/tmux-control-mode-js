@@ -1,6 +1,8 @@
 // src/transport/close-gate.ts
 // Shared end-of-life state machine for TmuxTransport implementations.
 //
+import type { SendResult } from "./types.js";
+
 // [LAW:one-source-of-truth] Every transport answers "is it closed, and why"
 // from exactly one state value, dispatched exactly once. Both spawn.ts and
 // the websocket transport independently defined this same discriminated
@@ -26,12 +28,13 @@ export interface CloseGate {
   /** Register a callback to run on dispatch. */
   readonly onClose: (callback: (reason?: string) => void) => void;
   /**
-   * The `SendResult.reason` string for a send refused because this gate is
-   * closed: {@link closedSendReason} of its recorded reason. Callers must
-   * check `state().closed` first — calling this on an open gate throws
-   * rather than silently claiming "transport closed" while it is not.
+   * The `SendResult` for a send refused because this gate is closed: a
+   * closing refusal whose reason is {@link closedSendReason} of the recorded
+   * one. Callers must check `state().closed` first — calling this on an open
+   * gate throws rather than silently claiming "transport closed" while it is
+   * not.
    */
-  readonly deniedSendReason: () => string;
+  readonly deniedSend: () => SendResult;
 }
 
 // [LAW:single-enforcer] The one formatting of "not sent, because the
@@ -64,17 +67,21 @@ export function createCloseGate(): CloseGate {
       }
       callbacks.push(callback);
     },
-    deniedSendReason() {
+    deniedSend() {
       // [LAW:no-silent-failure] A caller that skipped the state().closed
       // check would otherwise silently get "transport closed" back for a
       // gate that is not, in fact, closed — a real answer to the wrong
       // question. Fail loud instead of misrepresenting the state.
       if (!state.closed) {
         throw new Error(
-          "CloseGate.deniedSendReason() called on a gate that is not closed",
+          "CloseGate.deniedSend() called on a gate that is not closed",
         );
       }
-      return closedSendReason(state.reason);
+      return {
+        ok: false,
+        reason: closedSendReason(state.reason),
+        closing: true,
+      };
     },
   };
 }

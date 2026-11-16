@@ -8,7 +8,7 @@
 //   here only. Transport adapters call onTransportReady / handleNotification / dispatchBytes;
 //   they do NOT own a topology table, a sink registry, or a bootstrap method.
 // [LAW:effects-at-boundaries] TopologyRouter is a pure substrate: it issues commands via
-//   the injected runCommand callback (provided by the transport adapter) and does nothing
+//   the injected RunCommand callback (provided by the transport adapter) and does nothing
 //   else to the outside world. It does NOT call the emitter — non-topology notifications
 //   are still passed by the transport adapter to its own emitter.
 
@@ -184,7 +184,7 @@ export class TopologyRouter {
     this.reportTopologyError = reportTopologyError;
     if (options?.idlePaneSuppression === true) {
       // [LAW:effects-at-boundaries] The suppressor's only path to tmux is this
-      //   sender, which the router gates on the live runCommand.
+      //   sender, which drops actions when there is no connection.
       this.suppressor = new IdlePaneSuppressor((paneId, action) =>
         this.sendPaneAction(paneId, action),
       );
@@ -229,8 +229,9 @@ export class TopologyRouter {
    * closed, or post-welcome for WebSocket) — i.e. connectionState
    * reaching "ready", not merely the first byte arriving.
    *
-   * Stores the runCommand callback and triggers a topology bootstrap if any
-   * session- or window-scoped sinks are already attached.
+   * Makes `runCommand` the live connection's runner, supersedes every query
+   * a previous runner has in flight, and triggers a topology bootstrap if
+   * any session- or window-scoped sinks are already attached.
    *
    * Idempotent for the same readiness state — re-calling with the same
    * connection context (e.g., on reconnect) triggers a fresh bootstrap.
@@ -241,6 +242,10 @@ export class TopologyRouter {
 
   private readonly ready = (runCommand: RunCommand): void => {
     this.connection = { phase: "live", run: runCommand };
+    // [LAW:single-enforcer] A new runner is a connection change even when
+    //   no loss announced the old one (an adapter may re-announce ready):
+    //   the epoch makes the old runner's answers stale.
+    this.epoch.supersedeAll();
     // [LAW:no-ambient-temporal-coupling] No interest "replay" is needed here.
     //   Before a runner exists, sendPaneAction drops every action — but the
     //   only panes the tracker can mark interesting pre-ready are pane-scope
@@ -274,7 +279,7 @@ export class TopologyRouter {
     this.connection = { phase: "lost", run };
     // [LAW:single-enforcer] The epoch is the one staleness authority: losing
     //   the connection supersedes every query in flight on it.
-    this.epoch.connectionLost();
+    this.epoch.supersedeAll();
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.
     this.topology.seed([]);
@@ -293,7 +298,7 @@ export class TopologyRouter {
 
   private readonly close = (): void => {
     this.connection = NO_CONNECTION;
-    this.epoch.connectionLost();
+    this.epoch.supersedeAll();
     // [LAW:no-ambient-temporal-coupling] There is no connection now, so the
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.

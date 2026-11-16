@@ -151,12 +151,11 @@ function classifyDispatchError(method: RpcMethod, err: unknown): BridgeOutcome {
   if (err instanceof BridgeError) {
     return { kind: "bridge-error", error: err };
   }
-  // [LAW:one-type-per-behavior] Both a transport send refusal (the command
-  // never left this process) and a transport close while a command was
-  // still awaiting a reply are the same operational close of the upstream
-  // tmux connection — the same consumer-facing state as a bridge close, so
-  // both carry the same code, never BRIDGE_INTERNAL (which means "bug").
-  // The reason rides in the message either way.
+  // [LAW:one-type-per-behavior] A transport close while a command was
+  // pending, and a send refused by an upstream client that is closed or not
+  // open, are one consumer-facing state: the upstream tmux connection cannot
+  // carry the call, as with a bridge close. Both carry the same code, never
+  // BRIDGE_INTERNAL (which means "bug"). The reason rides in the message.
   if (
     err instanceof TransportSendError ||
     err instanceof TransportClosedError

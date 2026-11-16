@@ -783,14 +783,15 @@ export class PaneInterestTracker {
  */
 export class TopologyEpochTracker {
   private bootstrapGen = 0;
-  // [LAW:types-are-the-program] The gen of the most recently *started* bootstrap.
+  // [LAW:types-are-the-program] The gen of the latest supersedeAll — a
+  //   bootstrap start, or a connection change that started none.
   //   Distinct from bootstrapGen, which is also bumped by invalidateWindow: a
   //   window-add/-close invalidates an in-flight bootstrap's SUCCESS (its seed
   //   can predate the window's change) but does NOT start a replacement, so it
   //   must not make a genuine bootstrap FAILURE look superseded. The success path
   //   asks isBootstrapCurrent; the failure path asks isLatestBootstrap — two
   //   distinct staleness questions, one enforcer. [LAW:single-enforcer]
-  private latestBootstrapStartGen = 0;
+  private latestSupersedeGen = 0;
   private readonly windowGens = new Map<number, number>();
   // [LAW:types-are-the-program] Global monotone counter — each startWindowRefresh
   // call gets a strictly-greater-than-all-prior token. After startBootstrap()
@@ -814,19 +815,20 @@ export class TopologyEpochTracker {
    * cannot alias any pre-clear token.
    */
   startBootstrap(): number {
-    this.windowGens.clear();
-    this.layoutsSinceBootstrap.clear();
-    this.latestBootstrapStartGen = ++this.bootstrapGen;
-    return this.latestBootstrapStartGen;
+    this.supersedeAll();
+    return this.latestSupersedeGen;
   }
 
   /**
-   * Call when the connection the queries ran on is lost or closed. Every
-   * query in flight is superseded on both paths, as by a bootstrap start, and
-   * none replaces it: the next connection's bootstrap owns the outcome.
+   * Supersede every query in flight, success and failure paths alike. A
+   * bootstrap start does this; so does a connection change (ready, lost,
+   * closed), whose in-flight queries were asked of a connection that no
+   * longer answers for the topology — the next bootstrap owns the outcome.
    */
-  connectionLost(): void {
-    this.startBootstrap();
+  supersedeAll(): void {
+    this.windowGens.clear();
+    this.layoutsSinceBootstrap.clear();
+    this.latestSupersedeGen = ++this.bootstrapGen;
   }
 
   /** Call before applying seed(). Returns false if a newer event superseded this query. */
@@ -835,18 +837,18 @@ export class TopologyEpochTracker {
   }
 
   /**
-   * Call on the bootstrap FAILURE path. True iff this bootstrap is still the
-   * most recently *started* one — i.e. no newer bootstrap has superseded it.
+   * Call on the bootstrap FAILURE path. True iff nothing has superseded this
+   * bootstrap since it started — no newer bootstrap, no connection change.
    *
    * A newer bootstrap owns the topology outcome (it will seed a healthy table or
    * report its own failure), so a superseded attempt's rejection must stay
    * silent to avoid a false alarm on an already-repaired connection. A failure
-   * that is NOT superseded by a newer *start* — including one whose gen was
+   * that is NOT superseded so — including one whose gen was
    * bumped only by `invalidateWindow` — is the authoritative topology state and
    * must be reported. [LAW:no-silent-failure]
    */
   isLatestBootstrap(gen: number): boolean {
-    return this.latestBootstrapStartGen === gen;
+    return this.latestSupersedeGen === gen;
   }
 
   /** Call on every `layout-change`, with the panes its layout lists. */

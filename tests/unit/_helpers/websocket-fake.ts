@@ -43,8 +43,11 @@ export class FakeWebSocket implements BrowserWebSocketLike {
     // The transport only ever sends strings; tests assert that.
     this.sent.push(data as string);
   }
+  // As a real socket's close() does, the handshake starts: CLOSING until the
+  // close event, which a test emits.
   close(_code?: number, _reason?: string): void {
     this.closed = true;
+    this.readyState = 2;
   }
 
   addEventListener(

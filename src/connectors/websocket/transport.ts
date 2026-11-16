@@ -136,12 +136,11 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // ws.send — both are refused here as a typed result instead.
     send(command: string): SendResult {
       if (closeGate.state().closed) {
-        return {
-          ok: false,
-          reason: closeGate.deniedSendReason(),
-          closing: true,
-        };
+        return closeGate.deniedSend();
       }
+      // Ahead of readyState: the close this failure started leaves the
+      // socket CLOSING, and the refusal names the failure, not its echo.
+      if (sendFailure !== undefined) return refuseSend(sendFailure);
       // CLOSING and CLOSED are the socket ending, and the spec guarantees
       // its close event; CONNECTING has lost nothing.
       if (ws.readyState !== WEBSOCKET_OPEN) {
@@ -151,7 +150,6 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
           closing: ws.readyState !== WEBSOCKET_CONNECTING,
         };
       }
-      if (sendFailure !== undefined) return refuseSend(sendFailure);
       const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; the
       // socket is a consumer-supplied structural object (polyfills included),

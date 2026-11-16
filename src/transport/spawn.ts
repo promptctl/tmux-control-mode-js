@@ -146,11 +146,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
       if (closeGate.state().closed) {
-        return {
-          ok: false,
-          reason: closeGate.deniedSendReason(),
-          closing: true,
-        };
+        return closeGate.deniedSend();
       }
       if (stdinFailure !== undefined) {
         return refuseStdin(stdinFailure);
