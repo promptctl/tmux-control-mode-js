@@ -11,6 +11,7 @@ export type {
   ErrorMessage,
   OutputMessage,
   ExtendedOutputMessage,
+  PaneOutputMessage,
   PauseMessage,
   ContinueMessage,
   PaneModeChangedMessage,

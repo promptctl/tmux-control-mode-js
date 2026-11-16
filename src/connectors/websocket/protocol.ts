@@ -29,12 +29,6 @@ import type {
 import { windowLayoutFields } from "../../protocol/layout.js";
 import type { ChunkPayload } from "../../pane-output.js";
 
-// [LAW:one-source-of-truth] Re-export the canonical PaneOutputMessage from
-// the protocol types module. The websocket layer USES the type but does not
-// own it — moving the definition home means the four connector consumers all
-// reach the same name through a single declaration.
-export type { PaneOutputMessage } from "../../protocol/types.js";
-
 // ---------------------------------------------------------------------------
 // Error taxonomy
 //

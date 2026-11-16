@@ -6,8 +6,9 @@
 //     the encoder writes decodes back to the same paneId and bytes, and every
 //     frame the encoder cannot write is rejected with BridgeProtocolError.
 //
-// [LAW:one-source-of-truth] The round trip is the proof that the two halves
-//   describe one layout; a decoder variant with no encoder fails it.
+// [LAW:one-source-of-truth] The round trip proves every frame the encoder
+//   writes is read back; the flags-byte sweep proves the decoder reads nothing
+//   more. A decoder variant with no encoder fails the sweep.
 
 import { describe, expect, it } from "vitest";
 
