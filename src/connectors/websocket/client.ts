@@ -51,8 +51,8 @@ interface EmitterImpl {
 import {
   isPaneOutput,
   type CommandResponse,
+  type OutputMessage,
   type PaneAction,
-  type PaneOutputMessage,
   type PaneRecord,
   type SessionRecord,
   type TmuxMessage,
@@ -1062,7 +1062,7 @@ export class WebSocketTmuxClient
 
 /** One message the socket delivered, decoded: a text frame, or the pane
  *  output a binary frame carries. */
-type Inbound = ReceivedServerFrame | PaneOutputMessage;
+type Inbound = ReceivedServerFrame | OutputMessage;
 
 // [LAW:parse-dont-validate] The one decoder of what the socket delivers, for
 //   both phases. Anything that is not a frame throws a BridgeError.
@@ -1155,7 +1155,7 @@ interface PhaseReader<Ctx> {
   readonly output: (
     self: WebSocketTmuxClient,
     ctx: Ctx,
-    msg: PaneOutputMessage,
+    msg: OutputMessage,
   ) => void;
   readonly frames: FrameHandlers<Ctx>;
 }

@@ -17,7 +17,7 @@
 import type { DeliveredRoute } from "../bridge-connection.js";
 import type {
   CommandResponse,
-  PaneOutputMessage,
+  OutputMessage,
   PaneProcessState,
   PaneRecord,
   ProtocolErrorMessage,
@@ -256,48 +256,42 @@ export type ReceivedServerFrame =
 // Layout (network / big-endian byte order):
 //
 //   byte 0:        magic (0x7F)
-//   byte 1:        flags
-//                    bit 0: extended   — when set, age field is present
-//                    bit 1..7: reserved, must be zero
+//   byte 1:        flags — reserved, must be zero
 //   bytes 2-5:     paneId  (uint32 BE)
-//   bytes 6-9:     age     (uint32 BE, only when extended flag set)
 //   remaining:     pane bytes verbatim (no encoding, no framing)
 //
 // [LAW:one-source-of-truth] encodePaneOutput and decodePaneOutput are the
-// only functions that know this layout. Anything that ever peeks at the first
-// byte of a binary frame goes through `isPaneOutputFrame`.
+// only functions that know this layout, and they accept the same frame set:
+// what one writes is exactly what the other reads. Anything that ever peeks
+// at the first byte of a binary frame goes through `isPaneOutputFrame`.
 // ---------------------------------------------------------------------------
 
 /** Magic byte identifying a pane-output binary frame. */
 export const PANE_OUTPUT_MAGIC = 0x7f;
 
-const FLAG_EXTENDED = 0x01;
-
-const HEADER_BASE = 6;
-const HEADER_EXTENDED = 10;
+const HEADER = 6;
 
 export function isPaneOutputFrame(buf: Uint8Array): boolean {
   return buf.length > 0 && buf[0] === PANE_OUTPUT_MAGIC;
 }
 
-// [LAW:types-are-the-program] ChunkPayload strips the wire discriminator
-// fields (type, age) before dispatch — the wire frame always uses the base
-// (non-extended) layout. The browser-side decoder still supports extended
-// frames for forward compatibility; the server never emits them from sinks.
+// [LAW:types-are-the-program] ChunkPayload carries no `age` — the substrate
+// strips it before dispatch — so the frame has no field for one, and the
+// decoder yields the `output` shape alone.
 export function encodePaneOutput(msg: ChunkPayload): Uint8Array {
-  const out = new Uint8Array(HEADER_BASE + msg.data.byteLength);
+  const out = new Uint8Array(HEADER + msg.data.byteLength);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   out[0] = PANE_OUTPUT_MAGIC;
   out[1] = 0;
   view.setUint32(2, msg.paneId, false);
-  out.set(msg.data, HEADER_BASE);
+  out.set(msg.data, HEADER);
   return out;
 }
 
-export function decodePaneOutput(buf: Uint8Array): PaneOutputMessage {
-  if (buf.length < HEADER_BASE) {
+export function decodePaneOutput(buf: Uint8Array): OutputMessage {
+  if (buf.length < HEADER) {
     throw new BridgeProtocolError(
-      `pane-output frame truncated: got ${buf.length} bytes, need >=${HEADER_BASE}`,
+      `pane-output frame truncated: got ${buf.length} bytes, need >=${HEADER}`,
     );
   }
   if (buf[0] !== PANE_OUTPUT_MAGIC) {
@@ -307,31 +301,18 @@ export function decodePaneOutput(buf: Uint8Array): PaneOutputMessage {
         .padStart(2, "0")}`,
     );
   }
-  const flags = buf[1];
-  if ((flags & ~FLAG_EXTENDED) !== 0) {
+  if (buf[1] !== 0) {
     throw new BridgeProtocolError(
-      `pane-output frame has unknown flag bits set: 0x${flags
+      `pane-output frame has reserved flag bits set: 0x${buf[1]
         .toString(16)
         .padStart(2, "0")}`,
     );
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const paneId = view.getUint32(2, false);
-  const extended = (flags & FLAG_EXTENDED) !== 0;
-  if (!extended) {
-    return { type: "output", paneId, data: buf.slice(HEADER_BASE) };
-  }
-  if (buf.length < HEADER_EXTENDED) {
-    throw new BridgeProtocolError(
-      `extended pane-output frame truncated: got ${buf.length} bytes, need >=${HEADER_EXTENDED}`,
-    );
-  }
-  const age = view.getUint32(6, false);
   return {
-    type: "extended-output",
-    paneId,
-    age,
-    data: buf.slice(HEADER_EXTENDED),
+    type: "output",
+    paneId: view.getUint32(2, false),
+    data: buf.slice(HEADER),
   };
 }
 
