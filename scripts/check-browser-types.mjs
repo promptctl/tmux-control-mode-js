@@ -29,7 +29,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 
 // Subpaths whose API is Node's own types, by design.
 const NODE_ONLY = new Set([
@@ -88,13 +88,12 @@ try {
 
   const lines = output.split("\n");
   const diagnostics = lines.filter((l) => l.includes("error TS"));
-  const nodeTypes = lines.filter((l) =>
-    l.includes(`${sep}@types${sep}node${sep}`),
-  );
+  // --listFiles prints "/"-separated paths on every platform.
+  const nodeTypes = lines.filter((l) => l.includes("/@types/node/"));
 
   if (failed || nodeTypes.length > 0) {
     console.error(
-      `✗ the declarations of ${specifiers.length} browser-facing export(s) do not type-check without Node's types:`,
+      `✗ the declarations of ${specifiers.length} export(s) do not type-check without Node's types:`,
     );
     for (const d of diagnostics) console.error(`    ${d}`);
     if (nodeTypes.length > 0) {
@@ -113,7 +112,7 @@ try {
   }
 
   console.log(
-    `✓ all ${specifiers.length} browser-facing exports' declarations type-check with the DOM lib and no @types/node`,
+    `✓ all ${specifiers.length} exports' declarations type-check with the DOM lib and no @types/node`,
   );
 } finally {
   rmSync(consumer, { recursive: true, force: true });

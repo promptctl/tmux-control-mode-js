@@ -80,11 +80,13 @@ interface FakeWs extends ServerWebSocketLike {
 // deadline.
 type ClosingPing = "dropped" | "refused";
 
+const utf8 = new TextEncoder();
+
 function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
   let buffered = 0;
   interface Listeners {
     message?: (data: unknown, isBinary: boolean) => void;
-    close?: (code: number, reason: Buffer | string) => void;
+    close?: (code: number, reason: Uint8Array | string) => void;
     error?: (err: Error) => void;
     pong?: () => void;
     ping?: () => void;
@@ -116,14 +118,16 @@ function createFakeWs(closingPing: ClosingPing = "dropped"): FakeWs {
         const call = parseClientFrame(raw);
         if (call.k === "call") calls.set(call.id, call.method);
       }
-      listeners.message?.(raw, false);
+      // `ws` delivers a text frame as its UTF-8 bytes.
+      listeners.message?.(utf8.encode(raw), false);
     },
     feedBinary(bytes) {
       listeners.message?.(bytes, true);
     },
     fireClose(code = 1000, reason = "") {
       readyState = 3;
-      listeners.close?.(code, reason);
+      // `ws` delivers a close reason as its UTF-8 bytes.
+      listeners.close?.(code, utf8.encode(reason));
     },
     fireError(err) {
       listeners.error?.(err);
@@ -1590,6 +1594,44 @@ function closedEvents(
       e.kind === "connection-closed",
   );
 }
+
+describe("WebSocket bridge — text is UTF-8", () => {
+  it("a call's non-ASCII text reaches tmux as the characters the browser sent", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedClient({
+      k: "call",
+      id: "x",
+      method: "execute",
+      args: ["display-message 'café ✓ 日本'"],
+    });
+    await flush();
+    expect(t.sent).toContain("display-message 'café ✓ 日本'\n");
+  });
+
+  it("a peer's non-ASCII close reason is reported as the text it sent", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => client,
+      onEvent: (ev) => events.push(ev),
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.fireClose(4000, "au revoir — fermé");
+    expect(closedEvents(events)).toEqual([
+      expect.objectContaining({ code: 4000, reason: "au revoir — fermé" }),
+    ]);
+  });
+});
 
 describe("WebSocket bridge — upstream close", () => {
   it("closes the socket with a fatal naming the upstream; the in-flight call's reply is recorded but never reaches the closing socket", async () => {

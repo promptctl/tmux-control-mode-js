@@ -34,7 +34,6 @@
 // [LAW:single-enforcer] Exactly one place (`finalize`) tears a connection
 // down. Every error path funnels through it.
 
-import { bytesToLatin1 } from "../../protocol/byte-codec.js";
 import type { TmuxClient } from "../../client.js";
 import type { ConnectionState as TmuxConnectionState } from "../../connection-state.js";
 import type { EmitterMessage } from "../../emitter.js";
@@ -101,8 +100,9 @@ import {
   type ServerCloseCode,
 } from "./close-code.js";
 
-// A close frame's reason is UTF-8 (RFC 6455 §5.5.1).
-const closeReasonDecoder = new TextDecoder();
+// A text frame's payload and a close frame's reason are UTF-8 (RFC 6455
+// §5.6, §5.5.1); `ws` hands both over as bytes.
+const wsText = new TextDecoder();
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -539,7 +539,7 @@ class Connection {
         typeof data === "string"
           ? data
           : data instanceof Uint8Array
-            ? bytesToLatin1(data)
+            ? wsText.decode(data)
             : String(data);
       this.onFrame(text);
     });
@@ -553,10 +553,7 @@ class Connection {
       this.finalize(undefined, {
         kind: "close-event",
         code,
-        reason:
-          typeof reason === "string"
-            ? reason
-            : closeReasonDecoder.decode(reason),
+        reason: typeof reason === "string" ? reason : wsText.decode(reason),
       });
     });
 
