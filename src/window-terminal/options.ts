@@ -11,6 +11,8 @@
 //   whose arm says who owns the window's size. `fit` exists only where tmux
 //   owns it, the floors only where the box does, so no field is ever dead.
 
+import { DEFAULT_HISTORY } from "./engine/seed-builder.js";
+
 /** One font size in CSS px, or the range the solver picks from. */
 export type FontRange = number | { readonly min: number; readonly max: number };
 
@@ -151,7 +153,3 @@ export function parseHistory(raw: number | undefined): number {
   }
   return n;
 }
-
-// tmux's default `history-limit`, so a pane arrives with as much history as
-// tmux keeps for it by default.
-const DEFAULT_HISTORY = 2000;

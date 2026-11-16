@@ -108,17 +108,10 @@ describe("buildSeed: terminal-mode escapes", () => {
     // cursor_flag=1, insert=0, app-cursor=1, keypad=1 → ?25h, 4l, ?1h, ESC=.
     const { captured } = buildSeed(["x"], "0;0;0;1;0;1;1;0;;", 0);
     expect(text(captured)).toBe(
-      `${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J${ESC}[?7l` + // preamble: main screen, home, erased + wrap off
+      `${ESC}[?1049l${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}[?7l` + // preamble: main screen, home, SGR reset, erased + wrap off
         "x" +
         `${ESC}[?25h${ESC}[4l${ESC}[?1h${ESC}=`, // epilogue
     );
-  });
-
-  it("a main-screen pane's preamble erases the screen and its scrollback before drawing", () => {
-    const { captured } = buildSeed(["hi"], "0;0;0;0;0;0;0;0;;", 0);
-    expect(
-      text(captured).startsWith(`${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J`),
-    ).toBe(true);
   });
 
   it("treats an empty mode field as a no-op (never forces the mode off)", () => {
@@ -130,7 +123,7 @@ describe("buildSeed: terminal-mode escapes", () => {
   });
 });
 
-describe("buildSeed: a seed applied again leaves the pane's history once", () => {
+describe("buildSeed: a seed written over a terminal replaces its picture", () => {
   // Every recapture (resize, %continue, reconnect) hands the sink a fresh seed
   // carrying the pane's history, written over whatever the terminal shows. Each
   // seed must leave tmux's picture there once, not stack its history on the
@@ -180,6 +173,32 @@ describe("buildSeed: a seed applied again leaves the pane's history once", () =>
     await write(term, "old0\r\nold1\r\nold2\r\nold3\r\nold4");
     await write(term, seed.captured);
     expect(lines(term)).toEqual([...HISTORY, ...SCREEN]);
+    term.dispose();
+  });
+
+  it("an alt-screen seed leaves no tail of the rows it draws over", async () => {
+    // capture-pane drops trailing blanks, so "x" over "abcdefgh" must not
+    // leave "xbcdefgh", and a padded blank row must not keep its old text.
+    const term = terminal();
+    await write(term, `${ESC}[?1049habcdefgh\r\nabcdefgh\r\nabcdefgh`);
+    const alt = buildSeed(["x", ""], "0;0;1;1;0;0;0;1;3;0", DEPTH);
+    await write(term, alt.captured);
+    const buf = term.buffer.active;
+    expect(
+      [0, 1, 2].map((i) => buf.getLine(i)?.translateToString(true)),
+    ).toEqual(["x", "", ""]);
+    term.dispose();
+  });
+
+  it("erases with the default background, whatever colour the stream saved", async () => {
+    // ED 2 erases with the current background, and the seed's ?1049l restores
+    // the attributes a DECSC saved, so a colour saved by the live stream would
+    // fill every blank cell of the seed.
+    const term = terminal();
+    await write(term, `${ESC}[41m${ESC}7${ESC}[0m`);
+    await write(term, seed.captured);
+    const cell = term.buffer.active.getLine(HISTORY.length + 2)?.getCell(5);
+    expect(cell?.isBgDefault()).toBe(true);
     term.dispose();
   });
 });

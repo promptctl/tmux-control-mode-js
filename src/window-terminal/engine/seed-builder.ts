@@ -18,6 +18,14 @@
 import type { SeedCursor } from "./terminal-sink.js";
 
 /**
+ * The history depth a pane carries when nobody says otherwise: tmux's default
+ * `history-limit`, so a pane arrives with as much history as tmux keeps for it.
+ * The capture depth and the terminal's scrollback are one quantity — a seed
+ * erases the scrollback and writes this many lines back — so both default here.
+ */
+export const DEFAULT_HISTORY = 2000;
+
+/**
  * The replayable snapshot of a pane: the raw seed bytes plus the cursor to home
  * to after writing them. Also the shape PaneStream caches for re-attach.
  */
@@ -164,18 +172,18 @@ function parseSeedState(line: string): SeedState {
   //   content; ?1049h enters alt screen before drawing alt-screen content.
   //   Without explicit CUP-home, ?1049l restores the cursor saved at the
   //   matching ?1049h entry point rather than row 0 — content draws mid-screen.
-  // A main-screen seed is the pane's whole picture, history included, so it
-  //   erases the screen (ED 2) and the scrollback (ED 3) before drawing: a
-  //   recapture written over an earlier one replaces its history rather than
-  //   stacking another copy into the scrollback. An alt-screen seed leaves the
-  //   main screen's scrollback alone — the alternate buffer has none to stack,
-  //   and that scrollback is what the user returns to when the program exits.
+  // A seed is the pane's whole picture, so it erases the screen (ED 2) before
+  //   drawing: capture-pane drops trailing blanks, so a row drawn over an old
+  //   one would otherwise leave the old row's tail. SGR 0 goes first, because
+  //   ED 2 erases with the current background and ?1049l's DECRC restores
+  //   whatever attributes ?1049h saved. A main-screen seed carries the pane's
+  //   history too, so it also erases the scrollback (ED 3): a recapture written
+  //   over an earlier one replaces its history rather than stacking another
+  //   copy. An alt-screen seed leaves the main screen's scrollback alone — that
+  //   is what the user returns to when the program exits.
+  const erase = `${ESC}[H${ESC}[0m${ESC}[2J`;
   const preamble =
-    mode(
-      f[2],
-      `${ESC}[?1049h${ESC}[H`,
-      `${ESC}[?1049l${ESC}[H${ESC}[2J${ESC}[3J`,
-    ) + // screen + CUP home (+ erase, main screen)
+    mode(f[2], `${ESC}[?1049h${erase}`, `${ESC}[?1049l${erase}${ESC}[3J`) + // screen, CUP home, erase (+ scrollback, main screen)
     mode(f[7], `${ESC}[?7h`, `${ESC}[?7l`); // DECAWM autowrap
 
   // After content: input/cursor modes that the captured grid can't carry.

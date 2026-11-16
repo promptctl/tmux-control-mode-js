@@ -362,23 +362,38 @@ test("a pane resized again and again holds its history once", async () => {
       return { rows: height, lines: history + height };
     };
     // The pane's xterm: its screen rows, and its lines (scrollback and
-    // screen), the scroll area being one row tall per line.
+    // screen). The scroll area outgrows the viewport by one row per
+    // scrollback line; measuring past the viewport leaves out any slack
+    // between the viewport and the rows it draws.
     const xtermGrid = (): Promise<{ rows: number; lines: number }> =>
       page.evaluate((id) => {
         const pane = document.querySelector(`.wt-pane[data-pane-id="${id}"]`);
         const area = pane?.querySelector(".xterm-scroll-area");
+        const viewport = pane?.querySelector(".xterm-viewport");
         const rows = pane?.querySelectorAll(".xterm-rows > div");
-        if (area == null || rows == null || rows.length === 0) {
+        if (
+          area == null ||
+          viewport == null ||
+          rows == null ||
+          rows.length === 0
+        ) {
           return { rows: -1, lines: -1 };
         }
+        const height = (el: Element): number =>
+          el.getBoundingClientRect().height;
         return {
           rows: rows.length,
-          lines: Math.round(
-            area.getBoundingClientRect().height /
-              rows[0].getBoundingClientRect().height,
-          ),
+          lines:
+            rows.length +
+            Math.round((height(area) - height(viewport)) / height(rows[0])),
         };
       }, PANE);
+    // A row of the pane that reads exactly `text`: the output, not the echo
+    // of the command line that printed it.
+    const row = (text: string) =>
+      page
+        .locator(`.wt-pane[data-pane-id="${PANE}"] .xterm-rows > div`)
+        .filter({ hasText: new RegExp(`^\\s*${text}\\s*$`) });
     // The pane's new size reaches xterm on the notification that also has
     // the pane recaptured, so rows that agree mean the recapture is under
     // way; a history it stacked stays in the scrollback for every later
@@ -389,9 +404,7 @@ test("a pane resized again and again holds its history once", async () => {
         ? "same"
         : `xterm ${held.rows} rows/${held.lines} lines, tmux ${truth.rows}/${truth.lines}`;
     };
-    await expect(page.locator(".xterm-rows").first()).toContainText("60", {
-      timeout: 15_000,
-    });
+    await expect(row("60")).toHaveCount(1, { timeout: 15_000 });
     await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
     // A split below halves the pane and closing it restores the height:
     // each is a new pane size, so the pane is recaptured, history included.
@@ -410,6 +423,12 @@ test("a pane resized again and again holds its history once", async () => {
       tmux(socket, ["kill-pane", "-t", below]);
       await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
     }
+    // Output printed after the last resize reaches xterm behind that
+    // resize's seed, so a history the seed stacked is in the scrollback by
+    // the time the output shows.
+    tmux(socket, ["send-keys", "-t", PANE, "printf '%s\\n' do''ne", "Enter"]);
+    await expect(row("done")).toHaveCount(1, { timeout: 15_000 });
+    await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
   } finally {
     await disposeApp(handle);
   }

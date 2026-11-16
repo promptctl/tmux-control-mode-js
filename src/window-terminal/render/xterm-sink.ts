@@ -43,6 +43,7 @@
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ITerminalAddon } from "@xterm/xterm";
 import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
+import { DEFAULT_HISTORY } from "../engine/seed-builder.js";
 import {
   optionWrites,
   TERMINAL_DEFAULTS,
@@ -58,7 +59,6 @@ import { TMUX_CELLS } from "./tmux-cells.js";
 const utf8Encoder = new TextEncoder();
 
 const DEFAULT_FONT_SIZE = 14;
-const DEFAULT_SCROLLBACK = 10000;
 
 // Dispose each of `owned`, then throw `err`. A dispose that throws as well
 // is not lost: the error leaves as an AggregateError, `err` first.
@@ -139,7 +139,7 @@ export class XtermSink implements TerminalSink {
       // The Unicode provider below is xterm's proposed API.
       allowProposedApi: true,
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
-      scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
+      scrollback: opts.scrollback ?? DEFAULT_HISTORY,
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
