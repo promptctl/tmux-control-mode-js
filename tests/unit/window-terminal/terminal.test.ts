@@ -380,7 +380,8 @@ describe("window terminal — what is drawn", () => {
     await settle();
     expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
     expect(m.host.querySelector(".wt-root")).toBeNull();
-    expect(m.client.held()).toEqual(RELEASED);
+    expect(terminals).toHaveLength(1);
+    expect(m.client.held()).toEqual(NOTHING_HELD);
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {
@@ -629,10 +630,12 @@ describe("window terminal — dispose", () => {
   // after it, nothing it opens outlives the dispose.
   it("from onError(layout) while live, it leaves nothing on the connection", async () => {
     const m = await live();
+    const opened = terminals.length;
     m.terminal.onError(() => m.terminal.dispose());
     m.client.injectLayoutChange(1, "0000,80x24", "0000,80x24", "*");
     await settle();
     expect(m.errors.map((e) => e.seam)).toEqual(["layout"]);
+    expect(terminals).toHaveLength(opened);
     expect(m.client.held()).toEqual(RELEASED);
   });
 

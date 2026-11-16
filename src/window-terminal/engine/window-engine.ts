@@ -366,22 +366,16 @@ export class WindowEngine {
       facts.panes.map((p) => p.id),
     );
     for (const id of removed) this.disposePane(id);
-    for (const id of added) {
-      // A host listener reached earlier in this work (a layout error, a pane
-      // that failed to open) may have disposed the terminal.
-      if (this.ended) return;
-      this.createPane(id);
-    }
+    for (const id of added) this.createPane(id);
   }
 
-  // [LAW:single-enforcer] The one place a pane's tmux resources are taken, so
-  //   the one place an ended engine is refused them.
+  // [LAW:single-enforcer] The one place a pane's resources are taken, so the
+  //   one place an ended engine is refused them: a host listener reached
+  //   earlier in this work (a layout error, a pane that failed to open) may
+  //   have disposed the terminal.
   private createPane(id: PaneId): void {
-    const stream = new PaneStream({
-      client: this.connection,
-      paneId: paneNumber(id),
-      historyLines: this.history,
-    });
+    if (this.ended) return;
+    // Keys arrive from the person at the pane, never inside create().
     const surface = this.surfaces.create(id, (bytes) => {
       void stream.sendKeyBytes(bytes).catch((err: unknown) => {
         if (!isConnectionGone(err)) {
@@ -390,12 +384,17 @@ export class WindowEngine {
       });
     });
     // The renderer reports a pane that failed to open from inside create(),
-    // and a listener there may dispose the terminal: this pane is not held yet.
+    // and a listener there may dispose the terminal: the surface goes back
+    // before tmux is asked for anything.
     if (this.ended) {
       surface.dispose();
-      stream.dispose();
       return;
     }
+    const stream = new PaneStream({
+      client: this.connection,
+      paneId: paneNumber(id),
+      historyLines: this.history,
+    });
     stream.on("error", (e) =>
       this.report({ seam: e.phase, paneId: id, cause: e.cause }),
     );

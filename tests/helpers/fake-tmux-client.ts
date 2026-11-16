@@ -124,8 +124,11 @@ export class FakeTmuxClient {
   //   undefined)` — tests attach at serverScope so topology-based routing
   //   is not exercised.
   private readonly sinks = new SinkRegistry();
-  // Every sink attached and not since detached, for `held()`.
-  private readonly attachedSinks = new Set<BytesSink>();
+  // For `held()`: one token per attachment not since detached (a sink may be
+  //   attached more than once), and the subscriptions tmux accepted and was
+  //   not since told to drop.
+  private readonly attachments = new Set<object>();
+  private readonly subscriptions = new Set<string>();
 
   // Capture-pane invocation log + scriptable response handler. The log lets a
   // consumer assert re-mount churn on one stream issues exactly one capture;
@@ -198,13 +201,21 @@ export class FakeTmuxClient {
    * macrotask boundary between the call site and the response.
    */
   execute(command: string): Promise<CommandResponse> {
+    return this.issue(command).reply;
+  }
+
+  // The reply, and whether tmux refuses the command: known when it is issued.
+  private issue(command: string): {
+    readonly refused: boolean;
+    readonly reply: Promise<CommandResponse>;
+  } {
     this.commandLog.push(command);
     if (command.startsWith("capture-pane")) {
       this.captureLog.push(command);
     }
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
-    return new Promise((resolve, reject) => {
+    const reply = new Promise<CommandResponse>((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
         // TmuxClient.execute, which rejects with a typed error on %error /
@@ -238,20 +249,27 @@ export class FakeTmuxClient {
         });
       }, this.roundTripMs);
     });
+    return { refused: failure !== null, reply };
   }
 
-  // [LAW:single-enforcer] `execute()` is the fake's ONE command path, as it is
-  //   `TmuxClient`'s: the subscription methods encode and go through it, so the
-  //   command log and `setExecuteFailure` see subscriptions like any command.
+  // [LAW:single-enforcer] `issue()` is the fake's ONE command path, as
+  //   `execute()` is `TmuxClient`'s: the subscription methods encode and go
+  //   through it, so the command log and `setExecuteFailure` see subscriptions
+  //   like any command.
   subscribeRaw(
     name: string,
     what: string,
     format: string,
   ): Promise<CommandResponse> {
-    return this.execute(refreshClientSubscribe(name, what, format));
+    const { refused, reply } = this.issue(
+      refreshClientSubscribe(name, what, format),
+    );
+    if (!refused) this.subscriptions.add(name);
+    return reply;
   }
 
   unsubscribe(name: string): Promise<CommandResponse> {
+    this.subscriptions.delete(name);
     return this.execute(refreshClientUnsubscribe(name));
   }
 
@@ -278,9 +296,10 @@ export class FakeTmuxClient {
   //   `TmuxConnection` implementation. `attachBytesSink` is the public entry.
   attachBytesSink(sink: BytesSink, options?: AttachOptions): () => void {
     const detach = this.sinks.attach(sink, options?.scope ?? serverScope);
-    this.attachedSinks.add(sink);
+    const attachment = {};
+    this.attachments.add(attachment);
     return () => {
-      this.attachedSinks.delete(sink);
+      this.attachments.delete(attachment);
       detach();
     };
   }
@@ -379,8 +398,8 @@ export class FakeTmuxClient {
 
   /**
    * What consumers still hold on this connection: a listener's event type per
-   * listener (sorted), the byte sinks attached, and the subscription names
-   * issued and not since unsubscribed, in the order issued.
+   * listener (sorted), the byte-sink attachments, and the subscription names
+   * tmux accepted and was not since told to drop, in the order issued.
    */
   held(): {
     readonly listeners: readonly string[];
@@ -390,19 +409,10 @@ export class FakeTmuxClient {
     const listeners = [...this.listeners].flatMap(([type, set]) =>
       [...set].map(() => type),
     );
-    // `refresh-client -B 'name':'what':'format'` subscribes; `-B 'name'` alone
-    // unsubscribes.
-    const subscriptions = new Set<string>();
-    for (const command of this.commandLog) {
-      const m = /^refresh-client -B '([^']*)'(:?)/.exec(command);
-      if (m === null) continue;
-      if (m[2] === ":") subscriptions.add(m[1]);
-      else subscriptions.delete(m[1]);
-    }
     return {
       listeners: listeners.sort(),
-      sinks: this.attachedSinks.size,
-      subscriptions: [...subscriptions],
+      sinks: this.attachments.size,
+      subscriptions: [...this.subscriptions],
     };
   }
 
