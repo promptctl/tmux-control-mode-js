@@ -1518,7 +1518,9 @@ class Connection<Identity> {
 // readClientFrame does a single indexed lookup. The mapped
 // type forces exhaustiveness — adding a new ClientFrame kind without a
 // handler is a compile-time error, not a runtime "unknown kind" branch.
-// [LAW:single-enforcer] readClientFrame is the only call site.
+// [LAW:single-enforcer] readClientFrame is the table's only lookup. Its frame
+// is a parsed ClientFrame, so parseClientFrame alone keeps a peer's kind to
+// the table's own keys — never one Object.prototype names.
 // ---------------------------------------------------------------------------
 
 type ClientFrameByKind = FrameByKind<ClientFrame>;

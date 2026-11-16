@@ -1732,9 +1732,25 @@ describe("WebSocket bridge — a text frame's payload", () => {
   });
 });
 
-describe("WebSocket bridge — a client frame's kind", () => {
-  it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])(
-    "a kind named by Object.prototype (%s) is a protocol error, not a handler",
+describe("WebSocket bridge — a frame kind named by Object.prototype", () => {
+  const PROTOTYPE_KINDS = [
+    "constructor",
+    "__proto__",
+    "toString",
+    "hasOwnProperty",
+  ];
+
+  it.each(PROTOTYPE_KINDS)(
+    "a server frame of kind %s is a protocol error",
+    (k) => {
+      expect(() => parseServerFrame(JSON.stringify({ k }))).toThrow(
+        `[BRIDGE_PROTOCOL_ERROR] unknown server frame kind: ${k}`,
+      );
+    },
+  );
+
+  it.each(PROTOTYPE_KINDS)(
+    "a client frame of kind %s closes the connection with a protocol error",
     async (k) => {
       const t = createFakeTransport();
       const client = new TmuxClient(t.transport);

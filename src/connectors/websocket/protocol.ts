@@ -332,6 +332,8 @@ export function decodePaneOutput(buf: Uint8Array): OutputMessage {
 // them reads a field. Downstream operates on typed unions.
 // ---------------------------------------------------------------------------
 
+// Extract, not FrameByKind: over a generic F only the conditional type is
+// assignable back to F, which parseFrame returns.
 type FrameParserTable<F extends { readonly k: string }> = {
   readonly [K in F["k"]]: (raw: unknown) => Extract<F, { k: K }>;
 };
