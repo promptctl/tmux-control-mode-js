@@ -19,9 +19,7 @@ import type { ServerCloseCode } from "./close-code.js";
 // Common constants
 // ---------------------------------------------------------------------------
 
-/** readyState value for a CONNECTING WebSocket per the WHATWG standard. */
-export const WEBSOCKET_CONNECTING = 0 as const;
-/** readyState value for an OPEN WebSocket. */
+/** readyState value for an OPEN WebSocket per the WHATWG standard. */
 export const WEBSOCKET_OPEN = 1 as const;
 /** readyState value for a CLOSING WebSocket. */
 export const WEBSOCKET_CLOSING = 2 as const;

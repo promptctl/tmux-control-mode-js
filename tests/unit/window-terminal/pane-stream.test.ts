@@ -595,7 +595,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     stream.dispose();
   });
 
-  it("a TransportSendError subscribe failure also stays quiet (the other connection-gone class)", async () => {
+  it("a TransportSendError subscribe failure also stays quiet (the other no-live-connection class)", async () => {
     // isConnectionGone classifies BOTH TransportClosedError and
     // TransportSendError as quiet; this pins the TransportSendError branch so a
     // silent removal of it would fail here.

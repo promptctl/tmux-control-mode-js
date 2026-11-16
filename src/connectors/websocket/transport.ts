@@ -20,7 +20,7 @@ import type { TmuxTransport, SendResult } from "../../transport/types.js";
 import { createCloseGate } from "../../transport/close-gate.js";
 import { terminateLine } from "../../transport/line-termination.js";
 import {
-  WEBSOCKET_CONNECTING,
+  WEBSOCKET_CLOSING,
   WEBSOCKET_OPEN,
   WEBSOCKET_CLOSED,
   type BrowserWebSocketLike,
@@ -147,7 +147,9 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
         return {
           ok: false,
           reason: `websocket not open (readyState ${ws.readyState})`,
-          closing: ws.readyState !== WEBSOCKET_CONNECTING,
+          closing:
+            ws.readyState === WEBSOCKET_CLOSING ||
+            ws.readyState === WEBSOCKET_CLOSED,
         };
       }
       const terminated = terminateLine(command);

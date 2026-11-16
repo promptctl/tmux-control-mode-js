@@ -819,6 +819,28 @@ describe("TmuxClient — a dying transport's refusal waits for its close", () =>
     await expect(call).rejects.toMatchObject({ reason: "server exited" });
   });
 
+  it("a held refusal claims no reply, even from a transport that accepts a later send", async () => {
+    let refuse = true;
+    const t = createFakeTransport();
+    t.send = () =>
+      refuse
+        ? { ok: false, reason: "stdin failed: EPIPE", closing: true }
+        : { ok: true };
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+
+    const held = client.execute("list-windows");
+    void held.catch(() => undefined);
+    // A transport breaking its promise that every later send is refused.
+    refuse = false;
+    const sent = client.execute("list-sessions");
+    t.feed("%begin 2 2 1\n$0 main\n%end 2 2 1\n");
+
+    await expect(sent).resolves.toMatchObject({ output: ["$0 main"] });
+    t.triggerClose("exit 1");
+    await expect(held).rejects.toBeInstanceOf(TransportClosedError);
+  });
+
   it("a refusal that is not the transport ending rejects at once", async () => {
     const t = createFakeTransport();
     t.send = () => ({

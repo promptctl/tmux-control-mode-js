@@ -91,15 +91,15 @@ export class TransportSendError extends Error {
  * Thrown via Promise rejection when a command was accepted by the transport
  * (queued, or already inflight awaiting `%end`/`%error`), refused by a
  * transport that was closing (`SendResult.closing`), or issued after the
- * connection closed — the connection ended before tmux ever replied.
- * Distinct from {@link TransportSendError} (a transport that is not ending
- * refused the command)
- * and {@link TmuxCommandError} (tmux replied, and the reply was `%error`):
- * here tmux never got the chance to decide the command's fate at all.
+ * connection closed — the connection ended before tmux ever replied. Only an
+ * accepted command may have reached tmux and run. Distinct from
+ * {@link TransportSendError} (a transport that is not ending refused the
+ * command) and {@link TmuxCommandError} (tmux replied, and the reply was
+ * `%error`): here tmux never got the chance to report the command's fate.
  *
- * [LAW:types-are-the-program] "Sent, but the connection died before an
- * answer arrived" is its own domain category — it carries why the connection
- * ended, not a fabricated `CommandResponse`.
+ * [LAW:types-are-the-program] "The connection ended before an answer
+ * arrived" is its own domain category — it carries why the connection ended,
+ * not a fabricated `CommandResponse`.
  */
 export class TransportClosedError extends Error {
   /**
@@ -302,13 +302,13 @@ export class PaneCwdUnavailableError extends Error {
 }
 
 /**
- * Classify a command rejection as "the connection is already gone" — the
- * transport refused the send ({@link TransportSendError}) or closed before
- * tmux replied ({@link TransportClosedError}), or, for a bridged connection,
- * the bridge closed with the call in flight (`BridgeError` `BRIDGE_CLOSED`).
- * Each means the command never got a verdict from a live tmux, so the
- * operation it drove is *moot*: the pane / subscription it targeted is being
- * torn down and, on reconnect, re-driven.
+ * Classify a command rejection as "no live connection carried it" — the
+ * connection ended before tmux replied ({@link TransportClosedError}), a
+ * transport not yet open refused the send ({@link TransportSendError}), or,
+ * for a bridged connection, the bridge closed with the call in flight
+ * (`BridgeError` `BRIDGE_CLOSED`). Each means the command never got a verdict
+ * from a live tmux, so the operation it drove is *moot*: the next connection
+ * to reach ready re-drives the pane / subscription it targeted.
  *
  * Any other rejection class ({@link TmuxCommandError}, {@link TmuxProtocolError},
  * anything else) means tmux was ALIVE and the effect's real outcome matters —

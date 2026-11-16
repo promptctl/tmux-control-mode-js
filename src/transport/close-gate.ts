@@ -29,8 +29,8 @@ export interface CloseGate {
   readonly onClose: (callback: (reason?: string) => void) => void;
   /**
    * The `SendResult` for a send refused because this gate is closed: a
-   * closing refusal whose reason is {@link closedSendReason} of the recorded
-   * one. Callers must check `state().closed` first — calling this on an open
+   * closing refusal whose reason is `transport closed`, followed by `: ` and
+   * the recorded reason when there is one. Callers must check `state().closed` first — calling this on an open
    * gate throws rather than silently claiming "transport closed" while it is
    * not.
    */

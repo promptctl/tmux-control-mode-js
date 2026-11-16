@@ -872,8 +872,8 @@ describe("Electron IPC bridge — method dispatch", () => {
   });
 
   it("classifies a transport send refusal as BRIDGE_CLOSED carrying the reason", async () => {
-    // The DESIGNED dead-transport path (vs H3's contract-violating throw):
-    // the transport refuses with a typed {ok:false}, TmuxClient.execute
+    // The DESIGNED refusal path (vs H3's contract-violating throw): a
+    // transport not yet open refuses with a typed {ok:false}, TmuxClient.execute
     // rejects with TransportSendError, and the bridge reports it as the
     // operational BRIDGE_CLOSED (never BRIDGE_INTERNAL, which means "bug"),
     // with the refusal reason intact — a swallowed reason would leave the
