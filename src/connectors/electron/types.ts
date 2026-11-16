@@ -83,21 +83,41 @@ export interface WebFrameLike {
  * (a reload or navigation — same-document navigations fire
  * `did-navigate-in-page` instead), or its renderer process crashed.
  */
-export type PageEndEvent = "destroyed" | "did-navigate" | "render-process-gone";
+export const PAGE_END_EVENTS = [
+  "destroyed",
+  "did-navigate",
+  "render-process-gone",
+] as const;
+export type PageEndEvent = (typeof PAGE_END_EVENTS)[number];
+
+/**
+ * A load in the WebContents failed. A failed main-frame load that commits an
+ * error page swaps the frame host and fires this instead of `did-navigate`;
+ * a failure that commits nothing (an aborted navigation) leaves the page
+ * shown.
+ */
+export type LoadFailedEvent = "did-fail-load";
 
 export interface WebContentsLike {
   send(channel: IpcChannel, ...args: unknown[]): void;
-  /** The frame host of the page this WebContents shows now. */
+  /**
+   * The frame host of the page this WebContents shows. After `destroy()` it
+   * still reads the last host; before Electron 34, reading it after a
+   * renderer crash throws until a new document commits.
+   */
   readonly mainFrame: WebFrameLike;
   once(event: PageEndEvent, listener: () => void): void;
+  on(event: LoadFailedEvent, listener: () => void): void;
   /**
-   * Required so the bridge can detach its page-end listener when a sender is
+   * Required so the bridge can detach its page listeners when a sender is
    * torn down via `unregister` while the page is still alive. Without this
-   * the once-handler closure stays attached to the emitter for the
-   * WebContents's remaining lifetime and fires later against a page that
-   * never registered.
+   * a listener stays attached to the emitter for the WebContents's remaining
+   * lifetime and fires later against a page that never registered.
    */
-  removeListener(event: PageEndEvent, listener: () => void): void;
+  removeListener(
+    event: PageEndEvent | LoadFailedEvent,
+    listener: () => void,
+  ): void;
   isDestroyed(): boolean;
 }
 

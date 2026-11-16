@@ -93,7 +93,8 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
  *
  * Page end:
  *   - A renderer's peer lives one page. The WebContents' `destroyed`,
- *     `did-navigate` (a reload or navigation committed a new document) or
+ *     `did-navigate` (a reload or navigation committed a new document),
+ *     `did-fail-load` that committed an error page, or
  *     `render-process-gone` drives `SenderRegistry.teardown` once per sender,
  *     which flags in-flight invokes aborted (via the invoke pipeline), detaches
  *     the byte forwarder, and `bridge.removePeer`s — withdrawing the page's
@@ -205,7 +206,7 @@ export function createMainBridge(
       ipcMain.removeListener(IPC.ack, onAckListener);
       ipcMain.removeHandler(IPC.invoke);
       // Tear down every sender through the unified path: aborts in-flight
-      // dispatches, removes destroyed listeners from still-alive wcs (so
+      // dispatches, removes page listeners from still-alive wcs (so
       // dispose doesn't leak handlers across bridge re-installations), and
       // calls bridge.removePeer for each. Then bridge.dispose() flushes any
       // residual pause state and unsubscribes any names the bridge created but
@@ -230,10 +231,15 @@ export { WebContentsSink, attachWebContentsSink } from "./sink.js";
 export type {
   BridgeErrorCode,
   BridgeErrorPayload,
+  IpcMainEventLike,
+  IpcMainInvokeEventLike,
   IpcMainLike,
+  LoadFailedEvent,
   MainBridgeHandle,
   MainBridgeOptions,
+  PageEndEvent,
   ResumeFailure,
   WebContentsLike,
+  WebFrameLike,
 } from "./types.js";
 export { BridgeError } from "./types.js";

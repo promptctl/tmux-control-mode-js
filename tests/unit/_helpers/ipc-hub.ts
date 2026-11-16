@@ -5,10 +5,12 @@
 //   - structuredClone on every cross-process arg (regressions that depend on
 //     shared identity fail here the same way they'd fail in production).
 //   - ipcMain.handle throws on a second registration for the same channel.
-//   - page-end listeners (destroyed / did-navigate / render-process-gone) are
-//     removable.
+//   - page listeners (destroyed / did-navigate / render-process-gone /
+//     did-fail-load) are removable.
 //   - every IPC event carries the sending document's frame-host ids, and a
-//     WebContents' `mainFrame` names the host of the document it shows now.
+//     WebContents' `mainFrame` names the host of the document it shows now:
+//     after destroy() it still reads the last host, and after crash() reading
+//     it throws until a new document commits (Electron < 34).
 //
 // Used by tests that need to drive the Electron bridges (main + renderer)
 // without booting a real Electron process.
@@ -18,7 +20,6 @@ import type {
   IpcMainInvokeEventLike,
   IpcMainLike,
   IpcRendererLike,
-  PageEndEvent,
   WebContentsLike,
   WebFrameLike,
 } from "../../../src/connectors/electron/types.js";
@@ -39,14 +40,23 @@ export interface FakeRenderer {
    * so the old ipcRenderer throws if used.
    */
   navigate(options?: { readonly swapFrame?: boolean }): void;
-  /** The renderer process dies; fires `render-process-gone`. */
+  /**
+   * The renderer process dies; fires `render-process-gone`. Messages the
+   * dead document queued before it died still arrive, under its ids.
+   */
   crash(): void;
   /**
-   * Visibility hook for leak regression tests: how many listeners are still
-   * attached to this fake's WebContents for each of `destroyed`,
-   * `did-navigate` and `render-process-gone`, in that order.
+   * A main-frame load fails, firing `did-fail-load`. With `commitErrorPage`
+   * an error page commits in a frame host of its own process — the old
+   * document's ipcRenderer keeps sending under the old host's ids. Without
+   * it nothing commits and the page stays shown.
    */
-  pageEndListenerCounts(): number[];
+  failLoad(options: { readonly commitErrorPage: boolean }): void;
+  /**
+   * Visibility hook for leak regression tests: how many page listeners are
+   * still attached to this fake's WebContents, over every event.
+   */
+  pageListenerCount(): number;
 }
 
 export interface IpcHub {
@@ -104,16 +114,27 @@ export function createIpcHub(): IpcHub {
     }
 
     let destroyed = false;
-    const pageEndListeners = new Map<PageEndEvent, Set<() => void>>();
+    let crashed = false;
+    // Each listener mapped to whether it was attached with `once`.
+    const pageListeners = new Map<string, Map<() => void, boolean>>();
     const processId = nextProcessId++;
     let nextRoutingId = 1;
 
-    const fire = (event: PageEndEvent): void => {
-      const set = pageEndListeners.get(event);
-      if (!set) return;
-      const snapshot = [...set];
-      set.clear();
-      for (const h of snapshot) h();
+    const attach = (event: string, listener: () => void, once: boolean) => {
+      let map = pageListeners.get(event);
+      if (!map) {
+        map = new Map();
+        pageListeners.set(event, map);
+      }
+      map.set(listener, once);
+    };
+    const fire = (event: string): void => {
+      const map = pageListeners.get(event);
+      if (!map) return;
+      for (const [h, once] of [...map]) {
+        if (once) map.delete(h);
+        h();
+      }
     };
 
     const sender: WebContentsLike = {
@@ -128,19 +149,21 @@ export function createIpcHub(): IpcHub {
         for (const h of set) h({}, ...cloneArgs(args));
       },
       get mainFrame() {
-        if (destroyed) throw new Error("Object has been destroyed");
+        if (crashed) {
+          throw new Error(
+            "Render frame was disposed before WebFrameMain could be accessed",
+          );
+        }
         return doc.frame;
       },
       once(event, listener) {
-        let set = pageEndListeners.get(event);
-        if (!set) {
-          set = new Set();
-          pageEndListeners.set(event, set);
-        }
-        set.add(listener);
+        attach(event, listener, true);
+      },
+      on(event, listener) {
+        attach(event, listener, false);
       },
       removeListener(event, listener) {
-        pageEndListeners.get(event)?.delete(listener);
+        pageListeners.get(event)?.delete(listener);
       },
       isDestroyed() {
         return destroyed;
@@ -217,16 +240,24 @@ export function createIpcHub(): IpcHub {
         doc = createDocument(
           swapFrame ? { processId, routingId: nextRoutingId++ } : old.frame,
         );
+        crashed = false;
         fire("did-navigate");
       },
       crash() {
-        doc.sends = false;
+        crashed = true;
         fire("render-process-gone");
       },
-      pageEndListenerCounts: () =>
-        (["destroyed", "did-navigate", "render-process-gone"] as const).map(
-          (e) => pageEndListeners.get(e)?.size ?? 0,
-        ),
+      failLoad({ commitErrorPage }) {
+        if (commitErrorPage) {
+          doc = createDocument({
+            processId: nextProcessId++,
+            routingId: nextRoutingId++,
+          });
+        }
+        fire("did-fail-load");
+      },
+      pageListenerCount: () =>
+        [...pageListeners.values()].reduce((n, m) => n + m.size, 0),
     };
   }
 

@@ -1378,11 +1378,11 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const r = hub.createRenderer();
     const proxy = createRendererBridge(r.ipcRenderer);
-    expect(r.pageEndListenerCounts()).toEqual([1, 1, 1]);
+    expect(r.pageListenerCount()).toBe(4);
 
     proxy.close(); // sends tmux:unregister → main.teardownSender
     await Promise.resolve();
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("removes the page-end handlers when teardown is driven by dispose", async () => {
@@ -1394,10 +1394,10 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const r = hub.createRenderer();
     createRendererBridge(r.ipcRenderer);
-    expect(r.pageEndListenerCounts()).toEqual([1, 1, 1]);
+    expect(r.pageListenerCount()).toBe(4);
 
     handle.dispose();
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("duplicate tmux:unregister from a single sender is a noop (L3)", async () => {
@@ -1440,7 +1440,7 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
     const r = hub.createRenderer();
     const proxy = createRendererBridge(r.ipcRenderer);
     proxy.close();
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
 
     // Firing destroy now should not throw — no page-end handler is attached.
     expect(() => r.destroy()).not.toThrow();
@@ -2499,7 +2499,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     });
     expect(t.sent).toEqual([]);
     // No peer was minted for the WebContents.
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
 
     // The old page's unregister leaves the new page's peer.
     const proxy = createRendererBridge(r.ipcRenderer);
@@ -2545,5 +2545,35 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
         line(refreshClientClearWindowSize(3)),
       ]),
     );
+  });
+
+  it("a reload that fails into an error page withdraws the old page's window size", async () => {
+    const { t, r } = rig();
+    await createRendererBridge(r.ipcRenderer).setWindowSize(3, 100, 30);
+    t.sent.length = 0;
+
+    r.failLoad({ commitErrorPage: true });
+    await vi.waitFor(() =>
+      expect(t.sent).toEqual([
+        OUT_OF_SIZING,
+        line(refreshClientClearWindowSize(3)),
+      ]),
+    );
+  });
+
+  it("an invoke a crashed renderer had queued answers BRIDGE_ABORTED", async () => {
+    const { t, r } = rig();
+    const dead = r.ipcRenderer;
+    await createRendererBridge(dead).setWindowSize(3, 100, 30);
+
+    r.crash();
+    t.sent.length = 0;
+    await expect(
+      dead.invoke(IPC.invoke, { method: "setWindowSize", args: [3, 90, 20] }),
+    ).resolves.toMatchObject({
+      status: "bridge-error",
+      error: { code: "BRIDGE_ABORTED" },
+    });
+    expect(t.sent).not.toContain(line(refreshClientWindowSize(3, 90, 20)));
   });
 });

@@ -58,7 +58,8 @@ function abortedEnvelope(method: string): InvokeResultEnvelope {
     status: "bridge-error",
     error: new BridgeError(
       "BRIDGE_ABORTED",
-      `dispatch for method=${method} aborted: the sending page is gone`,
+      `dispatch for method=${method} aborted: not sent by the page its ` +
+        `WebContents shows (the page has ended, or a subframe sent it)`,
     ).toPayload(),
   };
 }

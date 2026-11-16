@@ -24,10 +24,11 @@ import { serverScope, type BytesSink } from "../../pane-output.js";
 import type { BridgeConnection, Peer } from "../bridge-connection.js";
 import {
   IPC,
+  PAGE_END_EVENTS,
   parseAckMessage,
   type IpcMainEventLike,
-  type PageEndEvent,
   type WebContentsLike,
+  type WebFrameLike,
 } from "./types.js";
 import { WebContentsSink } from "./sink.js";
 
@@ -63,12 +64,14 @@ export interface SenderState {
   /** True once the renderer has sent IPC.register; toggled off by unregister. */
   isSubscribed: boolean;
   /**
-   * The exact listener registered with `wc.once` for every PAGE_END_EVENTS
-   * entry. Stored so `teardown` can call `wc.removeListener` for the events
-   * that did not fire — otherwise a once-handler stays attached on a
-   * still-alive emitter and tears down the NEXT page's sender when it fires.
+   * The exact listeners registered on `wc`: `onPageEnd` with `once` for every
+   * PAGE_END_EVENTS entry, `onLoadFailed` with `on` for `did-fail-load`.
+   * Stored so `teardown` can call `wc.removeListener` for the ones still
+   * attached — otherwise a listener stays on a still-alive emitter and tears
+   * down the NEXT page's sender when it fires.
    */
   readonly onPageEnd: () => void;
+  readonly onLoadFailed: () => void;
   /** In-flight invoke dispatches owned by this sender. The pipeline adds/removes
    *  entries; teardown flags them all aborted. */
   readonly pending: Set<PendingDispatch>;
@@ -90,11 +93,30 @@ export interface SenderRegistryDeps {
   readonly client: Pick<TmuxClient, "attachBytesSink" | "connectionState">;
 }
 
-const PAGE_END_EVENTS: readonly PageEndEvent[] = [
-  "destroyed",
-  "did-navigate",
-  "render-process-gone",
-];
+/**
+ * Whether `frame` hosts the page `wc` shows now.
+ *
+ * [LAW:parse-dont-validate] The one place Electron's two ways of showing no
+ * page become `false`: a destroyed WebContents (its `mainFrame` still reads
+ * the last host's ids), and — before Electron 34 — a crashed renderer, whose
+ * disposed `mainFrame` throws when read until a new document commits.
+ */
+function showsFrame(wc: WebContentsLike, frame: WebFrameLike): boolean {
+  if (wc.isDestroyed()) return false;
+  try {
+    const shown = wc.mainFrame;
+    return (
+      shown.processId === frame.processId && shown.routingId === frame.routingId
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** The frame host that sent `event`. */
+function senderFrame(event: IpcMainEventLike): WebFrameLike {
+  return { processId: event.processId, routingId: event.frameId };
+}
 
 /**
  * Whether `event` was sent by the page its WebContents shows now.
@@ -110,13 +132,7 @@ const PAGE_END_EVENTS: readonly PageEndEvent[] = [
  * fail too — a page has one peer, its main frame's.
  */
 function sentByLivePage(event: IpcMainEventLike): boolean {
-  const wc = event.sender;
-  // `mainFrame` throws on a destroyed WebContents.
-  if (wc.isDestroyed()) return false;
-  const frame = wc.mainFrame;
-  return (
-    event.processId === frame.processId && event.frameId === frame.routingId
-  );
+  return showsFrame(event.sender, senderFrame(event));
 }
 
 export class SenderRegistry {
@@ -141,20 +157,28 @@ export class SenderRegistry {
     const wc = event.sender;
     const existing = this.senders.get(wc);
     if (existing !== undefined) return existing;
-    // [LAW:single-enforcer] One page-end handler per sender, stored on the
-    // sender so `teardown` can detach it from the events that did not fire.
+    const page = senderFrame(event);
+    // [LAW:single-enforcer] One set of page listeners per sender, stored on
+    // the sender so `teardown` can detach the ones still attached.
     const onPageEnd = (): void => this.teardown(wc);
+    // A failed load ended the page only if it committed an error page in
+    // another frame host; `did-fail-load` does not say which.
+    const onLoadFailed = (): void => {
+      if (!showsFrame(wc, page)) this.teardown(wc);
+    };
     const peer = this.deps.bridge.registerPeer();
     const state: SenderState = {
       wc,
       peer,
       isSubscribed: false,
       onPageEnd,
+      onLoadFailed,
       pending: new Set(),
       detachBytes: null,
     };
     this.senders.set(wc, state);
     for (const e of PAGE_END_EVENTS) wc.once(e, onPageEnd);
+    wc.on("did-fail-load", onLoadFailed);
     return state;
   }
 
@@ -209,12 +233,10 @@ export class SenderRegistry {
     // lifecycle state immediately, not just when the next transition happens.
     // Send a snapshot through the same IPC.event channel the live transitions
     // use — receivers treat it identically.
-    if (!wc.isDestroyed()) {
-      wc.send(IPC.event, {
-        type: "connection-state",
-        state: this.deps.client.connectionState,
-      });
-    }
+    wc.send(IPC.event, {
+      type: "connection-state",
+      state: this.deps.client.connectionState,
+    });
   }
 
   /**
@@ -260,13 +282,13 @@ export class SenderRegistry {
     if (state === undefined) return;
     this.senders.delete(wc);
 
-    // (0) Detach the page-end handler from every event. The one that fired
-    //     (if any) has already been removed by `once`; the rest would
-    //     otherwise fire later against the next page — see
-    //     SenderState.onPageEnd.
+    // (0) Detach the page listeners. A page-end one that fired has already
+    //     been removed by `once`; the rest would otherwise fire later against
+    //     the next page — see SenderState.onPageEnd.
     for (const e of PAGE_END_EVENTS) {
       state.wc.removeListener(e, state.onPageEnd);
     }
+    state.wc.removeListener("did-fail-load", state.onLoadFailed);
 
     // (1) Flag in-flight invokes for this sender aborted. The TmuxClient FIFO
     //     stays intact — the underlying %begin/%end still resolves the pending

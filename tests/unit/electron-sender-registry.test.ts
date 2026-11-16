@@ -24,7 +24,6 @@ import type { ConnectionState } from "../../src/connection-state.js";
 import {
   IPC,
   type IpcMainEventLike,
-  type PageEndEvent,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
 import {
@@ -45,12 +44,6 @@ function mustCreate(
   return state;
 }
 
-const PAGE_END_EVENTS: readonly PageEndEvent[] = [
-  "destroyed",
-  "did-navigate",
-  "render-process-gone",
-];
-
 // A WebContentsLike whose destroyed state is set directly, WITHOUT firing the
 // `destroyed` once-handler. Lets a test drive the broadcast reaping path
 // (isDestroyed → teardown) in isolation from the destroy-handler teardown path.
@@ -59,23 +52,24 @@ interface ControllableWc {
   readonly event: IpcMainEventLike;
   readonly sends: unknown[];
   setDestroyed(): void;
-  pageEndListenerCounts(): number[];
+  pageListenerCount(): number;
 }
 
 function makeControllableWc(): ControllableWc {
   let destroyed = false;
   const sends: unknown[] = [];
-  const attached = new Map<PageEndEvent, Set<() => void>>(
-    PAGE_END_EVENTS.map((e) => [e, new Set()]),
-  );
+  const attached = new Map<string, Set<() => void>>();
+  const attach = (event: string, listener: () => void): void => {
+    const set = attached.get(event) ?? new Set();
+    attached.set(event, set.add(listener));
+  };
   const wc: WebContentsLike = {
     send(_channel, ...args) {
       sends.push(args[0]);
     },
     mainFrame: { processId: 1, routingId: 1 },
-    once(event, listener) {
-      attached.get(event)?.add(listener);
-    },
+    once: attach,
+    on: attach,
     removeListener(event, listener) {
       attached.get(event)?.delete(listener);
     },
@@ -90,8 +84,8 @@ function makeControllableWc(): ControllableWc {
     setDestroyed() {
       destroyed = true;
     },
-    pageEndListenerCounts: () =>
-      PAGE_END_EVENTS.map((e) => attached.get(e)?.size ?? 0),
+    pageListenerCount: () =>
+      [...attached.values()].reduce((n, set) => n + set.size, 0),
   };
 }
 
@@ -192,12 +186,12 @@ describe("SenderRegistry — peer lifecycle", () => {
     const r = createIpcHub().createRenderer();
 
     const state = mustCreate(registry, r.event);
-    expect(r.pageEndListenerCounts()).toEqual([1, 1, 1]);
+    expect(r.pageListenerCount()).toBe(4);
 
     r.destroy();
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     // The fired handler was consumed by `once`; teardown detached the rest.
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("refuses to resurrect a sender for an already-destroyed wc (post-teardown invoke race)", () => {
@@ -216,7 +210,7 @@ describe("SenderRegistry — peer lifecycle", () => {
     // No new sender, no leaked peer, no never-firing destroyed listener.
     expect(registry.getOrCreate(dead.event)).toBeUndefined();
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
-    expect(dead.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(dead.pageListenerCount()).toBe(0);
   });
 });
 
@@ -241,6 +235,58 @@ describe("SenderRegistry — the live page", () => {
     r.navigate();
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     expect(mustCreate(registry, r.event).peer).not.toBe(state.peer);
+  });
+
+  it("a failed load that commits an error page tears the page's sender down", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = mustCreate(registry, r.event);
+
+    r.failLoad({ commitErrorPage: true });
+    expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
+    expect(r.pageListenerCount()).toBe(0);
+  });
+
+  it("a failed load that commits nothing leaves the page's sender", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const state = mustCreate(registry, r.event);
+
+    r.failLoad({ commitErrorPage: false });
+    expect(bridge.removePeer).not.toHaveBeenCalled();
+    expect(registry.getOrCreate(r.event)).toBe(state);
+  });
+
+  it("an ack from a page that has ended releases nothing against the next page's peer", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const old = r.event;
+    mustCreate(registry, old);
+
+    r.navigate({ swapFrame: true });
+    mustCreate(registry, r.event);
+    registry.ack(old, { paneId: 3, bytes: 128 });
+    expect(bridge.ackOutput).not.toHaveBeenCalled();
+  });
+
+  it("refuses what a crashed renderer had queued, without reading its disposed frame", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const r = createIpcHub().createRenderer();
+    const dead = r.event;
+    mustCreate(registry, dead);
+
+    r.crash();
+    expect(() => r.sender.mainFrame).toThrow();
+    expect(registry.getOrCreate(dead)).toBeUndefined();
+    registry.register(dead);
+    registry.ack(dead, { paneId: 3, bytes: 128 });
+    registry.unregister(dead);
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
+    expect(bridge.ackOutput).not.toHaveBeenCalled();
   });
 });
 
@@ -340,7 +386,7 @@ describe("SenderRegistry — teardown", () => {
     expect(bridge.removePeer).toHaveBeenCalledTimes(1);
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     // Listener detached from the still-alive emitter (unregister-driven path).
-    expect(r.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(r.pageListenerCount()).toBe(0);
   });
 
   it("flags every in-flight dispatch of the torn-down sender aborted", () => {
@@ -420,7 +466,7 @@ describe("SenderRegistry — broadcast", () => {
     expect(bridge.removePeer).toHaveBeenCalledTimes(1);
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     expect(dead.sends).toEqual([]);
-    expect(dead.pageEndListenerCounts()).toEqual([0, 0, 0]);
+    expect(dead.pageListenerCount()).toBe(0);
 
     // Reaped: a second broadcast finds nothing to tear down.
     registry.broadcast({ type: "reconnected" });
