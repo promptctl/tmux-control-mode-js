@@ -461,8 +461,8 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Failure surfaced, and the sink is (correctly) starved: topology is empty,
-    // so a session-scoped chunk matches nothing.
+    // Failure surfaced, and the sink is starved: topology is empty, so a
+    // session-scoped chunk matches nothing and is held.
     expect(errors).toHaveLength(1);
     router.dispatchBytes(makeChunk(1));
     expect(sink.chunks).toHaveLength(0);
@@ -473,9 +473,11 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Pane 1 (session 100) is now in topology, so the session sink receives it.
-    router.dispatchBytes(makeChunk(1));
+    // Pane 1 (session 100) is now in topology: the held chunk is replayed,
+    // and the session sink receives the next one live.
     expect(sink.chunks).toHaveLength(1);
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(2);
   });
 
   // A router driving a NON-FIFO transport: bootstrap A hangs while a newer
@@ -670,8 +672,9 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Held chunks: output for a pane topology does not know yet, while a query
-// that may place it is in flight, reaches topology-scoped sinks once placed.
+// Held chunks: output for a pane topology does not know yet reaches
+// topology-scoped sinks once a query places it, and is dropped once a
+// server-wide query asked after it answers without it.
 // ---------------------------------------------------------------------------
 
 describe("TopologyRouter — chunks that arrive before topology places their pane", () => {
@@ -722,6 +725,69 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     replies[1]!.resolve(makeOkResponse(["%7 @3 $1"]));
     await settle();
     expect(paneIdsOf(sink)).toEqual([7]);
+    // The refresh placed it, so no server-wide query was asked.
+    expect(replies).toHaveLength(2);
+  });
+
+  it("delivers a new pane's chunk that arrives with no query in flight", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+
+    // %7 prints before the %window-add that announces it, with no query in
+    // flight: the chunk asks one.
+    router.dispatchBytes(makeChunk(7));
+    expect(replies.map((r) => r.cmd)).toEqual([
+      expect.stringContaining("list-panes -a"),
+      expect.stringContaining("list-panes -a"),
+    ]);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1", "%7 @3 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
+  it("asks again for a chunk whose pane is newer than the bootstrap in flight", async () => {
+    // The bootstrap ran before %7 existed; its answer settles after %7's
+    // chunk is routed, so it cannot place it.
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    router.dispatchBytes(makeChunk(7));
+    expect(replies).toHaveLength(1);
+
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(replies).toHaveLength(2);
+    expect(sink.chunks).toHaveLength(0);
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1", "%7 @2 $1"]));
+    await settle();
+    expect(paneIdsOf(sink)).toEqual([7]);
+  });
+
+  it("drops a chunk a bootstrap asked after it does not place, and asks no more", async () => {
+    const router = newRouter();
+    const { run, replies } = controlledRun();
+    router.onTransportReady(run);
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(1) });
+    replies[0]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+
+    router.dispatchBytes(makeChunk(7)); // %7 exited before the query ran
+    replies[1]!.resolve(makeOkResponse(["%5 @2 $1"]));
+    await settle();
+    expect(replies).toHaveLength(2);
+
+    router.handleNotification({ type: "sessions-changed" });
+    replies[2]!.resolve(makeOkResponse(["%5 @2 $1", "%7 @2 $1"]));
+    await settle();
+    expect(sink.chunks).toHaveLength(0);
   });
 
   it("keeps per-pane order: a held chunk is replayed before later chunks", async () => {
@@ -1388,7 +1454,7 @@ describe("TopologyRouter — what a sink hears after a callback ends it", () => 
     expect(self.log).toEqual(["write", "end"]);
   });
 
-  it("reports a runner that throws synchronously, and holds nothing for it afterwards", async () => {
+  it("reports a runner that throws synchronously, and drops output its failed query could not place", async () => {
     const errors: Error[] = [];
     const router = new TopologyRouter(new DeliveryQueue(), (e) =>
       errors.push(e),
@@ -1406,9 +1472,10 @@ describe("TopologyRouter — what a sink hears after a callback ends it", () => 
     expect(errors.map((e) => e.message)).toEqual([
       "topology bootstrap failed: runner down",
     ]);
-    // No query is outstanding, so early output for an unplaced pane is not
-    // held for a later bootstrap to replay.
+    // Output for an unplaced pane asks a bootstrap of its own; that one fails
+    // too, so the chunk is dropped rather than replayed by a later bootstrap.
     router.dispatchBytes(makeChunk(1));
+    expect(errors).toHaveLength(2);
     down = false;
     router.handleNotification({ type: "sessions-changed" });
     await settle();

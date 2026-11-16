@@ -160,12 +160,24 @@ export class TopologyRouter {
   //   code never runs inside the router.
   private readonly delivery: DeliveryQueue;
 
-  // Chunks for panes topology did not know when they arrived, held while a
-  // topology query that may place them is outstanding. Each carries the attach
-  // seq at arrival so replay never reaches a sink attached afterwards.
+  // Chunks for panes topology did not know when they arrived, held until a
+  // query places the pane or a server-wide query asked after the chunk answers
+  // without it. Each carries the attach seq at arrival, so replay never
+  // reaches a sink attached afterwards, and the bootstrap seq at arrival.
   // Empty is the resting state; releaseHeld() drains it after every query and
   // onTransportClose() discards it with the connection.
-  private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
+  private held: {
+    chunk: ChunkPayload;
+    attachedBy: number;
+    askedBefore: number;
+  }[] = [];
+  // Sequence numbers of the latest bootstrap started, and of the latest that
+  // answered: seeded the table, or failed and was reported. tmux runs commands
+  // in order, so a bootstrap started after a chunk arrived lists its pane if
+  // the pane still exists — even when an earlier bootstrap's answer, which
+  // can predate the pane, settles after the chunk.
+  private bootstrapSeq = 0;
+  private answeredSeq = 0;
   // Bytes in `held`, and bytes refused because holding them would exceed
   // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
   private heldBytes = 0;
@@ -388,17 +400,14 @@ export class TopologyRouter {
   private readonly route = (payload: ChunkPayload): void => {
     const meta = this.topology.get(payload.paneId);
     this.sinks.dispatch(payload, meta);
-    // A pane topology does not know yet matched no window/session scope. If a
-    // query in flight may still place it, hold the chunk for replay instead of
-    // losing it: output provoked from another tmux client is not ordered with
-    // our command stream, so it can land before the attach-triggered
-    // bootstrap (or a window-add refresh) does.
-    if (
-      meta === undefined &&
-      this.sinks.hasTopologyDependentSinks() &&
-      this.inFlight > 0
-    ) {
+    // A pane topology does not know yet matched no window/session scope. Hold
+    // the chunk for replay instead of losing it: a new pane prints before the
+    // %window-add or %layout-change that announces it, and output provoked
+    // from another tmux client is not ordered with our command stream, so it
+    // can land before the attach-triggered bootstrap does.
+    if (meta === undefined && this.sinks.hasTopologyDependentSinks()) {
       this.hold(payload);
+      this.askForHeld();
     }
   };
 
@@ -418,15 +427,32 @@ export class TopologyRouter {
     this.held.push({
       chunk: { ...payload, data: payload.data.slice() },
       attachedBy: this.sinks.attachSeq(),
+      askedBefore: this.bootstrapSeq,
     });
   }
 
+  // Once no query is in flight, a held chunk that no bootstrap was asked
+  // after gets one. A query already in flight is waited for first: the
+  // window-add or layout-change refresh that announces a new pane usually
+  // places it, so the server-wide query is sent only when that did not.
+  // Seqs only grow, so the newest held chunk is the one that can lack it.
+  private askForHeld(): void {
+    const newest = this.held.at(-1);
+    if (
+      newest !== undefined &&
+      newest.askedBefore === this.bootstrapSeq &&
+      this.inFlight === 0
+    ) {
+      void this.bootstrap();
+    }
+  }
+
   // Replay every held chunk whose pane topology now knows, in arrival order,
-  // to the window/session attachments that existed when it arrived. Chunks
-  // still unplaced wait while a query remains outstanding; once none does,
-  // nothing can place them and they are dropped (pane/server sinks already got
-  // them live). Runs synchronously at the end of every query, so per-pane
-  // order holds against any chunk dispatched after it.
+  // to the window/session attachments that existed when it arrived. A chunk
+  // still unplaced after a bootstrap asked after it has answered belongs to a
+  // pane that is gone (or the answer was a reported failure), and is dropped:
+  // pane/server sinks already got it live. Runs synchronously at the end of
+  // every query, so per-pane order holds against any chunk dispatched after it.
   // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
   //   an empty list makes it a no-op.
   private releaseHeld(): void {
@@ -449,12 +475,13 @@ export class TopologyRouter {
           kind: "replay",
           attachedBy: h.attachedBy,
         });
-      } else if (this.inFlight > 0) {
+      } else if (h.askedBefore >= this.answeredSeq) {
         // Already copied and counted once; re-holding cannot exceed the cap.
         this.held.push(h);
         this.heldBytes += h.chunk.data.byteLength;
       }
     }
+    this.askForHeld();
   }
 
   // ---------------------------------------------------------------------------
@@ -550,18 +577,20 @@ export class TopologyRouter {
     if (this.connection.phase !== "live") return;
     const run = this.connection.run;
     const gen = this.epoch.startBootstrap();
+    const seq = ++this.bootstrapSeq;
     this.inFlight++;
     const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
     // [LAW:no-ambient-temporal-coupling] The reply is an entry point: it
     //   settles as one step, so no sink or listener runs mid-settle.
     await this.delivery.settle(
       () => run(command),
-      (reply) => this.settleBootstrap(gen, command, reply),
+      (reply) => this.settleBootstrap(gen, seq, command, reply),
     );
   }
 
   private settleBootstrap(
     gen: number,
+    seq: number,
     command: string,
     reply: Outcome<CommandResponse>,
   ): void {
@@ -580,6 +609,7 @@ export class TopologyRouter {
         return;
       }
       this.topology.seed(parseListReply(command, r.output, parsePaneListLine));
+      this.answeredSeq = seq;
       // [LAW:single-enforcer] A bootstrap sent before a move lists the moved
       //   pane in its old window; the epoch tracker hands back the layouts
       //   seen since it started, and their windows' refreshes already follow
@@ -614,6 +644,7 @@ export class TopologyRouter {
       //   window events, a new topology-scoped attach) re-attempt this, so a
       //   later success recovers a starved sink — no ambient retry timer needed.
       //   [LAW:no-ambient-temporal-coupling]
+      this.answeredSeq = seq;
       this.reportError(topologyError("bootstrap", err));
     } finally {
       this.inFlight--;
