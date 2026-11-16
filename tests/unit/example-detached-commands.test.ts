@@ -184,7 +184,9 @@ describe("MirrorRegistry.addViewer never rejects", () => {
     const joined = registry.addViewer(3, viewer);
     (await inFlight(transports)).end("server exited");
     await joined;
-    expect(frames).toEqual([{ kind: "error", message: "mirror of %3 failed" }]);
+    expect(frames).toEqual([
+      { kind: "error", message: "tmux connection lost" },
+    ]);
     expect(closed()).toBe(true);
     expect(vi.mocked(console.warn).mock.calls).toEqual([
       ["[mirror] tmux connection ended: server exited"],
@@ -199,7 +201,9 @@ describe("MirrorRegistry.addViewer never rejects", () => {
     const joined = registry.addViewer(3, viewer);
     transports[0].end("no server running");
     await joined;
-    expect(frames).toEqual([{ kind: "error", message: "mirror of %3 failed" }]);
+    expect(frames).toEqual([
+      { kind: "error", message: "tmux connection lost" },
+    ]);
     expect(closed()).toBe(true);
     registry.close();
   });

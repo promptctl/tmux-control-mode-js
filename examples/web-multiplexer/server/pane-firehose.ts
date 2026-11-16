@@ -31,8 +31,8 @@ import { reportDetachedFailure } from "./detached-failure.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 
 /**
- * Run a tmux command over the host's control connection. Like the library's
- * `execute`, a `%error` rejects with `TmuxCommandError`.
+ * Run a tmux command over the host's control connection. A `%error` may reject
+ * (the library's `execute`) or resolve unsuccessful; both are a failure.
  */
 export type FirehoseExecute = (command: string) => Promise<CommandResponse>;
 
@@ -85,10 +85,12 @@ export class PaneFirehose {
    * Tap every current pane and begin draining their FIFOs, then keep tapping
    * panes that appear later. Rejects if the first enumeration fails; the
    * refresh timer is already running and keeps trying. Idempotent: a second
-   * `start` while running is a no-op.
+   * `start` while running is a no-op. Rejects once the firehose has ended —
+   * stopped, or its connection gone — since it will never tap again.
    */
   async start(): Promise<void> {
-    if (this.dir !== null || this.stopped) return;
+    if (this.stopped) throw new Error("firehose has ended; start a new one");
+    if (this.dir !== null) return;
     this.dir = mkdtempSync(join(tmpdir(), "tmux-firehose-"));
     const interval = this.options.refreshIntervalMs ?? DEFAULT_REFRESH_MS;
     // The timer fires and forgets, so a failed tick is reported here.
@@ -143,6 +145,9 @@ export class PaneFirehose {
           throw err;
         },
       );
+      if (!listed.success) {
+        throw new Error(`list-panes failed: ${listed.output.join(" ")}`);
+      }
       const current = new Set(
         listed.output.flatMap((line) => {
           const m = /^%(\d+)/.exec(line.trim());

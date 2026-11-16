@@ -200,6 +200,8 @@ describe("PaneFirehose refresh failures", () => {
       await new Promise((r) => setTimeout(r, 50));
       expect(lists).toBe(1);
       expect(console.warn).not.toHaveBeenCalled();
+      // A host still holding it hears that it has ended, not a silent success.
+      await expect(firehose.start()).rejects.toThrow("firehose has ended");
     } finally {
       firehose.stop();
     }

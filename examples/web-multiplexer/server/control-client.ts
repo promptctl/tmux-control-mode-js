@@ -24,10 +24,7 @@ import {
 } from "@promptctl/tmux-control-mode-js";
 import { demoAttachArgs } from "./tmux-target.js";
 
-/**
- * Start a fresh control client, not yet ready. Injectable so tests can run one
- * over a fake transport.
- */
+/** Start a control client. Injectable so tests can run one over a fake transport. */
 export type SpawnControlClient = () => TmuxClient;
 
 /** A `tmux -C` client against the demo's target server. */
@@ -86,6 +83,11 @@ export class DedicatedControlClient {
     return live.ready;
   }
 
+  /** Whether `client` is the live one: the client `ready()` hands out now. */
+  isLive(client: TmuxClient): boolean {
+    return this.slot?.kind === "live" && this.slot.client === client;
+  }
+
   /** Close the live client for good; `ready()` refuses from now on. */
   close(): void {
     this.closed = true;
@@ -97,6 +99,7 @@ export class DedicatedControlClient {
   private connect(): Live {
     const client = this.spawn();
     const ready = new Promise<TmuxClient>((resolve, reject) => {
+      if (client.connectionState.status === "ready") resolve(client);
       client.on("connection-state", ({ state }) => {
         if (state.status === "ready") resolve(client);
       });
@@ -104,9 +107,11 @@ export class DedicatedControlClient {
         const error = new TransportClosedError(reason);
         reject(error);
         // Our own `close()` has already let go of this client.
-        const slot = this.slot;
-        if (slot?.kind !== "live" || slot.client !== client) return;
+        if (!this.isLive(client)) return;
         this.slot = { kind: "ended", error, at: Date.now() };
+        // `exit` can come on tmux's `%exit` line, before the transport closes:
+        // release the child rather than leave it to tmux.
+        client.close();
         console.warn(
           `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
         );

@@ -22,7 +22,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
+import {
+  isConnectionGone,
+  TransportClosedError,
+  type TmuxClient,
+} from "@promptctl/tmux-control-mode-js";
 import { asCommandResponse } from "../shared/command-response.js";
 import { tapPaneToFifo } from "./pane-tap.js";
 import { reportDetachedFailure } from "./detached-failure.js";
@@ -110,7 +114,12 @@ export class MirrorRegistry {
         refuse(viewer, "bridge is shutting down");
       } else {
         reportDetachedFailure(`[mirror] join of %${paneId}`, err);
-        refuse(viewer, `mirror of %${paneId} failed`);
+        refuse(
+          viewer,
+          isConnectionGone(err)
+            ? "tmux connection lost"
+            : `mirror of %${paneId} failed`,
+        );
       }
       return notJoined;
     });
@@ -184,12 +193,15 @@ export class MirrorRegistry {
   /**
    * Get the hub for a pane, creating (and tapping) it over `client` on first
    * viewer. [LAW:single-enforcer] The one place a hub comes into being, so the
-   * one place a closed registry refuses to grow one.
+   * one place a closed registry, or a client whose connection has ended under
+   * a joiner still seeding, is refused a new one.
    */
   private ensureHub(paneId: number, client: TmuxClient): Hub {
     if (this.closed) throw new Error("mirror registry is closed");
     const existing = this.hubs.get(paneId);
     if (existing !== undefined) return existing;
+    if (!this.connection.isLive(client))
+      throw new TransportClosedError(undefined);
 
     this.dir ??= mkdtempSync(join(tmpdir(), "tmux-mirror-"));
     const dir = this.dir;

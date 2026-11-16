@@ -8,7 +8,7 @@
 // The registry reads the package's built dist/ as the demo does: run
 // `pnpm run build` first.
 
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import { tmux, uniqueSocket } from "../helpers/integration.js";
 import {
@@ -58,7 +58,7 @@ describe.skipIf(!RUN_INTEGRATION)("demo mirror across a tmux restart", () => {
     registry = new MirrorRegistry();
   });
 
-  afterAll(() => {
+  afterEach(() => {
     registry.close();
     delete process.env.TMUX_DEMO_SOCKET;
     killTmuxServer(socket);

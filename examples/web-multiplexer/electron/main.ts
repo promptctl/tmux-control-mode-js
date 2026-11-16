@@ -25,6 +25,7 @@ import * as path from "node:path";
 
 import {
   TmuxClient,
+  TransportClosedError,
   spawnTmux,
   tmuxSocketDir,
   listTmuxSocketNames,
@@ -132,15 +133,18 @@ function pickSessionOn(socket: string): string {
  * Wait for tmux's initial attach handshake to settle. tmux emits a
  * spurious `%begin`/`%end` pair as part of `attach-session`, plus
  * `%session-changed`. Any command sent before that noise has cleared
- * pops a stray `%end` off the FIFO with an empty response.
+ * pops a stray `%end` off the FIFO with an empty response. Rejects if tmux
+ * exits first (its server died between the liveness probe and the attach),
+ * so a socket switch fails loudly instead of never answering.
  */
 function waitUntilReady(client: TmuxClient): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const handler = (): void => {
       client.off("session-changed", handler);
       resolve();
     };
     client.on("session-changed", handler);
+    client.on("exit", ({ reason }) => reject(new TransportClosedError(reason)));
   });
 }
 
@@ -214,12 +218,6 @@ async function connectTo(socket: string, session: string): Promise<void> {
   ensureSession(socket, session);
   const transport = spawnTmux(["-L", socket, "attach-session", "-t", session]);
   const client = new TmuxClient(transport);
-  // tmux gone under the active client: its panes' taps went with it, so stop
-  // the firehose rather than poll a dead connection. The renderer hears the
-  // exit through the bridge.
-  client.on("exit", () => {
-    if (active?.client === client) stopFirehose();
-  });
   await waitUntilReady(client);
   const bridge = createMainBridge(client, ipcMain, bridgeOptions());
   active = { socket, session, client, bridge };
@@ -297,8 +295,8 @@ app.whenReady().then(async () => {
   // the demo:firehose-bytes channel. [LAW:single-enforcer] One PaneFirehose,
   // sourced from the active client's control connection.
   ipcMain.handle("demo:firehose-start", async (): Promise<void> => {
-    if (active === null || active.client.connectionState.status === "closed") {
-      throw new Error("demo:firehose-start: no live tmux client");
+    if (active === null) {
+      throw new Error("demo:firehose-start: no active tmux client");
     }
     const client = active.client;
     if (firehose === null) {
