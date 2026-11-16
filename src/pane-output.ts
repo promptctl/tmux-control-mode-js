@@ -163,10 +163,11 @@ type PlacedPane = PaneMeta & { readonly floating: boolean };
 /** What a layout or refresh contradicted in the table, and so which query re-places it. */
 export interface Contradiction {
   // Windows moved-in panes left, whose membership any earlier query misstates.
-  readonly left: ReadonlySet<number>;
-  // A tiled pane the layout omits went somewhere only a server-wide query can
-  // say: another window, maybe one in a session tmux sends no layout for.
-  readonly lostTrack: boolean;
+  readonly leftWindows: ReadonlySet<number>;
+  // Tiled panes a layout or listing omits. Only a query about the pane itself
+  // can say where each went: another window, maybe one in a session tmux
+  // sends no layout for, or nowhere because it exited.
+  readonly lostPanes: ReadonlySet<number>;
 }
 
 /**
@@ -218,10 +219,10 @@ export class PaneTopologyManager {
   }
 
   /**
-   * Differential update for one window from its `list-panes -t @W` reply:
-   * removes panes that moved away or closed, adds and re-places the rest.
-   * A tiled pane it removes went somewhere only a server-wide query can say,
-   * as with a layout's omission.
+   * Differential update for one window from a listing of it (`list-panes -t
+   * @W`, or `-t %P` for a pane in it): removes panes that moved away or
+   * closed, adds and re-places the rest. A tiled pane it removes is lost, as
+   * with a layout's omission.
    */
   updateWindow(
     windowId: number,
@@ -234,12 +235,12 @@ export class PaneTopologyManager {
     // [LAW:one-source-of-truth] Only delete when table still maps the pane to
     // this window. A concurrent refresh for another window may have already
     // updated the entry — if so, that newer mapping is authoritative.
-    let lostTrack = false;
+    const lost = new Set<number>();
     for (const paneId of prev ?? []) {
       const meta = this.table.get(paneId);
       if (!next.has(paneId) && meta?.windowId === windowId) {
         this.table.delete(paneId);
-        lostTrack ||= !meta.floating;
+        if (!meta.floating) lost.add(paneId);
       }
     }
 
@@ -253,7 +254,7 @@ export class PaneTopologyManager {
     } else {
       this.windowIndex.set(windowId, next);
     }
-    return { left: new Set(), lostTrack };
+    return { leftWindows: new Set(), lostPanes: lost };
   }
 
   /**
@@ -268,7 +269,7 @@ export class PaneTopologyManager {
     layoutPanes: readonly number[],
   ): Contradiction {
     const listed = new Set(layoutPanes);
-    let lostTrack = false;
+    const lost = new Set<number>();
     for (const paneId of this.windowIndex.get(windowId) ?? []) {
       const meta = this.table.get(paneId);
       if (
@@ -277,18 +278,18 @@ export class PaneTopologyManager {
         !meta.floating
       ) {
         this.table.delete(paneId);
-        lostTrack = true;
+        lost.add(paneId);
       }
     }
-    const lost = new Set<number>();
+    const left = new Set<number>();
     for (const paneId of listed) {
       const meta = this.table.get(paneId);
       if (meta !== undefined && meta.windowId !== windowId) {
         this.table.delete(paneId);
-        lost.add(meta.windowId);
+        left.add(meta.windowId);
       }
     }
-    return { left: lost, lostTrack };
+    return { leftWindows: left, lostPanes: lost };
   }
 
   /**
@@ -792,14 +793,18 @@ export class TopologyEpochTracker {
   //   asks isBootstrapCurrent; the failure path asks isLatestBootstrap — two
   //   distinct staleness questions, one enforcer. [LAW:single-enforcer]
   private latestSupersedeGen = 0;
-  private readonly windowGens = new Map<number, number>();
-  // [LAW:types-are-the-program] Global monotone counter — each startWindowRefresh
-  // call gets a strictly-greater-than-all-prior token. After startBootstrap()
-  // clears windowGens, any new startWindowRefresh still produces a token that
-  // cannot alias a pre-clear token, because it is drawn from a sequence that
-  // only ever increases. Per-window counters that reset after a clear would
-  // allow pre-clear and post-clear tokens to collide (both start at 1).
+  // [LAW:types-are-the-program] Global monotone counter: every window
+  //   refresh and locate draws a gen strictly greater than all before it, so
+  //   gens order those queries against each other in send order.
+  //   A gen never aliases one drawn before a clear of windowMarks.
   private windowEpoch = 0;
+  // The windowEpoch at the latest supersedeAll: a listing sent at or before it
+  // is stale whatever window it lists.
+  private supersededAt = 0;
+  // Each window's latest refresh since the last supersedeAll, as its gen. A
+  // listing of the window sent before it is stale. Only a refresh writes here,
+  // so a connection that refreshes nothing holds no entries.
+  private readonly windowMarks = new Map<number, number>();
   // Each window's latest layout pane list since the last bootstrap started:
   // a bootstrap reply can predate a move these record, so its seed is checked
   // against them once (takeLayouts).
@@ -808,11 +813,9 @@ export class TopologyEpochTracker {
   /**
    * Call immediately before the `list-panes -a` execute(). Returns captured gen.
    *
-   * Also clears all window-refresh generations: a bootstrap is a full table
-   * replacement via `seed()`, so any in-flight `list-panes -t @W` result is
-   * superseded — `isWindowRefreshCurrent` will return false for a missing key.
-   * Post-clear window refreshes draw from the global `windowEpoch` and therefore
-   * cannot alias any pre-clear token.
+   * Also supersedes every listing in flight: a bootstrap is a full table
+   * replacement via `seed()`, so no `list-panes -t` reply sent before it is
+   * newer than what it seeds.
    */
   startBootstrap(): number {
     this.supersedeAll();
@@ -826,7 +829,8 @@ export class TopologyEpochTracker {
    * longer answers for the topology — the next bootstrap owns the outcome.
    */
   supersedeAll(): void {
-    this.windowGens.clear();
+    this.windowMarks.clear();
+    this.supersededAt = this.windowEpoch;
     this.layoutsSinceBootstrap.clear();
     this.latestSupersedeGen = ++this.bootstrapGen;
   }
@@ -871,44 +875,55 @@ export class TopologyEpochTracker {
   /** Call immediately before the `list-panes -t @W` execute(). Returns captured gen. */
   startWindowRefresh(windowId: number): number {
     const gen = ++this.windowEpoch;
-    this.windowGens.set(windowId, gen);
+    this.windowMarks.set(windowId, gen);
     return gen;
-  }
-
-  /** Call before applying updateWindow(). Returns false if a newer event superseded this query. */
-  isWindowRefreshCurrent(windowId: number, gen: number): boolean {
-    return this.windowGens.get(windowId) === gen;
   }
 
   /**
    * Call immediately before a `list-panes -t %P` execute(). Returns captured
-   * gen. A locate only names the pane's window, so only what supersedes
-   * everything supersedes it: a newer bootstrap, asked after it and so
-   * placing the pane itself, or a connection change.
+   * gen. The reply lists the pane's window, which is known only once it
+   * comes, so the locate marks no window.
    */
   startLocate(): number {
-    return this.latestSupersedeGen;
+    return ++this.windowEpoch;
   }
 
-  /** Call before acting on a locate's answer, success or failure. */
+  /**
+   * Call before applying a listing of `windowId` sent at `gen`, by a window
+   * refresh or a locate. Current iff nothing has superseded everything since
+   * it was sent and no refresh of the window was sent after it.
+   * [LAW:single-enforcer] One rule for every listing of one window, whichever
+   *   query asked for it. While anything reads topology, every event that
+   *   makes a window's listings suspect (a layout, a window-add or -close)
+   *   refreshes it, and that refresh supersedes the listings sent before it.
+   *   While nothing reads it, no refresh follows, and a stale listing lands
+   *   in a table no one reads until a reader's attach bootstraps, which
+   *   supersedes everything.
+   */
+  isListingCurrent(windowId: number, gen: number): boolean {
+    return (
+      this.isLocateCurrent(gen) && (this.windowMarks.get(windowId) ?? 0) <= gen
+    );
+  }
+
+  /**
+   * Call before acting on a locate's failure, or before reading its reply.
+   * True iff nothing has superseded everything since it was sent: a newer
+   * bootstrap places the pane itself, and a connection change makes the
+   * answer one about a connection no longer current.
+   */
   isLocateCurrent(gen: number): boolean {
-    return this.latestSupersedeGen === gen;
+    return gen > this.supersededAt;
   }
 
   /**
    * Call when a window's membership changes (window-add / window-close).
-   * Invalidates any in-flight bootstrap (its reply can predate the change)
-   * and any in-flight per-window refresh for the same window.
-   *
-   * Deletes the window entry rather than incrementing it, which keeps the
-   * Map bounded: `isWindowRefreshCurrent` returns false for a missing key
-   * (`undefined !== gen`), so in-flight refreshes are still discarded, and
-   * the refresh that follows the change sets a fresh entry.
+   * Invalidates any in-flight bootstrap (its reply can predate the change).
+   * The refresh the change starts supersedes the window's listings in flight.
    */
   invalidateWindow(windowId: number): void {
     this.bootstrapGen++;
     this.layoutsSinceBootstrap.delete(windowId);
-    this.windowGens.delete(windowId);
   }
 }
 

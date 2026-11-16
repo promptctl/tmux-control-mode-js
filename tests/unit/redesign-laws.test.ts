@@ -359,6 +359,34 @@ describe("topology-race", () => {
     expect(tracker.isLatestBootstrap(gen)).toBe(true);
   });
 
+  it("a window's listing is current until the next refresh of that window, whichever query sent it", () => {
+    const tracker = new TopologyEpochTracker();
+    const refresh = tracker.startWindowRefresh(3);
+    const locate = tracker.startLocate();
+    // The locate was sent after @3's refresh: its listing of @3 is newer.
+    expect(tracker.isListingCurrent(3, refresh)).toBe(true);
+    expect(tracker.isListingCurrent(3, locate)).toBe(true);
+
+    // A refresh sent after the locate owns @3, but not any other window.
+    const later = tracker.startWindowRefresh(3);
+    expect(tracker.isListingCurrent(3, refresh)).toBe(false);
+    expect(tracker.isListingCurrent(3, locate)).toBe(false);
+    expect(tracker.isListingCurrent(7, locate)).toBe(true);
+    expect(tracker.isListingCurrent(3, later)).toBe(true);
+  });
+
+  it("a bootstrap supersedes every listing and locate sent before it", () => {
+    const tracker = new TopologyEpochTracker();
+    const refresh = tracker.startWindowRefresh(3);
+    const locate = tracker.startLocate();
+    tracker.startBootstrap();
+    expect(tracker.isListingCurrent(3, refresh)).toBe(false);
+    expect(tracker.isListingCurrent(7, locate)).toBe(false);
+    expect(tracker.isLocateCurrent(locate)).toBe(false);
+    const after = tracker.startLocate();
+    expect(tracker.isListingCurrent(3, after)).toBe(true);
+  });
+
   it("a newer bootstrap supersedes an older one on BOTH the success and failure paths", () => {
     const tracker = new TopologyEpochTracker();
     const genA = tracker.startBootstrap();
