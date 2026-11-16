@@ -50,7 +50,7 @@ export {
   type AuthResult,
   type AuthorizeRequest,
   type AuthorizeResult,
-  type ConnectionIdentity,
+  type Authenticate,
   type BridgeObservabilityEvent,
   type SocketEnd,
   type RateLimitConfig,

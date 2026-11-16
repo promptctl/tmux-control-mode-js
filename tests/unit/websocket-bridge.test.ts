@@ -18,8 +18,12 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
 
-import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
+import {
+  createWebSocketBridge,
+  type WebSocketBridgeOptions,
+} from "../../src/connectors/websocket/server.js";
 import type {
+  Authenticate,
   AuthResult,
   BridgeObservabilityEvent,
 } from "../../src/connectors/websocket/types.js";
@@ -2619,11 +2623,11 @@ describe("WebSocket bridge — shutdown", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     t.feed(STARTUP_GREETING);
-    let resolveAuth!: (r: { ok: true }) => void;
+    let resolveAuth!: (r: { ok: true; identity: undefined }) => void;
     const bridge = createWebSocketBridge({
       createClient: () => client,
       authenticate: () =>
-        new Promise<{ ok: true }>((res) => {
+        new Promise<{ ok: true; identity: undefined }>((res) => {
           resolveAuth = res;
         }),
     });
@@ -2632,7 +2636,7 @@ describe("WebSocket bridge — shutdown", () => {
 
     const startedAt = Date.now();
     const shutdown = bridge.shutdown(30_000);
-    resolveAuth({ ok: true });
+    resolveAuth({ ok: true, identity: undefined });
     await flush();
 
     expect(readJsonFrames(ws).map((f) => f.k)).toEqual(["welcome", "draining"]);
@@ -2814,7 +2818,7 @@ describe("WebSocket bridge — frames after a pending fatal", () => {
     const bridge = createWebSocketBridge({
       authenticate: () => {
         counts.authenticate++;
-        return { ok: true };
+        return { ok: true, identity: undefined };
       },
       createClient: () => {
         counts.createClient++;
@@ -2850,5 +2854,134 @@ describe("WebSocket bridge — frames after a pending fatal", () => {
     expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
       "BRIDGE_PROTOCOL_ERROR",
     ]);
+  });
+});
+
+describe("WebSocket bridge — connection identity", () => {
+  interface User {
+    readonly user: string;
+  }
+
+  it("the identity authenticate() attaches reaches createClient, authorize and the call event as the app's own type", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const seen: string[] = [];
+    const bridge = createWebSocketBridge({
+      // A hook that reads its request, written inline before the hooks that
+      // read the identity: the order TypeScript infers it in.
+      authenticate: (req) => ({
+        ok: true,
+        identity: { user: req.url ?? "ada" },
+      }),
+      createClient: (ctx) => {
+        seen.push(`createClient:${ctx.identity.user}`);
+        return client;
+      },
+      authorize: (req) => {
+        seen.push(`authorize:${req.identity.user}`);
+        return { allow: false, reason: "denied" };
+      },
+      onEvent: (ev) => {
+        if (ev.kind === "call") seen.push(`call:${ev.identity?.user}`);
+      },
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+    ws.feedClient({ k: "call", id: "1", method: "execute", args: ["x"] });
+    await flush();
+
+    expect(seen).toEqual(["createClient:ada", "authorize:ada", "call:ada"]);
+  });
+
+  it("a bridge without authenticate accepts the connection with no identity", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const identities: undefined[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: (ctx) => {
+        identities.push(ctx.identity);
+        return client;
+      },
+    });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    expect(identities).toEqual([undefined]);
+    expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(true);
+  });
+
+  it("a bridge without authenticate calls the caller's own options object, class methods and all", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    class Hooks {
+      readonly created: TmuxClient[] = [];
+      createClient(): TmuxClient {
+        this.created.push(client);
+        return client;
+      }
+    }
+    const hooks = new Hooks();
+    const ws = connectRunning(createWebSocketBridge(hooks));
+    await flush();
+
+    expect(hooks.created).toEqual([client]);
+    expect(readJsonFrames(ws).some((f) => f.k === "welcome")).toBe(true);
+  });
+
+  it("an authenticate written as a class method is called on its own object", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    class Hooks {
+      readonly user = "ada";
+      readonly seen: string[] = [];
+      authenticate(): AuthResult<User> {
+        return { ok: true, identity: { user: this.user } };
+      }
+      createClient(ctx: { readonly identity: User }): TmuxClient {
+        this.seen.push(ctx.identity.user);
+        return client;
+      }
+    }
+    const hooks = new Hooks();
+    connectRunning(createWebSocketBridge(hooks));
+    await flush();
+
+    expect(hooks.seen).toEqual(["ada"]);
+  });
+
+  it("a named identity type reaches a hook listed before authenticate", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const seen: string[] = [];
+    const bridge = createWebSocketBridge<User>({
+      createClient: (ctx) => {
+        seen.push(ctx.identity.user);
+        return client;
+      },
+      authenticate: (req) => ({
+        ok: true,
+        identity: { user: req.url ?? "ada" },
+      }),
+    });
+    connectRunning(bridge);
+    await flush();
+
+    expect(seen).toEqual(["ada"]);
+  });
+
+  it("an identity type is only reachable through an authenticate that attaches it", () => {
+    const createClient = (): TmuxClient => {
+      throw new Error("never called");
+    };
+    // @ts-expect-error authenticate is required once an identity is named
+    const unauthenticated: WebSocketBridgeOptions<User> = { createClient };
+    // @ts-expect-error an accept names the identity it attaches
+    const anonymousAccept: Authenticate<User> = () => ({ ok: true });
+    expect([unauthenticated, anonymousAccept]).toHaveLength(2);
   });
 });

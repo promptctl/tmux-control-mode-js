@@ -91,19 +91,20 @@ async function startFixture(
 
   const bridge = createWebSocketBridge({
     createClient: () => tmux,
-    authenticate: options.authenticateToken
-      ? (req) => {
-          const headerToken =
-            (req.headers["x-auth-token"] as string | undefined) ?? "";
-          return headerToken === options.authenticateToken
-            ? { ok: true, identity: { token: headerToken } }
-            : {
-                ok: false,
-                reason: "bad token",
-                code: options.denialCloseCode ?? 4401,
-              };
-        }
-      : undefined,
+    authenticate: (req) => {
+      if (options.authenticateToken === undefined) {
+        return { ok: true, identity: undefined };
+      }
+      const headerToken =
+        (req.headers["x-auth-token"] as string | undefined) ?? "";
+      return headerToken === options.authenticateToken
+        ? { ok: true, identity: { token: headerToken } }
+        : {
+            ok: false,
+            reason: "bad token",
+            code: options.denialCloseCode ?? 4401,
+          };
+    },
     authorize: options.deniedMethods
       ? (req) => {
           if (options.deniedMethods!.has(req.method)) {
