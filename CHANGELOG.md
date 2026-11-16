@@ -57,6 +57,10 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A pane that exits, is killed, or leaves its window no longer costs a
+  server-wide `list-panes -a` that discards every window refresh in flight:
+  the router asks tmux about that pane alone (`list-panes -t %N`) and
+  refreshes the window it names.
 - A command sent after tmux died but before its connection closed is no
   longer refused as one failed command: it settles at the close with
   `TransportClosedError` and the connection's end. So a window event read in
