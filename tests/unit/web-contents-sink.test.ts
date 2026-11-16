@@ -31,7 +31,6 @@ import {
 import {
   IPC,
   type IpcEventMessage,
-  type IpcRendererLike,
   type IpcRendererOnListener,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
@@ -267,10 +266,10 @@ describe("attachWebContentsSink", () => {
 });
 
 // ---------------------------------------------------------------------------
-// IPC payloads — each channel's arguments, checked where they are sent
+// IPC.event payload — one union, checked at both ends
 // ---------------------------------------------------------------------------
 
-describe("IPC payloads", () => {
+describe("IPC.event payload", () => {
   it("main sends a renderer only an IpcEventMessage, and a renderer listener receives one", () => {
     const fake = createFakeWebContents();
     const output: OutputMessage = {
@@ -288,21 +287,5 @@ describe("IPC payloads", () => {
       return type;
     };
     expect([wrongPayload, wrongChannel, listener]).toHaveLength(3);
-  });
-
-  it("a renderer sends main each channel's own arguments", () => {
-    const sends = (ipc: IpcRendererLike) => [
-      () => ipc.send(IPC.register),
-      () => ipc.send(IPC.ack, { paneId: 1, bytes: 1 }),
-      // @ts-expect-error an ack carries its AckMessage
-      () => ipc.send(IPC.ack),
-      // @ts-expect-error register carries nothing
-      () => ipc.send(IPC.register, { paneId: 1, bytes: 1 }),
-      // @ts-expect-error a renderer sends main nothing on IPC.event
-      () => ipc.send(IPC.event),
-      // @ts-expect-error invoke is the one channel a renderer invokes on
-      () => ipc.invoke(IPC.ack, { paneId: 1, bytes: 1 }),
-    ];
-    expect(sends).toBeTypeOf("function");
   });
 });

@@ -49,7 +49,6 @@ import {
   IPC,
   type AckMessage,
   type InvokeRequest,
-  type InvokeResultEnvelope,
   type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
@@ -387,11 +386,10 @@ export class TmuxClientProxy
     // when timeout is disabled (the default), the IPC promise is awaited
     // directly with no timer overhead.
     const ipcPromise = this.ipc.invoke(IPC.invoke, req);
-    const settled =
+    const result =
       this.invokeTimeoutMs > 0
         ? await this.withTimeout(ipcPromise, req.method)
         : await ipcPromise;
-    const result = settled as InvokeResultEnvelope;
     if (result.status === "ok") {
       return result.response as RpcResponseMap[R["method"]];
     }
@@ -429,7 +427,7 @@ export class TmuxClientProxy
     });
   }
 
-  // [LAW:single-enforcer] Called from the byte-only branch of `eventHandler`,
+  // [LAW:single-enforcer] Called from the byte-only branch of `onEvent`,
   // so `msg` is statically the pane-output arm of `IpcEventMessage`.
   private account(msg: OutputMessage): void {
     const next = (this.pendingAck.get(msg.paneId) ?? 0) + msg.data.byteLength;
@@ -460,6 +458,7 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  InvokeResultEnvelope,
   IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,

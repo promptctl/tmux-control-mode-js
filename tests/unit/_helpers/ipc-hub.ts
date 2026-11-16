@@ -26,7 +26,9 @@
 // without booting a real Electron process.
 
 import type {
+  InvokeResultEnvelope,
   IpcMainEventLike,
+  IpcMainInvokeListener,
   IpcMainLike,
   IpcRendererLike,
   IpcRendererOnListener,
@@ -43,7 +45,7 @@ export interface RawIpcRenderer extends Pick<
   IpcRendererLike,
   "on" | "removeListener"
 > {
-  invoke(channel: string, ...args: unknown[]): Promise<unknown>;
+  invoke(channel: string, ...args: unknown[]): Promise<InvokeResultEnvelope>;
   send(channel: string, ...args: unknown[]): void;
 }
 
@@ -101,13 +103,9 @@ export interface IpcHub {
 }
 
 export function createIpcHub(): IpcHub {
-  type InvokeHandler = (
-    event: IpcMainEventLike,
-    ...args: unknown[]
-  ) => unknown | Promise<unknown>;
   type OnHandler = (event: IpcMainEventLike, ...args: unknown[]) => void;
 
-  const invokeHandlers = new Map<string, InvokeHandler>();
+  const invokeHandlers = new Map<string, IpcMainInvokeListener>();
   const mainOnListeners = new Map<string, Set<OnHandler>>();
   let nextProcessId = 1;
 
@@ -203,7 +201,7 @@ export function createIpcHub(): IpcHub {
       from: Document,
       channel: string,
       args: readonly unknown[],
-    ): Promise<unknown> {
+    ): Promise<InvokeResultEnvelope> {
       const payload = cloneArgs(args);
       await nextTask();
       const reply = await (async () => {
@@ -240,7 +238,7 @@ export function createIpcHub(): IpcHub {
         // reach the renderer. Mirroring that here means a test that mutates
         // the source object after dispatch (or relies on by-ref identity)
         // fails the same way it would in production.
-        const payload = structuredClone(msg);
+        const [payload] = cloneArgs([msg]);
         void nextTask().then(() => {
           if (!hears(target)) return;
           for (const h of target.listeners.get(channel) ?? []) h({}, payload);
@@ -370,6 +368,6 @@ export function createIpcHub(): IpcHub {
   };
 }
 
-export function cloneArgs(args: readonly unknown[]): unknown[] {
+export function cloneArgs<T>(args: readonly T[]): T[] {
   return args.map((a) => structuredClone(a));
 }

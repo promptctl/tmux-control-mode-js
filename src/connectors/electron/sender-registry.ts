@@ -202,7 +202,7 @@ export class SenderRegistry {
     // broadcast loop exists in the bridge. [LAW:one-source-of-truth]
     if (state.detachBytes === null) {
       // [LAW:one-source-of-truth] The IPC envelope shaping (ChunkPayload →
-      // PaneOutputMessage) and wire send live solely in WebContentsSink.write;
+      // OutputMessage) and wire send live solely in WebContentsSink.write;
       // this internal sink wraps that one forwarder and adds backpressure
       // accounting. Previously both paths hand-built the envelope and could
       // silently diverge.

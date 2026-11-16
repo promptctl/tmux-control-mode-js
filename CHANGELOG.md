@@ -54,8 +54,11 @@ All notable changes to this project are documented here. Format follows
   `AckMessage`; `invoke` takes `IPC.invoke` and an `InvokeRequest`.
   Electron's `WebContents` and `ipcRenderer` are still assignable; a
   hand-written fake or wrapper that sends other channels or arguments no
-  longer compiles. `./electron/main` and `./electron/renderer` export
-  `IpcEventMessage`.
+  longer compiles. `invoke` resolves to an `InvokeResultEnvelope`, and
+  `IpcMainLike.handle`/`removeHandler` take `IPC.invoke`, whose listener
+  returns a `Promise<InvokeResultEnvelope>`. `./electron/main` and
+  `./electron/renderer` export `IpcEventMessage` and `InvokeResultEnvelope`;
+  `./electron/renderer` also exports `IpcRendererOnListener`.
 - The Electron main bridge refuses IPC from subframes (an invoke answers
   `BRIDGE_ABORTED`): a renderer's peer is its page's main frame.
 - A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the

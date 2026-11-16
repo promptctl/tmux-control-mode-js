@@ -149,14 +149,16 @@ export type IpcMainOnListener = (
   ...args: unknown[]
 ) => void;
 
+/** Main answers every `IPC.invoke` with an envelope, whatever the renderer sent. */
 export type IpcMainInvokeListener = (
   event: IpcMainEventLike,
   ...args: unknown[]
-) => unknown | Promise<unknown>;
+) => Promise<InvokeResultEnvelope>;
 
 export interface IpcMainLike {
-  handle(channel: IpcChannel, listener: IpcMainInvokeListener): void;
-  removeHandler(channel: IpcChannel): void;
+  /** `IPC.invoke` is the one channel main handles. */
+  handle(channel: typeof IPC.invoke, listener: IpcMainInvokeListener): void;
+  removeHandler(channel: typeof IPC.invoke): void;
   on(channel: IpcChannel, listener: IpcMainOnListener): void;
   removeListener(channel: IpcChannel, listener: IpcMainOnListener): void;
 }
@@ -173,7 +175,10 @@ export type IpcRendererOnListener = (
 ) => void;
 
 export interface IpcRendererLike {
-  invoke(channel: typeof IPC.invoke, req: InvokeRequest): Promise<unknown>;
+  invoke(
+    channel: typeof IPC.invoke,
+    req: InvokeRequest,
+  ): Promise<InvokeResultEnvelope>;
   // A renderer's own sends are typed per channel; main still parses what
   // arrives (`parseAckMessage`), since a renderer is untrusted.
   send(channel: typeof IPC.register | typeof IPC.unregister): void;

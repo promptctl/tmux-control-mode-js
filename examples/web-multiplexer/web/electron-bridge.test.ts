@@ -20,6 +20,7 @@ import {
 } from "@promptctl/tmux-control-mode-js/browser";
 import { createMainBridge } from "@promptctl/tmux-control-mode-js/electron/main";
 import type {
+  InvokeResultEnvelope,
   IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,
@@ -65,7 +66,10 @@ const demoIpc: DemoIpc = {
  *  `envelope`, and answers the proxy's registration with `onRegister`, as it
  *  happens, before `send` returns. */
 function connectedBridge(
-  envelope: unknown = { status: "ok" },
+  envelope: InvokeResultEnvelope = {
+    status: "ok",
+    response: { commandNumber: 0, timestamp: 0, output: [], success: true },
+  },
   onRegister: readonly IpcEventMessage[] = [],
 ): {
   bridge: ElectronBridge;
@@ -167,7 +171,7 @@ describe("ElectronBridge state", () => {
   });
 
   it("is ready when main's ready snapshot answers the registration before connect() returns", () => {
-    const { bridge, states } = connectedBridge({ status: "ok" }, [READY]);
+    const { bridge, states } = connectedBridge(undefined, [READY]);
 
     expect(states.at(-1)).toBe("ready");
     bridge.disconnect();
