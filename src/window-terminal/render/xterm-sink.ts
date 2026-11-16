@@ -229,6 +229,9 @@ export class XtermSink implements TerminalSink {
   }
 
   private applySeed(captured: Uint8Array, cursor: SeedCursor | null): void {
+    (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+      `[DBG sink] applySeed ${captured.byteLength}B cursor=${JSON.stringify(cursor)}`,
+    );
     // xterm.write accepts Uint8Array; the seed is raw bytes (same as the live
     // path) and xterm is the single decoding authority. The CUP below is an
     // ASCII string — xterm.write accepts either form.
@@ -264,12 +267,24 @@ export class XtermSink implements TerminalSink {
     // the hot path is a bare `term.write(data)` — no allocation. Only during
     // the brief startup window do writes route through the gate, which returns
     // a DrainBatch when the cap forces an early drain (the no-resize valve).
+    const dbgText = Array.from(data.subarray(0, 60), (b) =>
+      b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : `\\x${b.toString(16)}`,
+    ).join("");
+    (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+      `[DBG sink] write ${data.byteLength}B gate=${this.gate.buffering} "${dbgText}"`,
+    );
     if (this.gate.buffering) {
       const overflow = this.gate.bufferWrite(data);
       if (overflow !== null) this.performDrain(overflow);
       return;
     }
-    this.terminal.write(data);
+    this.terminal.write(data, () => {
+      const buf = this.terminal.buffer.active;
+      const line = buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true);
+      (globalThis as unknown as { console: { log(s: string): void } }).console.log(
+        `[DBG sink] parsed; cursor row text "${line}" y=${buf.cursorY} base=${buf.baseY} len=${buf.length}`,
+      );
+    });
   }
 
   // Apply a batch the gate released: the pending seed (if any) then the
