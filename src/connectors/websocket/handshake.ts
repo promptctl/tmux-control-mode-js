@@ -4,6 +4,7 @@
 // handshake timer state.
 import {
   AUTH_DENIED,
+  INTERNAL_ERROR,
   serverCloseCodeParser,
   type ServerCloseCode,
 } from "./close-code.js";
@@ -50,14 +51,27 @@ export class Handshake {
     }
   }
 
-  // Run the authenticate hook; a hook that throws or returns a code the
-  // socket may not send is a denial naming the defect.
+  // Run the authenticate hook. A denial it returns is its decision and closes
+  // with its code. A hook that throws is a fault, not a decision: the peer is
+  // still denied, under INTERNAL_ERROR, which a client retries — an auth
+  // backend's outage must not refuse a connection for good (isRefusal). A
+  // code the socket may not send is the hook's own defect, the same on every
+  // retry, so it is a denial naming the defect under AUTH_DENIED.
   async authenticate(): Promise<AuthVerdict> {
     if (this.authHook === undefined) return { ok: true, identity: undefined };
     const req: UpgradeRequest = this.request ?? { headers: {} };
+    let result: AuthResult;
     try {
-      const result = await this.authHook(req);
-      if (result.ok) return result;
+      result = await this.authHook(req);
+    } catch (err) {
+      return {
+        ok: false,
+        closeCode: INTERNAL_ERROR,
+        reason: `authenticate failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (result.ok) return result;
+    try {
       return {
         ok: false,
         closeCode: parseCloseCode(

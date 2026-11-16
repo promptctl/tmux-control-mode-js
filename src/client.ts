@@ -534,7 +534,10 @@ export class TmuxClient
   // issues meets execute's 'closed' refusal and never reaches tmux.
   private endConnection(
     reason: string | undefined,
-    closedReason: Extract<ConnectionState, { status: "closed" }>["reason"],
+    closedReason: Exclude<
+      Extract<ConnectionState, { status: "closed" }>["reason"],
+      "refused"
+    >,
   ): void {
     if (this.currentConnectionState.status === "closed") return;
     const exit = this.recordExit(reason);

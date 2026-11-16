@@ -165,9 +165,12 @@ export type AuthResult =
   | {
       readonly ok: false;
       /** The code the denied socket closes with: one a server may send
-       *  (see `ServerCloseCode`). Default 4401. Any other number is
-       *  the hook's defect: the socket closes with 4401 and the denial's
-       *  reason names the value. */
+       *  (see `ServerCloseCode`). Default 4401. A code in 4400–4499 refuses
+       *  the connection for good: a `WebSocketTmuxClient` ends `closed` /
+       *  `refused` and does not retry. Any other code is retried under the
+       *  client's reconnect policy. A number the socket may not send is the
+       *  hook's defect: the socket closes with 4401 and the denial's reason
+       *  names the value. */
       readonly code?: number;
       readonly reason: string;
     };

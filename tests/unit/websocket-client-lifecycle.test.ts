@@ -26,11 +26,13 @@ import {
   encodePaneOutput,
   encodeServerFrame,
   parseDurationMs,
+  type BridgeErrorCode,
   type ResultFrame,
   type ServerFrame,
 } from "../../src/connectors/websocket/protocol.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import { sessionScope } from "../../src/pane-output.js";
+import type { ConnectionState } from "../../src/connection-state.js";
 import { MockWebSocketHub, type MockWS } from "./_helpers/websocket-hub.js";
 
 function makeClient(
@@ -1607,6 +1609,63 @@ describe("WebSocketTmuxClient — a protocol fault before ready fails the handsh
     expect(client.connectionState).toEqual({
       status: "closed",
       reason: "transport-error",
+    });
+  });
+
+  it.each([
+    [4401, "BRIDGE_AUTH_DENIED", "denied"],
+    [4403, "BRIDGE_REFUSED", "createClient failed: can't find window: @3"],
+  ])(
+    "under a reconnect policy, a %i refusal ends the connection refused at the close, with no retry",
+    async (code, errorCode, message) => {
+      const { client, hub, ws } = started({ reconnect: true });
+      const states: ConnectionState[] = [];
+      client.on("connection-state", (ev) => states.push(ev.state));
+      ws.fire("message", {
+        data: encodeServerFrame({
+          k: "error",
+          fatal: true,
+          error: { code: errorCode as BridgeErrorCode, message },
+        }),
+      });
+      hub.fireClose(-1, code, message);
+
+      const closed = client.connectionState;
+      expect(closed).toMatchObject({ status: "closed", reason: "refused" });
+      expect(
+        closed.status === "closed" && closed.reason === "refused"
+          ? closed.error.message
+          : undefined,
+      ).toContain(message);
+      expect(states.map((s) => s.status)).toEqual(["closed"]);
+      // Past the policy's whole 1 ms backoff: no second socket was opened.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(hub.sockets).toHaveLength(1);
+    },
+  );
+
+  it("a refusal whose fatal frame never parsed still ends refused, from the close alone", () => {
+    const { client, hub } = started({ reconnect: true });
+    hub.fireClose(-1, 4403, "createClient failed: gone");
+    expect(client.connectionState).toMatchObject({
+      status: "closed",
+      reason: "refused",
+      error: expect.objectContaining({
+        message: expect.stringContaining("createClient failed: gone"),
+      }),
+    });
+  });
+
+  it.each([
+    [1011, "createClient failed: spawn EAGAIN"],
+    [1001, "bridge is shutting down"],
+    [1006, ""],
+  ])("under a reconnect policy, a %i close is retried", (code, reason) => {
+    const { client, hub } = started({ reconnect: true });
+    hub.fireClose(-1, code, reason);
+    expect(client.connectionState).toMatchObject({
+      status: "reconnecting",
+      attempt: 1,
     });
   });
 

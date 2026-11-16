@@ -21,6 +21,7 @@ import {
 import type { TmuxClient } from "../../src/client.js";
 import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
 import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import { BridgeError } from "../../src/bridge-error.js";
 import type {
   BrowserWebSocketLike,
   ServerWebSocketLike,
@@ -447,19 +448,13 @@ describe.skipIf(!RUN_INTEGRATION)(
       socket = "";
     });
 
-    it("a dropped socket is stale with the last picture, then live again with each pane reseeded once", async () => {
-      const tmuxClient = await attachSession(socket, uniqueName("br"), {
-        newSessionFlags: ["-x", "120", "-y", "40", "cat"],
-      });
-      teardown.push(() => tmuxClient.close());
-      const window = q(socket, [
-        "display-message",
-        "-p",
-        "#{window_id}",
-      ]) as WindowId;
-      q(socket, ["split-window", "-h", "-t", window, "cat"]);
-
-      const bridge = createWebSocketBridge({ createClient: () => tmuxClient });
+    // A bridge on a loopback port and a browser client of it, retrying on a
+    // short backoff, both torn down with the test. `sockets` holds every
+    // socket the browser opened, latest last.
+    async function browserOverBridge(
+      createClient: () => TmuxClient,
+    ): Promise<{ browser: WebSocketTmuxClient; sockets: WsClient[] }> {
+      const bridge = createWebSocketBridge({ createClient });
       const http = createServer();
       const wss = new WebSocketServer({ server: http, path: "/tmux" });
       wss.on("connection", (ws, req) => {
@@ -481,12 +476,13 @@ describe.skipIf(!RUN_INTEGRATION)(
         await new Promise<void>((r) => http.close(() => r()));
       });
 
-      let lastWs: WsClient | null = null;
+      const sockets: WsClient[] = [];
       const browser = new WebSocketTmuxClient({
         url: `ws://127.0.0.1:${port}/tmux`,
         createWebSocket: (u) => {
-          lastWs = new WsClient(u);
-          return lastWs as unknown as BrowserWebSocketLike;
+          const ws = new WsClient(u);
+          sockets.push(ws);
+          return ws as unknown as BrowserWebSocketLike;
         },
         reconnect: {
           maxAttempts: 5,
@@ -498,6 +494,56 @@ describe.skipIf(!RUN_INTEGRATION)(
         heartbeatIntervalMs: 0,
       });
       teardown.push(() => browser.close());
+      return { browser, sockets };
+    }
+
+    // The cc-dump-web factory: it backs a connection with `tmuxClient` while
+    // tmux still has `window`, and refuses for good once it does not.
+    // `calls` counts every connection it was asked to back.
+    function windowFactory(
+      tmuxClient: TmuxClient,
+      window: WindowId,
+    ): { createClient: () => TmuxClient; calls: () => number } {
+      let calls = 0;
+      return {
+        createClient: () => {
+          calls++;
+          const windows = q(socket, [
+            "list-windows",
+            "-a",
+            "-F",
+            "#{window_id}",
+          ]);
+          if (!windows.split("\n").includes(window)) {
+            throw new BridgeError(
+              "BRIDGE_REFUSED",
+              `can't find window: ${window}`,
+            );
+          }
+          return tmuxClient;
+        },
+        calls: () => calls,
+      };
+    }
+
+    // Longer than the whole retry budget's backoff (5 × ≤50ms), so a retry
+    // the client wrongly scheduled would have reached the factory.
+    const pastRetryBudget = (): Promise<void> =>
+      new Promise((r) => setTimeout(r, 400));
+
+    it("a dropped socket is stale with the last picture, then live again with each pane reseeded once", async () => {
+      const tmuxClient = await attachSession(socket, uniqueName("br"), {
+        newSessionFlags: ["-x", "120", "-y", "40", "cat"],
+      });
+      teardown.push(() => tmuxClient.close());
+      const window = q(socket, [
+        "display-message",
+        "-p",
+        "#{window_id}",
+      ]) as WindowId;
+      q(socket, ["split-window", "-h", "-t", window, "cat"]);
+
+      const { browser, sockets } = await browserOverBridge(() => tmuxClient);
 
       const s = recorder();
       const engine = engineOver(browser, window, s);
@@ -517,7 +563,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       // [LAW:no-ambient-temporal-coupling]
       const states: (typeof engine.state)[] = [];
       const offState = engine.onState((st) => states.push(st));
-      (lastWs as unknown as WsClient).terminate();
+      sockets.at(-1)?.terminate();
       await readUntil(
         () => states.map((st) => st.phase),
         (phases) => phases.includes("stale"),
@@ -540,6 +586,96 @@ describe.skipIf(!RUN_INTEGRATION)(
         [...s.sinks.values()].map((sink) => sink.seedCalls.length),
       ).toEqual([2, 2]);
       expect(s.sinks.size).toBe(2);
+    }, 20_000);
+
+    it("a window gone before the page connects is gone at once: one refused connection, never stale", async () => {
+      const tmuxClient = await attachSession(socket, uniqueName("br"), {
+        newSessionFlags: ["-x", "120", "-y", "40", "cat"],
+      });
+      teardown.push(() => tmuxClient.close());
+      const window = q(socket, [
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "cat",
+      ]) as WindowId;
+      q(socket, ["kill-window", "-t", window]);
+      const factory = windowFactory(tmuxClient, window);
+
+      const { browser } = await browserOverBridge(factory.createClient);
+      const statuses: string[] = [];
+      browser.on("connection-state", (ev) => statuses.push(ev.state.status));
+      const engine = engineOver(browser, window, recorder());
+      teardown.push(() => engine.dispose());
+      const phases: string[] = [];
+      engine.onState((st) => phases.push(st.phase));
+
+      const gone = await readUntil(
+        () => engine.state,
+        (st) => st.phase === "gone",
+        "the engine never went gone",
+      );
+      expect(gone).toEqual({
+        phase: "gone",
+        reason: "connection-closed",
+        detail: expect.stringContaining(`can't find window: ${window}`),
+      });
+      expect(browser.connectionState).toMatchObject({
+        status: "closed",
+        reason: "refused",
+      });
+      await pastRetryBudget();
+      expect(factory.calls()).toBe(1);
+      expect(statuses).not.toContain("reconnecting");
+      expect(phases).not.toContain("stale");
+    }, 20_000);
+
+    it("a dropped socket whose window the bridge then refuses ends refused after one retry, not the whole budget", async () => {
+      const tmuxClient = await attachSession(socket, uniqueName("br"), {
+        newSessionFlags: ["-x", "120", "-y", "40", "cat"],
+      });
+      teardown.push(() => tmuxClient.close());
+      const window = q(socket, [
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "cat",
+      ]) as WindowId;
+      const factory = windowFactory(tmuxClient, window);
+
+      const { browser, sockets } = await browserOverBridge(
+        factory.createClient,
+      );
+      await readUntil(
+        () => browser.connectionState.status,
+        (st) => st === "ready",
+        "the browser never became ready",
+      );
+      const statuses: string[] = [];
+      browser.on("connection-state", (ev) => statuses.push(ev.state.status));
+
+      // The window goes under a live connection (its client is the session's,
+      // which outlives the window), so the connection the page opens after
+      // the drop is the bridge's to refuse.
+      q(socket, ["kill-window", "-t", window]);
+      sockets.at(-1)?.terminate();
+
+      await readUntil(
+        () => browser.connectionState.status,
+        (st) => st === "closed",
+        "the browser never closed",
+      );
+      expect(browser.connectionState).toMatchObject({
+        status: "closed",
+        reason: "refused",
+      });
+      await pastRetryBudget();
+      expect(factory.calls()).toBe(2);
+      expect(statuses.filter((s) => s === "reconnecting")).toHaveLength(1);
     }, 20_000);
   },
 );

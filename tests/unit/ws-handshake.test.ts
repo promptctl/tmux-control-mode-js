@@ -88,14 +88,27 @@ describe("Handshake — authenticate()", () => {
     expect(result).toEqual({ ok: false, closeCode: 1008, reason: "policy" });
   });
 
-  it("wraps a thrown error from the hook into a 4401 denial", async () => {
+  it("a hook that throws is a fault: still denied, under 1011, which a client retries", async () => {
     const hook = vi.fn().mockRejectedValue(new Error("db down"));
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
     expect(result).toMatchObject({
       ok: false,
-      closeCode: 4401,
+      closeCode: 1011,
       reason: expect.stringContaining("db down"),
+    });
+  });
+
+  it("a denial naming a code the socket may not send closes 4401, naming the value", async () => {
+    const hook = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: "policy", code: 1005 });
+    const hs = new Handshake(ms(100), undefined, hook);
+    const result = await hs.authenticate();
+    expect(result).toMatchObject({
+      ok: false,
+      closeCode: 4401,
+      reason: expect.stringContaining("1005"),
     });
   });
 

@@ -22,7 +22,9 @@
  * - `closed`        — no live connection, and no automatic transition leaves
  *                     this state. The `reason` distinguishes consumer-
  *                     initiated close (`disposed`) from clean transport exit
- *                     (`exit`) and from error-driven close (`transport-error`:
+ *                     (`exit`), from a server's refusal (`refused`, which
+ *                     carries the server's account as `error`) and from
+ *                     error-driven close (`transport-error`:
  *                     the transport failed, or the reply stream it carried
  *                     became unreadable — `TmuxClient`'s `protocol-error`
  *                     with kind `begin` says which line).
@@ -56,6 +58,15 @@ export type ConnectionState =
   | {
       readonly status: "closed";
       readonly reason: "exit" | "transport-error" | "disposed";
+    }
+  | {
+      readonly status: "closed";
+      /** The server refused this connection for good (the WebSocket bridge's
+       *  auth denial, or a `createClient` that names a target that does not
+       *  exist), so no retry was made: one would be refused again. */
+      readonly reason: "refused";
+      /** The server's account of the refusal, as its close carried it. */
+      readonly error: Error;
     };
 
 /**
@@ -123,7 +134,9 @@ export function sameConnectionState(
     return a.attempt === b.attempt && a.lastError === b.lastError;
   }
   if (a.status === "closed" && b.status === "closed") {
-    return a.reason === b.reason;
+    return a.reason === "refused" && b.reason === "refused"
+      ? a.error === b.error
+      : a.reason === b.reason;
   }
   return true;
 }
