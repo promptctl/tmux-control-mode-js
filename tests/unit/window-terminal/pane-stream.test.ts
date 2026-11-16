@@ -1144,6 +1144,23 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
+  it("output while detached mid-capture is not kept: the next attach captures again", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    stream.detach();
+    client.injectOutput(PANE_ID, new Uint8Array([0x41, 0x42]));
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
+
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes).toEqual([]);
+    stream.dispose();
+  });
+
   it("a detached stream recaptures on its next attach after a flood", async () => {
     const { client, stream } = makeStream();
     stream.attach(new RecordingSink());

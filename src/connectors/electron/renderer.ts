@@ -72,14 +72,6 @@ import {
 // `.code` survives Electron's structured-clone IPC serializer, which would
 // otherwise drop subclass properties.
 
-// [LAW:no-shared-mutable-globals] The invoke-id allocator: written only by
-// `TmuxClientProxy.invoke`. Main replies on `IPC.event`, which every proxy on
-// the page hears, so ids are unique across the realm, not per proxy. And
-// `IPC.event` reaches whatever document the WebContents shows when the reply
-// lands, so a reply main sent just before a navigation can reach the next
-// page: a random start keeps one document's ids from naming another's calls.
-let lastInvokeId = Math.floor(Math.random() * 2 ** 52);
-
 // The reply an invoke's return carries, or null when it rides `IPC.event`.
 // [LAW:no-silent-failure] A main of another version returns some other shape:
 // the call fails on it rather than wait for a reply that never comes.
@@ -150,6 +142,12 @@ export class TmuxClientProxy
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
   private readonly pendingAck = new Map<number, number>();
+  // Main replies on `IPC.event`, which every proxy on the page hears, and
+  // which reaches whatever document the WebContents shows when the reply
+  // lands — a reply sent just before a navigation can reach the next page. A
+  // random start keeps one proxy's ids from naming another's calls, on this
+  // page or the next.
+  private lastInvokeId = Math.floor(Math.random() * 2 ** 52);
   // Each invoke awaiting its reply, by id.
   private readonly awaitingReply = new Map<
     number,
@@ -434,7 +432,7 @@ export class TmuxClientProxy
     // await happens. The timeout branch races the IPC call against a timer;
     // when timeout is disabled (the default), the IPC promise is awaited
     // directly with no timer overhead.
-    const id = ++lastInvokeId;
+    const id = ++this.lastInvokeId;
     const reply = new Promise<InvokeResultEnvelope>((resolve, reject) => {
       // A closed proxy hears no reply on IPC.event.
       if (this.closed) {

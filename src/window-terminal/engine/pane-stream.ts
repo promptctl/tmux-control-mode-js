@@ -517,10 +517,10 @@ export class PaneStream implements ReseedTarget {
 
   /**
    * Detach the current sink. State flips to 'detached'; live bytes continue
-   * to arrive at the output handler but only update the activity counter —
-   * and the buffer of a capture in flight, which still serves a re-attach
-   * (StrictMode's mount→cleanup→mount: one capture). Re-attaching is allowed
-   * and re-seeds.
+   * to arrive at the output handler but only update the activity counter,
+   * and mark a capture in flight stale. A capture nothing followed still
+   * serves a re-attach (StrictMode's mount→cleanup→mount, synchronous: one
+   * capture). Re-attaching is allowed and re-seeds.
    */
   detach(): void {
     if (this.currentState === "disposed") return;
@@ -645,14 +645,19 @@ export class PaneStream implements ReseedTarget {
     // single property write, allocation-free, so the [HOT-PATH] rule holds.
     this.lastSeed = null;
 
-    // A live sink draws the byte (sink.write must be allocation-free per O3);
-    // otherwise a capture in flight takes it, attached or not (Array.push
-    // doesn't allocate unless the backing store grows; bounded by seed time).
+    // A live sink draws the byte (sink.write must be allocation-free per O3).
+    // Detached, nobody will be handed the capture in flight with the byte
+    // behind it, so it is marked stale rather than made to keep the pane's
+    // output (an in-place write). Seeding, the capture's buffer takes it
+    // (Array.push doesn't allocate unless the backing store grows; bounded by
+    // seed time).
     if (this.currentState === "live") {
       // sink is non-null in 'live' by construction (attach assigns it
       // before transitioning). Trust the state machine.
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       this.sink!.write(data);
+    } else if (this.currentState === "detached") {
+      this.markSeedStale();
     } else if (this.seedCycle.phase === "capturing") {
       this.seedCycle.buffer.push(data);
     }
@@ -705,11 +710,13 @@ export class PaneStream implements ReseedTarget {
   /**
    * The pane moved past every picture of it this stream holds: drop the cache
    * and mark an in-flight capture stale. The triggers are a reconnect,
-   * `%pause` and a recapture (`%continue`, a new size). [LAW:single-enforcer]
+   * `%pause`, a recapture (`%continue`, a new size) and a byte while
+   * detached. [LAW:single-enforcer]
    * The only place a capture is marked stale, and it always drops the cache
    * with it, so a stale capture never has a cache to fall back on. (A byte
-   * behind a capture moves the pane past the cache but not the capture — the
-   * capture's buffer holds it — so the byte path drops only the cache.)
+   * behind an attached capture moves the pane past the cache but not the
+   * capture — the capture's buffer holds it — so there the byte path drops
+   * only the cache.)
    * [LAW:no-mode-explosion] Staleness is only meaningful mid-capture: a no-op
    * when `idle`.
    */
@@ -763,7 +770,6 @@ export class PaneStream implements ReseedTarget {
     // Re-check liveness after the await; consumer may have disposed in the
     // meantime.
     if (this.currentState === "disposed") return;
-    const reply = this.readCapture(cycle, outcome);
 
     // A capture taken while tmux has the pane paused misses what tmux dropped:
     // drop it and stay seeding. `%continue` reseeds.
@@ -786,6 +792,9 @@ export class PaneStream implements ReseedTarget {
       if (this.sink !== null) void this.startSeedCycle();
       return;
     }
+
+    // Read (and report a failure of) only the capture that is used.
+    const reply = this.readCapture(cycle, outcome);
 
     // [LAW:single-enforcer] The whole seeding→live transition lives below.
     // No `await` from here to the state flip — nothing can push to the buffer
