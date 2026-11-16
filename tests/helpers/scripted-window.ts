@@ -38,7 +38,8 @@ export function scriptedTmux(world: World): FakeTmuxClient {
         paneLine(2, "new"),
       ].join("\n");
     }
-    if (cmd.startsWith("display-message -p -t %")) return "0;0";
+    // A seed's line: an empty capture, then the state line.
+    if (cmd.startsWith("capture-pane")) return "0;0";
     return "";
   });
   return client;

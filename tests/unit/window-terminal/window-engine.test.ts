@@ -110,10 +110,7 @@ describe("WindowEngine — arrival", () => {
       ["%1", "right", { x: 41, y: 0, cols: 39, rows: 24 }],
     ]);
     expect(s.created).toEqual(["%0", "%1"]);
-    const captures = client
-      .commands()
-      .filter((c) => c.startsWith("capture-pane"));
-    expect(captures).toEqual([
+    expect(client.captures()).toEqual([
       "capture-pane -peqN -S -50 -t %0",
       "capture-pane -peqN -S -50 -t %1",
     ]);
@@ -309,7 +306,7 @@ describe("WindowEngine — following the window", () => {
     ]);
     expect(s.created).toEqual(["%0", "%1", "%2"]);
     await settle();
-    expect(client.commands()).toContain("capture-pane -peqN -S -50 -t %2");
+    expect(client.captures()).toContain("capture-pane -peqN -S -50 -t %2");
 
     client.injectLayoutChange(1, ONE_PANE, ONE_PANE, "*");
     expect(live(engine.state).panes.map((p) => p.id)).toEqual(["%0"]);

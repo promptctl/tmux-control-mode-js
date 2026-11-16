@@ -118,7 +118,7 @@ describe.skipIf(!integrationOn)(
         try {
           const t0 = performance.now();
           stream.attach(sink);
-          // The seed lands once capture-pane + display-message round-trip;
+          // The seed lands once the capture's command line round-trips;
           // seedAt is stamped inside the sink's seed() callback, so the poll
           // interval never enters the sample.
           await readUntil(

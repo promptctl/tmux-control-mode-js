@@ -30,6 +30,7 @@ import type {
 } from "../../src/browser.js";
 import { SinkRegistry, serverScope } from "../../src/browser.js";
 import type {
+  BeginMessage,
   OutputMessage,
   SubscriptionChangedMessage,
   CommandResponse,
@@ -43,6 +44,7 @@ import type {
   ContinueMessage,
   SessionChangedMessage,
 } from "../../src/protocol/index.js";
+import { CONTROL_FLAGS } from "../../src/protocol/types.js";
 import {
   refreshClientClearWindowSize,
   refreshClientSize,
@@ -80,6 +82,7 @@ export type FakeNotification =
 
 export type FakeMessage =
   | FakeOutputMessage
+  | BeginMessage
   | FakeConnectionStateMessage
   | FakeReconnectedMessage
   | SubscriptionChangedMessage
@@ -140,11 +143,15 @@ export class FakeTmuxClient {
   // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
   // (modelling tmux's `%error`/transport failures), or `null` to resolve
   // normally. Both of PaneStream's tmux seams — the pane-size subscription
-  // (`refresh-client -B …`) and the seed (`capture-pane`/`display-message`) —
+  // (`refresh-client -B …`) and the seed (the `capture-pane …` line) —
   // flow through `execute()`, so this one knob drives both failure paths.
   // Default: never fail.
   private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
+  // Replies' `begin` events held back until `releaseBegins()`, modelling a
+  // connection whose replies outrun its event stream (Electron); null while
+  // begins are announced as they come.
+  private heldBegins: BeginMessage[] | null = null;
 
   // Round-trip latency injected into `execute()`. A consumer varies this to
   // measure visibility-toggle / reconnect-burst timing against a known
@@ -202,11 +209,26 @@ export class FakeTmuxClient {
    */
   execute(command: string): Promise<CommandResponse> {
     this.commandLog.push(command);
-    if (command.startsWith("capture-pane")) {
-      this.captureLog.push(command);
-    }
+    // A line's commands are separated by ` ; `; the log keeps a line's
+    // capture-pane command alone.
+    const capture = command
+      .split(" ; ")
+      .find((c) => c.startsWith("capture-pane"));
+    if (capture !== undefined) this.captureLog.push(capture);
     const failure = this.executeFailure(command);
     const commandNumber = ++this.commandCounter;
+    // tmux runs the line as soon as it arrives; this fake announces the
+    // reply's `begin` at the next microtask (a synchronous transport would
+    // announce it inside `execute()`). Bytes injected before it are in the
+    // snapshot; bytes injected after an `await` follow it.
+    queueMicrotask(() =>
+      this.announceBegin({
+        type: "begin",
+        timestamp: Date.now(),
+        commandNumber,
+        flags: CONTROL_FLAGS,
+      }),
+    );
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         // [LAW:no-silent-failure] A scripted failure rejects — same shape as
@@ -359,8 +381,8 @@ export class FakeTmuxClient {
    * Script which `execute()` commands REJECT and with what error. The handler
    * receives the full command string and returns an `Error` to reject with, or
    * `null` to resolve normally. Match on the command prefix to target a seam —
-   * `refresh-client -B` for the pane-size subscription, `capture-pane` /
-   * `display-message` for the seed. Persistent, like `setExecuteResponse`.
+   * `refresh-client -B` for the pane-size subscription, `capture-pane` for
+   * the seed's line. Persistent, like `setExecuteResponse`.
    */
   setExecuteFailure(handler: (command: string) => Error | null): void {
     this.executeFailure = handler;
@@ -428,6 +450,23 @@ export class FakeTmuxClient {
     return this.captureLog.length;
   }
 
+  /** Every capture-pane command sent, in order. */
+  captures(): readonly string[] {
+    return this.captureLog;
+  }
+
+  /** Hold replies' `begin` events back; replies still resolve. */
+  holdBegins(): void {
+    this.heldBegins = [];
+  }
+
+  /** Announce the held `begin` events, in order, and stop holding them. */
+  releaseBegins(): void {
+    const held = this.heldBegins ?? [];
+    this.heldBegins = null;
+    for (const msg of held) this.dispatch(msg);
+  }
+
   /** Set round-trip latency (ms) for `execute()`. Used by attach + reconnect benches. */
   setRoundTripLatencyMs(ms: number): void {
     this.roundTripMs = ms;
@@ -436,6 +475,11 @@ export class FakeTmuxClient {
   // -------------------------------------------------------------------------
   // Internal
   // -------------------------------------------------------------------------
+
+  private announceBegin(msg: BeginMessage): void {
+    if (this.heldBegins === null) this.dispatch(msg);
+    else this.heldBegins.push(msg);
+  }
 
   private dispatch(msg: FakeMessage): void {
     // [LAW:single-enforcer] Pane bytes flow exclusively through the sink

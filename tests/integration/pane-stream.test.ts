@@ -3,16 +3,19 @@
 // Integration coverage for `PaneStream` against a real tmux process.
 // Verifies the load-bearing pieces that the bench/unit suites cannot:
 //
-//  1. capture-pane + display-message round-trip during seed produces
-//     a non-empty seed payload at the sink.
+//  1. The seed's command line produces a non-empty seed payload at the sink.
 //  2. Per-pane format subscription (`pane_width;pane_height`) emits
 //     a `subscription-changed` event whose value the stream parses into
 //     a `sink.resize(cols, rows)` call when the pane geometry changes.
+//  3. A seed taken while the pane prints draws each line once — over a
+//     direct client and over a WebSocket bridge.
 //
-// [LAW:verifiable-goals] Both gates are bounded; both produce a deterministic
+// [LAW:verifiable-goals] Every gate is bounded and produces a deterministic
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { createServer } from "node:http";
+import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   uniqueSocket,
@@ -24,7 +27,16 @@ import {
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
 import { sendKeys } from "../../src/commands/index.js";
-import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
+import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
+import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
+import type {
+  BrowserWebSocketLike,
+  ServerWebSocketLike,
+} from "../../src/connectors/websocket/types.js";
+import {
+  PaneStream,
+  type TerminalConnection,
+} from "../../src/window-terminal/engine/pane-stream.js";
 import type {
   TerminalSink,
   SeedCursor,
@@ -80,6 +92,83 @@ class CollectorSink implements TerminalSink {
   }
 }
 
+// What each seed draws as text, one transcript per seed: the screen's rows
+// down to the cursor's, then every byte written after it. Escapes are
+// stripped, so a pane printing plain lines reads back as those lines.
+class TranscriptSink implements TerminalSink {
+  readonly transcripts: string[] = [];
+  private readonly decoder = new TextDecoder();
+  seed(
+    captured: Uint8Array,
+    cursor: SeedCursor | null,
+    trailing: readonly Uint8Array[],
+  ): void {
+    if (cursor === null) throw new Error("a seed arrived without a cursor");
+    const rows = this.decoder
+      .decode(captured)
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b(\[[0-9;?]*[A-Za-z]|[=>]|\([0-9A-Z])/g, "")
+      .split("\r\n")
+      .map((row) => row.trimEnd());
+    const settled = rows.slice(0, cursor.row).filter((row) => row !== "");
+    this.transcripts.push(
+      settled.map((row) => `${row}\n`).join("") + (rows[cursor.row] ?? ""),
+    );
+    for (const chunk of trailing) this.write(chunk);
+  }
+  write(bytes: Uint8Array): void {
+    const last = this.transcripts.length - 1;
+    if (last < 0) return;
+    this.transcripts[last] += this.decoder.decode(bytes).replace(/\r/g, "");
+  }
+  resize(): void {}
+  isVisible(): boolean {
+    return true;
+  }
+  dispose(): void {}
+}
+
+// Seeds `paneId` 20 times while it counts, and asserts each seed's
+// transcript is an unbroken run of integers: a byte drawn twice repeats a
+// number, a byte lost skips one.
+async function expectSeedsDrawEachLineOnce(
+  conn: TerminalConnection,
+  paneId: number,
+): Promise<void> {
+  // The visible screen only, so the cursor row indexes the captured rows.
+  const stream = new PaneStream({ client: conn, paneId, historyLines: 0 });
+  try {
+    const sink = new TranscriptSink();
+    stream.attach(sink);
+    await readUntil(
+      () => stream.state,
+      (state) => state === "live",
+      "PaneStream never went live",
+    );
+    for (let i = 0; i < 20; i++) {
+      await stream.reseed();
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    expect(stream.lastError).toBeNull();
+    expect(sink.transcripts).toHaveLength(21);
+    for (const transcript of sink.transcripts) {
+      // The last line may still be printing.
+      const lines = transcript.split("\n").slice(0, -1);
+      expect(lines.length).toBeGreaterThan(1);
+      const numbers = lines.map(Number);
+      const breaks = numbers.flatMap((n, i) =>
+        i > 0 && n !== numbers[i - 1] + 1 ? [`${numbers[i - 1]}→${n}`] : [],
+      );
+      expect(breaks).toEqual([]);
+    }
+  } finally {
+    stream.dispose();
+  }
+}
+
+// A pane counting up, one integer per line, as fast as the shell goes.
+const COUNTER = "i=0; while [ $i -lt 2000000 ]; do echo $i; i=$((i+1)); done";
+
 describe.skipIf(!RUN_INTEGRATION)(
   "PaneStream — integration (tmux ≥3.2)",
   () => {
@@ -95,17 +184,82 @@ describe.skipIf(!RUN_INTEGRATION)(
     let client: TmuxClient;
     let stream: PaneStream | null;
 
+    // Further teardown a test registers, run before the client closes.
+    let teardown: (() => void | Promise<void>)[] = [];
+
     beforeEach(() => {
       socket = uniqueSocket("ps");
       stream = null;
+      teardown = [];
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       stream?.dispose();
+      for (const step of teardown.reverse()) await step();
       client?.close();
       if (socket !== "") killTmuxServer(socket);
       socket = "";
     });
+
+    // A browser client of `tmux` across a WebSocket bridge on a loopback
+    // port, torn down with the test.
+    async function bridgeTo(tmux: TmuxClient): Promise<WebSocketTmuxClient> {
+      const bridge = createWebSocketBridge({ createClient: () => tmux });
+      const http = createServer();
+      const wss = new WebSocketServer({ server: http, path: "/tmux" });
+      wss.on("connection", (ws, req) => {
+        void bridge.handleConnection(ws as unknown as ServerWebSocketLike, {
+          url: req.url,
+          headers: {},
+          remoteAddress: undefined,
+        });
+      });
+      const port = await new Promise<number>((resolve) => {
+        http.listen(0, "127.0.0.1", () => {
+          const addr = http.address();
+          resolve(typeof addr === "object" && addr !== null ? addr.port : 0);
+        });
+      });
+      teardown.push(async () => {
+        await bridge.shutdown(1_000);
+        await new Promise<void>((r) => wss.close(() => r()));
+        await new Promise<void>((r) => http.close(() => r()));
+      });
+      const browser = new WebSocketTmuxClient({
+        url: `ws://127.0.0.1:${port}/tmux`,
+        createWebSocket: (u) =>
+          new WsClient(u) as unknown as BrowserWebSocketLike,
+        heartbeatIntervalMs: 0,
+      });
+      teardown.push(() => browser.close());
+      await readUntil(
+        () => browser.connectionState.status,
+        (status) => status === "ready",
+        "the bridge never connected",
+      );
+      return browser;
+    }
+
+    // A session whose one pane is counting, once the count is on screen.
+    async function countingPane(): Promise<number> {
+      session = uniqueName("count");
+      client = await attachSession(socket, session, {
+        newSessionFlags: ["-x", "80", "-y", "24", COUNTER],
+      });
+      const paneId = await getPrimaryPaneId(client);
+      await waitForPaneText(client, paneId, "1000");
+      return paneId;
+    }
+
+    it("a seed taken while the pane prints draws each line once", async () => {
+      const paneId = await countingPane();
+      await expectSeedsDrawEachLineOnce(client, paneId);
+    }, 30000);
+
+    it("a seed taken while the pane prints draws each line once over a WebSocket bridge", async () => {
+      const paneId = await countingPane();
+      await expectSeedsDrawEachLineOnce(await bridgeTo(client), paneId);
+    }, 30000);
 
     it("attach() seeds with capture-pane output + cursor", async () => {
       session = uniqueName("seed");

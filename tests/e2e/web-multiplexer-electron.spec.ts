@@ -241,6 +241,45 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
   }
 });
 
+// Output the pane printed before the app launched reaches the screen only
+// through the pane's seed, so seeing it proves the seed's capture reply and
+// its `begin` cross Electron's IPC in an order the seed can cut by.
+test("output printed before launch is drawn by the pane's seed", async () => {
+  const marker = `SEED_${Date.now().toString(36).toUpperCase()}`;
+  tmux(SOCKET, [
+    "send-keys",
+    "-t",
+    SESSION,
+    `printf '%s\\n' ${marker}`,
+    "Enter",
+  ]);
+  await expect
+    .poll(() =>
+      execFileSync(
+        "tmux",
+        ["-L", SOCKET, "capture-pane", "-p", "-t", SESSION],
+        {
+          encoding: "utf8",
+        },
+      ),
+    )
+    .toContain(marker);
+
+  const app = await electron.launch({
+    args: [APP_ROOT],
+    cwd: APP_ROOT,
+    env: APP_ENV,
+  });
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".xterm-rows").first()).toContainText(marker, {
+      timeout: 20_000,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 // A click reaches the pane's program when that program asked for legacy mouse
 // reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
 // not `onData` — a path the window terminal must forward as raw bytes. The
