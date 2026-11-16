@@ -21,6 +21,7 @@ import {
   pollUntil,
   attachSession,
   attachClient,
+  recordingTransport,
   tmux,
 } from "../helpers/integration.js";
 import {
@@ -28,6 +29,7 @@ import {
   listAllPanes,
   makeRecordingSink,
   sendOutputToPane,
+  textOf,
   type ArrivedChunk,
 } from "../helpers/topology-moves.js";
 import type { TmuxClient } from "../../src/client.js";
@@ -232,6 +234,50 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
 
     tmux(socketName, ["kill-pane", "-t", split]);
     await expect(locate(split)).rejects.toThrow(/^can't find pane/);
+  }, 15000);
+
+  it("SCOPE-03e: a pane killed out of a multi-pane window is asked about by itself, not by list-panes -a", async () => {
+    const session = uniqueName("sess-kill");
+    const sent: string[] = [];
+    client = await attachSession(socketName, session, {
+      wrapTransport: (t) => recordingTransport(t, sent),
+    });
+    const errors: Error[] = [];
+    client.on("topology-error", (e) => errors.push(e.error));
+    const [pane] = await listAllPanes(client);
+    expect(pane).toBeDefined();
+    const split = tmux(socketName, [
+      "split-window",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      `%${pane!.paneId}`,
+      "sleep 30",
+    ]).trim();
+    const arrived: ArrivedChunk[] = [];
+    const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: sessionScope(pane!.sessionId),
+    });
+    // Replies in order: the attach's bootstrap and the split's refresh have
+    // answered before the kill.
+    await client.execute("display-message -p settled");
+    sent.length = 0;
+
+    tmux(socketName, ["kill-pane", "-t", split]);
+    await pollUntil(() =>
+      sent.some((c) => c.startsWith(`list-panes -t ${split} `)),
+    );
+    await client.execute("display-message -p settled");
+    expect(sent.filter((c) => c.startsWith("list-panes -a "))).toEqual([]);
+    expect(errors).toEqual([]);
+
+    // Its window-mate still routes to the session.
+    await sendOutputToPane(client, pane!.paneId);
+    await pollUntil(() =>
+      textOf(arrived, pane!.paneId).includes(`scope-test-${pane!.paneId}`),
+    );
+    dispose();
   }, 15000);
 
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────

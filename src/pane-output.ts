@@ -164,9 +164,10 @@ type PlacedPane = PaneMeta & { readonly floating: boolean };
 export interface Contradiction {
   // Windows moved-in panes left, whose membership any earlier query misstates.
   readonly left: ReadonlySet<number>;
-  // A tiled pane the layout omits went somewhere only a server-wide query can
-  // say: another window, maybe one in a session tmux sends no layout for.
-  readonly lostTrack: boolean;
+  // Tiled panes the layout or refresh omits. Each went somewhere only a query
+  // about the pane itself can say: another window, maybe one in a session tmux
+  // sends no layout for, or nowhere because it exited.
+  readonly lost: ReadonlySet<number>;
 }
 
 /**
@@ -220,8 +221,7 @@ export class PaneTopologyManager {
   /**
    * Differential update for one window from its `list-panes -t @W` reply:
    * removes panes that moved away or closed, adds and re-places the rest.
-   * A tiled pane it removes went somewhere only a server-wide query can say,
-   * as with a layout's omission.
+   * A tiled pane it removes is lost, as with a layout's omission.
    */
   updateWindow(
     windowId: number,
@@ -234,12 +234,12 @@ export class PaneTopologyManager {
     // [LAW:one-source-of-truth] Only delete when table still maps the pane to
     // this window. A concurrent refresh for another window may have already
     // updated the entry — if so, that newer mapping is authoritative.
-    let lostTrack = false;
+    const lost = new Set<number>();
     for (const paneId of prev ?? []) {
       const meta = this.table.get(paneId);
       if (!next.has(paneId) && meta?.windowId === windowId) {
         this.table.delete(paneId);
-        lostTrack ||= !meta.floating;
+        if (!meta.floating) lost.add(paneId);
       }
     }
 
@@ -253,7 +253,7 @@ export class PaneTopologyManager {
     } else {
       this.windowIndex.set(windowId, next);
     }
-    return { left: new Set(), lostTrack };
+    return { left: new Set(), lost };
   }
 
   /**
@@ -268,7 +268,7 @@ export class PaneTopologyManager {
     layoutPanes: readonly number[],
   ): Contradiction {
     const listed = new Set(layoutPanes);
-    let lostTrack = false;
+    const lost = new Set<number>();
     for (const paneId of this.windowIndex.get(windowId) ?? []) {
       const meta = this.table.get(paneId);
       if (
@@ -277,18 +277,18 @@ export class PaneTopologyManager {
         !meta.floating
       ) {
         this.table.delete(paneId);
-        lostTrack = true;
+        lost.add(paneId);
       }
     }
-    const lost = new Set<number>();
+    const left = new Set<number>();
     for (const paneId of listed) {
       const meta = this.table.get(paneId);
       if (meta !== undefined && meta.windowId !== windowId) {
         this.table.delete(paneId);
-        lost.add(meta.windowId);
+        left.add(meta.windowId);
       }
     }
-    return { left: lost, lostTrack };
+    return { left, lost };
   }
 
   /**

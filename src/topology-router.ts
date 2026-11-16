@@ -183,7 +183,7 @@ export class TopologyRouter {
   // refusal is reported at the next settle.
   private refusedBytes = 0;
   // Topology queries started and not yet settled. Only bootstrap(),
-  // refreshWindow() and locate() start queries, so the router owns this
+  // refreshWindow() and ask() start queries, so the router owns this
   // count; the epoch tracker answers staleness, not liveness.
   private inFlight = 0;
 
@@ -409,7 +409,7 @@ export class TopologyRouter {
     // before the attach-triggered bootstrap does, and a new pane's can land
     // before its %window-add or %layout-change refresh is asked.
     if (meta === undefined) {
-      void this.locate(payload.paneId);
+      this.locate(payload.paneId);
       const conn = this.connection;
       if (
         conn.phase === "live" &&
@@ -475,7 +475,7 @@ export class TopologyRouter {
     // [LAW:dataflow-not-control-flow] Every unplaced pane is asked about
     //   before any chunk's fate is decided, so a pane's held output is kept
     //   or dropped whole, never with a gap.
-    for (const h of unplaced) void this.locate(h.chunk.paneId);
+    for (const h of unplaced) this.locate(h.chunk.paneId);
     // Already copied and counted once; keeping them cannot exceed the cap.
     const kept = this.inFlight > 0 ? unplaced : [];
     conn.hold.chunks = kept;
@@ -610,13 +610,13 @@ export class TopologyRouter {
       //   seen since it started, and their windows' refreshes already follow
       //   the move, so only what the layouts contradict is asked again.
       const left = new Set<number>();
-      let lostTrack = false;
+      const lost = new Set<number>();
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
         const c = this.topology.unplaceContradicted(windowId, panes);
         for (const id of c.left) left.add(id);
-        lostTrack ||= c.lostTrack;
+        for (const id of c.lost) lost.add(id);
       }
-      this.requery({ left, lostTrack });
+      this.requery({ left, lost });
       this.interest?.recompute();
     } catch (err) {
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
@@ -646,17 +646,14 @@ export class TopologyRouter {
     }
   }
 
-  // The query that re-places what the table was told it got wrong: a pane lost track
-  // of needs the server-wide one, which supersedes every window refresh.
-  // A new refresh supersedes any sent before the move.
+  // The queries that re-place what the table was told it got wrong. A new
+  // refresh supersedes any sent before the move. A lost pane is asked about
+  // at once, whatever else is in flight: nothing in flight can place it.
   private requery(c: Contradiction, ...windows: number[]): void {
-    if (c.lostTrack) {
-      void this.bootstrap();
-      return;
-    }
     for (const id of new Set([...c.left, ...windows])) {
       void this.refreshWindow(id);
     }
+    for (const paneId of c.lost) void this.ask(paneId);
   }
 
   private async refreshWindow(windowId: number): Promise<void> {
@@ -710,16 +707,14 @@ export class TopologyRouter {
     }
   }
 
-  // Ask tmux which window an unknown pane is in, once per pane per connection.
-  // tmux never reuses a pane id, so the answer is final whenever it comes: the
-  // pane's window, or "can't find pane" — gone, along with any output it could
-  // still print. Asking once bounds a failing ask to one report per pane, not
+  // Locate a pane that printed before topology knew it, once per pane per
+  // connection. Asking once bounds a failing ask to one report per pane, not
   // one per chunk it prints.
   // [LAW:single-enforcer] Asked only once nothing else is outstanding: any
   //   query in flight may place the pane itself (the bootstrap, or the refresh
   //   its %window-add/%layout-change started), and a pane placed that way
   //   costs no query of its own. Arrival and every release both ask here.
-  private async locate(paneId: number): Promise<void> {
+  private locate(paneId: number): void {
     const conn = this.connection;
     if (
       conn.phase !== "live" ||
@@ -728,6 +723,15 @@ export class TopologyRouter {
       conn.located.has(paneId)
     )
       return;
+    void this.ask(paneId);
+  }
+
+  // Ask tmux which window a pane is in. tmux never reuses a pane id, so the
+  // answer is final whenever it comes: the pane's window, or "can't find
+  // pane" — gone, along with any output it could still print.
+  private async ask(paneId: number): Promise<void> {
+    const conn = this.connection;
+    if (conn.phase !== "live") return;
     conn.located.add(paneId);
     const gen = this.epoch.startLocate();
     this.inFlight++;

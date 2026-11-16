@@ -1105,6 +1105,22 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     );
   }
 
+  // Answer the locate (`list-panes -t %P`) of `paneId` with its window's rows.
+  function answerLocate(
+    locates: ReturnType<typeof controlledRun>["locates"],
+    paneId: number,
+    lines: string[],
+  ) {
+    const r = [...locates]
+      .reverse()
+      .find((q) => q.cmd.includes(`-t %${paneId} `));
+    if (r === undefined) throw new Error(`expected a locate of %${paneId}`);
+    r.resolve(makeOkResponse(lines));
+  }
+
+  const serverWide = (replies: { cmd: string }[]) =>
+    replies.filter((q) => q.cmd.includes("list-panes -a "));
+
   function answerRefreshWith(
     replies: ReturnType<typeof controlledRun>["replies"],
     windowId: number,
@@ -1129,7 +1145,7 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     onError: (e: Error) => void = () => undefined,
   ) {
     const router = new TopologyRouter(new DeliveryQueue(), onError);
-    const { run, replies } = controlledRun();
+    const { run, replies, locates } = controlledRun();
     router.onTransportReady(run);
     const oldSession = makeSink();
     const newSession = makeSink();
@@ -1146,7 +1162,16 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     }
     router.dispatchBytes(makeChunk(4));
     router.dispatchBytes(makeChunk(5));
-    return { router, run, replies, oldSession, newSession, newWindow, pane };
+    return {
+      router,
+      run,
+      replies,
+      locates,
+      oldSession,
+      newSession,
+      newWindow,
+      pane,
+    };
   }
 
   it("routes a moved pane's output to its new window and session, not its old ones", async () => {
@@ -1157,8 +1182,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(paneIdsOf(s.pane)).toEqual([5]);
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
 
-    answerRefresh(s.replies, "all");
+    answerLocate(s.locates, 5, AFTER[3]);
     await settle();
+    answerRefresh(s.replies, 2);
     answerRefresh(s.replies, 3);
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
@@ -1174,8 +1200,12 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     answerRefresh(s.replies, 3);
     await settle();
     expect(paneIdsOf(s.newSession)).toEqual([5]);
-    answerRefresh(s.replies, "all");
+    const sent = s.replies.length;
+    answerLocate(s.locates, 5, AFTER[3]);
+    answerRefresh(s.replies, 2);
     await settle();
+    // Already placed: the locate's answer asks nothing more.
+    expect(s.replies.length).toBe(sent);
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
   });
@@ -1213,25 +1243,60 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     const s = await movedPane([[2, LAYOUT_4]]);
     s.router.handleNotification({ type: "window-add", windowId: 3 });
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
-    answerRefresh(s.replies, "all"); // stale: the window-add re-queries
     answerRefresh(s.replies, 3);
     await settle();
-    expect(s.newSession.chunks).toHaveLength(0);
-    answerRefresh(s.replies, "all");
+    expect(paneIdsOf(s.newSession)).toEqual([5]);
+    answerLocate(s.locates, 5, AFTER[3]);
+    answerRefresh(s.replies, 2);
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
+    expect(serverWide(s.replies)).toEqual([]);
   });
 
   // join-pane into a window of a session tmux sends no layout for: only the
-  // source layout's omission tells, and only list-panes -a finds the pane.
-  it("routes a pane joined out to an unannounced window once a server-wide query finds it", async () => {
+  // source layout's omission tells, and only a query about the pane finds it.
+  it("routes a pane joined out to an unannounced window once a query about the pane finds it", async () => {
     const s = await movedPane([[2, LAYOUT_4]]);
-    expect(s.replies.at(-1)!.cmd).toContain("list-panes -a ");
-    answerRefresh(s.replies, "all");
+    expect(s.locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %5 "),
+    ]);
+    answerLocate(s.locates, 5, ["%9 @7 $2", "%5 @7 $2"]);
+    await settle();
+    answerRefreshWith(s.replies, 7, ["%9 @7 $2", "%5 @7 $2"]);
     await settle();
     expect(paneIdsOf(s.oldSession)).toEqual([4]);
     expect(paneIdsOf(s.newSession)).toEqual([5]);
+    expect(serverWide(s.replies)).toEqual([]);
+  });
+
+  it("asks about a pane each time a layout loses it", async () => {
+    const s = await movedPane([[2, LAYOUT_4]]);
+    answerLocate(s.locates, 5, ["%9 @7 $2", "%5 @7 $2"]);
+    await settle();
+    answerRefreshWith(s.replies, 7, ["%9 @7 $2", "%5 @7 $2"]);
+    await settle();
+    // Joined back out of @7: its layout now lists only %9.
+    s.router.handleNotification(layoutChange(7, "b266,80x24,0,0,9"));
+    expect(s.locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %5 "),
+      expect.stringContaining("list-panes -t %5 "),
+    ]);
+  });
+
+  // The common case: a pane exits, or is killed, out of a multi-pane window.
+  it("asks only about the pane a layout lost when it has exited", async () => {
+    const errors: Error[] = [];
+    const s = await movedPane([[2, LAYOUT_4]], (e) => errors.push(e));
+    s.locates.at(-1)!.reject(paneGone("%5"));
+    answerRefresh(s.replies, 2);
+    await settle();
+    expect(errors).toEqual([]);
+    expect(serverWide(s.replies)).toEqual([]);
+    // Its last output, printed before it went, is not asked about again.
+    s.router.dispatchBytes(makeChunk(5));
+    expect(s.locates).toHaveLength(1);
+    expect(paneIdsOf(s.oldSession)).toEqual([4]);
   });
 
   it("routes a window moved in from another session to its new session", async () => {
@@ -1402,9 +1467,9 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
 
   // An unparsed layout only refreshes its window; a pane gone from the
   // reply may have joined a window tmux announces nothing for.
-  it("finds a pane a window refresh no longer lists with a server-wide query", async () => {
+  it("finds a pane a window refresh no longer lists with a query about the pane", async () => {
     const router = newRouter();
-    const { run, replies } = controlledRun();
+    const { run, replies, locates } = controlledRun();
     router.onTransportReady(run);
     const sink = makeSink();
     router.attachBytesSink(sink, { scope: sessionScope(2) });
@@ -1413,16 +1478,18 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     router.handleNotification(layoutChange(2, "0000,80x24,0,0,4"));
     answerRefreshWith(replies, 2, ["%4 @2 $1"]);
     await settle();
-    expect(replies.at(-1)!.cmd).toContain("list-panes -a ");
-    replies.at(-1)!.resolve(makeOkResponse(["%4 @2 $1", "%5 @7 $2"]));
+    answerLocate(locates, 5, ["%5 @7 $2"]);
+    await settle();
+    answerRefreshWith(replies, 7, ["%5 @7 $2"]);
     await settle();
     router.dispatchBytes(makeChunk(5));
     expect(paneIdsOf(sink)).toEqual([5]);
+    expect(serverWide(replies)).toHaveLength(1); // the attach's bootstrap
   });
 
-  it("asks once after a bootstrap whose seed several layouts contradict", async () => {
+  it("asks about each pane a bootstrap's seed several layouts contradict", async () => {
     const router = newRouter();
-    const { run, replies } = controlledRun();
+    const { run, replies, locates } = controlledRun();
     router.onTransportReady(run);
     router.attachBytesSink(makeSink(), { scope: sessionScope(1) });
     router.handleNotification(layoutChange(2, LAYOUT_4));
@@ -1434,9 +1501,11 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
         );
     }
     await settle();
-    expect(
-      replies.filter((r) => r.cmd.includes("list-panes -a ")),
-    ).toHaveLength(1);
+    expect(serverWide(replies)).toEqual([]);
+    expect(locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %5 "),
+      expect.stringContaining("list-panes -t %8 "),
+    ]);
   });
 
   it("does not hold a bootstrap's seed to a layout an unparsed one replaced", async () => {
