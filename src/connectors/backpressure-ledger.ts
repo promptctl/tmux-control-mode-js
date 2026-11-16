@@ -6,15 +6,17 @@
 // reached the high watermark and not yet fallen back to or below the low
 // watermark. The two boundaries are inclusive and symmetric — pause at
 // `slowest >= high`, resume at `slowest <= low` — so the hysteresis band is
-// `(low, high)`.
+// `(low, high)`. It shares nothing with the subscription ledger except the
+// opaque `Peer` token it indexes on.
 //
 // Each peer holds its own copy of a pane's bytes in its own pipe, so a peer's
 // outstanding total is what measures how far behind that consumer is; a sum
 // across peers measures nothing a consumer sees. It would also add up what
 // each peer withholds by design — the Electron renderer acks in batches, so
 // every proxy keeps up to one batch unacked — until enough peers kept a paused
-// pane above low forever, with no output left to fill a batch and ack it. It shares nothing
-// with the subscription ledger except the opaque `Peer` token it indexes on.
+// pane above low forever, with no output left to fill a batch and ack it.
+// Per peer, a paused pane resumes as long as what one peer withholds is at
+// most `low` (see `RendererBridgeOptions.ackBatchBytes`).
 //
 // [LAW:dataflow-not-control-flow] Pause/resume decisions are pure functions of
 // the per-peer `outstanding` maps; the same account / ack pipeline runs every
@@ -203,9 +205,11 @@ export class BackpressureLedger {
     return slowest;
   }
 
-  private maybePause(paneId: number): void {
+  // Only the peer just billed changed, and any other peer at `high` would
+  // have paused the pane already, so its total alone decides.
+  private maybePause(paneId: number, billed: number): void {
     if (this.pausedPanes.has(paneId)) return;
-    if (this.slowestOutstanding(paneId) < this.high) return;
+    if (billed < this.high) return;
     this.pausedPanes.set(paneId, { resuming: false });
     void this.client
       .execute(refreshClientPaneAction(paneId, PaneAction.Pause))
@@ -269,9 +273,9 @@ export class BackpressureLedger {
     const m = this.outstanding.get(peer);
     if (m === undefined) return;
     if (bytes <= 0) return;
-    const prev = m.get(paneId) ?? 0;
-    m.set(paneId, prev + bytes);
-    this.maybePause(paneId);
+    const next = (m.get(paneId) ?? 0) + bytes;
+    m.set(paneId, next);
+    this.maybePause(paneId, next);
   }
 
   /**

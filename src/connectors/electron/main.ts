@@ -85,10 +85,11 @@ const REGISTERED_IPC_MAINS = new WeakSet<IpcMainLike>();
  *
  * Backpressure:
  *   - For every `%output` / `%extended-output` byte forwarded, the helper
- *     accounts it as outstanding for that (proxy, pane) pair. When the
- *     per-pane total crosses `outputHighWatermark`, the helper calls
- *     `client.setPaneAction(paneId, Pause)`; the renderer's `tmux:ack` drops
- *     the total below `outputLowWatermark` and the helper resumes the pane.
+ *     accounts it as outstanding for that (proxy, pane) pair. When one
+ *     proxy's outstanding for a pane reaches `outputHighWatermark`, the
+ *     helper calls `client.setPaneAction(paneId, Pause)`; once the proxies'
+ *     `tmux:ack`s bring every one to `outputLowWatermark` or below, the
+ *     helper resumes the pane.
  *
  * Proxy end:
  *   - A proxy's peer lives until its `tmux:unregister` or its page's end. The

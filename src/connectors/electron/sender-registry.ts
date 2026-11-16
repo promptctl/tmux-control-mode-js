@@ -187,8 +187,9 @@ export class SenderRegistry {
     if (proxy === null || !sentByLivePage(event)) return;
     const wc = event.sender;
     const page = this.pages.get(wc) ?? this.openPage(event);
-    const state = page.proxies.get(proxy) ?? this.openPeer(wc, proxy);
-    page.proxies.set(proxy, state);
+    if (!page.proxies.has(proxy)) {
+      page.proxies.set(proxy, this.openPeer(wc, proxy));
+    }
     // [LAW:dataflow-not-control-flow] Late-joining proxies need the current
     // lifecycle state immediately, not just when the next transition happens.
     // The snapshot rides the same IPC.event channel the live transitions use —

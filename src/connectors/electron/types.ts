@@ -396,8 +396,10 @@ export interface RendererBridgeOptions {
   /**
    * Bytes-since-last-ack threshold per pane. Renderer batches `tmux:ack`
    * messages to amortize IPC chatter; lower values give tighter feedback to
-   * the main-side watermark loop at the cost of more ack traffic.
-   * Default: 64 KiB.
+   * the main-side watermark loop at the cost of more ack traffic. A proxy
+   * keeps up to a batch unacked once its panes go quiet, so a value above
+   * main's `outputLowWatermark` can leave a paused pane paused for good.
+   * Default: 64 KiB (main's default low watermark is 256 KiB).
    */
   readonly ackBatchBytes?: number;
   /**

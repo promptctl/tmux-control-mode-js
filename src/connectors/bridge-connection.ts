@@ -197,8 +197,9 @@ export interface BridgeConnection<L extends boolean = boolean> {
 
   /**
    * Zero this peer's outstanding bytes for every pane and resume any pane
-   * whose slowest remaining peer is at or below the low watermark. Used by transports whose underlying drain signal is
-   * connection-wide rather than per-pane — notably the WebSocket bridge,
+   * whose slowest remaining peer is at or below the low watermark. Used by
+   * transports whose underlying drain signal is connection-wide rather than
+   * per-pane — notably the WebSocket bridge,
    * which observes `ws.bufferedAmount` reaching zero as the only available
    * "everything I sent has been flushed" signal.
    *
