@@ -24,7 +24,6 @@ import type {
   XtermOptions,
 } from "@promptctl/tmux-control-mode-js/window-terminal";
 import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/react";
-import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { DemoStore } from "../store.ts";
@@ -72,22 +71,23 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
   const terminal = useRef<ElementRef<typeof WindowTerminal>>(null);
   const seen = useRef<Seen | null>(null);
   // A link clicked in a pane: an OSC 8 link of any scheme (a statusline's
-  // `cc-candybar://…`) or a plain URL. The page shows it; a web one opens.
+  // `cc-candybar://…`) or a plain URL. The page shows it. Only a plain URL
+  // opens: its text is the link, where an OSC 8 link's text can be anything.
   const [lastLink, setLastLink] = useState<string | null>(null);
   const { xterm, addons } = useMemo(() => {
-    const activate = (_: MouseEvent, uri: string): void => {
-      setLastLink(uri);
-      if (/^https?:/.test(uri)) window.open(uri, "_blank", "noopener");
+    const show = (_: MouseEvent, uri: string): void => setLastLink(uri);
+    const open = (ev: MouseEvent, uri: string): void => {
+      show(ev, uri);
+      window.open(uri, "_blank", "noopener");
     };
     const options: XtermOptions = {
       fontFamily: FONT_FAMILY,
       allowProposedApi: true,
-      linkHandler: { allowNonHttpProtocols: true, activate },
+      linkHandler: { allowNonHttpProtocols: true, activate: show },
     };
     const factory: XtermAddons = () => [
       ...unicode11(),
-      new WebLinksAddon(activate),
-      new ClipboardAddon(),
+      new WebLinksAddon(open),
     ];
     return { xterm: options, addons: factory };
   }, []);

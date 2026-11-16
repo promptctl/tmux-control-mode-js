@@ -21,6 +21,7 @@ import {
   type XtermAddons,
   type XtermOptions,
 } from "../index.js";
+import { DEFAULT_SIZING } from "../options.js";
 
 export interface WindowTerminalProps {
   readonly connection: WindowTerminalOptions["connection"];
@@ -78,8 +79,13 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
       return () => assign(ref, null);
     }, [ref, connection, window, history]);
 
+    // A prop is the whole setting: one left out is the default, where
+    // `update` would read it as unchanged.
     useEffect(() => {
-      terminal.current?.update({ sizing, xterm });
+      terminal.current?.update({
+        sizing: sizing ?? DEFAULT_SIZING,
+        xterm: xterm ?? {},
+      });
     }, [sizing, xterm]);
 
     return <div ref={host} className={props.className} />;

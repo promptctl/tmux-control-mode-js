@@ -48,6 +48,17 @@ describe("parseXtermOptions", () => {
     );
   });
 
+  it("names the refused value as it was given", () => {
+    expect(() => parseXtermOptions({ lineHeight: Number.NaN })).toThrow(
+      "xterm.lineHeight must be a number of at least 1; got NaN",
+    );
+    expect(() =>
+      parseXtermOptions({ lineHeight: 10n } as unknown as XtermOptions),
+    ).toThrow(
+      new RangeError("xterm.lineHeight must be a number of at least 1; got 10"),
+    );
+  });
+
   it("accepts the edge of each range", () => {
     expect(() =>
       parseXtermOptions({

@@ -13,8 +13,9 @@ All notable changes to this project are documented here. Format follows
   place of `appearance` (`Appearance` is gone), at mount and through
   `update()`, and every pane has them. A new function, such as a
   `linkHandler.activate`, reaches every pane. `xterm` refuses `scrollback`
-  (`history` sets it) and `tabStopWidth`, as well as the sizes and modes tmux
-  owns.
+  (`history` sets it), `tabStopWidth` and `overviewRulerWidth`, as well as the
+  sizes and modes tmux owns. In the React component, a `sizing` or `xterm`
+  prop taken away returns to the default.
 - The free functions `setSize`, `setWindowSize` and `clearWindowSize` are
   gone: call the connection's methods of the same names (`ClientSizeSurface`).
   They sent `refresh-client -C` through `execute()`, past the client's size
@@ -84,9 +85,10 @@ All notable changes to this project are documented here. Format follows
 ### Added
 
 - `addons` (`./window-terminal`, and the React component): a factory each
-  pane calls once for the xterm.js addons it loads (Unicode 11, web links,
-  clipboard, WebGL). With `xterm.linkHandler`, an OSC 8 link with a custom
-  scheme reaches the host's `activate` (README).
+  pane calls once for the xterm.js addons it loads (Unicode 11, web links).
+  With `xterm.linkHandler`, an OSC 8 link with a custom scheme reaches the
+  host's `activate` (README). An addon that throws as a pane opens is an
+  `onError` (`render`), and that pane is not shown.
 - `letterSpacing` is part of the measured cell, so the sizing solver lays
   out the grid xterm draws at any spacing.
 - `sendKeyBytes(client, target, bytes)` (`.`, `./browser`; the encoder in

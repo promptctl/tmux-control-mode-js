@@ -235,6 +235,26 @@ describe("window terminal — what is drawn", () => {
     m.terminal.dispose();
   });
 
+  it("an addon that throws as a pane opens reaches onError(render), and that pane holds nothing", async () => {
+    const refused = new Error("proposed API not allowed");
+    let calls = 0;
+    const addons = () => {
+      calls += 1;
+      if (calls === 2) throw refused;
+      return [];
+    };
+    const m = mount(undefined, undefined, { addons });
+    await settle();
+    expect(m.errors.map((e) => [e.seam, e.paneId, e.cause])).toEqual([
+      ["render", "%1", refused],
+    ]);
+    const panes = [...m.host.querySelectorAll<HTMLElement>("[data-pane-id]")];
+    expect(panes.map((p) => p.dataset.paneId)).toEqual(["%0"]);
+    expect(terminals[1].dispose).toHaveBeenCalledOnce();
+    expect(m.client.commands().filter((c) => c.includes("%1"))).toEqual([]);
+    m.terminal.dispose();
+  });
+
   it("a new link handler through update reaches every pane", async () => {
     const first = vi.fn();
     const { terminal, flush } = await live();

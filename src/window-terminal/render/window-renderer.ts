@@ -116,13 +116,19 @@ export class WindowRenderer implements PaneSurfaces {
       outline: "1px solid var(--wt-border-color, #555)",
     });
     this.grid.appendChild(el);
-    const sink = new XtermSink({
-      container: el,
-      fontSize: this.font,
-      scrollback: this.history,
-      xterm: this.xterm,
-      addons: this.addons,
-    });
+    let sink: XtermSink;
+    try {
+      sink = new XtermSink({
+        container: el,
+        fontSize: this.font,
+        scrollback: this.history,
+        xterm: this.xterm,
+        addons: this.addons,
+      });
+    } catch (err) {
+      el.remove();
+      throw err;
+    }
     // The pane's own box clips the terminal to its cell rect; a viewport
     // scrollbar would cover its last columns. Wheel scrolling still works.
     const viewport =

@@ -238,24 +238,29 @@ A new `connection`, `window` or `history` mounts a new terminal; `sizing` and
 returns to its default. The terminal sets the ones tmux decides, and the type
 refuses them: `cols` and `rows`, `fontSize` (`sizing.font`), `scrollback`
 (`history`), `tabStopWidth` (tmux's tab stops), `convertEol`, `disableStdin`,
-`windowOptions`, `windowsMode`, `windowsPty` and `documentOverride`.
+`windowOptions`, `overviewRulerWidth`, `windowsMode`, `windowsPty` and
+`documentOverride`.
 
 `addons` is a factory each pane calls once, when it opens, for the xterm.js
 addons it loads. It is read at mount. xterm.js 5.5 makes an OSC 8 link with a
 scheme other than `http:` or `https:` only when `linkHandler` allows it, and
 draws an emoji one cell wide where tmux counts two unless Unicode 11 is the
-version in use:
+version in use. A pane is sized to the cell xterm's DOM renderer draws, so a
+renderer addon (WebGL, canvas), which draws a different cell, misaligns the
+panes. An addon that throws as a pane opens is an `onError` (`render`), and
+that pane is not shown.
 
 ```tsx
+import type { XtermAddons, XtermOptions } from "@promptctl/tmux-control-mode-js/window-terminal";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 
 const activate = (_: MouseEvent, uri: string) => openLink(uri);
-const xterm = {
+const xterm: XtermOptions = {
   allowProposedApi: true, // Unicode 11 uses xterm's proposed API
   linkHandler: { allowNonHttpProtocols: true, activate },
 };
-const addons = () => [
+const addons: XtermAddons = () => [
   new Unicode11Addon(),
   { activate: (t) => (t.unicode.activeVersion = "11"), dispose: () => {} },
   new WebLinksAddon(activate),

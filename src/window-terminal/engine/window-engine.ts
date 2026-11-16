@@ -71,6 +71,7 @@ export interface PaneSurface {
  * no other.
  */
 export interface PaneSurfaces {
+  /** Throws having kept nothing, if the pane cannot open. */
   create(pane: PaneId, keys: (bytes: Uint8Array) => void): PaneSurface;
 }
 
@@ -371,17 +372,26 @@ export class WindowEngine {
   }
 
   private createPane(id: PaneId): void {
+    // The surface runs the host's addons, so it can throw. It is created
+    // before the stream subscribes: a pane that fails to open holds nothing,
+    // is reported, and is tried again at the next layout change.
+    let surface: PaneSurface;
+    try {
+      surface = this.surfaces.create(id, (bytes) => {
+        void stream.sendKeyBytes(bytes).catch((err: unknown) => {
+          if (!isConnectionGone(err)) {
+            this.report({ seam: "send-keys", paneId: id, cause: err });
+          }
+        });
+      });
+    } catch (cause) {
+      this.report({ seam: "render", paneId: id, cause });
+      return;
+    }
     const stream = new PaneStream({
       client: this.connection,
       paneId: paneNumber(id),
       historyLines: this.history,
-    });
-    const surface = this.surfaces.create(id, (bytes) => {
-      void stream.sendKeyBytes(bytes).catch((err: unknown) => {
-        if (!isConnectionGone(err)) {
-          this.report({ seam: "send-keys", paneId: id, cause: err });
-        }
-      });
     });
     stream.on("error", (e) =>
       this.report({ seam: e.phase, paneId: id, cause: e.cause }),

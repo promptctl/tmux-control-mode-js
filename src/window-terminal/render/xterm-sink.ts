@@ -146,7 +146,13 @@ export class XtermSink implements TerminalSink {
     // `allowProposedApi`).
     this.setOptions(opts.xterm ?? {});
     this.terminal.open(this.container);
-    for (const addon of opts.addons?.() ?? []) this.terminal.loadAddon(addon);
+    try {
+      for (const addon of opts.addons?.() ?? []) this.terminal.loadAddon(addon);
+    } catch (err) {
+      // A host addon that throws leaves no open terminal behind.
+      this.terminal.dispose();
+      throw err;
+    }
 
     this.visibility = new VisibilityTracker(this.container);
   }

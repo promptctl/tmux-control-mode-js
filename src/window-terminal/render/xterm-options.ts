@@ -22,7 +22,9 @@ export type XtermAddons = () => readonly ITerminalAddon[];
  * written as sent (convertEol), input goes through tmux (disableStdin), its
  * panes keep 8-column tab stops (tabStopWidth) and answer the window reports
  * themselves (windowOptions), the sizing solver picks the font size from
- * `sizing.font` (fontSize), and `history` is the scrollback (scrollback).
+ * `sizing.font` (fontSize), `history` is the scrollback (scrollback), and a
+ * pane's box is exactly its cells wide, so a ruler would cover its last
+ * columns (overviewRulerWidth).
  */
 export const TERMINAL_OWNED = [
   "cols",
@@ -36,6 +38,7 @@ export const TERMINAL_OWNED = [
   "scrollback",
   "tabStopWidth",
   "windowOptions",
+  "overviewRulerWidth",
 ] as const;
 
 /** xterm.js's options for every pane, less the ones the terminal owns. */
@@ -81,7 +84,7 @@ export function parseXtermOptions(raw: XtermOptions | undefined): XtermOptions {
     const check = Object.hasOwn(ACCEPTS, key) ? ACCEPTS[key] : undefined;
     if (check !== undefined && !check[0](value)) {
       throw new RangeError(
-        `xterm.${key} must be ${check[1]}; got ${JSON.stringify(value)}`,
+        `xterm.${key} must be ${check[1]}; got ${String(value)}`,
       );
     }
   }

@@ -166,10 +166,7 @@ describe("<WindowTerminal>", () => {
       }),
     );
     expect(mounted).toHaveLength(1);
-    expect(mounted[0].updates.at(-1)).toEqual({
-      sizing: next,
-      xterm: undefined,
-    });
+    expect(mounted[0].updates.at(-1)).toEqual({ sizing: next, xterm: {} });
     const count = mounted[0].updates.length;
     render(
       createElement(WindowTerminal, {
@@ -179,6 +176,23 @@ describe("<WindowTerminal>", () => {
       }),
     );
     expect(mounted[0].updates).toHaveLength(count);
+  });
+
+  it("a setting taken away returns to its default", () => {
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        sizing: { window: "tmux", font: 12, fit: "none" },
+        xterm: { cursorStyle: "bar" },
+      }),
+    );
+    render(createElement(WindowTerminal, { connection: CONN_A, window: "@1" }));
+    expect(mounted).toHaveLength(1);
+    expect(mounted[0].updates.at(-1)).toEqual({
+      sizing: { window: "box", font: 14 },
+      xterm: {},
+    });
   });
 
   it("onState gets the current state first, then changes, through the latest callback without remounting", () => {
