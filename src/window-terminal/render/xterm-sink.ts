@@ -15,8 +15,8 @@
 // State invariants this class enforces:
 //
 //  1. The `Terminal` is constructed once in the constructor and disposed
-//     once in `dispose()`. Style changes (font, theme, line height, cursor)
-//     flow through xterm's in-place option setters; we never
+//     once in `dispose()`. Option changes (the host's `XtermOptions`, the
+//     font size) flow through xterm's in-place option setters; we never
 //     tear-down-and-rebuild (O10).
 //  2. The very first `term.resize()` is deferred by one rAF. Xterm's
 //     `Viewport.syncScrollArea` dereferences a renderer-`dimensions` object
@@ -35,14 +35,19 @@
 //   no access to xterm or the DOM. Direct consumers of XtermSink — which
 //   already bundle `@xterm/xterm` and the DOM by virtue of choosing this
 //   sink — get an explicit escape hatch via the `terminal` field below
-//   (xterm-addon mounting, custom decorators, viewport queries). The seam
+//   (custom decorators, viewport queries). The seam
 //   that matters for the architecture is producer↔renderer, not
 //   consumer↔renderer; the latter is intentionally permeable.
 
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable } from "@xterm/xterm";
 import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
-import type { Appearance } from "./appearance.js";
+import type { CellFont } from "../sizing/cell-metrics.js";
+import {
+  optionWrites,
+  type XtermAddons,
+  type XtermOptions,
+} from "./xterm-options.js";
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
@@ -52,21 +57,27 @@ const utf8Encoder = new TextEncoder();
 /**
  * Default monospace stack. The list is platform-spanning so XtermSink is
  * usable out of the box; consumers that bundle a custom font pass it as
- * `appearance.fontFamily`.
+ * `xterm.fontFamily`.
  */
 export const DEFAULT_FONT_FAMILY =
   '"JetBrains Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace';
-/** xterm.js's own default `lineHeight`. */
-export const DEFAULT_LINE_HEIGHT = 1;
 
-/** The font a cell is drawn in: what xterm draws and the solver measures. */
-export function cellFont(a: Appearance): {
-  readonly fontFamily: string;
-  readonly lineHeight: number;
-} {
+/**
+ * The terminal's own choices where xterm.js's default differs; a host option
+ * overrides each, and leaving it out returns to it.
+ */
+const TERMINAL_DEFAULTS = {
+  fontFamily: DEFAULT_FONT_FAMILY,
+  cursorBlink: true,
+} as const;
+
+/** The font a cell is drawn in under these options. */
+export function cellFont(o: XtermOptions): CellFont {
   return {
-    fontFamily: a.fontFamily ?? DEFAULT_FONT_FAMILY,
-    lineHeight: a.lineHeight ?? DEFAULT_LINE_HEIGHT,
+    fontFamily: o.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
+    // xterm.js's own defaults.
+    lineHeight: o.lineHeight ?? 1,
+    letterSpacing: o.letterSpacing ?? 0,
   };
 }
 const DEFAULT_FONT_SIZE = 14;
@@ -76,14 +87,15 @@ export interface XtermSinkOptions {
   readonly container: HTMLElement;
   readonly fontSize?: number;
   readonly scrollback?: number;
-  readonly appearance?: Appearance;
+  readonly xterm?: XtermOptions;
+  readonly addons?: XtermAddons;
 }
 
 export class XtermSink implements TerminalSink {
   /**
-   * Documented escape hatch for advanced consumers — addon mounting
-   * (`@xterm/addon-search`, custom decorators), viewport queries, theme
-   * inspection. The producer-side seam is `TerminalSink`; PaneStream never
+   * Documented escape hatch for advanced consumers — custom decorators,
+   * viewport queries, buffer inspection. Options and addons have their own
+   * way in (`xterm`, `addons`). The producer-side seam is `TerminalSink`; PaneStream never
    * sees this field. Touching it bypasses the wrapper's invariants
    * (deferred first resize, in-place option mutation), so reach for it
    * only when the wrapper genuinely doesn't expose what you need.
@@ -105,28 +117,36 @@ export class XtermSink implements TerminalSink {
   private readonly gate = new FirstResizeGate();
   // On-screen visibility (IntersectionObserver + document visibility).
   private readonly visibility: VisibilityTracker;
+  // Every option's value before any host option: xterm's default or the
+  // terminal's. A host option left out returns to it.
+  private readonly base: Readonly<Record<string, unknown>>;
+  // The host options this pane has now.
+  private applied: XtermOptions = {};
 
   constructor(opts: XtermSinkOptions) {
     this.container = opts.container;
-    const a = opts.appearance ?? {};
 
-    // [LAW:single-enforcer] Terminal constructed once, disposed once. Style
-    // mutations go through `terminal.options` setters below — never another
-    // `new Terminal()`.
+    // [LAW:single-enforcer] Terminal constructed once, disposed once. Option
+    // changes go through `terminal.options` setters (`setOptions`) — never
+    // another `new Terminal()`.
     this.terminal = new Terminal({
+      ...TERMINAL_DEFAULTS,
       convertEol: false,
-      cursorBlink: true,
-      ...cellFont(a),
       fontSize: opts.fontSize ?? DEFAULT_FONT_SIZE,
       scrollback: opts.scrollback ?? DEFAULT_SCROLLBACK,
-      theme: a.theme ?? {},
-      ...(a.cursorStyle === undefined ? {} : { cursorStyle: a.cursorStyle }),
       // We do NOT use FitAddon — `Viewport.syncScrollArea` dereferences a
       // renderer that's instantiated on first render tick; the addon's
       // post-`open()` resize would crash. cols/rows come from tmux via
       // `resize()`.
     });
+    // [LAW:one-source-of-truth] xterm.js's public options are enumerable, so
+    //   xterm itself supplies every default; the terminal keeps no table.
+    this.base = { ...this.terminal.options };
+    // Before the addons load: one may need an option (Unicode 11 needs
+    // `allowProposedApi`).
+    this.setOptions(opts.xterm ?? {});
     this.terminal.open(this.container);
+    for (const addon of opts.addons?.() ?? []) this.terminal.loadAddon(addon);
 
     this.visibility = new VisibilityTracker(this.container);
   }
@@ -338,18 +358,17 @@ export class XtermSink implements TerminalSink {
   }
 
   /**
-   * In-place look. NEVER reconstructs the Terminal. Each option is written
-   * as given (a field left out returns to its default), and xterm re-measures
-   * itself when the family changes.
+   * In-place options. NEVER reconstructs the Terminal. Only an option whose
+   * value changed is written, and one left out returns to its value before
+   * any host option; xterm re-measures itself when the font changes.
    */
-  setAppearance(a: Appearance): void {
+  setOptions(next: XtermOptions): void {
     if (this.isDisposed) return;
-    const o = this.terminal.options;
-    const font = cellFont(a);
-    o.fontFamily = font.fontFamily;
-    o.lineHeight = font.lineHeight;
-    o.theme = a.theme ?? {};
-    o.cursorStyle = a.cursorStyle ?? "block";
+    const o = this.terminal.options as Record<string, unknown>;
+    for (const [key, value] of optionWrites(this.applied, next, this.base)) {
+      o[key] = value;
+    }
+    this.applied = next;
   }
 
   /**

@@ -10,7 +10,7 @@
 //   - resize(cols, rows): first call is deferred by one rAF; subsequent
 //     calls are synchronous. (Demo's "Cannot read properties of undefined
 //     (reading 'dimensions')" lesson.)
-//   - setFont / setAppearance / remeasure / clear: in-place; never reconstruct Terminal
+//   - setFont / setOptions / remeasure / clear: in-place; never reconstruct Terminal
 //     and never call terminal.dispose(). (O10.)
 //   - dispose(): tears down once; idempotent; subsequent ops are no-ops.
 //   - isVisible: reflects IntersectionObserver + document.visibilityState.
@@ -47,6 +47,8 @@ interface MockTerminal {
   focus: ReturnType<typeof vi.fn>;
   onData: MockEvent;
   onBinary: MockEvent;
+  // Each addon loaded, with what the terminal had when it loaded.
+  loaded: { addon: unknown; opened: boolean; allowProposedApi: unknown }[];
 }
 
 // xterm's `IEvent<string>`: subscribe returns a disposable; `fire` stands in
@@ -83,11 +85,27 @@ vi.mock("@xterm/xterm", () => {
     focus = vi.fn<() => void>();
     onData = mockEvent();
     onBinary = mockEvent();
-    constructor(opts: { fontSize?: number; theme?: object } = {}) {
+    loaded: MockTerminal["loaded"] = [];
+    loadAddon = (addon: unknown): void => {
+      this.loaded.push({
+        addon,
+        opened: this.open.mock.calls.length > 0,
+        allowProposedApi: this.options.allowProposedApi,
+      });
+    };
+    // As xterm.js: every option present, at its default unless given.
+    constructor(opts: Record<string, unknown> = {}) {
       this.options = {
-        fontSize: opts.fontSize ?? 14,
-        theme: opts.theme ?? {},
-      };
+        fontSize: 15,
+        fontFamily: "courier-new, courier, monospace",
+        lineHeight: 1,
+        theme: {},
+        cursorStyle: "block",
+        cursorBlink: false,
+        allowProposedApi: false,
+        linkHandler: null,
+        ...opts,
+      } as MockTerminal["options"];
       lastTerm = this as unknown as MockTerminal;
     }
   }
@@ -97,7 +115,6 @@ vi.mock("@xterm/xterm", () => {
 // Import AFTER vi.mock so the mocked Terminal is used.
 import {
   DEFAULT_FONT_FAMILY,
-  DEFAULT_LINE_HEIGHT,
   XtermSink,
 } from "../../../src/window-terminal/render/xterm-sink.js";
 
@@ -507,28 +524,72 @@ describe("XtermSink: in-place option setters (O10)", () => {
     sink.dispose();
   });
 
-  it("setAppearance replaces the look in place; a field left out returns to its default", () => {
-    const { sink, term } = newSink();
-    sink.setAppearance({
-      fontFamily: "Iosevka",
-      lineHeight: 1.2,
-      theme: { background: "#000" },
-      cursorStyle: "bar",
+  it("the host's options are set before the terminal opens, and each addon loads once, after it opens", () => {
+    const a = { activate: vi.fn(), dispose: vi.fn() };
+    const b = { activate: vi.fn(), dispose: vi.fn() };
+    const addons = vi.fn(() => [a, b]);
+    new XtermSink({
+      container: makeContainer(),
+      xterm: { allowProposedApi: true, cursorStyle: "bar" },
+      addons,
     });
+    const term = lastTerm;
+    if (term === null) throw new Error("Terminal mock not constructed");
     expect(term.options).toMatchObject({
-      fontFamily: "Iosevka",
-      lineHeight: 1.2,
-      theme: { background: "#000" },
+      allowProposedApi: true,
       cursorStyle: "bar",
+      // The terminal's own choices beside the host's.
+      fontFamily: DEFAULT_FONT_FAMILY,
+      cursorBlink: true,
     });
-    sink.setAppearance({ theme: { foreground: "#fff" } });
+    expect(addons).toHaveBeenCalledOnce();
+    expect(term.loaded).toEqual([
+      { addon: a, opened: true, allowProposedApi: true },
+      { addon: b, opened: true, allowProposedApi: true },
+    ]);
+  });
+
+  it("setOptions writes only what changed: a theme equal in a new object is left alone, a new function is written", () => {
+    const first = vi.fn();
+    const { sink, term } = newSink();
+    sink.setOptions({
+      theme: { background: "#000" },
+      linkHandler: { activate: first },
+    });
+    const themes = countWrites(term.options, "theme");
+    const handlers = countWrites(term.options, "linkHandler");
+    sink.setOptions({
+      theme: { background: "#000" },
+      linkHandler: { activate: first },
+    });
+    expect(themes()).toEqual([]);
+    expect(handlers()).toEqual([]);
+    const second = vi.fn();
+    sink.setOptions({
+      theme: { background: "#000" },
+      linkHandler: { activate: second },
+    });
+    expect(themes()).toEqual([]);
+    expect(handlers()).toEqual([{ activate: second }]);
+    expect(term.dispose).not.toHaveBeenCalled();
+    sink.dispose();
+  });
+
+  it("an option left out returns to its value before any host option: xterm's default, or the terminal's", () => {
+    const { sink, term } = newSink();
+    sink.setOptions({
+      fontFamily: "Iosevka",
+      cursorStyle: "bar",
+      cursorBlink: false,
+      theme: { background: "#000" },
+    });
+    sink.setOptions({ theme: { foreground: "#fff" } });
     expect(term.options).toMatchObject({
       fontFamily: DEFAULT_FONT_FAMILY,
-      lineHeight: DEFAULT_LINE_HEIGHT,
-      theme: { foreground: "#fff" },
+      cursorBlink: true,
       cursorStyle: "block",
+      theme: { foreground: "#fff" },
     });
-    expect(term.dispose).not.toHaveBeenCalled();
     sink.dispose();
   });
 
@@ -561,7 +622,7 @@ describe("XtermSink: dispose lifecycle", () => {
     expect(term.dispose).toHaveBeenCalledOnce();
   });
 
-  it("post-dispose: write, seed, resize, setFont, setAppearance, remeasure all no-op", () => {
+  it("post-dispose: write, seed, resize, setFont, setOptions, remeasure all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
     sink.seed(enc("x"), null, []);
@@ -569,7 +630,7 @@ describe("XtermSink: dispose lifecycle", () => {
     sink.resize(80, 24);
     flushRaf();
     sink.setFont(99);
-    sink.setAppearance({ theme: { background: "#abc" } });
+    sink.setOptions({ theme: { background: "#abc" } });
     sink.remeasure();
     sink.clear();
     sink.focus();

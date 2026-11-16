@@ -37,10 +37,10 @@ import {
   type Sizing,
 } from "./options.js";
 import {
-  parseAppearance,
-  sameAppearance,
-  type Appearance,
-} from "./render/appearance.js";
+  parseXtermOptions,
+  type XtermAddons,
+  type XtermOptions,
+} from "./render/xterm-options.js";
 import { renderPlan } from "./render/render-plan.js";
 import { WindowRenderer } from "./render/window-renderer.js";
 import { cellFont } from "./render/xterm-sink.js";
@@ -57,14 +57,20 @@ export interface WindowTerminalOptions {
   readonly history?: number;
   /** Default `{ window: "box", font: 14 }`. */
   readonly sizing?: Sizing;
-  readonly appearance?: Appearance;
+  /** xterm.js's options for every pane, less the ones the terminal owns. */
+  readonly xterm?: XtermOptions;
+  /** The addons every pane's xterm loads. Fixed at mount. */
+  readonly addons?: XtermAddons;
 }
 
 export interface WindowTerminal {
-  /** Change the settings; identity (connection, window, history) is fixed. */
+  /**
+   * Change the settings; identity (connection, window, history) and the
+   * addons are fixed.
+   */
   update(settings: {
     readonly sizing?: Sizing;
-    readonly appearance?: Appearance;
+    readonly xterm?: XtermOptions;
   }): void;
   readonly state: WindowTerminalState;
   /** Calls `cb` with the current state now, then on every change. */
@@ -92,7 +98,7 @@ export function createWindowTerminal(
   const windowId = parseWindowId(options.window);
   const history = parseHistory(options.history);
   let sizing: ResolvedSizing = parseSizing(options.sizing ?? DEFAULT_SIZING);
-  let appearance: Appearance = parseAppearance(options.appearance);
+  let xterm: XtermOptions = parseXtermOptions(options.xterm);
   const measure = ports.measure();
   let box: Box = { width: 0, height: 0 };
   let cancelFrame: (() => void) | null = null;
@@ -104,7 +110,8 @@ export function createWindowTerminal(
 
   const renderer = new WindowRenderer(element, {
     history,
-    appearance,
+    xterm,
+    addons: options.addons,
     font: sizing.font.max,
     onBox: (b) => {
       box = b;
@@ -142,8 +149,7 @@ export function createWindowTerminal(
   function render(): void {
     const state = engine.state;
     if (state.phase !== "live" && state.phase !== "stale") return;
-    const font = cellFont(appearance);
-    const cell = measure.cellAt(font.fontFamily, font.lineHeight);
+    const cell = measure.cellAt(cellFont(xterm));
     const solution = solve(sizing, box, cell, state.window.size);
     renderer.apply(renderPlan(state.window, solution));
     declarer.apply(state.phase === "live" ? solution.claim : { kind: "hold" });
@@ -161,16 +167,14 @@ export function createWindowTerminal(
       // Both parsed before either applies: a bad value changes nothing.
       const nextSizing =
         settings.sizing === undefined ? sizing : parseSizing(settings.sizing);
-      const nextAppearance =
-        settings.appearance === undefined
-          ? appearance
-          : parseAppearance(settings.appearance);
+      const nextXterm =
+        settings.xterm === undefined
+          ? xterm
+          : parseXtermOptions(settings.xterm);
       if (disposed) return;
       sizing = nextSizing;
-      if (!sameAppearance(nextAppearance, appearance)) {
-        appearance = nextAppearance;
-        renderer.setAppearance(appearance);
-      }
+      xterm = nextXterm;
+      renderer.setOptions(xterm);
       schedule();
     },
     get state() {

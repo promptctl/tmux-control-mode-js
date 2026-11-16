@@ -11,6 +11,7 @@
 
 import {
   XtermSink,
+  cellFont,
   createCellMeasure,
   parseSizing,
   solve,
@@ -60,7 +61,6 @@ export class FittedXtermSink extends XtermSink {
 
   private refit(): void {
     if (this.grid === null) return;
-    const o = this.terminal.options;
     const solution = solve(
       parseSizing({
         window: "tmux",
@@ -68,7 +68,7 @@ export class FittedXtermSink extends XtermSink {
         fit: "both",
       }),
       { width: this.box.clientWidth, height: this.box.clientHeight },
-      this.measure.cellAt(o.fontFamily ?? "monospace", o.lineHeight ?? 1),
+      this.measure.cellAt(cellFont(this.terminal.options)),
       this.grid,
     );
     super.setFont(solution.font);

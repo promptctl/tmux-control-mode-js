@@ -38,13 +38,13 @@ export const MirrorScreen = observer(function MirrorScreen({
     if (container === null) return undefined;
     const sink = new FittedXtermSink({
       container,
-      appearance: { fontFamily: FONT_FAMILY },
+      xterm: { fontFamily: FONT_FAMILY, cursorBlink: false },
       fontSize: initialFontSize.current,
     });
-    // Read-only: the projection must not accept keystrokes. The escape hatch to
-    // the underlying terminal is the supported way to set this option.
+    // Read-only: the projection must not accept keystrokes. `disableStdin` is
+    // the terminal's own option, so the escape hatch to the underlying
+    // terminal is the way to set it.
     sink.terminal.options.disableStdin = true;
-    sink.terminal.options.cursorBlink = false;
     sinkRef.current = sink;
 
     // If geometry already arrived (fast connect), resize immediately so the

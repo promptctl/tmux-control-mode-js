@@ -354,7 +354,7 @@ function ReplaySurface({
     if (container === null) return undefined;
     const sink = new FittedXtermSink({
       container,
-      appearance: { fontFamily: FONT_FAMILY },
+      xterm: { fontFamily: FONT_FAMILY },
       fontSize: initial.current.fontSize,
     });
     sinkRef.current = sink;

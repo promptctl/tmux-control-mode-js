@@ -7,6 +7,8 @@
 //   1. multi-line output renders onto distinct xterm rows
 //   2. ANSI foreground escapes produce styled spans in the DOM
 //   3. carriage-return overwrite renders correctly
+//   4. the page's xterm options and addons reach the pane: an OSC 8 link
+//      with a custom scheme, and Unicode 11 widths
 //
 // All three categories are from IMPL §11.3. The original §11.3 catalog
 // listed these as "Playwright + xterm.js" because they can only be
@@ -234,6 +236,90 @@ test("carriage-return overwrite renders the post-CR characters in place", async 
       );
     }, PRE);
     expect(preCrRowExists).toBe(false);
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+// The page's xterm options and addons reach the pane (PaneView passes a
+// linkHandler that allows any scheme, and Unicode 11). The rows below are the
+// pane program's output only: the typed command's echo carries the escapes as
+// literal text, never a link or a colored span.
+
+test("an OSC 8 link with a custom scheme calls the page's link handler with its URI on click", async () => {
+  const handle = await launchApp();
+  try {
+    const { page } = handle;
+    const TEXT = `LINK_${Date.now().toString(36).toUpperCase()}`;
+    const URI = `cc-candybar://dispatch/${TEXT.toLowerCase()}`;
+
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.focus();
+    // OSC 8 ; ; <uri> ST <text> OSC 8 ; ; ST, ST being ESC \.
+    await textarea.pressSequentially(
+      `printf '\\033]8;;${URI}\\033\\\\${TEXT}\\033]8;;\\033\\\\\\n'\n`,
+      { delay: 10 },
+    );
+
+    // The link's text on a row of its own: printf's output, not the echo.
+    const linkAt = async (): Promise<{ x: number; y: number } | null> =>
+      page.evaluate((needle) => {
+        const rows = document.querySelector(".xterm-rows");
+        const row = Array.from(rows?.children ?? []).find(
+          (el) => (el.textContent ?? "").trim() === needle,
+        );
+        if (row === undefined) return null;
+        const range = document.createRange();
+        range.selectNodeContents(row);
+        const r = range.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }, TEXT);
+    await expect.poll(linkAt, { timeout: 15_000 }).not.toBeNull();
+    const at = await linkAt();
+    if (at === null) throw new Error("the link's row went away");
+
+    // xterm finds the link under the pointer as it moves, then activates it
+    // on a click there.
+    await page.mouse.move(at.x - 5, at.y);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.click(at.x, at.y);
+    await expect(page.getByTestId("last-link")).toHaveText(URI, {
+      timeout: 5_000,
+    });
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+test("an emoji takes two cells, as tmux counts it, with Unicode 11 loaded", async () => {
+  const handle = await launchApp();
+  try {
+    const { page } = handle;
+    const TAIL = `EMOJI_${Date.now().toString(36).toUpperCase()}`;
+
+    const textarea = page.locator(".xterm-helper-textarea").first();
+    await textarea.focus();
+    // U+1F600 (UTF-8 F0 9F 98 80) at column 0, then the tail in red. Under
+    // xterm's default Unicode 6 table this emoji is one cell wide; under
+    // Unicode 11, two.
+    await textarea.pressSequentially(
+      `printf '\\360\\237\\230\\200\\033[31m${TAIL}\\033[0m\\n'\n`,
+      { delay: 10 },
+    );
+
+    const tail = page.locator('.xterm-rows span[class*="xterm-fg-"]', {
+      hasText: TAIL,
+    });
+    await expect(tail.first()).toBeVisible({ timeout: 15_000 });
+    // How many cells precede the red tail on its row.
+    const cellsBefore = await tail.first().evaluate((span, text) => {
+      const row = span.parentElement;
+      if (row === null) throw new Error("span outside a row");
+      const s = span.getBoundingClientRect();
+      const cell = s.width / text.length;
+      return (s.left - row.getBoundingClientRect().left) / cell;
+    }, TAIL);
+    expect(Math.round(cellsBefore)).toBe(2);
   } finally {
     await disposeApp(handle);
   }

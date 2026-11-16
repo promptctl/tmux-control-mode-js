@@ -1,7 +1,7 @@
 // `<WindowTerminal>` maps React's lifecycle onto `mountWindowTerminal`:
 // identity (connection, window, history) mounts a terminal, settings (sizing,
-// appearance) update it, and the callbacks and ref follow the latest render
-// without remounting.
+// xterm) update it, the addons are read at mount, and the callbacks and ref
+// follow the latest render without remounting.
 
 // @vitest-environment happy-dom
 
@@ -92,7 +92,7 @@ describe("<WindowTerminal>", () => {
         window: "@1",
         history: 50,
         sizing: BOX,
-        appearance: { fontFamily: "Iosevka" },
+        xterm: { fontFamily: "Iosevka" },
         className: "term",
       }),
     );
@@ -103,8 +103,32 @@ describe("<WindowTerminal>", () => {
       window: "@1",
       history: 50,
       sizing: BOX,
-      appearance: { fontFamily: "Iosevka" },
+      xterm: { fontFamily: "Iosevka" },
+      addons: undefined,
     });
+  });
+
+  it("the addons are the ones at mount; a new factory neither remounts nor updates", () => {
+    const first = () => [];
+    const second = () => [];
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        addons: first,
+      }),
+    );
+    const count = mounted[0].updates.length;
+    render(
+      createElement(WindowTerminal, {
+        connection: CONN_A,
+        window: "@1",
+        addons: second,
+      }),
+    );
+    expect(mounted).toHaveLength(1);
+    expect(mounted[0].options.addons).toBe(first);
+    expect(mounted[0].updates).toHaveLength(count);
   });
 
   it("a new connection or window is a new terminal; the old one is disposed", () => {
@@ -144,7 +168,7 @@ describe("<WindowTerminal>", () => {
     expect(mounted).toHaveLength(1);
     expect(mounted[0].updates.at(-1)).toEqual({
       sizing: next,
-      appearance: undefined,
+      xterm: undefined,
     });
     const count = mounted[0].updates.length;
     render(

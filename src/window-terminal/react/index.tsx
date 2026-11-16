@@ -5,20 +5,21 @@
 //
 // [LAW:one-source-of-truth] The terminal owns every behaviour; this only maps
 //   React's lifecycle onto it. Identity (connection, window, history) mounts a
-//   new terminal; settings (sizing, appearance) go through `update`; the
-//   callbacks and the forwarded ref are read through refs, so a new function
-//   each render neither remounts nor resubscribes.
+//   new terminal; settings (sizing, xterm) go through `update`; the addons
+//   are read at mount; the callbacks and the forwarded ref are read through
+//   refs, so a new function each render neither remounts nor resubscribes.
 
 import { forwardRef, useEffect, useRef, type ForwardedRef } from "react";
 import {
   mountWindowTerminal,
-  type Appearance,
   type Sizing,
   type WindowId,
   type WindowTerminal as Terminal,
   type WindowTerminalError,
   type WindowTerminalOptions,
   type WindowTerminalState,
+  type XtermAddons,
+  type XtermOptions,
 } from "../index.js";
 
 export interface WindowTerminalProps {
@@ -26,7 +27,9 @@ export interface WindowTerminalProps {
   readonly window: WindowId;
   readonly history?: number;
   readonly sizing?: Sizing;
-  readonly appearance?: Appearance;
+  readonly xterm?: XtermOptions;
+  /** Read when the terminal mounts; a new factory does not remount it. */
+  readonly addons?: XtermAddons;
   readonly onState?: (state: WindowTerminalState) => void;
   readonly onError?: (error: WindowTerminalError) => void;
   readonly className?: string;
@@ -43,7 +46,7 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
     const terminal = useRef<Terminal | null>(null);
     const latest = useRef(props);
     latest.current = props;
-    const { connection, window, history, sizing, appearance } = props;
+    const { connection, window, history, sizing, xterm } = props;
 
     useEffect(() => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -53,7 +56,8 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
         window,
         history,
         sizing: latest.current.sizing,
-        appearance: latest.current.appearance,
+        xterm: latest.current.xterm,
+        addons: latest.current.addons,
       });
       terminal.current = t;
       const offState = t.onState((s) => latest.current.onState?.(s));
@@ -75,8 +79,8 @@ export const WindowTerminal = forwardRef<Terminal, WindowTerminalProps>(
     }, [ref, connection, window, history]);
 
     useEffect(() => {
-      terminal.current?.update({ sizing, appearance });
-    }, [sizing, appearance]);
+      terminal.current?.update({ sizing, xterm });
+    }, [sizing, xterm]);
 
     return <div ref={host} className={props.className} />;
   },

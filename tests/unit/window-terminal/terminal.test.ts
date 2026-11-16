@@ -17,6 +17,7 @@ interface MockTerminal {
   element: HTMLElement | undefined;
   focus: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
+  loadAddon: ReturnType<typeof vi.fn>;
   options: Record<string, unknown>;
 }
 const terminals: MockTerminal[] = [];
@@ -34,6 +35,7 @@ vi.mock("@xterm/xterm", () => {
     scrollToBottom = vi.fn();
     onData = vi.fn(() => ({ dispose: vi.fn() }));
     onBinary = vi.fn(() => ({ dispose: vi.fn() }));
+    loadAddon = vi.fn();
     constructor(opts: Record<string, unknown>) {
       this.options = { ...opts };
       terminals.push(this as unknown as MockTerminal);
@@ -54,6 +56,7 @@ vi.mock("@xterm/xterm", () => {
 
 import {
   createWindowTerminal,
+  type WindowTerminalOptions,
   type WindowTerminalPorts,
 } from "../../../src/window-terminal/terminal.js";
 import { TmuxCommandError } from "../../../src/browser.js";
@@ -88,6 +91,7 @@ function mount(
       width: px / 2,
       height: px,
     }),
+  given: Pick<WindowTerminalOptions, "xterm" | "addons"> = {},
 ) {
   const client = scriptedTmux(world());
   client.setConnectionState({ status: "ready" });
@@ -114,7 +118,7 @@ function mount(
   };
   const terminal = createWindowTerminal(
     host,
-    { connection: client, window: "@1", history: 10, sizing },
+    { connection: client, window: "@1", history: 10, sizing, ...given },
     ports,
   );
   const errors: WindowTerminalError[] = [];
@@ -204,16 +208,74 @@ describe("window terminal — what is drawn", () => {
     expect(terminals.map((t) => t.options.fontSize)).toEqual([12, 12]);
   });
 
-  it("an appearance equal to the one in use, in a new object, leaves every xterm alone", async () => {
+  it("the host's xterm options and addons reach every pane, the addons made once per pane", async () => {
+    const made: { activate: () => void; dispose: () => void }[] = [];
+    const addons = vi.fn(() => {
+      const addon = { activate: vi.fn(), dispose: vi.fn() };
+      made.push(addon);
+      return [addon];
+    });
+    const m = mount(undefined, undefined, {
+      xterm: { cursorStyle: "bar", allowProposedApi: true },
+      addons,
+    });
+    await settle();
+    expect(terminals).toHaveLength(2);
+    expect(
+      terminals.map((t) => [t.options.cursorStyle, t.options.allowProposedApi]),
+    ).toEqual([
+      ["bar", true],
+      ["bar", true],
+    ]);
+    expect(addons).toHaveBeenCalledTimes(2);
+    expect(terminals.map((t) => t.loadAddon.mock.calls)).toEqual([
+      [[made[0]]],
+      [[made[1]]],
+    ]);
+    m.terminal.dispose();
+  });
+
+  it("a new link handler through update reaches every pane", async () => {
+    const first = vi.fn();
     const { terminal, flush } = await live();
-    terminal.update({ appearance: { theme: { background: "#000" } } });
+    terminal.update({ xterm: { linkHandler: { activate: first } } });
+    flush();
+    const second = vi.fn();
+    terminal.update({ xterm: { linkHandler: { activate: second } } });
+    flush();
+    expect(
+      terminals.map(
+        (t) => (t.options.linkHandler as { activate: unknown }).activate,
+      ),
+    ).toEqual([second, second]);
+  });
+
+  it("the cell the solver measures is the one xterm draws: family, line height and letter spacing", async () => {
+    const cellAt = vi.fn(() => (px: number) => ({ width: px / 2, height: px }));
+    const m = mount(undefined, cellAt, {
+      xterm: { fontFamily: "Iosevka", letterSpacing: 2 },
+    });
+    await settle();
+    observed?.(800, 480);
+    m.flush();
+    expect(cellAt).toHaveBeenLastCalledWith({
+      fontFamily: "Iosevka",
+      lineHeight: 1,
+      letterSpacing: 2,
+    });
+    m.terminal.dispose();
+  });
+
+  it("xterm options equal to the ones in use, in a new object, leave every xterm alone", async () => {
+    const { terminal, flush } = await live();
+    terminal.update({ xterm: { theme: { background: "#000" } } });
     flush();
     const themes = terminals.map((t) => t.options.theme);
-    terminal.update({ appearance: { theme: { background: "#000" } } });
+    terminal.update({ xterm: { theme: { background: "#000" } } });
     flush();
     expect(terminals.map((t) => t.options.theme)).toEqual(themes);
     expect(terminals.every((t, i) => t.options.theme === themes[i])).toBe(true);
-    terminal.update({ appearance: { theme: { background: "#111" } } });
+    terminal.update({ xterm: { theme: { background: "#111" } } });
     flush();
     expect(terminals.map((t) => t.options.theme)).toEqual([
       { background: "#111" },
@@ -336,9 +398,23 @@ describe("window terminal — the size claim", () => {
     expect(() =>
       terminal.update({
         sizing: { window: "box", font: { min: 20, max: 10 } },
-        appearance: { fontFamily: "Iosevka" },
+        xterm: { fontFamily: "Iosevka" },
       }),
     ).toThrow(RangeError);
+    expect(() =>
+      terminal.update({
+        sizing: { window: "box", font: 20 },
+        xterm: {
+          fontFamily: "Iosevka",
+          cursorStyle: "beam" as "bar",
+        },
+      }),
+    ).toThrow(/xterm\.cursorStyle/);
+    expect(() =>
+      terminal.update({
+        xterm: { fontFamily: "Iosevka", fontSize: 30 } as never,
+      }),
+    ).toThrow(/xterm\.fontSize is set by the window terminal/);
     observed?.(800, 480);
     flush();
     await settle();

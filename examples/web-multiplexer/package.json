@@ -21,6 +21,9 @@
     "@mantine/core": "^7.14.0",
     "@mantine/hooks": "^7.14.0",
     "@promptctl/tmux-control-mode-js": "workspace:*",
+    "@xterm/addon-clipboard": "^0.1.0",
+    "@xterm/addon-unicode11": "^0.8.0",
+    "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "mobx": "^6.15.0",
     "mobx-react-lite": "^4.1.1",
@@ -29,6 +32,10 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/plugin-transform-react-jsx-self": "^7.27.1",
+    "@babel/plugin-transform-react-jsx-source": "^7.27.1",
+    "@types/babel__core": "^7.20.5",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -37,13 +44,9 @@
     "concurrently": "^9.1.0",
     "electron": "^31.0.0",
     "esbuild": "^0.24.0",
-    "tsx": "^4.19.0",
-    "@babel/core": "^7.28.0",
-    "@babel/plugin-transform-react-jsx-self": "^7.27.1",
-    "@babel/plugin-transform-react-jsx-source": "^7.27.1",
-    "@types/babel__core": "^7.20.5",
     "react-refresh": "^0.17.0",
     "rollup": "^4.20.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.11"
   }

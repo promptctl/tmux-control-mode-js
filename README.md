@@ -231,8 +231,38 @@ import { WindowTerminal } from "@promptctl/tmux-control-mode-js/window-terminal/
 ```
 
 A new `connection`, `window` or `history` mounts a new terminal; `sizing` and
-`appearance` (`theme`, `fontFamily`, `lineHeight`, `cursorStyle`) update the
-one there is, as `terminal.update()` does.
+`xterm` update the one there is, as `terminal.update()` does.
+
+`xterm` is xterm.js's options for every pane (`ITerminalOptions`): `theme`,
+`fontFamily`, `linkHandler`, `cursorStyle` and the rest. An option left out
+returns to its default. The terminal sets the ones tmux decides, and the type
+refuses them: `cols` and `rows`, `fontSize` (`sizing.font`), `scrollback`
+(`history`), `tabStopWidth` (tmux's tab stops), `convertEol`, `disableStdin`,
+`windowOptions`, `windowsMode`, `windowsPty` and `documentOverride`.
+
+`addons` is a factory each pane calls once, when it opens, for the xterm.js
+addons it loads. It is read at mount. xterm.js 5.5 makes an OSC 8 link with a
+scheme other than `http:` or `https:` only when `linkHandler` allows it, and
+draws an emoji one cell wide where tmux counts two unless Unicode 11 is the
+version in use:
+
+```tsx
+import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+
+const activate = (_: MouseEvent, uri: string) => openLink(uri);
+const xterm = {
+  allowProposedApi: true, // Unicode 11 uses xterm's proposed API
+  linkHandler: { allowNonHttpProtocols: true, activate },
+};
+const addons = () => [
+  new Unicode11Addon(),
+  { activate: (t) => (t.unicode.activeVersion = "11"), dispose: () => {} },
+  new WebLinksAddon(activate),
+];
+
+<WindowTerminal connection={connection} window="@3" xterm={xterm} addons={addons} />;
+```
 
 `sizing` says who decides the window's size:
 

@@ -23,13 +23,14 @@ import type { PaneSurface, PaneSurfaces } from "../engine/window-engine.js";
 import type { PaneId } from "../ids.js";
 import { parsePaneId } from "../ids.js";
 import type { Box } from "../sizing/solve.js";
-import type { Appearance } from "./appearance.js";
 import type { RenderPlan } from "./render-plan.js";
+import type { XtermAddons, XtermOptions } from "./xterm-options.js";
 import { XtermSink } from "./xterm-sink.js";
 
 export interface WindowRendererOptions {
   readonly history: number;
-  readonly appearance: Appearance;
+  readonly xterm: XtermOptions;
+  readonly addons: XtermAddons | undefined;
   /** The font a pane opens at, before the first plan reaches it. */
   readonly font: number;
   /** The box the terminal has to draw in, on every change. */
@@ -50,7 +51,8 @@ export class WindowRenderer implements PaneSurfaces {
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
   private readonly observer: ResizeObserver;
-  private appearance: Appearance;
+  private readonly addons: XtermAddons | undefined;
+  private xterm: XtermOptions;
   private font: number;
   // Set while this renderer moves DOM focus itself, so the focus it moves is
   // not read back as a person choosing a pane.
@@ -66,7 +68,8 @@ export class WindowRenderer implements PaneSurfaces {
 
   constructor(host: HTMLElement, opts: WindowRendererOptions) {
     this.history = opts.history;
-    this.appearance = opts.appearance;
+    this.xterm = opts.xterm;
+    this.addons = opts.addons;
     this.font = opts.font;
     this.onFocusPane = opts.onFocusPane;
     const doc = host.ownerDocument;
@@ -117,7 +120,8 @@ export class WindowRenderer implements PaneSurfaces {
       container: el,
       fontSize: this.font,
       scrollback: this.history,
-      appearance: this.appearance,
+      xterm: this.xterm,
+      addons: this.addons,
     });
     // The pane's own box clips the terminal to its cell rect; a viewport
     // scrollbar would cover its last columns. Wheel scrolling still works.
@@ -200,9 +204,10 @@ export class WindowRenderer implements PaneSurfaces {
     }
   }
 
-  setAppearance(a: Appearance): void {
-    this.appearance = a;
-    for (const { sink } of this.panes.values()) sink.setAppearance(a);
+  /** Every pane takes `xterm`; each writes only the options that changed. */
+  setOptions(xterm: XtermOptions): void {
+    this.xterm = xterm;
+    for (const { sink } of this.panes.values()) sink.setOptions(xterm);
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */

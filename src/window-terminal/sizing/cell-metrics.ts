@@ -7,8 +7,8 @@
 //   char  — CharSizeService: an OffscreenCanvas `measureText("W")` (width,
 //           fontBoundingBoxAscent + fontBoundingBoxDescent), else a DOM span
 //           of 32 "W"s (offsetWidth / 32, offsetHeight).
-//   cell  — DomRenderer: width = char width; height =
-//           floor(ceil(char height × dpr) × lineHeight) / dpr.
+//   cell  — DomRenderer: width = (char width × dpr + round(letterSpacing))
+//           / dpr; height = floor(ceil(char height × dpr) × lineHeight) / dpr.
 //
 // [LAW:no-shared-mutable-globals] The cache belongs to one measure (one
 //   terminal), not the module.
@@ -62,9 +62,17 @@ function charSizeInDom(doc: Document, family: string, px: number): CellSize {
   return size;
 }
 
+/** The font a cell is drawn in: what xterm draws and the solver measures. */
+export interface CellFont {
+  readonly fontFamily: string;
+  readonly lineHeight: number;
+  /** Device px xterm adds to each cell's width. */
+  readonly letterSpacing: number;
+}
+
 export interface CellMeasure {
-  /** The cell size at each font size for this family and line height. */
-  cellAt(family: string, lineHeight: number): CellAt;
+  /** The cell size at each font size for this font. */
+  cellAt(font: CellFont): CellAt;
   /**
    * Called when cell sizes may have changed under the same settings: a font
    * finished loading, or the device pixel ratio moved (a zoom, a monitor).
@@ -99,9 +107,9 @@ export function createCellMeasure(win: Window): CellMeasure {
   doc.fonts.addEventListener("loadingdone", changed);
 
   return {
-    cellAt(family, lineHeight) {
+    cellAt({ fontFamily: family, lineHeight, letterSpacing }) {
       return (px) => {
-        const key = `${px}|${lineHeight}|${family}`;
+        const key = `${px}|${lineHeight}|${letterSpacing}|${family}`;
         const hit = cache.get(key);
         if (hit !== undefined) return hit;
         const char =
@@ -113,7 +121,7 @@ export function createCellMeasure(win: Window): CellMeasure {
         }
         const dpr = win.devicePixelRatio;
         const cell = {
-          width: char.width,
+          width: (char.width * dpr + Math.round(letterSpacing)) / dpr,
           height: Math.floor(Math.ceil(char.height * dpr) * lineHeight) / dpr,
         };
         cache.set(key, cell);
