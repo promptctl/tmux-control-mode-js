@@ -20,7 +20,7 @@ import { serverScope } from "@promptctl/tmux-control-mode-js";
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
-import { asCommandResponse } from "./command-response.js";
+import { asCommandResponse } from "../shared/command-response.js";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 import { PaneFirehose } from "./pane-firehose.js";

@@ -50,11 +50,10 @@ function mapConnState(s: ConnState): ConnectionState {
   return { status: "connecting" };
 }
 
-// [LAW:parse-dont-validate] A `TmuxBridge` may report a tmux %error as a
-//   resolved `{success: false}` reply (the WebSocket bridge does); a
-//   `TmuxConnection` rejects it with `TmuxCommandError`, the one shape the
-//   router and the window terminal classify. Every command relayed here
-//   crosses this function.
+// [LAW:parse-dont-validate] A `TmuxBridge` resolves a tmux %error as a
+//   `{success: false}` reply; a `TmuxConnection` rejects it with
+//   `TmuxCommandError`, the one shape the router and the window terminal
+//   classify. Every command relayed here crosses this function.
 function relayed(reply: Promise<CommandResponse>): Promise<CommandResponse> {
   return reply.then((r) =>
     r.success ? r : Promise.reject(new TmuxCommandError(r)),
@@ -94,8 +93,9 @@ export class BridgePaneStreamClient
   private readonly router = new TopologyRouter(new DeliveryQueue(), (error) =>
     this.emit({ type: "topology-error", error }),
   );
-  // The router's queries go out through this connection's command seam.
-  private readonly run: RunCommand = (command) => this.execute(command);
+  // The runner of the bridge's current (or last) ready connection; the
+  // router's queries go out through it, over this adapter's command seam.
+  private run: RunCommand = (command) => this.execute(command);
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -117,21 +117,26 @@ export class BridgePaneStreamClient
     });
 
     bridge.onState((state) => {
-      const wasReady = this.everReady;
+      // [LAW:no-ambient-temporal-coupling] The router moves to the new
+      //   connection before any consumer hears of it, so a `connection-state`
+      //   handler never queries a dropped connection. The bridge reconnects
+      //   after `closed`, and each PaneStream keeps its sink across that, so
+      //   leaving `ready` is a lost connection, never the router's close
+      //   (which ends every sink for good). The runner names the connection:
+      //   each ready gets its own, so a loss reported against an earlier one
+      //   retires nothing.
+      if (state === "ready") {
+        this.run = (command) => this.execute(command);
+        this.router.onTransportReady(this.run);
+      } else {
+        this.router.onTransportLost(this.run);
+      }
       const next = mapConnState(state);
       const changed = next.status !== this._connectionState.status;
       this._connectionState = next;
       if (changed) this.emit({ type: "connection-state", state: next });
-      // [LAW:no-ambient-temporal-coupling] The bridge reconnects after
-      //   `closed`, and each PaneStream keeps its sink across that, so leaving
-      //   `ready` is a lost connection, never the router's close (which ends
-      //   every sink for good). A loss with no live connection changes nothing.
-      if (state !== "ready") {
-        this.router.onTransportLost(this.run);
-        return;
-      }
-      this.router.onTransportReady(this.run);
-      if (wasReady) {
+      if (state !== "ready") return;
+      if (this.everReady) {
         // [LAW:single-enforcer] The only place that decides "this is a
         // reconnect" for all PaneStream instances on this bridge.
         this.emit({ type: "reconnected" });

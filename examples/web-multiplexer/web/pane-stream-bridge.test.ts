@@ -19,7 +19,7 @@ import {
 } from "@promptctl/tmux-control-mode-js/browser";
 import { describeTopologyMoves } from "../../../tests/helpers/topology-moves.ts";
 import { forwardClientToSocket } from "../server/bridge.ts";
-import { asCommandResponse } from "../server/command-response.ts";
+import { asCommandResponse } from "../shared/command-response.ts";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.ts";
 import { WebSocketBridge } from "./ws-client.ts";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
@@ -198,6 +198,31 @@ describe("BridgePaneStreamClient command seam", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(reported).toEqual([]);
     bridge.disconnect();
+  });
+
+  it("retires the router's connection before consumers hear it closed, so a window sink attached then asks nothing of it", async () => {
+    const bridge = new WebSocketBridge();
+    const conn = new BridgePaneStreamClient(bridge);
+    const bridgeErrors: string[] = [];
+    bridge.onError((message) => bridgeErrors.push(message));
+    bridge.connect("ws://in-process");
+    const socket = InProcessSocket.last!;
+    socket.open();
+    socket.deliver(JSON.stringify({ kind: "ready" }));
+    conn.on("connection-state", ({ state }) => {
+      if (state.status === "closed") {
+        conn.attachBytesSink(
+          { write: () => undefined, end: () => undefined },
+          { scope: windowScope(1) },
+        );
+      }
+    });
+
+    bridge.disconnect();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // A bootstrap on the dropped connection would be refused with
+    // "cannot execute: bridge is not connected".
+    expect(bridgeErrors).toEqual([]);
   });
 });
 

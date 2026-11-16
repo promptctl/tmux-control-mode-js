@@ -1,24 +1,28 @@
-// examples/web-multiplexer/server/command-response.ts
+// examples/web-multiplexer/shared/command-response.ts
 // The single enforcer for "a tmux command rejection, as a CommandResponse".
 //
 // The library rejects a failed command with `TmuxCommandError` — an `Error`
 // whose `.response` is the real `CommandResponse` carrying tmux's `%error`
-// output. Every server-side caller that ran a command and now wants to inspect
-// `success` / `output` must funnel its `.catch` through HERE, never re-derive
-// the unwrap inline. An inline `.catch((r: CommandResponse) => r)` is a
-// type-lie: the caught value is a `TmuxCommandError`, so `r.success` is
-// `undefined` (it only *accidentally* reads as failure) and a non-command
-// rejection — a transport drop, a version precondition — gets laundered into a
-// phantom "command failed" instead of surfacing.
+// output. The demo's `TmuxBridge` contract instead resolves a tmux `%error` as
+// `{success: false}`, so every caller that ran a library command and now wants
+// to inspect `success` / `output` — the bridge server's request handler, the
+// mirror registry, the collab input, and the Electron bridge in the page —
+// funnels its `.catch` through HERE, never re-deriving the unwrap inline. An
+// inline `.catch((r: CommandResponse) => r)` is a type-lie: the caught value is
+// a `TmuxCommandError`, so `r.success` is `undefined` (it only *accidentally*
+// reads as failure) and a non-command rejection — a transport drop, a version
+// precondition — gets laundered into a phantom "command failed" instead of
+// surfacing.
 //
 // [LAW:single-enforcer] One translation from rejection → `CommandResponse`,
-//   shared by the bridge's request handler, the mirror registry, and the
-//   collab input. None of them can drift from the others.
+//   shared by the server and the page. None of them can drift from the others.
 // [LAW:no-silent-failure] A non-command rejection is rethrown, not swallowed:
 //   the caller's surrounding `try`/`catch` (or its unhandled-rejection path)
 //   surfaces it loudly rather than masking it as a failed tmux command.
+// [LAW:one-way-deps] Imported from the `/browser` subpath, which the page can
+//   bundle; it is the same `TmuxCommandError` class the root entry exports.
 
-import { TmuxCommandError } from "@promptctl/tmux-control-mode-js";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 
 /**

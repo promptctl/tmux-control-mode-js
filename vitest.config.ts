@@ -21,9 +21,10 @@ export default defineConfig({
       "tests/unit/**/*.test.ts",
       "tests/unit/**/*.test.tsx",
       "tests/integration/**/*.test.ts",
-      // Pure, package-independent demo logic (trigram index, ANSI→text).
-      // These import no browser/DOM/React deps, so they run under the same
-      // node test env and keep `test:all` the single canonical command.
+      // Demo logic, run under the same node test env so `test:all` stays the
+      // single canonical command. Files that import the package resolve it
+      // through its exports map to the built dist/, as the demo does — build
+      // first; cases that drive real tmux sit behind TMUX_INTEGRATION=1.
       "examples/web-multiplexer/web/*.test.ts",
       // tests/bench (*.bench.ts) is not collected here: those are slow
       // real-tmux + --expose-gc perf gates run by `bench:gate`

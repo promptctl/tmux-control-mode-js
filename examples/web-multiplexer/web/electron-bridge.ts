@@ -10,7 +10,9 @@
 // [LAW:dataflow-not-control-flow] Method calls and events run the same
 // pipeline every time:
 //   - methods: synthesize ClientToServer → emit "out" wire → invoke proxy
-//     → emit "in-response" wire (or "in-error" on rejection)
+//     → emit "in-response" wire (a tmux %error included, resolved as
+//     `success: false` per the TmuxBridge contract), or "in-error" when the
+//     bridge itself fails
 //   - events:  proxy.on("*") → emit "in-event" wire → fan out to handlers
 // No branching on "is this a special method" or "is this a special event".
 
@@ -38,6 +40,7 @@ import {
   refreshClientSize,
   refreshClientWindowSize,
 } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "../shared/command-response.ts";
 import type { ClientToServer } from "../shared/protocol.ts";
 import type { DemoIpc } from "./demo-ipc.ts";
 import type {
@@ -333,7 +336,11 @@ export class ElectronBridge implements TmuxBridge {
     const sentAt = Date.now();
     this.emitWire({ dir: "out", ts: sentAt, msg: request });
     try {
-      const response = await invoker(proxy);
+      // [LAW:single-enforcer] The proxy rejects a tmux %error with
+      //   `TmuxCommandError`; the TmuxBridge contract resolves it, as the
+      //   WebSocket bridge does, so every consumer's `success` check holds on
+      //   both transports and only a bridge failure reaches onError.
+      const response = await invoker(proxy).catch(asCommandResponse);
       const now = Date.now();
       this.emitWire({
         dir: "in-response",
