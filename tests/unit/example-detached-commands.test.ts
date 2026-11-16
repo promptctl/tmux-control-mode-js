@@ -125,15 +125,25 @@ describe("CollabInput.sendKeyBytes never rejects", () => {
     const { transports, spawn } = silentTmux();
     const input = new CollabInput(spawn);
     const sent = input.sendKeyBytes(3, new Uint8Array([0x61]));
-    (await inFlight(transports)).end("server exited");
+    const transport = await inFlight(transports);
+    // The test owns the clock from the moment the connection ends.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(0);
+    transport.end("server exited");
     await sent;
     expect(vi.mocked(console.warn).mock.calls).toEqual([
       ["[collab] tmux connection ended: server exited"],
     ]);
 
-    void input.sendKeyBytes(3, new Uint8Array([0x62]));
+    // Within the respawn delay a keystroke is dropped, not a new tmux fork.
+    clock.mockReturnValue(999);
+    await input.sendKeyBytes(3, new Uint8Array([0x62]));
+    expect(transports).toHaveLength(1);
+
+    clock.mockReturnValue(1000);
+    void input.sendKeyBytes(3, new Uint8Array([0x63]));
     await inFlight(transports);
     expect(transports).toHaveLength(2);
+    expect(console.warn).toHaveBeenCalledTimes(1);
     input.close();
   });
 

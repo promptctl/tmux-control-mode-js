@@ -182,7 +182,7 @@ describe("PaneFirehose refresh failures", () => {
     }
   });
 
-  it("leaves a lost connection to the connection's owner to report", async () => {
+  it("ends on a lost connection, leaving the report to the connection's owner", async () => {
     let lists = 0;
     const firehose = new PaneFirehose(
       () => {
@@ -196,7 +196,9 @@ describe("PaneFirehose refresh failures", () => {
       await expect(firehose.start()).rejects.toBeInstanceOf(
         TransportClosedError,
       );
-      await vi.waitFor(() => expect(lists).toBeGreaterThan(2));
+      // Many refresh intervals pass; a dead connection is not polled again.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(lists).toBe(1);
       expect(console.warn).not.toHaveBeenCalled();
     } finally {
       firehose.stop();

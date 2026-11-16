@@ -82,6 +82,9 @@ describe.skipIf(!RUN_INTEGRATION)("demo mirror across a tmux restart", () => {
       expect.stringMatching(/^\[mirror\] tmux connection ended/),
     );
 
+    // Past the registry's respawn delay, without waiting it out.
+    const realNow = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + 1000);
     const second = recordingViewer();
     await registry.addViewer(startTmux(), second.viewer);
     expect(second.frames[0]).toMatchObject({ kind: "size", cols: 80 });

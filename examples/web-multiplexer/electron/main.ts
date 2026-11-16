@@ -297,8 +297,8 @@ app.whenReady().then(async () => {
   // the demo:firehose-bytes channel. [LAW:single-enforcer] One PaneFirehose,
   // sourced from the active client's control connection.
   ipcMain.handle("demo:firehose-start", async (): Promise<void> => {
-    if (active === null) {
-      throw new Error("demo:firehose-start: no active tmux client");
+    if (active === null || active.client.connectionState.status === "closed") {
+      throw new Error("demo:firehose-start: no live tmux client");
     }
     const client = active.client;
     if (firehose === null) {

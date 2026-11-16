@@ -10,11 +10,12 @@
 // has settled. [LAW:one-source-of-truth] [LAW:no-ambient-temporal-coupling] the
 // "settled before first command" ordering has a single, named owner.
 //
-// THE CONNECTION'S LIFETIME: a client whose connection ends is dropped, and the
-// next `ready()` spawns a fresh one, so the owner recovers when tmux comes back
-// instead of holding a dead client until the bridge restarts. [LAW:single-enforcer]
-// The end of a connection is reported here, once; the commands it took with it
-// are not reported again (`detached-failure.ts`).
+// THE CONNECTION'S LIFETIME: a client whose connection ends is dropped, and a
+// `ready()` after the respawn delay spawns a fresh one, so the owner recovers
+// when tmux comes back instead of holding a dead client until the bridge
+// restarts. [LAW:single-enforcer] The end of a connection is reported here,
+// once; the commands it took with it are not reported again
+// (`detached-failure.ts`).
 
 import {
   TmuxClient,
@@ -23,20 +24,37 @@ import {
 } from "@promptctl/tmux-control-mode-js";
 import { demoAttachArgs } from "./tmux-target.js";
 
-/** Start a control client. Injectable so tests can run one over a fake transport. */
+/**
+ * Start a fresh control client, not yet ready. Injectable so tests can run one
+ * over a fake transport.
+ */
 export type SpawnControlClient = () => TmuxClient;
 
 /** A `tmux -C` client against the demo's target server. */
 export const spawnDemoClient: SpawnControlClient = () =>
   new TmuxClient(spawnTmux(demoAttachArgs()));
 
+/**
+ * How long an ended connection stands before `ready()` spawns again: with tmux
+ * down, a collaborator holding a key would otherwise fork a `tmux -C` and log
+ * its failure per keystroke.
+ */
+const RESPAWN_DELAY_MS = 1000;
+
 interface Live {
+  readonly kind: "live";
   readonly client: TmuxClient;
   readonly ready: Promise<TmuxClient>;
 }
 
+interface Ended {
+  readonly kind: "ended";
+  readonly error: TransportClosedError;
+  readonly at: number;
+}
+
 export class DedicatedControlClient {
-  private live: Live | null = null;
+  private slot: Live | Ended | null = null;
   private closed = false;
 
   /**
@@ -47,26 +65,33 @@ export class DedicatedControlClient {
   constructor(
     private readonly label: string,
     private readonly onLost: () => void,
-    private readonly spawn: SpawnControlClient = spawnDemoClient,
+    private readonly spawn: SpawnControlClient,
   ) {}
 
   /**
    * The live client once it is ready for commands, spawning one if there is
    * none. Rejects with `TransportClosedError` if the connection ends before it
-   * is ready, or once this owner has closed.
+   * is ready, within `RESPAWN_DELAY_MS` of the last one ending, or once this
+   * owner has closed.
    */
   ready(): Promise<TmuxClient> {
     if (this.closed) return Promise.reject(new TransportClosedError(undefined));
-    this.live ??= this.connect();
-    return this.live.ready;
+    const slot = this.slot;
+    if (slot?.kind === "live") return slot.ready;
+    if (slot !== null && Date.now() - slot.at < RESPAWN_DELAY_MS) {
+      return Promise.reject(slot.error);
+    }
+    const live = this.connect();
+    this.slot = live;
+    return live.ready;
   }
 
   /** Close the live client for good; `ready()` refuses from now on. */
   close(): void {
     this.closed = true;
-    const live = this.live;
-    this.live = null;
-    live?.client.close();
+    const slot = this.slot;
+    this.slot = null;
+    if (slot?.kind === "live") slot.client.close();
   }
 
   private connect(): Live {
@@ -76,16 +101,18 @@ export class DedicatedControlClient {
         if (state.status === "ready") resolve(client);
       });
       client.on("exit", ({ reason }) => {
-        reject(new TransportClosedError(reason));
+        const error = new TransportClosedError(reason);
+        reject(error);
         // Our own `close()` has already let go of this client.
-        if (this.live?.client !== client) return;
-        this.live = null;
+        const slot = this.slot;
+        if (slot?.kind !== "live" || slot.client !== client) return;
+        this.slot = { kind: "ended", error, at: Date.now() };
         console.warn(
           `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
         );
         this.onLost();
       });
     });
-    return { client, ready };
+    return { kind: "live", client, ready };
   }
 }

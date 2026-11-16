@@ -25,6 +25,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isConnectionGone } from "@promptctl/tmux-control-mode-js";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import { reportDetachedFailure } from "./detached-failure.js";
 import { tapPaneToFifo } from "./pane-tap.js";
@@ -134,7 +135,14 @@ export class PaneFirehose {
     if (this.refreshing || this.dir === null || this.stopped) return;
     this.refreshing = true;
     try {
-      const listed = await this.execute("list-panes -a -F '#{pane_id}'");
+      const listed = await this.execute("list-panes -a -F '#{pane_id}'").catch(
+        (err: unknown) => {
+          // A gone connection never answers again and took every tap with
+          // it: the firehose ends rather than poll it unseen.
+          if (isConnectionGone(err)) this.stop();
+          throw err;
+        },
+      );
       const current = new Set(
         listed.output.flatMap((line) => {
           const m = /^%(\d+)/.exec(line.trim());
