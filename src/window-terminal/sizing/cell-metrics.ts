@@ -1,7 +1,7 @@
 // src/window-terminal/sizing/cell-metrics.ts
 //
 // The size of one xterm.js cell at a font size, in CSS px, measured the way
-// xterm.js 5.5 measures it, so the grid the solver lays out is the grid xterm
+// xterm.js 6 measures it, so the grid the solver lays out is the grid xterm
 // draws.
 //
 //   char  — CharSizeService: an OffscreenCanvas `measureText("W")` (width,

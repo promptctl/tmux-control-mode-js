@@ -189,12 +189,14 @@ export class WindowRenderer implements PaneSurfaces {
     } catch (cause) {
       return { sink: NOTHING_DRAWN, failures: [cause] };
     }
-    // The pane's own box clips the terminal to its cell rect; a viewport
-    // scrollbar would cover its last columns. Wheel scrolling still works.
-    const viewport =
-      sink.terminal.element?.querySelector<HTMLElement>(".xterm-viewport");
-    if (viewport !== null && viewport !== undefined) {
-      viewport.style.scrollbarWidth = "none";
+    // The pane's own box clips the terminal to its cell rect; xterm's
+    // scrollbar, drawn over the screen's right edge, would cover its last
+    // column. Wheel scrolling still works.
+    const scrollbar = sink.terminal.element?.querySelector<HTMLElement>(
+      ".xterm-scrollable-element > .scrollbar.vertical",
+    );
+    if (scrollbar !== null && scrollbar !== undefined) {
+      scrollbar.style.display = "none";
     }
     return { sink, failures: [] };
   }

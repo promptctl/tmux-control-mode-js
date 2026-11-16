@@ -329,6 +329,54 @@ test("an emoji with VS16 takes two cells, as tmux counts it, with no Unicode add
   }
 });
 
+test("a pane scrolled back by the wheel still shows its last column, with no scrollbar over it", async () => {
+  const handle = await launchApp();
+  try {
+    const { page, socket } = handle;
+    tmux(socket, [
+      "send-keys",
+      "-t",
+      "web-multiplexer-demo",
+      "seq 1 60",
+      "Enter",
+    ]);
+    const pane = page.locator(".wt-pane:not([hidden])").first();
+    await expect(pane.locator(".xterm-rows")).toContainText("60", {
+      timeout: 15_000,
+    });
+    const box = await pane.boundingBox();
+    if (box === null) throw new Error("the pane has no box");
+    // Scrolling is what shows a scrollbar that otherwise fades out.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -400);
+    await expect(pane.locator(".xterm-rows")).not.toContainText("60");
+    // tmux's 80 columns can be wider than the demo's box, so the window
+    // scrolls: bring the pane's right edge into view.
+    await pane.evaluate((p) => {
+      const root = p.closest(".wt-root");
+      if (root === null) throw new Error("the pane is not in a window");
+      root.scrollLeft = root.scrollWidth;
+    });
+    const edge = await pane.boundingBox();
+    if (edge === null) throw new Error("the pane has no box");
+    // What the pointer meets on the pane's last column, halfway down.
+    const lastColumn = await page.evaluate(
+      ({ x, y }) => {
+        const hit = document.elementFromPoint(x, y);
+        return hit?.closest(".scrollbar") !== null
+          ? "scrollbar"
+          : hit?.closest(".xterm-screen") !== null
+            ? "screen"
+            : (hit?.className ?? "nothing");
+      },
+      { x: edge.x + edge.width - 2, y: edge.y + edge.height / 2 },
+    );
+    expect(lastColumn).toBe("screen");
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
 test("each pane's xterm fills its pane box exactly, drawn by the DOM renderer or by WebGL", async () => {
   const handle = await launchApp();
   try {

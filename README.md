@@ -266,7 +266,7 @@ loads is an `onError` (`render`), as an addon that throws.
 addons it loads; it is read at mount. An addon that throws as a pane opens is
 an `onError` (`render`), and that pane stays empty. Panes are laid out in the
 cell their renderer draws, xterm.js's DOM renderer or a renderer addon (WebGL,
-canvas). xterm.js 5.5 makes an OSC 8 link with
+canvas). xterm.js 6 makes an OSC 8 link with
 a scheme other than `http:` or `https:` only when `linkHandler` allows it:
 
 ```tsx
