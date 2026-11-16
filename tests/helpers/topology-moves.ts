@@ -87,188 +87,200 @@ export function describeTopologyMoves(
   label: string,
   open: OpenConnection,
 ): void {
-  describe(`topology moves: ${label}`, () => {
-    let socketName = "";
-    let opened: { conn: MovesConnection; close(): void } | null = null;
+  // Every case drives real tmux.
+  describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
+    `topology moves: ${label}`,
+    () => {
+      let socketName = "";
+      let opened: { conn: MovesConnection; close(): void } | null = null;
 
-    beforeEach(() => {
-      socketName = uniqueSocket("tmux-scope-test-", "moves");
-    });
-
-    afterEach(() => {
-      opened?.close();
-      opened = null;
-      if (socketName !== "") killTmuxServer(socketName);
-      socketName = "";
-    });
-
-    async function attach(session: string): Promise<MovesConnection> {
-      opened = await open(socketName, session);
-      return opened.conn;
-    }
-
-    it("SCOPE-06: a pane joined into another window routes to it, not its old window", async () => {
-      const session = uniqueName("join");
-      const conn = await attach(session);
-      // Two panes in the first window, so it survives the join and reports the
-      // move as a layout-change; a second window to join into.
-      await conn.execute("split-window");
-      await conn.execute("new-window");
-
-      const all = await listAllPanes(conn);
-      const windowIds = [...new Set(all.map((p) => p.windowId))];
-      expect(windowIds.length).toBe(2);
-      const [fromWindow, toWindow] = windowIds;
-      const movedPane = all.filter((p) => p.windowId === fromWindow)[1].paneId;
-
-      const inFrom: ArrivedChunk[] = [];
-      const inTo: ArrivedChunk[] = [];
-      const disposeFrom = conn.attachBytesSink(makeRecordingSink(inFrom), {
-        scope: windowScope(fromWindow),
+      beforeEach(() => {
+        socketName = uniqueSocket("tmux-scope-test-", "moves");
       });
-      const disposeTo = conn.attachBytesSink(makeRecordingSink(inTo), {
-        scope: windowScope(toWindow),
+
+      afterEach(() => {
+        opened?.close();
+        opened = null;
+        if (socketName !== "") killTmuxServer(socketName);
+        socketName = "";
       });
-      tmux(socketName, [
-        "join-pane",
-        "-s",
-        `%${movedPane}`,
-        "-t",
-        `@${toWindow}`,
-      ]);
-      await sendOutputToPane(conn, movedPane);
 
-      const marker = `scope-test-${movedPane}`;
-      await pollUntil(() => textOf(inTo, movedPane).includes(marker));
-      expect(textOf(inFrom, movedPane)).not.toContain(marker);
-      disposeFrom();
-      disposeTo();
-    }, 20000);
+      async function attach(session: string): Promise<MovesConnection> {
+        opened = await open(socketName, session);
+        return opened.conn;
+      }
 
-    it("SCOPE-06c: a pane broken out into a new window stops routing to its old window", async () => {
-      const session = uniqueName("break");
-      const conn = await attach(session);
-      await conn.execute("split-window");
+      it("SCOPE-06: a pane joined into another window routes to it, not its old window", async () => {
+        const session = uniqueName("join");
+        const conn = await attach(session);
+        // Two panes in the first window, so it survives the join and reports the
+        // move as a layout-change; a second window to join into.
+        await conn.execute("split-window");
+        await conn.execute("new-window");
 
-      const all = await listAllPanes(conn);
-      const [fromWindow] = [...new Set(all.map((p) => p.windowId))];
-      const { paneId: movedPane, sessionId } = all[1];
+        const all = await listAllPanes(conn);
+        const windowIds = [...new Set(all.map((p) => p.windowId))];
+        expect(windowIds.length).toBe(2);
+        const [fromWindow, toWindow] = windowIds;
+        const movedPane = all.filter((p) => p.windowId === fromWindow)[1]
+          .paneId;
 
-      const inFrom: ArrivedChunk[] = [];
-      const inSession: ArrivedChunk[] = [];
-      const disposeFrom = conn.attachBytesSink(makeRecordingSink(inFrom), {
-        scope: windowScope(fromWindow),
-      });
-      const disposeSession = conn.attachBytesSink(
-        makeRecordingSink(inSession),
-        { scope: sessionScope(sessionId) },
-      );
-      // tmux reports break-pane only as the old window's layout omitting the
-      // pane, then %window-add for the new one.
-      tmux(socketName, ["break-pane", "-d", "-s", `%${movedPane}`]);
-      await sendOutputToPane(conn, movedPane);
+        const inFrom: ArrivedChunk[] = [];
+        const inTo: ArrivedChunk[] = [];
+        const disposeFrom = conn.attachBytesSink(makeRecordingSink(inFrom), {
+          scope: windowScope(fromWindow),
+        });
+        const disposeTo = conn.attachBytesSink(makeRecordingSink(inTo), {
+          scope: windowScope(toWindow),
+        });
+        tmux(socketName, [
+          "join-pane",
+          "-s",
+          `%${movedPane}`,
+          "-t",
+          `@${toWindow}`,
+        ]);
+        await sendOutputToPane(conn, movedPane);
 
-      const marker = `scope-test-${movedPane}`;
-      await pollUntil(() => textOf(inSession, movedPane).includes(marker));
-      expect(textOf(inFrom, movedPane)).not.toContain(marker);
-      disposeFrom();
-      disposeSession();
-    }, 20000);
+        const marker = `scope-test-${movedPane}`;
+        await pollUntil(() => textOf(inTo, movedPane).includes(marker));
+        expect(textOf(inFrom, movedPane)).not.toContain(marker);
+        disposeFrom();
+        disposeTo();
+      }, 20000);
 
-    it("SCOPE-06d: a window moved in from another session routes to the attached session, not its old one", async () => {
-      const session = uniqueName("mvwin");
-      const conn = await attach(session);
-      const other = uniqueName("mvwin-src");
-      // Two windows, so moving one out leaves the source session alive.
-      tmux(socketName, ["new-session", "-d", "-s", other]);
-      tmux(socketName, ["new-window", "-d", "-t", `${other}:`]);
+      it("SCOPE-06c: a pane broken out into a new window stops routing to its old window", async () => {
+        const session = uniqueName("break");
+        const conn = await attach(session);
+        await conn.execute("split-window");
 
-      const all = await listAllPanes(conn);
-      const attachedId = await attachedSessionId(conn);
-      const moved = all.find((p) => p.sessionId !== attachedId)!;
+        const all = await listAllPanes(conn);
+        const [fromWindow] = [...new Set(all.map((p) => p.windowId))];
+        const { paneId: movedPane, sessionId } = all[1];
 
-      const inAttached: ArrivedChunk[] = [];
-      const inOld: ArrivedChunk[] = [];
-      const disposeAttached = conn.attachBytesSink(
-        makeRecordingSink(inAttached),
-        { scope: sessionScope(attachedId) },
-      );
-      const disposeOld = conn.attachBytesSink(makeRecordingSink(inOld), {
-        scope: sessionScope(moved.sessionId),
-      });
-      // tmux reports this only as %window-add; the window keeps its id and
-      // its panes keep their ids. tmux runs a client's commands one at a time,
-      // so the stall holds the window-add refresh back while the moved pane's
-      // output (provoked through the CLI, outside that queue) arrives.
-      // The attach-triggered bootstraps reply before anything after them.
-      await conn.execute("display-message -p settled");
-      const stall = conn.execute("run-shell 'sleep 0.5'");
-      tmux(socketName, [
-        "move-window",
-        "-d",
-        "-s",
-        `@${moved.windowId}`,
-        "-t",
-        `${session}:`,
-      ]);
-      const marker = `scope-test-${moved.paneId}`;
-      tmux(socketName, [
-        "send-keys",
-        "-t",
-        `%${moved.paneId}`,
-        `echo ${marker}`,
-        "Enter",
-      ]);
-      await stall;
+        const inFrom: ArrivedChunk[] = [];
+        const inSession: ArrivedChunk[] = [];
+        const disposeFrom = conn.attachBytesSink(makeRecordingSink(inFrom), {
+          scope: windowScope(fromWindow),
+        });
+        const disposeSession = conn.attachBytesSink(
+          makeRecordingSink(inSession),
+          { scope: sessionScope(sessionId) },
+        );
+        // tmux reports break-pane only as the old window's layout omitting the
+        // pane, then %window-add for the new one.
+        tmux(socketName, ["break-pane", "-d", "-s", `%${movedPane}`]);
+        await sendOutputToPane(conn, movedPane);
 
-      await pollUntil(() => textOf(inAttached, moved.paneId).includes(marker));
-      expect(textOf(inOld, moved.paneId)).not.toContain(marker);
-      disposeAttached();
-      disposeOld();
-    }, 20000);
+        const marker = `scope-test-${movedPane}`;
+        await pollUntil(() => textOf(inSession, movedPane).includes(marker));
+        expect(textOf(inFrom, movedPane)).not.toContain(marker);
+        disposeFrom();
+        disposeSession();
+      }, 20000);
 
-    it("SCOPE-06e: a window unlinked from another session it was linked into keeps routing in the attached session", async () => {
-      const session = uniqueName("unlink");
-      const conn = await attach(session);
-      const other = uniqueName("unlink-other");
-      tmux(socketName, ["new-session", "-d", "-s", other]);
+      it("SCOPE-06d: a window moved in from another session routes to the attached session, not its old one", async () => {
+        const session = uniqueName("mvwin");
+        const conn = await attach(session);
+        const other = uniqueName("mvwin-src");
+        // Two windows, so moving one out leaves the source session alive.
+        tmux(socketName, ["new-session", "-d", "-s", other]);
+        tmux(socketName, ["new-window", "-d", "-t", `${other}:`]);
 
-      const all = await listAllPanes(conn);
-      const attachedId = await attachedSessionId(conn);
-      const { paneId, windowId } = all.find((p) => p.sessionId === attachedId)!;
-      // The window lives in both sessions until it is unlinked from `other`.
-      tmux(socketName, [
-        "link-window",
-        "-d",
-        "-s",
-        `@${windowId}`,
-        "-t",
-        `${other}:`,
-      ]);
+        const all = await listAllPanes(conn);
+        const attachedId = await attachedSessionId(conn);
+        const moved = all.find((p) => p.sessionId !== attachedId)!;
 
-      const inWindow: ArrivedChunk[] = [];
-      const inAttached: ArrivedChunk[] = [];
-      const disposeWindow = conn.attachBytesSink(makeRecordingSink(inWindow), {
-        scope: windowScope(windowId),
-      });
-      const disposeAttached = conn.attachBytesSink(
-        makeRecordingSink(inAttached),
-        { scope: sessionScope(attachedId) },
-      );
-      tmux(socketName, ["unlink-window", "-t", `${other}:@${windowId}`]);
-      // Replies in order: the unlink's notifications have arrived and their
-      // queries have settled before the output is provoked.
-      await conn.execute("display-message -p settled");
-      await sendOutputToPane(conn, paneId);
+        const inAttached: ArrivedChunk[] = [];
+        const inOld: ArrivedChunk[] = [];
+        const disposeAttached = conn.attachBytesSink(
+          makeRecordingSink(inAttached),
+          { scope: sessionScope(attachedId) },
+        );
+        const disposeOld = conn.attachBytesSink(makeRecordingSink(inOld), {
+          scope: sessionScope(moved.sessionId),
+        });
+        // tmux reports this only as %window-add; the window keeps its id and
+        // its panes keep their ids. tmux runs a client's commands one at a time,
+        // so the stall holds the window-add refresh back while the moved pane's
+        // output (provoked through the CLI, outside that queue) arrives.
+        // The attach-triggered bootstraps reply before anything after them.
+        await conn.execute("display-message -p settled");
+        const stall = conn.execute("run-shell 'sleep 0.5'");
+        tmux(socketName, [
+          "move-window",
+          "-d",
+          "-s",
+          `@${moved.windowId}`,
+          "-t",
+          `${session}:`,
+        ]);
+        const marker = `scope-test-${moved.paneId}`;
+        tmux(socketName, [
+          "send-keys",
+          "-t",
+          `%${moved.paneId}`,
+          `echo ${marker}`,
+          "Enter",
+        ]);
+        await stall;
 
-      const marker = `scope-test-${paneId}`;
-      await pollUntil(
-        () =>
-          textOf(inWindow, paneId).includes(marker) &&
-          textOf(inAttached, paneId).includes(marker),
-      );
-      disposeWindow();
-      disposeAttached();
-    }, 20000);
-  });
+        await pollUntil(() =>
+          textOf(inAttached, moved.paneId).includes(marker),
+        );
+        expect(textOf(inOld, moved.paneId)).not.toContain(marker);
+        disposeAttached();
+        disposeOld();
+      }, 20000);
+
+      it("SCOPE-06e: a window unlinked from another session it was linked into keeps routing in the attached session", async () => {
+        const session = uniqueName("unlink");
+        const conn = await attach(session);
+        const other = uniqueName("unlink-other");
+        tmux(socketName, ["new-session", "-d", "-s", other]);
+
+        const all = await listAllPanes(conn);
+        const attachedId = await attachedSessionId(conn);
+        const { paneId, windowId } = all.find(
+          (p) => p.sessionId === attachedId,
+        )!;
+        // The window lives in both sessions until it is unlinked from `other`.
+        tmux(socketName, [
+          "link-window",
+          "-d",
+          "-s",
+          `@${windowId}`,
+          "-t",
+          `${other}:`,
+        ]);
+
+        const inWindow: ArrivedChunk[] = [];
+        const inAttached: ArrivedChunk[] = [];
+        const disposeWindow = conn.attachBytesSink(
+          makeRecordingSink(inWindow),
+          {
+            scope: windowScope(windowId),
+          },
+        );
+        const disposeAttached = conn.attachBytesSink(
+          makeRecordingSink(inAttached),
+          { scope: sessionScope(attachedId) },
+        );
+        tmux(socketName, ["unlink-window", "-t", `${other}:@${windowId}`]);
+        // Replies in order: the unlink's notifications have arrived and their
+        // queries have settled before the output is provoked.
+        await conn.execute("display-message -p settled");
+        await sendOutputToPane(conn, paneId);
+
+        const marker = `scope-test-${paneId}`;
+        await pollUntil(
+          () =>
+            textOf(inWindow, paneId).includes(marker) &&
+            textOf(inAttached, paneId).includes(marker),
+        );
+        disposeWindow();
+        disposeAttached();
+      }, 20000);
+    },
+  );
 }

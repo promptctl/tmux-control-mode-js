@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { TmuxClient, spawnTmux } from "@promptctl/tmux-control-mode-js";
 import {
   TmuxCommandError,
+  TransportClosedError,
   windowScope,
 } from "@promptctl/tmux-control-mode-js/browser";
 import { pollUntil, tmux } from "../../../tests/helpers/integration.ts";
@@ -27,8 +28,6 @@ import {
 import type { ClientToServer, ServerToClient } from "../shared/protocol.ts";
 import { WebSocketBridge } from "./ws-client.ts";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
-
-const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
 type Listener = (event?: { data?: unknown }) => void;
 
@@ -130,6 +129,7 @@ async function openBridged(
       socket.deliverFrame({
         kind: "error",
         id: msg.id,
+        code: "BRIDGE_INTERNAL",
         message: `the move cases send no ${msg.kind}`,
       });
     }
@@ -204,6 +204,37 @@ describe("BridgePaneStreamClient command seam", () => {
     }
   });
 
+  it("a command the server's lost tmux connection could not carry retires the router's connection before the socket closes, so it reports no topology error", async () => {
+    const { bridge, conn, socket } = page();
+    try {
+      const reported: Error[] = [];
+      conn.on("topology-error", (ev) => reported.push(ev.error));
+      socket.onSend = (msg) => {
+        if (msg.kind !== "execute") return;
+        // The server's tmux client ended with this command in flight.
+        void replyToCommand(
+          {
+            execute: () =>
+              Promise.reject(new TransportClosedError("tmux exited")),
+          } as unknown as TmuxClient,
+          msg,
+        ).then((f) => socket.deliverFrame(f));
+      };
+      socket.open();
+      socket.deliverFrame({ kind: "ready" });
+      await settle();
+
+      conn.attachBytesSink(
+        { write: () => undefined, end: () => undefined },
+        { scope: windowScope(1) },
+      );
+      await settle();
+      expect(reported).toEqual([]);
+    } finally {
+      bridge.disconnect();
+    }
+  });
+
   it("retires the router's connection before consumers hear it closed, so a window sink attached then asks nothing of it", async () => {
     const { bridge, conn, socket } = page();
     try {
@@ -232,6 +263,4 @@ describe("BridgePaneStreamClient command seam", () => {
   });
 });
 
-describe.skipIf(!RUN_INTEGRATION)("web-multiplexer pane-stream bridge", () => {
-  describeTopologyMoves("BridgePaneStreamClient", openBridged);
-});
+describeTopologyMoves("BridgePaneStreamClient", openBridged);

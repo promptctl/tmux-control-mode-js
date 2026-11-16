@@ -183,9 +183,12 @@ export class SearchStore {
 
       runInAction(() => {
         for (const { paneId, resp } of captures) {
-          // A pane that closed between list and capture fails its capture —
-          // expected churn, skip it. Genuine errors still surface above.
-          if (!resp.success) continue;
+          // A pane that closed between list and capture fails its capture, so
+          // a failed capture leaves its pane out of the index, said aloud.
+          if (!resp.success) {
+            console.warn(`[search] capture of %${paneId} failed`, resp.output);
+            continue;
+          }
           for (const text of resp.output) this.appendLine(paneId, text);
         }
         this.backfilled = true;

@@ -570,9 +570,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
   }, 20000);
 });
 
-describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
-  describeTopologyMoves("TmuxClient", async (socketName, session) => {
-    const client = await attachSession(socketName, session);
-    return { conn: client, close: () => client.close() };
-  });
+describeTopologyMoves("TmuxClient", async (socketName, session) => {
+  const client = await attachSession(socketName, session);
+  return { conn: client, close: () => client.close() };
 });

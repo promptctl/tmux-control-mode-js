@@ -148,22 +148,26 @@ describe("WebSocketBridge — pending settlement on close", () => {
     }).not.toThrow();
   });
 
-  it("rejects a pending call when the server sends a correlated ErrorFrame (a bridge-dispatch failure, distinct from a tmux %error), not a hang", async () => {
-    const { bridge, socket } = connectedBridge();
+  it.each(["BRIDGE_INTERNAL", "BRIDGE_CLOSED"] as const)(
+    "rejects a pending call with the code of a correlated ErrorFrame (%s), distinct from a tmux %%error, not a hang",
+    async (code) => {
+      const { bridge, socket } = connectedBridge();
 
-    const p = bridge.execute("list-sessions");
-    const sentRequest = JSON.parse(socket.sent[0]) as { id: string };
-    socket.fireMessage(
-      JSON.stringify({
-        kind: "error",
-        id: sentRequest.id,
-        message: "dispatch failed",
-      }),
-    );
+      const p = bridge.execute("list-sessions");
+      const sentRequest = JSON.parse(socket.sent[0]) as { id: string };
+      socket.fireMessage(
+        JSON.stringify({
+          kind: "error",
+          id: sentRequest.id,
+          code,
+          message: "dispatch failed",
+        }),
+      );
 
-    await expect(p).rejects.toBeInstanceOf(BridgeError);
-    await expect(p).rejects.toMatchObject({ code: "BRIDGE_INTERNAL" });
-  });
+      await expect(p).rejects.toBeInstanceOf(BridgeError);
+      await expect(p).rejects.toMatchObject({ code });
+    },
+  );
 
   it("disconnect() clears the outbox so a message queued but never drained isn't sent stale on the next connect()", () => {
     const bridge = new WebSocketBridge();

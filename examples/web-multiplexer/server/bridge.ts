@@ -18,6 +18,7 @@ import { spawnTmux } from "@promptctl/tmux-control-mode-js";
 import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
 import { serverScope } from "@promptctl/tmux-control-mode-js";
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
+import { isConnectionGone } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
 import { asCommandResponse } from "../shared/command-response.js";
@@ -139,9 +140,12 @@ export function replyToCommand(
       : sendKeys(client, msg.target, msg.keys);
   return reply.catch(asCommandResponse).then(
     (response): ServerToClient => ({ kind: "response", id: msg.id, response }),
+    // [LAW:single-enforcer] The library's isConnectionGone decides what a
+    //   lost connection is, so the page retires it as the library would.
     (err: unknown): ServerToClient => ({
       kind: "error",
       id: msg.id,
+      code: isConnectionGone(err) ? "BRIDGE_CLOSED" : "BRIDGE_INTERNAL",
       message: err instanceof Error ? err.message : String(err),
     }),
   );
@@ -272,6 +276,7 @@ function handleConnection(ws: WebSocket): void {
       send({
         kind: "error",
         id: msg.id,
+        code: "BRIDGE_INTERNAL",
         message: err instanceof Error ? err.message : String(err),
       });
     }

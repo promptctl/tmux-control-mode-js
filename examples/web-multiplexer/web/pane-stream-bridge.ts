@@ -78,9 +78,10 @@ export class BridgePaneStreamClient
   private readonly router = new TopologyRouter(new DeliveryQueue(), (error) =>
     this.emit({ type: "topology-error", error }),
   );
-  // Tells the router the current connection is gone. Before the first ready
-  // there is none, so there is nothing to retire.
-  private retire: () => void = () => undefined;
+  // The current connection's runner, which names it to the router. Retiring
+  // a runner the router no longer holds as current changes nothing, so before
+  // the first ready this one retires nothing.
+  private run: RunCommand = (command) => this.execute(command);
 
   constructor(private readonly bridge: TmuxBridge) {
     // [LAW:dataflow-not-control-flow] One bridge subscription fans out to
@@ -108,22 +109,23 @@ export class BridgePaneStreamClient
       //   after `closed`, and each PaneStream keeps its sink across that, so
       //   leaving `ready` is a lost connection, never the router's close
       //   (which ends every sink for good).
-      this.retire();
-      this.retire = () => undefined;
+      this.router.onTransportLost(this.run);
       if (state === "ready") {
-        // The runner names the connection: each ready gets its own, so late
-        // evidence about an earlier connection retires nothing.
+        // Each ready gets a runner of its own, so late evidence about an
+        // earlier connection retires nothing.
         // [LAW:no-ambient-temporal-coupling] A reply saying the connection is
         //   gone can beat the bridge's own state change (Electron's
-        //   BRIDGE_CLOSED races main's `closed` over IPC); it retires the
-        //   connection as the library's renderer runner does.
+        //   BRIDGE_CLOSED races main's `closed` over IPC; the server's error
+        //   frame races its socket's close); it retires the connection, as
+        //   the library's renderer runner does. Both demo bridges answer
+        //   BRIDGE_CLOSED only for a connection that is gone.
         const run: RunCommand = (command) =>
           this.execute(command).catch((err: unknown) => {
             if (isConnectionGone(err)) this.router.onTransportLost(run);
             throw err;
           });
+        this.run = run;
         this.router.onTransportReady(run);
-        this.retire = () => this.router.onTransportLost(run);
       }
       const next = connectionState(state);
       const changed = next.status !== this._connectionState.status;

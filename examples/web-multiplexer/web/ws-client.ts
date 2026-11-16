@@ -329,24 +329,26 @@ export class WebSocketBridge implements TmuxBridge {
       return;
     }
     if (frame.kind === "error") {
+      const id = "id" in frame ? frame.id : undefined;
       this.emitWire({
         dir: "in-error",
         ts: Date.now(),
-        id: frame.id ?? null,
+        id: id ?? null,
         message: frame.message,
       });
-      this.emitError(frame.message, frame.id);
+      this.emitError(frame.message, id);
       // [LAW:no-silent-failure] This ErrorFrame is the bridge server's outer
       // dispatch-failure path (server/bridge.ts) — distinct from a tmux
       // %error, which arrives as a ResponseFrame{success:false}.
       // If it carries the id of a still-pending execute()/sendKeys(), that
       // promise must settle here or it hangs forever (sweepGeneration
       // already ran, or never runs, for a connection that stays open).
-      if (frame.id !== undefined) {
+      // The frame's code says whether the server's connection is gone.
+      if ("id" in frame) {
         const entry = this.pending.get(frame.id);
         if (entry !== undefined) {
           this.pending.delete(frame.id);
-          entry.reject(new BridgeError("BRIDGE_INTERNAL", frame.message));
+          entry.reject(new BridgeError(frame.code, frame.message));
         }
       }
     }
