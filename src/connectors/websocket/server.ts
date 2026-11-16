@@ -521,7 +521,7 @@ class Connection {
   // binary messages in v1.
   // -------------------------------------------------------------------------
   private installWsListeners(): void {
-    this.ws.on("message", (data: Uint8Array | string, isBinary: boolean) => {
+    this.ws.on("message", (data: unknown, isBinary: boolean) => {
       // [LAW:single-enforcer] A connection whose close is decided reads no
       // more frames. `ws` still emits `message` on a CLOSING socket, so
       // without this a hello after a fatal would authenticate and build a
@@ -535,7 +535,13 @@ class Connection {
         );
         return;
       }
-      this.onFrame(typeof data === "string" ? data : wsText.decode(data));
+      if (typeof data === "string") this.onFrame(data);
+      else if (data instanceof Uint8Array) this.onFrame(wsText.decode(data));
+      else
+        this.sendFatalAndClose(
+          "BRIDGE_PROTOCOL_ERROR",
+          `a text frame's payload must be a string or bytes, got ${Object.prototype.toString.call(data)}`,
+        );
     });
 
     this.ws.on("close", (code: number, reason: Uint8Array | string) => {

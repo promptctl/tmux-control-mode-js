@@ -56,6 +56,8 @@ interface FakeWs extends ServerWebSocketLike {
   setBuffered(n: number): void;
   feedClient(frame: object): void;
   feedBinary(bytes: Uint8Array): void;
+  // A text frame whose payload the transport hands over in a shape of its own.
+  feedTextPayload(data: unknown): void;
   fireClose(code?: number, reason?: string): void;
   fireError(err: Error): void;
   // Whether the peer behind an OPEN socket answers pings. Default true (a
@@ -93,7 +95,7 @@ function createFakeWs(
     textShape === "bytes" ? utf8.encode(s) : s;
   let buffered = 0;
   interface Listeners {
-    message?: (data: Uint8Array | string, isBinary: boolean) => void;
+    message?: (data: unknown, isBinary: boolean) => void;
     close?: (code: number, reason: Uint8Array | string) => void;
     error?: (err: Error) => void;
     pong?: () => void;
@@ -130,6 +132,9 @@ function createFakeWs(
     },
     feedBinary(bytes) {
       listeners.message?.(bytes, true);
+    },
+    feedTextPayload(data) {
+      listeners.message?.(data, false);
     },
     fireClose(code = 1000, reason = "") {
       readyState = 3;
@@ -1645,6 +1650,29 @@ describe.each<TextShape>(["bytes", "string"])(
     });
   },
 );
+
+describe("WebSocket bridge — a text frame's payload", () => {
+  it("neither a string nor bytes is a protocol error naming what arrived", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    ws.feedTextPayload(new ArrayBuffer(4));
+    expect(fatalFrames(ws)).toEqual([
+      {
+        k: "error",
+        fatal: true,
+        error: {
+          code: "BRIDGE_PROTOCOL_ERROR",
+          message: expect.stringMatching(/ArrayBuffer/) as string,
+        },
+      },
+    ]);
+  });
+});
 
 describe("WebSocket bridge — upstream close", () => {
   it("closes the socket with a fatal naming the upstream; the in-flight call's reply is recorded but never reaches the closing socket", async () => {

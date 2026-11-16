@@ -87,7 +87,10 @@ try {
   }
 
   const lines = output.split("\n");
-  const diagnostics = lines.filter((l) => l.includes("error TS"));
+  // A diagnostic's elaboration (an assignability chain) is its indented lines.
+  const diagnostics = lines.filter(
+    (l) => l.includes("error TS") || /^\s+\S/.test(l),
+  );
   // --listFiles prints "/"-separated paths on every platform.
   const nodeTypes = lines.filter((l) => l.includes("/@types/node/"));
 
