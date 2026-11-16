@@ -300,6 +300,51 @@ describe("TopologyRouter — topology race protection (single epoch mechanism)",
     router.dispatchBytes(makeChunk(1));
     expect(windowSink.chunks).toHaveLength(0);
   });
+
+  it("a bootstrap that succeeds after its connection was lost does not seed", async () => {
+    const router = newRouter();
+    let resolveListPanes!: (r: CommandResponse) => void;
+    const run = () =>
+      new Promise<CommandResponse>((res) => {
+        resolveListPanes = res;
+      });
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    router.onTransportReady(run); // bootstrap starts, hangs
+
+    router.onTransportLost(run);
+    resolveListPanes(makeOkResponse(["%1 @10 $100"]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+  });
+
+  it("a window refresh that succeeds after its connection was lost does not place its panes", async () => {
+    const router = newRouter();
+    let resolveRefresh!: (r: CommandResponse) => void;
+    const run = (cmd: string) =>
+      cmd.includes("list-panes -t")
+        ? new Promise<CommandResponse>((res) => {
+            resolveRefresh = res;
+          })
+        : Promise.resolve(makeOkResponse());
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    router.onTransportReady(run);
+    await Promise.resolve();
+    await Promise.resolve();
+    router.handleNotification({ type: "window-add", windowId: 10 }); // refresh hangs
+
+    router.onTransportLost(run);
+    resolveRefresh(makeOkResponse(["%1 @10 $100"]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

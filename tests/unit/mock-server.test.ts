@@ -179,6 +179,7 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     expect(client.detach()).toEqual({
       ok: false,
       reason: "transport closed",
+      closing: true,
     });
   });
 
@@ -204,6 +205,7 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     expect(server.send("list-windows\n")).toEqual({
       ok: false,
       reason: "transport closed",
+      closing: true,
     });
     expect(server.sentCommands).not.toContain("list-windows");
   });

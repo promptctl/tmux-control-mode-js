@@ -820,6 +820,15 @@ export class TopologyEpochTracker {
     return this.latestBootstrapStartGen;
   }
 
+  /**
+   * Call when the connection the queries ran on is lost or closed. Every
+   * query in flight is superseded on both paths, as by a bootstrap start, and
+   * none replaces it: the next connection's bootstrap owns the outcome.
+   */
+  connectionLost(): void {
+    this.startBootstrap();
+  }
+
   /** Call before applying seed(). Returns false if a newer event superseded this query. */
   isBootstrapCurrent(gen: number): boolean {
     return this.bootstrapGen === gen;

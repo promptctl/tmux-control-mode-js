@@ -1675,6 +1675,37 @@ describe("WebSocket bridge — a text frame's payload", () => {
 });
 
 describe("WebSocket bridge — upstream close", () => {
+  it("a call refused while the upstream tmux is dying gets no result frame; the upstream's close ends the connection", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const bridge = createWebSocketBridge({ createClient: () => client });
+    const ws = connectRunning(bridge);
+    await flush();
+
+    // tmux died: its stdin refuses writes until the child's close lands.
+    t.transport.send = (cmd) => {
+      t.sent.push(cmd);
+      return { ok: false, reason: "stdin failed: EPIPE", closing: true };
+    };
+    ws.feedClient({
+      k: "call",
+      id: "x",
+      method: "execute",
+      args: ["list-windows"],
+    });
+    await flush();
+    await flush();
+    const results = () => readJsonFrames(ws).filter((f) => f.k === "result");
+    expect(results()).toEqual([]);
+
+    t.transport.close();
+    await flush();
+    await flush();
+    expect(results()).toEqual([]);
+    expect(fatalFrames(ws).map((f) => f.error.code)).toEqual(["BRIDGE_CLOSED"]);
+  });
+
   it("closes the socket with a fatal naming the upstream; the in-flight call's reply is recorded but never reaches the closing socket", async () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);

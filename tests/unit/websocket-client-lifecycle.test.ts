@@ -830,6 +830,73 @@ describe("topology across a reconnect", () => {
     expect(errors).toEqual([]);
     await client.close();
   });
+
+  it("reports a refresh a draining bridge refused, and keeps querying on the same connection", async () => {
+    const { client, hub } = makeClient();
+    const errors: unknown[] = [];
+    client.on("topology-error", (ev) => errors.push(ev));
+    void client.connect();
+    hub.open();
+    hub.welcome();
+    await new Promise((r) => setImmediate(r));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+    const ws = hub.sockets[0]!;
+    const queries = () =>
+      sentFrames(ws).filter(
+        (f): f is { k: string; id: string; args: string[] } =>
+          f.k === "call" && f.id !== undefined,
+      );
+    const answer = (id: string, ok: boolean) =>
+      ws.fire("message", {
+        data: encodeServerFrame(
+          ok
+            ? {
+                k: "result",
+                id,
+                ok: true,
+                response: {
+                  commandNumber: 1,
+                  timestamp: 0,
+                  output: [],
+                  success: true,
+                },
+              }
+            : {
+                k: "result",
+                id,
+                ok: false,
+                error: { code: "BRIDGE_CLOSED", message: "server draining" },
+              },
+        ),
+      });
+    const windowAdd = (windowId: number) =>
+      ws.fire("message", {
+        data: encodeServerFrame({
+          k: "event",
+          msg: { type: "window-add", windowId },
+        }),
+      });
+
+    answer(queries()[0]!.id, true); // the bootstrap
+    await new Promise((r) => setImmediate(r));
+    windowAdd(5);
+    await new Promise((r) => setImmediate(r));
+    const refresh = queries().at(-1)!;
+    expect(refresh.args[0]).toMatch(/^list-panes -t @5/);
+    answer(refresh.id, false);
+    await new Promise((r) => setImmediate(r));
+    expect(errors).toHaveLength(1);
+
+    windowAdd(6);
+    await new Promise((r) => setImmediate(r));
+    expect(queries().some((q) => /^list-panes -t @6/.test(q.args[0]!))).toBe(
+      true,
+    );
+    await client.close();
+  });
 });
 
 // ---------------------------------------------------------------------------

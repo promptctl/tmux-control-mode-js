@@ -132,7 +132,11 @@ export class MockTmuxServer implements TmuxTransport {
     // [LAW:no-silent-failure] A closed mock refuses like a dead tmux would —
     // the seam's contract, not a test convenience.
     if (this.closeGate.state().closed) {
-      return { ok: false, reason: this.closeGate.deniedSendReason() };
+      return {
+        ok: false,
+        reason: this.closeGate.deniedSendReason(),
+        closing: true,
+      };
     }
     this.inputBuffer += command;
 

@@ -116,6 +116,7 @@ describe("spawnTmux lifecycle seam", () => {
     expect(result).toEqual({
       ok: false,
       reason: "transport closed: exit 3",
+      closing: true,
     });
   });
 
@@ -142,6 +143,7 @@ describe("spawnTmux lifecycle seam", () => {
     await until(() => !transport.send("list-windows").ok, "EPIPE to surface");
     const refused = transport.send("list-windows");
     expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({ closing: true });
     if (!refused.ok) expect(refused.reason).toMatch(/EPIPE/);
     // The child never exited — the loud refusal came from the stdin failure,
     // not from a close dispatch.

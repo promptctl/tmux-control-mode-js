@@ -46,9 +46,23 @@ describe("websocketTransport", () => {
     const ws = createFake();
     ws.readyState = 0; // CONNECTING — a real ws.send here throws InvalidStateError
     const t = websocketTransport(ws);
+    // Still connecting has lost nothing: the refusal is not the transport ending.
     expect(t.send("list-sessions")).toEqual({
       ok: false,
       reason: "websocket not open (readyState 0)",
+      closing: false,
+    });
+    expect(ws.sent).toEqual([]);
+  });
+
+  it("send while the socket is closing refuses as the transport ending", () => {
+    const ws = createFake();
+    ws.readyState = 2; // CLOSING — the close event is guaranteed to follow
+    const t = websocketTransport(ws);
+    expect(t.send("list-sessions")).toEqual({
+      ok: false,
+      reason: "websocket not open (readyState 2)",
+      closing: true,
     });
     expect(ws.sent).toEqual([]);
   });
@@ -60,6 +74,7 @@ describe("websocketTransport", () => {
     expect(t.send("list-sessions")).toEqual({
       ok: false,
       reason: "transport closed: abnormal",
+      closing: true,
     });
     expect(ws.sent).toEqual([]);
   });
@@ -73,7 +88,25 @@ describe("websocketTransport", () => {
     expect(t.send("list-sessions")).toEqual({
       ok: false,
       reason: "websocket send failed: clone failure",
+      closing: true,
     });
+  });
+
+  it("a send throw closes the socket, and the close reports the send failure", () => {
+    const ws = createFake();
+    ws.send = () => {
+      throw new Error("clone failure");
+    };
+    const t = websocketTransport(ws);
+    const reasons: (string | undefined)[] = [];
+    t.onClose((r) => reasons.push(r));
+    t.send("list-sessions");
+    // The refusal promised a close; the socket it gave up on must close.
+    expect(ws.closed).toBe(true);
+    // A locally initiated close carries no code from the peer (1005); the
+    // reason the transport gave the socket up for is what onClose reports.
+    ws.emitClose(1005, "");
+    expect(reasons).toEqual(["websocket send failed: clone failure"]);
   });
 
   it("a caught send throw is remembered — a later send refuses without calling ws.send again", () => {
@@ -88,6 +121,7 @@ describe("websocketTransport", () => {
     expect(t.send("list-sessions")).toEqual({
       ok: false,
       reason: "websocket send failed: clone failure",
+      closing: true,
     });
     expect(calls).toBe(1);
   });
@@ -156,7 +190,11 @@ describe("websocketTransport", () => {
     ws.emitClose(1000, "");
     expect(captured).toBeUndefined();
     // The post-close refusal likewise reads as a plain clean close.
-    expect(t.send("x")).toEqual({ ok: false, reason: "transport closed" });
+    expect(t.send("x")).toEqual({
+      ok: false,
+      reason: "transport closed",
+      closing: true,
+    });
   });
 
   it("close event with no reason but a code surfaces the code", () => {

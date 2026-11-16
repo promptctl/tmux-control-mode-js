@@ -49,7 +49,8 @@ class FakeTransport implements TmuxTransport {
   private dataCb: ((chunk: string) => void) | undefined;
 
   send(command: string): SendResult {
-    if (this.closed) return { ok: false, reason: "transport closed" };
+    if (this.closed)
+      return { ok: false, reason: "transport closed", closing: true };
     this.sent.push(command);
     return { ok: true };
   }

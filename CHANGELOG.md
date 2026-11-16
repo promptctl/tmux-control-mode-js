@@ -29,6 +29,9 @@ All notable changes to this project are documented here. Format follows
 - A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the
   client's size methods clear the `ignore-size` flag `watchServerArgs` sets,
   and the watcher resizes windows.
+- A `SendResult` refusal states `closing`: `true` when the transport is
+  ending (its `onClose` has fired or will, and it refuses every later send),
+  `false` otherwise. A `TmuxTransport` of your own must set it.
 
 ### Added
 
@@ -45,6 +48,13 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A command sent after tmux died but before its connection closed is no
+  longer refused as one failed command: it settles at the close with
+  `TransportClosedError` and the connection's end. So a window event read in
+  that window reports no `topology-error` and sends no recovery query, and a
+  bridge sends its browser no `BRIDGE_CLOSED` result ahead of the connection's
+  own close. A topology query answered after its connection was lost no
+  longer seeds the topology.
 - A page that closes without `dispose()` no longer leaves its window size on
   the bridge's tmux client. Each bridge peer's sizes are a claim on the
   client the pages share, withdrawn when its socket closes or its Electron

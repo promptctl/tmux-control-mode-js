@@ -339,7 +339,12 @@ export class TmuxClient
         // violating transport that returns a non-SendResult value throws
         // here too, falling into the same rollback path below rather than
         // leaking this entry via an uncaught TypeError.
-        if (!sent.ok) {
+        // A refusal from a closing transport stays queued instead, like a
+        // command tmux took and never answered: the close settles it with
+        // the connection's true end, after the router has retired, so a
+        // dying connection never reads as one refused command. No %begin
+        // can claim it, because every later send is refused too.
+        if (!sent.ok && !sent.closing) {
           this.dropPending(entry);
           reject(new TransportSendError(sent.reason));
         }

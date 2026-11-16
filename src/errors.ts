@@ -91,7 +91,8 @@ export class TransportSendError extends Error {
 
 /**
  * Thrown via Promise rejection when a command was accepted by the transport
- * (queued, or already inflight awaiting `%end`/`%error`) but the transport
+ * (queued, or already inflight awaiting `%end`/`%error`), or refused by a
+ * transport that was closing (`SendResult.closing`), and the transport
  * closed before tmux ever replied. Distinct from {@link TransportSendError}
  * (the transport refused the command outright — it never left this process)
  * and {@link TmuxCommandError} (tmux replied, and the reply was `%error`):
