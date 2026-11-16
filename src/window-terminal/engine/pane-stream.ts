@@ -322,8 +322,7 @@ export class PaneStream implements ReseedTarget {
       // A pause belonged to the connection that carried it.
       this.paused = false;
       // So did the size report: the new connection's subscription has
-      // reported nothing yet, and may never report this pane (a new control
-      // client whose session does not hold it).
+      // reported nothing yet.
       this.reported = null;
       // The pane moved while we were disconnected: the cache and any
       // capture-pane in flight are pre-reconnect pictures, so the
@@ -410,23 +409,21 @@ export class PaneStream implements ReseedTarget {
     getScheduler(this.client).register(this);
   }
 
-  // Per-pane width;height in one subscription (single message,
-  // semicolon-separated) so tmux performs the layout walk for us.
-  // tmux sends the subscription's first value at its next check (up to a
-  // second away), then each change, but only for a pane whose window is in
-  // the control client's session; for any other pane it sends nothing, and
-  // each seed's size is all the sink gets.
+  // The pane's width;height as one subscription, so tmux performs the layout
+  // walk for us. tmux sends its first value at its next check (up to a second
+  // away), then each change. A subscription scoped to the pane is walked only
+  // over the control client's own session, so a pane in another session would
+  // never be reported; scoped to the session, the format finds the pane
+  // server-wide instead, wherever it lives or moves.
+  // [LAW:one-source-of-truth] One report for every pane, in or out of the
+  //   client's session, so `reported` has one writer.
   // [LAW:no-silent-failure] A failed subscribe means tmux will never report
   //   this pane's geometry. `reportError` lifts the failure to the 'error'
   //   seam (classifying connection-gone as the quiet, reconnect-re-driven
   //   case).
   private subscribeSize(): void {
     void this.client
-      .subscribeRaw(
-        this.subscriptionName,
-        `%${this.paneId}`,
-        "#{pane_width};#{pane_height}",
-      )
+      .subscribeRaw(this.subscriptionName, "", paneSizeFormat(this.paneId))
       .catch((err: unknown) => this.reportError("subscribe", err));
   }
 
@@ -466,8 +463,7 @@ export class PaneStream implements ReseedTarget {
   }
 
   // The size the stream holds the pane at: tmux's report once there is one,
-  // else the newest capture's (a pane outside the control client's session
-  // is never reported, and any other waits up to a second for its first).
+  // else the newest capture's (the first report is up to a second away).
   // [LAW:one-source-of-truth] A capture never outranks a report: tmux keeps
   //   a subscription quiet while its value is the one it last sent, so only
   //   that value says what tmux's silence means.
@@ -909,7 +905,6 @@ export class PaneStream implements ReseedTarget {
     ev: TmuxEventMap["subscription-changed"],
   ): void {
     if (ev.name !== this.subscriptionName) return;
-    if (ev.paneId !== this.paneId) return;
     if (this.currentState === "disposed") return;
     const dims = parseDimensions(ev.value);
     if (dims === null) return;
@@ -978,9 +973,23 @@ export class PaneStream implements ReseedTarget {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
+// Every pane on the server, by session and window, giving `w;h,` for the one
+// pane: once per session its window is linked into. `#,` because a bare comma
+// inside a loop separates its arguments.
+function paneSizeFormat(paneId: number): string {
+  return `#{S:#{W:#{P:#{?#{==:#{pane_id},%${paneId}},#{pane_width};#{pane_height}#,,}}}}`;
+}
+
+// [LAW:parse-dont-validate] The shape `paneSizeFormat` produces: one or more
+// identical `w;h,` entries. Anything else, the empty value of a pane that is
+// gone included, is no size.
 function parseDimensions(value: string): Grid | null {
-  const [width, height, ...rest] = value.split(";");
-  return rest.length === 0 ? parseGrid(width, height) : null;
+  const entries = value.split(",");
+  const [entry, ...rest] = entries.slice(0, -1);
+  if (entries.at(-1) !== "" || entry === undefined) return null;
+  if (rest.some((other) => other !== entry)) return null;
+  const [width, height, ...extra] = entry.split(";");
+  return extra.length === 0 ? parseGrid(width, height) : null;
 }
 
 // Size `sink` to `grid`, when the stream knows one.

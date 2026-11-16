@@ -5,9 +5,9 @@
 //
 //  1. capture-pane + display-message round-trip during seed produces
 //     a non-empty seed payload at the sink.
-//  2. Per-pane format subscription (`pane_width;pane_height`) emits
-//     a `subscription-changed` event whose value the stream parses into
-//     a `sink.resize(cols, rows)` call when the pane geometry changes.
+//  2. The pane-size format subscription emits a `subscription-changed` event
+//     whose value the stream parses into a `sink.resize(cols, rows)` call
+//     when the pane geometry changes, wherever the pane's session is.
 //
 // [LAW:verifiable-goals] Both gates are bounded; both produce a deterministic
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
@@ -54,6 +54,15 @@ async function paneSize(
   const m = (r.output[0] ?? "").match(/^(\d+) (\d+)$/);
   if (m === null) throw new Error(`unexpected pane size reply: ${r.output}`);
   return { cols: Number(m[1]), rows: Number(m[2]) };
+}
+
+async function paneIn(client: TmuxClient, target: string): Promise<number> {
+  const r = await client.execute(
+    `display-message -p -t ${target} '#{pane_id}'`,
+  );
+  const m = (r.output[0] ?? "").match(/^%(\d+)$/);
+  if (m === null) throw new Error(`unexpected pane id reply: ${r.output}`);
+  return Number(m[1]);
 }
 
 class CollectorSink implements TerminalSink {
@@ -145,7 +154,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(cursor!.row).toBeGreaterThanOrEqual(0);
     }, 15000);
 
-    it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
+    it("the pane-size subscription fires sink.resize on geometry change", async () => {
       session = uniqueName("size");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
@@ -194,18 +203,12 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);
 
-    it("draws a pane outside the client's session at its size, which tmux never reports", async () => {
-      // tmux sends a size subscription's values only for a pane whose window
-      // is in the control client's session, so this pane's size can come
-      // only with its seed.
+    it("draws a pane outside the client's session at its size, and redraws it at each new size", async () => {
       session = uniqueName("near");
       client = await createSession(socket, session);
       const far = uniqueName("far");
       await client.execute(`new-session -d -s ${far} -x 100 -y 30`);
-      const r = await client.execute(
-        `display-message -p -t ${far}: '#{pane_id}'`,
-      );
-      const paneId = Number((r.output[0] ?? "").replace(/^%/, ""));
+      const paneId = await paneIn(client, `${far}:`);
       const size = await paneSize(client, paneId);
       expect(size.cols).toBe(100);
 
@@ -221,6 +224,47 @@ describe.skipIf(!RUN_INTEGRATION)(
         "PaneStream never went live",
       );
       expect(order).toEqual([`resize(${size.cols}x${size.rows})`, "seed"]);
+
+      // tmux resizes the pane; the sink takes the new size and a picture
+      // taken at it.
+      await client.execute(`resize-window -t ${far}: -x 120 -y 40`);
+      const resized = await paneSize(client, paneId);
+      expect(resized.cols).toBe(120);
+      await readUntil(
+        () => order.slice(2),
+        (since) =>
+          since.join(" ") === `resize(${resized.cols}x${resized.rows}) seed`,
+        "the out-of-session pane never redrew at its new size",
+      );
+    }, 15000);
+
+    it("follows a pane that leaves the client's session", async () => {
+      session = uniqueName("near");
+      client = await createSession(socket, session);
+      await client.execute(`new-window -d -t ${session}:`);
+      const paneId = await paneIn(client, `${session}:1`);
+      const sink = new CollectorSink();
+      stream = new PaneStream({ client, paneId });
+      stream.attach(sink);
+      // tmux's report of the pane while it is in the session.
+      const before = await paneSize(client, paneId);
+      await readUntil(
+        () => sink.resizeCalls.at(-1),
+        (last) => last?.cols === before.cols && last.rows === before.rows,
+        "no report of the in-session pane reached the sink",
+      );
+
+      const far = uniqueName("far");
+      await client.execute(`new-session -d -s ${far} -x 100 -y 30`);
+      await client.execute(`move-window -s ${session}:1 -t ${far}:`);
+      await client.execute(`resize-window -t %${paneId} -x 120 -y 40`);
+      const after = await paneSize(client, paneId);
+      expect(after.cols).toBe(120);
+      await readUntil(
+        () => sink.resizeCalls.at(-1),
+        (last) => last?.cols === after.cols && last.rows === after.rows,
+        "the pane's resize after it left the session never reached the sink",
+      );
     }, 15000);
   },
 );
