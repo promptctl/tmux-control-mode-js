@@ -1,7 +1,7 @@
 // examples/web-multiplexer/electron/main.ts
 // Electron main-process entry for the web-multiplexer demo.
 //
-//   1. On app.whenReady, prune dead sockets in /tmp/tmux-$UID/ (skip
+//   1. On app.whenReady, prune dead sockets in $TMUX_TMPDIR/tmux-$UID/ (skip
 //      `default`) so the renderer's socket picker can trust the
 //      directory listing without re-probing liveness.
 //   2. Create-or-attach a dedicated tmux session and track it as ours;

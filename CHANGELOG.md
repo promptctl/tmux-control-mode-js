@@ -21,9 +21,11 @@ All notable changes to this project are documented here. Format follows
 - `tmuxSocketDir()` (and so `listTmuxSocketNames()`) honors `TMUX_TMPDIR`
   as tmux does: `$TMUX_TMPDIR/tmux-<UID>`, or `/tmp/tmux-<UID>` when it is
   unset or empty. It named `/tmp/tmux-<UID>` whatever the environment said.
-- `disableCrossSessionLayoutChange()` resolves when the connection is
-  already gone, since the subscription went with it, instead of rejecting
-  with `TransportClosedError`. A refusal from a live tmux still rejects.
+- `disableCrossSessionLayoutChange()` resolves when the subscription
+  already does not exist (`isAlreadyUnsubscribed`): the connection is gone
+  and took it along, or a bridge answers `BRIDGE_UNKNOWN_SUBSCRIPTION`.
+  It used to reject with that error. A refusal from a live tmux still
+  rejects.
 
 ## [0.4.0] - 2026-11-16
 
