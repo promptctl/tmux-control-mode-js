@@ -149,8 +149,8 @@ export function createIpcHub(): IpcHub {
       readonly frame: WebFrameLike;
       readonly listeners: Map<string, Set<RendererHandler>>;
       readonly ipcRenderer: IpcRendererLike;
-      /** The IPC event every message from this document carries. */
-      readonly ipcEvent: IpcMainEventLike;
+      /** A fresh IPC event for each message from this document, as Electron builds. */
+      readonly ipcEvent: () => IpcMainEventLike;
       /** False once the document's frame host was reused by a later one. */
       sends: boolean;
     }
@@ -189,15 +189,16 @@ export function createIpcHub(): IpcHub {
     async function answer(
       from: Document,
       channel: string,
-      payload: unknown[],
+      args: readonly unknown[],
     ): Promise<unknown> {
+      const payload = cloneArgs(args);
       await nextTask();
       const reply = await (async () => {
         const handler = invokeHandlers.get(channel);
         if (handler === undefined) {
           throw new Error(`No handler registered for '${channel}'`);
         }
-        return cloneArgs([await handler(from.ipcEvent, ...payload)])[0];
+        return structuredClone(await handler(from.ipcEvent(), ...payload));
       })().then(
         (value) => ({ ok: true, value }) as const,
         // Electron carries only the message across, under its prefix.
@@ -271,14 +272,14 @@ export function createIpcHub(): IpcHub {
       const ipcRenderer: IpcRendererLike = {
         invoke(channel, ...args) {
           mustSend();
-          return answer(document, channel, cloneArgs(args));
+          return answer(document, channel, args);
         },
         send(channel, ...args) {
           mustSend();
           const payload = cloneArgs(args);
           void nextTask().then(() => {
             for (const h of mainOnListeners.get(channel) ?? [])
-              h(document.ipcEvent, ...payload);
+              h(document.ipcEvent(), ...payload);
           });
         },
         on(channel, listener) {
@@ -297,11 +298,11 @@ export function createIpcHub(): IpcHub {
         frame,
         listeners,
         ipcRenderer,
-        ipcEvent: {
+        ipcEvent: () => ({
           sender,
           processId: frame.processId,
           frameId: frame.routingId,
-        },
+        }),
         sends: true,
       };
       return document;
@@ -316,7 +317,7 @@ export function createIpcHub(): IpcHub {
       sender,
       unheardReplies,
       get event() {
-        return doc.ipcEvent;
+        return doc.ipcEvent();
       },
       destroy() {
         destroyed = true;

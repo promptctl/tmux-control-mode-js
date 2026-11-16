@@ -1909,7 +1909,13 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     // A's page is gone, so nothing hears main's answer; main still settles
     // A's invoke as aborted rather than holding it open.
     expect(a.unheardReplies).toMatchObject([
-      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      {
+        status: "bridge-error",
+        error: {
+          code: "BRIDGE_ABORTED",
+          message: expect.stringMatching(/method=execute/),
+        },
+      },
     ]);
 
     // B's invoke MUST receive its own response (correlation intact).
