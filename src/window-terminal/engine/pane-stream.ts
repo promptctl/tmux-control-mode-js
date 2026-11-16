@@ -1,4 +1,5 @@
 // src/window-terminal/engine/pane-stream.ts
+declare const console: { log(s: string): void };
 //
 // `PaneStream` — environment-agnostic pane data carrier. Owns the
 // idle→seeding→live↔detached→disposed state machine for a single tmux pane,
@@ -379,6 +380,7 @@ export class PaneStream implements ReseedTarget {
     // that says so.
     this.onPause = (ev) => {
       if (ev.paneId !== this.paneId) return;
+      console.log(`[DBG %${this.paneId}] pause`);
       this.paused = true;
       this.markSeedStale();
       if (this.sink === null) return;
@@ -386,6 +388,7 @@ export class PaneStream implements ReseedTarget {
     };
     this.onContinue = (ev) => {
       if (ev.paneId !== this.paneId) return;
+      console.log(`[DBG %${this.paneId}] continue`);
       this.paused = false;
       this.recapture();
     };
@@ -617,6 +620,7 @@ export class PaneStream implements ReseedTarget {
    * attached.
    */
   private recapture(): void {
+    console.log(`[DBG %${this.paneId}] recapture cycle=${this.seedCycle.phase} state=${this.currentState}`);
     this.markSeedStale();
     if (this.seedCycle.phase === "idle") void this.reseed();
   }
@@ -664,6 +668,8 @@ export class PaneStream implements ReseedTarget {
       this.markSeedStale();
     } else if (this.seedCycle.phase === "capturing") {
       this.seedCycle.buffer.push(data);
+    } else {
+      console.log(`[DBG %${this.paneId}] DROPPED ${data.byteLength}B state=${this.currentState}`);
     }
 
     // Schedule the activity-changed flush at most once per window.
@@ -701,6 +707,7 @@ export class PaneStream implements ReseedTarget {
    *   `seed()`, are the only `this.seedCycle` writes besides `markSeedStale`.
    */
   private startSeedCycle(): Promise<void> {
+    console.log(`[DBG %${this.paneId}] startSeedCycle`);
     const cycle: Capturing = {
       phase: "capturing",
       stale: false,
@@ -777,6 +784,7 @@ export class PaneStream implements ReseedTarget {
     // Every failed capture reports, even one dropped below: a failure is true
     // of the pane whether or not this capture is used.
     const reply = this.readCapture(cycle, outcome);
+    console.log(`[DBG %${this.paneId}] capture resolved ok=${outcome.ok} stale=${cycle.stale} paused=${this.paused} begunAt=${reply?.begunAt} buf=${cycle.buffer.length} sink=${this.sink !== null} state=${this.currentState}`);
 
     // A capture taken while tmux has the pane paused misses what tmux dropped:
     // drop it and stay seeding. `%continue` reseeds.
@@ -913,6 +921,7 @@ export class PaneStream implements ReseedTarget {
   }
 
   private setState(next: PaneStreamState): void {
+    console.log(`[DBG %${this.paneId}] state ${this.currentState} -> ${next} cycle=${this.seedCycle.phase}`);
     if (this.currentState === next) return;
     this.currentState = next;
     for (const h of this.listeners["state-changed"]) h(next);

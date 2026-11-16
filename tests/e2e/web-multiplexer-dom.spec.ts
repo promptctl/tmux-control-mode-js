@@ -339,6 +339,10 @@ test("a pane resized again and again holds its history once", async () => {
   const handle = await launchApp();
   try {
     const { page, socket } = handle;
+    const dbg: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("[DBG")) dbg.push(`${Date.now() % 100000} ${m.text()}`);
+    });
     const PANE = tmuxOutput(socket, [
       "display-message",
       "-p",
@@ -448,7 +452,11 @@ test("a pane resized again and again holds its history once", async () => {
     // resize's seed, so a history the seed stacked is in the scrollback by
     // the time the output shows.
     tmux(socket, ["send-keys", "-t", PANE, "printf '%s\\n' do''ne", "Enter"]);
-    await showsRow("done");
+    try {
+      await showsRow("done");
+    } finally {
+      console.log("DBGLOG\n" + dbg.slice(-80).join("\n"));
+    }
     await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
   } finally {
     await disposeApp(handle);
