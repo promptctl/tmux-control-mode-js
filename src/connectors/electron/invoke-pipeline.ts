@@ -27,7 +27,7 @@ import { waitAtMost } from "../wait-at-most.js";
 import {
   BridgeError,
   type InvokeResultEnvelope,
-  type IpcMainInvokeEventLike,
+  type IpcMainEventLike,
 } from "./types.js";
 import type { PendingDispatch, SenderRegistry } from "./sender-registry.js";
 
@@ -53,13 +53,20 @@ function rpcErrorEnvelope(err: RpcError): InvokeResultEnvelope {
   return { status: "bridge-error", error: rpcErrorToBridge(err).toPayload() };
 }
 
-function abortedEnvelope(method: string): InvokeResultEnvelope {
+// Why an invoke was aborted, as its reply states it.
+const NOT_FROM_PAGE_SHOWN =
+  "not sent by the page its WebContents shows (the page has ended, or a " +
+  "subframe sent it)";
+const PEER_TORN_DOWN =
+  "the page's peer was torn down while it ran (the page ended or " +
+  "unregistered, or the bridge was disposed)";
+
+function abortedEnvelope(method: string, reason: string): InvokeResultEnvelope {
   return {
     status: "bridge-error",
     error: new BridgeError(
       "BRIDGE_ABORTED",
-      `dispatch for method=${method} aborted: not sent by the page its ` +
-        `WebContents shows (the page has ended, or a subframe sent it)`,
+      `dispatch for method=${method} aborted: ${reason}`,
     ).toPayload(),
   };
 }
@@ -127,7 +134,7 @@ export class InvokePipeline {
 
   // Bound so `ipcMain.handle(IPC.invoke, pipeline.handle)` keeps its `this`.
   handle = (
-    event: IpcMainInvokeEventLike,
+    event: IpcMainEventLike,
     ...args: unknown[]
   ): Promise<InvokeResultEnvelope> => {
     const p = this.run(event, ...args);
@@ -155,7 +162,7 @@ export class InvokePipeline {
   }
 
   private async run(
-    event: IpcMainInvokeEventLike,
+    event: IpcMainEventLike,
     ...args: unknown[]
   ): Promise<InvokeResultEnvelope> {
     // [LAW:dataflow-not-control-flow] The handler ALWAYS returns an
@@ -179,7 +186,9 @@ export class InvokePipeline {
     // sender to bill and no point running a real command for a page that is
     // gone — the reply is moot. Abort before creating any state, so no peer is
     // minted for the next page to inherit.
-    if (sender === undefined) return abortedEnvelope(methodLabel(args[0]));
+    if (sender === undefined) {
+      return abortedEnvelope(methodLabel(args[0]), NOT_FROM_PAGE_SHOWN);
+    }
     const dispatch: PendingDispatch = { aborted: false };
     sender.pending.add(dispatch);
 
@@ -200,7 +209,7 @@ export class InvokePipeline {
       // [LAW:no-ambient-temporal-coupling] If the sender was torn down while
       // the dispatch was in flight, the abort flag is the single owner of
       // "this reply is moot" — it overrides any outcome.
-      if (dispatch.aborted) return abortedEnvelope(req.method);
+      if (dispatch.aborted) return abortedEnvelope(req.method, PEER_TORN_DOWN);
       return encodeOutcome(outcome);
     } finally {
       sender.pending.delete(dispatch);

@@ -52,11 +52,14 @@ interface ControllableWc {
   readonly event: IpcMainEventLike;
   readonly sends: unknown[];
   setDestroyed(): void;
+  /** Crashed, with `mainFrame` still readable (Electron 34+). */
+  setCrashed(): void;
   pageListenerCount(): number;
 }
 
 function makeControllableWc(): ControllableWc {
   let destroyed = false;
+  let crashed = false;
   const sends: unknown[] = [];
   const attached = new Map<string, Set<() => void>>();
   const attach = (event: string, listener: () => void): void => {
@@ -76,6 +79,7 @@ function makeControllableWc(): ControllableWc {
     isDestroyed() {
       return destroyed;
     },
+    isCrashed: () => crashed,
   };
   return {
     wc,
@@ -83,6 +87,9 @@ function makeControllableWc(): ControllableWc {
     sends,
     setDestroyed() {
       destroyed = true;
+    },
+    setCrashed() {
+      crashed = true;
     },
     pageListenerCount: () =>
       [...attached.values()].reduce((n, set) => n + set.size, 0),
@@ -257,6 +264,18 @@ describe("SenderRegistry — the live page", () => {
     r.failLoad({ commitErrorPage: false });
     expect(bridge.removePeer).not.toHaveBeenCalled();
     expect(registry.getOrCreate(r.event)).toBe(state);
+  });
+
+  it("refuses a crashed renderer's queued message when its frame still reads (Electron 34+)", () => {
+    const bridge = makeBridge();
+    const registry = new SenderRegistry({ bridge, client: makeClient() });
+    const dead = makeControllableWc();
+    mustCreate(registry, dead.event);
+
+    registry.teardown(dead.wc); // as render-process-gone would
+    dead.setCrashed();
+    expect(registry.getOrCreate(dead.event)).toBeUndefined();
+    expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
   });
 
   it("an ack from a page that has ended releases nothing against the next page's peer", () => {

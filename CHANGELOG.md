@@ -18,9 +18,9 @@ All notable changes to this project are documented here. Format follows
   renderer client have it.
 - The bridge wire gains `setWindowSize` and `clearWindowSize`; upgrade server
   and client together.
-- `WebContentsLike` requires `mainFrame` and takes `did-navigate`,
-  `render-process-gone` and `did-fail-load` listeners; `IpcMainEventLike` and
-  `IpcMainInvokeEventLike` require `processId` and `frameId`. Electron's
+- `WebContentsLike` requires `mainFrame` and `isCrashed`, and takes
+  `did-navigate`, `render-process-gone` and `did-fail-load` listeners;
+  `IpcMainEventLike` requires `processId` and `frameId`. Electron's
   `WebContents` and IPC events have them; a hand-written fake needs them.
   `./electron/main` exports these types.
   `WebContentsSink` needs only `send` and `isDestroyed`.

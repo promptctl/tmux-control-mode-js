@@ -17,7 +17,6 @@
 
 import type {
   IpcMainEventLike,
-  IpcMainInvokeEventLike,
   IpcMainLike,
   IpcRendererLike,
   WebContentsLike,
@@ -66,7 +65,7 @@ export interface IpcHub {
 
 export function createIpcHub(): IpcHub {
   type InvokeHandler = (
-    event: IpcMainInvokeEventLike,
+    event: IpcMainEventLike,
     ...args: unknown[]
   ) => unknown | Promise<unknown>;
   type OnHandler = (event: IpcMainEventLike, ...args: unknown[]) => void;
@@ -167,6 +166,9 @@ export function createIpcHub(): IpcHub {
       },
       isDestroyed() {
         return destroyed;
+      },
+      isCrashed() {
+        return crashed;
       },
     };
 

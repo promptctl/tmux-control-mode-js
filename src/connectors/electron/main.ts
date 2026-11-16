@@ -232,7 +232,6 @@ export type {
   BridgeErrorCode,
   BridgeErrorPayload,
   IpcMainEventLike,
-  IpcMainInvokeEventLike,
   IpcMainLike,
   LoadFailedEvent,
   MainBridgeHandle,

@@ -119,6 +119,7 @@ export interface WebContentsLike {
     listener: () => void,
   ): void;
   isDestroyed(): boolean;
+  isCrashed(): boolean;
 }
 
 /** An IPC message as ipcMain receives it: the WebContents and the frame host
@@ -129,15 +130,13 @@ export interface IpcMainEventLike {
   readonly frameId: number;
 }
 
-export type IpcMainInvokeEventLike = IpcMainEventLike;
-
 export type IpcMainOnListener = (
   event: IpcMainEventLike,
   ...args: unknown[]
 ) => void;
 
 export type IpcMainInvokeListener = (
-  event: IpcMainInvokeEventLike,
+  event: IpcMainEventLike,
   ...args: unknown[]
 ) => unknown | Promise<unknown>;
 

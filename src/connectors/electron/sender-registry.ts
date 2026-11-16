@@ -96,21 +96,18 @@ export interface SenderRegistryDeps {
 /**
  * Whether `frame` hosts the page `wc` shows now.
  *
- * [LAW:parse-dont-validate] The one place Electron's two ways of showing no
- * page become `false`: a destroyed WebContents (its `mainFrame` still reads
- * the last host's ids), and — before Electron 34 — a crashed renderer, whose
- * disposed `mainFrame` throws when read until a new document commits.
+ * A destroyed WebContents and a crashed renderer show no page, though their
+ * `mainFrame` may still name the last host (before Electron 34, reading a
+ * crashed one throws), so both are ruled out before `mainFrame` is read.
+ * `isCrashed` turns false once a reload commits a new document.
  */
 function showsFrame(wc: WebContentsLike, frame: WebFrameLike): boolean {
-  if (wc.isDestroyed()) return false;
-  try {
-    const shown = wc.mainFrame;
-    return (
-      shown.processId === frame.processId && shown.routingId === frame.routingId
-    );
-  } catch {
-    return false;
-  }
+  return (
+    !wc.isDestroyed() &&
+    !wc.isCrashed() &&
+    wc.mainFrame.processId === frame.processId &&
+    wc.mainFrame.routingId === frame.routingId
+  );
 }
 
 /** The frame host that sent `event`. */
@@ -189,8 +186,9 @@ export class SenderRegistry {
    */
   register(event: IpcMainEventLike): void {
     const state = this.getOrCreate(event);
-    // [LAW:no-silent-failure] exception: a register from a page that has ended
-    // has no one to answer — nothing to attach, nothing to snapshot.
+    // [LAW:no-silent-failure] exception: a register not sent by the page shown
+    // (it has ended, or a subframe sent it) has no one to answer — `wc.send`
+    // reaches only the main frame's document.
     if (state === undefined) return;
     const wc = state.wc;
     state.isSubscribed = true;

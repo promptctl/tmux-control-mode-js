@@ -14,14 +14,14 @@ import type { TmuxTransport } from "../../src/transport/types.js";
 import { createBridgeConnection } from "../../src/connectors/bridge-connection.js";
 import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js";
 import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js";
-import type { IpcMainInvokeEventLike } from "../../src/connectors/electron/types.js";
+import type { IpcMainEventLike } from "../../src/connectors/electron/types.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 interface Rig {
   readonly pipeline: InvokePipeline;
   readonly registry: SenderRegistry;
-  readonly event: IpcMainInvokeEventLike;
+  readonly event: IpcMainEventLike;
   readonly sent: string[];
   /** Feed a raw control-mode chunk (e.g. a command's %begin/%end reply). */
   feed(chunk: string): void;
@@ -59,7 +59,7 @@ function makeRig(): Rig {
   });
   const registry = new SenderRegistry({ bridge, client });
   const pipeline = new InvokePipeline({ bridge, client, registry });
-  const event: IpcMainInvokeEventLike = createIpcHub().createRenderer().event;
+  const event: IpcMainEventLike = createIpcHub().createRenderer().event;
   return { pipeline, registry, event, sent, feed };
 }
 
