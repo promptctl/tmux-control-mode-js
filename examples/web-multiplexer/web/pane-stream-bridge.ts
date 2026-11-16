@@ -31,6 +31,7 @@ import type {
 import {
   DeliveryQueue,
   TopologyRouter,
+  isConnectionGone,
   subscribeRaw,
   unsubscribe,
 } from "@promptctl/tmux-control-mode-js/browser";
@@ -41,13 +42,8 @@ import type {
   PaneStreamState,
 } from "./window-terminal-internals.ts";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
-import type { ConnState, TmuxBridge } from "./bridge.ts";
-
-function mapConnState(s: ConnState): ConnectionState {
-  if (s === "ready") return { status: "ready" };
-  if (s === "closed") return { status: "closed", reason: "transport-error" };
-  return { status: "connecting" };
-}
+import type { TmuxBridge } from "./bridge.ts";
+import { connectionState } from "./bridge.ts";
 
 // ---------------------------------------------------------------------------
 // BridgePaneStreamClient
@@ -117,11 +113,19 @@ export class BridgePaneStreamClient
       if (state === "ready") {
         // The runner names the connection: each ready gets its own, so late
         // evidence about an earlier connection retires nothing.
-        const run: RunCommand = (command) => this.execute(command);
+        // [LAW:no-ambient-temporal-coupling] A reply saying the connection is
+        //   gone can beat the bridge's own state change (Electron's
+        //   BRIDGE_CLOSED races main's `closed` over IPC); it retires the
+        //   connection as the library's renderer runner does.
+        const run: RunCommand = (command) =>
+          this.execute(command).catch((err: unknown) => {
+            if (isConnectionGone(err)) this.router.onTransportLost(run);
+            throw err;
+          });
         this.router.onTransportReady(run);
         this.retire = () => this.router.onTransportLost(run);
       }
-      const next = mapConnState(state);
+      const next = connectionState(state);
       const changed = next.status !== this._connectionState.status;
       this._connectionState = next;
       if (changed) this.emit({ type: "connection-state", state: next });

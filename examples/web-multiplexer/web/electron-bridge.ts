@@ -29,7 +29,6 @@ import {
 } from "@promptctl/tmux-control-mode-js/browser";
 import type {
   ChunkPayload,
-  ConnectionState,
   EmitterMessage,
 } from "@promptctl/tmux-control-mode-js/browser";
 import type {
@@ -53,18 +52,7 @@ import type {
   WireEntry,
   WireHandler,
 } from "./bridge.ts";
-
-function bridgeState(state: ConnectionState): ConnState {
-  switch (state.status) {
-    case "ready":
-      return "ready";
-    case "closed":
-      return "closed";
-    case "connecting":
-    case "reconnecting":
-      return "connecting";
-  }
-}
+import { bridgeState } from "./bridge.ts";
 
 export class ElectronBridge implements TmuxBridge {
   private readonly ipcRenderer: IpcRendererLike;
@@ -265,15 +253,9 @@ export class ElectronBridge implements TmuxBridge {
       { scope: serverScope },
     );
     this.proxy = proxy;
+    // Ready arrives as main's connection-state snapshot, which main sends
+    // when this proxy registers.
     this.setState("connecting");
-    // Main-side createWindow gates on `session-changed`, so by the time
-    // this runs the underlying TmuxClient is already attached and ready.
-    // Defer the ready transition by one microtask so callers that wire
-    // `onState` synchronously after connect() observe connecting → ready.
-    queueMicrotask(() => {
-      if (this.proxy !== proxy) return;
-      this.setState("ready");
-    });
   }
 
   disconnect(): void {

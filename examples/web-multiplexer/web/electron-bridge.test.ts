@@ -9,7 +9,10 @@
 // `pnpm run build` first.
 
 import { describe, it, expect } from "vitest";
-import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
+import {
+  TmuxCommandError,
+  windowScope,
+} from "@promptctl/tmux-control-mode-js/browser";
 import type {
   IpcRendererLike,
   IpcRendererEventLike,
@@ -18,6 +21,7 @@ import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 import type { ConnState, WireEntry } from "./bridge.ts";
 import type { DemoIpc } from "./demo-ipc.ts";
 import { ElectronBridge } from "./electron-bridge.ts";
+import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 
 const unused = (): Promise<never> =>
   Promise.reject(new Error("not used by these cases"));
@@ -64,6 +68,8 @@ function connectedBridge(envelope: unknown = { status: "ok" }): {
   };
 }
 
+const READY = { type: "connection-state", state: { status: "ready" } };
+
 const settle = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -104,8 +110,12 @@ describe("ElectronBridge command contract", () => {
 });
 
 describe("ElectronBridge state", () => {
-  it("leaves ready when main's tmux client closes", async () => {
+  it("follows main's tmux client: connecting until main says ready, closed when it closes", async () => {
     const { bridge, states, fromMain } = connectedBridge();
+    await settle();
+    expect(states.at(-1)).toBe("connecting");
+
+    fromMain(READY);
     await settle();
     expect(states.at(-1)).toBe("ready");
 
@@ -116,6 +126,31 @@ describe("ElectronBridge state", () => {
     await settle();
 
     expect(states.at(-1)).toBe("closed");
+    bridge.disconnect();
+  });
+});
+
+describe("BridgePaneStreamClient over ElectronBridge", () => {
+  it("a BRIDGE_CLOSED reply that beats main's closed retires the router's connection, so it reports no topology error", async () => {
+    const { bridge, fromMain } = connectedBridge({
+      status: "bridge-error",
+      error: { code: "BRIDGE_CLOSED", message: "main went away" },
+    });
+    fromMain(READY);
+    await settle();
+    const conn = new BridgePaneStreamClient(bridge);
+    const reported: Error[] = [];
+    conn.on("topology-error", (ev) => reported.push(ev.error));
+
+    // A window sink needs topology, so the router bootstraps on the live
+    // connection; main answers BRIDGE_CLOSED before its `closed` arrives.
+    conn.attachBytesSink(
+      { write: () => undefined, end: () => undefined },
+      { scope: windowScope(1) },
+    );
+    await settle();
+
+    expect(reported).toEqual([]);
     bridge.disconnect();
   });
 });

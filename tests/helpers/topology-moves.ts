@@ -18,6 +18,7 @@ import {
   sessionScope,
   windowScope,
   PANE_LIST_FORMAT,
+  parseListReply,
   parsePaneListLine,
 } from "../../src/pane-output.js";
 import type { BytesSink } from "../../src/pane-output.js";
@@ -44,11 +45,9 @@ export interface ArrivedChunk {
 export async function listAllPanes(
   conn: Pick<TmuxConnection, "execute">,
 ): Promise<{ paneId: number; windowId: number; sessionId: number }[]> {
-  const response = await conn.execute(`list-panes -a -F '${PANE_LIST_FORMAT}'`);
-  return response.output.flatMap((line) => {
-    const parsed = parsePaneListLine(line);
-    return parsed !== null ? [parsed] : [];
-  });
+  const command = `list-panes -a -F '${PANE_LIST_FORMAT}'`;
+  const response = await conn.execute(command);
+  return parseListReply(command, response.output, parsePaneListLine);
 }
 
 /** Make the pane print `scope-test-<paneId>`, typed into that pane by id. */
