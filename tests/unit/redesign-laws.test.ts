@@ -35,6 +35,7 @@ import {
   type ServerWebSocketLike,
 } from "../../src/connectors/websocket/types.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { sentinelBlock } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Shared fakes
@@ -276,14 +277,19 @@ describe("fifo-correlation", () => {
     const p1 = client.execute("cmd-alpha");
     const p2 = client.execute("cmd-beta");
 
-    // Wire format: raw command string + newline, no id field, no wrapper.
-    expect(transport.sent[0]).toBe("cmd-alpha\n");
-    expect(transport.sent[1]).toBe("cmd-beta\n");
+    // Wire format: the raw command line, then the sentinel line that ends
+    // it — no id field, no wrapper.
+    expect(transport.sent[0]).toBe(
+      "cmd-alpha\ntmux-control-mode-js-sentinel\n",
+    );
+    expect(transport.sent[1]).toBe("cmd-beta\ntmux-control-mode-js-sentinel\n");
     expect(transport.sent[0]).not.toContain('"id"');
 
     // Inject %begin/%end pairs in order; promises resolve FIFO.
     transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject(sentinelBlock(1000));
     transport.inject("%begin 1001 2 1\n%end 1001 2 1\n");
+    transport.inject(sentinelBlock(1001));
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1.commandNumber).toBe(1);
@@ -311,6 +317,7 @@ describe("fifo-correlation", () => {
     // the failed entry did not leak a slot.
     const p = client.execute("cmd-beta");
     transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject(sentinelBlock(1000));
     expect((await p).commandNumber).toBe(1);
   });
 
@@ -333,6 +340,7 @@ describe("fifo-correlation", () => {
 
     const p = client.execute("cmd-beta");
     transport.inject("%begin 1000 1 1\n%end 1000 1 1\n");
+    transport.inject(sentinelBlock(1000));
     expect((await p).commandNumber).toBe(1);
   });
 });

@@ -16,6 +16,7 @@ import { SenderRegistry } from "../../src/connectors/electron/sender-registry.js
 import { InvokePipeline } from "../../src/connectors/electron/invoke-pipeline.js";
 import type { IpcMainEventLike } from "../../src/connectors/electron/types.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
+import { sentinelBlock } from "./_helpers/wire.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 
 interface Rig {
@@ -103,6 +104,7 @@ describe("InvokePipeline — outcome encoding", () => {
     });
     // First post-greeting command is numbered 1; resolve it successfully.
     feed("%begin 1 1 1\n@0 zsh 1 -\n%end 1 1 1\n");
+    feed(sentinelBlock(1));
 
     await expect(p).resolves.toMatchObject({
       status: "ok",
@@ -116,6 +118,7 @@ describe("InvokePipeline — outcome encoding", () => {
     const p = pipeline.handle(event, { method: "execute", args: ["bogus"] });
     // The command reached tmux, which rejected it with an %error guard block.
     feed("%begin 1 1 1\n%error 1 1 1\n");
+    feed(sentinelBlock(1));
 
     await expect(p).resolves.toMatchObject({ status: "tmux-error" });
   });
@@ -155,6 +158,7 @@ describe("InvokePipeline — destroyed sender", () => {
     // Now the command resolves; the pipeline sees the abort flag and returns
     // BRIDGE_ABORTED instead of delivering the result to a dead renderer.
     feed("%begin 1 1 1\n%end 1 1 1\n");
+    feed(sentinelBlock(1));
 
     await expect(p).resolves.toMatchObject({
       status: "bridge-error",

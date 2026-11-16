@@ -14,6 +14,7 @@ import {
 } from "../../src/connectors/bridge-connection.js";
 import { BridgeError } from "../../src/connectors/errors.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { lineError, lineReply, sentinelBlock } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -58,9 +59,7 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[] = [],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
+  t.feed(lineReply(commandNumber, outputLines));
 }
 
 function feedCommandError(
@@ -68,9 +67,7 @@ function feedCommandError(
   commandNumber: number,
   msg: string,
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  t.feed(msg + "\n");
-  t.feed(`%error ${commandNumber} ${commandNumber} 1\n`);
+  t.feed(lineError(commandNumber, [msg]));
 }
 
 async function flush(): Promise<void> {
@@ -361,6 +358,7 @@ describe("BridgeConnection — resume (Continue) failure", () => {
     expect(continueCount(t, 2)).toBe(1);
     t.feed("%begin 2 2 1\n");
     t.feed("%end 2 2\n");
+    t.feed(sentinelBlock(2));
     await flush();
 
     expect(failures).toHaveLength(1);

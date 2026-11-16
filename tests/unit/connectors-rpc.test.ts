@@ -23,6 +23,7 @@ import {
 } from "../../src/connectors/rpc.js";
 import { dispatchRpcRequest } from "../../src/connectors/rpc-dispatch.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { lineReply, sentinelBlock } from "./_helpers/wire.js";
 
 // ---------------------------------------------------------------------------
 // Fakes — reused minimal transport for dispatch tests
@@ -64,9 +65,7 @@ function feedOk(
   commandNumber: number,
   lines: readonly string[] = [],
 ): void {
-  feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const l of lines) feed(l + "\n");
-  feed(`%end ${commandNumber} ${commandNumber} 1\n`);
+  feed(lineReply(commandNumber, lines));
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +377,7 @@ describe("dispatchRpcRequest — error propagation", () => {
     t.feed("%begin 1 1 1\n");
     t.feed("unknown command\n");
     t.feed("%error 1 1 1\n");
+    t.feed(sentinelBlock(1));
 
     await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(p).rejects.toMatchObject({

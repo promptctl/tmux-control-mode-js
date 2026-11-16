@@ -49,6 +49,15 @@ All notable changes to this project are documented here. Format follows
   its own, and `isLocateCurrent` is false only once something supersedes
   every query. `invalidateWindow` no longer supersedes the window's listings
   in flight: the window refresh you start after it does.
+- `execute()` writes each command line followed by a sentinel line,
+  `tmux-control-mode-js-sentinel`, whose parse error ends the line's reply.
+  A line tmux runs several commands for (`a ; b`, `if-shell`, `source-file`)
+  resolves with all their output, or rejects with the first that failed. A
+  blank or comment-only line is sent and resolves with no output. A command
+  naming the sentinel is refused. A fake transport answers the sentinel line
+  with tmux's `%error` block; `MockTmuxServer` does.
+- A block's `begin` event is announced when the block closes, with its `end`
+  or `error`. The sentinel's block is never announced.
 
 ### Added
 
@@ -68,6 +77,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A line tmux answers with more or fewer than one reply block no longer
+  hands its extra block to the next caller, or takes that caller's: a `;`
+  list, `if-shell`, `source-file`, `run-shell -C` and `%hidden` each settle
+  their own `execute()`. Cross-session layout's hook install was one such
+  line.
 - A pane that leaves a window's layout, by exiting or by moving to a window
   of a session tmux sends no layout for, is asked about alone
   (`list-panes -t %P`), not with `list-panes -a`. That query no longer

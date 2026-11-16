@@ -43,6 +43,8 @@ import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import { MESSAGE_SAMPLES } from "../../src/conformance/samples.js";
 import { isPaneOutput } from "../../src/protocol/types.js";
+import { lineReply, sentinelBlock } from "./_helpers/wire.js";
+import { commandLine } from "../../src/protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -244,9 +246,7 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[] = [],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
+  t.feed(lineReply(commandNumber, outputLines));
 }
 
 function readJsonFrames(ws: FakeWs): ServerFrame[] {
@@ -718,6 +718,7 @@ describe("WebSocket bridge — resume-failure observability", () => {
     t.feed(`%begin 2 2 1\n`);
     t.feed(`no current target\n`);
     t.feed(`%error 2 2 1\n`);
+    t.feed(sentinelBlock(2));
     await flush();
 
     const failures = events.filter((e) => e.kind === "pane-resume-failed");
@@ -1276,6 +1277,7 @@ describe("WebSocket bridge — cross-session layout coverage", () => {
     t.feed(`%begin 1 1 1\n`);
     t.feed(`unknown command: bogus\n`);
     t.feed(`%error 1 1 1\n`);
+    t.feed(sentinelBlock(1));
     await flush();
 
     const frame = readJsonFrames(ws).find(
@@ -1626,7 +1628,7 @@ describe.each<TextShape>(["bytes", "string"])(
         args: ["display-message 'café ✓ 日本'"],
       });
       await flush();
-      expect(t.sent).toContain("display-message 'café ✓ 日本'\n");
+      expect(t.sent).toContain(commandLine("display-message 'café ✓ 日本'"));
     });
 
     it("a peer's non-ASCII close reason is reported as the text it sent", async () => {
@@ -1725,7 +1727,7 @@ describe("WebSocket bridge — upstream close", () => {
       args: ["list-windows"],
     });
     await flush();
-    expect(t.sent).toContain("list-windows\n");
+    expect(t.sent).toContain(commandLine("list-windows"));
     expect(closedEvents(events)).toHaveLength(0);
 
     t.transport.close();

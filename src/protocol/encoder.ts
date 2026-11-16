@@ -186,17 +186,43 @@ export function capturePane(paneId: number): string {
 // per-field refusal below both read this one pattern.
 const COMMAND_LINE_TERMINATOR = /[\n\0]/;
 
+// [LAW:one-source-of-truth] The end of a line execute() writes (SPEC §5.6).
+// tmux writes one reply block per command it runs for a line — none for
+// `%hidden X=1`, two for `a ; b` or `if-shell -F 1 x` — and nothing on the
+// wire says which line a block answers. So every command line is followed by
+// a line naming no tmux command: tmux answers it with exactly one block, its
+// parse error, and runs nothing, fires no hook. That block ends the line.
+// tmux matches a unique command prefix, so the name starts with no command's.
+export const LINE_SENTINEL = "tmux-control-mode-js-sentinel";
+export const LINE_SENTINEL_REPLY = `parse error: unknown command: ${LINE_SENTINEL}`;
+
+/** What execute() writes for `command`: the line, then the sentinel line. */
+export function commandLine(command: string): string {
+  return `${command}\n${LINE_SENTINEL}\n`;
+}
+
 /**
- * Why tmux would not run `command` as one command with one reply, or `null`
- * when it would. A newline splits the line into several commands; a NUL ends
- * it early; an empty line detaches the control client (SPEC §4.1); a blank or
- * comment-only line gets no reply.
+ * Whether a block's output is the sentinel's reply. A CRLF transport leaves a
+ * trailing `\r` run on a response line (see `CommandResponse.output`).
+ */
+export function isSentinelReply(output: readonly string[]): boolean {
+  return (
+    output.length === 1 && output[0].replace(/\r+$/, "") === LINE_SENTINEL_REPLY
+  );
+}
+
+/**
+ * Why execute() must not send `command`, or `null` when it may. A newline
+ * makes tmux read two lines, and an empty one detaches the control client
+ * (SPEC §4.1); a NUL ends the line early; a line naming the sentinel would
+ * end its own reply early.
  */
 export function commandLineFault(command: string): string | null {
   if (COMMAND_LINE_TERMINATOR.test(command)) return "it holds a newline or NUL";
-  const trimmed = command.trim();
-  if (trimmed === "") return "it is empty or blank";
-  return trimmed.startsWith("#") ? "it is only a comment" : null;
+  if (command === "") return "it is empty";
+  return command.includes(LINE_SENTINEL)
+    ? `it names ${LINE_SENTINEL}, which ends every line this client writes`
+    : null;
 }
 
 // The refusal names the field and leaves the value out: an environment value

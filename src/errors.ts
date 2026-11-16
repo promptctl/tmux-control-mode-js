@@ -21,14 +21,15 @@ import type { CommandResponse } from "./protocol/types.js";
 import type { TmuxVersion } from "./tmux-compat.js";
 
 /**
- * Thrown via Promise rejection when a dispatched tmux command receives an
- * `%error` reply instead of `%end`. Every command flows through
+ * Thrown via Promise rejection when a command tmux ran for the line
+ * receives an `%error` reply instead of `%end`: the first that did, as tmux
+ * runs nothing after it in a `;` list. Every command flows through
  * `TmuxClient.execute` (the sole dispatch path), including the command
  * helpers in `./commands/index.ts` that compose on top of it; any of them
  * can reject with this error.
  *
- * The original `CommandResponse` (containing the captured error output) is
- * available on `.response`.
+ * That command's `CommandResponse` (containing the captured error output) is
+ * available on `.response`; output of the line's earlier commands is not.
  *
  * Usage:
  *
@@ -89,7 +90,7 @@ export class TransportSendError extends Error {
 
 /**
  * Thrown via Promise rejection when a command was accepted by the transport
- * (queued, or already inflight awaiting `%end`/`%error`), refused by a
+ * (queued, or with tmux still replying to its line), refused by a
  * transport that was closing (`SendResult.closing`), or issued after the
  * connection closed — the connection ended before tmux ever replied. Only an
  * accepted command may have reached tmux and run. Distinct from
@@ -234,10 +235,10 @@ export class TmuxProtocolError extends Error {
 }
 
 /**
- * `execute()` refused a command tmux would not run as written; the message
- * says why (see `commandLineFault`). A newline's extra replies would answer
- * the commands queued after it, and a NUL makes tmux run only what precedes
- * it and reply success. Nothing was sent.
+ * `execute()` refused a command it cannot send as one line; the message
+ * says why (see `commandLineFault`). An empty line detaches the client, a
+ * NUL makes tmux run only what precedes it and reply success, and a line
+ * naming the sentinel would end its own reply early. Nothing was sent.
  */
 export class TmuxInvalidCommandError extends Error {
   readonly command: string;

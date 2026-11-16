@@ -41,6 +41,7 @@ import {
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
 import { createIpcHub } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
+import { lineReply, sentinelBlock } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
 import {
   refreshClientClearFlags,
@@ -48,6 +49,7 @@ import {
   refreshClientSetFlags,
   refreshClientUnsubscribe,
   refreshClientWindowSize,
+  commandLine,
 } from "../../src/protocol/encoder.js";
 
 // ---------------------------------------------------------------------------
@@ -106,9 +108,7 @@ function feedCommandResponse(
   commandNumber: number,
   outputLines: readonly string[],
 ): void {
-  t.feed(`%begin ${commandNumber} ${commandNumber} 1\n`);
-  for (const line of outputLines) t.feed(line + "\n");
-  t.feed(`%end ${commandNumber} ${commandNumber} 1\n`);
+  t.feed(lineReply(commandNumber, outputLines));
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +508,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     // Reject that bootstrap → the MAIN client emits topology-error locally.
     t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    t.feed(sentinelBlock(1));
     await hub.settled();
 
     // The renderer proxy has its own router and reports its own failures; the
@@ -544,6 +545,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     // Reject that bootstrap invoke with an %error guard block. The rejection
     // round-trips over IPC back to the proxy's router, which reports it.
     t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    t.feed(sentinelBlock(1));
 
     const err = await topologyError;
     expect(err).toBeInstanceOf(Error);
@@ -738,7 +740,7 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     const pending = proxy.execute("list-windows");
     await hub.settled();
-    expect(t.sent).toEqual(["list-windows\n"]);
+    expect(t.sent).toEqual([commandLine("list-windows")]);
 
     feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
 
@@ -967,7 +969,10 @@ describe("Electron IPC bridge — method dispatch", () => {
   );
 
   it.each([
-    ["# comment only", "it is only a comment"],
+    [
+      "tmux-control-mode-js-sentinel",
+      "it names tmux-control-mode-js-sentinel, which ends every line this client writes",
+    ],
     ["# note\nkill-server", "it holds a newline or NUL"],
     ["new-window -e 'TOKEN=s3cr3t\0' -- cmd", "it holds a newline or NUL"],
   ])(
@@ -1011,6 +1016,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     t.feed("%begin 1 1 1\n");
     t.feed("unknown command\n");
     t.feed("%error 1 1 1\n");
+    t.feed(sentinelBlock(1));
 
     await expect(pending).rejects.toBeInstanceOf(TmuxCommandError);
     await expect(pending).rejects.toMatchObject({
@@ -1458,16 +1464,12 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
     // First unregister: refcount 1 → 0 → tmux unsubscribe fires.
     r.ipcRenderer.send(IPC.unregister);
     await hub.settled();
-    expect(
-      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
-    ).toHaveLength(1);
+    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
 
     // Second unregister: noop, no additional unsubscribe.
     r.ipcRenderer.send(IPC.unregister);
     await hub.settled();
-    expect(
-      t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
-    ).toHaveLength(1);
+    expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
   });
 
   it("late destroy after unregister is a no-op (no double teardown, no error)", async () => {
@@ -1856,8 +1858,8 @@ describe("Electron IPC bridge — two-window scenario", () => {
     feedCommandResponse(t, 2, []);
     await p2Pending;
 
-    expect(t.sent).toContain("list-windows\n");
-    expect(t.sent).toContain("list-panes\n");
+    expect(t.sent).toContain(commandLine("list-windows"));
+    expect(t.sent).toContain(commandLine("list-panes"));
   });
 
   it("regression — fake hub mirrors real Electron: second handle() throws", () => {
@@ -1985,7 +1987,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
 // ---------------------------------------------------------------------------
 
 function isUnsubscribeWire(line: string, name: string): boolean {
-  return line === `refresh-client -B '${name}'\n`;
+  return line === commandLine(`refresh-client -B '${name}'`);
 }
 
 function isSubscribeWire(line: string, name: string): boolean {
@@ -2257,6 +2259,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       t.feed("%begin 1 1 1\n");
       t.feed("nope\n");
       t.feed("%error 1 1 1\n");
+      t.feed(sentinelBlock(1));
 
       await expect(aSub).rejects.toBeInstanceOf(TmuxCommandError);
       await expect(bSub).rejects.toBeInstanceOf(TmuxCommandError);
@@ -2494,7 +2497,7 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
 // ---------------------------------------------------------------------------
 
 describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
-  const line = (command: string): string => `${command}\n`;
+  const line = commandLine;
   const INTO_SIZING = line(refreshClientClearFlags(["ignore-size"]));
   const OUT_OF_SIZING = line(refreshClientSetFlags(["ignore-size"]));
 
