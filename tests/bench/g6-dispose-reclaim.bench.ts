@@ -80,7 +80,14 @@ vi.mock("@xterm/xterm", () => {
   const noop = (): void => undefined;
   class TerminalMock {
     options: { fontSize: number; theme: object; [k: string]: unknown };
-    open = noop;
+    element: HTMLElement | undefined;
+    // The terminal's element holds its screen, as xterm's does.
+    open = (container: HTMLElement): void => {
+      const doc = container.ownerDocument;
+      this.element = doc.createElement("div");
+      this.element.appendChild(doc.createElement("div")).className =
+        "xterm-screen";
+    };
     write = noop;
     resize = noop;
     clear = noop;

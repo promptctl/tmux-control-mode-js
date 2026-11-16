@@ -23,6 +23,7 @@ import type { PaneSurface, PaneSurfaces } from "../engine/window-engine.js";
 import type { PaneId } from "../ids.js";
 import { parsePaneId } from "../ids.js";
 import type { TerminalSink } from "../engine/terminal-sink.js";
+import type { CellRenderer } from "../sizing/cell-metrics.js";
 import type { Box } from "../sizing/solve.js";
 import type { RenderPlan } from "./render-plan.js";
 import type { XtermAddons, XtermOptions } from "./xterm-options.js";
@@ -38,11 +39,24 @@ export interface WindowRendererOptions {
   readonly onBox: (box: Box) => void;
   /** Focus entered `pane` (a click, a tab). */
   readonly onFocusPane: (pane: PaneId) => void;
+  /** A pane's renderer may have changed, and with it the window's cell. */
+  readonly onRenderer: () => void;
 }
 
-/** What the renderer drives in a pane. */
+/**
+ * What the renderer drives in a pane. A pane drawn by no renderer (its xterm
+ * failed to open) draws no cell, so its `renderer` is null.
+ */
 type PaneDrawing = TerminalSink &
-  Pick<XtermSink, "onInput" | "setFont" | "setOptions" | "remeasure" | "focus">;
+  Pick<
+    XtermSink,
+    | "onInput"
+    | "setFont"
+    | "setOptions"
+    | "remeasure"
+    | "focus"
+    | "onRendererChange"
+  > & { readonly renderer: CellRenderer | null };
 
 // [LAW:dataflow-not-control-flow] A pane with no xterm takes every call and
 //   draws nothing, so nothing that drives panes asks which kind it has.
@@ -57,6 +71,8 @@ const NOTHING_DRAWN: PaneDrawing = {
   setOptions: () => undefined,
   remeasure: () => undefined,
   focus: () => undefined,
+  renderer: null,
+  onRendererChange: () => () => undefined,
 };
 
 interface PaneEl {
@@ -70,6 +86,7 @@ export class WindowRenderer implements PaneSurfaces {
   private readonly panes = new Map<PaneId, PaneEl>();
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
+  private readonly onRenderer: () => void;
   private readonly observer: ResizeObserver;
   private readonly addons: XtermAddons | undefined;
   private xterm: XtermOptions;
@@ -92,6 +109,7 @@ export class WindowRenderer implements PaneSurfaces {
     this.addons = opts.addons;
     this.font = opts.font;
     this.onFocusPane = opts.onFocusPane;
+    this.onRenderer = opts.onRenderer;
     const doc = host.ownerDocument;
 
     this.root = doc.createElement("div");
@@ -138,12 +156,14 @@ export class WindowRenderer implements PaneSurfaces {
     this.grid.appendChild(el);
     const { sink, failures } = this.open(el);
     const offInput = sink.onInput(keys);
+    const offRenderer = sink.onRendererChange(this.onRenderer);
     this.panes.set(pane, { el, sink });
     return {
       sink,
       failures,
       dispose: () => {
         offInput();
+        offRenderer();
         sink.dispose();
         el.remove();
         this.panes.delete(pane);
@@ -255,6 +275,23 @@ export class WindowRenderer implements PaneSurfaces {
         return [{ pane, cause }];
       }
     });
+  }
+
+  /**
+   * The renderer the panes' cells are drawn by. Every pane loads the same
+   * addons, so they agree; where one does not (its WebGL context was lost),
+   * or no pane draws yet, the window takes the DOM renderer's cell, never
+   * narrower than a canvas renderer's, so the canvas panes fall short of
+   * their boxes rather than the DOM panes losing columns past them. A pane
+   * that draws nothing has no say.
+   */
+  get renderer(): CellRenderer {
+    const drawn = [...this.panes.values()].flatMap(
+      (p) => p.sink.renderer ?? [],
+    );
+    return drawn.length > 0 && drawn.every((r) => r === "canvas")
+      ? "canvas"
+      : "dom";
   }
 
   /** Cell sizes changed under the same settings (a font loaded, a zoom). */

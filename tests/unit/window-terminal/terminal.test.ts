@@ -75,6 +75,9 @@ vi.mock("@xterm/xterm", () => {
       const textarea = container.ownerDocument.createElement("textarea");
       textarea.className = "xterm-helper-textarea";
       el.appendChild(textarea);
+      const screen = container.ownerDocument.createElement("div");
+      screen.className = "xterm-screen";
+      el.appendChild(screen);
       container.appendChild(el);
       this.element = el;
       this.textarea = textarea;
@@ -173,8 +176,8 @@ function mount(
   };
 }
 
-async function live(sizing?: Sizing) {
-  const m = mount(sizing);
+async function live(...args: Parameters<typeof mount>) {
+  const m = mount(...args);
   await settle();
   observed?.(800, 480);
   m.flush();
@@ -214,6 +217,93 @@ describe("window terminal — what is drawn", () => {
     expect(grid?.style.getPropertyValue("--wt-cols")).toBe("80");
     expect(grid?.style.getPropertyValue("--wt-rows")).toBe("24");
     expect(terminals.every((t) => t.options.fontSize === 16)).toBe(true);
+  });
+
+  describe("panes drawn by a renderer addon are laid out in the cell that renderer draws", () => {
+    // A canvas renderer's cell is narrower here: 7 wide where the DOM's is 8.
+    const cellAt: ReturnType<WindowTerminalPorts["measure"]>["cellAt"] =
+      (_, renderer) => (px) => ({
+        width: renderer === "canvas" ? 7 : px / 2,
+        height: px,
+      });
+    // An addon that draws on a canvas in xterm's screen, as WebGL draws its
+    // links on `xterm-link-layer` and the image addon its images on
+    // `xterm-image-layer`. Disposing it takes the canvas away.
+    const layer = (name: string) => {
+      const canvas = document.createElement("canvas");
+      canvas.className = `xterm-${name}-layer`;
+      return {
+        activate(t: { element: HTMLElement | undefined }) {
+          // Addons load after open: the terminal has its screen.
+          (t.element as HTMLElement)
+            .querySelector(".xterm-screen")
+            ?.appendChild(canvas);
+        },
+        dispose: () => canvas.remove(),
+      };
+    };
+    const webgl = () => [layer("link")];
+    const cellWidth = (m: ReturnType<typeof mount>): string | undefined =>
+      m.host
+        .querySelector<HTMLElement>(".wt-grid")
+        ?.style.getPropertyValue("--wt-cell-w");
+    const laidOut = (addons: WindowTerminalOptions["addons"]) =>
+      live({ window: "tmux", font: 16, fit: "none" }, cellAt, { addons });
+    const widthUnder = async (
+      addons: WindowTerminalOptions["addons"],
+    ): Promise<string | undefined> => {
+      const m = await laidOut(addons);
+      const w = cellWidth(m);
+      m.terminal.dispose();
+      return w;
+    };
+
+    it("every pane drawn by WebGL: the canvas renderer's cell", async () => {
+      expect(await widthUnder(webgl)).toBe("7px");
+    });
+
+    it("no renderer addon: the DOM renderer's cell", async () => {
+      expect(await widthUnder(undefined)).toBe("8px");
+    });
+
+    it("an addon that only adds a layer is not a renderer", async () => {
+      expect(await widthUnder(() => [layer("image")])).toBe("8px");
+    });
+
+    it("one pane on the DOM renderer among WebGL panes: the DOM renderer's cell, so no pane loses columns", async () => {
+      let opened = 0;
+      expect(await widthUnder(() => (opened++ === 0 ? webgl() : []))).toBe(
+        "8px",
+      );
+    });
+
+    it("a pane that failed to open draws no cell and has no say", async () => {
+      let opened = 0;
+      const broken = {
+        activate() {
+          throw new Error("no WebGL2 here");
+        },
+        dispose: () => undefined,
+      };
+      expect(
+        await widthUnder(() => (opened++ === 0 ? webgl() : [broken])),
+      ).toBe("7px");
+    });
+
+    it("WebGL dropped (a lost context) lays the window out again in the DOM renderer's cell", async () => {
+      const loaded: { dispose(): void }[] = [];
+      const m = await laidOut(() => {
+        const addons = webgl();
+        loaded.push(...addons);
+        return addons;
+      });
+      expect(cellWidth(m)).toBe("7px");
+      for (const addon of loaded) addon.dispose();
+      await settle();
+      m.flush();
+      expect(cellWidth(m)).toBe("8px");
+      m.terminal.dispose();
+    });
   });
 
   it("a zoom hides the other panes without closing them", async () => {

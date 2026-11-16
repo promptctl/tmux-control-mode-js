@@ -7,11 +7,12 @@
 //   char  — CharSizeService: an OffscreenCanvas `measureText("W")` (width,
 //           fontBoundingBoxAscent + fontBoundingBoxDescent), else a DOM span
 //           of 32 "W"s (offsetWidth / 32, offsetHeight).
-//   cell  — DomRenderer: width =
+//   cell  — the renderer's: width =
 //           (char width × dpr + round(letterSpacing)) / dpr; height =
-//           floor(ceil(char height × dpr) × lineHeight) / dpr.
-//           Only the DOM renderer: a renderer addon (WebGL, canvas) draws
-//           a different cell.
+//           floor(ceil(char height × dpr) × lineHeight) / dpr. A canvas
+//           renderer (the WebGL or canvas addon) floors the char width to
+//           whole device pixels first, so its glyph atlas stays sharp; the
+//           DOM renderer keeps the fraction.
 //
 // [LAW:no-shared-mutable-globals] The cache belongs to one measure (one
 //   terminal), not the module.
@@ -72,9 +73,20 @@ export interface CellFont {
   readonly letterSpacing: number;
 }
 
+/**
+ * Which xterm.js renderer draws a cell: its own DOM renderer, or a renderer
+ * addon that draws on a canvas (WebGL, canvas).
+ */
+export type CellRenderer = "dom" | "canvas";
+
+const charWidth: Record<CellRenderer, (devicePx: number) => number> = {
+  dom: (w) => w,
+  canvas: Math.floor,
+};
+
 export interface CellMeasure {
-  /** The cell size at each font size in this font. */
-  cellAt(font: CellFont): CellAt;
+  /** The cell size at each font size in this font, as `renderer` draws it. */
+  cellAt(font: CellFont, renderer: CellRenderer): CellAt;
   /**
    * Called when cell sizes may have changed under the same settings: a font
    * finished loading, or the device pixel ratio moved (a zoom, a monitor).
@@ -86,10 +98,12 @@ export interface CellMeasure {
 export function createCellMeasure(win: Window): CellMeasure {
   const doc = win.document;
   const ctx = canvasContext();
-  const cache = new Map<string, CellSize>();
+  // The glyph is what costs a measurement; each renderer's cell is
+  // arithmetic on it.
+  const chars = new Map<string, CellSize>();
   const listeners = new Set<() => void>();
   const changed = (): void => {
-    cache.clear();
+    chars.clear();
     for (const cb of listeners) cb();
   };
 
@@ -109,16 +123,19 @@ export function createCellMeasure(win: Window): CellMeasure {
   doc.fonts.addEventListener("loadingdone", changed);
 
   return {
-    cellAt({ fontFamily: family, lineHeight, letterSpacing }) {
+    cellAt({ fontFamily: family, lineHeight, letterSpacing }, renderer) {
       return (px) => {
-        const key = `${px}|${lineHeight}|${letterSpacing}|${family}`;
-        const hit = cache.get(key);
-        if (hit !== undefined) return hit;
+        const key = `${px}|${family}`;
         const char =
-          charSizeOnCanvas(ctx, family, px) ?? charSizeInDom(doc, family, px);
+          chars.get(key) ??
+          charSizeOnCanvas(ctx, family, px) ??
+          charSizeInDom(doc, family, px);
         const dpr = win.devicePixelRatio;
         const cell = {
-          width: (char.width * dpr + Math.round(letterSpacing)) / dpr,
+          width:
+            (charWidth[renderer](char.width * dpr) +
+              Math.round(letterSpacing)) /
+            dpr,
           height: Math.floor(Math.ceil(char.height * dpr) * lineHeight) / dpr,
         };
         // A glyph measured as nothing is no font, whatever the spacing; a
@@ -128,7 +145,7 @@ export function createCellMeasure(win: Window): CellMeasure {
             `cannot lay out ${px}px ${family}: the document measured its glyph as ${char.width}x${char.height}, a cell of ${cell.width}x${cell.height}`,
           );
         }
-        cache.set(key, cell);
+        chars.set(key, char);
         return cell;
       };
     },
@@ -140,7 +157,7 @@ export function createCellMeasure(win: Window): CellMeasure {
       dprQuery?.removeEventListener("change", onDpr);
       doc.fonts.removeEventListener("loadingdone", changed);
       listeners.clear();
-      cache.clear();
+      chars.clear();
     },
   };
 }

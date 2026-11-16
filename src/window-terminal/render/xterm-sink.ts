@@ -52,6 +52,7 @@ import {
 import { FirstResizeGate, type DrainBatch } from "./first-resize-gate.js";
 import { VisibilityTracker } from "./visibility-tracker.js";
 import { latin1ToBytes } from "../../protocol/index.js";
+import type { CellRenderer } from "../sizing/cell-metrics.js";
 
 const utf8Encoder = new TextEncoder();
 
@@ -116,6 +117,14 @@ export class XtermSink implements TerminalSink {
   private readonly base: Readonly<Record<string, unknown>>;
   // The host options this pane has now.
   private applied: XtermOptions = {};
+  // xterm's screen element, where a renderer draws: the DOM renderer its
+  // rows, a renderer addon its canvases.
+  private readonly screen: Element;
+  // Fires when the screen's children change: a renderer took over.
+  private readonly rendererListeners = new Set<() => void>();
+  private readonly rendererObserver = new MutationObserver(() => {
+    for (const cb of this.rendererListeners) cb();
+  });
 
   constructor(opts: XtermSinkOptions) {
     this.container = opts.container;
@@ -148,11 +157,19 @@ export class XtermSink implements TerminalSink {
       // `allowProposedApi`).
       this.setOptions(opts.xterm ?? {});
       this.terminal.open(this.container);
+      const screen = this.terminal.element?.querySelector(".xterm-screen");
+      if (screen === null || screen === undefined) {
+        throw new Error("xterm opened without a screen element");
+      }
+      this.screen = screen;
       addons = (opts.addons ?? (() => []))();
       for (const addon of addons) {
         taken += 1;
         this.terminal.loadAddon(addon);
       }
+      // Watched once the terminal stands: the renderer it opened with is
+      // read at the first layout, and only a later change needs telling.
+      this.rendererObserver.observe(screen, { childList: true });
       this.visibility = new VisibilityTracker(this.container);
     } catch (err) {
       release(err, [this.terminal, ...addons.slice(taken)]);
@@ -323,6 +340,8 @@ export class XtermSink implements TerminalSink {
       this.rafFirstResizeId = null;
     }
     this.firstResizeQueued = false;
+    this.rendererObserver.disconnect();
+    this.rendererListeners.clear();
 
     // xterm.dispose() detaches DOM nodes and releases its internal listeners.
     // Our own `isDisposed` guard at the top of this method already prevents a
@@ -390,6 +409,28 @@ export class XtermSink implements TerminalSink {
     const px = this.terminal.options.fontSize ?? DEFAULT_FONT_SIZE;
     this.terminal.options.fontSize = px + 1;
     this.terminal.options.fontSize = px;
+  }
+
+  /**
+   * The renderer drawing this terminal now. Each renderer addon (WebGL,
+   * canvas) draws links on its own canvas in xterm's screen element,
+   * `xterm-link-layer`; the DOM renderer draws none, and an addon that only
+   * adds a layer (the image addon's `xterm-image-layer`) is not a renderer.
+   */
+  get renderer(): CellRenderer {
+    return this.screen.querySelector("canvas.xterm-link-layer") === null
+      ? "dom"
+      : "canvas";
+  }
+
+  /**
+   * Call `cb` when the renderer may have changed: a renderer addon loaded,
+   * or one was disposed (a host that drops WebGL on context loss) and the
+   * DOM renderer took the pane back. The returned function detaches it.
+   */
+  onRendererChange(cb: () => void): () => void {
+    this.rendererListeners.add(cb);
+    return () => this.rendererListeners.delete(cb);
   }
 
   /** Focus the underlying xterm. Safe after dispose (no-op). */

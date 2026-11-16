@@ -37,6 +37,7 @@ export class FittedXtermSink extends XtermSink {
     if (win === null) throw new RangeError("container must be in a window");
     this.measure = createCellMeasure(win);
     this.offMetrics = this.measure.onChange(() => this.refit());
+    this.onRendererChange(() => this.refit());
     this.observer = new ResizeObserver(() => this.refit());
     this.observer.observe(opts.container);
   }
@@ -68,7 +69,7 @@ export class FittedXtermSink extends XtermSink {
         fit: "both",
       }),
       { width: this.box.clientWidth, height: this.box.clientHeight },
-      this.measure.cellAt(cellFontOf(this.terminal.options)),
+      this.measure.cellAt(cellFontOf(this.terminal.options), this.renderer),
       this.grid,
     );
     super.setFont(solution.font);
