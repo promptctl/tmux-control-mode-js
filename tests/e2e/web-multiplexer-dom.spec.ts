@@ -337,11 +337,12 @@ test("a pane scrolled back by the wheel still shows its last column, with no scr
       "send-keys",
       "-t",
       "web-multiplexer-demo",
-      "seq 1 60",
+      "seq -f n%g 1 60",
       "Enter",
     ]);
     const pane = page.locator(".wt-pane:not([hidden])").first();
-    await expect(pane.locator(".xterm-rows")).toContainText("60", {
+    // `n60` is output's alone: the echoed command reads `n%g 1 60`.
+    await expect(pane.locator(".xterm-rows")).toContainText("n60", {
       timeout: 15_000,
     });
     const box = await pane.boundingBox();
@@ -349,7 +350,7 @@ test("a pane scrolled back by the wheel still shows its last column, with no scr
     // Scrolling is what shows a scrollbar that otherwise fades out.
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.wheel(0, -400);
-    await expect(pane.locator(".xterm-rows")).not.toContainText("60");
+    await expect(pane.locator(".xterm-rows")).not.toContainText("n60");
     // tmux's 80 columns can be wider than the demo's box, so the window
     // scrolls: bring the pane's right edge into view.
     await pane.evaluate((p) => {
@@ -363,11 +364,12 @@ test("a pane scrolled back by the wheel still shows its last column, with no scr
     const lastColumn = await page.evaluate(
       ({ x, y }) => {
         const hit = document.elementFromPoint(x, y);
-        return hit?.closest(".scrollbar") !== null
+        if (hit === null) return "nothing";
+        return hit.closest(".scrollbar") !== null
           ? "scrollbar"
-          : hit?.closest(".xterm-screen") !== null
+          : hit.closest(".xterm-screen") !== null
             ? "screen"
-            : (hit?.className ?? "nothing");
+            : hit.className;
       },
       { x: edge.x + edge.width - 2, y: edge.y + edge.height / 2 },
     );

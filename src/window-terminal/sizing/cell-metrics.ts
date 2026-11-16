@@ -10,7 +10,7 @@
 //   cell  — the renderer's: width =
 //           (char width × dpr + round(letterSpacing)) / dpr; height =
 //           floor(ceil(char height × dpr) × lineHeight) / dpr. A canvas
-//           renderer (the WebGL or canvas addon) floors the char width to
+//           renderer (the WebGL addon) floors the char width to
 //           whole device pixels first, so its glyph atlas stays sharp; the
 //           DOM renderer keeps the fraction.
 //
@@ -75,7 +75,7 @@ export interface CellFont {
 
 /**
  * Which xterm.js renderer draws a cell: its own DOM renderer, or a renderer
- * addon that draws on a canvas (WebGL, canvas).
+ * addon that draws on a canvas (WebGL).
  */
 export type CellRenderer = "dom" | "canvas";
 

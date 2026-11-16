@@ -14,7 +14,11 @@ All notable changes to this project are documented here. Format follows
   the scroll event the browser raised for the taller viewport as the person
   scrolling, when output landed before it, and held the view rows above the
   bottom. xterm.js 6 keeps the scroll position itself. Its scrollbar, drawn
-  over a pane's last column, is hidden, as the old one was.
+  over a pane's last column, is hidden, as the old one was. The terminal
+  owns `xterm.overviewRuler`, which replaced `overviewRulerWidth`, so a host
+  that passes it gets a `RangeError`; `windowsMode`, gone from xterm.js 6,
+  is refused as an option xterm.js does not have. There is no canvas
+  renderer addon for xterm.js 6; WebGL is the renderer addon.
 
 - `xterm.allowProposedApi` (`./window-terminal`) is the terminal's: a pane
   counts cells through xterm.js's proposed Unicode API, so it is always on,

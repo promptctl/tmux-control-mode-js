@@ -77,9 +77,20 @@ vi.mock("@xterm/xterm", () => {
       const textarea = container.ownerDocument.createElement("textarea");
       textarea.className = "xterm-helper-textarea";
       el.appendChild(textarea);
-      const screen = container.ownerDocument.createElement("div");
-      screen.className = "xterm-screen";
-      el.appendChild(screen);
+      // xterm 6's: an empty viewport, and the screen in a scrollable element
+      // with its scrollbars.
+      const make = (className: string) => {
+        const div = container.ownerDocument.createElement("div");
+        div.className = className;
+        return div;
+      };
+      const scrollable = make("xterm-scrollable-element");
+      scrollable.append(
+        make("xterm-screen"),
+        make("scrollbar horizontal"),
+        make("scrollbar vertical"),
+      );
+      el.append(make("xterm-viewport"), scrollable);
       container.appendChild(el);
       this.element = el;
       this.textarea = textarea;
@@ -474,6 +485,26 @@ describe("window terminal — what is drawn", () => {
     expect(m.pane("%0")?.querySelector(".xterm")).not.toBeNull();
     expect(m.pane("%1")).not.toBeNull();
     expect(m.pane("%1")?.querySelector(".xterm")).toBeNull();
+    m.terminal.dispose();
+  });
+
+  it("a pane whose xterm has no scrollbar to hide is reported, and draws", async () => {
+    // An addon that takes xterm's scrollbar away, as a new xterm's markup
+    // would.
+    const unscrolled = {
+      activate(t: { element: HTMLElement | undefined }) {
+        t.element?.querySelector(".scrollbar.vertical")?.remove();
+      },
+      dispose: () => undefined,
+    };
+    const m = mount(undefined, undefined, { addons: () => [unscrolled] });
+    await settle();
+    const missing = "Error: xterm opened a pane with no scrollbar to hide";
+    expect(m.errors.map((e) => [e.seam, e.paneId, String(e.cause)])).toEqual([
+      ["render", "%0", missing],
+      ["render", "%1", missing],
+    ]);
+    expect(m.pane("%0")?.querySelector(".xterm")).not.toBeNull();
     m.terminal.dispose();
   });
 

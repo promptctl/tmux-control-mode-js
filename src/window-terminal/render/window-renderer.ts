@@ -189,15 +189,30 @@ export class WindowRenderer implements PaneSurfaces {
     } catch (cause) {
       return { sink: NOTHING_DRAWN, failures: [cause] };
     }
-    // The pane's own box clips the terminal to its cell rect; xterm's
-    // scrollbar, drawn over the screen's right edge, would cover its last
-    // column. Wheel scrolling still works.
-    const scrollbar = sink.terminal.element?.querySelector<HTMLElement>(
+    // The pane's own box clips the terminal to its cell rect; a scrollbar at
+    // its right edge would cover its last column. xterm draws its own over
+    // the screen, and keeps an empty `.xterm-viewport` whose CSS asks for a
+    // native one. Wheel scrolling still works.
+    // [LAW:no-silent-failure] xterm builds both as it opens; one missing is
+    //   xterm's markup changing under the terminal, the pane's failure.
+    const root = sink.terminal.element;
+    const viewport = root?.querySelector<HTMLElement>(".xterm-viewport");
+    const scrollbar = root?.querySelector<HTMLElement>(
       ".xterm-scrollable-element > .scrollbar.vertical",
     );
-    if (scrollbar !== null && scrollbar !== undefined) {
-      scrollbar.style.display = "none";
+    if (
+      viewport === null ||
+      viewport === undefined ||
+      scrollbar === null ||
+      scrollbar === undefined
+    ) {
+      return {
+        sink,
+        failures: [new Error("xterm opened a pane with no scrollbar to hide")],
+      };
     }
+    viewport.style.scrollbarWidth = "none";
+    scrollbar.style.display = "none";
     return { sink, failures: [] };
   }
 
