@@ -173,18 +173,19 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       // Resize the client. tmux re-evaluates layout and the format
       // subscription fires with the new value.
+      const priorCalls = sink.resizeCalls.length;
       await client.setSize(120, 30);
       // The requested height lands, less at most the status line's row
       // (tmux 3.2 takes it from the initial session but not after setSize).
-      const calls = await readUntil(
-        () => sink.resizeCalls,
+      const since = await readUntil(
+        () => sink.resizeCalls.slice(priorCalls),
         (seen) => {
-          const last = seen[seen.length - 1];
-          return seen.length > 1 && last.cols === 120 && last.rows >= 30 - 1;
+          const last = seen.at(-1);
+          return last !== undefined && last.cols === 120 && last.rows >= 30 - 1;
         },
         "the sink never saw the 120x30 resize",
       );
-      const after = calls[calls.length - 1];
+      const after = since[since.length - 1];
       expect(after.rows).toBeLessThanOrEqual(30);
       expect(after).toEqual(await paneSize(client, paneId));
     }, 15000);

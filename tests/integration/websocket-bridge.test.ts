@@ -21,6 +21,7 @@ import {
   uniqueSocket,
   attachSession,
   readUntil,
+  waitForEvent,
   withSecondClient,
   tmux,
 } from "../helpers/integration.js";
@@ -198,6 +199,12 @@ function createWsBackedClient(
   return { client, states, errors };
 }
 
+// Every chunk `received` holds for one pane, decoded as one string.
+function textOf(received: Map<number, Uint8Array[]>, paneId: number): string {
+  return (received.get(paneId) ?? [])
+    .map((d) => Buffer.from(d).toString())
+    .join("");
+}
 function waitForState(
   client: WebSocketTmuxClient,
   target: ConnectionState["status"],
@@ -564,19 +571,22 @@ describe.skipIf(!RUN_INTEGRATION)(
         // frame; the bridge sees an abnormal close, finalize runs, the
         // reconnect timer fires.
         expect(lastWs).not.toBeNull();
-        (lastWs as unknown as WsClient).terminate();
-
         // Wait until the terminate's close has been OBSERVED by the
         // client — i.e. state has left "ready". Otherwise we'd race the
         // async close event and fire the call while the client still
         // thinks the socket is live, which would just reject through
-        // the old connection's finalize with "close 1006".
-        await readUntil(
-          () => client.connectionState.status,
-          (status) => status !== "ready",
-          "the client never saw the terminated socket close",
+        // the old connection's finalize with "close 1006". Armed before
+        // the terminate: the reconnect lands 25ms later, so a sampled
+        // status can miss the non-ready window entirely.
+        // [LAW:no-ambient-temporal-coupling]
+        const leftReady = waitForEvent(
+          client,
+          "connection-state",
+          (ev) => ev.state.status !== "ready",
           2_000,
         );
+        (lastWs as unknown as WsClient).terminate();
+        await leftReady;
 
         // Fire a call while the client is mid-flux. With the fix the
         // call is added to pending; flushOutbox transmits it on the
@@ -784,12 +794,8 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await fx.tmux.execute(`send-keys -t %${pane0} 'echo ws-int20-p0' Enter`);
     await fx.tmux.execute(`send-keys -t %${pane1} 'echo ws-int20-p1' Enter`);
 
-    const textOf = (paneId: number) =>
-      (received.get(paneId) ?? [])
-        .map((d) => Buffer.from(d).toString())
-        .join("");
     await readUntil(
-      () => ({ p0: textOf(pane0), p1: textOf(pane1) }),
+      () => ({ p0: textOf(received, pane0), p1: textOf(received, pane1) }),
       (seen) =>
         seen.p0.includes("ws-int20-p0") && seen.p1.includes("ws-int20-p1"),
       "serverScope never delivered both panes' markers",
@@ -852,15 +858,11 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     // resolves over the WebSocket after attachBytesSink returns, and output
     // that beats it must still reach the scope. A's arrival is also the proof
     // the scope is live, so B's provocation below tests exclusion.
-    const textOf = (paneId: number) =>
-      (received.get(paneId) ?? [])
-        .map((d) => Buffer.from(d).toString())
-        .join("");
     await fx.tmux.execute(
       `send-keys -t %${paneA} "printf 'ws-%s' int21-a" Enter`,
     );
     await readUntil(
-      () => textOf(paneA!),
+      () => textOf(received, paneA!),
       (text) => text.includes("ws-int21-a"),
       "sessionScope never delivered session A's marker",
       8_000,
@@ -873,7 +875,7 @@ describe.skipIf(!RUN_INTEGRATION)("WebSocket bridge — bytes sink scope", () =>
     await new Promise<void>((r) => setTimeout(r, 500));
 
     // Session B's pane should not have delivered bytes to this scope.
-    expect(textOf(paneB!)).not.toContain("ws-int21-b");
+    expect(textOf(received, paneB!)).not.toContain("ws-int21-b");
 
     dispose();
     await client.close();

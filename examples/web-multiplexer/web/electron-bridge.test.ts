@@ -29,6 +29,7 @@ import { createIpcHub } from "../../../tests/unit/_helpers/ipc-hub.ts";
 import {
   readUntil,
   tmux,
+  waitForEvent,
   uniqueName,
   uniqueSocket,
 } from "../../../tests/helpers/integration.ts";
@@ -218,15 +219,10 @@ async function attachMain(
     onClose: (cb) => inner.onClose(cb),
     close: () => inner.close(),
   });
-  let attached = false;
-  client.on("session-changed", () => (attached = true));
+  const attached = waitForEvent(client, "session-changed");
   let handle: ReturnType<typeof createMainBridge>;
   try {
-    await readUntil(
-      () => attached,
-      (a) => a,
-      "main never attached",
-    );
+    await attached;
     handle = createMainBridge(client, hub.ipcMain);
   } catch (err) {
     client.close();
@@ -272,7 +268,7 @@ async function electronPage(
     );
   } catch (err) {
     close();
-    throw new Error("the Electron page never became ready", { cause: err });
+    throw err;
   }
   return {
     conn,
@@ -308,14 +304,9 @@ describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(
           // router still holding A's table after the swap misroutes it. The
           // page hears A's new window before any sink needs topology, so the
           // only query on each server is the bootstrap.
-          let windowAdded = false;
-          page.conn.on("window-add", () => (windowAdded = true));
+          const windowAdded = waitForEvent(page.conn, "window-add");
           tmux(socketA, ["new-window", "-d"]);
-          await readUntil(
-            () => windowAdded,
-            (added) => added,
-            "the page never heard window-add",
-          );
+          await windowAdded;
           tmux(socketB, ["new-session", "-d", "-s", sessionB]);
           tmux(socketB, ["split-window", "-d"]);
           const onA = listAllPanesOn(socketA);

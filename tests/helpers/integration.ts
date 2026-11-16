@@ -6,10 +6,15 @@
 // already armed first). Integration tests import these; they do not redeclare
 // them.
 
+import { inspect } from "node:util";
 import { tmux } from "./tmux-cli.js";
 import { spawnTmux } from "../../src/transport/spawn.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
-import { TmuxClient, type TmuxClientOptions } from "../../src/client.js";
+import {
+  TmuxClient,
+  type TmuxClientOptions,
+  type TmuxConnection,
+} from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
 import type { TEST_SOCKET_PREFIXES } from "./reap-test-sockets.js";
 import { paneNumber, parsePaneId } from "../../src/window-terminal/ids.js";
@@ -46,7 +51,7 @@ export function uniqueName(tag: string): string {
  * [LAW:no-ambient-temporal-coupling] Observation is armed before provocation.
  */
 export function waitForEvent<K extends keyof TmuxEventMap>(
-  client: TmuxClient,
+  client: TmuxConnection,
   type: K,
   match: (ev: TmuxEventMap[K]) => boolean = () => true,
   ms = 12000,
@@ -294,6 +299,11 @@ export async function waitForPaneText(
   );
 }
 
+// Any value a read returns (circular, Map, bytes) renders, and a long one is
+// cut short so the failure stays legible.
+const quote = (value: unknown): string =>
+  inspect(value, { depth: 4, maxArrayLength: 20, maxStringLength: 2000 });
+
 /**
  * Call `read` until `done` holds for what it returns, and resolve with that;
  * reject as `what`, quoting the last value read, if none does within `ms`. A
@@ -314,9 +324,7 @@ export async function readUntil<T>(
     const value = await read();
     if (done(value)) return value;
     if (Date.now() >= deadline) {
-      throw new Error(
-        `${what} within ${ms}ms; last read: ${JSON.stringify(value)}`,
-      );
+      throw new Error(`${what} within ${ms}ms; last read: ${quote(value)}`);
     }
     await new Promise<void>((r) => setTimeout(r, 10));
   }

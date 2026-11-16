@@ -59,6 +59,25 @@ function emitLineInPane(
     .then(() => undefined);
 }
 
+// Resolve once each pane's marker has arrived on a line tagged with that pane;
+// a timeout quotes the markers still missing.
+function waitForTaggedMarkers(
+  lines: { line: string; paneId: number }[],
+  markers: Map<number, string>,
+): Promise<string[]> {
+  return readUntil(
+    () =>
+      [...markers.entries()]
+        .filter(
+          ([paneId, m]) =>
+            !lines.some((l) => l.paneId === paneId && l.line.includes(m)),
+        )
+        .map(([, m]) => m),
+    (missing) => missing.length === 0,
+    "markers never arrived tagged with their pane",
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -173,17 +192,7 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
       await emitLineInPane(client, p.paneId, marker);
     }
 
-    await readUntil(
-      () =>
-        [...markers.entries()]
-          .filter(
-            ([paneId, m]) =>
-              !lines.some((l) => l.paneId === paneId && l.line.includes(m)),
-          )
-          .map(([, m]) => m),
-      (missing) => missing.length === 0,
-      "markers never arrived tagged with their pane",
-    );
+    await waitForTaggedMarkers(lines, markers);
 
     const knownIds = new Set(after.map((p) => p.paneId));
     expect(lines.every((l) => knownIds.has(l.paneId))).toBe(true);
@@ -213,20 +222,12 @@ describe.skipIf(!RUN_INTEGRATION)("attachLineSink (integration)", () => {
     await emitLineInPane(client, paneA, markerA);
     await emitLineInPane(client, paneB, markerB);
 
-    const markers = new Map([
-      [paneA, markerA],
-      [paneB, markerB],
-    ]);
-    await readUntil(
-      () =>
-        [...markers.entries()]
-          .filter(
-            ([paneId, m]) =>
-              !lines.some((l) => l.paneId === paneId && l.line.includes(m)),
-          )
-          .map(([, m]) => m),
-      (missing) => missing.length === 0,
-      "markers never arrived tagged with their pane",
+    await waitForTaggedMarkers(
+      lines,
+      new Map([
+        [paneA, markerA],
+        [paneB, markerB],
+      ]),
     );
 
     // No marker arrives tagged with the wrong paneId.

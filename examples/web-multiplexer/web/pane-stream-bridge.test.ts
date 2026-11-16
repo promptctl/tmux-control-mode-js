@@ -150,9 +150,7 @@ async function openBridged(
     );
   } catch (err) {
     close();
-    throw new Error("the bridged connection never became ready", {
-      cause: err,
-    });
+    throw err;
   }
   return { conn, close };
 }
