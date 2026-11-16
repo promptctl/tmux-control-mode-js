@@ -125,8 +125,8 @@
   Uint8Array[]. When the capture's reply resolves, the sink receives seed(captured, cursor, trailing) in one
   synchronous step — `trailing` is the buffered live bytes tmux wrote after the reply's %begin (those before it are
   already in the snapshot), so the snapshot and the bytes behind it cross the seam as one ordered value — and state
-  flips to live. No await between the handoff and
-  the state flip — nothing mutates the buffer between reading it as `trailing` and handing it over.
+  flips to live. No await between the handoff and the state flip — nothing mutates the buffer between reading it as
+  `trailing` and handing it over.
 
   3. tmux is the size authority; library is single-mode
 
