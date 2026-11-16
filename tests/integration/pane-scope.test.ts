@@ -257,7 +257,71 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     dispose();
   }, 15000);
 
+  // The router reads these two answers when it locates an unplaced pane.
+  it("SCOPE-03d: list-panes -t %P lists a live pane's window and refuses a killed pane with can't find pane", async () => {
+    const session = uniqueName("sess-locate");
+    client = await attachSession(socketName, session);
+    const [pane] = await listAllPanes(client);
+    expect(pane).toBeDefined();
+    const split = tmux(socketName, [
+      "split-window",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      `%${pane!.paneId}`,
+      "sleep 30",
+    ]).trim();
+    const locate = (id: string) =>
+      client!.execute(`list-panes -t ${id} -F '${PANE_LIST_FORMAT}'`);
+
+    const live = await locate(split);
+    expect(live.output.map(parsePaneListLine)).toContainEqual(
+      expect.objectContaining({
+        paneId: Number(split.slice(1)),
+        windowId: pane!.windowId,
+        sessionId: pane!.sessionId,
+      }),
+    );
+
+    tmux(socketName, ["kill-pane", "-t", split]);
+    await expect(locate(split)).rejects.toThrow(/^can't find pane/);
+  }, 15000);
+
   // ── Test 4: sessionScope dynamic membership ───────────────────────────────
+
+  it("SCOPE-03c: sessionScope receives a split-window pane's only output, and placing it reports nothing", async () => {
+    const session = uniqueName("sess-split");
+    client = await attachSession(socketName, session);
+    const errors: Error[] = [];
+    client.on("topology-error", (e) => errors.push(e.error));
+    const [pane] = await listAllPanes(client);
+    expect(pane).toBeDefined();
+
+    const arrived: { paneId: number; data: Uint8Array }[] = [];
+    const dispose = client.attachBytesSink(makeRecordingSink(arrived), {
+      scope: sessionScope(pane!.sessionId),
+    });
+    // A round trip after the attach: the bootstrap it triggered has answered.
+    await listAllPanes(client);
+    // The new pane prints at once and only once.
+    tmux(socketName, [
+      "split-window",
+      "-t",
+      `%${pane!.paneId}`,
+      "printf 'first-%s' split; sleep 30",
+    ]);
+    await pollUntil(() =>
+      arrived.some((e) =>
+        Buffer.from(e.data).toString().includes("first-split"),
+      ),
+    );
+    // Whichever query placed the new pane, its answer was one the router read.
+    await listAllPanes(client);
+    expect(errors).toEqual([]);
+
+    dispose();
+  }, 15000);
 
   it("SCOPE-04: sessionScope tracks a new window created after subscription", async () => {
     const session = uniqueName("sess-dyn");

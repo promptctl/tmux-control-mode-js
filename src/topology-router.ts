@@ -34,7 +34,7 @@ import {
 } from "./pane-output.js";
 import { IdlePaneSuppressor } from "./idle-pane-suppressor.js";
 import type { DeliveryQueue, Outcome } from "./delivery-queue.js";
-import { TmuxCommandError } from "./errors.js";
+import { TmuxCommandError, TmuxReplyFormatError } from "./errors.js";
 
 /** Construction options for {@link TopologyRouter}. */
 export interface TopologyRouterOptions {
@@ -52,12 +52,29 @@ export interface TopologyRouterOptions {
 // adapter injects the one capability the router needs (executing a command string).
 export type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
+// Output for panes topology did not know when it arrived, held while a query
+// that may place them is outstanding. Each chunk carries the attach seq at
+// arrival so replay never reaches a sink attached afterwards. `bytes` is
+// their total, capped at HELD_BYTES_LIMIT.
+interface Hold {
+  chunks: { chunk: ChunkPayload; attachedBy: number }[];
+  bytes: number;
+}
+
 // [LAW:types-are-the-program] The runner and whether it may still be queried
 //   are one value: a query runner that is not the pane-action runner is
-//   unrepresentable.
+//   unrepresentable. What a live connection has asked tmux to locate, and the
+//   output it holds for panes not yet placed, belong to its server: pane ids
+//   restart on a new one, so every connection change drops them by
+//   construction, however the adapter announces it.
 type Connection =
   | { readonly phase: "none" }
-  | { readonly phase: "live"; readonly run: RunCommand }
+  | {
+      readonly phase: "live";
+      readonly run: RunCommand;
+      readonly located: Set<number>;
+      readonly hold: Hold;
+    }
   | { readonly phase: "lost"; readonly run: RunCommand };
 
 const NO_CONNECTION: Connection = { phase: "none" };
@@ -100,11 +117,13 @@ function topologyError(query: string, value: unknown): Error {
 // Where a detached sink's still-queued writes go: nowhere.
 const DETACHED: BytesSink = { write: () => undefined, end: () => undefined };
 
-// tmux's %error answer to `list-panes -t @W` for a window that no longer exists.
-function isWindowGone(err: unknown): boolean {
+// tmux's %error answer to `list-panes -t @W` / `-t %P` for a window or pane
+// that no longer exists. (`display-message -p -t %P` cannot say this: for a
+// gone pane it prints an empty line and succeeds.)
+function isTargetGone(err: unknown, target: "window" | "pane"): boolean {
   return (
     err instanceof TmuxCommandError &&
-    err.message.startsWith("can't find window")
+    err.message.startsWith(`can't find ${target}`)
   );
 }
 
@@ -160,19 +179,12 @@ export class TopologyRouter {
   //   code never runs inside the router.
   private readonly delivery: DeliveryQueue;
 
-  // Chunks for panes topology did not know when they arrived, held while a
-  // topology query that may place them is outstanding. Each carries the attach
-  // seq at arrival so replay never reaches a sink attached afterwards.
-  // Empty is the resting state; releaseHeld() drains it after every query and
-  // onTransportClose() discards it with the connection.
-  private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
-  // Bytes in `held`, and bytes refused because holding them would exceed
-  // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
-  private heldBytes = 0;
+  // Bytes refused because holding them would exceed HELD_BYTES_LIMIT. The
+  // refusal is reported at the next settle.
   private refusedBytes = 0;
-  // Topology queries started and not yet settled. Only bootstrap() and
-  // refreshWindow() start queries, so the router owns this count; the epoch
-  // tracker answers staleness, not liveness.
+  // Topology queries started and not yet settled. Only bootstrap(),
+  // refreshWindow() and locate() start queries, so the router owns this
+  // count; the epoch tracker answers staleness, not liveness.
   private inFlight = 0;
 
   constructor(
@@ -241,7 +253,12 @@ export class TopologyRouter {
   }
 
   private readonly ready = (runCommand: RunCommand): void => {
-    this.connection = { phase: "live", run: runCommand };
+    this.connection = {
+      phase: "live",
+      run: runCommand,
+      located: new Set(),
+      hold: { chunks: [], bytes: 0 },
+    };
     // [LAW:single-enforcer] A new runner is a connection change even when
     //   no loss announced the old one (an adapter may re-announce ready):
     //   the epoch makes the old runner's answers stale.
@@ -303,8 +320,6 @@ export class TopologyRouter {
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
-    this.held = [];
-    this.heldBytes = 0;
     this.refusedBytes = 0;
     this.sinks.endAll();
   };
@@ -388,17 +403,21 @@ export class TopologyRouter {
   private readonly route = (payload: ChunkPayload): void => {
     const meta = this.topology.get(payload.paneId);
     this.sinks.dispatch(payload, meta);
-    // A pane topology does not know yet matched no window/session scope. If a
-    // query in flight may still place it, hold the chunk for replay instead of
-    // losing it: output provoked from another tmux client is not ordered with
-    // our command stream, so it can land before the attach-triggered
-    // bootstrap (or a window-add refresh) does.
-    if (
-      meta === undefined &&
-      this.sinks.hasTopologyDependentSinks() &&
-      this.inFlight > 0
-    ) {
-      this.hold(payload);
+    // A pane topology does not know yet matched no window/session scope. Hold
+    // the chunk for replay instead of losing it: output provoked from another
+    // tmux client is not ordered with our command stream, so it can land
+    // before the attach-triggered bootstrap does, and a new pane's can land
+    // before its %window-add or %layout-change refresh is asked.
+    if (meta === undefined) {
+      void this.locate(payload.paneId);
+      const conn = this.connection;
+      if (
+        conn.phase === "live" &&
+        this.sinks.hasTopologyDependentSinks() &&
+        this.inFlight > 0
+      ) {
+        this.hold(conn.hold, payload);
+      }
     }
   };
 
@@ -406,16 +425,16 @@ export class TopologyRouter {
   //   one `run-shell 'sleep 30'` delays every reply behind it), so the hold is
   //   capped. Past the cap the newest chunks are refused, keeping the earliest
   //   output this hold exists for, and the refusal is reported, not hidden.
-  private hold(payload: ChunkPayload): void {
+  private hold(hold: Hold, payload: ChunkPayload): void {
     const size = payload.data.byteLength;
-    if (this.heldBytes + size > HELD_BYTES_LIMIT) {
+    if (hold.bytes + size > HELD_BYTES_LIMIT) {
       this.refusedBytes += size;
       return;
     }
-    this.heldBytes += size;
+    hold.bytes += size;
     // ChunkPayload data is valid only until its step's drain has run; a held
     // chunk outlives the step, so it is copied.
-    this.held.push({
+    hold.chunks.push({
       chunk: { ...payload, data: payload.data.slice() },
       attachedBy: this.sinks.attachSeq(),
     });
@@ -424,15 +443,13 @@ export class TopologyRouter {
   // Replay every held chunk whose pane topology now knows, in arrival order,
   // to the window/session attachments that existed when it arrived. Chunks
   // still unplaced wait while a query remains outstanding; once none does,
-  // nothing can place them and they are dropped (pane/server sinks already got
-  // them live). Runs synchronously at the end of every query, so per-pane
-  // order holds against any chunk dispatched after it.
+  // their pane is located, and once that has answered too, nothing can place
+  // them and they are dropped (pane/server sinks already got them live). Runs
+  // synchronously at the end of every query, so per-pane order holds against
+  // any chunk dispatched after it.
   // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
-  //   an empty list makes it a no-op.
+  //   an empty hold makes it a no-op.
   private releaseHeld(): void {
-    const pending = this.held;
-    this.held = [];
-    this.heldBytes = 0;
     if (this.refusedBytes > 0) {
       this.reportError(
         new Error(
@@ -442,19 +459,27 @@ export class TopologyRouter {
       );
       this.refusedBytes = 0;
     }
-    for (const h of pending) {
+    const conn = this.connection;
+    // Output held on an earlier connection went with it.
+    if (conn.phase !== "live") return;
+    const unplaced: Hold["chunks"] = [];
+    for (const h of conn.hold.chunks) {
       const meta = this.topology.get(h.chunk.paneId);
-      if (meta !== undefined) {
+      if (meta === undefined) unplaced.push(h);
+      else
         this.sinks.dispatch(h.chunk, meta, {
           kind: "replay",
           attachedBy: h.attachedBy,
         });
-      } else if (this.inFlight > 0) {
-        // Already copied and counted once; re-holding cannot exceed the cap.
-        this.held.push(h);
-        this.heldBytes += h.chunk.data.byteLength;
-      }
     }
+    // [LAW:dataflow-not-control-flow] Every unplaced pane is asked about
+    //   before any chunk's fate is decided, so a pane's held output is kept
+    //   or dropped whole, never with a gap.
+    for (const h of unplaced) void this.locate(h.chunk.paneId);
+    // Already copied and counted once; keeping them cannot exceed the cap.
+    const kept = this.inFlight > 0 ? unplaced : [];
+    conn.hold.chunks = kept;
+    conn.hold.bytes = kept.reduce((n, h) => n + h.chunk.data.byteLength, 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -675,9 +700,75 @@ export class TopologyRouter {
       // A window that no longer exists is the answer a close's refresh
       // expects; any other failure may have left a live window's panes
       // unplaced, so re-place them with the server-wide query and report it.
-      if (!isWindowGone(err)) {
+      if (!isTargetGone(err, "window")) {
         if (this.needsTopology()) void this.bootstrap();
         this.reportError(topologyError(`refresh of @${windowId}`, err));
+      }
+    } finally {
+      this.inFlight--;
+      this.releaseHeld();
+    }
+  }
+
+  // Ask tmux which window an unknown pane is in, once per pane per connection.
+  // tmux never reuses a pane id, so the answer is final whenever it comes: the
+  // pane's window, or "can't find pane" — gone, along with any output it could
+  // still print. Asking once bounds a failing ask to one report per pane, not
+  // one per chunk it prints.
+  // [LAW:single-enforcer] Asked only once nothing else is outstanding: any
+  //   query in flight may place the pane itself (the bootstrap, or the refresh
+  //   its %window-add/%layout-change started), and a pane placed that way
+  //   costs no query of its own. Arrival and every release both ask here.
+  private async locate(paneId: number): Promise<void> {
+    const conn = this.connection;
+    if (
+      conn.phase !== "live" ||
+      !this.needsTopology() ||
+      this.inFlight > 0 ||
+      conn.located.has(paneId)
+    )
+      return;
+    conn.located.add(paneId);
+    const gen = this.epoch.startLocate();
+    this.inFlight++;
+    const command = `list-panes -t %${paneId} -F '${PANE_LIST_FORMAT}'`;
+    await this.delivery.settle(
+      () => conn.run(command),
+      (reply) => this.settleLocate(paneId, gen, command, reply),
+    );
+  }
+
+  private settleLocate(
+    paneId: number,
+    gen: number,
+    command: string,
+    reply: Outcome<CommandResponse>,
+  ): void {
+    try {
+      // [LAW:single-enforcer] The epoch's rule, success and failure alike: a
+      //   newer bootstrap owns this pane's placement, and an answer from a
+      //   connection no longer current says nothing about this one.
+      if (!this.epoch.isLocateCurrent(gen)) return;
+      if (!reply.ok) throw reply.error;
+      const { output } = reply.value;
+      const row = parseListReply(command, output, parsePaneListLine).find(
+        (e) => e.paneId === paneId,
+      );
+      // The listing of a pane's window that omits the pane is not an answer.
+      if (row === undefined) throw new TmuxReplyFormatError(command, output);
+      // [LAW:single-enforcer] Locating only names the window; its refresh is
+      //   the one path that places a pane, under the epoch's staleness rule.
+      //   A pane something else placed meanwhile needs no refresh.
+      if (this.topology.get(paneId) === undefined && this.needsTopology()) {
+        void this.refreshWindow(row.windowId);
+      }
+    } catch (err) {
+      // A gone pane is the answer that ends its hold. Any other failure leaves
+      // a live pane unplaced, so — as a failed window refresh does — re-place
+      // it with the server-wide query, asked after its output, and report it.
+      if (!isTargetGone(err, "pane")) {
+        if (this.needsTopology()) void this.bootstrap();
+        this.reportError(topologyError(`locate of %${paneId}`, err));
       }
     } finally {
       this.inFlight--;
