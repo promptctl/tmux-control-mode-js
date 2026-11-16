@@ -687,7 +687,7 @@ class Connection<Identity> {
       );
       return;
     }
-    CLIENT_FRAME_HANDLERS[frame.k](this, frame as never);
+    readClientFrame(this, frame);
   }
 
   // [LAW:dataflow-not-control-flow] Per-kind handlers. State narrowing for
@@ -1517,25 +1517,37 @@ class Connection<Identity> {
 // dispatcher (Connection.dispatch) does a single indexed lookup. The mapped
 // type forces exhaustiveness — adding a new ClientFrame kind without a
 // handler is a compile-time error, not a runtime "unknown kind" branch.
-// [LAW:single-enforcer] Connection.dispatch is the only call site.
+// [LAW:single-enforcer] readClientFrame is the only call site.
 // ---------------------------------------------------------------------------
 
+type ClientFrameByKind = {
+  readonly [F in ClientFrame as F["k"]]: F;
+};
+
 type ClientFrameHandlers = {
-  readonly [K in ClientFrame["k"]]: <Identity>(
+  readonly [K in keyof ClientFrameByKind]: <Identity>(
     self: Connection<Identity>,
-    frame: Extract<ClientFrame, { k: K }>,
+    frame: ClientFrameByKind[K],
   ) => void;
 };
 
-const CLIENT_FRAME_HANDLERS: ClientFrameHandlers = Object.assign(
-  Object.create(null) as ClientFrameHandlers,
-  {
-    hello: (self) => void self.onHello(),
-    call: (self, f) => self.routeCall(f),
-    ping: (self, f) => self.replyPong(f.id),
-    bye: (self) => self.closeBye(),
-  } satisfies ClientFrameHandlers,
-);
+const CLIENT_FRAME_HANDLERS: ClientFrameHandlers = {
+  hello: (self) => void self.onHello(),
+  call: (self, f) => self.routeCall(f),
+  ping: (self, f) => self.replyPong(f.id),
+  bye: (self) => self.closeBye(),
+};
+
+// [LAW:types-are-the-program] The handler is looked up by the frame's own
+//   kind, and generic over it, so the compiler pairs each handler with its
+//   frame (a correlated union) and no cast does it.
+function readClientFrame<Identity, K extends keyof ClientFrameByKind>(
+  self: Connection<Identity>,
+  frame: ClientFrameByKind[K] & { readonly k: K },
+): void {
+  const kind: K = frame.k;
+  CLIENT_FRAME_HANDLERS[kind](self, frame);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers visible to the factory
