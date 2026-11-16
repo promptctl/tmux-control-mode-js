@@ -48,6 +48,19 @@ export class BridgeProtocolError extends BridgeError {
 // throw) passes through untouched so its specific code and message survive.
 // ---------------------------------------------------------------------------
 
+// What a consumer's hook threw, as text for the error the bridge reports in
+// its place: a BridgeError's message without its `[CODE] ` prefix, since the
+// report carries a code of its own.
+// [LAW:single-enforcer] Every catch around a consumer's hook (authenticate,
+//   createClient) words the thrown value here.
+export function thrownMessage(err: unknown): string {
+  return err instanceof BridgeError
+    ? err.toPayload().message
+    : err instanceof Error
+      ? err.message
+      : String(err);
+}
+
 export function toBridgeProtocolError(err: unknown): BridgeError {
   return err instanceof BridgeError
     ? err

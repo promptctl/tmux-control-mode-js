@@ -132,7 +132,7 @@ present in `TmuxEventMap` (`src/emitter.ts`).
 
 | Event name | Payload type | Description |
 |------------|--------------|-------------|
-| `connection-state` | `ConnectionStateMessage` (`{ type: "connection-state"; state: ConnectionState }`) | Emitted on every `ConnectionState` transition. `ConnectionState` is a discriminated union of four statuses: `{ status: "connecting" }` (pre-handshake), `{ status: "ready" }` (tmux is talking), `{ status: "reconnecting"; attempt: number; lastError?: Error }` (between auto-reconnect attempts; currently only WebSocket transport), `{ status: "closed"; reason: "exit" \| "transport-error" \| "disposed" }` (terminal). |
+| `connection-state` | `ConnectionStateMessage` (`{ type: "connection-state"; state: ConnectionState }`) | Emitted on every `ConnectionState` transition. `ConnectionState` is a discriminated union of four statuses: `{ status: "connecting" }` (pre-handshake), `{ status: "ready" }` (tmux is talking), `{ status: "reconnecting"; attempt: number; lastError?: Error }` (between auto-reconnect attempts; currently only WebSocket transport), `{ status: "closed"; reason: "exit" \| "transport-error" \| "disposed" }` or `{ status: "closed"; reason: "refused"; error: Error }` (terminal; `refused` is a server that refused the connection for good, currently only the WebSocket bridge). |
 | `reconnected` | `ReconnectedMessage` (`{ type: "reconnected" }`) | Emitted on every transition into `ready` after the first such transition (currently only WebSocket transport). The previous state need not be `reconnecting` — manual close→connect cycles count. The spawn-based `TmuxClient` never emits this. |
 
 Both are subscribable via `client.on("connection-state", ...)` and

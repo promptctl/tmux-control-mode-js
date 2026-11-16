@@ -2,7 +2,10 @@
 // Unit tests for the Handshake collaborator extracted from Connection.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Handshake } from "../../src/connectors/websocket/handshake.js";
-import { parseDurationMs } from "../../src/connectors/websocket/protocol.js";
+import {
+  BridgeError,
+  parseDurationMs,
+} from "../../src/connectors/websocket/protocol.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -74,6 +77,7 @@ describe("Handshake — authenticate()", () => {
     const result = await hs.authenticate();
     expect(result).toEqual({
       ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
       closeCode: 4401,
       reason: "token expired",
     });
@@ -85,17 +89,50 @@ describe("Handshake — authenticate()", () => {
       .mockResolvedValue({ ok: false, reason: "policy", code: 1008 });
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
-    expect(result).toEqual({ ok: false, closeCode: 1008, reason: "policy" });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
+      closeCode: 1008,
+      reason: "policy",
+    });
   });
 
-  it("wraps a thrown error from the hook into a 4401 denial", async () => {
+  it("a hook that throws is a fault, not a denial: BRIDGE_INTERNAL under 1011, which a client retries", async () => {
     const hook = vi.fn().mockRejectedValue(new Error("db down"));
     const hs = new Handshake(ms(100), undefined, hook);
     const result = await hs.authenticate();
     expect(result).toMatchObject({
       ok: false,
-      closeCode: 4401,
+      errorCode: "BRIDGE_INTERNAL",
+      closeCode: 1011,
       reason: expect.stringContaining("db down"),
+    });
+  });
+
+  it("a denial naming a code the socket may not send closes 4401, naming the value", async () => {
+    const hook = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: "policy", code: 1005 });
+    const hs = new Handshake(ms(100), undefined, hook);
+    const result = await hs.authenticate();
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "BRIDGE_AUTH_DENIED",
+      closeCode: 4401,
+      reason: expect.stringContaining("1005"),
+    });
+  });
+
+  it("a hook that throws a BridgeError is reported under BRIDGE_INTERNAL, its message carried without its own code", async () => {
+    const hook = vi
+      .fn()
+      .mockRejectedValue(new BridgeError("BRIDGE_TIMEOUT", "auth backend"));
+    const hs = new Handshake(ms(100), undefined, hook);
+    const result = await hs.authenticate();
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "BRIDGE_INTERNAL",
+      reason: "authenticate failed: auth backend",
     });
   });
 

@@ -354,7 +354,14 @@ export function phaseFor(
       : { phase: "gone", reason: sync.reason, detail: sync.detail };
   }
   if (conn.status === "closed") {
-    return { phase: "gone", reason: "connection-closed", detail: conn.reason };
+    return {
+      phase: "gone",
+      reason: "connection-closed",
+      detail:
+        conn.reason === "refused"
+          ? `refused: ${conn.error.message}`
+          : conn.reason,
+    };
   }
   if (view === null) return { phase: "connecting" };
   if (conn.status === "ready" && sync.kind === "synced") {

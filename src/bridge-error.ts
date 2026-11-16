@@ -62,6 +62,12 @@ export type BridgeErrorCode =
   | "BRIDGE_INTERNAL"
   /** `authenticate()` hook rejected the connection at upgrade time. */
   | "BRIDGE_AUTH_DENIED"
+  /**
+   * `createClient` refused the connection for good — the target it names
+   * does not exist, say — so the same connection would be refused again.
+   * A factory throws a `BridgeError` with this code to say so.
+   */
+  | "BRIDGE_REFUSED"
   /** `authorize()` hook rejected a specific call. */
   | "BRIDGE_COMMAND_DENIED"
   /** Per-connection rate limit exceeded. */
@@ -91,6 +97,7 @@ const BRIDGE_ERROR_CODES: Readonly<Record<BridgeErrorCode, true>> = {
   BRIDGE_ABORTED: true,
   BRIDGE_INTERNAL: true,
   BRIDGE_AUTH_DENIED: true,
+  BRIDGE_REFUSED: true,
   BRIDGE_COMMAND_DENIED: true,
   BRIDGE_RATE_LIMITED: true,
   BRIDGE_ALREADY_REGISTERED: true,

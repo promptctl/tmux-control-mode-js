@@ -764,6 +764,34 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(c.reason).toMatch(/no credentials/);
   });
 
+  it("an auth hook that throws is a fault: BRIDGE_INTERNAL, closed 1011, not a denial", async () => {
+    const events: BridgeObservabilityEvent[] = [];
+    const bridge = createWebSocketBridge({
+      createClient: () => {
+        throw new Error("unreachable: auth never passed");
+      },
+      authenticate: () => {
+        throw new Error("db down");
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws);
+    ws.feedClient({ k: "hello" });
+    await flush();
+
+    const message = "authenticate failed: db down";
+    expect(ws.closeCalls).toEqual([{ code: 1011, reason: message }]);
+    expect(fatalFrames(ws)).toEqual([
+      { k: "error", fatal: true, error: { code: "BRIDGE_INTERNAL", message } },
+    ]);
+    ws.fireClose(1011, message);
+    const c = events.find((e) => e.kind === "connection-closed");
+    if (c?.kind !== "connection-closed") throw new Error("unreachable");
+    expect(c.errorCode).toBe("BRIDGE_INTERNAL");
+  });
+
   // A denial ends the connection with a close whatever code its hook named:
   // `ws` throws on a code it may not send, so a code reaching close()
   // unchecked would leave the socket open until the heartbeat deadline.
@@ -839,30 +867,63 @@ describe("WebSocket bridge — onHello failure-path observability (zng.5.1)", ()
     expect(ws.closeCalls).toEqual([{ code: 4401, reason: "no credentials" }]);
   });
 
-  it("createClient failure surfaces as connection-closed.errorCode BRIDGE_INTERNAL", async () => {
-    const t = createFakeTransport();
-    t.feed(STARTUP_GREETING);
-    const events: BridgeObservabilityEvent[] = [];
-    const bridge = createWebSocketBridge({
-      createClient: () => {
-        throw new Error("tmux spawn failed");
-      },
-      onEvent: (ev) => events.push(ev),
-    });
+  it.each([
+    [
+      "an Error is a fault: BRIDGE_INTERNAL, closed 1011",
+      new Error("tmux spawn failed"),
+      "BRIDGE_INTERNAL",
+      1011,
+      "createClient failed: tmux spawn failed",
+    ],
+    [
+      "any other BridgeError is a fault, its message carried without its code",
+      new BridgeError("BRIDGE_INTERNAL", "spawn failed"),
+      "BRIDGE_INTERNAL",
+      1011,
+      "createClient failed: spawn failed",
+    ],
+    [
+      "a BRIDGE_REFUSED is a refusal: BRIDGE_REFUSED, closed 4403",
+      new BridgeError("BRIDGE_REFUSED", "can't find window: @3"),
+      "BRIDGE_REFUSED",
+      4403,
+      "createClient failed: can't find window: @3",
+    ],
+  ])(
+    "createClient throwing %s",
+    async (_, thrown, errorCode, closeCode, message) => {
+      const t = createFakeTransport();
+      t.feed(STARTUP_GREETING);
+      const events: BridgeObservabilityEvent[] = [];
+      const bridge = createWebSocketBridge({
+        createClient: () => {
+          throw thrown;
+        },
+        onEvent: (ev) => events.push(ev),
+      });
 
-    const ws = createFakeWs();
-    void bridge.handleConnection(ws);
-    ws.feedClient({ k: "hello" });
-    await flush();
-    ws.fireClose(1011, "createClient failed: tmux spawn failed");
+      const ws = createFakeWs();
+      void bridge.handleConnection(ws);
+      ws.feedClient({ k: "hello" });
+      await flush();
 
-    const closed = events.filter((e) => e.kind === "connection-closed");
-    expect(closed).toHaveLength(1);
-    const c = closed[0];
-    if (c.kind !== "connection-closed") throw new Error("unreachable");
-    expect(c.errorCode).toBe("BRIDGE_INTERNAL");
-    expect(c.reason).toMatch(/tmux spawn failed/);
-  });
+      expect(ws.closeCalls).toEqual([{ code: closeCode, reason: message }]);
+      expect(fatalFrames(ws)).toEqual([
+        {
+          k: "error",
+          fatal: true,
+          error: { code: errorCode, message },
+        },
+      ]);
+      ws.fireClose(closeCode, message);
+      const closed = events.filter((e) => e.kind === "connection-closed");
+      expect(closed).toHaveLength(1);
+      const c = closed[0];
+      if (c.kind !== "connection-closed") throw new Error("unreachable");
+      expect(c.errorCode).toBe(errorCode);
+      expect(c.reason).toBe(`[${errorCode}] ${message}`);
+    },
+  );
 
   it("createBridgeConnection failure disposes the already-created client (tmux-lifecycle-zng.s5u)", async () => {
     const t = createFakeTransport();

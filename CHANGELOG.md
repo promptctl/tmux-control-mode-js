@@ -63,9 +63,28 @@ All notable changes to this project are documented here. Format follows
   reading `parse error: unknown command: <that line>`. `MockTmuxServer` does.
 - A block's `begin` event is announced when the block closes, just before its
   `end` or `error`. A sentinel's block is never announced.
+- A `WebSocketTmuxClient` no longer retries a close in 4400–4499, the
+  bridge's refusals, the auth denial's default 4401 among them: it ends
+  `closed` / `refused`. An `authenticate` hook whose denial a retry may
+  outlast (a rate limit, a credential minted afresh per attempt) returns a
+  `code` outside that range, such as 1013 (Try Again Later).
+- A WebSocket bridge whose `authenticate` hook throws reports
+  `BRIDGE_INTERNAL` and closes the socket with 1011, not `BRIDGE_AUTH_DENIED`
+  and 4401, so a `WebSocketTmuxClient` retries it: a throw is a fault (an auth
+  backend's outage), not a decision. A denial the hook returns closes as
+  before.
 
 ### Added
 
+- `ConnectionState` gains `{ status: "closed", reason: "refused", error }`:
+  the server refused the connection for good, and `error` is the bridge's
+  fatal error (`BRIDGE_AUTH_DENIED`, `BRIDGE_REFUSED`), or a `BRIDGE_CLOSED`
+  with the close's reason from a server that sent none. A
+  `WebSocketTmuxClient` ends this way, without retrying, on a close in
+  4400–4499 — the bridge's auth denial (4401), or a `createClient` that throws
+  `new BridgeError("BRIDGE_REFUSED", reason)` (4403). A `WindowTerminal` on
+  it is `gone` at once. The bridge wire gains the `BRIDGE_REFUSED` error
+  code; an older client reads it as a protocol fault and retries.
 - `ClientSizeSurface` (exported from `.` and `./browser`): `setSize`,
   `setWindowSize` and `clearWindowSize` as methods of a connection.
 - `TmuxClient.claimSize()` returns a `ClientSizeClaim` (exported from `.`):
@@ -82,6 +101,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- A `WebSocketTmuxClient` no longer retries a connection the bridge refused
+  for good, which spawned a tmux client per attempt on the server and showed a
+  gone window as reconnecting for the whole retry budget. A `createClient`
+  must throw `BRIDGE_REFUSED` for a target that does not exist; any other
+  throw is still retried.
 - A pane that leaves a window's layout, by exiting or by moving to a window
   of a session tmux sends no layout for, is asked about alone
   (`list-panes -t %P`), not with `list-panes -a`. That query no longer

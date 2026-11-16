@@ -51,6 +51,7 @@ import {
   type ClientFrame,
   type ServerFrame,
 } from "./protocol.js";
+import { thrownMessage } from "../errors.js";
 
 import {
   mapRpcCode,
@@ -97,6 +98,7 @@ import {
   GOING_AWAY,
   INTERNAL_ERROR,
   NORMAL_CLOSURE,
+  REFUSED,
   type ServerCloseCode,
 } from "./close-code.js";
 
@@ -134,6 +136,15 @@ export interface WebSocketBridgeOptions {
    * its transport failed, or it was disposed) every connection on it is
    * closed with BRIDGE_CLOSED. A shared client therefore has to be replaced
    * by the factory once its tmux is gone.
+   *
+   * A factory that cannot back the connection, and never will — the target
+   * it names does not exist, or the identity may not reach it — throws
+   * `new BridgeError("BRIDGE_REFUSED",
+   * reason)`: the socket closes with 4403 and a `WebSocketTmuxClient` ends
+   * `closed` / `refused` without retrying. So a factory that starts a tmux
+   * client should await its readiness and throw `BRIDGE_REFUSED` for a
+   * startup tmux refused (`can't find window: @3`). Any other throw is a
+   * fault, closed `BRIDGE_INTERNAL` with 1011, which the client retries.
    */
   readonly createClient: (
     ctx: ConnectionContext,
@@ -695,13 +706,13 @@ class Connection {
         // already pending — sendFatalAndClose's write-once guard would
         // otherwise silently drop this denial. [LAW:no-silent-failure]
         this.emitUnreportedHandshakeFailure(
-          "BRIDGE_AUTH_DENIED",
+          authResult.errorCode,
           authResult.reason,
         );
         return;
       }
       this.sendFatalAndClose(
-        "BRIDGE_AUTH_DENIED",
+        authResult.errorCode,
         authResult.reason,
         authResult.closeCode,
       );
@@ -750,17 +761,26 @@ class Connection {
     try {
       client = await this.opts.createClient(ctx);
     } catch (err) {
-      const message = `createClient failed: ${err instanceof Error ? err.message : String(err)}`;
+      // [LAW:one-source-of-truth] Whether the failure is final is the
+      // factory's call — only it knows "the target is gone" from "tmux is
+      // restarting". A refusal closes in the refusal range (isRefusal), which
+      // the client does not retry; any other throw is a fault it retries.
+      const refused =
+        err instanceof BridgeError && err.code === "BRIDGE_REFUSED";
+      const code: BridgeErrorCode = refused
+        ? "BRIDGE_REFUSED"
+        : "BRIDGE_INTERNAL";
+      const message = `createClient failed: ${thrownMessage(err)}`;
       if (this.isTearingDown()) {
         // Either finalize already ran for an unrelated reason (the peer
         // disconnected while createClient() was still in flight, reporting
         // that closure with no failure info) or an earlier fatal is already
         // pending (write-once guard would silently drop this one too).
         // [LAW:no-silent-failure]
-        this.emitUnreportedHandshakeFailure("BRIDGE_INTERNAL", message);
+        this.emitUnreportedHandshakeFailure(code, message);
         return;
       }
-      this.sendFatalAndClose("BRIDGE_INTERNAL", message);
+      this.sendFatalAndClose(code, message, refused ? REFUSED : INTERNAL_ERROR);
       return;
     }
     releases.push(() => this.disposeClientSafely(client, ctx));
