@@ -3,6 +3,7 @@
 // extracted from Connection. Owns `helloDeadline`; Connection holds no
 // handshake timer state.
 import type { BridgeErrorCode } from "../../bridge-error.js";
+import { thrownMessage } from "../errors.js";
 import {
   AUTH_DENIED,
   INTERNAL_ERROR,
@@ -75,7 +76,7 @@ export class Handshake {
         ok: false,
         errorCode: "BRIDGE_INTERNAL",
         closeCode: INTERNAL_ERROR,
-        reason: `authenticate failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `authenticate failed: ${thrownMessage(err)}`,
       };
     }
     if (result.ok) return result;
@@ -94,7 +95,7 @@ export class Handshake {
         ok: false,
         errorCode: "BRIDGE_AUTH_DENIED",
         closeCode: AUTH_DENIED,
-        reason: `authenticate failed: ${err instanceof Error ? err.message : String(err)}`,
+        reason: `authenticate failed: ${thrownMessage(err)}`,
       };
     }
   }

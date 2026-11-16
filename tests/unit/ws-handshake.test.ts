@@ -2,7 +2,10 @@
 // Unit tests for the Handshake collaborator extracted from Connection.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Handshake } from "../../src/connectors/websocket/handshake.js";
-import { parseDurationMs } from "../../src/connectors/websocket/protocol.js";
+import {
+  BridgeError,
+  parseDurationMs,
+} from "../../src/connectors/websocket/protocol.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -117,6 +120,19 @@ describe("Handshake — authenticate()", () => {
       errorCode: "BRIDGE_AUTH_DENIED",
       closeCode: 4401,
       reason: expect.stringContaining("1005"),
+    });
+  });
+
+  it("a hook that throws a BridgeError is reported under BRIDGE_INTERNAL, its message carried without its own code", async () => {
+    const hook = vi
+      .fn()
+      .mockRejectedValue(new BridgeError("BRIDGE_TIMEOUT", "auth backend"));
+    const hs = new Handshake(ms(100), undefined, hook);
+    const result = await hs.authenticate();
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "BRIDGE_INTERNAL",
+      reason: "authenticate failed: auth backend",
     });
   });
 

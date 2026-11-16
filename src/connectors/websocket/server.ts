@@ -51,6 +51,7 @@ import {
   type ClientFrame,
   type ServerFrame,
 } from "./protocol.js";
+import { thrownMessage } from "../errors.js";
 
 import {
   mapRpcCode,
@@ -137,7 +138,8 @@ export interface WebSocketBridgeOptions {
    * by the factory once its tmux is gone.
    *
    * A factory that cannot back the connection, and never will — the target
-   * it names does not exist — throws `new BridgeError("BRIDGE_REFUSED",
+   * it names does not exist, or the identity may not reach it — throws
+   * `new BridgeError("BRIDGE_REFUSED",
    * reason)`: the socket closes with 4403 and a `WebSocketTmuxClient` ends
    * `closed` / `refused` without retrying. So a factory that starts a tmux
    * client should await its readiness and throw `BRIDGE_REFUSED` for a
@@ -768,7 +770,7 @@ class Connection {
       const code: BridgeErrorCode = refused
         ? "BRIDGE_REFUSED"
         : "BRIDGE_INTERNAL";
-      const message = `createClient failed: ${err instanceof BridgeError ? err.toPayload().message : err instanceof Error ? err.message : String(err)}`;
+      const message = `createClient failed: ${thrownMessage(err)}`;
       if (this.isTearingDown()) {
         // Either finalize already ran for an unrelated reason (the peer
         // disconnected while createClient() was still in flight, reporting

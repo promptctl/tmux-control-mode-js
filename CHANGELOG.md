@@ -78,7 +78,8 @@ All notable changes to this project are documented here. Format follows
 
 - `ConnectionState` gains `{ status: "closed", reason: "refused", error }`:
   the server refused the connection for good, and `error` is the bridge's
-  fatal error (`BRIDGE_AUTH_DENIED`, `BRIDGE_REFUSED`). A
+  fatal error (`BRIDGE_AUTH_DENIED`, `BRIDGE_REFUSED`), or a `BRIDGE_CLOSED`
+  with the close's reason from a server that sent none. A
   `WebSocketTmuxClient` ends this way, without retrying, on a close in
   4400–4499 — the bridge's auth denial (4401), or a `createClient` that throws
   `new BridgeError("BRIDGE_REFUSED", reason)` (4403). A `WindowTerminal` on

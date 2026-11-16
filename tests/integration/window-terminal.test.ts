@@ -448,8 +448,17 @@ describe.skipIf(!RUN_INTEGRATION)(
       socket = "";
     });
 
-    // A bridge on a loopback port and a browser client of it, retrying on a
-    // short backoff, both torn down with the test. `sockets` holds every
+    // The browser's reconnect policy: a short, fixed backoff.
+    const RETRY = {
+      maxAttempts: 5,
+      initialDelayMs: 25,
+      maxDelayMs: 50,
+      factor: 1,
+      jitterMs: 0,
+    } as const;
+
+    // A bridge on a loopback port and a browser client of it, retrying on
+    // RETRY, both torn down with the test. `sockets` holds every
     // socket the browser opened, latest last.
     async function browserOverBridge(
       createClient: () => TmuxClient,
@@ -484,13 +493,7 @@ describe.skipIf(!RUN_INTEGRATION)(
           sockets.push(ws);
           return ws as unknown as BrowserWebSocketLike;
         },
-        reconnect: {
-          maxAttempts: 5,
-          initialDelayMs: 25,
-          maxDelayMs: 50,
-          factor: 1,
-          jitterMs: 0,
-        },
+        reconnect: RETRY,
         heartbeatIntervalMs: 0,
       });
       teardown.push(() => browser.close());
@@ -526,10 +529,12 @@ describe.skipIf(!RUN_INTEGRATION)(
       };
     }
 
-    // Longer than the whole retry budget's backoff (5 × ≤50ms), so a retry
-    // the client wrongly scheduled would have reached the factory.
+    // Twice the whole retry budget's backoff (no jitter), so a retry the
+    // client wrongly scheduled would have reached the factory.
     const pastRetryBudget = (): Promise<void> =>
-      new Promise((r) => setTimeout(r, 400));
+      new Promise((r) =>
+        setTimeout(r, 2 * RETRY.maxAttempts * RETRY.maxDelayMs),
+      );
 
     it("a dropped socket is stale with the last picture, then live again with each pane reseeded once", async () => {
       const tmuxClient = await attachSession(socket, uniqueName("br"), {
