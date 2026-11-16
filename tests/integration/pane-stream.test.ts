@@ -57,13 +57,22 @@ async function paneSize(
 }
 
 class CollectorSink implements TerminalSink {
-  seedCalls: { byteLength: number; cursor: SeedCursor | null }[] = [];
+  seedCalls: {
+    byteLength: number;
+    cursor: SeedCursor | null;
+    // The size the sink was last given when the seed reached it.
+    drawnAt: { cols: number; rows: number } | undefined;
+  }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
   seed(captured: Uint8Array, cursor: SeedCursor | null): void {
     // seed carries raw terminal bytes (may include 0x80-0xFF / invalid UTF-8),
     // so assert on byteLength rather than a lossy UTF-8 decode.
-    this.seedCalls.push({ byteLength: captured.byteLength, cursor });
+    this.seedCalls.push({
+      byteLength: captured.byteLength,
+      cursor,
+      drawnAt: this.resizeCalls.at(-1),
+    });
   }
   write(_bytes: Uint8Array): void {
     this.writeCount += 1;
@@ -143,6 +152,28 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(cursor).not.toBeNull();
       expect(cursor!.col).toBeGreaterThanOrEqual(0);
       expect(cursor!.row).toBeGreaterThanOrEqual(0);
+    }, 15000);
+
+    it("draws a pane outside the client's session at its size from the first seed", async () => {
+      // tmux reports a pane's size to a control client only for a pane in
+      // the client's session, so this pane's size comes with its seed.
+      session = uniqueName("own");
+      client = await createSession(socket, session);
+      const other = await client.execute(
+        `new-session -d -s ${uniqueName("other")} -x 100 -y 30 -P -F '#{pane_id}'`,
+      );
+      const paneId = Number((other.output[0] ?? "").replace("%", ""));
+
+      const sink = new CollectorSink();
+      stream = new PaneStream({ client, paneId });
+      stream.attach(sink);
+      await readUntil(
+        () => stream!.state,
+        (state) => state === "live",
+        "PaneStream never went live",
+      );
+      expect(sink.seedCalls).toHaveLength(1);
+      expect(sink.seedCalls[0].drawnAt).toEqual(await paneSize(client, paneId));
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {

@@ -85,13 +85,11 @@ All notable changes to this project are documented here. Format follows
   claims and unacked bytes, and nothing of the others'.
 
 - `./window-terminal`: a pane draws at tmux's size from its first frame, even
-  when tmux has not reported its size. tmux reports a pane's size only when
-  it changes, so a pane that never resized got no size, and its `XtermSink`
-  held the seed and every byte behind it. Each seed now carries the size it
-  was captured at, and `PaneStream` hands it to the sink just before the
-  seed. `XtermSink` no longer holds anything back: `resize()`, `seed()` and
-  `write()` reach xterm.js when they are called, so a host driving one
-  directly sizes it before writing.
+  when tmux has not reported its size. tmux reports a pane's size to a
+  control client only for a pane in that client's session, so a pane in
+  another session got no size and stayed blank. Each capture now reads the
+  pane's size along with its contents, and the pane is drawn at that size
+  until tmux reports one.
 
 - `./window-terminal`: a pane's scrollback holds its history once, however
   often it is captured again. Each resize, `%continue` or reconnect wrote

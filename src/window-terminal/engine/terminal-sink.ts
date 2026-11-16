@@ -45,8 +45,10 @@ export interface PaneSize {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.resize(cols, rows)      (the size the seed was
- *                                                          captured at, if known)
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (the size the stream
+ *                                                          knows, if any)
+ *                        →  sink.resize(cols, rows)      (again, as the seed
+ *                                                          lands)
  *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
  *                                                          the live bytes
  *                                                          captured behind it)
@@ -120,10 +122,10 @@ export interface TerminalSink {
 
   /**
    * Apply the current pane geometry, as tmux (the size authority) reported
-   * it: before each seed, with the size that seed was captured at, and on
-   * each `subscription-changed` for this pane while attached. A seed is drawn
-   * at the size the sink was last given, so it lands at tmux's size from its
-   * first frame.
+   * it: at attach and before each seed, with the size the stream knows, and
+   * on each `subscription-changed` for this pane while attached. A seed is
+   * drawn at the size the sink was last given, so it lands at tmux's size
+   * from its first frame.
    */
   resize(cols: number, rows: number): void;
 
@@ -169,12 +171,6 @@ export interface SeedCall {
   readonly cursor: SeedCursor | null;
 }
 
-/** A recorded `resize()` call. */
-export interface ResizeCall {
-  readonly cols: number;
-  readonly rows: number;
-}
-
 export interface BufferingSinkOptions {
   /**
    * Initial visibility for `isVisible()`. Default `true` (matches the
@@ -190,7 +186,7 @@ export class BufferingSink implements TerminalSink {
   /** Every `write()` call's bytes, in order. Reset by `clear()`. */
   readonly writes: Uint8Array[] = [];
   /** Every `resize()` call in order. Reset by `clear()`. */
-  readonly resizeCalls: ResizeCall[] = [];
+  readonly resizeCalls: PaneSize[] = [];
 
   private isDisposed = false;
   private visible: boolean;

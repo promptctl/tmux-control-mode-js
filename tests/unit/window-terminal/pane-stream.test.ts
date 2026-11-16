@@ -996,8 +996,8 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
   const SIZED = "0;0;0;1;0;0;0;1;24;0;0;23;80";
 
   it("gives the sink the seed's size before the seed, with no size report", async () => {
-    // tmux reports a size only when it changes, so a pane that never resizes
-    // never reports one: the seed carries the size it was captured at.
+    // tmux reports a pane's size only for a pane in the control client's
+    // session: the seed carries the size it was captured at.
     const { stream } = makeStream({ capture: "hello", cursor: SIZED });
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -1019,6 +1019,33 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
+  it("keeps the reported size over a seed taken at another size", async () => {
+    // The seed caught the pane mid zoom-and-unzoom. tmux will not report
+    // 100;30 again, so were the seed's size to win, the sink would stay at it.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(sink.events.filter((e) => e.startsWith("resize"))).toEqual([
+      "resize(100x30)",
+      "resize(100x30)",
+    ]);
+    stream.dispose();
+  });
+
+  it("sizes a sink at attach while the pane is paused", () => {
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    expect(sink.events).toEqual(["resize(100x30)"]);
     stream.dispose();
   });
 
@@ -1140,8 +1167,8 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(stream.state).toBe("seeding"); // not the cached fast path
     await flushTicks();
     expect(client.capturePaneCount()).toBe(captures + 1);
-    expect(sink.events[0]).toBe("resize(100x30)");
-    expect(sink.events[1]).toMatch(/^seed/);
+    const seedAt = sink.events.findIndex((e) => e.startsWith("seed"));
+    expect(sink.events[seedAt - 1]).toBe("resize(100x30)");
     stream.dispose();
   });
 

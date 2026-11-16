@@ -247,9 +247,12 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // The pane's size as tmux last reported it — by the size subscription or
-  // with a seed — null before the first report.
-  private size: PaneSize | null = null;
+  // The pane's size as the size subscription last reported it, null until
+  // it has. tmux keeps quiet while the value matches what it last sent, so
+  // once it has reported, its silence means "unchanged since that report".
+  private reported: PaneSize | null = null;
+  // The size the last seed was captured at, null before one succeeds.
+  private seeded: PaneSize | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -408,11 +411,14 @@ export class PaneStream implements ReseedTarget {
   // Per-pane width;height in one subscription (single message,
   // semicolon-separated) so tmux performs the layout walk for us.
   // [LAW:no-silent-failure] A failed subscribe means tmux will never report
-  //   a change of this pane's geometry, so the sink keeps the size its last
-  //   seed brought while the pane moves on. `reportError` lifts the failure
+  //   this pane's geometry, so the sink keeps the size its last seed brought
+  //   while the pane moves on. `reportError` lifts the failure
   //   to the 'error' seam (classifying connection-gone as the quiet,
   //   reconnect-re-driven case).
   private subscribeSize(): void {
+    // A new subscription has reported nothing yet; tmux sends its first
+    // value at its next check.
+    this.reported = null;
     void this.client
       .subscribeRaw(
         this.subscriptionName,
@@ -484,6 +490,7 @@ export class PaneStream implements ReseedTarget {
     // Reset attach-scoped activity counter so consumers see "since I started
     // looking", not "since the universe began."
     this.currentBytesSinceAttach = 0;
+    this.giveSize(sink);
 
     if (this.seedCycle.phase !== "idle") {
       // A capture-pane is already in flight from a previous attach (e.g.
@@ -501,7 +508,6 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      this.giveSize(sink);
       sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
@@ -809,9 +815,7 @@ export class PaneStream implements ReseedTarget {
     // snapshot; `trailing` is the rest. A failed capture holds none of them.
     const trailing = cycle.buffer.slice(reply === null ? 0 : reply.begunAt);
 
-    // The capture ran after every size report already received, so its size
-    // is the pane's size now.
-    this.size = picture?.size ?? this.size;
+    this.seeded = picture?.size ?? this.seeded;
 
     // Cache for the next attach() — a re-attach reuses this without a fresh
     // capture-pane round-trip. A failed capture is no picture, so it is never
@@ -831,8 +835,7 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes behind it over as one ordered value,
-    // at the size it was captured at (or, with no picture, the size the
-    // stream knows: tmux reports a size only when it changes).
+    // at the size the stream knows now.
     this.giveSize(liveSink);
     if (picture !== null) {
       liveSink.seed(picture.captured, picture.cursor, trailing);
@@ -905,16 +908,28 @@ export class PaneStream implements ReseedTarget {
     // sink at the old size. tmux's screen is right: take it again. Detached
     // too: a resize that prints nothing still leaves the cached picture at
     // the old size.
+    const known = this.size;
     const moved =
-      this.size !== null &&
-      (this.size.cols !== dims.cols || this.size.rows !== dims.rows);
-    this.size = dims;
+      known !== null && (known.cols !== dims.cols || known.rows !== dims.rows);
+    this.reported = dims;
     if (moved) this.recapture();
+  }
+
+  // [LAW:one-source-of-truth] The pane's size, derived: the subscription's
+  //   report once it has made one, else the last seed's. A seed may be taken
+  //   while the pane is briefly at another size (a zoom and unzoom between
+  //   two subscription checks); were it to win, tmux's silence afterwards
+  //   would leave the sink at that size. Until the subscription reports — and
+  //   for a pane outside the control client's session, it never does — the
+  //   seed's size is the only one tmux has given.
+  private get size(): PaneSize | null {
+    return this.reported ?? this.seeded;
   }
 
   // Hand `sink` the size the stream knows, when it knows one.
   private giveSize(sink: TerminalSink): void {
-    if (this.size !== null) sink.resize(this.size.cols, this.size.rows);
+    const size = this.size;
+    if (size !== null) sink.resize(size.cols, size.rows);
   }
 
   private setState(next: PaneStreamState): void {

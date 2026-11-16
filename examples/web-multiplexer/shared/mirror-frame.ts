@@ -24,8 +24,7 @@
 
 /**
  * The pane geometry, sent once before the seed so the viewer can `resize` its
- * sink (a fresh `XtermSink` buffers every write until its first resize — the
- * `.4` first-paint finding). Re-sent if the pane's size changes under it.
+ * sink before the seed is drawn. Re-sent if the pane's size changes under it.
  */
 export interface MirrorSizeFrame {
   readonly kind: "size";
