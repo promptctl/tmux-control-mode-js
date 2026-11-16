@@ -165,6 +165,10 @@ describe("createCellMeasure", () => {
     expect(() => m.cellAt(font("Missing", 1))(12)).toThrow(
       /cannot lay out 12px Missing/,
     );
+    // Letter spacing does not make a glyph that measured nothing a font.
+    expect(() => m.cellAt(font("Missing", 1, 2))(12)).toThrow(
+      /cannot lay out 12px Missing/,
+    );
     m.dispose();
   });
 
