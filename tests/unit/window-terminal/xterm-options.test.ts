@@ -71,6 +71,26 @@ describe("parseXtermOptions", () => {
     expect((thrown as Error).cause).toBeInstanceOf(Error);
   });
 
+  it("refuses a key xterm does not have", () => {
+    expect(() =>
+      parseXtermOptions({ cursorStle: "bar" } as unknown as XtermOptions),
+    ).toThrow(new RangeError("xterm.cursorStle is not an xterm.js option"));
+  });
+
+  it.each([
+    ["lineHeight", NaN],
+    ["lineHeight", Infinity],
+    ["letterSpacing", NaN],
+    ["letterSpacing", -Infinity],
+  ])(
+    "refuses %s %s, which xterm takes but no window can be sized from",
+    (key, value) => {
+      expect(() => parseXtermOptions({ [key]: value } as XtermOptions)).toThrow(
+        new RangeError(`xterm.${key} must be finite, not ${value}`),
+      );
+    },
+  );
+
   it("accepts the edge of each range", () => {
     expect(() =>
       parseXtermOptions({

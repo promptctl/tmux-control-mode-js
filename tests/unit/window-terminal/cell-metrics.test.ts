@@ -163,7 +163,17 @@ describe("createCellMeasure", () => {
     charScale = { width: 0, height: 0 };
     const m = createCellMeasure(win);
     expect(() => m.cellAt(font("Missing", 1))(12)).toThrow(
-      /cannot measure 12px Missing/,
+      /cannot lay out 12px Missing/,
+    );
+    m.dispose();
+  });
+
+  it("a letter spacing that eats the glyph's width throws: no cell, no columns", () => {
+    const { win } = stubWindow(1);
+    const m = createCellMeasure(win);
+    // 10px: char 6 wide; -6 leaves a cell 0 wide.
+    expect(() => m.cellAt(font("Mono", 1, -6))(10)).toThrow(
+      /cannot lay out 10px Mono: .* a cell of 0x/,
     );
     m.dispose();
   });

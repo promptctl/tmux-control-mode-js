@@ -576,6 +576,52 @@ describe("XtermSink: in-place option setters (O10)", () => {
     expect(c.dispose).toHaveBeenCalledOnce();
   });
 
+  it("a release that throws as well loses neither error, and releases the rest", () => {
+    const refused = new Error("proposed API not allowed");
+    const stuck = new Error("cannot dispose");
+    const b = {
+      activate: vi.fn(() => {
+        throw refused;
+      }),
+      dispose: vi.fn(),
+    };
+    const c = {
+      activate: vi.fn(),
+      dispose: vi.fn(() => {
+        throw stuck;
+      }),
+    };
+    const d = { activate: vi.fn(), dispose: vi.fn() };
+    let thrown: unknown;
+    try {
+      new XtermSink({ container: makeContainer(), addons: () => [b, c, d] });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors).toEqual([refused, stuck]);
+    expect(lastTerm?.dispose).toHaveBeenCalledOnce();
+    expect(d.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("a terminal that fails to open after it is constructed is disposed, and the error leaves as thrown", () => {
+    const broken = new Error("no observer");
+    vi.stubGlobal(
+      "IntersectionObserver",
+      vi.fn(function () {
+        throw broken;
+      }),
+    );
+    try {
+      expect(() => new XtermSink({ container: makeContainer() })).toThrow(
+        broken,
+      );
+      expect(lastTerm?.dispose).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("setOptions writes only what changed: a theme equal in a new object is left alone, a new function is written", () => {
     const { sink, term } = newSink();
     const first = vi.fn();

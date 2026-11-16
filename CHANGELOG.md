@@ -11,7 +11,7 @@ All notable changes to this project are documented here. Format follows
 - `./window-terminal` takes the host's xterm.js options as `xterm`
   (`XtermOptions`: `ITerminalOptions` less the ones the terminal sets) in
   place of `appearance` (`Appearance` is gone), at mount and through
-  `update()`, and every pane has them. A value xterm.js refuses throws
+  `update()`, and every pane has them. A key xterm.js does not have, a value it refuses, or a non-finite `lineHeight` or `letterSpacing` throws
   `RangeError` there. `xterm` refuses `scrollback` (`history` sets it),
   `tabStopWidth`, `windowOptions` and `overviewRulerWidth`, as well as the
   sizes and modes tmux owns. The React component updates each setting on

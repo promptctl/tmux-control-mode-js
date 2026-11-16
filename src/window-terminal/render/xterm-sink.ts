@@ -15,7 +15,7 @@
 // State invariants this class enforces:
 //
 //  1. The `Terminal` is constructed once in the constructor and disposed
-//     once in `dispose()` (or in the constructor, when a host addon throws).
+//     once in `dispose()` (or in the constructor, when opening it throws).
 //     Option changes (the host's `XtermOptions`, the font size) flow
 //     through xterm's in-place option setters; we never
 //     tear-down-and-rebuild (O10).
@@ -57,6 +57,25 @@ const utf8Encoder = new TextEncoder();
 
 const DEFAULT_FONT_SIZE = 14;
 const DEFAULT_SCROLLBACK = 10000;
+
+// Dispose each of `owned`, then throw `err`. A dispose that throws as well
+// is not lost: the error leaves as an AggregateError, `err` first.
+function release(err: unknown, owned: readonly IDisposable[]): never {
+  const failures: unknown[] = [];
+  for (const d of owned) {
+    try {
+      d.dispose();
+    } catch (e) {
+      failures.push(e);
+    }
+  }
+  throw failures.length === 0
+    ? err
+    : new AggregateError(
+        [err, ...failures],
+        "an xterm failed to open, and releasing it threw as well",
+      );
+}
 
 export interface XtermSinkOptions {
   readonly container: HTMLElement;
@@ -118,31 +137,25 @@ export class XtermSink implements TerminalSink {
     //   constructed, so it supplies each reset value; the terminal keeps no
     //   table of xterm's defaults.
     this.base = { ...this.terminal.options };
-    // Before the addons load: one may need an option (Unicode 11 needs
-    // `allowProposedApi`).
-    this.setOptions(opts.xterm ?? {});
-    this.terminal.open(this.container);
-    this.loadAddons(opts.addons ?? (() => []));
-
-    this.visibility = new VisibilityTracker(this.container);
-  }
-
-  // The sink owns every addon the factory made. If the factory or a load
-  // throws, the terminal (and with it the addons already loaded) and the
-  // addons not yet loaded are released before the error leaves.
-  private loadAddons(factory: XtermAddons): void {
+    // The sink owns the terminal and every addon the factory made. If any
+    // step throws, the terminal (and with it each addon xterm took, the one
+    // whose activate threw included) and the addons it never took are
+    // released before the error leaves.
     let addons: readonly ITerminalAddon[] = [];
-    let loaded = 0;
+    let taken = 0;
     try {
-      addons = factory();
+      // Before the addons load: one may need an option (Unicode 11 needs
+      // `allowProposedApi`).
+      this.setOptions(opts.xterm ?? {});
+      this.terminal.open(this.container);
+      addons = (opts.addons ?? (() => []))();
       for (const addon of addons) {
+        taken += 1;
         this.terminal.loadAddon(addon);
-        loaded += 1;
       }
+      this.visibility = new VisibilityTracker(this.container);
     } catch (err) {
-      this.terminal.dispose();
-      for (const addon of addons.slice(loaded + 1)) addon.dispose();
-      throw err;
+      release(err, [this.terminal, ...addons.slice(taken)]);
     }
   }
 

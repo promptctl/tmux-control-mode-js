@@ -140,9 +140,12 @@ export class WindowRenderer implements PaneSurfaces {
       outline: "1px solid var(--wt-border-color, #555)",
     });
     this.grid.appendChild(el);
-    const sink = this.open(pane, el);
+    const { sink, failures } = this.open(el);
     const offInput = sink.onInput(keys);
     this.panes.set(pane, { el, sink });
+    // Reported once the pane is held: a listener that disposes the terminal
+    // finds the renderer whole, and disposes this pane with the rest.
+    for (const cause of failures) this.onError(pane, cause);
     return {
       sink,
       dispose: () => {
@@ -154,9 +157,12 @@ export class WindowRenderer implements PaneSurfaces {
     };
   }
 
-  // A pane's xterm, or nothing drawn where the host's addons refused to open
-  // one: the pane is still the window's, an empty box, reported once.
-  private open(pane: PaneId, el: HTMLDivElement): PaneDrawing {
+  // A pane's xterm, or nothing drawn where it failed to open (a host addon
+  // threw): the pane is still the window's, an empty box, reported once.
+  private open(el: HTMLDivElement): {
+    readonly sink: PaneDrawing;
+    readonly failures: readonly unknown[];
+  } {
     let sink: XtermSink;
     try {
       sink = new XtermSink({
@@ -167,8 +173,7 @@ export class WindowRenderer implements PaneSurfaces {
         addons: this.addons,
       });
     } catch (cause) {
-      this.onError(pane, cause);
-      return NOTHING_DRAWN;
+      return { sink: NOTHING_DRAWN, failures: [cause] };
     }
     // The pane's own box clips the terminal to its cell rect; a viewport
     // scrollbar would cover its last columns. Wheel scrolling still works.
@@ -177,7 +182,7 @@ export class WindowRenderer implements PaneSurfaces {
     if (viewport !== null && viewport !== undefined) {
       viewport.style.scrollbarWidth = "none";
     }
-    return sink;
+    return { sink, failures: [] };
   }
 
   // -------------------------------------------------------------------------

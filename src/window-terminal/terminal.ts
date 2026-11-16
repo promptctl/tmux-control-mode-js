@@ -37,7 +37,9 @@ import {
   type Sizing,
 } from "./options.js";
 import {
+  givenOptions,
   parseXtermOptions,
+  sameOption,
   type ParsedXterm,
   type XtermAddons,
   type XtermOptions,
@@ -169,8 +171,11 @@ export function createWindowTerminal(
       // Both parsed before either applies: a bad value changes nothing.
       const nextSizing =
         settings.sizing === undefined ? sizing : parseSizing(settings.sizing);
+      // The options in use are already parsed: a host passing an equal set
+      // (an inline object, every render) costs no probe terminal.
       const nextXterm =
-        settings.xterm === undefined
+        settings.xterm === undefined ||
+        sameOption(givenOptions(settings.xterm), xterm.given)
           ? xterm
           : parseXtermOptions(settings.xterm);
       if (disposed) return;

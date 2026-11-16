@@ -236,7 +236,7 @@ A prop taken away returns to its default.
 
 `xterm` is xterm.js's options for every pane (`ITerminalOptions`): `theme`,
 `fontFamily`, `linkHandler`, `cursorStyle`, `disableStdin` and the rest. An
-option left out returns to its default, and a value xterm.js refuses throws
+option left out returns to its default. A key xterm.js does not have, a value it refuses, or a `lineHeight` or `letterSpacing` that is not finite throws
 `RangeError` at the call that passed it, changing nothing. The terminal sets
 the ones tmux or its layout decides, and the type refuses them: `cols` and
 `rows`, `fontSize` (`sizing.font`), `scrollback` (`history`), `tabStopWidth`

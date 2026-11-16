@@ -116,16 +116,18 @@ export function createCellMeasure(win: Window): CellMeasure {
         if (hit !== undefined) return hit;
         const char =
           charSizeOnCanvas(ctx, family, px) ?? charSizeInDom(doc, family, px);
-        if (!(char.width > 0 && char.height > 0)) {
-          throw new Error(
-            `cannot measure ${px}px ${family}: the document measured it as ${char.width}x${char.height}`,
-          );
-        }
         const dpr = win.devicePixelRatio;
         const cell = {
           width: (char.width * dpr + Math.round(letterSpacing)) / dpr,
           height: Math.floor(Math.ceil(char.height * dpr) * lineHeight) / dpr,
         };
+        // The cell, not the glyph: a letterSpacing that eats the glyph's
+        // width leaves no column to lay a window out in.
+        if (!(cell.width > 0 && cell.height > 0)) {
+          throw new Error(
+            `cannot lay out ${px}px ${family}: the document measured its glyph as ${char.width}x${char.height}, a cell of ${cell.width}x${cell.height}`,
+          );
+        }
         cache.set(key, cell);
         return cell;
       };

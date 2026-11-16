@@ -86,17 +86,25 @@ export function cellFontOf(options: ITerminalOptions): CellFont {
   };
 }
 
+/** The options a host gave: a key given as `undefined` is a key left out. */
+export function givenOptions(raw: XtermOptions | undefined): XtermOptions {
+  return Object.fromEntries(
+    Object.entries(raw ?? {}).filter(([, v]) => v !== undefined),
+  ) as XtermOptions;
+}
+
 /**
  * [LAW:parse-dont-validate] An owned option is refused at the call that
  * passed it; every other is set on an unopened xterm.js terminal first, so a
- * value xterm refuses throws there, before any pane has changed. A key given
- * as `undefined` is a key left out.
- * [LAW:single-enforcer] xterm.js's own option setters judge the values; the
- *   terminal keeps no copy of their rules.
+ * key xterm does not have, or a value it refuses, throws there, before any
+ * pane has changed. The cell's font must be finite, since the window is
+ * sized from it.
+ * [LAW:single-enforcer] xterm.js's own options object judges the keys and its
+ *   setters the values; the terminal keeps no copy of their rules.
  */
 export function parseXtermOptions(raw: XtermOptions | undefined): ParsedXterm {
-  const given = Object.entries(raw ?? {}).filter(([, v]) => v !== undefined);
-  for (const [key] of given) {
+  const given = givenOptions(raw);
+  for (const key of Object.keys(given)) {
     if (owned.has(key)) {
       throw new RangeError(
         `xterm.${key} is set by the window terminal, not the host`,
@@ -106,7 +114,10 @@ export function parseXtermOptions(raw: XtermOptions | undefined): ParsedXterm {
   const probe = new Terminal({ ...TERMINAL_DEFAULTS });
   try {
     const o = probe.options as Record<string, unknown>;
-    for (const [key, value] of given) {
+    for (const [key, value] of Object.entries(given)) {
+      if (!(key in o)) {
+        throw new RangeError(`xterm.${key} is not an xterm.js option`);
+      }
       try {
         o[key] = value;
       } catch (cause) {
@@ -115,10 +126,13 @@ export function parseXtermOptions(raw: XtermOptions | undefined): ParsedXterm {
         });
       }
     }
-    return {
-      given: Object.fromEntries(given) as XtermOptions,
-      font: cellFontOf(probe.options),
-    };
+    const font = cellFontOf(probe.options);
+    for (const key of ["lineHeight", "letterSpacing"] as const) {
+      if (!Number.isFinite(font[key])) {
+        throw new RangeError(`xterm.${key} must be finite, not ${font[key]}`);
+      }
+    }
+    return { given, font };
   } finally {
     probe.dispose();
   }

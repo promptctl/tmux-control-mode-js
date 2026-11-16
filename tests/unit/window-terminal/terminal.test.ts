@@ -21,6 +21,8 @@ interface MockTerminal {
   options: Record<string, unknown>;
 }
 const terminals: MockTerminal[] = [];
+// Every Terminal constructed: the panes' and the options checker's.
+const constructed = { count: 0 };
 
 vi.mock("@xterm/xterm", () => {
   class TerminalMock {
@@ -41,8 +43,17 @@ vi.mock("@xterm/xterm", () => {
     // As xterm does: every option has a value, its default where not given,
     // and the setter refuses a cursor style it does not know.
     constructor(opts: Record<string, unknown>) {
+      constructed.count += 1;
       this.options = new Proxy(
-        { lineHeight: 1, letterSpacing: 0, cursorStyle: "block", ...opts },
+        {
+          lineHeight: 1,
+          letterSpacing: 0,
+          cursorStyle: "block",
+          theme: {},
+          linkHandler: null,
+          allowProposedApi: false,
+          ...opts,
+        },
         {
           set(o, key, value) {
             if (
@@ -226,13 +237,17 @@ describe("window terminal — what is drawn", () => {
     expect(terminals.map((t) => t.options.fontSize)).toEqual([12, 12]);
   });
 
-  it("xterm options equal to the ones in use, in a new object, leave every xterm alone", async () => {
+  it("xterm options equal to the ones in use, in a new object, leave every xterm alone and construct none", async () => {
     const { terminal, flush } = await live();
     terminal.update({ xterm: { theme: { background: "#000" } } });
     flush();
     const themes = terminals.map((t) => t.options.theme);
-    terminal.update({ xterm: { theme: { background: "#000" } } });
+    const before = constructed.count;
+    terminal.update({
+      xterm: { theme: { background: "#000" }, logger: undefined },
+    });
     flush();
+    expect(constructed.count).toBe(before);
     expect(terminals.map((t) => t.options.theme)).toEqual(themes);
     expect(terminals.every((t, i) => t.options.theme === themes[i])).toBe(true);
     terminal.update({ xterm: { theme: { background: "#111" } } });
@@ -329,6 +344,17 @@ describe("window terminal — what is drawn", () => {
     expect(m.pane("%1")).not.toBeNull();
     expect(m.pane("%1")?.querySelector(".xterm")).toBeNull();
     m.terminal.dispose();
+  });
+
+  it("an onError listener that disposes the terminal on a pane that failed to open leaves nothing behind", async () => {
+    const addons = () => {
+      throw new Error("proposed API not allowed");
+    };
+    const m = mount(undefined, undefined, { addons });
+    m.terminal.onError(() => m.terminal.dispose());
+    await settle();
+    expect(m.errors.map((e) => [e.seam, e.paneId])).toEqual([["render", "%0"]]);
+    expect(m.host.querySelector(".wt-root")).toBeNull();
   });
 
   it("fonts finishing loading make every pane's xterm measure again", async () => {
