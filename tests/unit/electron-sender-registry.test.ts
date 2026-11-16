@@ -233,13 +233,13 @@ describe("SenderRegistry — the live page", () => {
     expect(bridge.registerPeer).not.toHaveBeenCalled();
   });
 
-  it("a navigation tears the page's sender down", () => {
+  it("a navigation tears the page's sender down", async () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
     const state = mustCreate(registry, r.event);
 
-    r.navigate();
+    await r.navigate();
     expect(bridge.removePeer).toHaveBeenCalledWith(state.peer);
     expect(mustCreate(registry, r.event).peer).not.toBe(state.peer);
   });
@@ -278,14 +278,14 @@ describe("SenderRegistry — the live page", () => {
     expect(bridge.registerPeer).toHaveBeenCalledTimes(1);
   });
 
-  it("an ack from a page that has ended releases nothing against the next page's peer", () => {
+  it("an ack from a page that has ended releases nothing against the next page's peer", async () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const r = createIpcHub().createRenderer();
     const old = r.event;
     mustCreate(registry, old);
 
-    r.navigate({ swapFrame: true });
+    await r.navigate({ swapFrame: true });
     mustCreate(registry, r.event);
     registry.ack(old, { paneId: 3, bytes: 128 });
     expect(bridge.ackOutput).not.toHaveBeenCalled();
@@ -310,16 +310,18 @@ describe("SenderRegistry — the live page", () => {
 });
 
 describe("SenderRegistry — register", () => {
-  it("marks subscribed, attaches the byte sink once, and sends a state snapshot", () => {
+  it("marks subscribed, attaches the byte sink once, and sends a state snapshot", async () => {
     const bridge = makeBridge();
     const client = makeClient();
     client.state = { status: "connecting" };
     const registry = new SenderRegistry({ bridge, client });
-    const r = createIpcHub().createRenderer();
+    const hub = createIpcHub();
+    const r = hub.createRenderer();
     const events = captureEvents(r);
 
     registry.register(r.event);
     registry.register(r.event);
+    await hub.settled();
 
     // Byte sink attached exactly once despite two register calls.
     expect(client.attachBytesSink).toHaveBeenCalledTimes(1);
@@ -329,11 +331,12 @@ describe("SenderRegistry — register", () => {
     });
   });
 
-  it("the per-renderer sink accounts output before forwarding, and no-ops when destroyed", () => {
+  it("the per-renderer sink accounts output before forwarding, and no-ops when destroyed", async () => {
     const bridge = makeBridge();
     const client = makeClient();
     const registry = new SenderRegistry({ bridge, client });
-    const r = createIpcHub().createRenderer();
+    const hub = createIpcHub();
+    const r = hub.createRenderer();
     const events = captureEvents(r);
     registry.register(r.event);
     const state = mustCreate(registry, r.event);
@@ -343,6 +346,7 @@ describe("SenderRegistry — register", () => {
       data: new Uint8Array([1, 2, 3, 4]),
     };
     client.lastSink?.write(chunk);
+    await hub.settled();
 
     expect(bridge.accountOutput).toHaveBeenCalledWith(state.peer, 7, 4);
     expect(events).toContainEqual({
@@ -356,6 +360,7 @@ describe("SenderRegistry — register", () => {
     const before = events.length;
     r.destroy();
     client.lastSink?.write(chunk);
+    await hub.settled();
     expect(bridge.accountOutput).toHaveBeenCalledTimes(1);
     expect(events.length).toBe(before);
   });
@@ -443,7 +448,7 @@ describe("SenderRegistry — teardown", () => {
 });
 
 describe("SenderRegistry — broadcast", () => {
-  it("delivers to subscribed senders and skips unsubscribed ones", () => {
+  it("delivers to subscribed senders and skips unsubscribed ones", async () => {
     const bridge = makeBridge();
     const registry = new SenderRegistry({ bridge, client: makeClient() });
     const hub = createIpcHub();
@@ -455,9 +460,11 @@ describe("SenderRegistry — broadcast", () => {
 
     registry.register(subscribed.event); // isSubscribed = true
     registry.getOrCreate(unsubscribed.event); // never register → not subscribed
+    await hub.settled();
     subEvents.length = 0; // drop the register-time connection-state snapshot
 
     registry.broadcast({ type: "reconnected" });
+    await hub.settled();
 
     expect(subEvents).toContainEqual({ type: "reconnected" });
     expect(unsubEvents).not.toContainEqual({ type: "reconnected" });

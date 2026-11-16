@@ -2,6 +2,10 @@
 // In-memory IPC hub that couples a fake IpcMain with one or more fake
 // WebContents, each showing one page (document) at a time. Mirrors real
 // Electron semantics:
+//   - every cross-process hop (both sends, and an invoke's request and its
+//     reply) is delivered in a later task, in the order it was sent: the
+//     receiving process handles an IPC message as a task of its own, never
+//     inside the sender's call stack.
 //   - structuredClone on every cross-process arg (regressions that depend on
 //     shared identity fail here the same way they'd fail in production).
 //   - ipcMain.handle throws on a second registration for the same channel.
@@ -34,11 +38,12 @@ export interface FakeRenderer {
    * Commit a new document in the main frame (a reload or navigation), firing
    * `did-navigate`. With `swapFrame` the new document gets a new frame host,
    * and the old document's ipcRenderer keeps sending under the old host's ids
-   * — the late messages of a page that has ended. Without it the host is
-   * reused, and Chromium delivers the old document's IPC before the commit,
-   * so the old ipcRenderer throws if used.
+   * — the late messages of a page that has ended, and the commit is
+   * immediate. Without it the host is reused, and Chromium delivers the old
+   * document's IPC before the commit: every message in flight lands first,
+   * and the old ipcRenderer throws if used after.
    */
-  navigate(options?: { readonly swapFrame?: boolean }): void;
+  navigate(options?: { readonly swapFrame?: boolean }): Promise<void>;
   /**
    * The renderer process dies; fires `render-process-gone`. Messages the
    * dead document queued before it died still arrive, under its ids.
@@ -61,6 +66,11 @@ export interface FakeRenderer {
 export interface IpcHub {
   readonly ipcMain: IpcMainLike;
   createRenderer(): FakeRenderer;
+  /**
+   * Resolves once no IPC message is in flight: every send and invoke leg
+   * made so far, and any it caused, has been delivered.
+   */
+  settled(): Promise<void>;
 }
 
 export function createIpcHub(): IpcHub {
@@ -73,6 +83,17 @@ export function createIpcHub(): IpcHub {
   const invokeHandlers = new Map<string, InvokeHandler>();
   const mainOnListeners = new Map<string, Set<OnHandler>>();
   let nextProcessId = 1;
+
+  // [LAW:no-ambient-temporal-coupling] one hop for every crossing, so no test
+  // can rely on an ordering Electron never produces. Same-delay timers fire
+  // in FIFO order, which keeps each direction's messages in send order.
+  const task = (): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, 0));
+  let inFlight = 0;
+  const nextTask = (): Promise<void> => {
+    inFlight++;
+    return task().finally(() => inFlight--);
+  };
 
   const ipcMain: IpcMainLike = {
     handle(channel, listener) {
@@ -101,6 +122,13 @@ export function createIpcHub(): IpcHub {
       mainOnListeners.get(channel)?.delete(listener as OnHandler);
     },
   };
+
+  async function settled(): Promise<void> {
+    // At least one task, so a send the caller's pending microtasks are about
+    // to make is counted before the check.
+    do await task();
+    while (inFlight > 0);
+  }
 
   function createRenderer(): FakeRenderer {
     type RendererHandler = (event: unknown, ...args: unknown[]) => void;
@@ -139,13 +167,17 @@ export function createIpcHub(): IpcHub {
     const sender: WebContentsLike = {
       send(channel, ...args) {
         if (destroyed) return;
-        const set = doc.listeners.get(channel);
-        if (!set) return;
+        const target = doc;
         // Real Electron sends args through structuredClone before they
         // reach the renderer. Mirroring that here means a test that mutates
         // the source object after dispatch (or relies on by-ref identity)
         // fails the same way it would in production.
-        for (const h of set) h({}, ...cloneArgs(args));
+        const payload = cloneArgs(args);
+        void nextTask().then(() => {
+          if (destroyed) return;
+          for (const h of target.listeners.get(channel) ?? [])
+            h({}, ...payload);
+        });
       },
       get mainFrame() {
         if (crashed) {
@@ -189,18 +221,27 @@ export function createIpcHub(): IpcHub {
       };
       const ipcRenderer: IpcRendererLike = {
         async invoke(channel, ...args) {
-          const handler = invokeHandlers.get(channel);
-          if (handler === undefined) {
-            throw new Error(`no handler registered for ${channel}`);
+          const e = event();
+          const payload = cloneArgs(args);
+          await nextTask();
+          try {
+            const handler = invokeHandlers.get(channel);
+            if (handler === undefined) {
+              throw new Error(`no handler registered for ${channel}`);
+            }
+            return cloneArgs([await handler(e, ...payload)])[0];
+          } finally {
+            // The reply, value or error, crosses back as a hop of its own.
+            await nextTask();
           }
-          const result = await handler(event(), ...cloneArgs(args));
-          return cloneArgs([result])[0];
         },
         send(channel, ...args) {
           const e = event();
-          const set = mainOnListeners.get(channel);
-          if (!set) return;
-          for (const h of set) h(e, ...cloneArgs(args));
+          const payload = cloneArgs(args);
+          void nextTask().then(() => {
+            for (const h of mainOnListeners.get(channel) ?? [])
+              h(e, ...payload);
+          });
         },
         on(channel, listener) {
           let set = listeners.get(channel);
@@ -236,7 +277,8 @@ export function createIpcHub(): IpcHub {
         destroyed = true;
         fire("destroyed");
       },
-      navigate({ swapFrame = false } = {}) {
+      async navigate({ swapFrame = false } = {}) {
+        if (!swapFrame) await settled();
         const old = doc;
         old.sends = swapFrame;
         doc = createDocument(
@@ -263,7 +305,11 @@ export function createIpcHub(): IpcHub {
     };
   }
 
-  return { ipcMain, createRenderer };
+  return {
+    ipcMain,
+    createRenderer,
+    settled,
+  };
 }
 
 export function cloneArgs(args: readonly unknown[]): unknown[] {

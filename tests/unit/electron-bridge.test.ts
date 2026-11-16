@@ -272,7 +272,7 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
 // ---------------------------------------------------------------------------
 
 describe("Electron IPC bridge — C4 backpressure", () => {
-  it("emits setPaneAction(Pause) once per-pane outstanding crosses the high watermark", () => {
+  it("emits setPaneAction(Pause) once per-pane outstanding crosses the high watermark", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -287,6 +287,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 
     const renderer = hub.createRenderer();
     createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+    await hub.settled();
 
     // 5 chunks of 30 bytes = 150 bytes outstanding > 100 → pause emitted once.
     for (let i = 0; i < 5; i++) {
@@ -299,7 +300,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(pauseCmds).toHaveLength(1);
   });
 
-  it("emits setPaneAction(Continue) once tmux:ack drops outstanding below the low watermark", () => {
+  it("emits setPaneAction(Continue) once tmux:ack drops outstanding below the low watermark", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -313,6 +314,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     // auto-ack is a real-IPC convenience; here we want deterministic control.
     const renderer = hub.createRenderer();
     renderer.ipcRenderer.send(IPC.register);
+    await hub.settled();
 
     for (let i = 0; i < 5; i++) {
       t.feed(`%output %3 ${"x".repeat(30)}\n`);
@@ -323,10 +325,11 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 
     // Ack 130 bytes → outstanding = 20 < low=25 → exactly one continue.
     renderer.ipcRenderer.send(IPC.ack, { paneId: 3, bytes: 130 });
+    await hub.settled();
     expect(t.sent.filter((c) => c.includes("%3:continue"))).toHaveLength(1);
   });
 
-  it("does not re-pause on every chunk while already paused", () => {
+  it("does not re-pause on every chunk while already paused", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -338,6 +341,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 
     const renderer = hub.createRenderer();
     renderer.ipcRenderer.send(IPC.register);
+    await hub.settled();
 
     for (let i = 0; i < 20; i++) {
       t.feed(`%output %7 ${"x".repeat(30)}\n`);
@@ -345,7 +349,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(t.sent.filter((c) => c.includes("%7:pause"))).toHaveLength(1);
   });
 
-  it("counts outstanding bytes per renderer separately (sum across renderers drives pause)", () => {
+  it("counts outstanding bytes per renderer separately (sum across renderers drives pause)", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -360,6 +364,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const r2 = hub.createRenderer();
     r1.ipcRenderer.send(IPC.register);
     r2.ipcRenderer.send(IPC.register);
+    await hub.settled();
 
     // Each chunk fans out to BOTH renderers, so per-pane total grows by 60
     // (2 × 30) per chunk. 2 chunks = 120 > 100 → pause.
@@ -374,10 +379,11 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 
     // Ack the rest from r1 → outstanding = 0 → resume.
     r1.ipcRenderer.send(IPC.ack, { paneId: 9, bytes: 60 });
+    await hub.settled();
     expect(t.sent.filter((c) => c.includes("%9:continue"))).toHaveLength(1);
   });
 
-  it("invalidates this renderer's outstanding bytes when WebContents is destroyed (resume fires)", () => {
+  it("invalidates this renderer's outstanding bytes when WebContents is destroyed (resume fires)", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -390,6 +396,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     const renderer = hub.createRenderer();
     // High ack batch so renderer never acks before destruction.
     createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+    await hub.settled();
 
     for (let i = 0; i < 5; i++) {
       t.feed(`%output %4 ${"x".repeat(30)}\n`);
@@ -401,7 +408,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
     expect(t.sent.filter((c) => c.includes("%4:continue"))).toHaveLength(1);
   });
 
-  it("dispose resumes any panes the bridge had paused", () => {
+  it("dispose resumes any panes the bridge had paused", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -413,6 +420,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 
     const renderer = hub.createRenderer();
     createRendererBridge(renderer.ipcRenderer, { ackBatchBytes: 1 << 30 });
+    await hub.settled();
 
     for (let i = 0; i < 5; i++) {
       t.feed(`%output %5 ${"x".repeat(30)}\n`);
@@ -441,7 +449,7 @@ describe("Electron IPC bridge — C4 backpressure", () => {
 // ---------------------------------------------------------------------------
 
 describe("Electron IPC bridge — event forwarding", () => {
-  it("forwards tmux events from main to a registered renderer", () => {
+  it("forwards tmux events from main to a registered renderer", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -450,6 +458,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const typed: TmuxMessage[] = [];
     const wildcard: TmuxMessage[] = [];
@@ -467,6 +476,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     t.feed("%window-add @5\n");
     t.feed("%session-renamed $1 my-session\n");
+    await hub.settled();
 
     expect(typed).toEqual([{ type: "window-add", windowId: 5 }]);
     expect(wildcard).toHaveLength(2);
@@ -474,7 +484,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(wildcard[1]?.type).toBe("session-renamed");
   });
 
-  it("does NOT forward the main client's topology-error to renderers (each client owns its own bootstrap)", () => {
+  it("does NOT forward the main client's topology-error to renderers (each client owns its own bootstrap)", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -483,6 +493,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const rendererTopoErrors: unknown[] = [];
     proxy.on("topology-error", (ev) => rendererTopoErrors.push(ev));
@@ -497,6 +508,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     // Reject that bootstrap → the MAIN client emits topology-error locally.
     t.feed("%begin 1 1 1\n%error 1 1 1\n");
+    await hub.settled();
 
     // The renderer proxy has its own router and reports its own failures; the
     // main client's per-instance topology-error must not cross the bridge.
@@ -514,7 +526,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
     // Let the register-time connection-state snapshot reach the proxy so its
     // router is ready before we attach a topology-dependent sink.
-    await Promise.resolve();
+    await hub.settled();
 
     // Event-driven: resolve when the proxy surfaces the failure, so the test
     // waits exactly as long as the real IPC round-trip needs — no fixed
@@ -526,7 +538,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     // A session-scoped sink on the PROXY drives its own router to bootstrap:
     // execute("list-panes -a") → IPC → main client → transport.
     proxy.attachBytesSink({ write() {}, end() {} }, { scope: sessionScope(1) });
-    await Promise.resolve();
+    await hub.settled();
     expect(t.sent.some((c) => c.includes("list-panes -a"))).toBe(true);
 
     // Reject that bootstrap invoke with an %error guard block. The rejection
@@ -596,7 +608,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect(heard).toEqual(["exit", "disposed"]);
   });
 
-  it("preserves Uint8Array contents through OutputMessage round-trip", () => {
+  it("preserves Uint8Array contents through OutputMessage round-trip", async () => {
     // Electron IPC uses structured clone, which preserves Uint8Array natively.
     // The hub now mirrors that with `cloneArgs` (structuredClone per arg) so
     // a regression that depends on shared identity — or stringifies anywhere
@@ -613,6 +625,7 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const received: Uint8Array[] = [];
     proxy.attachBytesSink(
@@ -627,6 +640,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     );
 
     t.feed("%output %2 hello\n");
+    await hub.settled();
 
     expect(received).toHaveLength(1);
     expect(received[0]).toBeInstanceOf(Uint8Array);
@@ -635,7 +649,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     );
   });
 
-  it("fans events out to multiple registered renderers", () => {
+  it("fans events out to multiple registered renderers", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -646,6 +660,7 @@ describe("Electron IPC bridge — event forwarding", () => {
     const b = hub.createRenderer();
     const pa = createRendererBridge(a.ipcRenderer);
     const pb = createRendererBridge(b.ipcRenderer);
+    await hub.settled();
 
     const receivedA: number[] = [];
     const receivedB: number[] = [];
@@ -653,12 +668,13 @@ describe("Electron IPC bridge — event forwarding", () => {
     pb.on("window-add", (ev) => receivedB.push(ev.windowId));
 
     t.feed("%window-add @7\n");
+    await hub.settled();
 
     expect(receivedA).toEqual([7]);
     expect(receivedB).toEqual([7]);
   });
 
-  it("stops forwarding to a renderer once its WebContents is destroyed", () => {
+  it("stops forwarding to a renderer once its WebContents is destroyed", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -667,18 +683,21 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const received: number[] = [];
     proxy.on("window-add", (ev) => received.push(ev.windowId));
 
     t.feed("%window-add @1\n");
+    await hub.settled();
     renderer.destroy();
     t.feed("%window-add @2\n");
+    await hub.settled();
 
     expect(received).toEqual([1]);
   });
 
-  it("proxy.close unsubscribes from further events", () => {
+  it("proxy.close unsubscribes from further events", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -687,13 +706,16 @@ describe("Electron IPC bridge — event forwarding", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const received: number[] = [];
     proxy.on("window-add", (ev) => received.push(ev.windowId));
 
     t.feed("%window-add @1\n");
+    await hub.settled();
     proxy.close();
     t.feed("%window-add @2\n");
+    await hub.settled();
 
     expect(received).toEqual([1]);
   });
@@ -715,6 +737,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("list-windows");
+    await hub.settled();
     expect(t.sent).toEqual(["list-windows\n"]);
 
     feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
@@ -735,11 +758,13 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.sendKeys("%0", "hello");
+    await hub.settled();
     expect(t.sent[0]).toContain("send-keys");
     expect(t.sent[0]).toContain("%0");
     // Keys are sent as raw UTF-8 hex bytes (`send -H`): "hello".
     expect(t.sent[0]).toContain("68 65 6c 6c 6f");
 
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await pending;
   });
@@ -755,6 +780,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.splitWindow({ vertical: true, target: "%0" });
+    await hub.settled();
     expect(t.sent[0]).toContain("split-window");
     expect(t.sent[0]).toContain("-v");
     expect(t.sent[0]).toContain("%0");
@@ -774,6 +800,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.setFlags(["pause-after=2", "no-output"]);
+    await hub.settled();
     expect(t.sent[0]).toContain("refresh-client");
     expect(t.sent[0]).toContain("pause-after=2");
     expect(t.sent[0]).toContain("no-output");
@@ -981,6 +1008,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("bogus-cmd");
+    await hub.settled();
     t.feed("%begin 1 1 1\n");
     t.feed("unknown command\n");
     t.feed("%error 1 1 1\n");
@@ -1138,6 +1166,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+    await hub.settled();
 
     // dispose marks every in-flight dispatch aborted but doesn't await them.
     handle.dispose();
@@ -1148,7 +1177,7 @@ describe("Electron IPC bridge — L5 drain", () => {
 
     // Drain hasn't completed yet — the underlying client.execute is still
     // awaiting its FIFO entry (no tmux response yet).
-    await Promise.resolve();
+    await hub.settled();
     expect(drainResolved).toBe(false);
 
     feedCommandResponse(t, 1, []);
@@ -1175,6 +1204,7 @@ describe("Electron IPC bridge — L5 drain", () => {
     // Swallow rejection so vitest doesn't flag it; the handler is still
     // pending until we feed a response (which we never will here).
     void proxy.execute("hangs-forever").catch(() => undefined);
+    await hub.settled();
 
     const start = Date.now();
     await handle.drain(25);
@@ -1198,7 +1228,7 @@ describe("Electron IPC bridge — L5 drain", () => {
 // ---------------------------------------------------------------------------
 
 describe("Electron IPC bridge — dispose", () => {
-  it("removes all ipcMain handlers and stops forwarding events", () => {
+  it("removes all ipcMain handlers and stops forwarding events", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -1207,13 +1237,16 @@ describe("Electron IPC bridge — dispose", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     const received: number[] = [];
     proxy.on("window-add", (ev) => received.push(ev.windowId));
 
     t.feed("%window-add @1\n");
+    await hub.settled();
     handle.dispose();
     t.feed("%window-add @2\n");
+    await hub.settled();
 
     expect(received).toEqual([1]);
   });
@@ -1279,6 +1312,7 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
     const received: Uint8Array[] = [];
     proxy.attachBytesSink(
       {
@@ -1295,9 +1329,7 @@ describe("Electron IPC bridge — proxy parity (M6)", () => {
     const payload = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     t.feed(`%output %1 \\336\\255\\276\\357\n`);
 
-    // Allow microtasks to drain.
-    await Promise.resolve();
-    await Promise.resolve();
+    await hub.settled();
 
     expect(received).toHaveLength(1);
     const bytes = received[0]!;
@@ -1329,6 +1361,7 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     const proxyA = createRendererBridge(a.ipcRenderer);
     const proxyB = createRendererBridge(b.ipcRenderer);
     const proxyC = createRendererBridge(c.ipcRenderer);
+    await hub.settled();
 
     const got: ("a" | "c")[] = [];
     proxyA.attachBytesSink(
@@ -1358,8 +1391,7 @@ describe("Electron IPC bridge — M1 forward iteration safety", () => {
     void proxyB; // keep reference so unused-variable lint is quiet
 
     t.feed(`%output %42 ok\n`);
-    await Promise.resolve();
-    await Promise.resolve();
+    await hub.settled();
 
     expect(got.sort()).toEqual(["a", "c"]);
   });
@@ -1380,10 +1412,11 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const r = hub.createRenderer();
     const proxy = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
     expect(r.pageListenerCount()).toBe(4);
 
     proxy.close(); // sends tmux:unregister → main.teardownSender
-    await Promise.resolve();
+    await hub.settled();
     expect(r.pageListenerCount()).toBe(0);
   });
 
@@ -1396,6 +1429,7 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const r = hub.createRenderer();
     createRendererBridge(r.ipcRenderer);
+    await hub.settled();
     expect(r.pageListenerCount()).toBe(4);
 
     handle.dispose();
@@ -1416,17 +1450,20 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
     const proxy = createRendererBridge(r.ipcRenderer);
 
     const sub = proxy.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await sub;
 
     // First unregister: refcount 1 → 0 → tmux unsubscribe fires.
     r.ipcRenderer.send(IPC.unregister);
+    await hub.settled();
     expect(
       t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
     ).toHaveLength(1);
 
     // Second unregister: noop, no additional unsubscribe.
     r.ipcRenderer.send(IPC.unregister);
+    await hub.settled();
     expect(
       t.sent.filter((c) => c === `refresh-client -B 'focus'\n`),
     ).toHaveLength(1);
@@ -1441,7 +1478,10 @@ describe("Electron IPC bridge — M2 page-end-listener cleanup", () => {
 
     const r = hub.createRenderer();
     const proxy = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    expect(r.pageListenerCount()).toBe(4);
     proxy.close();
+    await hub.settled();
     expect(r.pageListenerCount()).toBe(0);
 
     // Firing destroy now should not throw — no page-end handler is attached.
@@ -1498,6 +1538,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     const proxy = new TmuxClientProxy(r.ipcRenderer); // no timeout option
 
     const p = proxy.listPanes();
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     const resp = await p;
     expect(resp).toEqual([]);
@@ -1796,17 +1837,21 @@ describe("Electron IPC bridge — two-window scenario", () => {
     const got2: number[] = [];
     p2.on("window-add", (ev) => got2.push(ev.windowId));
 
+    await hub.settled();
     t.feed("%window-add @11\n");
+    await hub.settled();
     expect(got1).toEqual([11]);
     expect(got2).toEqual([11]);
 
     // Both renderers can independently invoke commands through the single
     // shared handler.
     const p1Pending = p1.execute("list-windows");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await p1Pending;
 
     const p2Pending = p2.execute("list-panes");
+    await hub.settled();
     feedCommandResponse(t, 2, []);
     await p2Pending;
 
@@ -1847,13 +1892,16 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const pb = createRendererBridge(b.ipcRenderer);
 
     const aResult = pa.execute("list-windows").catch((err: unknown) => err);
+    await hub.settled();
     // tmux has not yet replied — kill A.
     a.destroy();
     // Now B starts a request; tmux processes them in order.
     const bResult = pb.execute("list-panes");
 
     // Tmux replies to A's command first (still in FIFO), then B's.
+    await hub.settled();
     feedCommandResponse(t, 1, ["@0 zsh 1 -"]);
+    await hub.settled();
     feedCommandResponse(t, 2, ["%1 main 0 -"]);
 
     // A's invoke surface MUST reject with a typed BridgeError (not silently
@@ -1883,7 +1931,9 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+    await hub.settled();
     proxy.close();
+    await hub.settled();
     feedCommandResponse(t, 1, []);
 
     const err = await pending;
@@ -1902,12 +1952,14 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     const pending = proxy.execute("list-windows").catch((err: unknown) => err);
+    await hub.settled();
     handle.dispose();
 
     // After dispose, the IPC handler is gone. The pending invoke was already
     // awaiting on dispatchRpcRequest(client, ...) — feeding a response still
     // resolves the underlying promise, but the post-await branch sees
     // aborted and throws.
+    await hub.settled();
     feedCommandResponse(t, 1, []);
 
     const err = await pending;
@@ -1950,6 +2002,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     // A subscribes — bridge forwards the subscribe to tmux.
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await aSub;
     expect(t.sent.some((c) => isSubscribeWire(c, "focus"))).toBe(true);
@@ -1978,9 +2031,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pb = createRendererBridge(b.ipcRenderer);
 
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await aSub;
     const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 2, []);
     await bSub;
 
@@ -1996,6 +2051,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
     // B unsubscribes — refcount hits 0 → tmux call.
     const bUnsub = pb.unsubscribe("focus");
+    await hub.settled();
     feedCommandResponse(t, 3, []);
     await bUnsub;
     expect(t.sent.filter((c) => isUnsubscribeWire(c, "focus"))).toHaveLength(1);
@@ -2014,6 +2070,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pa = createRendererBridge(a.ipcRenderer);
 
     const sub = pa.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await sub;
 
@@ -2036,9 +2093,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pb = createRendererBridge(b.ipcRenderer);
 
     const aSub = pa.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await aSub;
     const bSub = pb.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 2, []);
     await bSub;
 
@@ -2062,9 +2121,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
     const pa = createRendererBridge(a.ipcRenderer);
 
     const aSub1 = pa.subscribeRaw("focus", "", "#{pane_id}");
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await aSub1;
     const aSub2 = pa.subscribeRaw("layout", "", "#{window_id}");
+    await hub.settled();
     feedCommandResponse(t, 2, []);
     await aSub2;
 
@@ -2110,6 +2171,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       // A claims (foo, '', '#{a}'); bridge forwards to tmux with '#{a}'.
       const aSub = pa.subscribeRaw("foo", "", "#{a}");
+      await hub.settled();
       feedCommandResponse(t, 1, []);
       await aSub;
 
@@ -2142,6 +2204,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const pb = createRendererBridge(b.ipcRenderer);
 
       const aSub = pa.subscribeRaw("foo", "", "#{x}");
+      await hub.settled();
       feedCommandResponse(t, 1, []);
       await aSub;
 
@@ -2176,12 +2239,11 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
 
       // A initiates the subscribe; B races in with the same (what, format).
       const aSub = pa.subscribeRaw("foo", "", "#{x}");
-      // Yield once so A's subscribe call reaches client.subscribeRaw (the
-      // bridge dispatch path is async). Then B's call observes the
-      // record and queues on inflight.
-      await Promise.resolve();
-      await Promise.resolve();
+      // A's subscribe reaches client.subscribeRaw before B's call, so B
+      // observes the record and queues on inflight.
+      await hub.settled();
       const bSub = pb.subscribeRaw("foo", "", "#{x}");
+      await hub.settled();
 
       // tmux rejects A's subscribe. Both A and B must reject — B was
       // queued on the inflight promise, not optimistically resolved.
@@ -2219,10 +2281,12 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       const pa = createRendererBridge(a.ipcRenderer);
 
       const sub1 = pa.subscribeRaw("foo", "", "#{a}");
+      await hub.settled();
       feedCommandResponse(t, 1, []);
       await sub1;
 
       const unsub = pa.unsubscribe("foo");
+      await hub.settled();
       feedCommandResponse(t, 2, []);
       await unsub;
 
@@ -2230,6 +2294,7 @@ describe("Electron IPC bridge — H7 subscription scoping", () => {
       // the new (what, format) becomes the canonical record without a
       // conflict.
       const sub2 = pa.subscribeRaw("foo", "", "#{b}");
+      await hub.settled();
       feedCommandResponse(t, 3, []);
       const resp2 = await sub2;
       expect(resp2.success).toBe(true);
@@ -2402,6 +2467,7 @@ describe("Electron IPC bridge — cross-session layout coverage", () => {
     (client as unknown as { emitter: { emit(m: unknown): void } }).emitter.emit(
       change,
     );
+    await hub.settled();
 
     expect(seenOn).toEqual([change]);
     expect(seenOff).toEqual([]);
@@ -2442,7 +2508,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     const client = new TmuxClient(transport);
     t.feed(STARTUP_GREETING);
     createMainBridge(client, hub.ipcMain);
-    return { t, r: hub.createRenderer() };
+    return { hub, t, r: hub.createRenderer() };
   }
 
   it("a reload withdraws the old page's window size; the new page declares through a fresh claim", async () => {
@@ -2450,7 +2516,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     await createRendererBridge(r.ipcRenderer).setWindowSize(3, 100, 30);
     t.sent.length = 0;
 
-    r.navigate();
+    await r.navigate();
     await vi.waitFor(() =>
       expect(t.sent).toEqual([
         OUT_OF_SIZING,
@@ -2468,14 +2534,14 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
   });
 
   it("a reload releases the old page's subscriptions and byte forwarder", async () => {
-    const { t, r } = rig();
+    const { hub, t, r } = rig();
     await createRendererBridge(r.ipcRenderer).subscribeRaw(
       "focus",
       "",
       "#{pane_id}",
     );
 
-    r.navigate();
+    await r.navigate();
     expect(t.sent).toContain(line(refreshClientUnsubscribe("focus")));
 
     // The new page has not registered: nothing is forwarded to it.
@@ -2483,15 +2549,17 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     r.ipcRenderer.on(IPC.event, (_e, msg) => received.push(msg));
     t.feed("%output %1 hi\n");
     t.feed("%window-add @2\n");
+    await hub.settled();
     expect(received).toEqual([]);
   });
 
   it("a message the old page sends after a navigation that swapped frame hosts is refused", async () => {
-    const { t, r } = rig();
+    const { hub, t, r } = rig();
     const old = r.ipcRenderer;
     createRendererBridge(old);
+    await hub.settled();
 
-    r.navigate({ swapFrame: true });
+    await r.navigate({ swapFrame: true });
     t.sent.length = 0;
     await expect(
       old.invoke(IPC.invoke, { method: "setWindowSize", args: [3, 100, 30] }),
@@ -2511,6 +2579,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     t.sent.length = 0;
     old.send(IPC.unregister);
     t.feed("%window-add @2\n");
+    await hub.settled();
     expect(t.sent).toEqual([]);
     expect(windows).toEqual([2]);
   });
@@ -2527,7 +2596,8 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
       method: "execute",
       args: ["list-windows"],
     });
-    r.navigate();
+    await r.navigate();
+    await hub.settled();
     feedCommandResponse(t, 1, []);
     await expect(reply).resolves.toMatchObject({
       status: "bridge-error",

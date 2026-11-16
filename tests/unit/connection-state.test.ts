@@ -263,7 +263,7 @@ describe("WebSocketTmuxClient — connection state", () => {
 // ---------------------------------------------------------------------------
 
 describe("TmuxClientProxy (Electron renderer) — connection state", () => {
-  it("receives the current snapshot on register and tracks subsequent transitions", () => {
+  it("receives the current snapshot on register and tracks subsequent transitions", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const main = new TmuxClient(t);
@@ -277,14 +277,18 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
-    // Snapshot delivered synchronously by main.onRegister.
-    expect(proxy.connectionState).toEqual({ status: "ready" });
-
+    // The register message and main's snapshot reply each cross the IPC
+    // boundary as a task of their own, so the proxy is still connecting
+    // when its constructor returns.
+    expect(proxy.connectionState).toEqual({ status: "connecting" });
     const states: ConnectionState[] = [];
     proxy.on("connection-state", (ev) => states.push(ev.state));
+    await hub.settled();
+    expect(states).toEqual([{ status: "ready" }]);
 
     // Drive main to closed; the renderer should observe the transition.
     t.triggerClose();
+    await hub.settled();
 
     expect(states.at(-1)).toEqual({ status: "closed", reason: "exit" });
     expect(proxy.connectionState).toEqual({
@@ -293,7 +297,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     });
   });
 
-  it("proxy.close() lands in closed{disposed} regardless of main's state", () => {
+  it("proxy.close() lands in closed{disposed} regardless of main's state", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const main = new TmuxClient(t);
@@ -302,6 +306,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
 
     const renderer = hub.createRenderer();
     const proxy = createRendererBridge(renderer.ipcRenderer);
+    await hub.settled();
 
     expect(proxy.connectionState.status).toBe("ready");
     proxy.close();
@@ -312,7 +317,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     });
   });
 
-  it("proxy.close() overrides main's closed{exit} with closed{disposed}", () => {
+  it("proxy.close() overrides main's closed{exit} with closed{disposed}", async () => {
     // Pins the contract documented at renderer.ts (close() is the proxy-side
     // terminator: even if main already broadcast closed{exit}, the proxy
     // reports closed{disposed} so the proxy's lifecycle reflects *its*
@@ -331,6 +336,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
 
     // Drive main to closed{exit}; proxy mirrors it.
     t.triggerClose();
+    await hub.settled();
     expect(proxy.connectionState).toEqual({
       status: "closed",
       reason: "exit",
@@ -346,7 +352,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     expect(states.at(-1)).toEqual({ status: "closed", reason: "disposed" });
   });
 
-  it("proxy.close() overrides main's closed{transport-error} with closed{disposed}", () => {
+  it("proxy.close() overrides main's closed{transport-error} with closed{disposed}", async () => {
     const hub = createIpcHub();
     const t = createFakeTransport();
     const main = new TmuxClient(t);
@@ -357,6 +363,7 @@ describe("TmuxClientProxy (Electron renderer) — connection state", () => {
     const proxy = createRendererBridge(renderer.ipcRenderer);
 
     t.triggerClose("EPIPE");
+    await hub.settled();
     expect(proxy.connectionState).toEqual({
       status: "closed",
       reason: "transport-error",
