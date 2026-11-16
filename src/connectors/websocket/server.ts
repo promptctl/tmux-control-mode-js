@@ -72,11 +72,10 @@ import {
 import { waitAtMost } from "../wait-at-most.js";
 
 import type {
-  AuthResult,
+  Authenticate,
   AuthorizeRequest,
   AuthorizeResult,
   BridgeObservabilityEvent,
-  ConnectionIdentity,
   RateLimitConfig,
   ServerWebSocketLike,
   SocketEnd,
@@ -123,12 +122,26 @@ const DEFAULTS = Object.freeze({
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface ConnectionContext {
-  readonly identity: ConnectionIdentity;
+export interface ConnectionContext<Identity = unknown> {
+  readonly identity: Identity;
   readonly request?: UpgradeRequest;
 }
 
-export interface WebSocketBridgeOptions {
+/** The bridge's options. `Identity` is the shape `authenticate()` attaches,
+ *  inferred from it; `authenticate` may be left out only when `undefined` is
+ *  itself an `Identity`, since the bridge then accepts every connection with
+ *  no identity. */
+// [LAW:types-are-the-program] Under `NoInfer` for the reason `AuthResult`'s
+// identity requirement is.
+export type WebSocketBridgeOptions<Identity = unknown> =
+  WebSocketBridgeOptionFields<Identity> &
+    NoInfer<
+      undefined extends Identity
+        ? unknown
+        : { readonly authenticate: Authenticate<Identity> }
+    >;
+
+interface WebSocketBridgeOptionFields<Identity> {
   /**
    * Produce (or look up) the TmuxClient backing a new connection. The client
    * must be live: one whose `connectionState` is already `closed` is refused
@@ -147,7 +160,7 @@ export interface WebSocketBridgeOptions {
    * fault, closed `BRIDGE_INTERNAL` with 1011, which the client retries.
    */
   readonly createClient: (
-    ctx: ConnectionContext,
+    ctx: ConnectionContext<Identity>,
   ) => Promise<TmuxClient> | TmuxClient;
 
   /**
@@ -157,17 +170,15 @@ export interface WebSocketBridgeOptions {
    */
   readonly disposeClient?: (
     client: TmuxClient,
-    ctx: ConnectionContext,
+    ctx: ConnectionContext<Identity>,
   ) => Promise<void> | void;
 
-  /** Pre-handshake auth. Default: accept all. */
-  readonly authenticate?: (
-    req: UpgradeRequest,
-  ) => Promise<AuthResult> | AuthResult;
+  /** Default: accept all, with no identity. */
+  readonly authenticate?: Authenticate<Identity>;
 
   /** Per-call authorization. Default: allow all. */
   readonly authorize?: (
-    req: AuthorizeRequest,
+    req: AuthorizeRequest<Identity>,
   ) => Promise<AuthorizeResult> | AuthorizeResult;
 
   /** Sliding-window rate limit per connection: `maxCalls` and `windowMs`
@@ -215,7 +226,7 @@ export interface WebSocketBridgeOptions {
   readonly outputLowWatermark?: number;
 
   /** Observability hook fired for every notable event. */
-  readonly onEvent?: (ev: BridgeObservabilityEvent) => void;
+  readonly onEvent?: (ev: BridgeObservabilityEvent<Identity>) => void;
 }
 
 export interface WebSocketBridge {
@@ -246,11 +257,11 @@ export interface WebSocketBridge {
 // Implementation
 // ---------------------------------------------------------------------------
 
-export function createWebSocketBridge(
-  opts: WebSocketBridgeOptions,
+export function createWebSocketBridge<Identity = unknown>(
+  opts: WebSocketBridgeOptions<Identity>,
 ): WebSocketBridge {
   const defaults = resolveDefaults(opts);
-  const connections = new Set<Connection>();
+  const connections = new Set<Connection<Identity>>();
   // [LAW:one-source-of-truth] The drain in flight: recorded once, by the
   // first shutdown, and read by every later call and every welcome.
   let drain:
@@ -318,7 +329,7 @@ export function createWebSocketBridge(
 // "invariant violation" guard) is gone — the invariant lives on the type.
 // ---------------------------------------------------------------------------
 
-type ConnectionState =
+type ConnectionState<Identity> =
   /** No hello received yet; no client. Initial state. */
   | { readonly kind: "pending-hello" }
   /**
@@ -335,7 +346,7 @@ type ConnectionState =
   | {
       readonly kind: "running";
       readonly client: TmuxClient;
-      readonly ctx: ConnectionContext;
+      readonly ctx: ConnectionContext<Identity>;
       /** Shared bookkeeping: subscription refcount + per-pane outstanding
        *  bytes. The connection acts as a single peer inside this helper —
        *  every subscribe/unsubscribe and every pane-output send routes
@@ -347,7 +358,7 @@ type ConnectionState =
   | {
       readonly kind: "draining";
       readonly client: TmuxClient;
-      readonly ctx: ConnectionContext;
+      readonly ctx: ConnectionContext<Identity>;
       readonly bridge: BridgeConnection<false>;
       readonly peer: Peer;
       readonly deadlineMs: number;
@@ -362,13 +373,16 @@ type ConnectionState =
       readonly kind: "closed";
       readonly final: {
         readonly client: TmuxClient;
-        readonly ctx: ConnectionContext;
+        readonly ctx: ConnectionContext<Identity>;
         readonly bridge: BridgeConnection<false>;
         readonly peer: Peer;
       } | null;
     };
 
-type RunningState = Extract<ConnectionState, { kind: "running" }>;
+type RunningState<Identity> = Extract<
+  ConnectionState<Identity>,
+  { kind: "running" }
+>;
 
 interface ResolvedDefaults {
   readonly heartbeat: HeartbeatCadence;
@@ -384,7 +398,9 @@ interface ResolvedDefaults {
 // and value instead of as a verdict against every peer. The results are in
 // the shapes Heartbeat, CallPump, Handshake and RateLimiter take, so no caller
 // re-packs them and none checks again.
-function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
+function resolveDefaults<Identity>(
+  opts: WebSocketBridgeOptions<Identity>,
+): ResolvedDefaults {
   return {
     heartbeat: {
       intervalMs: parseHeartbeatInterval(
@@ -409,11 +425,12 @@ function resolveDefaults(opts: WebSocketBridgeOptions): ResolvedDefaults {
   };
 }
 
-class Connection {
+class Connection<Identity> {
   // [LAW:one-source-of-truth] Single state field; (client, ctx) live inside
   // the variant that needs them, not as parallel nullable fields.
-  private state: ConnectionState = { kind: "pending-hello" };
-  private identity: ConnectionIdentity = undefined;
+  private state: ConnectionState<Identity> = { kind: "pending-hello" };
+  // Set once authenticate() accepts; every event before that has none.
+  private identity: Identity | undefined = undefined;
   // Set by sendFatalAndClose; read by the "close" listener once the real
   // close event lands, so finalize's one connection-closed emission can
   // carry the BridgeErrorCode a peer-initiated close never has.
@@ -433,7 +450,7 @@ class Connection {
   private readonly rateLimiter: RateLimiter;
   private readonly heartbeat: Heartbeat;
   private readonly callPump: CallPump;
-  private readonly handshake: Handshake;
+  private readonly handshake: Handshake<Identity>;
 
   private closed!: () => void;
   readonly whenClosed: Promise<void> = new Promise<void>((resolve) => {
@@ -443,7 +460,7 @@ class Connection {
   constructor(
     private readonly ws: ServerWebSocketLike,
     private readonly request: UpgradeRequest | undefined,
-    private readonly opts: WebSocketBridgeOptions,
+    private readonly opts: WebSocketBridgeOptions<Identity>,
     private readonly defaults: ResolvedDefaults,
     // The bridge's drain deadline, read at the welcome. [LAW:one-source-of-truth]
     private readonly drainDeadlineMs: () => number | undefined,
@@ -719,8 +736,8 @@ class Connection {
       return;
     }
     this.identity = authResult.identity;
-    const ctx: ConnectionContext = {
-      identity: this.identity,
+    const ctx: ConnectionContext<Identity> = {
+      identity: authResult.identity,
       request: this.request,
     };
 
@@ -936,7 +953,10 @@ class Connection {
   // the "invariant violation" comment is gone: that case is structurally
   // unrepresentable.
   // -------------------------------------------------------------------------
-  private async onCall(frame: CallFrame, state: RunningState): Promise<void> {
+  private async onCall(
+    frame: CallFrame,
+    state: RunningState<Identity>,
+  ): Promise<void> {
     if (this.callPump.isFull()) {
       this.replyError(
         frame.id,
@@ -954,7 +974,7 @@ class Connection {
       return;
     }
 
-    const authResult = await this.safeAuthorize(frame);
+    const authResult = await this.safeAuthorize(frame, state.ctx.identity);
     this.emit({
       kind: "call",
       identity: this.identity,
@@ -1046,11 +1066,14 @@ class Connection {
     });
   }
 
-  private async safeAuthorize(frame: CallFrame): Promise<AuthorizeResult> {
+  private async safeAuthorize(
+    frame: CallFrame,
+    identity: Identity,
+  ): Promise<AuthorizeResult> {
     const hook = this.opts.authorize;
     if (hook === undefined) return { allow: true };
-    const req: AuthorizeRequest = {
-      identity: this.identity,
+    const req: AuthorizeRequest<Identity> = {
+      identity,
       method: frame.method,
       args: frame.args,
     };
@@ -1401,7 +1424,7 @@ class Connection {
     this.closed();
   }
 
-  private emit(ev: BridgeObservabilityEvent): void {
+  private emit(ev: BridgeObservabilityEvent<Identity>): void {
     emitObservability(this.opts, ev);
   }
 
@@ -1416,7 +1439,7 @@ class Connection {
   // client-dispose-failed instead. [LAW:no-silent-failure]
   private disposeClientSafely(
     client: TmuxClient,
-    ctx: ConnectionContext,
+    ctx: ConnectionContext<Identity>,
   ): void {
     if (this.opts.disposeClient === undefined) return;
     const onFailure = (err: unknown): void => {
@@ -1447,8 +1470,8 @@ class Connection {
 // ---------------------------------------------------------------------------
 
 type ClientFrameHandlers = {
-  readonly [K in ClientFrame["k"]]: (
-    self: Connection,
+  readonly [K in ClientFrame["k"]]: <Identity>(
+    self: Connection<Identity>,
     frame: Extract<ClientFrame, { k: K }>,
   ) => void;
 };
@@ -1488,9 +1511,9 @@ function sendFatal(
 
 // [LAW:single-enforcer] The one place an onEvent hook is called, for the
 // bridge's own events and every connection's.
-function emitObservability(
-  opts: WebSocketBridgeOptions,
-  ev: BridgeObservabilityEvent,
+function emitObservability<Identity>(
+  opts: WebSocketBridgeOptions<Identity>,
+  ev: BridgeObservabilityEvent<Identity>,
 ): void {
   if (opts.onEvent === undefined) return;
   try {
@@ -1503,7 +1526,9 @@ function emitObservability(
 // [LAW:one-source-of-truth] The drain waits on the live set, not a snapshot
 // taken when it began: a socket refused mid-drain joins the set, and its
 // close handshake holds the drain open like any other until the deadline.
-async function allClosed(conns: Set<Connection>): Promise<void> {
+async function allClosed<Identity>(
+  conns: Set<Connection<Identity>>,
+): Promise<void> {
   while (conns.size > 0) {
     await Promise.all([...conns].map((c) => c.whenClosed));
   }

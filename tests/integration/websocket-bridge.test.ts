@@ -89,7 +89,9 @@ async function startFixture(
 
   const observabilityEvents: BridgeObservabilityEvent[] = [];
 
-  const bridge = createWebSocketBridge({
+  // A fixture with no token authenticates nobody, so its connections carry
+  // no identity.
+  const bridge = createWebSocketBridge<{ token: string } | undefined>({
     createClient: () => tmux,
     authenticate: options.authenticateToken
       ? (req) => {

@@ -11,13 +11,14 @@ import {
   type ServerCloseCode,
 } from "./close-code.js";
 import type { DurationMs } from "./limits.js";
-import type { AuthResult, UpgradeRequest } from "./types.js";
+import type { Authenticate, AuthResult, UpgradeRequest } from "./types.js";
 
-/** An auth hook's result, parsed: a peer the bridge turns away carries the
- *  error its fatal frame reports — a denial, or a hook that failed to
- *  decide — and the code its close may send. */
-export type AuthVerdict =
-  | Extract<AuthResult, { ok: true }>
+/** An auth hook's result, parsed: an accepted peer carries its identity, and
+ *  a peer the bridge turns away carries the error its fatal frame reports — a
+ *  denial, or a hook that failed to decide — and the code its close may
+ *  send. */
+export type AuthVerdict<Identity> =
+  | { readonly ok: true; readonly identity: Identity }
   | {
       readonly ok: false;
       readonly errorCode: Extract<
@@ -33,15 +34,13 @@ export type AuthVerdict =
 // send is the hook's defect, raised like a throw from the hook.
 const parseCloseCode = serverCloseCodeParser((message) => new Error(message));
 
-export class Handshake {
+export class Handshake<Identity> {
   private deadline: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly timeoutMs: DurationMs,
     private readonly request: UpgradeRequest | undefined,
-    private readonly authHook:
-      | ((req: UpgradeRequest) => Promise<AuthResult> | AuthResult)
-      | undefined,
+    private readonly authHook: Authenticate<Identity> | undefined,
   ) {}
 
   // Arm the hello-timeout; `onTimeout` fires if hello isn't received in time.
@@ -65,10 +64,17 @@ export class Handshake {
   // (isRefusal). A code the socket may not send is the hook's own defect, the
   // same on every retry, so it is a denial naming the defect under
   // AUTH_DENIED.
-  async authenticate(): Promise<AuthVerdict> {
-    if (this.authHook === undefined) return { ok: true, identity: undefined };
+  //
+  // [LAW:types-are-the-program] exception: `WebSocketBridgeOptions` admits a
+  // missing hook, and `AuthResult` a missing identity, only when `undefined`
+  // is an `Identity`; that conditional does not resolve for a generic
+  // `Identity`, so the accepted identity is asserted here, once, for every
+  // reader downstream.
+  async authenticate(): Promise<AuthVerdict<Identity>> {
+    if (this.authHook === undefined)
+      return { ok: true, identity: undefined as Identity };
     const req: UpgradeRequest = this.request ?? { headers: {} };
-    let result: AuthResult;
+    let result: AuthResult<Identity>;
     try {
       result = await this.authHook(req);
     } catch (err) {
@@ -79,7 +85,7 @@ export class Handshake {
         reason: `authenticate failed: ${thrownMessage(err)}`,
       };
     }
-    if (result.ok) return result;
+    if (result.ok) return { ok: true, identity: result.identity as Identity };
     try {
       return {
         ok: false,

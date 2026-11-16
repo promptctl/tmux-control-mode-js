@@ -13,7 +13,15 @@
 // server-side API: enough surface to satisfy ServerWebSocketLike, plus a
 // test hook to set bufferedAmount for the watermark probes.
 
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  expectTypeOf,
+  vi,
+  afterEach,
+  beforeEach,
+} from "vitest";
 
 import { TmuxClient } from "../../src/client.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
@@ -2850,5 +2858,76 @@ describe("WebSocket bridge — frames after a pending fatal", () => {
     expect(fatalFrames(ws).map((f) => f.error.code)).toEqual([
       "BRIDGE_PROTOCOL_ERROR",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The identity an app's authenticate() attaches reaches createClient,
+// authorize and the observability events as the app's own type, with no cast.
+// ---------------------------------------------------------------------------
+describe("WebSocket bridge — connection identity", () => {
+  interface User {
+    user: string;
+  }
+
+  it("the identity authenticate() attaches reaches createClient, authorize and the events typed as the app's", async () => {
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    const seen: { createClient?: User; authorize?: User } = {};
+    const events: BridgeObservabilityEvent<User>[] = [];
+    const bridge = createWebSocketBridge({
+      authenticate: (req) => ({
+        ok: true,
+        identity: { user: String(req.headers["x-user"]) },
+      }),
+      createClient: (ctx) => {
+        expectTypeOf(ctx.identity).toEqualTypeOf<User>();
+        seen.createClient = ctx.identity;
+        return client;
+      },
+      authorize: (req) => {
+        expectTypeOf(req.identity).toEqualTypeOf<User>();
+        seen.authorize = req.identity;
+        return { allow: false, reason: `${req.identity.user} may not` };
+      },
+      onEvent: (ev) => events.push(ev),
+    });
+
+    const ws = createFakeWs();
+    void bridge.handleConnection(ws, { headers: { "x-user": "ada" } });
+    ws.feedClient({ k: "hello" });
+    await flush();
+    ws.feedClient({ k: "call", id: "c1", method: "listSessions", args: [] });
+    await flush();
+
+    expect(seen).toEqual({
+      createClient: { user: "ada" },
+      authorize: { user: "ada" },
+    });
+    expect(events.find((e) => e.kind === "call")).toMatchObject({
+      identity: { user: "ada" },
+      allowed: false,
+      denyReason: "ada may not",
+    });
+  });
+
+  it("an identity that may not be undefined is attached by an authenticate() that is given", () => {
+    const createClient = (): never => {
+      throw new Error("unreachable: no connection is handled");
+    };
+    // @ts-expect-error — without authenticate() a connection has no identity
+    createWebSocketBridge<User>({ createClient });
+    createWebSocketBridge<User>({
+      // @ts-expect-error — an accepted connection must carry its User
+      authenticate: () => ({ ok: true }),
+      createClient,
+    });
+    // An identity that may be undefined needs neither.
+    createWebSocketBridge<User | undefined>({ createClient });
+    createWebSocketBridge<User | undefined>({
+      authenticate: () => ({ ok: true }),
+      createClient,
+    });
   });
 });

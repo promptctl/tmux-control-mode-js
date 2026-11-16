@@ -156,12 +156,17 @@ export interface UpgradeRequest {
 // Auth + authorize hooks
 // ---------------------------------------------------------------------------
 
-/** Opaque identity attached by `authenticate()` and handed back to authorize
- *  and to createClient. Type-parameterized so apps can carry their own shape. */
-export type ConnectionIdentity = unknown;
-
-export type AuthResult =
-  | { readonly ok: true; readonly identity?: ConnectionIdentity }
+/** What `authenticate()` decides. An accepted connection carries the app's
+ *  own `Identity`, which the bridge hands to `authorize()`, `createClient()`,
+ *  `disposeClient()` and every later observability event. `identity` may be
+ *  left out only when `undefined` is itself an `Identity`. */
+export type AuthResult<Identity = unknown> =
+  // [LAW:types-are-the-program] The requirement sits under `NoInfer`: a
+  // conditional type in the inference path makes TypeScript infer
+  // `Identity | undefined`, so every inferred identity would turn optional.
+  | ({ readonly ok: true; readonly identity?: Identity } & NoInfer<
+      undefined extends Identity ? unknown : { readonly identity: Identity }
+    >)
   | {
       readonly ok: false;
       /** The code the denied socket closes with: one a server may send
@@ -177,8 +182,14 @@ export type AuthResult =
       readonly reason: string;
     };
 
-export interface AuthorizeRequest {
-  readonly identity: ConnectionIdentity;
+/** Pre-handshake auth: decides whether a connection may proceed, and with
+ *  which identity. */
+export type Authenticate<Identity = unknown> = (
+  req: UpgradeRequest,
+) => Promise<AuthResult<Identity>> | AuthResult<Identity>;
+
+export interface AuthorizeRequest<Identity = unknown> {
+  readonly identity: Identity;
   readonly method: string;
   readonly args: readonly unknown[];
 }
@@ -214,7 +225,8 @@ export type SocketEnd =
    *  passed while the bridge's close handshake was pending. */
   | { readonly kind: "terminated"; readonly by: "shutdown" | "heartbeat" };
 
-export type BridgeObservabilityEvent =
+/** `identity` is `undefined` on an event from before authentication. */
+export type BridgeObservabilityEvent<Identity = unknown> =
   | {
       // One per `shutdown` call that parsed; the bridge's, so it carries no
       // connection identity. `deadlineMs` is the drain's deadline: the first
@@ -228,12 +240,12 @@ export type BridgeObservabilityEvent =
     }
   | {
       readonly kind: "connection-opened";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly remoteAddress?: string;
     }
   | {
       readonly kind: "connection-closed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly code?: number;
       readonly reason?: string;
       // Set when the close was triggered by sendFatalAndClose rather than a
@@ -244,7 +256,7 @@ export type BridgeObservabilityEvent =
     }
   | {
       readonly kind: "call";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly id: string;
       readonly method: string;
       readonly allowed: boolean;
@@ -252,7 +264,7 @@ export type BridgeObservabilityEvent =
     }
   | {
       readonly kind: "result";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly id: string;
       readonly ok: boolean;
       readonly code?: string;
@@ -260,13 +272,13 @@ export type BridgeObservabilityEvent =
     }
   | {
       readonly kind: "event-out";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly type: string;
       readonly bytes: number;
     }
   | {
       readonly kind: "protocol-error";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly message: string;
     }
   | {
@@ -278,7 +290,7 @@ export type BridgeObservabilityEvent =
       // is what tells a tmux death apart from a silent browser.
       // [LAW:nothing-unseen]
       readonly kind: "upstream-closed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly reason: Extract<
         TmuxConnectionState,
         { status: "closed" }
@@ -292,7 +304,7 @@ export type BridgeObservabilityEvent =
       // silent swallow that made a stuck pane indistinguishable from a quiet
       // one. [LAW:no-silent-failure]
       readonly kind: "pane-resume-failed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly paneId: number;
       readonly code: BridgeErrorCode;
       readonly message: string;
@@ -302,7 +314,7 @@ export type BridgeObservabilityEvent =
       // tmux; the relay's subscription may outlive every peer that wanted it.
       // [LAW:no-silent-failure]
       readonly kind: "cross-session-layout-release-failed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly code: BridgeErrorCode;
       readonly message: string;
     }
@@ -316,7 +328,7 @@ export type BridgeObservabilityEvent =
       // this one. Surfaced on its own rather than lost.
       // [LAW:no-silent-failure]
       readonly kind: "handshake-failure-unreported";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly code: BridgeErrorCode;
       readonly message: string;
     }
@@ -328,7 +340,7 @@ export type BridgeObservabilityEvent =
       // letting it become an unhandled rejection would hide that from the
       // caller who configured the hook. [LAW:no-silent-failure]
       readonly kind: "client-dispose-failed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly message: string;
     }
   | {
@@ -341,7 +353,7 @@ export type BridgeObservabilityEvent =
       // it outright would hide that from the caller instead.
       // [LAW:no-silent-failure]
       readonly kind: "release-failed";
-      readonly identity: ConnectionIdentity;
+      readonly identity: Identity | undefined;
       readonly message: string;
     };
 
