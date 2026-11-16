@@ -163,11 +163,11 @@ type PlacedPane = PaneMeta & { readonly floating: boolean };
 /** What a layout or refresh contradicted in the table, and so which query re-places it. */
 export interface Contradiction {
   // Windows moved-in panes left, whose membership any earlier query misstates.
-  readonly left: ReadonlySet<number>;
+  readonly leftWindows: ReadonlySet<number>;
   // Tiled panes a layout or listing omits. Only a query about the pane itself
   // can say where each went: another window, maybe one in a session tmux
   // sends no layout for, or nowhere because it exited.
-  readonly lost: ReadonlySet<number>;
+  readonly lostPanes: ReadonlySet<number>;
 }
 
 /**
@@ -254,7 +254,7 @@ export class PaneTopologyManager {
     } else {
       this.windowIndex.set(windowId, next);
     }
-    return { left: new Set(), lost };
+    return { leftWindows: new Set(), lostPanes: lost };
   }
 
   /**
@@ -289,7 +289,7 @@ export class PaneTopologyManager {
         left.add(meta.windowId);
       }
     }
-    return { left, lost };
+    return { leftWindows: left, lostPanes: lost };
   }
 
   /**
@@ -893,13 +893,16 @@ export class TopologyEpochTracker {
    * refresh or a locate. Current iff nothing has superseded everything since
    * it was sent and no refresh of the window was sent after it.
    * [LAW:single-enforcer] One rule for every listing of one window, whichever
-   *   query asked for it. Every event that makes a window's listings suspect
-   *   (a layout, a window-add or -close) refreshes it, and that refresh is
-   *   what supersedes the listings sent before it.
+   *   query asked for it. While anything reads topology, every event that
+   *   makes a window's listings suspect (a layout, a window-add or -close)
+   *   refreshes it, and that refresh supersedes the listings sent before it.
+   *   While nothing reads it, no refresh follows, and a stale listing lands
+   *   in a table no one reads until a reader's attach bootstraps, which
+   *   supersedes everything.
    */
   isListingCurrent(windowId: number, gen: number): boolean {
     return (
-      gen > this.supersededAt && (this.windowMarks.get(windowId) ?? 0) <= gen
+      this.isLocateCurrent(gen) && (this.windowMarks.get(windowId) ?? 0) <= gen
     );
   }
 

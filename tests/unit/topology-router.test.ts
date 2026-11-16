@@ -1265,6 +1265,20 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(asked(s.replies, "list-panes -a ")).toBe(0);
   });
 
+  it("asks once more about a pane a lost-pane ask placed when it prints unplaced", async () => {
+    const s = await movedPane([[2, LAYOUT_4]]);
+    answerRefresh(s.replies, 2);
+    answerLocate(s.locates, 5, 3);
+    await settle();
+    s.router.handleNotification({ type: "window-close", windowId: 3 });
+    s.replies.at(-1)!.reject(windowGone("@3"));
+    await settle();
+    const asks = s.locates.length;
+    s.router.dispatchBytes(makeChunk(5));
+    expect(s.locates).toHaveLength(asks + 1);
+    expect(s.locates.at(-1)!.cmd).toContain("list-panes -t %5 ");
+  });
+
   it("sends no server-wide query when a pane in a multi-pane window exits", async () => {
     const errors: Error[] = [];
     const s = await movedPane([[2, LAYOUT_4]], (e) => errors.push(e));

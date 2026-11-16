@@ -302,7 +302,7 @@ describe.skipIf(!RUN_INTEGRATION)("Scope-based pane output", () => {
     expect(s.errors).toEqual([]);
   }, 15000);
 
-  it("SCOPE-03f: a pane joined out to another session's window is found with a query about the pane", async () => {
+  it("SCOPE-03f: a pane joined out to another session's window is asked about alone, and the answer reports nothing", async () => {
     // Made first: a new session's %sessions-changed starts a bootstrap.
     const other = uniqueName("sess-join-dest");
     tmux(socketName, ["new-session", "-d", "-s", other, "sleep 30"]);

@@ -64,8 +64,9 @@ interface Hold {
 
 // [LAW:types-are-the-program] The runner and whether it may still be queried
 //   are one value: a query runner that is not the pane-action runner is
-//   unrepresentable. What a live connection has asked tmux to locate, and the
-//   output it holds for panes not yet placed, belong to its server: pane ids
+//   unrepresentable. The panes whose output a live connection has asked tmux
+//   to locate, and the output it holds for panes not yet placed, belong to
+//   its server: pane ids
 //   restart on a new one, so every connection change drops them by
 //   construction, however the adapter announces it.
 interface LiveConnection {
@@ -617,10 +618,10 @@ export class TopologyRouter {
       const lost = new Set<number>();
       for (const [windowId, panes] of this.epoch.takeLayouts()) {
         const c = this.topology.unplaceContradicted(windowId, panes);
-        for (const id of c.left) left.add(id);
-        for (const id of c.lost) lost.add(id);
+        for (const id of c.leftWindows) left.add(id);
+        for (const id of c.lostPanes) lost.add(id);
       }
-      this.requery({ left, lost });
+      this.requery({ leftWindows: left, lostPanes: lost });
       this.interest?.recompute();
     } catch (err) {
       // [LAW:single-enforcer] Respect the ONE staleness authority on the failure
@@ -655,10 +656,10 @@ export class TopologyRouter {
   // once, whatever else is in flight: a listing in flight may name the window
   // it went to, but none is known to, and a redundant ask costs one reply.
   private requery(c: Contradiction, ...windows: number[]): void {
-    for (const id of new Set([...c.left, ...windows])) {
+    for (const id of new Set([...c.leftWindows, ...windows])) {
       void this.refreshWindow(id);
     }
-    for (const paneId of c.lost) void this.ask(paneId);
+    for (const paneId of c.lostPanes) void this.ask(paneId);
   }
 
   // [LAW:single-enforcer] The one place a window's listing is applied, from a
@@ -735,6 +736,7 @@ export class TopologyRouter {
     const conn = this.connection;
     if (conn.phase !== "live" || this.inFlight > 0 || conn.located.has(paneId))
       return;
+    conn.located.add(paneId);
     void this.ask(paneId);
   }
 
@@ -744,7 +746,6 @@ export class TopologyRouter {
   private async ask(paneId: number): Promise<void> {
     const conn = this.queryConnection();
     if (conn === null) return;
-    conn.located.add(paneId);
     const gen = this.epoch.startLocate();
     this.inFlight++;
     const command = `list-panes -t %${paneId} -F '${PANE_LIST_FORMAT}'`;
