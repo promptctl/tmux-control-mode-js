@@ -252,6 +252,22 @@ describe("XtermSink: seed", () => {
     );
     sink.dispose();
   });
+
+  it("a reseed before the first rAF drops the bytes buffered behind the earlier seed", () => {
+    // The reseed's snapshot already contains them; replaying them after it
+    // would duplicate output.
+    const { sink, term } = newSink();
+    sink.seed(enc("first"), null, [enc("behind-first")]);
+    sink.write(enc("live"));
+    sink.seed(enc("second"), null, [enc("behind-second")]);
+    sink.resize(80, 24);
+    flushRaf();
+    expect(term.write.mock.calls.map((c) => c[0])).toEqual([
+      enc("second"),
+      enc("behind-second"),
+    ]);
+    sink.dispose();
+  });
 });
 
 describe("XtermSink: write (live byte path)", () => {

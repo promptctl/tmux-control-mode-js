@@ -85,8 +85,10 @@ export class FirstResizeGate {
   }
 
   /**
-   * Buffer a seed snapshot. Latest wins: a second seed before release simply
-   * overwrites the first (newer content supersedes any re-seed).
+   * Buffer a seed snapshot. A seed is the pane's whole picture as of its
+   * capture (TerminalSink.seed), so it supersedes the previous seed AND the
+   * live bytes buffered behind it: they are already inside it, and draining
+   * them after it would duplicate output.
    *
    * Precondition: `buffering` is true — enforced loudly (throws), not merely
    * documented. Buffering after the gate opened would strand the content in a
@@ -95,6 +97,8 @@ export class FirstResizeGate {
   bufferSeed(content: SeedContent): void {
     this.assertBuffering("bufferSeed");
     this.pendingSeed = content;
+    this.pendingWrites = [];
+    this.pendingWritesBytes = 0;
   }
 
   /**

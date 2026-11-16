@@ -186,6 +186,96 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
+  it("output a live sink received invalidates the cached seed", async () => {
+    // The cache is the pane's picture as of its capture; a live byte moves
+    // the pane past it, so a later sink must not be handed the older screen.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    client.injectOutput(7, new Uint8Array([0x41]));
+    stream.detach();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a seed whose capture was followed by trailing bytes is not cached", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    client.injectOutput(7, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    stream.detach();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a detach that drops bytes buffered behind a capture keeps that capture out of the cache", async () => {
+    // The dropped bytes postdate the snapshot, so it is already behind the pane.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    client.injectOutput(7, new Uint8Array([0x41]));
+    stream.detach();
+    await flushTicks();
+
+    stream.attach(new RecordingSink());
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a sink re-attaching after a detach dropped buffered bytes is seeded by a fresh capture", async () => {
+    // The in-flight capture plus the bytes after the re-attach would miss the
+    // dropped ones; a fresh capture contains them.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    client.injectOutput(7, new Uint8Array([0x41]));
+    stream.detach();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+
+    expect(stream.state).toBe("live");
+    expect(client.capturePaneCount()).toBe(2);
+    expect(sink.seedTexts).toHaveLength(1);
+  });
+
+  it("a sink attaching while a capture is in flight waits for it rather than replaying the older cache", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    void stream.reseed(); // cache still set; a capture is now in flight
+    stream.detach();
+
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    expect(stream.state).toBe("seeding");
+    await flushTicks();
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(client.capturePaneCount()).toBe(2);
+  });
+
+  it("a failed capture hands over no seed; the bytes behind it arrive as writes", async () => {
+    // A failed capture is no picture of the pane: seeding it would replace
+    // what the sink shows with a blank one.
+    const { client, stream } = makeStream();
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
+    );
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(7, new Uint8Array([0x41]));
+    await flushTicks();
+
+    expect(stream.state).toBe("live");
+    expect(sink.events).toEqual(["write(1B)"]);
+  });
+
   it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
     const { client, stream } = makeStream();
     // Make execute() reject so the seed Promise.all throws.
@@ -196,7 +286,7 @@ describe("PaneStream — state machine", () => {
     const sink1 = new RecordingSink();
     stream.attach(sink1);
     await flushTicks();
-    // State still flips to live (better than wedging), but with empty seed.
+    // State still flips to live (better than wedging), but with no seed.
     expect(stream.state).toBe("live");
     stream.detach();
 
