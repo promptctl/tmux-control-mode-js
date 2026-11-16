@@ -242,7 +242,7 @@ the ones tmux or its layout decides, and the type refuses them: `cols` and
 `rows`, `fontSize` (`sizing.font`), `scrollback` (`history`), `tabStopWidth`
 (tmux's tab stops), `windowOptions` (tmux answers the window reports),
 `overviewRuler` (a pane is exactly its cells wide), `allowProposedApi`
-(below), `convertEol`, `windowsPty` and `documentOverride`.
+(below), `convertEol`, `windowsMode`, `windowsPty` and `documentOverride`.
 
 A pane counts a character's cells as tmux does: an emoji is two, a character
 with VS16 two, and a ZWJ sequence or a flag is one character, so whatever

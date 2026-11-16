@@ -361,18 +361,27 @@ test("a pane scrolled back by the wheel still shows its last column, with no scr
     });
     const edge = await pane.boundingBox();
     if (edge === null) throw new Error("the pane has no box");
+    const point = { x: edge.x + edge.width - 2, y: edge.y + edge.height / 2 };
+    // A pointer over the pane keeps xterm's scrollbar revealed, so it cannot
+    // fade out of the hit test below.
+    await page.mouse.move(point.x, point.y);
     // What the pointer meets on the pane's last column, halfway down.
-    const lastColumn = await page.evaluate(
-      ({ x, y }) => {
-        const hit = document.elementFromPoint(x, y);
-        if (hit === null) return "nothing";
-        if (hit.closest(".scrollbar") !== null) return "scrollbar";
-        if (hit.closest(".xterm-screen") !== null) return "screen";
-        return hit.className;
-      },
-      { x: edge.x + edge.width - 2, y: edge.y + edge.height / 2 },
-    );
+    const lastColumn = await page.evaluate(({ x, y }) => {
+      const hit = document.elementFromPoint(x, y);
+      if (hit === null) return "nothing";
+      if (hit.closest(".scrollbar") !== null) return "scrollbar";
+      if (hit.closest(".xterm-screen") !== null) return "screen";
+      return hit.className;
+    }, point);
     expect(lastColumn).toBe("screen");
+    // The viewport under the screen keeps no native scrollbar strip, which a
+    // transparent theme would show over the last column.
+    const strip = await pane.evaluate((p) => {
+      const v = p.querySelector<HTMLElement>(".xterm-viewport");
+      if (v === null) throw new Error("the pane has no viewport");
+      return v.offsetWidth - v.clientWidth;
+    });
+    expect(strip).toBe(0);
   } finally {
     await disposeApp(handle);
   }

@@ -12,8 +12,8 @@
 // leaves one cell between panes for its border; an outline in
 // `--wt-border-color` (tmux's active pane: `--wt-active-border-color`) is drawn
 // into it. Styles are inline, beside xterm's own stylesheet
-// (`@xterm/xterm/css/xterm.css`, which the consumer imports) and the root's
-// one rule hiding xterm's scrollbars.
+// (`@xterm/xterm/css/xterm.css`, which the consumer imports) and the one
+// sheet this renderer adopts into the document to hide xterm's scrollbars.
 //
 // [LAW:effects-at-boundaries] Every DOM effect of the terminal lives here;
 //   what to draw arrives as a value.
@@ -84,6 +84,7 @@ interface PaneEl {
 export class WindowRenderer implements PaneSurfaces {
   private readonly root: HTMLDivElement;
   private readonly grid: HTMLDivElement;
+  private readonly sheet = new CSSStyleSheet();
   private readonly panes = new Map<PaneId, PaneEl>();
   private readonly history: number;
   private readonly onFocusPane: (pane: PaneId) => void;
@@ -135,12 +136,14 @@ export class WindowRenderer implements PaneSurfaces {
     // pointer there. xterm has no option for it, so one rule hides it in
     // every pane, as xterm opens or rebuilds it, and hides the native
     // scrollbar of the viewport under it, which shows wherever the theme's
-    // background is transparent. Wheel scrolling still works.
-    const style = doc.createElement("style");
-    style.textContent =
+    // background is transparent. Wheel scrolling still works. The sheet is
+    // constructed, not a <style>, so a CSP without 'unsafe-inline' allows it.
+    this.sheet.replaceSync(
       ".wt-root .xterm-scrollable-element > .scrollbar.vertical { display: none; }" +
-      " .wt-root .xterm-viewport { scrollbar-width: none; }";
-    this.root.append(style, this.grid);
+        " .wt-root .xterm-viewport { scrollbar-width: none; }",
+    );
+    doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, this.sheet];
+    this.root.appendChild(this.grid);
     host.appendChild(this.root);
 
     this.root.addEventListener("focusin", this.onFocusIn);
@@ -309,5 +312,9 @@ export class WindowRenderer implements PaneSurfaces {
     for (const { sink } of this.panes.values()) sink.dispose();
     this.panes.clear();
     this.root.remove();
+    const doc = this.root.ownerDocument;
+    doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter(
+      (s) => s !== this.sheet,
+    );
   }
 }
