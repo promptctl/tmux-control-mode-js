@@ -40,6 +40,7 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 interface MockTerminal {
   options: { fontSize: number; theme: object; [k: string]: unknown };
   loaded: { addon: unknown; opened: boolean; allowProposedApi: unknown }[];
+  element: HTMLElement | undefined;
   open: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
@@ -549,6 +550,39 @@ describe("XtermSink: in-place option setters (O10)", () => {
     sink.setFont(22);
     expect(writes()).toEqual([22]);
     sink.dispose();
+  });
+
+  it("the renderer is read from the screen, and a listener hears it change until it detaches or the sink is disposed", async () => {
+    const sink = new XtermSink({ container: makeContainer() });
+    const screen = lastTerm?.element?.querySelector(".xterm-screen");
+    if (screen === null || screen === undefined) {
+      throw new Error("the terminal opened no screen");
+    }
+    // A renderer addon's link layer: WebGL's, or the canvas addon's.
+    const linkLayer = document.createElement("canvas");
+    linkLayer.className = "xterm-link-layer";
+    const mutated = () => new Promise((r) => setTimeout(r, 0));
+    const heard = vi.fn();
+    const off = sink.onRendererChange(heard);
+    expect(sink.renderer).toBe("dom");
+
+    screen.appendChild(linkLayer);
+    await mutated();
+    expect(sink.renderer).toBe("canvas");
+    expect(heard).toHaveBeenCalledOnce();
+
+    off();
+    linkLayer.remove();
+    await mutated();
+    expect(sink.renderer).toBe("dom");
+    expect(heard).toHaveBeenCalledOnce();
+
+    const later = vi.fn();
+    sink.onRendererChange(later);
+    sink.dispose();
+    screen.appendChild(linkLayer);
+    await mutated();
+    expect(later).not.toHaveBeenCalled();
   });
 
   it("the host's options are set before the terminal opens, and each addon loads once, after it opens", () => {

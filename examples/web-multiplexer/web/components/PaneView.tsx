@@ -19,6 +19,7 @@ import { useCallback, useMemo, useRef, useState, type ElementRef } from "react";
 import { observer } from "mobx-react-lite";
 import { ActionIcon, Chip, Group, Text, Tooltip } from "@mantine/core";
 import type {
+  WindowTerminalError,
   WindowTerminalState,
   XtermAddons,
   XtermOptions,
@@ -62,6 +63,9 @@ interface Props {
 }
 
 interface Seen {
+  // The terminal that saw it: a new one (the WebGL switch) sees its first
+  // window arrive.
+  readonly mount: string;
   readonly window: string;
   readonly focus: string;
   // tmux's active pane once the layout holds it: tmux names a new pane active
@@ -102,6 +106,10 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
     ];
     return { xterm: options, addons: factory };
   }, [webgl]);
+  const mount = webgl ? "webgl" : "dom";
+  // What the terminal reports it could not do (a pane whose WebGL could not
+  // start opens as an empty box): shown, until the terminal mounts again.
+  const [error, setError] = useState<WindowTerminalError | null>(null);
   const seen = useRef<Seen | null>(null);
   const onState = useCallback(
     (s: WindowTerminalState) => {
@@ -109,8 +117,8 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
       const { id, active, focus, panes } = s.window;
       const shown = panes.some((p) => p.id === active) ? active : null;
       const prev = seen.current;
-      seen.current = { window: id, focus, shown };
-      if (prev?.window !== id || shown !== prev.shown) {
+      seen.current = { mount, window: id, focus, shown };
+      if (prev?.mount !== mount || prev.window !== id || shown !== prev.shown) {
         // A window arriving (a switch remounts the terminal), or tmux's
         // active pane moving: the keyboard goes there. Nothing else moves
         // it, so a click waiting on tmux's answer is not pulled back.
@@ -123,12 +131,24 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
         if (pane !== undefined) store.selectPane(pane);
       }
     },
-    [store],
+    [store, mount],
   );
   if (win === null) return null;
   return (
     <>
       <Group gap={4} justify="flex-end" wrap="nowrap">
+        {error !== null && (
+          <Text
+            size="xs"
+            c="red"
+            ff="monospace"
+            truncate
+            mr="auto"
+            data-testid="terminal-error"
+          >
+            {error.paneId ?? error.windowId} {error.seam}: {String(error.cause)}
+          </Text>
+        )}
         {lastLink !== null && (
           <Text
             size="xs"
@@ -145,11 +165,9 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
           size="xs"
           checked={webgl}
           onChange={(on) => {
-            // The terminal mounts again: its first window is one arriving.
-            seen.current = null;
+            setError(null);
             setWebgl(on);
           }}
-          data-testid="webgl-toggle"
         >
           WebGL
         </Chip>
@@ -176,7 +194,7 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
         </Tooltip>
       </Group>
       <WindowTerminal
-        key={webgl ? "webgl" : "dom"}
+        key={mount}
         ref={terminal}
         className="demo-window-terminal"
         connection={store.paneStreamClient}
@@ -185,6 +203,7 @@ export const PaneView = observer(function PaneView({ store, uiStore }: Props) {
         xterm={xterm}
         addons={addons}
         onState={onState}
+        onError={setError}
       />
     </>
   );

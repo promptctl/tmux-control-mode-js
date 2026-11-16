@@ -176,8 +176,8 @@ function mount(
   };
 }
 
-async function live(sizing?: Sizing) {
-  const m = mount(sizing);
+async function live(...args: Parameters<typeof mount>) {
+  const m = mount(...args);
   await settle();
   observed?.(800, 480);
   m.flush();
@@ -247,17 +247,8 @@ describe("window terminal — what is drawn", () => {
       m.host
         .querySelector<HTMLElement>(".wt-grid")
         ?.style.getPropertyValue("--wt-cell-w");
-    const laidOut = async (
-      addons: WindowTerminalOptions["addons"],
-    ): Promise<ReturnType<typeof mount>> => {
-      const m = mount({ window: "tmux", font: 16, fit: "none" }, cellAt, {
-        addons,
-      });
-      await settle();
-      observed?.(800, 480);
-      m.flush();
-      return m;
-    };
+    const laidOut = (addons: WindowTerminalOptions["addons"]) =>
+      live({ window: "tmux", font: 16, fit: "none" }, cellAt, { addons });
     const widthUnder = async (
       addons: WindowTerminalOptions["addons"],
     ): Promise<string | undefined> => {
