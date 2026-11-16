@@ -31,7 +31,7 @@ import {
   isPaneOutput,
   type CommandResponse,
   type PaneAction,
-  type PaneOutputMessage,
+  type OutputMessage,
   type PaneRecord,
   type SessionRecord,
   type WindowRecord,
@@ -49,7 +49,7 @@ import {
   IPC,
   type AckMessage,
   type InvokeRequest,
-  type InvokeResultEnvelope,
+  type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
   type RendererBridgeOptions,
@@ -139,14 +139,9 @@ export class TmuxClientProxy
     this.ackBatchBytes = options.ackBatchBytes ?? DEFAULT_ACK_BATCH_BYTES;
     this.invokeTimeoutMs = options.invokeTimeoutMs ?? 0;
 
-    // [LAW:locality-or-seam] IPC wire format is the boundary type; widened
-    //   to admit byte messages here, narrowed into the two channels in
-    //   onEvent. Each IPC event is one step.
-    this.eventHandler = (_event, ...args) =>
-      this.delivery.step(
-        this.onEvent,
-        args[0] as EmitterMessage | PaneOutputMessage,
-      );
+    // [LAW:locality-or-seam] `IpcEventMessage` is the boundary type; onEvent
+    //   splits it into bytes and events. Each IPC event is one step.
+    this.eventHandler = (_event, msg) => this.delivery.step(this.onEvent, msg);
     this.ipc.on(IPC.event, this.eventHandler);
 
     // Register this renderer as an event subscriber. Fire-and-forget.
@@ -161,9 +156,7 @@ export class TmuxClientProxy
   //   `PaneOutputMessage`, so announcing a byte message is a compile error,
   //   which is what enforces the split on the renderer side.
   // Bound once: an IPC event steps with no closure.
-  private readonly onEvent = (
-    msg: EmitterMessage | PaneOutputMessage,
-  ): void => {
+  private readonly onEvent = (msg: IpcEventMessage): void => {
     if (isPaneOutput(msg)) {
       this.account(msg);
       // [LAW:single-enforcer] Byte dispatch routes through the router.
@@ -393,11 +386,10 @@ export class TmuxClientProxy
     // when timeout is disabled (the default), the IPC promise is awaited
     // directly with no timer overhead.
     const ipcPromise = this.ipc.invoke(IPC.invoke, req);
-    const settled =
+    const result =
       this.invokeTimeoutMs > 0
         ? await this.withTimeout(ipcPromise, req.method)
         : await ipcPromise;
-    const result = settled as InvokeResultEnvelope;
     if (result.status === "ok") {
       return result.response as RpcResponseMap[R["method"]];
     }
@@ -435,11 +427,9 @@ export class TmuxClientProxy
     });
   }
 
-  // [LAW:single-enforcer] Called from the byte-only branch of `eventHandler`,
-  // so `msg` is statically `PaneOutputMessage`. The accounting pipeline is
-  // the same for both `output` and `extended-output` — main credits them
-  // identically on the way out, so we mirror that on the way in.
-  private account(msg: PaneOutputMessage): void {
+  // [LAW:single-enforcer] Called from the byte-only branch of `onEvent`,
+  // so `msg` is statically the pane-output arm of `IpcEventMessage`.
+  private account(msg: OutputMessage): void {
     const next = (this.pendingAck.get(msg.paneId) ?? 0) + msg.data.byteLength;
     if (next < this.ackBatchBytes) {
       this.pendingAck.set(msg.paneId, next);
@@ -468,7 +458,10 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  InvokeResultEnvelope,
+  IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,
+  IpcRendererOnListener,
   RendererBridgeOptions,
 } from "./types.js";

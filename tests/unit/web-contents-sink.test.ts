@@ -5,7 +5,7 @@
 // What the contract promises:
 //
 // WebContentsSink / attachWebContentsSink:
-//   - `WebContentsSink.write(msg)` sends a `PaneOutputMessage` on `IPC.event`,
+//   - `WebContentsSink.write(msg)` sends an `OutputMessage` on `IPC.event`,
 //     byte-for-byte preserved.
 //   - `write` is a no-op when `wc.isDestroyed()`.
 //   - `end()` is a no-op (no wire-level pane-end frame on IPC.event).
@@ -30,11 +30,13 @@ import {
 } from "../../src/connectors/electron/main.js";
 import {
   IPC,
+  type IpcEventMessage,
+  type IpcRendererOnListener,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
 import { paneScope } from "../../src/pane-output.js";
 import type { TmuxTransport } from "../../src/transport/types.js";
-import type { PaneOutputMessage } from "../../src/protocol/types.js";
+import { isPaneOutput, type OutputMessage } from "../../src/protocol/types.js";
 
 // ---------------------------------------------------------------------------
 // Test rigging
@@ -65,23 +67,25 @@ function createFakeTransport(): FakeTransport {
   };
 }
 
-interface RecordedSend {
-  readonly channel: string;
-  readonly args: readonly unknown[];
-}
-
 interface FakeWebContents {
   readonly wc: Pick<WebContentsLike, "send" | "isDestroyed">;
-  readonly sends: RecordedSend[];
+  readonly sends: IpcEventMessage[];
   destroy(): void;
+}
+
+/** The `i`th send, which a sink only ever makes as pane output. */
+function sentOutput(fake: FakeWebContents, i: number): OutputMessage {
+  const msg = fake.sends[i];
+  if (!isPaneOutput(msg)) throw new Error(`send ${i} is ${msg.type}`);
+  return msg;
 }
 
 function createFakeWebContents(): FakeWebContents {
   let destroyed = false;
-  const sends: RecordedSend[] = [];
+  const sends: IpcEventMessage[] = [];
   const wc: Pick<WebContentsLike, "send" | "isDestroyed"> = {
-    send(channel, ...args) {
-      sends.push({ channel, args });
+    send(_channel, msg) {
+      sends.push(msg);
     },
     isDestroyed() {
       return destroyed;
@@ -105,15 +109,14 @@ function octEscape(bytes: readonly number[]): string {
 // ---------------------------------------------------------------------------
 
 describe("WebContentsSink", () => {
-  it("write sends a PaneOutputMessage on IPC.event, byte-for-byte", () => {
+  it("write sends an OutputMessage on IPC.event, byte-for-byte", () => {
     const fake = createFakeWebContents();
     const sink = new WebContentsSink(fake.wc);
     const data = new Uint8Array([0x00, 0x7f, 0x80, 0xc3, 0xa9, 0xff]);
     sink.write({ paneId: 42, data });
 
     expect(fake.sends).toHaveLength(1);
-    expect(fake.sends[0].channel).toBe(IPC.event);
-    const msg = fake.sends[0].args[0] as PaneOutputMessage;
+    const msg = sentOutput(fake, 0);
     expect(msg.type).toBe("output");
     expect(msg.paneId).toBe(42);
     expect(Array.from(msg.data)).toEqual([0x00, 0x7f, 0x80, 0xc3, 0xa9, 0xff]);
@@ -141,8 +144,8 @@ describe("WebContentsSink", () => {
     sink1.write({ paneId: 1, data: new Uint8Array([0x11]) });
     sink2.write({ paneId: 2, data: new Uint8Array([0x22]) });
     expect(fake.sends).toHaveLength(2);
-    expect((fake.sends[0].args[0] as PaneOutputMessage).paneId).toBe(1);
-    expect((fake.sends[1].args[0] as PaneOutputMessage).paneId).toBe(2);
+    expect(sentOutput(fake, 0).paneId).toBe(1);
+    expect(sentOutput(fake, 1).paneId).toBe(2);
   });
 });
 
@@ -151,7 +154,7 @@ describe("WebContentsSink", () => {
 // ---------------------------------------------------------------------------
 
 describe("attachWebContentsSink", () => {
-  it("forwards every pane chunk as a PaneOutputMessage on IPC.event, byte-for-byte", () => {
+  it("forwards every pane chunk as an OutputMessage on IPC.event, byte-for-byte", () => {
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
     const fake = createFakeWebContents();
@@ -161,8 +164,7 @@ describe("attachWebContentsSink", () => {
     t.feed(`%output %42 ${octEscape(payload)}\n`);
 
     expect(fake.sends).toHaveLength(1);
-    expect(fake.sends[0].channel).toBe(IPC.event);
-    const msg = fake.sends[0].args[0] as PaneOutputMessage;
+    const msg = sentOutput(fake, 0);
     expect(msg.type).toBe("output");
     expect(msg.paneId).toBe(42);
     expect(Array.from(msg.data)).toEqual(payload);
@@ -178,8 +180,8 @@ describe("attachWebContentsSink", () => {
     t.feed(`%output %20 ${octEscape([0xbb])}\n`);
 
     expect(fake.sends).toHaveLength(2);
-    expect((fake.sends[0].args[0] as PaneOutputMessage).paneId).toBe(10);
-    expect((fake.sends[1].args[0] as PaneOutputMessage).paneId).toBe(20);
+    expect(sentOutput(fake, 0).paneId).toBe(10);
+    expect(sentOutput(fake, 1).paneId).toBe(20);
   });
 
   it("paneScope filters to only the addressed pane", () => {
@@ -192,7 +194,7 @@ describe("attachWebContentsSink", () => {
     t.feed(`%output %6 ${octEscape([0x66])}\n`);
 
     expect(fake.sends).toHaveLength(1);
-    expect((fake.sends[0].args[0] as PaneOutputMessage).paneId).toBe(5);
+    expect(sentOutput(fake, 0).paneId).toBe(5);
   });
 
   it("no-ops on wc.isDestroyed() during write", () => {
@@ -245,8 +247,8 @@ describe("attachWebContentsSink", () => {
     t.feed(`%output %2 ${octEscape([0x22])}\n`);
 
     expect(fake.sends).toHaveLength(2);
-    expect((fake.sends[0].args[0] as PaneOutputMessage).paneId).toBe(1);
-    expect((fake.sends[1].args[0] as PaneOutputMessage).paneId).toBe(2);
+    expect(sentOutput(fake, 0).paneId).toBe(1);
+    expect(sentOutput(fake, 1).paneId).toBe(2);
   });
 
   it("two serverScope attachments on the same wc both receive chunks (no exclusivity)", () => {
@@ -260,5 +262,30 @@ describe("attachWebContentsSink", () => {
 
     // Both attachments fire: two sends for the one chunk.
     expect(fake.sends).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IPC.event payload — one union, checked at both ends
+// ---------------------------------------------------------------------------
+
+describe("IPC.event payload", () => {
+  it("main sends a renderer only an IpcEventMessage, and a renderer listener receives one", () => {
+    const fake = createFakeWebContents();
+    const output: OutputMessage = {
+      type: "output",
+      paneId: 1,
+      data: new Uint8Array(),
+    };
+    // @ts-expect-error a payload outside IpcEventMessage does not compile
+    const wrongPayload = () => fake.wc.send(IPC.event, { type: "bogus" });
+    // @ts-expect-error main sends a renderer nothing on another channel
+    const wrongChannel = () => fake.wc.send(IPC.ack, output);
+    // An unannotated listener's `msg` is the union itself.
+    const listener: IpcRendererOnListener = (_e, msg) => {
+      const type: IpcEventMessage["type"] = msg.type;
+      return type;
+    };
+    expect([wrongPayload, wrongChannel, listener]).toHaveLength(3);
   });
 });

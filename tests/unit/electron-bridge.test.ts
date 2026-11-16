@@ -28,6 +28,7 @@ import type { TmuxMessage } from "../../src/protocol/types.js";
 import { paneScope, sessionScope } from "../../src/pane-output.js";
 import {
   IPC,
+  type InvokeResultEnvelope,
   type IpcRendererLike,
   type IpcRendererOnListener,
   parseAckMessage,
@@ -1494,7 +1495,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
   it("rejects with BridgeError(TIMEOUT) when the IPC call does not settle in time", async () => {
     // Fake renderer that lets us control settle timing of a single in-flight
     // invoke. We bypass the real ipcMain handler so the call simply hangs.
-    let resolveStuck: (v: unknown) => void = () => {};
+    let resolveStuck: (v: InvokeResultEnvelope) => void = () => {};
     const stuckIpc: IpcRendererLike = {
       invoke: () =>
         new Promise((resolve) => {
@@ -1517,7 +1518,10 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     // already rejected the renderer-side promise; the resolution is just
     // discarded). vitest will fail the test if an unhandled rejection
     // propagates, so the absence of a failure here is the assertion.
-    resolveStuck({ ok: true, response: { output: [], success: true } });
+    resolveStuck({
+      status: "bridge-error",
+      error: new BridgeError("BRIDGE_CLOSED", "late").toPayload(),
+    });
     await new Promise((r) => setTimeout(r, 5));
   });
 
@@ -1859,10 +1863,11 @@ describe("Electron IPC bridge — two-window scenario", () => {
   it("regression — fake hub mirrors real Electron: second handle() throws", () => {
     const hub = createIpcHub();
     // Direct second registration on the same channel must throw.
-    hub.ipcMain.handle("tmux:invoke", async () => undefined);
-    expect(() =>
-      hub.ipcMain.handle("tmux:invoke", async () => undefined),
-    ).toThrow(/second handler/);
+    const hang = () => new Promise<never>(() => {});
+    hub.ipcMain.handle("tmux:invoke", hang);
+    expect(() => hub.ipcMain.handle("tmux:invoke", hang)).toThrow(
+      /second handler/,
+    );
   });
 });
 
@@ -2651,5 +2656,32 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
       { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
     ]);
     expect(t.commands()).not.toContain(refreshClientWindowSize(3, 90, 20));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Renderer → main arguments — compile-time contract (checked by typecheck)
+// ---------------------------------------------------------------------------
+
+describe("IpcRendererLike", () => {
+  it("takes each channel's own arguments, and invoke resolves to an envelope", () => {
+    // The @ts-expect-error lines are the assertions; `pnpm run typecheck`
+    // fails if any of them compiles.
+    const calls = (ipc: IpcRendererLike) => [
+      () => ipc.send(IPC.register),
+      () => ipc.send(IPC.ack, { paneId: 1, bytes: 1 }),
+      // @ts-expect-error an ack carries its AckMessage
+      () => ipc.send(IPC.ack),
+      // @ts-expect-error register carries nothing
+      () => ipc.send(IPC.register, { paneId: 1, bytes: 1 }),
+      // @ts-expect-error a renderer sends main nothing on IPC.event
+      () => ipc.send(IPC.event),
+      // @ts-expect-error invoke is the one channel a renderer invokes on
+      () => ipc.invoke(IPC.ack, { paneId: 1, bytes: 1 }),
+      async (): Promise<InvokeResultEnvelope["status"]> =>
+        (await ipc.invoke(IPC.invoke, { method: "listWindows", args: [] }))
+          .status,
+    ];
+    expect(calls).toBeTypeOf("function");
   });
 });

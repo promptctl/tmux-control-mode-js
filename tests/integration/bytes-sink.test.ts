@@ -1,7 +1,7 @@
 // tests/integration/bytes-sink.test.ts
 // Integration test 22 for the Electron BytesSink destination against real tmux.
 //
-// INT-22: attachWebContentsSink delivers real tmux bytes as PaneOutputMessage
+// INT-22: attachWebContentsSink delivers real tmux bytes as OutputMessage
 //         on IPC.event to a fake WebContents.
 //
 // [LAW:verifiable-goals] Gated behind TMUX_INTEGRATION=1. All tests use
@@ -22,8 +22,11 @@ import {
   attachWebContentsSink,
   WebContentsSink,
 } from "../../src/connectors/electron/main.js";
-import { IPC } from "../../src/connectors/electron/types.js";
-import type { WebContentsLike } from "../../src/connectors/electron/types.js";
+import type {
+  IpcEventMessage,
+  WebContentsLike,
+} from "../../src/connectors/electron/types.js";
+import { isPaneOutput } from "../../src/protocol/types.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -59,12 +62,12 @@ describe.skipIf(!RUN_INTEGRATION)(
       killTmuxServer(socketName);
     });
 
-    it("INT-22: PaneOutputMessage arrives on IPC.event when tmux produces output", async () => {
+    it("INT-22: an OutputMessage arrives on IPC.event when tmux produces output", async () => {
       // Fake WebContents that records messages sent on any channel.
-      const ipcMessages: { channel: string; payload: unknown }[] = [];
+      const ipcMessages: IpcEventMessage[] = [];
       const fakeWc: Pick<WebContentsLike, "send" | "isDestroyed"> = {
-        send(channel: string, ...args: unknown[]) {
-          ipcMessages.push({ channel, payload: args[0] });
+        send(_channel, msg) {
+          ipcMessages.push(msg);
         },
         isDestroyed() {
           return false;
@@ -83,16 +86,7 @@ describe.skipIf(!RUN_INTEGRATION)(
         `send-keys -t %${paneId} "echo int22-''hello" Enter`,
       );
 
-      const outputs = () =>
-        ipcMessages
-          .filter(
-            (m) =>
-              m.channel === IPC.event &&
-              typeof m.payload === "object" &&
-              m.payload !== null &&
-              (m.payload as { type: string }).type === "output",
-          )
-          .map((m) => m.payload as { paneId: number; data: Uint8Array });
+      const outputs = () => ipcMessages.filter(isPaneOutput);
 
       // The wait keys on the marker itself: the first output message can be
       // the shell's prompt redraw, which arrives before the echo under load.

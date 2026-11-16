@@ -26,16 +26,32 @@
 // without booting a real Electron process.
 
 import type {
+  InvokeResultEnvelope,
   IpcMainEventLike,
+  IpcMainInvokeListener,
   IpcMainLike,
   IpcRendererLike,
+  IpcRendererOnListener,
   WebContentsLike,
   WebFrameLike,
 } from "../../../src/connectors/electron/types.js";
 
+/**
+ * Electron's own `ipcRenderer`, untyped per channel, so a test playing a
+ * hostile renderer can send main what `IpcRendererLike` refuses. It is
+ * assignable to `IpcRendererLike`, as Electron's is.
+ */
+export interface RawIpcRenderer extends Pick<
+  IpcRendererLike,
+  "on" | "removeListener"
+> {
+  invoke(channel: string, ...args: unknown[]): Promise<InvokeResultEnvelope>;
+  send(channel: string, ...args: unknown[]): void;
+}
+
 export interface FakeRenderer {
   /** The ipcRenderer of the document the WebContents shows now. */
-  readonly ipcRenderer: IpcRendererLike;
+  readonly ipcRenderer: RawIpcRenderer;
   readonly sender: WebContentsLike;
   /** The IPC event the current document's messages carry. */
   readonly event: IpcMainEventLike;
@@ -87,13 +103,9 @@ export interface IpcHub {
 }
 
 export function createIpcHub(): IpcHub {
-  type InvokeHandler = (
-    event: IpcMainEventLike,
-    ...args: unknown[]
-  ) => unknown | Promise<unknown>;
   type OnHandler = (event: IpcMainEventLike, ...args: unknown[]) => void;
 
-  const invokeHandlers = new Map<string, InvokeHandler>();
+  const invokeHandlers = new Map<string, IpcMainInvokeListener>();
   const mainOnListeners = new Map<string, Set<OnHandler>>();
   let nextProcessId = 1;
 
@@ -144,11 +156,10 @@ export function createIpcHub(): IpcHub {
   }
 
   function createRenderer(): FakeRenderer {
-    type RendererHandler = (event: unknown, ...args: unknown[]) => void;
     interface Document {
       readonly frame: WebFrameLike;
-      readonly listeners: Map<string, Set<RendererHandler>>;
-      readonly ipcRenderer: IpcRendererLike;
+      readonly listeners: Map<string, Set<IpcRendererOnListener>>;
+      readonly ipcRenderer: RawIpcRenderer;
       /** A fresh IPC event for each message from this document, as Electron builds. */
       readonly ipcEvent: () => IpcMainEventLike;
       /** False once the document's frame host was reused by a later one. */
@@ -190,7 +201,7 @@ export function createIpcHub(): IpcHub {
       from: Document,
       channel: string,
       args: readonly unknown[],
-    ): Promise<unknown> {
+    ): Promise<InvokeResultEnvelope> {
       const payload = cloneArgs(args);
       await nextTask();
       const reply = await (async () => {
@@ -220,18 +231,17 @@ export function createIpcHub(): IpcHub {
     }
 
     const sender: WebContentsLike = {
-      send(channel, ...args) {
+      send(channel, msg) {
         if (destroyed) throw new Error("Object has been destroyed");
         const target = doc;
         // Real Electron sends args through structuredClone before they
         // reach the renderer. Mirroring that here means a test that mutates
         // the source object after dispatch (or relies on by-ref identity)
         // fails the same way it would in production.
-        const payload = cloneArgs(args);
+        const [payload] = cloneArgs([msg]);
         void nextTask().then(() => {
           if (!hears(target)) return;
-          for (const h of target.listeners.get(channel) ?? [])
-            h({}, ...payload);
+          for (const h of target.listeners.get(channel) ?? []) h({}, payload);
         });
       },
       get mainFrame() {
@@ -260,7 +270,7 @@ export function createIpcHub(): IpcHub {
     };
 
     function createDocument(frame: WebFrameLike): Document {
-      const listeners = new Map<string, Set<RendererHandler>>();
+      const listeners = new Map<string, Set<IpcRendererOnListener>>();
       const mustSend = (): void => {
         if (!document.sends) {
           throw new Error(
@@ -269,7 +279,7 @@ export function createIpcHub(): IpcHub {
           );
         }
       };
-      const ipcRenderer: IpcRendererLike = {
+      const ipcRenderer: RawIpcRenderer = {
         invoke(channel, ...args) {
           mustSend();
           return answer(document, channel, args);
@@ -288,10 +298,10 @@ export function createIpcHub(): IpcHub {
             set = new Set();
             listeners.set(channel, set);
           }
-          set.add(listener as RendererHandler);
+          set.add(listener);
         },
         removeListener(channel, listener) {
-          listeners.get(channel)?.delete(listener as RendererHandler);
+          listeners.get(channel)?.delete(listener);
         },
       };
       const document: Document = {
@@ -358,6 +368,6 @@ export function createIpcHub(): IpcHub {
   };
 }
 
-export function cloneArgs(args: readonly unknown[]): unknown[] {
+export function cloneArgs<T>(args: readonly T[]): T[] {
   return args.map((a) => structuredClone(a));
 }

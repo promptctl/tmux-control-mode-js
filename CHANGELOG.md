@@ -45,6 +45,25 @@ All notable changes to this project are documented here. Format follows
   `WebContents` and IPC events have them; a hand-written fake needs them.
   `./electron/main` exports these types.
   `WebContentsSink` needs only `send` and `isDestroyed`.
+- The Electron IPC interfaces type each channel's arguments. `IPC.event`
+  carries `IpcEventMessage` (an `EmitterMessage` or an `OutputMessage`):
+  `WebContentsLike.send` takes `IPC.event` and one `IpcEventMessage`, and
+  `IpcRendererLike.on`/`removeListener` take `IPC.event` with a listener
+  `(event, msg: IpcEventMessage)`. `IpcRendererLike.send` takes
+  `IPC.register` or `IPC.unregister` alone, or `IPC.ack` with an
+  `AckMessage`; `IpcMainLike.on`/`removeListener` take those three
+  channels. `IpcRendererLike.invoke` takes `IPC.invoke` and an
+  `InvokeRequest` and resolves to an `InvokeResultEnvelope`;
+  `IpcMainLike.handle`/`removeHandler` take `IPC.invoke`, whose listener
+  returns a `Promise<InvokeResultEnvelope>`. Electron's `ipcMain` and
+  `WebContents` are still assignable. A preload wrapper whose `invoke`
+  returns `Promise<unknown>` no longer is: type it as `IpcRendererLike`
+  and return `ipcRenderer.invoke(channel, req)`, which needs no cast. A
+  hand-written fake that sends other channels or arguments no longer
+  compiles. `./electron/main` and
+  `./electron/renderer` export `IpcEventMessage` and
+  `InvokeResultEnvelope`; `./electron/renderer` also exports
+  `IpcRendererOnListener`.
 - The Electron main bridge refuses IPC from subframes (an invoke answers
   `BRIDGE_ABORTED`): a renderer's peer is its page's main frame.
 - A watcher passes `watchServerOptions` to its `TmuxClient`. Without it the

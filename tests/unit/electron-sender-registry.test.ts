@@ -23,6 +23,7 @@ import type {
 import type { ConnectionState } from "../../src/connection-state.js";
 import {
   IPC,
+  type IpcEventMessage,
   type IpcMainEventLike,
   type WebContentsLike,
 } from "../../src/connectors/electron/types.js";
@@ -50,7 +51,7 @@ function mustCreate(
 interface ControllableWc {
   readonly wc: WebContentsLike;
   readonly event: IpcMainEventLike;
-  readonly sends: unknown[];
+  readonly sends: IpcEventMessage[];
   setDestroyed(): void;
   /** Crashed, with `mainFrame` still readable (Electron 34+). */
   setCrashed(): void;
@@ -60,15 +61,15 @@ interface ControllableWc {
 function makeControllableWc(): ControllableWc {
   let destroyed = false;
   let crashed = false;
-  const sends: unknown[] = [];
+  const sends: IpcEventMessage[] = [];
   const attached = new Map<string, Set<() => void>>();
   const attach = (event: string, listener: () => void): void => {
     const set = attached.get(event) ?? new Set();
     attached.set(event, set.add(listener));
   };
   const wc: WebContentsLike = {
-    send(_channel, ...args) {
-      sends.push(args[0]);
+    send(_channel, msg) {
+      sends.push(msg);
     },
     mainFrame: { processId: 1, routingId: 1 },
     once: attach,
@@ -167,8 +168,8 @@ function makeClient(): FakeClient {
 }
 
 /** Capture every IPC.event payload a renderer receives. */
-function captureEvents(renderer: FakeRenderer): unknown[] {
-  const events: unknown[] = [];
+function captureEvents(renderer: FakeRenderer): IpcEventMessage[] {
+  const events: IpcEventMessage[] = [];
   renderer.ipcRenderer.on(IPC.event, (_e, msg) => events.push(msg));
   return events;
 }

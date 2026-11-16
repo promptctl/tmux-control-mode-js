@@ -15,7 +15,8 @@
 // [LAW:locality-or-seam] Structural "like" interfaces (IpcMainLike, etc.)
 // keep Electron out of the library's dependencies entirely.
 
-import type { CommandResponse } from "../../protocol/types.js";
+import type { EmitterMessage } from "../../emitter.js";
+import type { CommandResponse, OutputMessage } from "../../protocol/types.js";
 import type { BridgeErrorPayload as BridgeErrorPayloadType } from "../errors.js";
 import type { ResumeFailure } from "../bridge-connection.js";
 import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
@@ -25,7 +26,7 @@ import type { RpcMethod, RpcRequest, RpcResponseMap } from "../rpc.js";
 // ---------------------------------------------------------------------------
 
 export const IPC = {
-  /** main → renderer: forwarded TmuxMessage (all notifications, including `exit`). */
+  /** main → renderer: every `IpcEventMessage` — client events and pane bytes. */
   event: "tmux:event",
   /** renderer → main: method dispatch via ipcRenderer.invoke. */
   invoke: "tmux:invoke",
@@ -43,22 +44,31 @@ export const IPC = {
   ack: "tmux:ack",
 } as const;
 
+/** The channels a renderer sends main on with `ipcRenderer.send`. */
+export type RendererSendChannel =
+  | typeof IPC.register
+  | typeof IPC.unregister
+  | typeof IPC.ack;
+
 /**
- * Every channel the bridge talks on is one of the values of `IPC`. Narrowing
- * the structural-Electron interfaces below to this type makes channel typos a
- * compile error at the bridge boundary instead of a silent runtime mismatch.
+ * What main sends a renderer on `IPC.event`: an event of the main-side client
+ * (`client.on("*")`, plus the connection-state snapshot a late joiner gets) or
+ * a pane's output bytes from the renderer's `BytesSink`, which sends tmux's
+ * `%output` and `%extended-output` alike as `output`.
  *
- * [LAW:one-source-of-truth] `IPC` is the only place channel strings are spelled;
- * `IpcChannel` is derived from it. Adding a new channel = one edit.
+ * [LAW:types-are-the-program] The channel's payload is declared once, here,
+ * and both ends are typed against it: `WebContentsLike.send` checks every
+ * producer, `IpcRendererOnListener` hands the renderer the union with no cast.
  */
-export type IpcChannel = (typeof IPC)[keyof typeof IPC];
+export type IpcEventMessage = EmitterMessage | OutputMessage;
 
 // ---------------------------------------------------------------------------
 // Structural "like" interfaces for Electron.
 //
 // [LAW:locality-or-seam] These structural interfaces keep `electron` out of
-// the library's runtime dependencies. `IpcChannel` narrows the channel-name
-// parameter so a typo at the call site is a compile error.
+// the library's runtime dependencies. Each method takes only the channels its
+// side uses, with that channel's arguments, so a wrong channel or payload at
+// the call site is a compile error.
 //
 // [LAW:one-type-per-behavior] `on` and `removeListener` use the SAME listener
 // shape so a registered handler can be passed verbatim to removeListener
@@ -99,7 +109,8 @@ export type PageEndEvent = (typeof PAGE_END_EVENTS)[number];
 export type LoadFailedEvent = "did-fail-load";
 
 export interface WebContentsLike {
-  send(channel: IpcChannel, ...args: unknown[]): void;
+  /** `IPC.event` is the one channel main sends a renderer on. */
+  send(channel: typeof IPC.event, msg: IpcEventMessage): void;
   /**
    * The frame host of the page this WebContents shows. After `destroy()` it
    * still reads the last host; before Electron 34, reading it after a
@@ -135,16 +146,22 @@ export type IpcMainOnListener = (
   ...args: unknown[]
 ) => void;
 
+/** Main answers every `IPC.invoke` with an envelope, whatever the renderer sent. */
 export type IpcMainInvokeListener = (
   event: IpcMainEventLike,
   ...args: unknown[]
-) => unknown | Promise<unknown>;
+) => Promise<InvokeResultEnvelope>;
 
 export interface IpcMainLike {
-  handle(channel: IpcChannel, listener: IpcMainInvokeListener): void;
-  removeHandler(channel: IpcChannel): void;
-  on(channel: IpcChannel, listener: IpcMainOnListener): void;
-  removeListener(channel: IpcChannel, listener: IpcMainOnListener): void;
+  /** `IPC.invoke` is the one channel main handles. */
+  handle(channel: typeof IPC.invoke, listener: IpcMainInvokeListener): void;
+  removeHandler(channel: typeof IPC.invoke): void;
+  /** The channels a renderer sends main on; main parses what arrives. */
+  on(channel: RendererSendChannel, listener: IpcMainOnListener): void;
+  removeListener(
+    channel: RendererSendChannel,
+    listener: IpcMainOnListener,
+  ): void;
 }
 
 // [LAW:types-are-the-program] No fields required from the renderer event —
@@ -155,14 +172,24 @@ export type IpcRendererEventLike = object;
 
 export type IpcRendererOnListener = (
   event: IpcRendererEventLike,
-  ...args: unknown[]
+  msg: IpcEventMessage,
 ) => void;
 
 export interface IpcRendererLike {
-  invoke(channel: IpcChannel, ...args: unknown[]): Promise<unknown>;
-  send(channel: IpcChannel, ...args: unknown[]): void;
-  on(channel: IpcChannel, listener: IpcRendererOnListener): void;
-  removeListener(channel: IpcChannel, listener: IpcRendererOnListener): void;
+  invoke(
+    channel: typeof IPC.invoke,
+    req: InvokeRequest,
+  ): Promise<InvokeResultEnvelope>;
+  // A renderer's own sends are typed per channel; main still parses what
+  // arrives (`parseAckMessage`), since a renderer is untrusted.
+  send(channel: typeof IPC.register | typeof IPC.unregister): void;
+  send(channel: typeof IPC.ack, ack: AckMessage): void;
+  /** `IPC.event` is the one channel a renderer listens on. */
+  on(channel: typeof IPC.event, listener: IpcRendererOnListener): void;
+  removeListener(
+    channel: typeof IPC.event,
+    listener: IpcRendererOnListener,
+  ): void;
 }
 
 // ---------------------------------------------------------------------------
