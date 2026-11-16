@@ -14,9 +14,8 @@
 // neighbour's, and the old one killed them alike.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmux } from "./tmux-cli.js";
 
 function uid(): number {
   if (process.getuid === undefined) {
@@ -32,41 +31,63 @@ function uid(): number {
  */
 export const RUNS_ROOT = `/tmp/tmux-js-test-runs-${uid()}`;
 
+/** A run's namespace is named for its vitest process id; nothing else under RUNS_ROOT is a run. */
+const RUN_NAME = /^\d+$/;
+
+/** How long one `kill-server` may take before the environment counts as broken. */
+const KILL_TIMEOUT_MS = 5000;
+
 /** The namespace of the run whose vitest process is `pid`. */
 export function runDir(pid: number): string {
   return join(RUNS_ROOT, String(pid));
 }
 
-/** Kill the tmux server `socket` names in the current TMUX_TMPDIR. */
-export function killTmuxServer(socket: string): void {
+/** Where tmux puts the sockets of a server started with TMUX_TMPDIR=`dir`. */
+export function socketDirIn(dir: string): string {
+  return join(dir, `tmux-${uid()}`);
+}
+
+/** Entries of directory `path`; none once it is gone, as a concurrent run's reap may make it. */
+function entries(path: string): string[] {
   try {
-    tmux(socket, ["kill-server"]);
-  } catch {
-    // A stale socket file has no live server to kill — that failing here is
-    // the expected "already dead" case, not a swallowed error.
+    return readdirSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
   }
 }
 
 /**
- * Kill the tmux server named `socket` in the run namespace `dir`. True when
- * one was running: tmux leaves a killed server's socket file behind, so most
+ * Kill the tmux server `socket` names under `env`'s TMUX_TMPDIR. True when one
+ * was running: tmux leaves a killed server's socket file behind, so most
  * sockets in a namespace are dead files, and only a kill tells them apart.
  */
-function killServerIn(dir: string, socket: string): boolean {
+export function killTmuxServer(
+  socket: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
   try {
     execFileSync("tmux", ["-L", socket, "kill-server"], {
       stdio: "ignore",
-      env: { ...process.env, TMUX_TMPDIR: dir },
+      env,
+      timeout: KILL_TIMEOUT_MS,
     });
     return true;
-  } catch {
-    // No server listening: a dead file, which the directory's removal reaps.
-    return false;
+  } catch (err) {
+    // [LAW:no-silent-failure] Only tmux exiting non-zero means "no server".
+    // A missing tmux, a timeout or a signal is a broken environment: read as
+    // "dead", it would have the reaper delete a live server's socket.
+    if (typeof (err as { status?: unknown }).status === "number") return false;
+    throw err;
   }
 }
 
+function killServerIn(dir: string, socket: string): boolean {
+  return killTmuxServer(socket, { ...process.env, TMUX_TMPDIR: dir });
+}
+
 /** Whether process `pid` is running. A reused pid reads as alive: a leak, never a kill. */
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -86,9 +107,9 @@ export function reapRun(
   dir: string,
   killServer: (dir: string, socket: string) => boolean = killServerIn,
 ): string[] {
-  const socketDir = join(dir, `tmux-${uid()}`);
-  const sockets = existsSync(socketDir) ? readdirSync(socketDir) : [];
-  const running = sockets.filter((name) => killServer(dir, name));
+  const running = entries(socketDirIn(dir)).filter((name) =>
+    killServer(dir, name),
+  );
   rmSync(dir, { recursive: true, force: true });
   return running;
 }
@@ -102,8 +123,7 @@ export function reapDeadRuns(
   isAlive: (pid: number) => boolean = processAlive,
   killServer: (dir: string, socket: string) => boolean = killServerIn,
 ): string[] {
-  if (!existsSync(root)) return [];
-  return readdirSync(root)
-    .filter((name) => !isAlive(Number(name)))
+  return entries(root)
+    .filter((name) => RUN_NAME.test(name) && !isAlive(Number(name)))
     .flatMap((name) => reapRun(join(root, name), killServer));
 }

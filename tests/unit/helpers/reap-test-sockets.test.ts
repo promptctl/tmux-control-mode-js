@@ -16,12 +16,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  killTmuxServer,
   reapDeadRuns,
   reapRun,
   RUNS_ROOT,
+  socketDirIn,
 } from "../../helpers/reap-test-sockets.js";
 
-const uid = process.getuid?.();
 let root: string;
 const killed: string[] = [];
 /** Records each kill; a socket named `live-…` has a server running, any other is a dead file. */
@@ -32,7 +33,7 @@ const spyKill = (dir: string, socket: string): boolean => {
 
 /** A run directory `pid` under the temp root, with these tmux sockets in it. */
 function seedRun(pid: number, sockets: string[]): void {
-  const socketDir = join(root, String(pid), `tmux-${uid}`);
+  const socketDir = socketDirIn(join(root, String(pid)));
   mkdirSync(socketDir, { recursive: true });
   for (const name of sockets) writeFileSync(join(socketDir, name), "");
 }
@@ -46,7 +47,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe.skipIf(uid === undefined)("reapDeadRuns", () => {
+describe("reapDeadRuns", () => {
   it("reaps a dead run's servers and leaves a live run's alone, whatever their names", () => {
     seedRun(100, ["live-xsl-1-a", "live-collab-1-b"]);
     seedRun(200, ["live-xsl-1-a"]);
@@ -70,9 +71,23 @@ describe.skipIf(uid === undefined)("reapDeadRuns", () => {
     );
     expect(killed).toEqual([]);
   });
+
+  it("leaves an entry not named for a run alone, such as a Finder .DS_Store", () => {
+    writeFileSync(join(root, ".DS_Store"), "");
+    expect(reapDeadRuns(root, () => false, spyKill)).toEqual([]);
+    expect(readdirSync(root)).toEqual([".DS_Store"]);
+  });
 });
 
-describe.skipIf(uid === undefined)("reapRun", () => {
+describe("killTmuxServer", () => {
+  it("throws when tmux cannot run, rather than reading it as no server", () => {
+    expect(() => killTmuxServer("any", { ...process.env, PATH: root })).toThrow(
+      /ENOENT/,
+    );
+  });
+});
+
+describe("reapRun", () => {
   it("kills every server in the run's namespace, then removes it", () => {
     seedRun(100, ["live-a-1-x", "b-1-y"]);
     reapRun(join(root, "100"), spyKill);

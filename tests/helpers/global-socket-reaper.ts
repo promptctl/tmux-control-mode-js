@@ -7,7 +7,12 @@
 // See reap-test-sockets.ts for why ownership is a directory.
 
 import { mkdirSync } from "node:fs";
-import { reapDeadRuns, reapRun, runDir } from "./reap-test-sockets.js";
+import {
+  processAlive,
+  reapDeadRuns,
+  reapRun,
+  runDir,
+} from "./reap-test-sockets.js";
 
 const dir = runDir(process.pid);
 
@@ -22,8 +27,14 @@ function report(phase: "pre-run" | "post-run", reaped: string[]): void {
 }
 
 export function setup(): void {
-  report("pre-run", reapDeadRuns());
-  mkdirSync(dir, { recursive: true });
+  // A namespace already named for this pid is a dead run's that this run's
+  // pid reused: this run has not made its own yet.
+  report(
+    "pre-run",
+    reapDeadRuns(undefined, (pid) => pid !== process.pid && processAlive(pid)),
+  );
+  // Owner-only, as tmux keeps its own socket directory.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   process.env.TMUX_TMPDIR = dir;
 }
 
