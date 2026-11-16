@@ -176,6 +176,34 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(sink.seedCalls[0].drawnAt).toEqual(await paneSize(client, paneId));
     }, 15000);
 
+    it("a seed has tmux report the pane's size again, though it has not changed", async () => {
+      // tmux keeps a subscription quiet while its value is unchanged; the
+      // subscription a seed issues afresh is what lets a size the seed
+      // caught mid-change be corrected.
+      session = uniqueName("again");
+      client = await createSession(socket, session);
+      const paneId = await getPrimaryPaneId(client);
+      const reports: string[] = [];
+      client.on("subscription-changed", (ev) => {
+        if (ev.paneId === paneId) reports.push(ev.value);
+      });
+
+      stream = new PaneStream({ client, paneId });
+      stream.attach(new CollectorSink());
+      await readUntil(
+        () => reports.length,
+        (n) => n > 0,
+        "tmux never reported the pane's size",
+      );
+      await stream.reseed();
+      const seen = await readUntil(
+        () => [...reports],
+        (r) => r.length > 1,
+        "tmux never reported the size again after the seed",
+      );
+      expect(new Set(seen).size).toBe(1);
+    }, 15000);
+
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
       session = uniqueName("size");
       client = await createSession(socket, session);

@@ -34,8 +34,8 @@ export interface SeedCursor {
   readonly row: number;
 }
 
-/** A pane's size in cells, as tmux reports it (`pane_width`, `pane_height`). */
-export interface PaneSize {
+/** A grid's size in cells: a pane's (`pane_width`, `pane_height`) or a window's. */
+export interface Grid {
   readonly cols: number;
   readonly rows: number;
 }
@@ -186,7 +186,7 @@ export class BufferingSink implements TerminalSink {
   /** Every `write()` call's bytes, in order. Reset by `clear()`. */
   readonly writes: Uint8Array[] = [];
   /** Every `resize()` call in order. Reset by `clear()`. */
-  readonly resizeCalls: PaneSize[] = [];
+  readonly resizeCalls: Grid[] = [];
 
   private isDisposed = false;
   private visible: boolean;

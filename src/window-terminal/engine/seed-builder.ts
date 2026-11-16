@@ -16,7 +16,7 @@
 //   (the RPCs that produce the inputs, the sink.seed() that consumes the
 //   output, the lastSeed cache) stays in PaneStream at the boundary.
 
-import type { PaneSize, SeedCursor } from "./terminal-sink.js";
+import type { Grid, SeedCursor } from "./terminal-sink.js";
 
 /**
  * The replayable snapshot of a pane: the raw seed bytes, the cursor to home
@@ -26,7 +26,7 @@ import type { PaneSize, SeedCursor } from "./terminal-sink.js";
 export interface Seed {
   readonly captured: Uint8Array;
   readonly cursor: SeedCursor | null;
-  readonly size: PaneSize | null;
+  readonly size: Grid | null;
 }
 
 /**
@@ -111,7 +111,7 @@ function latin1ToBytes(s: string): Uint8Array {
 
 interface SeedState {
   readonly cursor: SeedCursor | null;
-  readonly size: PaneSize | null;
+  readonly size: Grid | null;
   /** Visible grid height (`pane_height`); `NaN` if tmux didn't report it. */
   readonly height: number;
   /** Scrollback line count (`history_size`); `NaN` if not reported. */
@@ -137,6 +137,23 @@ function mode(flag: string | undefined, onSeq: string, offSeq: string): string {
 // Number("") is 0.
 function num(field: string | undefined): number {
   return field === undefined || field === "" ? NaN : Number(field);
+}
+
+/**
+ * A grid's size from tmux's width and height fields (`pane_width`,
+ * `pane_height`); null unless both are positive integers.
+ */
+export function parseGrid(
+  width: string | undefined,
+  height: string | undefined,
+): Grid | null {
+  const [cols, rows] = [num(width), num(height)];
+  return Number.isInteger(cols) &&
+    cols > 0 &&
+    Number.isInteger(rows) &&
+    rows > 0
+    ? { cols, rows }
+    : null;
 }
 
 const ESC = "\x1b";
@@ -177,14 +194,7 @@ function parseSeedState(line: string): SeedState {
   // NaN as "skip", degrading to the strip-only behaviour rather than padding.
   const height = num(f[8]);
   const historySize = num(f[9]);
-  const width = num(f[12]);
-  const size =
-    Number.isInteger(width) &&
-    width > 0 &&
-    Number.isInteger(height) &&
-    height > 0
-      ? { cols: width, rows: height }
-      : null;
+  const size = parseGrid(f[12], f[8]);
 
   // Before content: establish the correct screen buffer, clear it, then set
   // autowrap — all of which affect how screen content lays out.

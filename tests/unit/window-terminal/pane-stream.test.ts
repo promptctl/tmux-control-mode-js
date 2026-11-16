@@ -533,9 +533,11 @@ describe("PaneStream — state machine", () => {
     // them again would double it on screen.
     const { client, stream } = makeStream({ capture: "second-screen" });
     const printed: number[] = [];
-    client.on("begin", () => {
+    const begun: string[] = [];
+    client.on("begin", (ev) => {
       const byte = 0x41 + printed.length;
       printed.push(byte);
+      begun.push(client.commandNumbered(ev.commandNumber));
       client.injectOutput(PANE_ID, new Uint8Array([byte]));
     });
     const sink = new RecordingSink();
@@ -547,7 +549,10 @@ describe("PaneStream — state machine", () => {
     expect(stream.state).toBe("live");
     expect(client.capturePaneCount()).toBe(2);
     expect(sink.seedTexts).toHaveLength(1);
-    expect(sink.writes.map((w) => [...w])).toEqual([[printed.at(-1)]]);
+    const retake = begun.lastIndexOf(
+      begun.filter((c) => c.startsWith("capture-pane")).at(-1) ?? "",
+    );
+    expect(sink.writes.flatMap((w) => [...w])).toEqual(printed.slice(retake));
   });
 
   it("seeds over a connection that announces the reply's begin inside execute()", async () => {
@@ -1022,19 +1027,25 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
     stream.dispose();
   });
 
-  it("keeps the reported size over a seed taken at another size", async () => {
-    // The seed caught the pane mid zoom-and-unzoom. tmux will not report
-    // 100;30 again, so were the seed's size to win, the sink would stay at it.
+  it("subscribes again after a seed, so tmux reports a size the seed caught mid-change", async () => {
+    // The seed caught the pane mid zoom-and-unzoom at 80x24; tmux had last
+    // sent 100;30 and would keep quiet about it. A fresh subscription sends
+    // it again, and the moved size recaptures.
     const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     const sink = new RecordingSink();
     stream.attach(sink);
     await flushTicks();
-    expect(sink.events.filter((e) => e.startsWith("resize"))).toEqual([
-      "resize(100x30)",
-      "resize(100x30)",
-    ]);
+    const seedAt = sink.events.findIndex((e) => e.startsWith("seed"));
+    expect(sink.events[seedAt - 1]).toBe("resize(80x24)");
+    expect(client.commands().filter(isSubscribe)).toHaveLength(2);
+
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    await flushTicks();
+    expect(sink.events).toContain("resize(100x30)");
+    expect(client.capturePaneCount()).toBe(captures + 1);
     stream.dispose();
   });
 
