@@ -7,6 +7,7 @@
 // them.
 
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
@@ -20,6 +21,16 @@ import {
 } from "../../src/client.js";
 import type { TmuxEventMap } from "../../src/emitter.js";
 import { paneNumber, parsePaneId } from "../../src/window-terminal/ids.js";
+import { WebSocket as WsClient, WebSocketServer } from "ws";
+import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
+import {
+  WebSocketTmuxClient,
+  type WebSocketTmuxClientOptions,
+} from "../../src/connectors/websocket/client.js";
+import type {
+  BrowserWebSocketLike,
+  ServerWebSocketLike,
+} from "../../src/connectors/websocket/types.js";
 
 function uniqueSuffix(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -353,4 +364,51 @@ export function rawInputCapture(): { command: string; hex: () => string } {
 /** Bytes as space-separated two-digit hex, the form a capture is compared in. */
 export function hexBytes(bytes: Iterable<number>): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(" ");
+}
+
+/**
+ * A WebSocket bridge on a loopback port, whose connections `createClient`
+ * backs, and a browser client of it, both torn down through `teardown`.
+ * `sockets` holds every socket the browser opened, latest last.
+ */
+export async function browserOverBridge(
+  createClient: () => TmuxClient,
+  teardown: (() => unknown)[],
+  options: Pick<WebSocketTmuxClientOptions, "reconnect"> = {},
+): Promise<{ browser: WebSocketTmuxClient; sockets: WsClient[] }> {
+  const bridge = createWebSocketBridge({ createClient });
+  const http = createServer();
+  const wss = new WebSocketServer({ server: http, path: "/tmux" });
+  wss.on("connection", (ws, req) => {
+    void bridge.handleConnection(ws as unknown as ServerWebSocketLike, {
+      url: req.url,
+      headers: {},
+      remoteAddress: undefined,
+    });
+  });
+  const port = await new Promise<number>((resolve) => {
+    http.listen(0, "127.0.0.1", () => {
+      const addr = http.address();
+      resolve(typeof addr === "object" && addr !== null ? addr.port : 0);
+    });
+  });
+  teardown.push(async () => {
+    await bridge.shutdown(1_000);
+    await new Promise<void>((r) => wss.close(() => r()));
+    await new Promise<void>((r) => http.close(() => r()));
+  });
+
+  const sockets: WsClient[] = [];
+  const browser = new WebSocketTmuxClient({
+    url: `ws://127.0.0.1:${port}/tmux`,
+    createWebSocket: (u) => {
+      const ws = new WsClient(u);
+      sockets.push(ws);
+      return ws as unknown as BrowserWebSocketLike;
+    },
+    heartbeatIntervalMs: 0,
+    ...options,
+  });
+  teardown.push(() => browser.close());
+  return { browser, sockets };
 }

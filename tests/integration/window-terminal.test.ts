@@ -8,11 +8,10 @@
 // reseeded once. Panes run `cat`, so what is typed is what the pane shows.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createServer } from "node:http";
-import { WebSocket as WsClient, WebSocketServer } from "ws";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
+  browserOverBridge,
   hexBytes,
   rawInputCapture,
   readUntil,
@@ -21,13 +20,7 @@ import {
   uniqueSocket,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
-import { createWebSocketBridge } from "../../src/connectors/websocket/server.js";
-import { WebSocketTmuxClient } from "../../src/connectors/websocket/client.js";
 import { BridgeError } from "../../src/bridge-error.js";
-import type {
-  BrowserWebSocketLike,
-  ServerWebSocketLike,
-} from "../../src/connectors/websocket/types.js";
 import {
   WindowEngine,
   type PaneSurfaces,
@@ -505,49 +498,6 @@ describe.skipIf(!RUN_INTEGRATION)(
       jitterMs: 0,
     } as const;
 
-    // A bridge on a loopback port and a browser client of it, retrying on
-    // RETRY, both torn down with the test. `sockets` holds every
-    // socket the browser opened, latest last.
-    async function browserOverBridge(
-      createClient: () => TmuxClient,
-    ): Promise<{ browser: WebSocketTmuxClient; sockets: WsClient[] }> {
-      const bridge = createWebSocketBridge({ createClient });
-      const http = createServer();
-      const wss = new WebSocketServer({ server: http, path: "/tmux" });
-      wss.on("connection", (ws, req) => {
-        void bridge.handleConnection(ws as unknown as ServerWebSocketLike, {
-          url: req.url,
-          headers: {},
-          remoteAddress: undefined,
-        });
-      });
-      const port = await new Promise<number>((resolve) => {
-        http.listen(0, "127.0.0.1", () => {
-          const addr = http.address();
-          resolve(typeof addr === "object" && addr !== null ? addr.port : 0);
-        });
-      });
-      teardown.push(async () => {
-        await bridge.shutdown(1_000);
-        await new Promise<void>((r) => wss.close(() => r()));
-        await new Promise<void>((r) => http.close(() => r()));
-      });
-
-      const sockets: WsClient[] = [];
-      const browser = new WebSocketTmuxClient({
-        url: `ws://127.0.0.1:${port}/tmux`,
-        createWebSocket: (u) => {
-          const ws = new WsClient(u);
-          sockets.push(ws);
-          return ws as unknown as BrowserWebSocketLike;
-        },
-        reconnect: RETRY,
-        heartbeatIntervalMs: 0,
-      });
-      teardown.push(() => browser.close());
-      return { browser, sockets };
-    }
-
     // The cc-dump-web factory: it backs a connection with `tmuxClient` while
     // tmux still has `window`, and refuses for good once it does not.
     // `calls` counts every connection it was asked to back.
@@ -596,7 +546,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       ]) as WindowId;
       q(socket, ["split-window", "-h", "-t", window, "cat"]);
 
-      const { browser, sockets } = await browserOverBridge(() => tmuxClient);
+      const { browser, sockets } = await browserOverBridge(
+        () => tmuxClient,
+        teardown,
+        { reconnect: RETRY },
+      );
 
       const s = recorder();
       const engine = engineOver(browser, window, s);
@@ -657,7 +611,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       q(socket, ["kill-window", "-t", window]);
       const factory = windowFactory(tmuxClient, window);
 
-      const { browser } = await browserOverBridge(factory.createClient);
+      const { browser } = await browserOverBridge(
+        factory.createClient,
+        teardown,
+        { reconnect: RETRY },
+      );
       const statuses: string[] = [];
       browser.on("connection-state", (ev) => statuses.push(ev.state.status));
       const engine = engineOver(browser, window, recorder());
@@ -703,6 +661,8 @@ describe.skipIf(!RUN_INTEGRATION)(
 
       const { browser, sockets } = await browserOverBridge(
         factory.createClient,
+        teardown,
+        { reconnect: RETRY },
       );
       await readUntil(
         () => browser.connectionState.status,

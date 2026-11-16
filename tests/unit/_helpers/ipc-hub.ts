@@ -2,10 +2,13 @@
 // In-memory IPC hub that couples a fake IpcMain with one or more fake
 // WebContents, each showing one page (document) at a time. Mirrors real
 // Electron semantics:
-//   - every cross-process hop (both sends, and an invoke's request and its
-//     reply) is delivered in a later task, in the order it was sent: the
-//     receiving process handles an IPC message as a task of its own, never
-//     inside the sender's call stack.
+//   - every cross-process hop (both sends, and an invoke's request) is
+//     delivered in a later task, in the order it was sent: the receiving
+//     process handles an IPC message as a task of its own, never inside the
+//     sender's call stack.
+//   - an invoke's return rides a pipe of its own, apart from
+//     webContents.send, and overtakes every send main made before it — the
+//     worst order real Electron delivers.
 //   - a page that has ended (a later document committed, its renderer
 //     crashed, or its WebContents was destroyed) hears nothing more from
 //     main: no send, and no invoke reply, which stays pending forever.
@@ -25,15 +28,17 @@
 // Used by tests that need to drive the Electron bridges (main + renderer)
 // without booting a real Electron process.
 
-import type {
-  InvokeResultEnvelope,
-  IpcMainEventLike,
-  IpcMainInvokeListener,
-  IpcMainLike,
-  IpcRendererLike,
-  IpcRendererOnListener,
-  WebContentsLike,
-  WebFrameLike,
+import {
+  IPC,
+  type InvokeResultEnvelope,
+  type InvokeReturn,
+  type IpcMainEventLike,
+  type IpcMainInvokeListener,
+  type IpcMainLike,
+  type IpcRendererLike,
+  type IpcRendererOnListener,
+  type WebContentsLike,
+  type WebFrameLike,
 } from "../../../src/connectors/electron/types.js";
 
 /**
@@ -45,7 +50,7 @@ export interface RawIpcRenderer extends Pick<
   IpcRendererLike,
   "on" | "removeListener"
 > {
-  invoke(channel: string, ...args: unknown[]): Promise<InvokeResultEnvelope>;
+  invoke(channel: string, ...args: unknown[]): Promise<InvokeReturn>;
   send(channel: string, ...args: unknown[]): void;
 }
 
@@ -195,13 +200,13 @@ export function createIpcHub(): IpcHub {
     // page shown in a live renderer; derived, never a flag of its own.
     const hears = (d: Document): boolean => !destroyed && !crashed && d === doc;
 
-    // An invoke's request lands in main, and its reply, value or error,
-    // crosses back as a hop of its own; a page that has ended never hears it.
+    // An invoke's request lands in main, and its return, value or error,
+    // crosses back ahead of main's sends; a page that has ended never hears it.
     async function answer(
       from: Document,
       channel: string,
       args: readonly unknown[],
-    ): Promise<InvokeResultEnvelope> {
+    ): Promise<InvokeReturn> {
       const payload = cloneArgs(args);
       await nextTask();
       const reply = await (async () => {
@@ -221,7 +226,6 @@ export function createIpcHub(): IpcHub {
             ),
           }) as const,
       );
-      await nextTask();
       if (!hears(from)) {
         unheardReplies.push(reply.ok ? reply.value : reply.error);
         return new Promise<never>(() => {});
@@ -366,6 +370,36 @@ export function createIpcHub(): IpcHub {
     createRenderer,
     settled,
   };
+}
+
+// Negative, so a raw invoke never shares an id with a proxy's on the page.
+let lastRawId = 0;
+
+/**
+ * Invoke main with `req`, sent as is, and resolve with the reply wherever main
+ * put it: on `IPC.event` under the invoke's id, or in the invoke's return.
+ * `invoke` carries the call to main: `ipc`'s own, or a handler driven directly.
+ */
+export function invokeRaw(
+  ipc: RawIpcRenderer,
+  req: unknown,
+  invoke: (call: unknown) => Promise<InvokeReturn> = (call) =>
+    ipc.invoke(IPC.invoke, call),
+): Promise<InvokeResultEnvelope> {
+  const id = --lastRawId;
+  return new Promise((resolve, reject) => {
+    const hear: IpcRendererOnListener = (_e, msg) => {
+      if (msg.type !== "invoke-reply" || msg.id !== id) return;
+      ipc.removeListener(IPC.event, hear);
+      resolve(msg.result);
+    };
+    ipc.on(IPC.event, hear);
+    invoke({ id, request: req }).then((ret) => {
+      if (ret.via === "event") return;
+      ipc.removeListener(IPC.event, hear);
+      resolve(ret.result);
+    }, reject);
+  });
 }
 
 export function cloneArgs<T>(args: readonly T[]): T[] {

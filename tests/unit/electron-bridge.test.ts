@@ -17,7 +17,11 @@ import ts from "typescript";
 
 import { TmuxClient } from "../../src/client.js";
 import { isTmuxMessage } from "../../src/emitter.js";
-import { TmuxCommandError, TmuxInvalidCommandError } from "../../src/errors.js";
+import {
+  isConnectionGone,
+  TmuxCommandError,
+  TmuxInvalidCommandError,
+} from "../../src/errors.js";
 import { dispatchBridgeRequest } from "../../src/connectors/bridge-dispatch.js";
 import type {
   BridgeConnection,
@@ -28,7 +32,7 @@ import type { TmuxMessage } from "../../src/protocol/types.js";
 import { paneScope, sessionScope } from "../../src/pane-output.js";
 import {
   IPC,
-  type InvokeResultEnvelope,
+  type InvokeReturn,
   type IpcRendererLike,
   type IpcRendererOnListener,
   parseAckMessage,
@@ -40,7 +44,7 @@ import {
   TmuxClientProxy,
 } from "../../src/connectors/electron/renderer.js";
 import { RPC_METHOD_NAMES } from "../../src/connectors/rpc.js";
-import { createIpcHub } from "./_helpers/ipc-hub.js";
+import { createIpcHub, invokeRaw } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { lineNumberOf, replyTo } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
@@ -159,7 +163,7 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const renderer = hub.createRenderer();
 
     await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
+      invokeRaw(renderer.ipcRenderer, {
         method: "kill-server",
         args: [],
       }),
@@ -180,19 +184,19 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const renderer = hub.createRenderer();
 
     await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, "not-an-object"),
+      invokeRaw(renderer.ipcRenderer, "not-an-object"),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });
     await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, { args: [] }),
+      invokeRaw(renderer.ipcRenderer, { args: [] }),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_INVALID_REQUEST" },
     });
     await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, {
+      invokeRaw(renderer.ipcRenderer, {
         method: "execute",
         args: "not-an-array",
       }),
@@ -213,12 +217,12 @@ describe("Electron IPC bridge — C2 input validation", () => {
     const renderer = hub.createRenderer();
 
     const expectInvalidArg = async (req: object): Promise<void> => {
-      await expect(
-        renderer.ipcRenderer.invoke(IPC.invoke, req),
-      ).resolves.toMatchObject({
-        status: "bridge-error",
-        error: { code: "BRIDGE_INVALID_ARG" },
-      });
+      await expect(invokeRaw(renderer.ipcRenderer, req)).resolves.toMatchObject(
+        {
+          status: "bridge-error",
+          error: { code: "BRIDGE_INVALID_ARG" },
+        },
+      );
     };
 
     // execute requires 1 string arg.
@@ -258,7 +262,7 @@ describe("Electron IPC bridge — C3 prototype pollution", () => {
       "hasOwnProperty",
     ]) {
       await expect(
-        renderer.ipcRenderer.invoke(IPC.invoke, { method: evil, args: [] }),
+        invokeRaw(renderer.ipcRenderer, { method: evil, args: [] }),
       ).resolves.toMatchObject({
         status: "bridge-error",
         error: { code: "BRIDGE_UNKNOWN_METHOD" },
@@ -552,6 +556,24 @@ describe("Electron IPC bridge — event forwarding", () => {
     expect((err as Error & { cause?: unknown }).cause).toBeDefined();
   });
 
+  it("fails a call whose invoke returns no InvokeReturn, rather than hang", async () => {
+    // A main of an older version returns the bare envelope.
+    const ipc: IpcRendererLike = {
+      on: () => undefined,
+      removeListener: () => undefined,
+      send: () => undefined,
+      invoke: () =>
+        Promise.resolve({
+          status: "ok",
+          response: { output: [] },
+        } as unknown as InvokeReturn),
+    };
+    const proxy = createRendererBridge(ipc);
+    await expect(proxy.execute("list-windows")).rejects.toMatchObject({
+      code: "BRIDGE_PROTOCOL_ERROR",
+    });
+  });
+
   it("does not report a bootstrap whose BRIDGE_CLOSED reply beats main's closed event", async () => {
     // The race: main rejects the in-flight invoke as BRIDGE_CLOSED, and that
     // reply reaches the renderer while its last connection-state is still ready.
@@ -564,8 +586,11 @@ describe("Electron IPC bridge — event forwarding", () => {
       send: () => undefined,
       invoke: () => {
         return Promise.resolve({
-          status: "bridge-error",
-          error: new BridgeError("BRIDGE_CLOSED", "exited").toPayload(),
+          via: "invoke",
+          result: {
+            status: "bridge-error",
+            error: new BridgeError("BRIDGE_CLOSED", "exited").toPayload(),
+          },
         });
       },
     };
@@ -864,7 +889,7 @@ describe("Electron IPC bridge — method dispatch", () => {
     // Runtime trust-boundary: bypassing the proxy and crafting a raw IPC
     // payload still gets rejected with BRIDGE_UNKNOWN_METHOD.
     await expect(
-      renderer.ipcRenderer.invoke(IPC.invoke, { method: "detach", args: [] }),
+      invokeRaw(renderer.ipcRenderer, { method: "detach", args: [] }),
     ).resolves.toMatchObject({
       status: "bridge-error",
       error: { code: "BRIDGE_UNKNOWN_METHOD" },
@@ -1495,7 +1520,7 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
   it("rejects with BridgeError(TIMEOUT) when the IPC call does not settle in time", async () => {
     // Fake renderer that lets us control settle timing of a single in-flight
     // invoke. We bypass the real ipcMain handler so the call simply hangs.
-    let resolveStuck: (v: InvokeResultEnvelope) => void = () => {};
+    let resolveStuck: (v: InvokeReturn) => void = () => {};
     const stuckIpc: IpcRendererLike = {
       invoke: () =>
         new Promise((resolve) => {
@@ -1519,8 +1544,11 @@ describe("Electron IPC bridge — M8 invoke timeout", () => {
     // discarded). vitest will fail the test if an unhandled rejection
     // propagates, so the absence of a failure here is the assertion.
     resolveStuck({
-      status: "bridge-error",
-      error: new BridgeError("BRIDGE_CLOSED", "late").toPayload(),
+      via: "invoke",
+      result: {
+        status: "bridge-error",
+        error: new BridgeError("BRIDGE_CLOSED", "late").toPayload(),
+      },
     });
     await new Promise((r) => setTimeout(r, 5));
   });
@@ -1911,10 +1939,13 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     // A's invoke as aborted rather than holding it open.
     expect(a.unheardReplies).toMatchObject([
       {
-        status: "bridge-error",
-        error: {
-          code: "BRIDGE_ABORTED",
-          message: expect.stringMatching(/method=execute/),
+        via: "invoke",
+        result: {
+          status: "bridge-error",
+          error: {
+            code: "BRIDGE_ABORTED",
+            message: expect.stringMatching(/method=execute/),
+          },
         },
       },
     ]);
@@ -1925,10 +1956,10 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     expect(bResp.output).toEqual(["%1 main 0 -"]);
   });
 
-  it("aborts in-flight invoke when sender unregisters mid-request", async () => {
-    // close() on the proxy sends IPC.unregister. The bridge treats this as
-    // a teardown for the sender (matching the destroyed-handler path) so any
-    // in-flight invoke is aborted with a typed error rather than orphaned.
+  it("settles an in-flight invoke as a gone connection when the proxy closes mid-request", async () => {
+    // close() on the proxy sends IPC.unregister, and main tears the sender
+    // down; the proxy no longer hears IPC.event, so it settles the call
+    // itself rather than leave it orphaned.
     const hub = createIpcHub();
     const t = createFakeTransport();
     const client = new TmuxClient(t.transport);
@@ -1944,9 +1975,7 @@ describe("Electron IPC bridge — H4 per-sender pending invokes", () => {
     await hub.settled();
     t.answer();
 
-    const err = await pending;
-    expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/ABORTED/);
+    expect(isConnectionGone(await pending)).toBe(true);
   });
 
   it("dispose aborts every in-flight invoke", async () => {
@@ -2412,13 +2441,13 @@ describe("qz5.2 — BridgeError round-trips through Electron IPC", () => {
     // The envelope shape was already verified in C2; here we focus on the
     // class identity by reconstructing manually — same code path the proxy
     // uses internally.
-    const envelope = (await renderer.ipcRenderer.invoke(IPC.invoke, {
+    const envelope = await invokeRaw(renderer.ipcRenderer, {
       method: "kill-server",
       args: [],
-    })) as { status: string; error: { code: string; message: string } };
+    });
 
-    expect(envelope.status).toBe("bridge-error");
-    const reconstructed = BridgeError.fromPayload(envelope.error as never);
+    if (envelope.status !== "bridge-error") throw new Error("expected error");
+    const reconstructed = BridgeError.fromPayload(envelope.error);
     expect(reconstructed).toBeInstanceOf(BridgeError);
     expect(reconstructed.code).toBe("BRIDGE_UNKNOWN_METHOD");
   });
@@ -2566,13 +2595,16 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     await r.navigate({ swapFrame: true });
     t.sent.length = 0;
-    void old.invoke(IPC.invoke, {
+    void invokeRaw(old, {
       method: "setWindowSize",
       args: [3, 100, 30],
     });
     await hub.settled();
     expect(r.unheardReplies).toMatchObject([
-      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      {
+        via: "invoke",
+        result: { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      },
     ]);
     expect(t.sent).toEqual([]);
     // No peer was minted for the WebContents.
@@ -2600,7 +2632,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     createMainBridge(client, hub.ipcMain);
     const r = hub.createRenderer();
 
-    void r.ipcRenderer.invoke(IPC.invoke, {
+    void invokeRaw(r.ipcRenderer, {
       method: "execute",
       args: ["list-windows"],
     });
@@ -2608,7 +2640,10 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
     t.answer();
     await hub.settled();
     expect(r.unheardReplies).toMatchObject([
-      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      {
+        via: "invoke",
+        result: { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      },
     ]);
   });
 
@@ -2647,15 +2682,77 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 
     r.crash();
     t.sent.length = 0;
-    void dead.invoke(IPC.invoke, {
+    void invokeRaw(dead, {
       method: "setWindowSize",
       args: [3, 90, 20],
     });
     await hub.settled();
     expect(r.unheardReplies).toMatchObject([
-      { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      {
+        via: "invoke",
+        result: { status: "bridge-error", error: { code: "BRIDGE_ABORTED" } },
+      },
     ]);
     expect(t.commands()).not.toContain(refreshClientWindowSize(3, 90, 20));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A reply follows the events main sent before it (lkg.350). The hub returns
+// an invoke ahead of main's sends, as real Electron can.
+// ---------------------------------------------------------------------------
+
+describe("Electron IPC bridge — a reply follows the events before it", () => {
+  function rig() {
+    const hub = createIpcHub();
+    const t = createFakeTransport();
+    const client = new TmuxClient(t.transport);
+    t.feed(STARTUP_GREETING);
+    createMainBridge(client, hub.ipcMain);
+    return { hub, t, r: hub.createRenderer() };
+  }
+
+  it("a command's begin reaches the proxy before its reply settles", async () => {
+    const { hub, t, r } = rig();
+    const proxy = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+    const order: string[] = [];
+    proxy.on("begin", () => order.push("begin"));
+
+    const reply = proxy.execute("list-windows").then(() => {
+      order.push("reply");
+    });
+    await hub.settled();
+    t.answer();
+    await reply;
+    expect(order).toEqual(["begin", "reply"]);
+  });
+
+  it("two proxies on one page each settle only their own replies", async () => {
+    const { hub, t, r } = rig();
+    const a = createRendererBridge(r.ipcRenderer);
+    const b = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+
+    const ra = a.execute("display-message -p a");
+    const rb = b.execute("display-message -p b");
+    await hub.settled();
+    t.answer(["a"]);
+    t.answer(["b"]);
+    expect((await ra).output).toEqual(["a"]);
+    expect((await rb).output).toEqual(["b"]);
+  });
+
+  it("close settles a call in flight as a gone connection, and a later call too", async () => {
+    const { hub, r } = rig();
+    const proxy = createRendererBridge(r.ipcRenderer);
+    await hub.settled();
+
+    const inFlight = proxy.execute("list-windows").catch((e: unknown) => e);
+    proxy.close();
+    const later = proxy.execute("list-windows").catch((e: unknown) => e);
+    expect(isConnectionGone(await inFlight)).toBe(true);
+    expect(isConnectionGone(await later)).toBe(true);
   });
 });
 
@@ -2664,7 +2761,7 @@ describe("Electron IPC bridge — a peer lives one page (444.mvr)", () => {
 // ---------------------------------------------------------------------------
 
 describe("IpcRendererLike", () => {
-  it("takes each channel's own arguments, and invoke resolves to an envelope", () => {
+  it("takes each channel's own arguments, and invoke resolves to where the reply went", () => {
     // The @ts-expect-error lines are the assertions; `pnpm run typecheck`
     // fails if any of them compiles.
     const calls = (ipc: IpcRendererLike) => [
@@ -2678,9 +2775,15 @@ describe("IpcRendererLike", () => {
       () => ipc.send(IPC.event),
       // @ts-expect-error invoke is the one channel a renderer invokes on
       () => ipc.invoke(IPC.ack, { paneId: 1, bytes: 1 }),
-      async (): Promise<InvokeResultEnvelope["status"]> =>
-        (await ipc.invoke(IPC.invoke, { method: "listWindows", args: [] }))
-          .status,
+      // @ts-expect-error an invoke names the id its reply carries
+      () => ipc.invoke(IPC.invoke, { method: "listWindows", args: [] }),
+      async (): Promise<InvokeReturn["via"]> =>
+        (
+          await ipc.invoke(IPC.invoke, {
+            id: 1,
+            request: { method: "listWindows", args: [] },
+          })
+        ).via,
     ];
     expect(calls).toBeTypeOf("function");
   });

@@ -48,7 +48,10 @@ import {
   DEFAULT_ACK_BATCH_BYTES,
   IPC,
   type AckMessage,
+  type BridgeErrorPayload,
   type InvokeRequest,
+  type InvokeResultEnvelope,
+  type InvokeReturn,
   type IpcEventMessage,
   type IpcRendererLike,
   type IpcRendererOnListener,
@@ -69,11 +72,37 @@ import {
 // `.code` survives Electron's structured-clone IPC serializer, which would
 // otherwise drop subclass properties.
 
+// The reply an invoke's return carries, or null when it rides `IPC.event`.
+// [LAW:no-silent-failure] A main of another version returns some other shape:
+// the call fails on it rather than wait for a reply that never comes.
+function replyInReturn(ret: unknown): InvokeResultEnvelope | null {
+  const via = (ret as { via?: unknown } | null | undefined)?.via;
+  if (via === "event") return null;
+  if (via === "invoke") {
+    return (ret as Extract<InvokeReturn, { via: "invoke" }>).result;
+  }
+  return {
+    status: "bridge-error",
+    error: new BridgeError(
+      "BRIDGE_PROTOCOL_ERROR",
+      "main answered the invoke with no InvokeReturn; main and renderer " +
+        "must come from the same version",
+    ).toPayload(),
+  };
+}
+
+// A closed proxy answers as a closed WebSocket client does: the connection is
+// gone (`isConnectionGone`), so teardown calls made after `close()` are moot.
+function proxyClosed(): BridgeErrorPayload {
+  return new BridgeError("BRIDGE_CLOSED", "the proxy is closed").toPayload();
+}
+
 /**
  * Renderer-side proxy that mirrors the public shape of `TmuxClient`.
  *
  * All methods are 1-line wrappers that send a typed `InvokeRequest` over
- * `ipcRenderer.invoke` and return the resolved `CommandResponse`. Events
+ * `ipcRenderer.invoke` and return the `CommandResponse` main replies with,
+ * on `IPC.event` (see `InvokeReplyMessage`). Events
  * arrive on `IPC.event` and are dispatched through an internal `TypedEmitter`
  * so `on`/`off` work identically to `TmuxClient`.
  *
@@ -104,8 +133,8 @@ export class TmuxClientProxy
   /**
    * Positive value enables the per-call timeout in `invoke`. 0 means disabled
    * (the default). The renderer-side promise rejects with
-   * `BridgeError("BRIDGE_TIMEOUT")` if the underlying `ipcRenderer.invoke`
-   * does not settle in time; the underlying main-side dispatch is NOT
+   * `BridgeError("BRIDGE_TIMEOUT")` if main's reply does not arrive in time;
+   * the underlying main-side dispatch is NOT
    * cancelled — it will resolve in order against the TmuxClient FIFO and its
    * result is discarded by the renderer.
    */
@@ -114,6 +143,17 @@ export class TmuxClientProxy
   // strictly the wire size of the data payload — which is exactly what main
   // accounted on the way out, so the credit math stays balanced.
   private readonly pendingAck = new Map<number, number>();
+  // Main replies on `IPC.event`, which every proxy on the page hears, and
+  // which reaches whatever document the WebContents shows when the reply
+  // lands — a reply sent just before a navigation can reach the next page. A
+  // random start keeps one proxy's ids from naming another's calls, on this
+  // page or the next.
+  private lastInvokeId = Math.floor(Math.random() * 2 ** 52);
+  // Each invoke awaiting its reply, by id.
+  private readonly awaitingReply = new Map<
+    number,
+    (result: InvokeResultEnvelope) => void
+  >();
   // [LAW:single-enforcer] One teardown per proxy: `closed` gates `close()`
   // so a second invocation is a true noop (no duplicate IPC.unregister send,
   // no double removeListener). The host renderer-side decision is "tear down
@@ -157,6 +197,10 @@ export class TmuxClientProxy
   //   which is what enforces the split on the renderer side.
   // Bound once: an IPC event steps with no closure.
   private readonly onEvent = (msg: IpcEventMessage): void => {
+    if (msg.type === "invoke-reply") {
+      this.settle(msg.id, msg.result);
+      return;
+    }
     if (isPaneOutput(msg)) {
       this.account(msg);
       // [LAW:single-enforcer] Byte dispatch routes through the router.
@@ -351,6 +395,10 @@ export class TmuxClientProxy
     this.ipc.removeListener(IPC.event, this.eventHandler);
     this.ipc.send(IPC.unregister);
     this.pendingAck.clear();
+    // No reply reaches this proxy now that it has stopped listening.
+    for (const id of [...this.awaitingReply.keys()]) {
+      this.settle(id, { status: "bridge-error", error: proxyClosed() });
+    }
     this.router.onTransportClose();
     // The proxy's lifecycle is over even though main keeps running. Report
     // `closed{disposed}` so consumers know this proxy will not emit again
@@ -385,11 +433,22 @@ export class TmuxClientProxy
     // await happens. The timeout branch races the IPC call against a timer;
     // when timeout is disabled (the default), the IPC promise is awaited
     // directly with no timer overhead.
-    const ipcPromise = this.ipc.invoke(IPC.invoke, req);
-    const result =
-      this.invokeTimeoutMs > 0
-        ? await this.withTimeout(ipcPromise, req.method)
-        : await ipcPromise;
+    const id = ++this.lastInvokeId;
+    const reply = new Promise<InvokeResultEnvelope>((resolve, reject) => {
+      // A closed proxy hears no reply on IPC.event.
+      if (this.closed) {
+        resolve({ status: "bridge-error", error: proxyClosed() });
+        return;
+      }
+      this.awaitingReply.set(id, resolve);
+      this.ipc.invoke(IPC.invoke, { id, request: req }).then((ret) => {
+        const result = replyInReturn(ret);
+        if (result !== null) this.settle(id, result);
+      }, reject);
+    });
+    const result = await (
+      this.invokeTimeoutMs > 0 ? this.withTimeout(reply, req.method) : reply
+    ).finally(() => this.awaitingReply.delete(id));
     if (result.status === "ok") {
       return result.response as RpcResponseMap[R["method"]];
     }
@@ -402,6 +461,15 @@ export class TmuxClientProxy
     // structured-clone serializer drops `.code` on Error subclasses, so the
     // payload pair is what keeps the error machine-distinguishable.
     throw BridgeError.fromPayload(result.error);
+  }
+
+  // Ids this proxy is not awaiting are another proxy's on the page, or a
+  // call that timed out or was closed out.
+  private settle(id: number, result: InvokeResultEnvelope): void {
+    const resolve = this.awaitingReply.get(id);
+    if (resolve === undefined) return;
+    this.awaitingReply.delete(id);
+    resolve(result);
   }
 
   private withTimeout<T>(p: Promise<T>, method: string): Promise<T> {
@@ -458,7 +526,10 @@ export function createRendererBridge(
 
 // Re-export the types a renderer consumer might need without a second import.
 export type {
+  InvokeCall,
+  InvokeReplyMessage,
   InvokeResultEnvelope,
+  InvokeReturn,
   IpcEventMessage,
   IpcRendererLike,
   IpcRendererEventLike,

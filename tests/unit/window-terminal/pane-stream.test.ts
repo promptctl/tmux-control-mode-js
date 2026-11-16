@@ -105,6 +105,19 @@ function makeStream(
   return { client, stream };
 }
 
+// The pane prints `data` just after tmux begins its next capture's reply:
+// behind that capture. (Bytes injected before it, tmux parsed into the grid
+// before the capture ran.)
+function printAfterNextBegin(client: FakeTmuxClient, data: Uint8Array): void {
+  const once = (ev: { commandNumber: number }): void => {
+    if (!client.commandNumbered(ev.commandNumber).startsWith("capture-pane"))
+      return;
+    client.off("begin", once);
+    client.injectOutput(PANE_ID, data);
+  };
+  client.on("begin", once);
+}
+
 async function flushTicks(n = 4): Promise<void> {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 0));
 }
@@ -131,9 +144,9 @@ describe("PaneStream — state machine", () => {
     const { client, stream } = makeStream();
     const sink = new RecordingSink();
     stream.attach(sink);
-    // Inject TWO bytes during the seeding window (capture is in flight).
-    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
-    client.injectOutput(PANE_ID, new Uint8Array([0x42]));
+    // TWO chunks the pane prints after the capture ran.
+    printAfterNextBegin(client, new Uint8Array([0x41]));
+    printAfterNextBegin(client, new Uint8Array([0x42]));
     await flushTicks();
     // Sink received: seed first, then the buffered writes in order.
     const order = sink.events.filter(
@@ -205,10 +218,23 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
+  it("bytes the pane printed before the capture's begin are not drawn again", async () => {
+    // tmux parsed them into the grid before it ran the capture: the snapshot
+    // holds them, however late they reach the client.
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes).toHaveLength(0);
+  });
+
   it("a seed whose capture was followed by trailing bytes is not cached", async () => {
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
-    client.injectOutput(7, new Uint8Array([0x41]));
+    printAfterNextBegin(client, new Uint8Array([0x41]));
     await flushTicks();
     expect(stream.state).toBe("live");
     stream.detach();
@@ -219,12 +245,12 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
-  it("a detach that drops bytes buffered behind a capture keeps that capture out of the cache", async () => {
-    // The dropped bytes postdate the snapshot, so it is already behind the pane.
+  it("a capture that resolves with no sink and bytes behind it is not cached", async () => {
+    // The bytes postdate the snapshot, so it is already behind the pane.
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
-    client.injectOutput(7, new Uint8Array([0x41]));
     stream.detach();
+    printAfterNextBegin(client, new Uint8Array([0x41]));
     await flushTicks();
 
     stream.attach(new RecordingSink());
@@ -233,20 +259,22 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2);
   });
 
-  it("a sink re-attaching after a detach dropped buffered bytes is seeded by a fresh capture", async () => {
-    // The in-flight capture plus the bytes after the re-attach would miss the
-    // dropped ones; a fresh capture contains them.
+  it("a sink re-attaching mid-capture is seeded with the snapshot, then exactly the bytes after its begin", async () => {
+    // StrictMode's mount→cleanup→mount on a printing pane, synchronous: one
+    // capture, and the bytes from before the detach are cut at the begin.
     const { client, stream } = makeStream({ capture: "first-screen" });
     stream.attach(new RecordingSink());
-    client.injectOutput(7, new Uint8Array([0x41]));
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
     stream.detach();
     const sink = new RecordingSink();
     stream.attach(sink);
+    printAfterNextBegin(client, new Uint8Array([0x42]));
     await flushTicks();
 
     expect(stream.state).toBe("live");
-    expect(client.capturePaneCount()).toBe(2);
+    expect(client.capturePaneCount()).toBe(1);
     expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes.map((w) => [...w])).toEqual([[0x42]]);
   });
 
   it("a sink attaching while a capture is in flight waits for it rather than replaying the older cache", async () => {
@@ -500,49 +528,66 @@ describe("PaneStream — state machine", () => {
     expect(sink.events.some((e) => e.startsWith("seed"))).toBe(false);
   });
 
-  it("stale mid-flight seed clears the buffer before reissuing capture-pane", async () => {
-    // Regression: detach while seed1 is pending → bytes arrive while detached
-    // (lastSeed dropped, seedStaleMidFlight = true) → reattach (state →
-    // seeding under the still-pending seed1) → more bytes arrive and are
-    // pushed to the seed buffer → seed1 resolves stale and starts seed cycle 2.
-    // Those buffered bytes are also in seed2's snapshot, so the buffer MUST be
-    // cleared before the new capture-pane is issued — otherwise they get
-    // replayed after seed2 and duplicate the on-screen output.
+  it("a capture the pane changed under is retaken, and the retake draws only the bytes after its own begin", async () => {
+    // The pane prints a fresh byte as tmux begins each reply. Every byte
+    // before the retake's begin is in the retake's snapshot; drawing any of
+    // them again would double it on screen.
     const { client, stream } = makeStream({ capture: "second-screen" });
-    const sink1 = new RecordingSink();
-    const sink2 = new RecordingSink();
+    const printed: number[] = [];
+    client.on("begin", () => {
+      const byte = 0x41 + printed.length;
+      printed.push(byte);
+      client.injectOutput(PANE_ID, new Uint8Array([byte]));
+    });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    // The pane changed under the capture in flight (a new size, `%continue`).
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
 
-    stream.attach(sink1);
-    expect(stream.state).toBe("seeding");
-    expect(client.capturePaneCount()).toBe(1);
-
-    // Detach before seed1 resolves; inject bytes to mark the seed stale.
-    stream.detach();
-    expect(stream.state).toBe("detached");
-    client.injectOutput(PANE_ID, new Uint8Array([0x41, 0x42]));
-
-    // Reattach — seed1 is still in flight, so PaneStream short-circuits to
-    // 'seeding' without issuing a second RPC yet.
-    stream.attach(sink2);
-    expect(stream.state).toBe("seeding");
-    expect(client.capturePaneCount()).toBe(1);
-
-    // These bytes arrive during the second seeding window and would be
-    // pushed to the buffer. seed2's snapshot will also contain them, so
-    // replaying the buffer after seed2 would duplicate them on screen.
-    client.injectOutput(PANE_ID, new Uint8Array([0x43, 0x44]));
-
-    // Let seed1 resolve (sees stale → clears buffer → starts seed2) and then
-    // seed2 resolve (drains the now-empty buffer → seeds sink2 → goes live).
-    await flushTicks();
+    await flushTicks(8);
     expect(stream.state).toBe("live");
     expect(client.capturePaneCount()).toBe(2);
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes.map((w) => [...w])).toEqual([[printed.at(-1)]]);
+  });
 
-    // sink2 received exactly one seed (from seed2's snapshot) and ZERO writes
-    // — the bytes that landed during the second seeding window were not
-    // replayed, because seed2's capture already includes them.
-    expect(sink2.events.filter((e) => e.startsWith("seed("))).toHaveLength(1);
-    expect(sink2.writes).toHaveLength(0);
+  it("seeds over a connection that announces the reply's begin inside execute()", async () => {
+    const client = new FakeTmuxClient();
+    client.setBeginAnnounced("in-execute");
+    const { stream } = makeStream({ client, capture: "first-screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(stream.lastError).toBeNull();
+    expect(sink.seedTexts).toHaveLength(1);
+  });
+
+  it("a reply that outruns its begin fails the seed loudly and goes live with every buffered byte", async () => {
+    const client = new FakeTmuxClient();
+    client.setBeginAnnounced("never");
+    const { stream } = makeStream({ client, capture: "first-screen" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+    expect(stream.state).toBe("live");
+    expect(stream.lastError).toMatchObject({
+      phase: "seed",
+      cause: { message: expect.stringMatching(/resolved before its %begin/) },
+    });
+    expect(sink.seedTexts).toHaveLength(0);
+    expect(sink.writes.map((w) => [...w])).toEqual([[0x41]]);
+  });
+
+  it("dispose mid-capture settles the capture and reports nothing", async () => {
+    const { stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    const reseed = stream.reseed();
+    stream.dispose();
+    await reseed;
+    expect(stream.lastError).toBeNull();
   });
 
   it("sendKeyBytes(no bytes) is a no-op: resolves success without issuing a command", async () => {
@@ -798,9 +843,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
-        ? tmuxError("capture failed")
-        : null,
+      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
     const errors: PaneStreamError[] = [];
@@ -838,7 +881,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") || cmd.startsWith("display-message")
+      cmd.startsWith("capture-pane")
         ? new TransportClosedError("socket closed")
         : null,
     );
@@ -1098,6 +1141,23 @@ describe("PaneStream — floods (pause/continue)", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(client.capturePaneCount()).toBe(captures);
+    stream.dispose();
+  });
+
+  it("output while detached mid-capture is not kept: the next attach captures again", async () => {
+    const { client, stream } = makeStream({ capture: "first-screen" });
+    stream.attach(new RecordingSink());
+    stream.detach();
+    client.injectOutput(PANE_ID, new Uint8Array([0x41, 0x42]));
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
+
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(sink.writes).toEqual([]);
     stream.dispose();
   });
 

@@ -42,9 +42,9 @@ const tracker = createWrapperTracker<IpcRendererOnListener, Wrapper>();
 
 // assertChannel still runs on every call: the page calling it is untrusted.
 const tmuxIpc: IpcRendererLike = {
-  invoke(channel, req) {
+  invoke(channel, call) {
     assertChannel(channel);
-    return ipcRenderer.invoke(channel, req);
+    return ipcRenderer.invoke(channel, call);
   },
 
   send(channel: string, ...args: unknown[]): void {

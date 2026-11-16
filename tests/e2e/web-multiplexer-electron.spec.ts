@@ -241,6 +241,42 @@ test("web-multiplexer Electron round-trips xterm → tmux → xterm", async () =
   }
 });
 
+// The seed's capture reply rides the same ordered channel as the `%begin`
+// before it, so the pane's picture is drawn. A reply that overtook its begin
+// would leave PaneStream nothing to cut its trailing bytes at: it fails the
+// seed and goes live with no picture, and output printed before launch is
+// never drawn.
+test("output printed before launch is drawn by the pane's seed", async () => {
+  const sentinel = `SEED_${Date.now().toString(36).toUpperCase()}`;
+  tmux(SOCKET, ["send-keys", "-t", SESSION, `printf ${sentinel}`, "Enter"]);
+  await expect
+    .poll(() =>
+      execFileSync(
+        "tmux",
+        ["-L", SOCKET, "capture-pane", "-p", "-t", SESSION],
+        {
+          encoding: "utf8",
+        },
+      ),
+    )
+    .toContain(sentinel);
+
+  const app = await electron.launch({
+    args: [APP_ROOT],
+    cwd: APP_ROOT,
+    env: APP_ENV,
+  });
+
+  try {
+    const page = await app.firstWindow();
+    await expect(page.locator(".xterm-rows").first()).toContainText(sentinel, {
+      timeout: 20_000,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 // A click reaches the pane's program when that program asked for legacy mouse
 // reporting (`?1000h`, no `?1006h`). xterm sends those reports on `onBinary`,
 // not `onData` — a path the window terminal must forward as raw bytes. The
