@@ -132,6 +132,13 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
   child.stdin.on("error", (err: Error) => {
     stdinFailure ??= err.message;
   });
+  // A dead stdin is the child ending: its read end closes only when tmux
+  // exits, so the child's own `close` follows with the exit reason.
+  const refuseStdin = (failure: string): SendResult => ({
+    ok: false,
+    reason: `stdin failed: ${failure}`,
+    closing: true,
+  });
 
   const transport: TmuxTransport = {
     // [LAW:single-enforcer] LF-termination logic itself lives in
@@ -139,10 +146,10 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
     // Note: sending an empty string writes a bare LF, which detaches the tmux client.
     send(command: string): SendResult {
       if (closeGate.state().closed) {
-        return { ok: false, reason: closeGate.deniedSendReason() };
+        return closeGate.deniedSend();
       }
       if (stdinFailure !== undefined) {
-        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
+        return refuseStdin(stdinFailure);
       }
       const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; Node
@@ -154,7 +161,7 @@ function spawnTmux(args: string[], options?: SpawnOptions): TmuxTransport {
         child.stdin.write(terminated);
       } catch (err) {
         stdinFailure ??= err instanceof Error ? err.message : String(err);
-        return { ok: false, reason: `stdin failed: ${stdinFailure}` };
+        return refuseStdin(stdinFailure);
       }
       return { ok: true };
     },

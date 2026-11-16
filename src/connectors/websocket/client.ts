@@ -843,7 +843,7 @@ export class WebSocketTmuxClient
 
     if (this.userRequestedClose) {
       // [LAW:no-ambient-temporal-coupling] Permanent close: end all sinks and
-      //   clear runCommand. NOT called on reconnect — sinks survive reconnect.
+      //   retire the runner. NOT called on reconnect — sinks survive reconnect.
       this.router.onTransportClose();
       this.setConnectionState({ status: "closed", reason: "disposed" });
       return;

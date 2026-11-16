@@ -12,6 +12,12 @@
  * that through `onClose`. `ok: false` means the transport already knows it
  * cannot deliver (closed, dead pipe, socket not open) and `reason` says why.
  *
+ * `closing` says whether the refusal is the transport ending. `true`: its
+ * `onClose` has fired or will, and every later send is refused the same way —
+ * a dead pipe stops only the writes, so output, `%exit` and replies already
+ * owed may still arrive before the close. `false`: the transport is not
+ * ending (a socket still connecting).
+ *
  * [LAW:types-are-the-program] Send failure is a representable outcome, not an
  * exception convention: the compiler forces every implementation to state a
  * result, and forces no caller to guess whether a silent void succeeded.
@@ -19,7 +25,7 @@
  */
 export type SendResult =
   | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
+  | { readonly ok: false; readonly reason: string; readonly closing: boolean };
 
 /**
  * Minimal transport interface for tmux control mode communication.

@@ -99,7 +99,7 @@ describe("TmuxClient — settles every pending promise on transport close", () =
     t.triggerClose();
 
     await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
-      TransportSendError,
+      TransportClosedError,
     );
   });
 });
@@ -293,13 +293,10 @@ describe("TmuxClient — why the connection ended reaches 'exit' and every rejec
     expect(states.some((s) => s.status === "ready")).toBe(ready);
 
     const late = client.execute("list-sessions");
-    await expect(late).rejects.toBeInstanceOf(TransportSendError);
-    await expect(late).rejects.toMatchObject({
-      reason:
-        reason === undefined
-          ? "transport closed"
-          : `transport closed: ${reason}`,
-    });
+    // Issued after the close, it gets the answer a command pending at the
+    // close got.
+    await expect(late).rejects.toBeInstanceOf(TransportClosedError);
+    await expect(late).rejects.toMatchObject({ reason });
   });
 
   it("a command issued before the startup reply gets its own reply, not the startup one", async () => {
@@ -604,7 +601,7 @@ describe("TmuxClient — a line the parser cannot read", () => {
     expect(order).toEqual(["protocol-error", "exit", "connection-state"]);
     expect(send).not.toHaveBeenCalled();
     for (const refused of later) {
-      await expect(refused).rejects.toBeInstanceOf(TransportSendError);
+      await expect(refused).rejects.toBeInstanceOf(TransportClosedError);
     }
     expect(exits).toHaveBeenCalledWith({
       type: "exit",
@@ -685,7 +682,7 @@ describe("TmuxClient — consumer code runs between messages", () => {
     });
     expect(topologyErrors).not.toHaveBeenCalled();
     await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
-      TransportSendError,
+      TransportClosedError,
     );
   });
 
@@ -779,5 +776,116 @@ describe("TmuxClient — consumer code runs between messages", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("TmuxClient — a dying transport's refusal waits for its close", () => {
+  // tmux died: writes fail (EPIPE) but output already sent still arrives, and
+  // the close follows with the true reason.
+  function dyingTransport() {
+    const t = createFakeTransport();
+    const sent: string[] = [];
+    let death: string | undefined;
+    return {
+      ...t,
+      sent,
+      send(command: string) {
+        sent.push(command);
+        return death === undefined
+          ? ({ ok: true } as const)
+          : ({ ok: false, reason: death, closing: true } as const);
+      },
+      die(reason: string): void {
+        death = reason;
+      },
+    };
+  }
+
+  it("a command refused while closing settles at close with the connection's end", async () => {
+    const t = dyingTransport();
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    t.die("stdin failed: EPIPE");
+
+    let settled = false;
+    const call = client.execute("list-windows");
+    void call.catch(() => undefined).finally(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(settled).toBe(false);
+
+    t.feed("%exit server exited\n");
+    t.triggerClose("exit 1");
+    await expect(call).rejects.toBeInstanceOf(TransportClosedError);
+    await expect(call).rejects.toMatchObject({ reason: "server exited" });
+  });
+
+  it("a held refusal claims no reply, even from a transport that accepts a later send", async () => {
+    let refuse = true;
+    const t = createFakeTransport();
+    t.send = () =>
+      refuse
+        ? { ok: false, reason: "stdin failed: EPIPE", closing: true }
+        : { ok: true };
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+
+    const held = client.execute("list-windows");
+    void held.catch(() => undefined);
+    // A transport breaking its promise that every later send is refused.
+    refuse = false;
+    const sent = client.execute("list-sessions");
+    t.feed("%begin 2 2 1\n$0 main\n%end 2 2 1\n");
+
+    await expect(sent).resolves.toMatchObject({ output: ["$0 main"] });
+    t.triggerClose("exit 1");
+    await expect(held).rejects.toBeInstanceOf(TransportClosedError);
+  });
+
+  it("a refusal that is not the transport ending rejects at once", async () => {
+    const t = createFakeTransport();
+    t.send = () => ({
+      ok: false,
+      reason: "websocket not open (readyState 0)",
+      closing: false,
+    });
+    const client = new TmuxClient(t);
+    t.feed(STARTUP_GREETING);
+    await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
+      TransportSendError,
+    );
+  });
+
+  it("a window event read after tmux died sends no recovery query and reports no topology-error", async () => {
+    const t = dyingTransport();
+    const client = new TmuxClient(t);
+    const topologyErrors = vi.fn();
+    client.on("topology-error", topologyErrors);
+    const states: string[] = [];
+    client.on("connection-state", (ev) => states.push(ev.state.status));
+    client.attachBytesSink(
+      { write() {}, end() {} },
+      { scope: sessionScope(1) },
+    );
+
+    t.feed(STARTUP_GREETING);
+    // The bootstrap is answered: the topology is live.
+    t.feed("%begin 1 1 1\n%end 1 1 1\n");
+    await new Promise((r) => setTimeout(r, 0));
+
+    t.die("stdin failed: EPIPE");
+    // Buffered in stdout before the death; read after it.
+    t.feed("%window-add @5\n");
+    await new Promise((r) => setTimeout(r, 0));
+    const afterWindowAdd = t.sent.length;
+
+    t.triggerClose("exit 1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(topologyErrors).not.toHaveBeenCalled();
+    // The refresh the window-add asked for was the last query sent: no
+    // recovery bootstrap followed its refusal.
+    expect(t.sent.at(-1)).toMatch(/^list-panes -t @5/);
+    expect(t.sent.length).toBe(afterWindowAdd);
+    expect(states.at(-1)).toBe("closed");
   });
 });

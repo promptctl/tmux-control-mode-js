@@ -872,8 +872,8 @@ describe("Electron IPC bridge — method dispatch", () => {
   });
 
   it("classifies a transport send refusal as BRIDGE_CLOSED carrying the reason", async () => {
-    // The DESIGNED dead-transport path (vs H3's contract-violating throw):
-    // the transport refuses with a typed {ok:false}, TmuxClient.execute
+    // The DESIGNED refusal path (vs H3's contract-violating throw): a
+    // transport not yet open refuses with a typed {ok:false}, TmuxClient.execute
     // rejects with TransportSendError, and the bridge reports it as the
     // operational BRIDGE_CLOSED (never BRIDGE_INTERNAL, which means "bug"),
     // with the refusal reason intact — a swallowed reason would leave the
@@ -882,7 +882,8 @@ describe("Electron IPC bridge — method dispatch", () => {
     const t = createFakeTransport();
     t.transport.send = () => ({
       ok: false,
-      reason: "transport closed: exit 1",
+      reason: "websocket not open (readyState 0)",
+      closing: false,
     });
     const client = new TmuxClient(t.transport);
     t.feed(STARTUP_GREETING);
@@ -893,7 +894,8 @@ describe("Electron IPC bridge — method dispatch", () => {
 
     await expect(proxy.execute("list-windows")).rejects.toMatchObject({
       code: "BRIDGE_CLOSED",
-      message: "[BRIDGE_CLOSED] command not sent: transport closed: exit 1",
+      message:
+        "[BRIDGE_CLOSED] command not sent: websocket not open (readyState 0)",
     });
   });
 

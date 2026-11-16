@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 import { MockTmuxServer } from "../../src/mock/index.js";
 import type { MockScenario } from "../../src/mock/index.js";
 import { TmuxClient } from "../../src/client.js";
-import { TmuxCommandError, TransportSendError } from "../../src/errors.js";
+import { TmuxCommandError, TransportClosedError } from "../../src/errors.js";
 import { serverScope } from "../../src/pane-output.js";
 import type { BytesSink, ChunkPayload } from "../../src/pane-output.js";
 import type { EmitterMessage } from "../../src/emitter.js";
@@ -179,6 +179,7 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     expect(client.detach()).toEqual({
       ok: false,
       reason: "transport closed",
+      closing: true,
     });
   });
 
@@ -204,11 +205,12 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     expect(server.send("list-windows\n")).toEqual({
       ok: false,
       reason: "transport closed",
+      closing: true,
     });
     expect(server.sentCommands).not.toContain("list-windows");
   });
 
-  it("execute after transport close rejects with TransportSendError instead of hanging", async () => {
+  it("execute after transport close rejects with TransportClosedError instead of hanging", async () => {
     const server = new MockTmuxServer();
     const client = new TmuxClient(server);
     server.start();
@@ -217,7 +219,7 @@ describe("MockTmuxServer drives a real TmuxClient", () => {
     // Before the seam carried send failure, this promise never settled — the
     // entry sat in the FIFO waiting for a %begin that could never arrive.
     await expect(client.execute("list-windows")).rejects.toBeInstanceOf(
-      TransportSendError,
+      TransportClosedError,
     );
     await expect(client.execute("list-windows")).rejects.toThrow(
       /transport closed/,

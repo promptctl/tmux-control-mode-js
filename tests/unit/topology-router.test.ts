@@ -300,6 +300,51 @@ describe("TopologyRouter — topology race protection (single epoch mechanism)",
     router.dispatchBytes(makeChunk(1));
     expect(windowSink.chunks).toHaveLength(0);
   });
+
+  it("a bootstrap that succeeds after its connection was lost does not seed", async () => {
+    const router = newRouter();
+    let resolveListPanes!: (r: CommandResponse) => void;
+    const run = () =>
+      new Promise<CommandResponse>((res) => {
+        resolveListPanes = res;
+      });
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    router.onTransportReady(run); // bootstrap starts, hangs
+
+    router.onTransportLost(run);
+    resolveListPanes(makeOkResponse(["%1 @10 $100"]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+  });
+
+  it("a window refresh that succeeds after its connection was lost does not place its panes", async () => {
+    const router = newRouter();
+    let resolveRefresh!: (r: CommandResponse) => void;
+    const run = (cmd: string) =>
+      cmd.includes("list-panes -t")
+        ? new Promise<CommandResponse>((res) => {
+            resolveRefresh = res;
+          })
+        : Promise.resolve(makeOkResponse());
+    const sink = makeSink();
+    router.attachBytesSink(sink, { scope: sessionScope(100) });
+    router.onTransportReady(run);
+    await Promise.resolve();
+    await Promise.resolve();
+    router.handleNotification({ type: "window-add", windowId: 10 }); // refresh hangs
+
+    router.onTransportLost(run);
+    resolveRefresh(makeOkResponse(["%1 @10 $100"]));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    router.dispatchBytes(makeChunk(1));
+    expect(sink.chunks).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -530,12 +575,11 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     expect(errors).toHaveLength(0);
   });
 
-  // Isolates the IDENTITY guard (`this.runCommand !== run`) from the value-only
-  // `=== null` check: the transport closes and REOPENS (ABA) before the stale
-  // bootstrap rejects. onTransportClose ends the sinks, so the reopen starts no
-  // new bootstrap — `isLatestBootstrap` stays true for the stale attempt, and
-  // only the identity comparison suppresses it. A `=== null` guard would report
-  // on the healthy reconnected connection (runCommand is the new, non-null runner).
+  // The transport closes and REOPENS (ABA) before the stale bootstrap rejects.
+  // onTransportClose ends the sinks, so the reopen starts no new bootstrap;
+  // only the close's own supersession makes the stale attempt's failure quiet.
+  // A check on "is there a connection" would report on the healthy reconnected
+  // one.
   it("does NOT report a stale bootstrap failure after the transport closed and reopened (reconnect/ABA)", async () => {
     const errors: Error[] = [];
     const router = new TopologyRouter(new DeliveryQueue(), (e) =>
@@ -557,9 +601,42 @@ describe("TopologyRouter — bootstrap failure surfacing", () => {
     router.onTransportClose();
     router.onTransportReady(() => Promise.resolve(makeOkResponse()));
 
-    // A (dead episode 1) finally rejects. runCommand is now the new runner, so a
-    // value-only guard would misreport; the identity guard suppresses it.
+    // A (dead episode 1) finally rejects, with a live connection in place.
     rejectA(new Error("close 1006"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  // An adapter may announce ready again with a new runner and no loss between
+  // (the Electron renderer builds one per 'ready' state it hears). With no
+  // sink needing topology, no bootstrap starts to supersede the old runner's
+  // queries, so the new runner's arrival must.
+  it("does NOT report a window refresh failure from a runner replaced by a later ready", async () => {
+    const errors: Error[] = [];
+    const router = new TopologyRouter(new DeliveryQueue(), (e) =>
+      errors.push(e),
+    );
+    let rejectRefresh!: (e: Error) => void;
+    const runA = (cmd: string): Promise<CommandResponse> =>
+      cmd.includes("list-panes -t")
+        ? new Promise<CommandResponse>((_res, rej) => {
+            rejectRefresh = rej;
+          })
+        : Promise.resolve(makeOkResponse(["%1 @10 $100"]));
+
+    const detach = router.attachBytesSink(makeSink(), {
+      scope: sessionScope(100),
+    });
+    router.onTransportReady(runA);
+    await Promise.resolve();
+    await Promise.resolve();
+    router.handleNotification({ type: "window-add", windowId: 10 }); // hangs
+    detach();
+
+    router.onTransportReady(() => Promise.resolve(makeOkResponse()));
+    rejectRefresh(new Error("close 1006"));
     await Promise.resolve();
     await Promise.resolve();
 

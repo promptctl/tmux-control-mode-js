@@ -20,6 +20,7 @@ import type { TmuxTransport, SendResult } from "../../transport/types.js";
 import { createCloseGate } from "../../transport/close-gate.js";
 import { terminateLine } from "../../transport/line-termination.js";
 import {
+  WEBSOCKET_CLOSING,
   WEBSOCKET_OPEN,
   WEBSOCKET_CLOSED,
   type BrowserWebSocketLike,
@@ -63,7 +64,8 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
 
   // [LAW:one-source-of-truth] Mirrors spawn.ts's stdinFailure: a caught send
   // throw is remembered so every subsequent send refuses immediately instead
-  // of re-attempting `ws.send()` against a socket already known to reject.
+  // of re-attempting `ws.send()` against a socket already known to reject,
+  // and it is the close's reason: the transport gave the socket up for it.
   let sendFailure: string | undefined;
 
   ws.addEventListener("message", (event: { data: unknown }) => {
@@ -94,8 +96,10 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
       event.code !== undefined ||
       (event.reason !== undefined && event.reason.length > 0);
     closeGate.dispatch(
-      closeReason(event) ??
-        (!closeHasData && errorOccurred ? "websocket error" : undefined),
+      sendFailure !== undefined
+        ? `websocket send failed: ${sendFailure}`
+        : (closeReason(event) ??
+            (!closeHasData && errorOccurred ? "websocket error" : undefined)),
     );
   });
 
@@ -117,6 +121,12 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     closeGate.dispatch("websocket already closed");
   }
 
+  const refuseSend = (failure: string): SendResult => ({
+    ok: false,
+    reason: `websocket send failed: ${failure}`,
+    closing: true,
+  });
+
   return {
     // [LAW:single-enforcer] LF-termination logic lives in terminateLine(),
     // shared with transport/spawn.ts. The relay forwards bytes verbatim to
@@ -126,16 +136,21 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
     // ws.send — both are refused here as a typed result instead.
     send(command: string): SendResult {
       if (closeGate.state().closed) {
-        return { ok: false, reason: closeGate.deniedSendReason() };
+        return closeGate.deniedSend();
       }
+      // Ahead of readyState: the close this failure started leaves the
+      // socket CLOSING, and the refusal names the failure, not its echo.
+      if (sendFailure !== undefined) return refuseSend(sendFailure);
+      // CLOSING and CLOSED are the socket ending, and the spec guarantees
+      // its close event; CONNECTING has lost nothing.
       if (ws.readyState !== WEBSOCKET_OPEN) {
         return {
           ok: false,
           reason: `websocket not open (readyState ${ws.readyState})`,
+          closing:
+            ws.readyState === WEBSOCKET_CLOSING ||
+            ws.readyState === WEBSOCKET_CLOSED,
         };
-      }
-      if (sendFailure !== undefined) {
-        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
       }
       const terminated = terminateLine(command);
       // [LAW:types-are-the-program] send is total by its own contract; the
@@ -149,7 +164,10 @@ function websocketTransport(ws: BrowserWebSocketLike): TmuxTransport {
         // stdinFailure — only meaningful today since there's one writer, but
         // consistent with the sibling pattern if a second ever appears.
         sendFailure ??= err instanceof Error ? err.message : String(err);
-        return { ok: false, reason: `websocket send failed: ${sendFailure}` };
+        // A socket that rejects writes can stay OPEN; closing it is what
+        // makes this refusal's promise of a close true.
+        ws.close();
+        return refuseSend(sendFailure);
       }
       return { ok: true };
     },

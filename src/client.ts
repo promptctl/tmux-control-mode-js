@@ -41,7 +41,6 @@ import {
 } from "./client-size.js";
 import { CONTROL_FLAGS, isPaneOutput } from "./protocol/types.js";
 import type { TmuxTransport, SendResult } from "./transport/types.js";
-import { closedSendReason } from "./transport/close-gate.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
@@ -174,6 +173,10 @@ export class TmuxClient
   // The FIFO holds one entry per execute() no %begin has claimed yet.
   private readonly pending: PendingEntry[] = [];
   private inflight: InflightEntry | null = null;
+  // Commands a closing transport refused: never sent, so outside the FIFO —
+  // no reply can claim one, whatever the transport sends next — and settled
+  // by the close, with the connection's true end.
+  private readonly awaitingClose: PendingEntry[] = [];
 
   // [LAW:one-type-per-behavior] The owner of every block tmux marks as not
   // answering a command this client wrote: the command line tmux was started
@@ -322,9 +325,9 @@ export class TmuxClient
       // closed," so this consults it rather than trusting a third-party
       // transport to get its own closed bookkeeping right.
       if (this.currentConnectionState.status === "closed") {
-        reject(
-          new TransportSendError(closedSendReason(this.announcedExit?.reason)),
-        );
+        // The same answer a command held at the close got: the connection
+        // ended before tmux could take it.
+        reject(new TransportClosedError(this.announcedExit?.reason));
         return;
       }
       // Enqueue BEFORE send: a synchronous transport (the mock's trampoline)
@@ -333,15 +336,20 @@ export class TmuxClient
       this.pending.push(entry);
       try {
         const sent = this.transport.send(command + "\n");
-        // [LAW:no-silent-failure] A refused send settles the promise now —
-        // the command never reached tmux, so no %begin will ever claim this
+        // [LAW:no-silent-failure] A refused send leaves the FIFO — the
+        // command never reached tmux, so no %begin will ever claim this
         // entry. The `.ok` access stays inside this try: a contract-
         // violating transport that returns a non-SendResult value throws
         // here too, falling into the same rollback path below rather than
         // leaking this entry via an uncaught TypeError.
+        // A closing transport's refusal waits for the close, like a command
+        // tmux took and never answered: the close settles it after the
+        // router has retired, so a dying connection never reads as one
+        // refused command.
         if (!sent.ok) {
           this.dropPending(entry);
-          reject(new TransportSendError(sent.reason));
+          if (sent.closing) this.awaitingClose.push(entry);
+          else reject(new TransportSendError(sent.reason));
         }
       } catch (err) {
         // [LAW:no-defensive-null-guards] exception: TmuxTransport is a public
@@ -499,7 +507,10 @@ export class TmuxClient
   private settlePendingOnClose(reason: string | undefined): void {
     const inflight = this.inflight;
     this.inflight = null;
-    const queued = this.pending.splice(0, this.pending.length);
+    const queued = [
+      ...this.pending.splice(0, this.pending.length),
+      ...this.awaitingClose.splice(0, this.awaitingClose.length),
+    ];
 
     inflight?.reject(new TransportClosedError(reason));
     for (const entry of queued) {
