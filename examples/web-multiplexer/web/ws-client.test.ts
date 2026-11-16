@@ -10,6 +10,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { BridgeError } from "@promptctl/tmux-control-mode-js/websocket/protocol";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import { WebSocketBridge } from "./ws-client.ts";
 
 type Listener = (event?: { data?: unknown }) => void;
@@ -369,5 +370,48 @@ describe("WebSocketBridge — pending settlement on close", () => {
     // pending/outbox entry with a generation `this.ws` (still the old,
     // superseded socket) was never reassigned to represent.
     expect(connectingReactionFired).toBe(false);
+  });
+});
+
+describe("WebSocketBridge — command contract", () => {
+  function answer(socket: FakeSocket, success: boolean): void {
+    const { id } = JSON.parse(socket.sent[0]) as { id: string };
+    socket.fireMessage(
+      JSON.stringify({
+        kind: "response",
+        id,
+        response: {
+          commandNumber: 0,
+          timestamp: 0,
+          output: success ? ["ok"] : ["can't find window: @9"],
+          success,
+        },
+      }),
+    );
+  }
+
+  it("rejects a tmux %error with a TmuxCommandError carrying tmux's reply, logged as a response and not as a bridge error", async () => {
+    const { bridge, socket } = connectedBridge();
+    const errors: string[] = [];
+    const wire: string[] = [];
+    bridge.onError((message) => errors.push(message));
+    bridge.onWire((entry) => wire.push(entry.dir));
+
+    const p = bridge.execute("list-panes -t @9");
+    answer(socket, false);
+
+    await expect(p).rejects.toBeInstanceOf(TmuxCommandError);
+    await expect(p).rejects.toMatchObject({
+      response: { output: ["can't find window: @9"], success: false },
+    });
+    expect(errors).toEqual([]);
+    expect(wire).toContain("in-response");
+  });
+
+  it("resolves a successful reply", async () => {
+    const { bridge, socket } = connectedBridge();
+    const p = bridge.execute("list-panes");
+    answer(socket, true);
+    await expect(p).resolves.toMatchObject({ output: ["ok"], success: true });
   });
 });

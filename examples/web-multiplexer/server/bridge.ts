@@ -20,7 +20,7 @@ import { serverScope } from "@promptctl/tmux-control-mode-js";
 import { sendKeys } from "@promptctl/tmux-control-mode-js";
 import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
-import { asCommandResponse } from "./command-response.js";
+import { asCommandResponse } from "../shared/command-response.js";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
 import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
 import { PaneFirehose } from "./pane-firehose.js";
@@ -102,6 +102,51 @@ export function forwardClientToSocket(
   };
 }
 
+/**
+ * Send `ready` once tmux has attached the client's session — the handshake the
+ * browser waits for before it trusts the connection.
+ */
+export function announceReadyOnAttach(
+  client: TmuxClient,
+  send: (frame: ServerToClient) => void,
+): void {
+  const onSessionChanged = (): void => {
+    client.off("session-changed", onSessionChanged);
+    send({ kind: "ready" });
+  };
+  client.on("session-changed", onSessionChanged);
+}
+
+/**
+ * The frame that answers one browser command. A tmux %error travels as a
+ * `success: false` response, because an Error does not survive JSON; the
+ * browser's bridge turns it back into a rejection. Any other failure is an
+ * error frame carrying the command's id.
+ *
+ * [LAW:single-enforcer] The live server and its tests share this reply, as
+ *   they share `forwardClientToSocket`.
+ */
+export function replyToCommand(
+  client: TmuxClient,
+  msg: Extract<ClientToServer, { kind: "execute" | "sendKeys" }>,
+): Promise<ServerToClient> {
+  // [LAW:decomposition] sendKeys is a free command function over the
+  //   TmuxConnection surface, not a TmuxClient method — one shared
+  //   implementation for every connector.
+  const reply =
+    msg.kind === "execute"
+      ? client.execute(msg.command)
+      : sendKeys(client, msg.target, msg.keys);
+  return reply.catch(asCommandResponse).then(
+    (response): ServerToClient => ({ kind: "response", id: msg.id, response }),
+    (err: unknown): ServerToClient => ({
+      kind: "error",
+      id: msg.id,
+      message: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Per-connection state
 // ---------------------------------------------------------------------------
@@ -171,12 +216,7 @@ function handleConnection(ws: WebSocket): void {
   };
   connections.add(connection);
 
-  // Fire a ready frame after the session-changed handshake arrives.
-  const onSessionChanged = () => {
-    client.off("session-changed", onSessionChanged);
-    send({ kind: "ready" });
-  };
-  client.on("session-changed", onSessionChanged);
+  announceReadyOnAttach(client, send);
 
   // [LAW:single-enforcer] When the underlying tmux client exits (user ran
   // detach-client, tmux server died, etc.), tear down the WebSocket so the
@@ -198,21 +238,8 @@ function handleConnection(ws: WebSocket): void {
     }
 
     try {
-      if (msg.kind === "execute") {
-        const response = await client
-          .execute(msg.command)
-          .catch(asCommandResponse);
-        send({ kind: "response", id: msg.id, response });
-        return;
-      }
-      if (msg.kind === "sendKeys") {
-        // [LAW:decomposition] sendKeys is a free command function over the
-        // TmuxConnection surface, not a TmuxClient method — one shared
-        // implementation for every connector.
-        const response = await sendKeys(client, msg.target, msg.keys).catch(
-          asCommandResponse,
-        );
-        send({ kind: "response", id: msg.id, response });
+      if (msg.kind === "execute" || msg.kind === "sendKeys") {
+        send(await replyToCommand(client, msg));
         return;
       }
       if (msg.kind === "detach") {

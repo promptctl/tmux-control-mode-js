@@ -94,6 +94,11 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
  * the URL on `connect()`; transports that are already attached at
  * construction time (Electron IPC) treat `connect()` as a no-op and ignore
  * the URL argument.
+ *
+ * Every command method keeps the library's `TmuxConnection` contract: a tmux
+ * `%error` rejects with `TmuxCommandError`, whose `.response` carries tmux's
+ * output (`.catch(asCommandResponse)` recovers it as a value); any other
+ * rejection is a bridge failure.
  */
 export interface TmuxBridge extends ClientSizeSurface {
   execute(command: string): Promise<CommandResponse>;

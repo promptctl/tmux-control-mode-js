@@ -34,6 +34,7 @@ import {
   decodePaneOutput,
   BridgeError,
 } from "@promptctl/tmux-control-mode-js/websocket/protocol";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import {
   isFirehoseFrame,
   decodeFirehoseFrame,
@@ -51,7 +52,7 @@ import type {
 
 interface Pending {
   readonly resolve: (r: CommandResponse) => void;
-  readonly reject: (e: BridgeError) => void;
+  readonly reject: (e: BridgeError | TmuxCommandError) => void;
   readonly sentAt: number;
   readonly request: ClientToServer;
   readonly gen: number;
@@ -317,7 +318,13 @@ export class WebSocketBridge implements TmuxBridge {
       });
       if (entry !== undefined) {
         this.pending.delete(frame.id);
-        entry.resolve(frame.response);
+        // [LAW:parse-dont-validate] The wire carries a tmux %error as a
+        //   `success: false` reply, because an Error does not survive JSON;
+        //   here, where it arrives, it becomes the TmuxCommandError the
+        //   TmuxBridge contract promises — as the library's Electron renderer
+        //   does with its `tmux-error` envelope.
+        if (frame.response.success) entry.resolve(frame.response);
+        else entry.reject(new TmuxCommandError(frame.response));
       }
       return;
     }
@@ -331,7 +338,7 @@ export class WebSocketBridge implements TmuxBridge {
       this.emitError(frame.message, frame.id);
       // [LAW:no-silent-failure] This ErrorFrame is the bridge server's outer
       // dispatch-failure path (server/bridge.ts) — distinct from a tmux
-      // %error, which already resolves via a ResponseFrame{success:false}.
+      // %error, which arrives as a ResponseFrame{success:false}.
       // If it carries the id of a still-pending execute()/sendKeys(), that
       // promise must settle here or it hangs forever (sweepGeneration
       // already ran, or never runs, for a connection that stays open).

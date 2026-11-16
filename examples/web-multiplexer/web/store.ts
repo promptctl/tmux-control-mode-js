@@ -109,6 +109,11 @@ export class DemoStore {
       runInAction(() => this.connection.onStateChange(s)),
     );
     this.client.onError((m) => runInAction(() => this.log.pushError(m)));
+    // [LAW:no-silent-failure] A topology query the router could not complete
+    //   leaves a session- or window-scoped sink without bytes; the log says why.
+    this.paneStreamClient.on("topology-error", ({ error }) =>
+      runInAction(() => this.log.pushError(`topology: ${error.message}`)),
+    );
     this.client.onEvent((ev) =>
       runInAction(() => this.refresh.handleEvent(ev)),
     );

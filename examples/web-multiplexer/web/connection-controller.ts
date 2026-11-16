@@ -9,6 +9,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import type { ConnState, TmuxBridge } from "./bridge.ts";
+import { asCommandResponse } from "../shared/command-response.ts";
 import {
   SESSIONS_FORMAT,
   WINDOWS_FORMAT,
@@ -94,15 +95,21 @@ export class ConnectionController {
       // subscription strings. Initial list-* snapshots are encoded into that
       // same string shape and fed through the same rebuild pipeline.
       const [sessionsResp, windowsResp, panesResp] = await Promise.all([
-        this.client.execute(
-          "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
-        ),
-        this.client.execute(
-          "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'",
-        ),
-        this.client.execute(
-          "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'",
-        ),
+        this.client
+          .execute(
+            "list-sessions -F '#{session_id}|#{session_name}|#{session_attached}'",
+          )
+          .catch(asCommandResponse),
+        this.client
+          .execute(
+            "list-windows -a -F '#{session_id}|#{window_id}|#{window_index}|#{window_name}|#{window_active}|#{window_zoomed_flag}'",
+          )
+          .catch(asCommandResponse),
+        this.client
+          .execute(
+            "list-panes -a -F '#{window_id}|#{pane_id}|#{pane_index}|#{pane_active}|#{pane_width}|#{pane_height}|#{pane_title}'",
+          )
+          .catch(asCommandResponse),
       ]);
 
       runInAction(() => {
@@ -130,9 +137,9 @@ export class ConnectionController {
       // practice tmux fires %client-session-changed on attach, but there's
       // no guarantee about timing relative to our subscriptions. Ask
       // explicitly so the UI has correct state from frame zero.
-      const sessionResp = await this.client.execute(
-        "display-message -p '#{session_id}'",
-      );
+      const sessionResp = await this.client
+        .execute("display-message -p '#{session_id}'")
+        .catch(asCommandResponse);
       if (sessionResp.success && sessionResp.output[0] !== undefined) {
         const parsed = parseInt(sessionResp.output[0].replace(/^\$/, ""), 10);
         if (Number.isFinite(parsed)) {

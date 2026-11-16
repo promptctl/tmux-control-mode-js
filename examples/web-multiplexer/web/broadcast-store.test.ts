@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
+import { TmuxCommandError } from "@promptctl/tmux-control-mode-js/browser";
 import { BroadcastStore } from "./broadcast-store.ts";
 import { DemoStore, type SessionInfo } from "./store.ts";
 import type { TmuxBridge } from "./bridge.ts";
@@ -138,7 +139,7 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
     });
   });
 
-  it("counts a fulfilled-but-%error sendKeys as failed, not sent", async () => {
+  it("counts a tmux %error sendKeys as failed, not sent", async () => {
     const { bridge, calls } = fakeBridge();
     const demo = demoWithPanes();
     const store = new BroadcastStore(bridge, demo);
@@ -149,19 +150,18 @@ describe("BroadcastStore.send — truthful lastSend (tmux-optimistic-ui-7ue)", (
     store.send();
     expect(calls).toHaveLength(2);
 
-    // A tmux %error resolves sendKeys with {success:false} — the promise
-    // fulfills, but the keys never reached the pane.
+    // A tmux %error rejects sendKeys: the keys never reached the pane.
     calls.find((c) => c.target === "%101")!.d.resolve(OK);
     calls
       .find((c) => c.target === "%102")!
-      .d.resolve({ ...OK, success: false });
+      .d.reject(new TmuxCommandError({ ...OK, success: false }));
     await tick();
 
     expect(store.lastSend).toEqual({
       sentPanes: 1,
       sentBytes: 2,
       blockedPanes: 0,
-      failedPanes: 1, // %102 fulfilled with success:false
+      failedPanes: 1, // %102 rejected with a tmux %error
     });
   });
 

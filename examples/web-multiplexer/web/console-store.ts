@@ -26,6 +26,7 @@
 
 import { makeAutoObservable, runInAction } from "mobx";
 import { latin1ToBytes } from "@promptctl/tmux-control-mode-js/protocol";
+import { asCommandResponse } from "../shared/command-response.ts";
 import type { TmuxBridge } from "./bridge.ts";
 import type { UiStore } from "./ui-store.ts";
 import {
@@ -217,8 +218,8 @@ export class ConsoleStore {
 
   /**
    * Resolve one command into its terminal `ReplEntry` variant. The bridge's
-   * `execute` honors `Promise<CommandResponse>`: a tmux `%end` resolves with
-   * `success: true`, a `%error` resolves with `success: false` carrying the
+   * `execute` resolves a tmux `%end` with `success: true` and rejects a
+   * `%error`, which `asCommandResponse` turns back into `success: false` carrying the
    * diagnostic, and a transport failure rejects. All three map to a single ok |
    * error value — the source of the error is not represented separately, matching
    * the `ReplEntry` error variant. [LAW:no-silent-failure] the rejection's real
@@ -231,7 +232,7 @@ export class ConsoleStore {
   ): Promise<ReplEntry> {
     const common = { id, command, submittedAt };
     try {
-      const resp = await this.bridge.execute(command);
+      const resp = await this.bridge.execute(command).catch(asCommandResponse);
       const latencyMs = this.now() - submittedAt;
       return resp.success
         ? {
@@ -377,8 +378,8 @@ export class ConsoleStore {
   /**
    * Evaluate the format once via `display-message -p`. tmux resolves `-t` against
    * the target pane (omitted for `active`, which uses the client's active pane).
-   * A `%error` resolves with `success: false` carrying the diagnostic (the bridge
-   * normalizes tmux errors); a transport failure rejects — both land in the error
+   * A `%error` becomes `success: false` carrying the diagnostic (via
+   * `asCommandResponse`); a transport failure rejects — both land in the error
    * variant. [LAW:no-silent-failure] the real message rides the result.
    *
    * The token guard drops a stale resolution: if a newer evaluation was issued
@@ -400,7 +401,7 @@ export class ConsoleStore {
 
   private async evalOneShot(command: string): Promise<PlaygroundResult> {
     try {
-      const resp = await this.bridge.execute(command);
+      const resp = await this.bridge.execute(command).catch(asCommandResponse);
       if (resp.success) {
         return {
           status: "value",
