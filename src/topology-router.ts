@@ -52,16 +52,28 @@ export interface TopologyRouterOptions {
 // adapter injects the one capability the router needs (executing a command string).
 export type RunCommand = (cmd: string) => Promise<CommandResponse>;
 
+// Output for panes topology did not know when it arrived, held while a query
+// that may place them is outstanding. Each chunk carries the attach seq at
+// arrival so replay never reaches a sink attached afterwards. `bytes` is
+// their total, capped at HELD_BYTES_LIMIT.
+interface Hold {
+  chunks: { chunk: ChunkPayload; attachedBy: number }[];
+  bytes: number;
+}
+
 // [LAW:types-are-the-program] The runner and whether it may still be queried
 //   are one value: a query runner that is not the pane-action runner is
-//   unrepresentable. The panes a live connection has asked tmux to locate
-//   belong to it, so a new connection starts asking afresh.
+//   unrepresentable. What a live connection has asked tmux to locate, and the
+//   output it holds for panes not yet placed, belong to its server: pane ids
+//   restart on a new one, so every connection change drops them by
+//   construction, however the adapter announces it.
 type Connection =
   | { readonly phase: "none" }
   | {
       readonly phase: "live";
       readonly run: RunCommand;
       readonly located: Set<number>;
+      readonly hold: Hold;
     }
   | { readonly phase: "lost"; readonly run: RunCommand };
 
@@ -167,15 +179,8 @@ export class TopologyRouter {
   //   code never runs inside the router.
   private readonly delivery: DeliveryQueue;
 
-  // Chunks for panes topology did not know when they arrived, held while a
-  // topology query that may place them is outstanding. Each carries the attach
-  // seq at arrival so replay never reaches a sink attached afterwards.
-  // Empty is the resting state; releaseHeld() drains it after every query and
-  // onTransportClose() discards it with the connection.
-  private held: { chunk: ChunkPayload; attachedBy: number }[] = [];
-  // Bytes in `held`, and bytes refused because holding them would exceed
-  // HELD_BYTES_LIMIT. The refusal is reported at the next settle.
-  private heldBytes = 0;
+  // Bytes refused because holding them would exceed HELD_BYTES_LIMIT. The
+  // refusal is reported at the next settle.
   private refusedBytes = 0;
   // Topology queries started and not yet settled. Only bootstrap(),
   // refreshWindow() and locate() start queries, so the router owns this
@@ -248,7 +253,12 @@ export class TopologyRouter {
   }
 
   private readonly ready = (runCommand: RunCommand): void => {
-    this.connection = { phase: "live", run: runCommand, located: new Set() };
+    this.connection = {
+      phase: "live",
+      run: runCommand,
+      located: new Set(),
+      hold: { chunks: [], bytes: 0 },
+    };
     // [LAW:single-enforcer] A new runner is a connection change even when
     //   no loss announced the old one (an adapter may re-announce ready):
     //   the epoch makes the old runner's answers stale.
@@ -289,11 +299,7 @@ export class TopologyRouter {
     this.epoch.supersedeAll();
     // The rows describe a server this client can no longer see; the next
     // connection's bootstrap holds output until it seeds, so none misroutes.
-    // Output held for that server's panes goes with them: a new server's
-    // panes reuse its ids.
     this.topology.seed([]);
-    this.held = [];
-    this.heldBytes = 0;
   };
 
   /**
@@ -314,8 +320,6 @@ export class TopologyRouter {
     //   suppressor's continue actions drop at the sender — this clears local
     //   paused-pane state without writing to a dead transport.
     this.suppressor?.dispose();
-    this.held = [];
-    this.heldBytes = 0;
     this.refusedBytes = 0;
     this.sinks.endAll();
   };
@@ -404,9 +408,16 @@ export class TopologyRouter {
     // tmux client is not ordered with our command stream, so it can land
     // before the attach-triggered bootstrap does, and a new pane's can land
     // before its %window-add or %layout-change refresh is asked.
-    if (meta === undefined && this.sinks.hasTopologyDependentSinks()) {
+    if (meta === undefined) {
       void this.locate(payload.paneId);
-      if (this.inFlight > 0) this.hold(payload);
+      const conn = this.connection;
+      if (
+        conn.phase === "live" &&
+        this.sinks.hasTopologyDependentSinks() &&
+        this.inFlight > 0
+      ) {
+        this.hold(conn.hold, payload);
+      }
     }
   };
 
@@ -414,16 +425,16 @@ export class TopologyRouter {
   //   one `run-shell 'sleep 30'` delays every reply behind it), so the hold is
   //   capped. Past the cap the newest chunks are refused, keeping the earliest
   //   output this hold exists for, and the refusal is reported, not hidden.
-  private hold(payload: ChunkPayload): void {
+  private hold(hold: Hold, payload: ChunkPayload): void {
     const size = payload.data.byteLength;
-    if (this.heldBytes + size > HELD_BYTES_LIMIT) {
+    if (hold.bytes + size > HELD_BYTES_LIMIT) {
       this.refusedBytes += size;
       return;
     }
-    this.heldBytes += size;
+    hold.bytes += size;
     // ChunkPayload data is valid only until its step's drain has run; a held
     // chunk outlives the step, so it is copied.
-    this.held.push({
+    hold.chunks.push({
       chunk: { ...payload, data: payload.data.slice() },
       attachedBy: this.sinks.attachSeq(),
     });
@@ -437,11 +448,8 @@ export class TopologyRouter {
   // synchronously at the end of every query, so per-pane order holds against
   // any chunk dispatched after it.
   // [LAW:dataflow-not-control-flow] Called unconditionally on every settle;
-  //   an empty list makes it a no-op.
+  //   an empty hold makes it a no-op.
   private releaseHeld(): void {
-    const pending = this.held;
-    this.held = [];
-    this.heldBytes = 0;
     if (this.refusedBytes > 0) {
       this.reportError(
         new Error(
@@ -451,22 +459,27 @@ export class TopologyRouter {
       );
       this.refusedBytes = 0;
     }
-    for (const h of pending) {
+    const conn = this.connection;
+    // Output held on an earlier connection went with it.
+    if (conn.phase !== "live") return;
+    const unplaced: Hold["chunks"] = [];
+    for (const h of conn.hold.chunks) {
       const meta = this.topology.get(h.chunk.paneId);
-      if (meta !== undefined) {
+      if (meta === undefined) unplaced.push(h);
+      else
         this.sinks.dispatch(h.chunk, meta, {
           kind: "replay",
           attachedBy: h.attachedBy,
         });
-        continue;
-      }
-      void this.locate(h.chunk.paneId);
-      if (this.inFlight > 0) {
-        // Already copied and counted once; re-holding cannot exceed the cap.
-        this.held.push(h);
-        this.heldBytes += h.chunk.data.byteLength;
-      }
     }
+    // [LAW:dataflow-not-control-flow] Every unplaced pane is asked about
+    //   before any chunk's fate is decided, so a pane's held output is kept
+    //   or dropped whole, never with a gap.
+    for (const h of unplaced) void this.locate(h.chunk.paneId);
+    // Already copied and counted once; keeping them cannot exceed the cap.
+    const kept = this.inFlight > 0 ? unplaced : [];
+    conn.hold.chunks = kept;
+    conn.hold.bytes = kept.reduce((n, h) => n + h.chunk.data.byteLength, 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -708,27 +721,34 @@ export class TopologyRouter {
   //   costs no query of its own. Arrival and every release both ask here.
   private async locate(paneId: number): Promise<void> {
     const conn = this.connection;
-    if (conn.phase !== "live" || this.inFlight > 0 || conn.located.has(paneId))
+    if (
+      conn.phase !== "live" ||
+      !this.needsTopology() ||
+      this.inFlight > 0 ||
+      conn.located.has(paneId)
+    )
       return;
     conn.located.add(paneId);
+    const gen = this.epoch.startLocate();
     this.inFlight++;
     const command = `list-panes -t %${paneId} -F '${PANE_LIST_FORMAT}'`;
     await this.delivery.settle(
       () => conn.run(command),
-      (reply) => this.settleLocate(conn, paneId, command, reply),
+      (reply) => this.settleLocate(paneId, gen, command, reply),
     );
   }
 
   private settleLocate(
-    conn: Connection,
     paneId: number,
+    gen: number,
     command: string,
     reply: Outcome<CommandResponse>,
   ): void {
     try {
-      // [LAW:single-enforcer] As with every query: an answer from a connection
-      //   no longer current says nothing about this one.
-      if (this.connection !== conn) return;
+      // [LAW:single-enforcer] The epoch's rule, success and failure alike: a
+      //   newer bootstrap owns this pane's placement, and an answer from a
+      //   connection no longer current says nothing about this one.
+      if (!this.epoch.isLocateCurrent(gen)) return;
       if (!reply.ok) throw reply.error;
       const { output } = reply.value;
       const row = parseListReply(command, output, parsePaneListLine).find(

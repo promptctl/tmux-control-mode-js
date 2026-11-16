@@ -881,6 +881,21 @@ export class TopologyEpochTracker {
   }
 
   /**
+   * Call immediately before a `list-panes -t %P` execute(). Returns captured
+   * gen. A locate only names the pane's window, so only what supersedes
+   * everything supersedes it: a newer bootstrap, asked after it and so
+   * placing the pane itself, or a connection change.
+   */
+  startLocate(): number {
+    return this.latestSupersedeGen;
+  }
+
+  /** Call before acting on a locate's answer, success or failure. */
+  isLocateCurrent(gen: number): boolean {
+    return this.latestSupersedeGen === gen;
+  }
+
+  /**
    * Call when a window's membership changes (window-add / window-close).
    * Invalidates any in-flight bootstrap (its reply can predate the change)
    * and any in-flight per-window refresh for the same window.

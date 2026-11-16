@@ -997,6 +997,54 @@ describe("TopologyRouter — chunks that arrive before topology places their pan
     expect(errors).toEqual([]);
   });
 
+  it("holds nothing past a new connection announced without a loss", async () => {
+    const s = await seeded();
+    s.router.dispatchBytes(makeChunk(7));
+    // An adapter may announce ready again with no lost before it.
+    const next = controlledRun();
+    s.router.onTransportReady(next.run);
+    next.replies[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
+    await settle();
+    s.locates[0]!.resolve(makeOkResponse(["%7 @1 $1"]));
+    await settle();
+    // The next server's %7 is not the one that printed before.
+    expect(s.sink.chunks).toEqual([]);
+  });
+
+  it("keeps or drops a pane's held output whole, never with a gap", async () => {
+    const s = await seeded();
+    // %7 is located already: its locate failed, and so did the bootstrap
+    // that followed it.
+    s.router.dispatchBytes(makeChunk(7));
+    s.locates[0]!.reject(new Error("boom"));
+    await settle();
+    s.replies.shift()!.reject(new Error("boom"));
+    await settle();
+    // A refresh is out while %7, %8, %7 print, so all three are held.
+    s.router.handleNotification({ type: "window-add", windowId: 2 });
+    for (const id of [7, 8, 7]) s.router.dispatchBytes(makeChunk(id));
+    s.replies.shift()!.resolve(makeOkResponse(["%9 @2 $1"]));
+    await settle();
+    // Locating %8 keeps every unplaced chunk, both of %7's included.
+    s.locates[1]!.resolve(makeOkResponse(["%7 @1 $1", "%8 @1 $1"]));
+    await settle();
+    s.replies.shift()!.resolve(makeOkResponse(["%7 @1 $1", "%8 @1 $1"]));
+    await settle();
+    expect(paneIdsOf(s.sink)).toEqual([7, 8, 7]);
+  });
+
+  it("locates an unannounced pane for idle suppression with no topology sink", async () => {
+    const router = newRouter({ idlePaneSuppression: true });
+    const { run, replies, locates } = controlledRun();
+    router.onTransportReady(run);
+    replies.shift()!.resolve(makeOkResponse(["%1 @1 $1"]));
+    await settle();
+    router.dispatchBytes(makeChunk(7));
+    expect(locates.map((q) => q.cmd)).toEqual([
+      expect.stringContaining("list-panes -t %7 "),
+    ]);
+  });
+
   it("replays the bytes as they arrived, not a buffer reused since", async () => {
     const router = newRouter();
     const { run, replies } = controlledRun();
