@@ -248,14 +248,15 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // The pane's size as the size subscription last reported it, null before
-  // its first report. [LAW:one-source-of-truth] The subscription is its only
+  // The pane's size as the current size subscription last reported it, null
+  // before its first report. [LAW:one-source-of-truth] The subscription is its only
   //   writer: tmux keeps a subscription quiet while its value is the one it
   //   last sent, so only that value says what tmux's silence means.
   private size: Grid | null = null;
-  // The size the last seed was drawn at: what the sink shows until the
-  // subscription's first report.
-  private seededAt: Grid | null = null;
+  // The size of the picture the stream holds (in the sink, or cached for the
+  // next attach): the size it last fitted the sink to after a seed or a
+  // report. A report that differs from it means tmux's screen moved on.
+  private shown: Grid | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -326,6 +327,9 @@ export class PaneStream implements ReseedTarget {
     this.onReconnected = () => {
       // A pause belonged to the connection that carried it.
       this.paused = false;
+      // So did the size: a new control client's subscription has reported
+      // nothing yet, and tmux may never report this pane to it.
+      this.size = null;
       // The pane moved while we were disconnected: the cache and any
       // capture-pane in flight are pre-reconnect pictures, so the
       // ReseedScheduler's upcoming reseed() (or the next attach()) captures
@@ -908,11 +912,12 @@ export class PaneStream implements ReseedTarget {
     // up to a second before this value arrives, and those bytes reached the
     // sink at the old size. tmux's screen is right: take it again. Detached
     // too: a resize that prints nothing still leaves the cached picture at
-    // the old size. Before the first report the old size is the seed's.
-    const shown = this.size ?? this.seededAt;
+    // the old size.
     const moved =
-      shown !== null && (shown.cols !== dims.cols || shown.rows !== dims.rows);
+      this.shown !== null &&
+      (this.shown.cols !== dims.cols || this.shown.rows !== dims.rows);
     this.size = dims;
+    this.shown = dims;
     if (moved) this.recapture();
   }
 
@@ -928,9 +933,9 @@ export class PaneStream implements ReseedTarget {
     trailing: readonly Uint8Array[],
   ): void {
     fit(sink, picture.size);
-    this.seededAt = picture.size;
     sink.seed(picture.captured, picture.cursor, trailing);
     fit(sink, this.size);
+    this.shown = this.size ?? picture.size;
   }
 
   private setState(next: PaneStreamState): void {

@@ -30,7 +30,6 @@ export class FittedXtermSink extends XtermSink {
   private readonly observer: ResizeObserver;
   private readonly offMetrics: () => void;
   private maxFont: number;
-  private grid: { cols: number; rows: number } | null = null;
 
   constructor(opts: XtermSinkOptions) {
     super(opts);
@@ -41,14 +40,11 @@ export class FittedXtermSink extends XtermSink {
     this.measure = createCellMeasure(win);
     this.offMetrics = this.measure.onChange(() => this.refit());
     this.onRendererChange(() => this.refit());
+    // The grid is xterm's own: `resize()` reaches it behind the bytes
+    // written before it, so the font follows when xterm actually resizes.
+    this.terminal.onResize(() => this.refit());
     this.observer = new ResizeObserver(() => this.refit());
     this.observer.observe(opts.container);
-  }
-
-  override resize(cols: number, rows: number): void {
-    super.resize(cols, rows);
-    this.grid = { cols, rows };
-    this.refit();
   }
 
   override setFont(px: number): void {
@@ -64,7 +60,6 @@ export class FittedXtermSink extends XtermSink {
   }
 
   private refit(): void {
-    if (this.grid === null) return;
     const solution = solve(
       parseSizing({
         window: "tmux",
@@ -73,7 +68,7 @@ export class FittedXtermSink extends XtermSink {
       }),
       { width: this.box.clientWidth, height: this.box.clientHeight },
       this.measure.cellAt(cellFontOf(this.terminal.options), this.renderer),
-      this.grid,
+      { cols: this.terminal.cols, rows: this.terminal.rows },
     );
     super.setFont(solution.font);
   }

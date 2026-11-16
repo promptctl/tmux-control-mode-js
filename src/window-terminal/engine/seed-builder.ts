@@ -32,7 +32,7 @@ export interface Seed {
 /**
  * A grid's size from tmux's decimal width and height fields (`pane_width`,
  * `pane_height`); `null` unless both are positive integers written in digits.
- * The one parser of a size tmux reports, by subscription or with a seed.
+ * Reads both the size subscription's value and a seed's size.
  */
 export function parseGrid(
   width: string | undefined,

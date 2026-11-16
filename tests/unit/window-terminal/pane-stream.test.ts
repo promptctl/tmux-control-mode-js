@@ -1055,6 +1055,27 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
     stream.dispose();
   });
 
+  it("after a reconnect, a seed is not sent back to a size the old connection reported", async () => {
+    // The new control client may never report this pane (not in its
+    // session), so the old report says nothing about the pane now.
+    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const name = client.subscriptionNamed(`%${PANE_ID}`);
+    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(resizes(sink).map((e) => e.replace(/^seed\(.*/s, "seed"))).toEqual([
+      "resize(80x24)",
+      "seed",
+    ]);
+    stream.dispose();
+  });
+
   it("a cached seed is handed over at its own size too", async () => {
     const { stream } = makeStream({ capture: "hello", cursor: SIZED });
     stream.attach(new RecordingSink());
