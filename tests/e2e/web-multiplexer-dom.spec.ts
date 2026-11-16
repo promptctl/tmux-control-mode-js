@@ -390,8 +390,8 @@ test("a pane resized again and again holds its history once", async () => {
       }, PANE);
     // The pane's screen as xterm draws it and as tmux holds it, so a wait
     // that times out shows both.
-    const screens = async (): Promise<{ xterm: string; tmux: string }> => ({
-      xterm: await page.evaluate(
+    const screens = async (): Promise<string> => {
+      const xterm = await page.evaluate(
         (id) =>
           Array.from(
             document.querySelectorAll(
@@ -400,15 +400,21 @@ test("a pane resized again and again holds its history once", async () => {
             (r) => r.textContent ?? "",
           ).join("\n"),
         PANE,
-      ),
-      tmux: tmuxOutput(socket, ["capture-pane", "-p", "-t", PANE]),
-    });
+      );
+      const tmux = tmuxOutput(socket, ["capture-pane", "-p", "-t", PANE]);
+      return `xterm:\n${xterm}\n--- tmux:\n${tmux}`;
+    };
     // xterm shows a row that reads exactly `text`: the output, not the echo
     // of the command line that printed it.
     const showsRow = (text: string) =>
-      expect.poll(screens, { timeout: 15_000 }).toMatchObject({
-        xterm: expect.stringMatching(new RegExp(`^\\s*${text}\\s*$`, "m")),
-      });
+      expect
+        .poll(screens, { timeout: 15_000 })
+        .toMatch(
+          new RegExp(
+            `^xterm:[\\s\\S]*^\\s*${text}\\s*$[\\s\\S]*^--- tmux:`,
+            "m",
+          ),
+        );
     // The pane's new size reaches xterm on the notification that also has
     // the pane recaptured, so rows that agree mean the recapture is under
     // way; a history it stacked stays in the scrollback for every later
