@@ -213,8 +213,9 @@ export class XtermSink implements TerminalSink {
       // construction, WITHOUT a clear: a reseed's `captured` is a snapshot
       // normalized to exactly `pane_height` rows (tested: PaneStream
       // "normalizes the seed to exactly pane_height rows") led by a screen-mode
-      // preamble that homes the cursor, so writing it rewrites EVERY visible row
-      // — no stale visible row can survive underneath. That holds equally for a
+      // preamble that homes the cursor and erases the screen, so writing it
+      // rewrites EVERY visible row — no stale visible row, nor the tail of one,
+      // can survive underneath. That holds equally for a
       // steady-state reseed and for one arriving in the post-cap-drain window
       // (gate opened early because the pane-size subscription was silent), so it
       // no longer rides on "this reseed's capture postdates the drained bytes"

@@ -39,6 +39,12 @@ function tmux(socket: string, args: readonly string[]): void {
   execFileSync("tmux", ["-L", socket, ...args], { stdio: "ignore" });
 }
 
+function tmuxOutput(socket: string, args: readonly string[]): string {
+  return execFileSync("tmux", ["-L", socket, ...args], {
+    encoding: "utf8",
+  }).trim();
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, "..", "..", "examples", "web-multiplexer");
 
@@ -324,6 +330,123 @@ test("an emoji with VS16 takes two cells, as tmux counts it, with no Unicode add
     });
     const cell = await cellWidth(page);
     expect(Math.abs(offset - 2 * cell)).toBeLessThan(cell / 2);
+  } finally {
+    await disposeApp(handle);
+  }
+});
+
+test("a pane resized again and again holds its history once and keeps following its output", async () => {
+  const handle = await launchApp();
+  try {
+    const { page, socket } = handle;
+    const PANE = tmuxOutput(socket, [
+      "display-message",
+      "-p",
+      "-t",
+      "web-multiplexer-demo",
+      "#{pane_id}",
+    ]);
+    tmux(socket, ["send-keys", "-t", PANE, "seq 1 60", "Enter"]);
+    // tmux's grid is the truth: its screen rows, and its lines (history and
+    // screen, one each).
+    const tmuxGrid = (): { rows: number; lines: number } => {
+      const [history, height] = tmuxOutput(socket, [
+        "display-message",
+        "-p",
+        "-t",
+        PANE,
+        "#{history_size} #{pane_height}",
+      ])
+        .split(" ")
+        .map(Number);
+      return { rows: height, lines: history + height };
+    };
+    // The pane's xterm: its screen rows, and its lines (scrollback and
+    // screen). The scroll area outgrows the viewport by one row per
+    // scrollback line; measuring past the viewport leaves out any slack
+    // between the viewport and the rows it draws.
+    const xtermGrid = (): Promise<{ rows: number; lines: number }> =>
+      page.evaluate((id) => {
+        const pane = document.querySelector(`.wt-pane[data-pane-id="${id}"]`);
+        const area = pane?.querySelector(".xterm-scroll-area");
+        const viewport = pane?.querySelector(".xterm-viewport");
+        const rows = pane?.querySelectorAll(".xterm-rows > div");
+        if (
+          area == null ||
+          viewport == null ||
+          rows == null ||
+          rows.length === 0
+        ) {
+          return { rows: -1, lines: -1 };
+        }
+        const height = (el: Element): number =>
+          el.getBoundingClientRect().height;
+        return {
+          rows: rows.length,
+          lines:
+            rows.length +
+            Math.round((height(area) - height(viewport)) / height(rows[0])),
+        };
+      }, PANE);
+    const holdsTmuxGrid = async (): Promise<string> => {
+      const [held, truth] = [await xtermGrid(), tmuxGrid()];
+      return held.rows === truth.rows && held.lines === truth.lines
+        ? "same"
+        : `xterm ${held.rows} rows/${held.lines} lines, tmux ${truth.rows}/${truth.lines}`;
+    };
+    // The pane's screen as xterm shows it and as tmux holds it, so a wait
+    // that times out shows both.
+    const screens = async (): Promise<string> => {
+      const xterm = await page.evaluate(
+        (id) =>
+          Array.from(
+            document.querySelectorAll(
+              `.wt-pane[data-pane-id="${id}"] .xterm-rows > div`,
+            ),
+            (r) => r.textContent ?? "",
+          ).join("\n"),
+        PANE,
+      );
+      const tmuxScreen = tmuxOutput(socket, ["capture-pane", "-p", "-t", PANE]);
+      return `xterm:\n${xterm}\n--- tmux:\n${tmuxScreen}`;
+    };
+    // xterm shows a row that reads exactly `text`: the output, not the echo
+    // of the command line that printed it.
+    const showsRow = (text: string) =>
+      expect
+        .poll(screens, { timeout: 15_000 })
+        .toMatch(
+          new RegExp(
+            `^xterm:[\\s\\S]*^\\s*${text}\\s*$[\\s\\S]*^--- tmux:`,
+            "m",
+          ),
+        );
+
+    await showsRow("60");
+    await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
+    // A split below halves the pane and closing it restores the height:
+    // each is a new pane size, so the pane is captured again.
+    for (let i = 0; i < 3; i++) {
+      const below = tmuxOutput(socket, [
+        "split-window",
+        "-v",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        PANE,
+        E2E_SHELL,
+      ]);
+      await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
+      tmux(socket, ["kill-pane", "-t", below]);
+      await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
+    }
+    // Output printed right after the last resize lands on the heels of its
+    // capture: the view still follows it to the bottom, and the history the
+    // capture redrew under it is still there once.
+    tmux(socket, ["send-keys", "-t", PANE, "printf '%s\\n' do''ne", "Enter"]);
+    await showsRow("done");
+    await expect.poll(holdsTmuxGrid, { timeout: 15_000 }).toBe("same");
   } finally {
     await disposeApp(handle);
   }

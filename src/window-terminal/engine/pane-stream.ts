@@ -26,7 +26,7 @@
 //   External views (`get state()`) read from `currentState` directly.
 
 import type { TerminalSink } from "./terminal-sink.js";
-import { buildSeed, type Seed } from "./seed-builder.js";
+import { buildSeed } from "./seed-builder.js";
 import { uniqueToken } from "./token.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
@@ -188,8 +188,8 @@ type Unsubscribe = () => void;
  *   [LAW:single-enforcer] `markSeedStale` is the single owner of the `stale`
  *   write.
  *
- * Distinct, orthogonal axes deliberately kept separate: `lastSeed` (the cached
- * picture a re-attach replays) and `ReseedScheduler.currentRun` (the
+ * Distinct, orthogonal axes deliberately kept separate: `lastCapture` (the
+ * cached capture a re-attach seeds from) and `ReseedScheduler.currentRun` (the
  * cross-stream sweep guard, one per client). Neither is a capture *phase*.
  */
 type SeedCycle = { readonly phase: "idle" } | Capturing;
@@ -209,10 +209,14 @@ interface Capturing {
   readonly begins: Map<number, number>;
 }
 
-/** A capture's reply, split, with where its `%begin` fell in the buffer. */
-interface CaptureReply {
+/** A capture's reply, split: the grid's rows and the cursor-and-modes line. */
+interface Capture {
   readonly output: readonly string[];
   readonly stateLine: string;
+}
+
+/** A capture with where its `%begin` fell in the buffer. */
+interface CaptureReply extends Capture {
   readonly begunAt: number;
 }
 
@@ -230,12 +234,17 @@ export class PaneStream implements ReseedTarget {
 
   private currentState: PaneStreamState = "idle";
   private sink: TerminalSink | null = null;
-  // The pane's picture as of a capture nothing has followed — kept so a
-  // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
-  // round-trip (re-mount churn on an idle pane → exactly one capture). Set
-  // inside seed(); cleared by every byte and by anything else that moves the
-  // pane (reconnect, `%pause`, a recapture).
-  private lastSeed: Seed | null = null;
+  // The pane as of a capture nothing has followed — kept so a re-attach can
+  // seed the new sink from it WITHOUT a fresh capture-pane round-trip
+  // (re-mount churn on an idle pane → exactly one capture). Set inside seed();
+  // cleared by every byte and by anything else that moves the pane
+  // (reconnect, `%pause`, a recapture).
+  private lastCapture: Capture | null = null;
+  // The sinks that hold this pane's history: each was handed a seed carrying
+  // it, and keeps it across a detach. A seed onto one of them carries the
+  // screen only, so its history is never written twice. Weak, so a sink this
+  // stream no longer feeds is not kept alive by it.
+  private readonly holdsHistory = new WeakSet<TerminalSink>();
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a time,
   // plus its staleness, as a single value (see {@link SeedCycle}). attach() and
   // reseed() short-circuit while the phase is not `idle` (the resolution will
@@ -502,12 +511,12 @@ export class PaneStream implements ReseedTarget {
       return;
     }
 
-    if (this.lastSeed !== null) {
-      // Re-attach fast path. Synchronous: hand the new sink the cached
-      // payload and flip straight to live. No capture-pane is issued, and no
+    if (this.lastCapture !== null) {
+      // Re-attach fast path. Synchronous: seed the new sink from the cached
+      // capture and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
+      this.handOver(sink, this.lastCapture, []);
       this.setState("live");
       return;
     }
@@ -640,11 +649,11 @@ export class PaneStream implements ReseedTarget {
     this.currentLastByteAt = Date.now();
     this.currentBytesSinceAttach += data.byteLength;
 
-    // [LAW:one-source-of-truth] The cached seed is the pane's picture as of
-    // its capture; any byte moves the pane past it, in every state, so the
+    // [LAW:one-source-of-truth] The cached capture is the pane as of its
+    // capture; any byte moves the pane past it, in every state, so the
     // next attach() captures afresh instead of replaying an older screen. A
     // single property write, allocation-free, so the [HOT-PATH] rule holds.
-    this.lastSeed = null;
+    this.lastCapture = null;
 
     // A live sink draws the byte (sink.write must be allocation-free per O3).
     // Detached, nobody will be handed the capture in flight with the byte
@@ -722,7 +731,7 @@ export class PaneStream implements ReseedTarget {
    * when `idle`.
    */
   private markSeedStale(): void {
-    this.lastSeed = null;
+    this.lastCapture = null;
     if (this.seedCycle.phase === "capturing") {
       this.seedCycle.stale = true;
     }
@@ -784,7 +793,7 @@ export class PaneStream implements ReseedTarget {
     // it. If anyone is still attached, kick off a fresh seed — through
     // `startSeedCycle` so `this.seedCycle` follows the new cycle.
     if (cycle.stale) {
-      // No `lastSeed === null` guard: `markSeedStale` drops the cache as it
+      // No `lastCapture === null` guard: `markSeedStale` drops the cache as it
       // marks the capture stale, so a stale in-flight
       // capture provably has no cache to fall back on. Guarding on it here
       // would be dead control-flow whose only reachable-false behavior —
@@ -805,10 +814,6 @@ export class PaneStream implements ReseedTarget {
     // padding, Latin-1→bytes) lives in `buildSeed`; PaneStream owns only the
     // effects around it — the RPCs that produced these inputs, the cache, and
     // the sink handoff below.
-    const picture =
-      reply === null
-        ? null
-        : buildSeed(reply.output, reply.stateLine, this.historyLines);
     // The buffered bytes tmux wrote before the capture's `%begin` are in the
     // snapshot; `trailing` is the rest. A failed capture holds none of them.
     const trailing = cycle.buffer.slice(reply === null ? 0 : reply.begunAt);
@@ -818,11 +823,11 @@ export class PaneStream implements ReseedTarget {
     // cached and the next attach is the natural recovery point. Bytes behind
     // the capture already moved the pane past the snapshot, so only a capture
     // nothing followed is the current picture.
-    this.lastSeed = trailing.length === 0 ? picture : null;
+    this.lastCapture = trailing.length === 0 ? reply : null;
     // The seed seam just succeeded (past the stale-drop guard above), so any
     // outstanding seed failure is moot — clear it so lastError stops
     // reporting a recovered transient failure.
-    if (picture !== null) this.clearError("seed");
+    if (reply !== null) this.clearError("seed");
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
     // issued), the cache above will serve the next attach() — no extra
@@ -831,12 +836,35 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes behind it over as one ordered value.
-    if (picture !== null) {
-      liveSink.seed(picture.captured, picture.cursor, trailing);
+    if (reply !== null) {
+      this.handOver(liveSink, reply, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
     }
     this.setState("live");
+  }
+
+  /**
+   * Seed `sink` from `capture`, with `trailing` behind it. A sink that already
+   * holds the pane's history gets the screen only: writing the history again
+   * would stack a second copy under the first in its scrollback.
+   *
+   * [LAW:single-enforcer] Every seed a sink is handed passes through here, so
+   *   `holdsHistory` is written in exactly one place.
+   */
+  private handOver(
+    sink: TerminalSink,
+    capture: Capture,
+    trailing: readonly Uint8Array[],
+  ): void {
+    const seed = buildSeed(
+      capture.output,
+      capture.stateLine,
+      this.historyLines,
+      this.holdsHistory.has(sink) ? 0 : this.historyLines,
+    );
+    this.holdsHistory.add(sink);
+    sink.seed(seed.captured, seed.cursor, trailing);
   }
 
   /**
