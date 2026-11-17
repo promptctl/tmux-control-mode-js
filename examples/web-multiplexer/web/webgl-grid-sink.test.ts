@@ -5,6 +5,10 @@
 
 import { describe, it, expect } from "vitest";
 import { WebGLGridSink } from "./webgl-grid-sink.ts";
+import {
+  buildSeed,
+  parseSeedState,
+} from "../../../src/window-terminal/engine/seed-builder.ts";
 
 const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
@@ -18,6 +22,22 @@ function row(sink: WebGLGridSink, r: number): string {
 }
 
 describe("WebGLGridSink", () => {
+  it("draws a PaneStream seed's rows one per line", () => {
+    // The seed's row separator saves and restores the cursor around a line
+    // feed; a sink that skipped the save/restore would step two rows each.
+    const sink = new WebGLGridSink({ cols: 10, rows: 5 });
+    const state = parseSeedState("0;4;1;0;0;0;0;1;0;5;0;0;4;10");
+    if (state === null) throw new Error("state line rejected");
+    sink.seed(buildSeed(["a", "b", "c", "d", "e"], state, 0).captured, []);
+    expect([0, 1, 2, 3, 4].map((r) => row(sink, r))).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+    ]);
+  });
+
   it("a seed supersedes what the sink showed, before and after a resize", () => {
     const sink = new WebGLGridSink({ cols: 10, rows: 2 });
     sink.write(bytes("old"));

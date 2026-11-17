@@ -43,6 +43,8 @@ export interface SeedState {
   readonly applicationCursorKeys: boolean;
   readonly applicationKeypad: boolean;
   readonly autowrap: boolean;
+  /** DECOM: cursor addressing is relative to the scroll region. */
+  readonly originMode: boolean;
   readonly scrollRegion: { readonly top: number; readonly bottom: number };
 }
 
@@ -109,7 +111,7 @@ export function buildSeed(
     stripped.length < targetRows
       ? stripped.concat(new Array(targetRows - stripped.length).fill(""))
       : stripped;
-  const screen = lines.join("\r\n");
+  const screen = lines.join(NEWLINE);
 
   // Restore terminal modes around the screen content: alt-screen + wrap
   // before drawing (they affect layout), input/cursor modes after. The CUP
@@ -158,7 +160,24 @@ const ESC = "\x1b";
 //   - ED 2: capture-pane drops trailing blanks, so a row drawn over an old one
 //     would otherwise keep the old row's tail.
 //   - ED 3: erases the scrollback, which the history rows then rewrite.
-const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+//   - G0 ASCII, G1 DEC Special Graphics, SI: capture-pane writes a
+//     line-drawing cell as SO … SI, so G1 must hold the line-drawing set; and
+//     ?1049l's DECRC restores whatever charset and shift DECSC saved.
+const SI = "\x0f";
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0${SI}`;
+
+// Between rows: a line feed that scrolls in a line with the default
+// background, then the next row's start under the pen the last row left.
+// capture-pane carries one pen across its lines, writing only what changes,
+// and xterm fills a line a feed scrolls in with the current background, so a
+// bare CRLF after a row ending on a coloured cell paints the next row's tail.
+// Save and restore cursor keep the pen across the feed with SGR 49 in force,
+// and CUD reaches the new line whether or not the feed scrolled. CSI s/u, not
+// ESC 7/8: every TerminalSink here implements them, the demo's
+// AttributionEngine included.
+//   The save overwrites the cursor a program saved before the reseed, which
+//   tmux does not report; a DECRC after a reseed lands on the seed's last row.
+const NEWLINE = `${ESC}[s${ESC}[49m\n${ESC}[u\r${ESC}[B`;
 
 // Before content: establish the correct screen buffer, clear it, then set
 // autowrap — all of which affect how screen content lays out.
@@ -178,17 +197,32 @@ function preamble(s: SeedState): string {
   );
 }
 
-// After content: the scroll region and the input/cursor modes the captured
-// grid can't carry, then the cursor where tmux has it. DECSTBM and CUP are
-// 1-indexed; DECSTBM homes the cursor, so the CUP comes after it.
+// After content: the scroll region and the modes the captured grid can't
+// carry, then the cursor where tmux has it. DECSTBM and DECOM both home the
+// cursor, so the CUP comes after them; it is 1-indexed and, under DECOM,
+// relative to the region's top row.
+//   SI and SGR 0 end the shift and pen the capture's last cell left set:
+//   capture-pane writes no reset after it, and tmux reports neither the
+//   program's shift nor its pen, so the live stream gets tmux's initial ones.
+//   G1 stays the line-drawing set, which a curses program designates once
+//   at startup and then reaches with SO.
+//   tmux can hold the cursor outside the region with DECOM on (its DECSTBM
+//   homes to the screen's top-left), but xterm.js clamps the cursor into the
+//   region under DECOM, so the CUP addresses the nearest row it can hold.
 function epilogue(s: SeedState): string {
+  const frame = s.originMode
+    ? s.scrollRegion
+    : { top: 0, bottom: s.size.rows - 1 };
+  const row = Math.min(Math.max(s.cursor.row, frame.top), frame.bottom);
   return (
     `${ESC}[${s.scrollRegion.top + 1};${s.scrollRegion.bottom + 1}r` +
+    mode(s.originMode, `${ESC}[?6h`, `${ESC}[?6l`) + // DECOM
     mode(s.cursorVisible, `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
     mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
-    `${ESC}[${s.cursor.row + 1};${s.cursor.col + 1}H` // CUP
+    `${SI}${ESC}[0m` + // SGR 0
+    `${ESC}[${row - frame.top + 1};${s.cursor.col + 1}H` // CUP
   );
 }
 
@@ -207,6 +241,7 @@ const STATE_FIELDS = {
   keypad_cursor_flag: FLAG,
   keypad_flag: FLAG,
   wrap_flag: FLAG,
+  origin_flag: FLAG,
   pane_height: SIZE,
   history_size: COUNT,
   scroll_region_upper: COUNT,
@@ -231,8 +266,8 @@ export const SEED_STATE_FORMAT = SEED_STATE_FIELDS.map((f) => `#{${f}}`).join(
 /**
  * The pane state from the `display-message` reply PaneStream takes with each
  * capture; `null` when the reply is not `SEED_STATE_FORMAT`'s shape (any field
- * missing, empty or malformed, or a zero dimension), which only a malformed
- * reply can be.
+ * missing, empty or malformed, a zero dimension, or a cursor or scroll region
+ * off the screen), which only a malformed reply can be.
  *
  * [LAW:parse-dont-validate] A `SeedState` holds every field the seed needs, so
  *   nothing downstream asks whether one is there.
@@ -249,9 +284,27 @@ export function parseSeedState(line: string): SeedState | null {
     SEED_STATE_FIELDS.map((name, i) => [name, values[i]]),
   ) as Record<SeedStateField, string>;
   const size = parseGrid(f.pane_width, f.pane_height);
-  if (size === null) return null;
+  const cursor = { col: Number(f.cursor_x), row: Number(f.cursor_y) };
+  const scrollRegion = {
+    top: Number(f.scroll_region_upper),
+    bottom: Number(f.scroll_region_lower),
+  };
+  // The cursor is on the screen; its column is the width while a wrap is
+  // pending. A region spans two rows or more (tmux refuses a one-row
+  // DECSTBM) or is the whole screen. The epilogue's DECSTBM and DECOM-relative
+  // CUP rely on both.
+  if (
+    size === null ||
+    cursor.row >= size.rows ||
+    cursor.col > size.cols ||
+    scrollRegion.bottom >= size.rows ||
+    (scrollRegion.top >= scrollRegion.bottom &&
+      !(scrollRegion.top === 0 && scrollRegion.bottom === size.rows - 1))
+  ) {
+    return null;
+  }
   return {
-    cursor: { col: Number(f.cursor_x), row: Number(f.cursor_y) },
+    cursor,
     size,
     historySize: Number(f.history_size),
     alternateScreen: f.alternate_on === "1",
@@ -260,9 +313,7 @@ export function parseSeedState(line: string): SeedState | null {
     applicationCursorKeys: f.keypad_cursor_flag === "1",
     applicationKeypad: f.keypad_flag === "1",
     autowrap: f.wrap_flag === "1",
-    scrollRegion: {
-      top: Number(f.scroll_region_upper),
-      bottom: Number(f.scroll_region_lower),
-    },
+    originMode: f.origin_flag === "1",
+    scrollRegion,
   };
 }

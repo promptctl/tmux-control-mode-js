@@ -39,6 +39,7 @@ export function seedStateLine({
     keypad_cursor_flag: 0,
     keypad_flag: 0,
     wrap_flag: 1,
+    origin_flag: 0,
     pane_height: rows,
     history_size: historySize,
     scroll_region_upper: 0,
@@ -47,3 +48,6 @@ export function seedStateLine({
   };
   return SEED_STATE_FIELDS.map((f) => values[f]).join(";");
 }
+
+/** What a seed writes between rows: SCOSC, SGR 49, LF, SCORC, CR, CUD. */
+export const SEED_NEWLINE = "\x1b[s\x1b[49m\n\x1b[u\r\x1b[B";
