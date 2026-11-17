@@ -2,10 +2,11 @@
 //
 // `buildSeed` — the pure tmux capture-grid reconstruction. Given the raw
 // `capture-pane` output, the pane state `parseSeedState` reads from the
-// `display-message` reply, and the requested scrollback depth, it produces the exact byte sequence (`captured`) plus
-// cursor position (`cursor`) a `TerminalSink.seed()` replays to paint a freshly
-// attached pane so its cursor and viewport line up with tmux's grid, and the
-// size (`size`) that grid was captured at.
+// `display-message` reply, and the requested scrollback depth, it produces
+// the exact byte sequence (`captured`) plus cursor position (`cursor`) a
+// `TerminalSink.seed()` replays to paint a freshly attached pane so its
+// cursor and viewport line up with tmux's grid, and the size (`size`) that
+// grid was captured at.
 //
 // [LAW:decomposition] This is a tmux-specific grid algorithm — flag→escape
 //   selection, blank-row padding, DEC private-mode synthesis, Latin-1→bytes.
@@ -196,11 +197,11 @@ function epilogue(s: SeedState): string {
 // The state reply's whole grammar, in stateCmd's field order: cursor_x;
 // cursor_y;alternate_on;cursor_flag;insert_flag;keypad_cursor_flag;
 // keypad_flag;wrap_flag;pane_height;history_size;scroll_region_upper;
-// scroll_region_lower;pane_width. Counts and rows are decimal digits, the
-// grid's dimensions positive, flags 0/1. tmux >= 3.2 expands every one of
-// these formats.
+// scroll_region_lower;pane_width. Counts and rows are decimal digits, flags
+// are 0/1; the grid's dimensions are `parseGrid`'s. tmux >= 3.2 expands every
+// one of these formats.
 const STATE_LINE =
-  /^(\d+);(\d+);([01]);([01]);([01]);([01]);([01]);([01]);([1-9]\d*);(\d+);(\d+);(\d+);([1-9]\d*)$/;
+  /^(\d+);(\d+);([01]);([01]);([01]);([01]);([01]);([01]);(\d+);(\d+);(\d+);(\d+);(\d+)$/;
 
 /**
  * The pane state from the `display-message` reply PaneStream takes with each
@@ -216,9 +217,13 @@ export function parseSeedState(line: string): SeedState | null {
   if (m === null) return null;
   const [, cx, cy, alt, cur, ins, kcur, kpad, wrap, h, hist, top, bottom, w] =
     m;
+  // [LAW:single-enforcer] A pane's size has one grammar, the pane-size
+  //   subscription's too.
+  const size = parseGrid(w, h);
+  if (size === null) return null;
   return {
     cursor: { col: Number(cx), row: Number(cy) },
-    size: { cols: Number(w), rows: Number(h) },
+    size,
     historySize: Number(hist),
     alternateScreen: alt === "1",
     cursorVisible: cur === "1",

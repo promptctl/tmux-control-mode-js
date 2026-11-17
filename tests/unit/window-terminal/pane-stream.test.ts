@@ -1007,7 +1007,6 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
 describe("PaneStream — pane-size subscription lifecycle", () => {
   it("two streams of one pane keep separate subscriptions: disposing one leaves the other's", async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const a = new PaneStream({ client, paneId: PANE_ID });
     const nameA = client.subscriptionNamed(`%${PANE_ID}`);
     const b = new PaneStream({ client, paneId: PANE_ID });
@@ -1045,7 +1044,6 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
 
   it("re-issues its subscription on 'reconnected'", async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const stream = new PaneStream({ client, paneId: PANE_ID });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     const subscribes = () =>

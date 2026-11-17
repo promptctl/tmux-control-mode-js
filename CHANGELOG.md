@@ -76,6 +76,11 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- `./window-terminal`: a capture whose pane-state reply is malformed fails
+  as a `TmuxReplyFormatError` on the `seed` error seam, and the pane keeps
+  what it showed. It used to be drawn anyway, with the cursor at the end of
+  the captured text and the terminal modes left as they were.
+
 - `./window-terminal`: a pane draws at tmux's size from its first frame.
   tmux reports a pane's size to a control client only for a pane in that
   client's session, and only at its next check, up to a second later, so a
