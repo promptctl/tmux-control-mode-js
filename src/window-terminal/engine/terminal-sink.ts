@@ -19,21 +19,6 @@
 //   snapshot — so that the snapshot→live ORDERING is one value's shape, not
 //   a convention re-enforced across separate `seed()`/`write()` calls.
 
-/**
- * Cursor coordinates as reported by tmux's `#{cursor_x};#{cursor_y}` format
- * variables, normalised to a renderer-natural axis vocabulary:
- *
- * - `col`: column index (0-indexed from the left edge of the visible pane).
- * - `row`: row index    (0-indexed from the top edge of the visible pane).
- *
- * Sinks that need to position a hardware cursor are responsible for any
- * 1-indexing translation (e.g. xterm's ANSI CUP escape is 1-indexed).
- */
-export interface SeedCursor {
-  readonly col: number;
-  readonly row: number;
-}
-
 /** A grid's size in cells: a pane's (`pane_width`, `pane_height`) or a window's. */
 export interface Grid {
   readonly cols: number;
@@ -45,8 +30,8 @@ export interface Grid {
  *
  * Lifecycle from a sink's perspective:
  *
- *   stream.attach(sink)  →  sink.resize(cols, rows)      (once the size is known)
- *                        →  sink.seed(captured, cursor, trailing)  (snapshot +
+ *   stream.attach(sink)  →  sink.resize(cols, rows)      (the capture's size)
+ *                        →  sink.seed(captured, trailing)  (snapshot +
  *                                                          the live bytes
  *                                                          captured behind it)
  *   then, interleaved:      sink.write(data)             (live byte stream)
@@ -76,7 +61,8 @@ export interface TerminalSink {
    * them, wrapped by library-synthesized escapes (before the grid: alt-screen,
    * a scroll-region reset, cursor home, SGR reset, an erase of the screen and
    * of the scrollback, autowrap; after it: tmux's scroll region, which homes
-   * the cursor, then cursor/keypad/insert) that PaneStream derives from
+   * the cursor, then cursor/keypad/insert, then the cursor's position) that
+   * PaneStream derives from
    * `display-message` state — those escapes are injected by the library, not
    * emitted by `capture-pane`. The grid is the pane's history above its
    * screen, and the erase acts on the screen buffer the seed draws into: a
@@ -98,16 +84,8 @@ export interface TerminalSink {
    * sequence of separate calls. It is empty on a re-attach (the cached seed has
    * no pending live bytes) and whenever tmux wrote nothing after the capture.
    * A sink MUST apply `captured` then each `trailing` chunk in order.
-   *
-   * `cursor` is `null` when tmux did not return a parsable cursor reply;
-   * sinks should leave the cursor at the natural end of the captured bytes
-   * in that case.
    */
-  seed(
-    captured: Uint8Array,
-    cursor: SeedCursor | null,
-    trailing: readonly Uint8Array[],
-  ): void;
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void;
 
   /**
    * Forward a chunk of live bytes to the renderer. Bytes are byte-identical
@@ -164,7 +142,6 @@ export interface TerminalSink {
 /** A recorded `seed()` call. */
 export interface SeedCall {
   readonly captured: Uint8Array;
-  readonly cursor: SeedCursor | null;
 }
 
 export interface BufferingSinkOptions {
@@ -199,13 +176,9 @@ export class BufferingSink implements TerminalSink {
   // TerminalSink
   // ---------------------------------------------------------------------------
 
-  seed(
-    captured: Uint8Array,
-    cursor: SeedCursor | null,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     if (this.isDisposed) return;
-    this.seedCalls.push({ captured, cursor });
+    this.seedCalls.push({ captured });
     // Record the trailing live bytes as ordinary writes, in order — the same
     // behavioral events a sink observes when it applies snapshot-then-trailing.
     // A test asserting seed-before-live sees `seedCalls` then these `writes`.

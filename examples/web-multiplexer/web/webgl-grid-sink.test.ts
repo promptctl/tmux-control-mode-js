@@ -21,7 +21,7 @@ describe("WebGLGridSink", () => {
   it("a seed supersedes what the sink showed, before and after a resize", () => {
     const sink = new WebGLGridSink({ cols: 10, rows: 2 });
     sink.write(bytes("old"));
-    sink.seed(bytes("new"), null, [bytes("!")]);
+    sink.seed(bytes("new"), [bytes("!")]);
     expect(row(sink, 0)).toBe("new!");
 
     // A resize replays the retained bytes: the replay starts at the seed, not

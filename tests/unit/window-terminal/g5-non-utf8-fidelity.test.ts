@@ -25,10 +25,9 @@ function attachLiveStream(
   client: FakeTmuxClient,
   sink: BufferingSink,
 ): PaneStream {
-  // Empty capture-pane response so seed completes immediately. After
-  // attach, the stream flushes the buffer and flips to live; subsequent
+  // The fake's default reply is a blank pane, so the seed completes at once.
+  // After attach, the stream flushes the buffer and flips to live; subsequent
   // injectOutput chunks land in sink.write directly.
-  client.setExecuteResponse(() => "");
   const stream = new PaneStream({
     client,
     paneId: PANE_ID,

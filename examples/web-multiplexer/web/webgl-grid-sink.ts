@@ -15,7 +15,7 @@
 // [LAW:effects-at-boundaries] This sink is the boundary where bytes become a
 //   grid; it holds no GL and no clock. The grid it exposes is pure data.
 
-import type { SeedCursor, TerminalSink } from "./window-terminal-internals.ts";
+import type { TerminalSink } from "./window-terminal-internals.ts";
 import {
   AttributionEngine,
   type GridSize,
@@ -53,11 +53,7 @@ export class WebGLGridSink implements TerminalSink {
 
   // --- TerminalSink ---------------------------------------------------------
 
-  seed(
-    captured: Uint8Array,
-    _cursor: SeedCursor | null,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     // The snapshot is the whole picture (TerminalSink.seed), so the replay log
     // restarts at it: a resize replays from the latest seed, not from the
     // bytes it supersedes. Then the snapshot and its trailing bytes, in order

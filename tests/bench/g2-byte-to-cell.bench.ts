@@ -15,7 +15,6 @@ import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
 import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import type { TerminalSink } from "../../src/window-terminal/engine/terminal-sink.js";
-import type { SeedCursor } from "../../src/window-terminal/engine/terminal-sink.js";
 
 const P99_BUDGET_MS = 16;
 const ITERATIONS = 1000;
@@ -26,11 +25,7 @@ const CHUNK_SIZES = [11, 64, 256, 1024];
 class TimingSink implements TerminalSink {
   // Most recent write timestamp; gate reads + clears between iterations.
   lastWriteAt = 0;
-  seed(
-    _captured: Uint8Array,
-    _c: SeedCursor | null,
-    _trailing: readonly Uint8Array[],
-  ): void {
+  seed(_captured: Uint8Array, _trailing: readonly Uint8Array[]): void {
     /* no-op */
   }
   write(_bytes: Uint8Array): void {
@@ -59,7 +54,6 @@ function p99(samples: number[]): number {
 describe("Gate 2 — live byte → cell on screen", () => {
   it(`p99 byte-to-sink latency < ${P99_BUDGET_MS}ms across ${ITERATIONS} chunks`, async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const sink = new TimingSink();
     const stream = new PaneStream({
       client,

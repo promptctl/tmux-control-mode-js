@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import { seedStateLine } from "../../helpers/seed-state.js";
 import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
 import type {
   PaneActivity,
@@ -14,10 +15,10 @@ import type {
   PaneStreamState,
 } from "../../../src/window-terminal/engine/pane-stream.js";
 import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
-import type { SeedCursor } from "../../../src/window-terminal/engine/terminal-sink.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
+  TmuxReplyFormatError,
   TransportClosedError,
   TransportSendError,
 } from "../../../src/browser.js";
@@ -43,18 +44,12 @@ class RecordingSink implements TerminalSink {
   readonly writes: Uint8Array[] = [];
   readonly seedTexts: string[] = [];
   private visible = true;
-  seed(
-    captured: Uint8Array,
-    cursor: SeedCursor | null,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     // seed carries raw bytes (same kind as write); decode Latin-1 (lossless
     // for the ASCII fixtures these tests use) for human-readable assertions.
     const text = new TextDecoder("latin1").decode(captured);
     this.seedTexts.push(text);
-    this.events.push(
-      `seed(${captured.byteLength} bytes, cursor=${JSON.stringify(cursor)})`,
-    );
+    this.events.push(`seed(${captured.byteLength} bytes)`);
     // Trailing live bytes are applied after the snapshot, in order — record
     // them as the same behavioral write events a renderer would emit.
     for (const chunk of trailing) this.write(chunk);
@@ -87,7 +82,7 @@ function makeStream(
     client?: FakeTmuxClient;
     paneId?: number;
     capture?: string;
-    cursor?: string;
+    state?: string;
   } = {},
 ): {
   client: FakeTmuxClient;
@@ -95,7 +90,7 @@ function makeStream(
 } {
   const client = opts.client ?? new FakeTmuxClient();
   client.setExecuteResponse((cmd) => {
-    if (cmd.startsWith("display-message")) return opts.cursor ?? "0;0";
+    if (cmd.startsWith("display-message")) return opts.state ?? seedStateLine();
     return opts.capture ?? "";
   });
   const stream = new PaneStream({
@@ -308,6 +303,36 @@ describe("PaneStream — state machine", () => {
     expect(sink.events).toEqual(["write(1B)"]);
   });
 
+  it("a state reply with no size fails the capture as a malformed reply", async () => {
+    // The capture's own size is the only size a seed is drawn at, so a reply
+    // without one is no picture: the bytes go out as writes and the reply is
+    // reported, then the next well-formed capture draws and clears it.
+    const truncated = "0;0;0;1;0;0;0;1;24;0;0;23"; // pane_width missing
+    const { client, stream } = makeStream({ state: truncated });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    client.injectOutput(PANE_ID, new Uint8Array([0x41]));
+    await flushTicks();
+
+    expect(stream.state).toBe("live");
+    expect(sink.events).toEqual(["write(1B)"]);
+    const cause = stream.lastError?.cause;
+    expect(stream.lastError?.phase).toBe("seed");
+    expect(cause).toBeInstanceOf(TmuxReplyFormatError);
+    expect(cause).toMatchObject({ output: [truncated] });
+    expect((cause as TmuxReplyFormatError).command).toMatch(
+      /^capture-pane .* ; display-message -p -t %7 /,
+    );
+
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message") ? seedStateLine() : "hello",
+    );
+    void stream.reseed();
+    await flushTicks();
+    expect(sink.seedTexts).toHaveLength(1);
+    expect(stream.lastError).toBeNull();
+  });
+
   it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
     const { client, stream } = makeStream();
     // Make execute() reject so the seed Promise.all throws.
@@ -325,7 +350,7 @@ describe("PaneStream — state machine", () => {
     // Now wire a working capture, re-attach. The cache must be empty so
     // attach takes the slow path and recovers.
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "recovered",
+      cmd.startsWith("display-message") ? seedStateLine() : "recovered",
     );
     const baselineCaptures = client.capturePaneCount();
 
@@ -363,13 +388,19 @@ describe("PaneStream — state machine", () => {
     // element emits a trailing \r\n that scrolls xterm up one line, putting
     // the subsequent CUP one row too low. Stripping the trailer is the fix;
     // this test locks it in place.
-    const { stream } = makeStream({ capture: "row-0\nrow-1\n" });
+    // A two-row pane: the trailer kept would make the seed three rows.
+    const { stream } = makeStream({
+      capture: "row-0\nrow-1\n",
+      state: seedStateLine({ rows: 2 }),
+    });
     const sink = new RecordingSink();
     stream.attach(sink);
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    expect(sink.seedTexts[0]?.endsWith("row-0\r\nrow-1")).toBe(true);
+    const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
+    expect(rows).toHaveLength(2);
+    expect(rows[1]?.startsWith("row-1\x1b")).toBe(true);
   });
 
   it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
@@ -383,7 +414,7 @@ describe("PaneStream — state machine", () => {
     // history_size — here 8 rows, no scrollback, cursor on visible row 1.
     const { stream } = makeStream({
       capture: "AA\nBB", // two content rows; trailing 6 blanks elided by tmux
-      cursor: "0;1;0;1;0;0;0;1;8;0",
+      state: seedStateLine({ rows: 8, cursor: { col: 0, row: 1 } }),
     });
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -413,7 +444,7 @@ describe("PaneStream — state machine", () => {
     const { stream } = makeStream({
       capture: "row-0\nrow-1",
       // alternate_on=0, cursor visible, no insert/keypad, autowrap, 3 rows
-      cursor: "0;0;0;1;0;0;0;1;3;0",
+      state: seedStateLine({ rows: 3 }),
     });
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -426,7 +457,7 @@ describe("PaneStream — state machine", () => {
   it("seed preamble opens with ?1049h for alt-screen pane (alternate_on=1)", async () => {
     const { stream } = makeStream({
       capture: "alt-row-0\nalt-row-1",
-      cursor: "0;0;1;1;0;0;0;1;3;0", // alternate_on=1
+      state: seedStateLine({ rows: 3, alternate: true }),
     });
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -444,7 +475,7 @@ describe("PaneStream — state machine", () => {
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message")
-        ? "0;0;1;1;0;0;0;1;3;0" // alt=1
+        ? seedStateLine({ rows: 3, alternate: true })
         : "alt-content",
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
@@ -460,7 +491,7 @@ describe("PaneStream — state machine", () => {
     // Reconnect: pane is now on main screen.
     client.setExecuteResponse((cmd) =>
       cmd.startsWith("display-message")
-        ? "0;0;0;1;0;0;0;1;3;0" // alt=0
+        ? seedStateLine({ rows: 3 })
         : "main-content",
     );
     client.setConnectionState({ status: "reconnecting", attempt: 1 });
@@ -611,7 +642,7 @@ describe("PaneStream — state machine", () => {
     const seen: string[] = [];
     client.setExecuteResponse((cmd) => {
       seen.push(cmd);
-      return cmd.startsWith("display-message") ? "0;0" : "";
+      return cmd.startsWith("display-message") ? seedStateLine() : "";
     });
     await stream.sendKeyBytes(new Uint8Array([0x41]));
     expect(seen.find((c) => c.startsWith("send-keys"))).toBe(
@@ -818,7 +849,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     vi.useRealTimers();
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "",
+      cmd.startsWith("display-message") ? seedStateLine() : "",
     );
     client.setExecuteFailure((cmd) =>
       isSubscribe(cmd) ? tmuxError("no such pane") : null,
@@ -901,7 +932,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     let failCapture = true;
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "recovered-screen",
+      cmd.startsWith("display-message") ? seedStateLine() : "recovered-screen",
     );
     client.setExecuteFailure((cmd) =>
       failCapture && cmd.startsWith("capture-pane")
@@ -937,7 +968,7 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     let failCapture = true;
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "screen",
+      cmd.startsWith("display-message") ? seedStateLine() : "screen",
     );
     client.setExecuteFailure((cmd) => {
       // subscribe fails permanently (no pane geometry will ever arrive)...
@@ -969,7 +1000,6 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
 describe("PaneStream — pane-size subscription lifecycle", () => {
   it("two streams of one pane keep separate subscriptions: disposing one leaves the other's", async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const a = new PaneStream({ client, paneId: PANE_ID });
     const nameA = client.subscriptionNamed(`%${PANE_ID}`);
     const b = new PaneStream({ client, paneId: PANE_ID });
@@ -1007,7 +1037,6 @@ describe("PaneStream — pane-size subscription lifecycle", () => {
 
   it("re-issues its subscription on 'reconnected'", async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const stream = new PaneStream({ client, paneId: PANE_ID });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     const subscribes = () =>
@@ -1066,9 +1095,6 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
-  // The display-message reply for an 80x24 pane: pane_height (field 9) 24,
-  // pane_width (field 13) 80.
-  const SIZED = "0;0;0;1;0;0;0;1;24;0;0;23;80";
   const shape = (sink: RecordingSink): string[] =>
     sink.events
       .filter((e) => !e.startsWith("write"))
@@ -1079,9 +1105,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     const pane = { cols, rows, failCapture: false };
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message")
-        ? `0;0;0;1;0;0;0;1;${pane.rows};0;0;${pane.rows - 1};${pane.cols}`
-        : "hello",
+      cmd.startsWith("display-message") ? seedStateLine(pane) : "hello",
     );
     client.setExecuteFailure((cmd) =>
       pane.failCapture && cmd.startsWith("capture-pane")
@@ -1119,7 +1143,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   it("before tmux reports, a seed is drawn at the size it was captured at", async () => {
     // A pane outside the control client's session is never reported; any
     // other waits up to a second for its first report.
-    const { stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { stream } = makeStream({ capture: "hello" });
     const sink = new RecordingSink();
     stream.attach(sink);
     await flushTicks();
@@ -1130,16 +1154,16 @@ describe("PaneStream — floods (pause/continue)", () => {
   it("before tmux reports, each seed is drawn at its own capture's size", async () => {
     // A pane outside the control client's session is never reported, so a
     // resize of it is known only from the next capture.
-    let cursor = SIZED;
+    let state = seedStateLine();
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? cursor : "hello",
+      cmd.startsWith("display-message") ? state : "hello",
     );
     const stream = new PaneStream({ client, paneId: PANE_ID });
     stream.attach(new RecordingSink());
     await flushTicks();
     stream.detach();
-    cursor = "0;0;0;1;0;0;0;1;30;0;0;29;100";
+    state = seedStateLine({ cols: 100, rows: 30 });
     client.injectOutput(PANE_ID, new TextEncoder().encode("x")); // drops the cache
     const sink = new RecordingSink();
     stream.attach(sink);
@@ -1255,7 +1279,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   it("a seed is drawn at the size it was captured at, not at tmux's last report", async () => {
     // tmux said 100;30, the pane went back to 80x24 inside one check, and
     // tmux will not say 80;24 again: only the capture knows.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     const sink = new RecordingSink();
@@ -1268,7 +1292,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   it("tmux's first report recaptures when it differs from the size the seed was drawn at", async () => {
     // The pane moved on before tmux's first check; its program's redraw
     // reached the sink at 80x24.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     stream.attach(new RecordingSink());
     await flushTicks();
@@ -1280,7 +1304,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   });
 
   it("tmux's first report does not recapture when it is the size the seed was drawn at", async () => {
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     stream.attach(new RecordingSink());
     await flushTicks();
@@ -1292,7 +1316,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   });
 
   it("a seed resolved with no sink attached still sets the size a first report is compared with", async () => {
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     stream.attach(new RecordingSink());
     stream.detach(); // the capture resolves into the cache
@@ -1311,7 +1335,7 @@ describe("PaneStream — floods (pause/continue)", () => {
   it("after a reconnect, a seed is drawn at its own size, not the old connection's report", async () => {
     // The new control client may never report this pane (not in its
     // session), so the old report says nothing about the pane now.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
+    const { client, stream } = makeStream({ capture: "hello" });
     const name = client.subscriptionNamed(`%${PANE_ID}`);
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     stream.attach(new RecordingSink());

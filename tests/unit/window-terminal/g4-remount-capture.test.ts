@@ -13,6 +13,7 @@
 
 import { describe, it, expect } from "vitest";
 import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
+import { seedStateLine } from "../../helpers/seed-state.js";
 import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
 import { BufferingSink } from "../../../src/window-terminal/engine/terminal-sink.js";
 
@@ -30,7 +31,7 @@ describe("Gate 4 — re-mount on the same stream", () => {
   it(`first mount = 1 capture-pane; mounts 2..${REMOUNT_COUNT} = 0 (re-attach reuses stream state)`, async () => {
     const client = new FakeTmuxClient();
     client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "row-0\nrow-1\n",
+      cmd.startsWith("display-message") ? seedStateLine() : "row-0\nrow-1\n",
     );
     const stream = new PaneStream({
       client,

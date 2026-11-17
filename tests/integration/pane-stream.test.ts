@@ -29,10 +29,7 @@ import {
   PaneStream,
   type TerminalConnection,
 } from "../../src/window-terminal/engine/pane-stream.js";
-import type {
-  TerminalSink,
-  SeedCursor,
-} from "../../src/window-terminal/engine/terminal-sink.js";
+import type { TerminalSink } from "../../src/window-terminal/engine/terminal-sink.js";
 
 const RUN_INTEGRATION = process.env.TMUX_INTEGRATION === "1";
 
@@ -57,13 +54,12 @@ async function paneSize(
 }
 
 class CollectorSink implements TerminalSink {
-  seedCalls: { byteLength: number; cursor: SeedCursor | null }[] = [];
+  // Latin-1: one char per raw byte, so no byte is lost to a decode.
+  seedCalls: string[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
-    // seed carries raw terminal bytes (may include 0x80-0xFF / invalid UTF-8),
-    // so assert on byteLength rather than a lossy UTF-8 decode.
-    this.seedCalls.push({ byteLength: captured.byteLength, cursor });
+  seed(captured: Uint8Array): void {
+    this.seedCalls.push(Buffer.from(captured).toString("latin1"));
   }
   write(_bytes: Uint8Array): void {
     this.writeCount += 1;
@@ -111,7 +107,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       socket = "";
     });
 
-    it("attach() seeds with capture-pane output + cursor", async () => {
+    it("attach() seeds with capture-pane output, leaving the cursor where tmux has it", async () => {
       session = uniqueName("seed");
       client = await createSession(socket, session);
       const paneId = await getPrimaryPaneId(client);
@@ -137,12 +133,19 @@ describe.skipIf(!RUN_INTEGRATION)(
         "PaneStream never went live",
       );
       expect(sink.seedCalls).toHaveLength(1);
-      expect(sink.seedCalls[0].byteLength).toBeGreaterThan(0);
-      // Cursor should be present and inside the 80x24 viewport.
-      const cursor = sink.seedCalls[0].cursor;
-      expect(cursor).not.toBeNull();
-      expect(cursor!.col).toBeGreaterThanOrEqual(0);
-      expect(cursor!.row).toBeGreaterThanOrEqual(0);
+      expect(sink.seedCalls[0]).toContain("HELLO_SEED_MARKER");
+      // The seed ends with a CUP to tmux's cursor (1-indexed).
+      const r = await client.execute(
+        `display-message -p -t %${paneId} '#{cursor_y};#{cursor_x}'`,
+      );
+      expect(
+        sink.seedCalls[0].endsWith(
+          `\x1b[${r.output[0]
+            .split(";")
+            .map((n) => Number(n) + 1)
+            .join(";")}H`,
+        ),
+      ).toBe(true);
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
@@ -229,11 +232,7 @@ describe.skipIf(!RUN_INTEGRATION)(
 // bytes behind it.
 class SeedTranscripts implements TerminalSink {
   readonly seeds: string[] = [];
-  seed(
-    captured: Uint8Array,
-    _cursor: SeedCursor | null,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     const latin1 = (b: Uint8Array): string => Buffer.from(b).toString("latin1");
     this.seeds.push([captured, ...trailing].map(latin1).join(""));
   }

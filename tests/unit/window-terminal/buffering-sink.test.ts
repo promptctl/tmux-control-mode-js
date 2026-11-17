@@ -19,14 +19,12 @@ const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 describe("BufferingSink — recorder behaviour", () => {
   it("records seed/write/resize calls in order", () => {
     const sink = new BufferingSink();
-    sink.seed(enc("hello"), { col: 2, row: 3 }, []);
+    sink.seed(enc("hello"), []);
     sink.write(new Uint8Array([1, 2]));
     sink.resize(80, 24);
     sink.write(new Uint8Array([3]));
 
-    expect(sink.seedCalls).toEqual([
-      { captured: enc("hello"), cursor: { col: 2, row: 3 } },
-    ]);
+    expect(sink.seedCalls).toEqual([{ captured: enc("hello") }]);
     expect(sink.writes.map((w) => Array.from(w))).toEqual([[1, 2], [3]]);
     expect(sink.resizeCalls).toEqual([{ cols: 80, rows: 24 }]);
   });
@@ -36,10 +34,10 @@ describe("BufferingSink — recorder behaviour", () => {
     // snapshot; the sink applies them after the seed, so they surface as
     // ordinary write events in order — the behavioral proof of seed-before-live.
     const sink = new BufferingSink();
-    sink.seed(enc("SNAP"), null, [new Uint8Array([1, 2]), new Uint8Array([3])]);
+    sink.seed(enc("SNAP"), [new Uint8Array([1, 2]), new Uint8Array([3])]);
     sink.write(new Uint8Array([4]));
 
-    expect(sink.seedCalls).toEqual([{ captured: enc("SNAP"), cursor: null }]);
+    expect(sink.seedCalls).toEqual([{ captured: enc("SNAP") }]);
     expect(sink.writes.map((w) => Array.from(w))).toEqual([[1, 2], [3], [4]]);
   });
 
@@ -50,19 +48,13 @@ describe("BufferingSink — recorder behaviour", () => {
     expect(sink.writes[0]).toBe(buf);
   });
 
-  it("seed() accepts null cursor", () => {
-    const sink = new BufferingSink();
-    sink.seed(enc("x"), null, []);
-    expect(sink.seedCalls[0].cursor).toBeNull();
-  });
-
   it("clear() empties recorders in place", () => {
     const sink = new BufferingSink();
     const seedRef = sink.seedCalls;
     const writesRef = sink.writes;
     const resizeRef = sink.resizeCalls;
 
-    sink.seed(enc("x"), null, []);
+    sink.seed(enc("x"), []);
     sink.write(new Uint8Array([1]));
     sink.resize(10, 10);
 
@@ -79,11 +71,11 @@ describe("BufferingSink — recorder behaviour", () => {
 
   it("dispose() makes subsequent calls no-ops", () => {
     const sink = new BufferingSink();
-    sink.seed(enc("x"), null, []);
+    sink.seed(enc("x"), []);
     sink.dispose();
     expect(sink.disposed).toBe(true);
 
-    sink.seed(enc("y"), null, []); // no-op
+    sink.seed(enc("y"), []); // no-op
     sink.write(new Uint8Array([1])); // no-op
     sink.resize(80, 24); // no-op
     sink.clear(); // no-op

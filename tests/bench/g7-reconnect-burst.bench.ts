@@ -38,6 +38,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { FakeTmuxClient } from "../helpers/fake-tmux-client.js";
+import { seedStateLine } from "../helpers/seed-state.js";
 import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import { BufferingSink } from "../../src/window-terminal/engine/terminal-sink.js";
 
@@ -79,7 +80,11 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
   beforeAll(async () => {
     const client = new FakeTmuxClient();
     // Four lines per capture-pane response — non-trivial, won't skew timing.
-    client.setExecuteResponse(() => "row-0\nrow-1\nrow-2\nrow-3\n");
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message")
+        ? seedStateLine()
+        : "row-0\nrow-1\nrow-2\nrow-3\n",
+    );
 
     const sinks: TimedBufferingSink[] = [];
     for (let i = 0; i < ATTACHED_STREAM_COUNT; i++) {

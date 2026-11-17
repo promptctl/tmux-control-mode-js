@@ -30,10 +30,7 @@
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import type { TmuxClient } from "../../src/index.js";
 import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
-import type {
-  TerminalSink,
-  SeedCursor,
-} from "../../src/window-terminal/engine/terminal-sink.js";
+import type { TerminalSink } from "../../src/window-terminal/engine/terminal-sink.js";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
 import {
   attachSession,
@@ -50,11 +47,7 @@ const integrationOn = process.env.TMUX_INTEGRATION === "1";
 class TimingSink implements TerminalSink {
   seedAt = 0;
   hasSeed = false;
-  seed(
-    _captured: Uint8Array,
-    _c: SeedCursor | null,
-    _trailing: readonly Uint8Array[],
-  ): void {
+  seed(_captured: Uint8Array, _trailing: readonly Uint8Array[]): void {
     this.seedAt = performance.now();
     this.hasSeed = true;
   }

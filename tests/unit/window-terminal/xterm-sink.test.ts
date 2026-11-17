@@ -4,8 +4,8 @@
 // performs against a (mocked) xterm `Terminal`, and the lifecycle invariants
 // it owes its callers. Covers:
 //
-//   - seed(captured, cursor): writes captured text + ANSI CUP escape exactly
-//     when cursor is non-null. (Gate 4 fast-path correctness.)
+//   - seed(captured, trailing): writes captured bytes, then the trailing
+//     ones, in order. (Gate 4 fast-path correctness.)
 //   - write(Uint8Array): forwards by reference; never decodes (Gate 5).
 //   - resize(cols, rows): reaches xterm when called, in order with seed()
 //     and write().
@@ -205,65 +205,34 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("XtermSink: seed", () => {
-  it("writes captured text and a CUP escape when cursor is provided", () => {
-    const { sink, term } = newSink();
-    sink.resize(80, 24);
-    sink.seed(enc("hello\r\nworld"), { col: 4, row: 1 }, []);
-    // Two writes: captured bytes, then the cursor escape + scrollToBottom cb.
-    expect(term.write).toHaveBeenCalledTimes(2);
-    expect(term.write).toHaveBeenNthCalledWith(1, enc("hello\r\nworld"));
-    expect(term.write).toHaveBeenNthCalledWith(
-      2,
-      "\x1b[2;5H",
-      expect.any(Function),
-    );
-    sink.dispose();
-  });
-
-  it("applies captured, CUP escape, THEN trailing bytes when cursor and trailing are both present", () => {
-    // The full combination: a non-null cursor makes seed() emit two
-    // term.write calls (captured + CUP), and non-empty
-    // trailing follows — so the ordering is captured → CUP → each trailing chunk.
+  it("applies captured, THEN trailing bytes, scrolling to the bottom once captured is parsed", () => {
     const { sink, term } = newSink();
     sink.resize(80, 24);
     const t1 = new Uint8Array([0x41]);
     const t2 = new Uint8Array([0x42]);
-    sink.seed(enc("grid"), { col: 4, row: 1 }, [t1, t2]);
-    expect(term.write).toHaveBeenCalledTimes(4);
-    expect(term.write).toHaveBeenNthCalledWith(1, enc("grid"));
+    sink.seed(enc("grid"), [t1, t2]);
+    expect(term.write).toHaveBeenCalledTimes(3);
     expect(term.write).toHaveBeenNthCalledWith(
-      2,
-      "\x1b[2;5H",
+      1,
+      enc("grid"),
       expect.any(Function),
     );
-    expect(term.write).toHaveBeenNthCalledWith(3, t1);
-    expect(term.write).toHaveBeenNthCalledWith(4, t2);
-    sink.dispose();
-  });
-
-  it("writes captured text without the CUP escape when cursor is null", () => {
-    const { sink, term } = newSink();
-    sink.resize(80, 24);
-    sink.seed(enc("only text"), null, []);
-    expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith(
-      enc("only text"),
-      expect.any(Function),
-    );
+    expect(term.write).toHaveBeenNthCalledWith(2, t1);
+    expect(term.write).toHaveBeenNthCalledWith(3, t2);
     sink.dispose();
   });
 
   it("seed after dispose is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed(enc("late"), { col: 0, row: 0 }, []);
+    sink.seed(enc("late"), []);
     expect(term.write).not.toHaveBeenCalled();
   });
 
   it("a seed never clears: its own bytes carry the clear, in order", () => {
     const { sink, term } = newSink();
     sink.write(enc("before"));
-    sink.seed(enc("RESEED"), null, [enc("after")]);
+    sink.seed(enc("RESEED"), [enc("after")]);
     expect(term.clear).not.toHaveBeenCalled();
     expect(term.write.mock.calls.map((c) => c[0])).toEqual([
       enc("before"),
@@ -304,7 +273,7 @@ describe("XtermSink: resize", () => {
     term.resize.mockImplementation(() => order.push("resize"));
     term.write.mockImplementation(() => order.push("write"));
     sink.resize(80, 24);
-    sink.seed(enc("snap"), null, []);
+    sink.seed(enc("snap"), []);
     sink.resize(120, 30);
     expect(term.resize.mock.calls).toEqual([
       [80, 24],
@@ -582,7 +551,7 @@ describe("XtermSink: dispose lifecycle", () => {
   it("post-dispose: write, seed, resize, setFont, setOptions, remeasure all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed(enc("x"), null, []);
+    sink.seed(enc("x"), []);
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     sink.setFont(99);
