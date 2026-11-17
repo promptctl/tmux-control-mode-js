@@ -26,9 +26,7 @@
 //   External views (`get state()`) read from `currentState` directly.
 
 import type { Grid, TerminalSink } from "./terminal-sink.js";
-import { buildSeed, parseGrid, type Seed } from "./seed-builder.js";
-import { uniqueToken } from "./token.js";
-import { rethrowUnlessUnsubscribed } from "./teardown.js";
+import { buildSeed, type Seed } from "./seed-builder.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
 // the pure pane-output core from `browser.ts`, never the root entry `index.ts`
 // (which pulls the Node-only transport and breaks browser bundlers).
@@ -87,27 +85,22 @@ export interface PaneActivity {
 }
 
 /**
- * Which effect seam failed. `PaneStream` performs exactly two tmux effects
- * whose failure would otherwise go unseen:
- *
- * - `"subscribe"` — the per-pane size subscription (`refresh-client -B`) issued
- *   at construction. Without it tmux never reports this pane's geometry, so
- *   the sink keeps the size of the newest seed while the pane moves on.
- * - `"seed"` — the `capture-pane` + `display-message` snapshot at attach. A
- *   failed seed leaves the consumer unable to tell "seed failed" from "the pane
- *   is genuinely blank."
+ * Which effect seam failed. `PaneStream`'s one tmux effect whose failure would
+ * otherwise go unseen is `"seed"`: the `capture-pane` + `display-message`
+ * snapshot. A failed seed leaves the consumer unable to tell "seed failed" from
+ * "the pane is genuinely blank."
  */
-export type PaneStreamErrorPhase = "subscribe" | "seed";
+export type PaneStreamErrorPhase = "seed";
 
 /**
- * An effect at one of `PaneStream`'s tmux seams failed in a way that alters
- * what the consumer sees (a blank pane). Delivered on the `'error'` event and
- * retained on {@link PaneStream.lastError} so a consumer that subscribes after
- * a construction-time subscribe failure can still read it.
+ * An effect at `PaneStream`'s tmux seam failed in a way that alters what the
+ * consumer sees (a blank pane). Delivered on the `'error'` event and retained
+ * on {@link PaneStream.lastError} so a consumer that subscribes after the
+ * failure can still read it.
  *
  * Connection-gone failures ({@link isConnectionGone}) are NOT reported here:
- * the whole connection is tearing down and `reconnected` re-drives the seed /
- * subscription, so a pane-level signal for that would be noise. Only failures
+ * the whole connection is tearing down and `reconnected` re-drives the seed,
+ * so a pane-level signal for that would be noise. Only failures
  * where tmux was alive and the outcome matters reach this type.
  *
  * [LAW:no-silent-failure] Having a signal is not optional; what the consumer
@@ -128,6 +121,8 @@ export interface PaneStreamError {
 export interface PaneStreamOptions {
   readonly client: TerminalConnection;
   readonly paneId: number;
+  /** The pane's size in its window's layout now; later sizes come through {@link PaneStream.resize}. */
+  readonly size: Grid;
   /**
    * Lines of scrollback to include in the seed (`capture-pane -S -<N>`).
    * Default 2000 — matches tmux's default `history-limit`, so a freshly
@@ -225,7 +220,6 @@ export class PaneStream implements ReseedTarget {
   private readonly client: TerminalConnection;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
-  private readonly subscriptionName: string;
 
   private currentState: PaneStreamState = "idle";
   private sink: TerminalSink | null = null;
@@ -247,10 +241,10 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // tmux's last size report on this connection; null before the first.
-  private reported: Grid | null = null;
-  // The size the newest capture was taken at; null before the first.
-  private captured: Grid | null = null;
+  // The pane's size in its window's layout, as last given to `resize`. Only
+  // a change to it matters here: the sink is fitted to each picture's own
+  // size, which tmux states with the capture.
+  private size: Grid;
 
   // Activity accounting. Updated synchronously on every byte event.
   // The flush emits a frozen snapshot at most every `activityThrottleMs`.
@@ -266,26 +260,14 @@ export class PaneStream implements ReseedTarget {
     error: new Set(),
   };
 
-  // [LAW:no-silent-failure] Outstanding seam failures, retained for the pull
-  //   model (`get lastError()`). The subscribe effect fires in the constructor,
-  //   before any consumer can attach an `'error'` listener, so a push-only
-  //   signal would emit into the void; retaining it lets a consumer that
-  //   subscribes afterwards still observe the failure. Mirrors the dual
-  //   push/pull the class already uses for state and activity.
-  //
-  // [LAW:one-source-of-truth] Keyed PER PHASE, not a single slot: subscribe and
-  //   seed are independent seams that can BOTH be outstanding. A single slot
-  //   would let a recovery at one seam (`clearError`) erase a still-live failure
-  //   at the other — re-manufacturing the silent failure this ticket removes.
-  //   Insertion order is recency (report re-inserts), so `lastError` can return
-  //   the most-recent still-outstanding failure.
-  private readonly seamErrors = new Map<
-    PaneStreamErrorPhase,
-    PaneStreamError
-  >();
+  // [LAW:no-silent-failure] The outstanding seed failure, retained for the
+  //   pull model (`get lastError()`) so a consumer that subscribes after the
+  //   failure still observes it. Mirrors the dual push/pull the class already
+  //   uses for state and activity.
+  private seedError: PaneStreamError | null = null;
 
   // Pre-bound handlers for the non-byte events PaneStream still consumes
-  // from the emitter (`reconnected`, `subscription-changed`) and for the
+  // from the emitter (`reconnected`, `%pause`, `%continue`, `begin`) and for the
   // throttled activity flush. Each is allocated once at construction so
   // `client.off(...)` can find the same reference at dispose. None of these
   // are on the [HOT-PATH] — the per-byte path lives in the `BytesSink`
@@ -293,9 +275,6 @@ export class PaneStream implements ReseedTarget {
   // also allocated once (in the constructor's `paneSink` literal below).
   private readonly onReconnected: (ev: TmuxEventMap["reconnected"]) => void;
   private readonly boundFlushActivity: () => void;
-  private readonly onSubscriptionChanged: (
-    ev: TmuxEventMap["subscription-changed"],
-  ) => void;
   private readonly onPause: (ev: TmuxEventMap["pause"]) => void;
   private readonly onContinue: (ev: TmuxEventMap["continue"]) => void;
   private readonly onBegin: (ev: TmuxEventMap["begin"]) => void;
@@ -312,29 +291,16 @@ export class PaneStream implements ReseedTarget {
     this.paneId = opts.paneId;
     this.historyLines = opts.historyLines ?? 2000;
     this.activityThrottleMs = opts.activityThrottleMs ?? 100;
-    // [LAW:one-source-of-truth] One name per stream instance: tmux keys
-    //   subscriptions by name per control client, so a name shared by two
-    //   streams of one pane (two views, or two pages through one bridge) let
-    //   the first dispose end the other's subscription.
-    this.subscriptionName = `wt-${uniqueToken()}-size-%${opts.paneId}`;
+    this.size = opts.size;
 
     this.onReconnected = () => {
       // A pause belonged to the connection that carried it.
       this.paused = false;
-      // So did the size report: the new connection's subscription has
-      // reported nothing yet, and may never report this pane (a new control
-      // client whose session does not hold it).
-      this.reported = null;
       // The pane moved while we were disconnected: the cache and any
       // capture-pane in flight are pre-reconnect pictures, so the
       // ReseedScheduler's upcoming reseed() (or the next attach()) captures
       // afresh.
       this.markSeedStale();
-      // A reconnect can be a new control client (a browser re-joining a
-      // bridge is a new peer), which holds none of the old one's
-      // subscriptions; re-issuing under the same name replaces, so this is
-      // right whether or not the old one survived.
-      this.subscribeSize();
       // ReseedScheduler owns dispatch; we just notify our own listeners
       // so consumers (e.g. status badges) can react.
       for (const h of this.listeners.reconnected) h();
@@ -352,7 +318,7 @@ export class PaneStream implements ReseedTarget {
     //
     // [LAW:locality-or-seam] One attachment, one disposer. `BytesSink` via
     //   `attachBytesSink` is the pane-byte subscription surface; `reconnected`
-    //   and `subscription-changed` are non-byte events and stay on the emitter.
+    //   and the flow-control events are non-byte events and stay on the emitter.
     const paneSink: BytesSink = {
       write: (msg) => this.handlePaneBytes(msg.data),
       // [LAW:types-are-the-program] end() is required by BytesSink contract.
@@ -366,13 +332,6 @@ export class PaneStream implements ReseedTarget {
     });
 
     this.client.on("reconnected", this.onReconnected);
-
-    // [LAW:dataflow-not-control-flow] The subscription path always runs; it
-    // goes through the connection's own subscription methods (see
-    // `TerminalConnection`) so a bridge owns its lifetime.
-    this.onSubscriptionChanged = (ev) => this.handleSubscriptionChanged(ev);
-    this.client.on("subscription-changed", this.onSubscriptionChanged);
-    this.subscribeSize();
 
     // A flood: something (a bridge's backpressure, `pause-after`) paused this
     // pane's output. tmux drops what the pane writes while paused, so the
@@ -410,26 +369,6 @@ export class PaneStream implements ReseedTarget {
     getScheduler(this.client).register(this);
   }
 
-  // Per-pane width;height in one subscription (single message,
-  // semicolon-separated) so tmux performs the layout walk for us.
-  // tmux sends the subscription's first value at its next check (up to a
-  // second away), then each change, but only for a pane whose window is in
-  // the control client's session; for any other pane it sends nothing, and
-  // each seed's size is all the sink gets.
-  // [LAW:no-silent-failure] A failed subscribe means tmux will never report
-  //   this pane's geometry. `reportError` lifts the failure to the 'error'
-  //   seam (classifying connection-gone as the quiet, reconnect-re-driven
-  //   case).
-  private subscribeSize(): void {
-    void this.client
-      .subscribeRaw(
-        this.subscriptionName,
-        `%${this.paneId}`,
-        "#{pane_width};#{pane_height}",
-      )
-      .catch((err: unknown) => this.reportError("subscribe", err));
-  }
-
   // -------------------------------------------------------------------------
   // Public surface
   // -------------------------------------------------------------------------
@@ -448,31 +387,31 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * The most recent STILL-OUTSTANDING seam failure, or `null` if every seam is
-   * healthy. A failure at one seam that has since recovered does not mask a
-   * failure still outstanding at the other — each seam is tracked independently,
-   * so a subscribe failure remains visible here even after a seed failure was
-   * reported and then recovered. `null` after a connection-gone failure too —
-   * those are deliberately not surfaced (see {@link PaneStreamError}).
-   * Pull-model companion to the `'error'` event, for consumers that subscribe
-   * after a construction-time subscribe failure.
+   * The STILL-OUTSTANDING seed failure, or `null` once a seed succeeds. `null`
+   * after a connection-gone failure too — those are deliberately not surfaced
+   * (see {@link PaneStreamError}). Pull-model companion to the `'error'`
+   * event, for consumers that subscribe after the failure.
    */
   get lastError(): PaneStreamError | null {
-    // Map iterates in insertion order and `reportError` re-inserts, so the last
-    // value is the most-recently-surfaced outstanding failure.
-    let latest: PaneStreamError | null = null;
-    for (const err of this.seamErrors.values()) latest = err;
-    return latest;
+    return this.seedError;
   }
 
-  // The size the stream holds the pane at: tmux's report once there is one,
-  // else the newest capture's (a pane outside the control client's session
-  // is never reported, and any other waits up to a second for its first).
-  // [LAW:one-source-of-truth] A capture never outranks a report: tmux keeps
-  //   a subscription quiet while its value is the one it last sent, so only
-  //   that value says what tmux's silence means.
-  private get size(): Grid | null {
-    return this.reported ?? this.captured;
+  /**
+   * The pane's size in its window's layout, from the window's
+   * `%layout-change` — sent immediately for every resize and zoom, and,
+   * for any change made before a command runs, ahead of that command's
+   * reply. A new size takes the pane again, attached or detached: the
+   * pane's program redraws for it, and tmux's screen is right where those
+   * bytes, written into a sink at the old size, are not. The same size is a
+   * no-op, so the caller can hand over every pane's size on every layout
+   * change.
+   * [LAW:one-source-of-truth] The layout is the pane's size; each picture
+   *   carries the size it was captured at, and the sink is fitted to that.
+   */
+  resize(size: Grid): void {
+    if (size.cols === this.size.cols && size.rows === this.size.rows) return;
+    this.size = size;
+    this.recapture();
   }
 
   /**
@@ -519,7 +458,7 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      fit(sink, this.size);
+      fit(sink, this.lastSeed.size);
       sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
@@ -571,16 +510,9 @@ export class PaneStream implements ReseedTarget {
     this.paneSinkDisposer?.();
     this.paneSinkDisposer = null;
     this.client.off("reconnected", this.onReconnected);
-
-    this.client.off("subscription-changed", this.onSubscriptionChanged);
     this.client.off("pause", this.onPause);
     this.client.off("continue", this.onContinue);
     this.client.off("begin", this.onBegin);
-    // Any failure but an already-absent subscription has nobody left to
-    // report to here, so it surfaces as an unhandled rejection.
-    void this.client
-      .unsubscribe(this.subscriptionName)
-      .catch(rethrowUnlessUnsubscribed);
 
     if (this.flushTimerId !== null) {
       clearTimeout(this.flushTimerId);
@@ -591,7 +523,7 @@ export class PaneStream implements ReseedTarget {
     // [LAW:single-enforcer] dispose() is the one teardown — drop the retained
     //   error chain too, so a consumer holding a disposed stream can't read a
     //   stale failure and the PaneStreamError.cause chain is free to GC.
-    this.seamErrors.clear();
+    this.seedError = null;
     getScheduler(this.client).unregister(this);
   }
 
@@ -622,7 +554,7 @@ export class PaneStream implements ReseedTarget {
 
   /**
    * The pane changed under the picture (`%continue`, a new size): drop the
-   * cache, and capture again; a capture already in flight began before the
+   * cache, and capture again; a capture already in flight may predate the
    * change, so its result is dropped and it re-issues while a sink is
    * attached.
    */
@@ -833,14 +765,13 @@ export class PaneStream implements ReseedTarget {
     // the capture already moved the pane past the snapshot, so only a capture
     // nothing followed is the current picture.
     this.lastSeed = trailing.length === 0 ? picture : null;
-    // A failed capture is no picture, so it took no size; a picture is the
-    // newest capture. The seed seam just succeeded (past the stale-drop guard
-    // above), so any outstanding seed failure is moot — clear it so lastError
-    // stops reporting a recovered transient failure.
-    if (picture !== null) {
-      this.captured = picture.size;
-      this.clearError("seed");
-    }
+    // The seed seam just succeeded (past the stale-drop guard above), so any
+    // outstanding seed failure is moot — clear it so lastError stops
+    // reporting a recovered transient failure.
+    // [LAW:one-source-of-truth] `lastError` claims "an outstanding seed
+    //   failure"; only a recovered seed supersedes it. (Reconnect is NOT a
+    //   clear point: it re-issues the seed, which has not succeeded yet.)
+    if (picture !== null) this.seedError = null;
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
     // issued), the cache above will serve the next attach() — no extra
@@ -849,9 +780,10 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes behind it over as one ordered value, at
-    // the size the stream holds the pane at.
-    fit(liveSink, this.size);
+    // the size it was captured at. A failed capture is no picture and took no
+    // size: the sink keeps the one it has.
     if (picture !== null) {
+      fit(liveSink, picture.size);
       liveSink.seed(picture.captured, picture.cursor, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
@@ -872,7 +804,7 @@ export class PaneStream implements ReseedTarget {
    *
    * [LAW:no-silent-failure] "Went live without a picture" is
    *   indistinguishable from "the pane is genuinely blank" — so the failure is
-   *   lifted to the 'error' seam. `reportError` classifies connection-gone as
+   *   lifted to the 'error' seam. `reportSeedError` classifies connection-gone as
    *   quiet (the reconnect handler re-drives the seed); a live tmux failure
    *   (%error, corrupted terminator) or a connection that settled the reply
    *   ahead of its `%begin` surfaces.
@@ -882,14 +814,13 @@ export class PaneStream implements ReseedTarget {
     outcome: Outcome<CommandResponse>,
   ): CaptureReply | null {
     if (!outcome.ok) {
-      this.reportError("seed", outcome.error);
+      this.reportSeedError(outcome.error);
       return null;
     }
     const { commandNumber, output } = outcome.value;
     const begunAt = cycle.begins.get(commandNumber);
     if (begunAt === undefined) {
-      this.reportError(
-        "seed",
+      this.reportSeedError(
         new Error(
           `capture of %${this.paneId} resolved before its %begin ` +
             `(command ${commandNumber}): the connection does not deliver ` +
@@ -905,32 +836,6 @@ export class PaneStream implements ReseedTarget {
     };
   }
 
-  private handleSubscriptionChanged(
-    ev: TmuxEventMap["subscription-changed"],
-  ): void {
-    if (ev.name !== this.subscriptionName) return;
-    if (ev.paneId !== this.paneId) return;
-    if (this.currentState === "disposed") return;
-    const dims = parseDimensions(ev.value);
-    if (dims === null) return;
-    // The subscription just delivered a pane size, so the subscribe seam is
-    // demonstrably working — clear any outstanding subscribe failure.
-    this.clearError("subscribe");
-    // The sink takes the new size with the recapture's seed, the one place a
-    // sink is sized: a report that changes nothing leaves it where it is.
-    // The pane's program redraws for the new size as soon as tmux resizes it,
-    // up to a second before this value arrives, and those bytes reached the
-    // sink at the old size. tmux's screen is right: take it again. Detached
-    // too: a resize that prints nothing still leaves the cached picture at
-    // the old size. A stream that held no size has no picture known to be at
-    // this one (its capture failed, or is still in flight and may have been
-    // taken before the resize), so it takes it again too.
-    const moved =
-      this.size?.cols !== dims.cols || this.size?.rows !== dims.rows;
-    this.reported = dims;
-    if (moved) this.recapture();
-  }
-
   private setState(next: PaneStreamState): void {
     if (this.currentState === next) return;
     this.currentState = next;
@@ -944,44 +849,28 @@ export class PaneStream implements ReseedTarget {
   //
   // [LAW:no-silent-failure] Classify by error CLASS, never tmux English.
   //   Connection-gone is the one genuinely-moot case: the whole connection is
-  //   tearing down and `reconnected` re-drives the seed / subscription, so
-  //   surfacing a pane-level error would be noise. Everything else — tmux
+  //   tearing down and `reconnected` re-drives the seed, so surfacing a
+  //   pane-level error would be noise. Everything else — tmux
   //   replied %error, or the guard terminator was corrupted, or an unexpected
   //   throw — means tmux was ALIVE and the blank pane is a real failure the
   //   consumer must be able to see. No String(err) fallthrough (the kwv.1
   //   lesson): `cause` is passed through untouched for the consumer to inspect.
-  private reportError(phase: PaneStreamErrorPhase, cause: unknown): void {
+  private reportSeedError(cause: unknown): void {
     if (this.currentState === "disposed") return;
     if (isConnectionGone(cause)) return;
-    const error: PaneStreamError = { phase, paneId: this.paneId, cause };
-    // Delete-then-set so a re-reported phase moves to the end of the Map's
-    // insertion order — keeps `lastError` recency-correct across both seams.
-    this.seamErrors.delete(phase);
-    this.seamErrors.set(phase, error);
+    const error: PaneStreamError = {
+      phase: "seed",
+      paneId: this.paneId,
+      cause,
+    };
+    this.seedError = error;
     for (const h of this.listeners.error) h(error);
-  }
-
-  // [LAW:one-source-of-truth] `lastError` claims "an outstanding failure at this
-  //   seam." That claim is superseded the moment the SAME seam demonstrates
-  //   success — a recovered seed for the "seed" phase, a delivered pane size for
-  //   the "subscribe" phase. Clearing then (and only then) keeps the pull-model
-  //   value honest instead of stranding a stale error after recovery. Phase-
-  //   gated so a seed success never wipes an outstanding subscribe failure, and
-  //   vice versa. (Reconnect is NOT a clear point: it re-issues the seed and
-  //   the subscription, but only a delivered size vouches for the latter.)
-  private clearError(phase: PaneStreamErrorPhase): void {
-    this.seamErrors.delete(phase);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
-
-function parseDimensions(value: string): Grid | null {
-  const [width, height, ...rest] = value.split(";");
-  return rest.length === 0 ? parseGrid(width, height) : null;
-}
 
 // Size `sink` to `grid`, when the stream knows one.
 function fit(sink: TerminalSink, grid: Grid | null): void {

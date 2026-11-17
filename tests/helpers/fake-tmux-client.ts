@@ -141,9 +141,9 @@ export class FakeTmuxClient {
   private captureHandler: (target: string) => string = () => "";
   // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
   // (modelling tmux's `%error`/transport failures), or `null` to resolve
-  // normally. Both of PaneStream's tmux seams — the pane-size subscription
-  // (`refresh-client -B …`) and the seed (`capture-pane`/`display-message`) —
-  // flow through `execute()`, so this one knob drives both failure paths.
+  // normally. Every command flows through `execute()`, so this one knob drives
+  // the failure path of any seam: a subscription (`refresh-client -B …`), the
+  // seed (`capture-pane`/`display-message`), and the rest.
   // Default: never fail.
   private executeFailure: (command: string) => Error | null = () => null;
   private commandCounter = 0;
@@ -386,7 +386,7 @@ export class FakeTmuxClient {
    * Script which `execute()` commands REJECT and with what error. The handler
    * receives the full command string and returns an `Error` to reject with, or
    * `null` to resolve normally. Match on the command prefix to target a seam —
-   * `refresh-client -B` for the pane-size subscription, `capture-pane` /
+   * `refresh-client -B` for a subscription, `capture-pane` /
    * `display-message` for the seed. Persistent, like `setExecuteResponse`.
    */
   setExecuteFailure(handler: (command: string) => Error | null): void {

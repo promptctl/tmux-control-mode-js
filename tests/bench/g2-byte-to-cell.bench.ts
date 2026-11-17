@@ -64,6 +64,7 @@ describe("Gate 2 — live byte → cell on screen", () => {
     const stream = new PaneStream({
       client,
       paneId: 1,
+      size: { cols: 80, rows: 24 },
     });
     stream.attach(sink);
     // Drain the seed Promise.all so subsequent injects land on live path.

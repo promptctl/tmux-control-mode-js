@@ -32,6 +32,7 @@ function attachLiveStream(
   const stream = new PaneStream({
     client,
     paneId: PANE_ID,
+    size: { cols: 80, rows: 24 },
   });
   stream.attach(sink);
   return stream;

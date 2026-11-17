@@ -13,7 +13,10 @@ import type {
   PaneStreamError,
   PaneStreamState,
 } from "../../../src/window-terminal/engine/pane-stream.js";
-import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
+import type {
+  Grid,
+  TerminalSink,
+} from "../../../src/window-terminal/engine/terminal-sink.js";
 import type { SeedCursor } from "../../../src/window-terminal/engine/terminal-sink.js";
 import {
   TmuxCommandError,
@@ -32,11 +35,6 @@ const tmuxError = (line: string): TmuxCommandError =>
     output: [line],
     success: false,
   });
-
-// `refresh-client -B 'name':'what':'format'` subscribes; the bare
-// `refresh-client -B 'name'` form unsubscribes.
-const isSubscribe = (cmd: string): boolean =>
-  /^refresh-client -B '[^']*':/.test(cmd);
 
 class RecordingSink implements TerminalSink {
   readonly events: string[] = [];
@@ -88,6 +86,7 @@ function makeStream(
     paneId?: number;
     capture?: string;
     cursor?: string;
+    size?: Grid;
   } = {},
 ): {
   client: FakeTmuxClient;
@@ -101,6 +100,7 @@ function makeStream(
   const stream = new PaneStream({
     client,
     paneId: opts.paneId ?? PANE_ID,
+    size: opts.size ?? { cols: 80, rows: 24 },
   });
   return { client, stream };
 }
@@ -447,7 +447,11 @@ describe("PaneStream — state machine", () => {
         ? "0;0;1;1;0;0;0;1;3;0" // alt=1
         : "alt-content",
     );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const stream = new PaneStream({
+      client,
+      paneId: PANE_ID,
+      size: { cols: 80, rows: 24 },
+    });
 
     const sink1 = new RecordingSink();
     stream.attach(sink1);
@@ -689,211 +693,68 @@ describe("PaneStream — activity counter coalescing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// kwv.3 — subscribe/seed effect failures are observable, not blank screens.
-// Both seams flow through client.execute(); the fake's setExecuteFailure knob
-// scripts a rejection per command. reportError classifies by error CLASS: a
-// live-tmux failure surfaces on the 'error' seam; a connection-gone failure is
-// the quiet, reconnect-re-driven case.
+// kwv.3 — seed effect failures are observable, not blank screens.
+// The seed flows through client.execute(); the fake's setExecuteFailure knob
+// scripts a rejection per command. reportSeedError classifies by error CLASS:
+// a live-tmux failure surfaces on the 'error' seam; a connection-gone failure
+// is the quiet, reconnect-re-driven case.
 // ---------------------------------------------------------------------------
 
 describe("PaneStream — seam failure observability (kwv.3)", () => {
-  it("a failed pane-size subscribe surfaces on lastError and the 'error' event", async () => {
-    vi.useRealTimers();
+  // The errors a stream reports when its capture rejects with `failure`.
+  async function seedErrorsFor(failure: Error): Promise<PaneStreamError[]> {
     const client = new FakeTmuxClient();
     client.setExecuteFailure((cmd) =>
-      isSubscribe(cmd) ? tmuxError("no such pane") : null,
+      cmd.startsWith("capture-pane") ? failure : null,
     );
-    const errors: PaneStreamError[] = [];
-    // The subscribe fires in the constructor; a listener attached synchronously
-    // after construction still catches the async rejection, and lastError is
-    // retained for a consumer that subscribes even later.
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.on("error", (e) => errors.push(e));
-    await flushTicks();
-
-    expect(stream.lastError?.phase).toBe("subscribe");
-    expect(stream.lastError?.paneId).toBe(PANE_ID);
-    expect(errors.map((e) => e.phase)).toEqual(["subscribe"]);
-    stream.dispose();
-  });
-
-  it("a connection-gone subscribe failure stays quiet (reconnect re-drives it)", async () => {
-    vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      isSubscribe(cmd) ? new TransportClosedError("socket closed") : null,
-    );
-    const errors: PaneStreamError[] = [];
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.on("error", (e) => errors.push(e));
-    await flushTicks();
-
-    expect(stream.lastError).toBeNull();
-    expect(errors).toEqual([]);
-    stream.dispose();
-  });
-
-  it("a TransportSendError subscribe failure also stays quiet (the other no-live-connection class)", async () => {
-    // isConnectionGone classifies BOTH TransportClosedError and
-    // TransportSendError as quiet; this pins the TransportSendError branch so a
-    // silent removal of it would fail here.
-    vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      isSubscribe(cmd)
-        ? new TransportSendError("transport refused the send")
-        : null,
-    );
-    const errors: PaneStreamError[] = [];
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.on("error", (e) => errors.push(e));
-    await flushTicks();
-
-    expect(stream.lastError).toBeNull();
-    expect(errors).toEqual([]);
-    stream.dispose();
-  });
-
-  it("a closed bridge (BRIDGE_CLOSED) is connection-gone too; another bridge error surfaces", async () => {
-    vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      isSubscribe(cmd)
-        ? new BridgeError("BRIDGE_CLOSED", "socket dropped")
-        : cmd.startsWith("capture-pane")
-          ? new BridgeError("BRIDGE_TIMEOUT", "slow")
-          : null,
-    );
-    const errors: PaneStreamError[] = [];
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.on("error", (e) => errors.push(e));
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
-    stream.dispose();
-  });
-
-  it("dispose's unsubscribe is done when the name holds no subscription; a live tmux refusal surfaces", async () => {
-    vi.useRealTimers();
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown): void => {
-      unhandled.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const isUnsubscribe = (cmd: string): boolean =>
-        /^refresh-client -B '[^':]*'$/.test(cmd);
-      const absent = new FakeTmuxClient();
-      // An unsubscribe made during a reconnect reaches a bridge peer that
-      // never held the name.
-      absent.setExecuteFailure((cmd) =>
-        isUnsubscribe(cmd)
-          ? new BridgeError("BRIDGE_UNKNOWN_SUBSCRIPTION", "not owned")
-          : null,
-      );
-      new PaneStream({ client: absent, paneId: PANE_ID }).dispose();
-
-      // A dispose while the connection is down: the subscription went with it.
-      const gone = new FakeTmuxClient();
-      gone.setExecuteFailure((cmd) =>
-        isUnsubscribe(cmd) ? new TransportClosedError("socket closed") : null,
-      );
-      new PaneStream({ client: gone, paneId: PANE_ID }).dispose();
-
-      const refused = new FakeTmuxClient();
-      const refusal = tmuxError("server exited unexpectedly");
-      refused.setExecuteFailure((cmd) => (isUnsubscribe(cmd) ? refusal : null));
-      new PaneStream({ client: refused, paneId: PANE_ID }).dispose();
-
-      await new Promise((r) => setTimeout(r, 10));
-      expect(unhandled).toEqual([refusal]);
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-  });
-
-  it("a delivered pane size clears an outstanding subscribe failure", async () => {
-    // The subscribe seam's recovery point: a subscription-changed carrying a
-    // valid size proves the subscription is working, so lastError must clear.
-    vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "",
-    );
-    client.setExecuteFailure((cmd) =>
-      isSubscribe(cmd) ? tmuxError("no such pane") : null,
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    expect(stream.lastError?.phase).toBe("subscribe");
-
-    // tmux later reports the pane size on the same subscription name.
-    client.injectSubscriptionChanged(
-      client.subscriptionNamed(`%${PANE_ID}`),
-      PANE_ID,
-      "80;24",
-    );
-    expect(stream.lastError).toBeNull();
-    stream.dispose();
-  });
-
-  it("a failed capture-pane seed surfaces on the 'error' seam yet the stream still goes live", async () => {
-    vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const stream = new PaneStream({
+      client,
+      paneId: PANE_ID,
+      size: { cols: 80, rows: 24 },
+    });
     const errors: PaneStreamError[] = [];
     stream.on("error", (e) => errors.push(e));
     stream.attach(new RecordingSink());
     await flushTicks();
-
-    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
-    expect(stream.lastError?.phase).toBe("seed");
-    // Still went live — live bytes must render, not wedge forever in 'seeding'.
+    // Live either way: live bytes must render, not wedge forever in 'seeding'.
     expect(stream.state).toBe("live");
+    expect(stream.lastError).toEqual(errors.at(-1) ?? null);
     stream.dispose();
+    return errors;
+  }
+
+  it("a failed capture-pane seed surfaces on lastError and the 'error' event", async () => {
+    vi.useRealTimers();
+    const errors = await seedErrorsFor(tmuxError("capture failed"));
+    expect(errors.map((e) => [e.phase, e.paneId])).toEqual([["seed", PANE_ID]]);
   });
 
   it("a corrupted-terminator (TmuxProtocolError) seed failure also surfaces", async () => {
     vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane")
-        ? new TmuxProtocolError(1, "%end 2 3") // truncated guard terminator
-        : null,
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    const errors: PaneStreamError[] = [];
-    stream.on("error", (e) => errors.push(e));
-    stream.attach(new RecordingSink());
-    await flushTicks();
-
+    // truncated guard terminator
+    const errors = await seedErrorsFor(new TmuxProtocolError(1, "%end 2 3"));
     expect(errors.map((e) => e.phase)).toEqual(["seed"]);
-    expect(stream.state).toBe("live");
-    stream.dispose();
   });
 
-  it("a connection-gone seed failure stays quiet but still transitions to live", async () => {
+  it("a connection-gone seed failure stays quiet (reconnect re-drives it), for every no-live-connection class", async () => {
     vi.useRealTimers();
-    const client = new FakeTmuxClient();
-    client.setExecuteFailure((cmd) =>
-      cmd.startsWith("capture-pane")
-        ? new TransportClosedError("socket closed")
-        : null,
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.on("error", () => {
-      throw new Error("connection-gone seed failure must not surface");
-    });
-    stream.attach(new RecordingSink());
-    await flushTicks();
+    expect(
+      await seedErrorsFor(new TransportClosedError("socket closed")),
+    ).toEqual([]);
+    expect(
+      await seedErrorsFor(new TransportSendError("transport refused the send")),
+    ).toEqual([]);
+    expect(
+      await seedErrorsFor(new BridgeError("BRIDGE_CLOSED", "socket dropped")),
+    ).toEqual([]);
+  });
 
-    expect(stream.lastError).toBeNull();
-    expect(stream.state).toBe("live");
-    stream.dispose();
+  it("another bridge error surfaces", async () => {
+    vi.useRealTimers();
+    const errors = await seedErrorsFor(
+      new BridgeError("BRIDGE_TIMEOUT", "slow"),
+    );
+    expect(errors.map((e) => e.phase)).toEqual(["seed"]);
   });
 
   it("recovers after a transient seed failure: a later reseed paints the captured screen", async () => {
@@ -908,7 +769,11 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
         ? tmuxError("transient")
         : null,
     );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
+    const stream = new PaneStream({
+      client,
+      paneId: PANE_ID,
+      size: { cols: 80, rows: 24 },
+    });
     const sink = new RecordingSink();
     stream.attach(sink);
     await flushTicks();
@@ -929,97 +794,187 @@ describe("PaneStream — seam failure observability (kwv.3)", () => {
     stream.dispose();
   });
 
-  it("a recovered seed does not mask a still-outstanding subscribe failure", async () => {
-    // Two independent seams fail. lastError is per-phase, so recovering one must
-    // not erase knowledge of the other — otherwise the epic's own silent
-    // failure creeps back in through the pull model.
+  it("dispose() drops a retained seed failure", async () => {
     vi.useRealTimers();
-    let failCapture = true;
     const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? "0;0" : "screen",
+    client.setExecuteFailure((cmd) =>
+      cmd.startsWith("capture-pane") ? tmuxError("capture failed") : null,
     );
-    client.setExecuteFailure((cmd) => {
-      // subscribe fails permanently (no pane geometry will ever arrive)...
-      if (isSubscribe(cmd)) return tmuxError("no such pane");
-      // ...seed fails only transiently.
-      if (failCapture && cmd.startsWith("capture-pane")) {
-        return tmuxError("transient");
-      }
-      return null;
+    const stream = new PaneStream({
+      client,
+      paneId: PANE_ID,
+      size: { cols: 80, rows: 24 },
     });
-    const stream = new PaneStream({ client, paneId: PANE_ID });
     stream.attach(new RecordingSink());
     await flushTicks();
-    // Both surfaced; the most-recent (seed) is on top.
     expect(stream.lastError?.phase).toBe("seed");
-
-    // Seed recovers via reseed — but the subscribe seam is still broken.
-    failCapture = false;
-    await stream.reseed();
-    await flushTicks();
-    expect(stream.lastError?.phase).toBe("subscribe");
-
-    // dispose() drops the retained error chain.
     stream.dispose();
     expect(stream.lastError).toBeNull();
   });
 });
 
-describe("PaneStream — pane-size subscription lifecycle", () => {
-  it("two streams of one pane keep separate subscriptions: disposing one leaves the other's", async () => {
+describe("PaneStream — pane size", () => {
+  // A display-message reply for a pane of `cols`x`rows`: pane_height is field
+  // 9, pane_width field 13.
+  const sized = (cols: number, rows: number): string =>
+    `0;0;0;1;0;0;0;1;${rows};0;0;${rows - 1};${cols}`;
+  const shape = (sink: RecordingSink): string[] =>
+    sink.events
+      .filter((e) => !e.startsWith("write"))
+      .map((e) => e.replace(/^seed\(.*/s, "seed"));
+
+  // A stream whose pane tmux reports at `pane.cursor` when captured.
+  function makeSizedStream(size: Grid): {
+    client: FakeTmuxClient;
+    stream: PaneStream;
+    pane: { cursor: string; failCapture: boolean };
+  } {
+    const pane = { cursor: sized(size.cols, size.rows), failCapture: false };
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
-    const a = new PaneStream({ client, paneId: PANE_ID });
-    const nameA = client.subscriptionNamed(`%${PANE_ID}`);
-    const b = new PaneStream({ client, paneId: PANE_ID });
-    const nameB = client.subscriptionNamed(`%${PANE_ID}`);
-    expect(nameA).not.toBe(nameB);
-
-    const sink = new RecordingSink();
-    b.attach(sink);
-    a.dispose();
-    await flushTicks();
-    const unsubscribes = client
-      .commands()
-      .filter((c) => /^refresh-client -B '[^']*'$/.test(c));
-    expect(unsubscribes).toEqual([`refresh-client -B '${nameA}'`]);
-
-    // b still follows its pane's size.
-    client.injectSubscriptionChanged(nameB, PANE_ID, "100;30");
-    await flushTicks();
-    expect(sink.events).toContain("resize(100x30)");
-    b.dispose();
-  });
-
-  it("subscribes through the connection's subscription methods", () => {
-    const client = new FakeTmuxClient();
-    const spy = vi.spyOn(client, "subscribeRaw");
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    expect(spy).toHaveBeenCalledWith(
-      client.subscriptionNamed(`%${PANE_ID}`),
-      `%${PANE_ID}`,
-      "#{pane_width};#{pane_height}",
+    client.setExecuteResponse((cmd) =>
+      cmd.startsWith("display-message") ? pane.cursor : "hello",
     );
-    stream.dispose();
-  });
+    client.setExecuteFailure((cmd) =>
+      pane.failCapture && cmd.startsWith("capture-pane")
+        ? tmuxError("x")
+        : null,
+    );
+    const stream = new PaneStream({ client, paneId: PANE_ID, size });
+    return { client, stream, pane };
+  }
 
-  it("re-issues its subscription on 'reconnected'", async () => {
-    const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    const subscribes = () =>
-      client
-        .commands()
-        .filter((c) => c.startsWith(`refresh-client -B '${name}':`));
-    expect(subscribes()).toHaveLength(1);
+  it("asks tmux for no size of its own: no subscription at construction, reconnect or dispose", async () => {
+    const { client, stream } = makeStream();
+    const subscribeRaw = vi.spyOn(client, "subscribeRaw");
+    const unsubscribe = vi.spyOn(client, "unsubscribe");
+    stream.attach(new RecordingSink());
+    await flushTicks();
     client.setConnectionState({ status: "ready" });
     client.setConnectionState({ status: "reconnecting", attempt: 1 });
     client.setConnectionState({ status: "ready" });
-    expect(subscribes()).toHaveLength(2);
+    await flushTicks();
     stream.dispose();
     await flushTicks();
+    expect(subscribeRaw).not.toHaveBeenCalled();
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(
+      client.commands().filter((c) => c.startsWith("refresh-client")),
+    ).toEqual([]);
+  });
+
+  it("a seed is drawn at the size it was captured at, whatever size the stream holds", async () => {
+    const { stream, pane } = makeSizedStream({ cols: 100, rows: 30 });
+    pane.cursor = sized(80, 24);
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
+    stream.dispose();
+  });
+
+  it("a re-attach from the cache is drawn at the cached picture's size", async () => {
+    const { client, stream } = makeSizedStream({ cols: 80, rows: 24 });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    expect(client.capturePaneCount()).toBe(1);
+    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
+    stream.dispose();
+  });
+
+  it("a new size takes the pane again and draws it at that size; the same size does not", async () => {
+    const { client, stream, pane } = makeSizedStream({ cols: 80, rows: 24 });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    stream.resize({ cols: 80, rows: 24 });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
+
+    // The program redrew for 100x30 into a sink at 80x24; tmux's screen wins.
+    pane.cursor = sized(100, 30);
+    stream.resize({ cols: 100, rows: 30 });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(stream.state).toBe("live");
+    expect(shape(sink)).toEqual([
+      "resize(80x24)",
+      "seed",
+      "resize(100x30)",
+      "seed",
+    ]);
+    stream.dispose();
+  });
+
+  it("a zoom undone at once is drawn at the size the pane went back to", async () => {
+    // tmux reports each layout change, so the unzoom always follows the zoom,
+    // however quickly; nothing waits on a later look.
+    const { client, stream, pane } = makeSizedStream({ cols: 49, rows: 30 });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    pane.cursor = sized(100, 30);
+    stream.resize({ cols: 100, rows: 30 });
+    await flushTicks();
+    pane.cursor = sized(49, 30);
+    stream.resize({ cols: 49, rows: 30 });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(3);
+    expect(shape(sink).slice(-2)).toEqual(["resize(49x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("a new size while a capture is in flight takes the pane again", async () => {
+    // The capture may have run before the change.
+    const { client, stream, pane } = makeSizedStream({ cols: 80, rows: 24 });
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    pane.cursor = sized(100, 30);
+    stream.resize({ cols: 100, rows: 30 });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("a failed capture leaves the sink's size alone; a new size captures again", async () => {
+    // The bytes behind the failed capture reached the sink at whatever size
+    // it had; nothing else would redraw them at tmux's.
+    const { stream, pane } = makeSizedStream({ cols: 80, rows: 24 });
+    pane.failCapture = true;
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    await flushTicks();
+    expect(shape(sink)).toEqual([]);
+    pane.failCapture = false;
+    pane.cursor = sized(100, 30);
+    stream.resize({ cols: 100, rows: 30 });
+    await flushTicks();
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
+  });
+
+  it("a new size while detached drops the cached picture with no output; the next attach draws the pane at it", async () => {
+    // A program that prints nothing on SIGWINCH leaves no byte to clear the
+    // cache; the size change alone moves the pane past the cached picture.
+    const { client, stream, pane } = makeSizedStream({ cols: 80, rows: 24 });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    stream.detach();
+    pane.cursor = sized(100, 30);
+    stream.resize({ cols: 100, rows: 30 });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1); // nobody to capture for
+
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    expect(stream.state).toBe("seeding"); // not the cached fast path
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    stream.dispose();
   });
 });
 
@@ -1062,222 +1017,6 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(client.capturePaneCount()).toBe(captures + 1);
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    stream.dispose();
-  });
-
-  it("a pane whose size changes is captured again; a repeat is not", async () => {
-    const { client, stream } = makeStream({ capture: "hello" });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
-    await flushTicks();
-    expect(stream.state).toBe("live");
-    const captures = client.capturePaneCount();
-
-    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures);
-
-    // The program redrew for 100x30 before tmux said so; tmux's screen wins.
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures + 1);
-    expect(stream.state).toBe("live");
-    expect(sink.events).toContain("resize(100x30)");
-    stream.dispose();
-  });
-
-  // The display-message reply for an 80x24 pane: pane_height (field 9) 24,
-  // pane_width (field 13) 80.
-  const SIZED = "0;0;0;1;0;0;0;1;24;0;0;23;80";
-  const shape = (sink: RecordingSink): string[] =>
-    sink.events
-      .filter((e) => !e.startsWith("write"))
-      .map((e) => e.replace(/^seed\(.*/s, "seed"));
-
-  it("before tmux reports, a seed is drawn at the size it was captured at", async () => {
-    // A pane outside the control client's session is never reported; any
-    // other waits up to a second for its first report.
-    const { stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    await flushTicks();
-    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
-    stream.dispose();
-  });
-
-  it("before tmux reports, each seed is drawn at its own capture's size", async () => {
-    // A pane outside the control client's session is never reported, so a
-    // resize of it is known only from the next capture.
-    let cursor = SIZED;
-    const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? cursor : "hello",
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    stream.detach();
-    cursor = "0;0;0;1;0;0;0;1;30;0;0;29;100";
-    client.injectOutput(PANE_ID, new TextEncoder().encode("x")); // drops the cache
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    await flushTicks();
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
-    stream.dispose();
-  });
-
-  it("tmux's first report after a failed capture captures again", async () => {
-    // The bytes behind the failed capture reached the sink at whatever size
-    // it had; nothing else would redraw them at tmux's.
-    let failCapture = true;
-    const client = new FakeTmuxClient();
-    client.setExecuteResponse((cmd) =>
-      cmd.startsWith("display-message") ? SIZED : "hello",
-    );
-    client.setExecuteFailure((cmd) =>
-      failCapture && cmd.startsWith("capture-pane") ? tmuxError("x") : null,
-    );
-    const stream = new PaneStream({ client, paneId: PANE_ID });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    await flushTicks();
-    expect(shape(sink)).toEqual([]);
-    failCapture = false;
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    await flushTicks();
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
-    stream.dispose();
-  });
-
-  it("tmux's first report while the first capture is in flight takes it again", async () => {
-    // The capture may have run before the resize the report says.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(2);
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
-    stream.dispose();
-  });
-
-  it("once tmux has reported, a seed is drawn at the reported size", async () => {
-    // The capture caught 80x24, but tmux said 100;30 and will not say it
-    // again if the pane went back to it.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    await flushTicks();
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
-    stream.dispose();
-  });
-
-  it("tmux's first report recaptures when it differs from the size the seed was drawn at", async () => {
-    // The pane moved on before tmux's first check; its program's redraw
-    // reached the sink at 80x24.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    const captures = client.capturePaneCount();
-    client.injectSubscriptionChanged(name, PANE_ID, "120;40");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures + 1);
-    stream.dispose();
-  });
-
-  it("tmux's first report does not recapture when it is the size the seed was drawn at", async () => {
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    const captures = client.capturePaneCount();
-    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures);
-    stream.dispose();
-  });
-
-  it("a seed resolved with no sink attached still sets the size a first report is compared with", async () => {
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    stream.attach(new RecordingSink());
-    stream.detach(); // the capture resolves into the cache
-    await flushTicks();
-    const captures = client.capturePaneCount();
-    client.injectSubscriptionChanged(name, PANE_ID, "120;40");
-    await flushTicks();
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    expect(stream.state).toBe("seeding"); // the cached 80x24 picture is gone
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures + 1);
-    stream.dispose();
-  });
-
-  it("after a reconnect, a seed is drawn at its own size, not the old connection's report", async () => {
-    // The new control client may never report this pane (not in its
-    // session), so the old report says nothing about the pane now.
-    const { client, stream } = makeStream({ capture: "hello", cursor: SIZED });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    stream.attach(new RecordingSink());
-    await flushTicks();
-    stream.detach();
-    client.setConnectionState({ status: "reconnecting", attempt: 1 });
-    client.setConnectionState({ status: "ready" });
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    await flushTicks();
-    expect(shape(sink)).toEqual(["resize(80x24)", "seed"]);
-    stream.dispose();
-  });
-
-  it("takes only a decimal width;height from the subscription", () => {
-    const { client, stream } = makeStream();
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    for (const value of ["0x50;24", "1e2;24", "80;24;1", "80;0", " 80;24"]) {
-      client.injectSubscriptionChanged(name, PANE_ID, value);
-    }
-    expect(sink.events.filter((e) => e.startsWith("resize"))).toEqual([]);
-    stream.dispose();
-  });
-
-  it("a size change while detached invalidates the cached seed and reaches the next sink, with no output", async () => {
-    // A program that prints nothing on SIGWINCH leaves no byte to clear the
-    // cache; the size change alone moves the pane past the cached picture.
-    const { client, stream } = makeStream({ capture: "hello" });
-    const name = client.subscriptionNamed(`%${PANE_ID}`);
-    stream.attach(new RecordingSink());
-    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
-    await flushTicks();
-    const captures = client.capturePaneCount();
-    stream.detach();
-
-    client.injectSubscriptionChanged(name, PANE_ID, "100;30");
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures); // nobody to capture for
-
-    // tmux will not report the size again until it changes, so the new sink
-    // is handed the one the stream already knows, before its seed.
-    const sink = new RecordingSink();
-    stream.attach(sink);
-    expect(stream.state).toBe("seeding"); // not the cached fast path
-    await flushTicks();
-    expect(client.capturePaneCount()).toBe(captures + 1);
-    const seedAt = sink.events.findIndex((e) => e.startsWith("seed"));
-    expect(seedAt).toBeGreaterThan(0);
-    expect(new Set(sink.events.slice(0, seedAt))).toEqual(
-      new Set(["resize(100x30)"]),
-    );
     stream.dispose();
   });
 

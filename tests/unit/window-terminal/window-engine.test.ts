@@ -333,6 +333,27 @@ describe("WindowEngine — following the window", () => {
     engine.dispose();
   });
 
+  it("a pane the layout resizes is taken again; a pane it leaves alone is not", async () => {
+    const { client, engine } = mount();
+    await settle();
+    const captures = (pane: string): number =>
+      client
+        .commands()
+        .filter((c) => c.startsWith("capture-pane") && c.includes(`-t ${pane}`))
+        .length;
+    expect([captures("%0"), captures("%1")]).toEqual([1, 1]);
+
+    // Zoomed, %0 is the whole window; hidden, %1 keeps its cell.
+    client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([2, 1]);
+
+    client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([3, 1]);
+    engine.dispose();
+  });
+
   it("ignores another window's events", async () => {
     const { client, engine } = mount();
     await settle();

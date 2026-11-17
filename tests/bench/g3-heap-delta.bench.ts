@@ -73,6 +73,7 @@ describe("Gate 3 — heap delta over 60s of detached output", () => {
           new PaneStream({
             client,
             paneId: i + 1,
+            size: { cols: 80, rows: 24 },
           }),
         );
       }

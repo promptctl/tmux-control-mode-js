@@ -89,6 +89,7 @@ describe("Gate 7 — reconnect burst with attached streams", () => {
       const stream = new PaneStream({
         client,
         paneId: i + 1,
+        size: { cols: 80, rows: 24 },
       });
       stream.attach(sink);
       sinks.push(sink);

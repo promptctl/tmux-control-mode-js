@@ -253,7 +253,7 @@ export class WebGLStressStore {
         existing.width !== info.width ||
         existing.height !== info.height
       ) {
-        existing.sink.resize(info.width, info.height);
+        existing.stream.resize({ cols: info.width, rows: info.height });
         existing.width = info.width;
         existing.height = info.height;
       }
@@ -265,6 +265,7 @@ export class WebGLStressStore {
     const stream = new PaneStream({
       client: this.demo.paneStreamClient,
       paneId: info.id,
+      size: { cols: info.width, rows: info.height },
     });
     stream.attach(sink);
     this.live.set(info.id, {

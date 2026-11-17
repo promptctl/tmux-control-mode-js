@@ -61,8 +61,7 @@ function parseWindowId(line: string | undefined): number | null {
 export type PlaygroundStatus = "idle" | "spawning" | "ready" | "error";
 
 /** Fixed scratch-pane geometry — compact enough to fit the playground column. */
-const PLAYGROUND_COLS = 80;
-const PLAYGROUND_ROWS = 24;
+export const PLAYGROUND_SIZE = { cols: 80, rows: 24 } as const;
 
 /** Parse a `#{pane_id} #{window_id}` reply (e.g. `%5 @3`) into numeric ids. */
 function parseSpawnReply(output: readonly string[]): {
@@ -215,7 +214,7 @@ export class EscapePlaygroundStore {
       // Give the scratch window a compact, fixed geometry so it fits the
       // playground column. The pane's seed brings that size to the terminal.
       await this.bridge.execute(
-        `resize-window -t @${ids.windowId} -x ${PLAYGROUND_COLS} -y ${PLAYGROUND_ROWS}`,
+        `resize-window -t @${ids.windowId} -x ${PLAYGROUND_SIZE.cols} -y ${PLAYGROUND_SIZE.rows}`,
       );
 
       runInAction(() => {

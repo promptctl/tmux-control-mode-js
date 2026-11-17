@@ -239,6 +239,104 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     );
   });
 
+  // tmux checks a format subscription once a second and sends only a changed
+  // value, so a zoom undone inside one check never shows in one. The layout
+  // shows every zoom, and each picture is drawn at the size it was taken at.
+  describe("a zoom undone at once ends with the pane drawn at its tiled size", () => {
+    async function zoomable(): Promise<{
+      window: WindowId;
+      added: PaneId;
+      sink: () => BufferingSink;
+      tiled: () => { cols: number; rows: number };
+    }> {
+      const { c, window } = await start();
+      const added = q(socket, [
+        "split-window",
+        "-h",
+        "-t",
+        window,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "cat",
+      ]) as PaneId;
+      const s = recorder();
+      engine = engineOver(c, window, s);
+      await untilLive(engine, (v) => v.panes.length === 2);
+      const sink = (): BufferingSink => {
+        const found = s.sinks.get(added);
+        if (found === undefined) throw new Error(`no sink for ${added}`);
+        return found;
+      };
+      await readUntil(
+        () => sink().seedCalls.length,
+        (n) => n === 1,
+        "the pane was never seeded",
+      );
+      // The pane's size as tmux has it now.
+      const tiled = () => {
+        const [cols, rows] = q(socket, [
+          "display-message",
+          "-p",
+          "-t",
+          added,
+          "#{pane_width} #{pane_height}",
+        ]).split(" ");
+        return { cols: Number(cols), rows: Number(rows) };
+      };
+      return { window, added, sink, tiled };
+    }
+
+    // The live view shows the pane settled: its picture taken, not resyncing.
+    const settled = (added: PaneId) => (v: WindowView) =>
+      v.panes.some((p) => p.id === added && !p.resyncing);
+
+    it("when a picture was taken while it was zoomed", async () => {
+      const { window, added, sink, tiled } = await zoomable();
+      const width = Number(
+        q(socket, ["display-message", "-p", "-t", window, "#{window_width}"]),
+      );
+      q(socket, ["resize-pane", "-Z", "-t", added]);
+      await readUntil(
+        () => sink().resizeCalls.at(-1),
+        (last) => last?.cols === width,
+        "the zoomed pane was never drawn at the window's width",
+      );
+      q(socket, ["resize-pane", "-Z", "-t", added]);
+      const want = tiled();
+      await readUntil(
+        () => sink().resizeCalls.at(-1),
+        (last) => last?.cols === want.cols && last.rows === want.rows,
+        "the unzoomed pane was never drawn at its tiled size",
+      );
+      await untilLive(engine!, settled(added));
+      expect(sink().resizeCalls.at(-1)).toEqual(tiled());
+    });
+
+    it("when the zoom and unzoom run as one command", async () => {
+      const { added, sink, tiled } = await zoomable();
+      const seeds = sink().seedCalls.length;
+      q(socket, [
+        "resize-pane",
+        "-Z",
+        "-t",
+        added,
+        ";",
+        "resize-pane",
+        "-Z",
+        "-t",
+        added,
+      ]);
+      await readUntil(
+        () => sink().seedCalls.length,
+        (n) => n > seeds,
+        "the pane was not taken again after the zoom",
+      );
+      await untilLive(engine!, settled(added));
+      expect(sink().resizeCalls.at(-1)).toEqual(tiled());
+    });
+  });
+
   it("the pane-meta format reads a control byte in a command as ?, on the running tmux", async () => {
     const { window } = await start();
     const pane = q(socket, [

@@ -5,9 +5,7 @@
 //
 //  1. capture-pane + display-message round-trip during seed produces
 //     a non-empty seed payload at the sink.
-//  2. Per-pane format subscription (`pane_width;pane_height`) emits
-//     a `subscription-changed` event whose value the stream parses into
-//     a `sink.resize(cols, rows)` call when the pane geometry changes.
+//  2. A seed is drawn at the size tmux captured the pane at.
 //
 // [LAW:verifiable-goals] Both gates are bounded; both produce a deterministic
 // pass/fail without operator intervention. Skipped when TMUX_INTEGRATION!=1.
@@ -127,6 +125,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       stream = new PaneStream({
         client,
         paneId,
+        size: await paneSize(client, paneId),
       });
       stream.attach(sink);
 
@@ -145,59 +144,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       expect(cursor!.row).toBeGreaterThanOrEqual(0);
     }, 15000);
 
-    it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
-      session = uniqueName("size");
-      client = await createSession(socket, session);
-      const paneId = await getPrimaryPaneId(client);
-
-      const sink = new CollectorSink();
-      stream = new PaneStream({
-        client,
-        paneId,
-      });
-      stream.attach(sink);
-      // Wait for live + the initial subscription-changed (tmux delivers
-      // the current value on subscribe).
-      await readUntil(
-        () => stream!.state,
-        (state) => state === "live",
-        "PaneStream never went live",
-      );
-      // Initial subscription delivery — at least one resize call.
-      await readUntil(
-        () => sink.resizeCalls,
-        (calls) => calls.length > 0,
-        "no resize reached the sink",
-      );
-      // The expected geometry is what tmux reports for the pane, not the
-      // requested size: tmux 3.2 gives an 80x24 session a 23-row pane.
-      expect(sink.resizeCalls[sink.resizeCalls.length - 1]).toEqual(
-        await paneSize(client, paneId),
-      );
-
-      // Resize the client. tmux re-evaluates layout and the format
-      // subscription fires with the new value.
-      const priorCalls = sink.resizeCalls.length;
-      await client.setSize(120, 30);
-      // The requested height lands, less at most the status line's row
-      // (tmux 3.2 takes it from the initial session but not after setSize).
-      const since = await readUntil(
-        () => sink.resizeCalls.slice(priorCalls),
-        (seen) => {
-          const last = seen.at(-1);
-          return last !== undefined && last.cols === 120 && last.rows >= 30 - 1;
-        },
-        "the sink never saw the 120x30 resize",
-      );
-      const after = since[since.length - 1];
-      expect(after.rows).toBeLessThanOrEqual(30);
-      expect(after).toEqual(await paneSize(client, paneId));
-    }, 15000);
-
-    it("draws a pane outside the client's session at its size, which tmux never reports", async () => {
-      // tmux sends a size subscription's values only for a pane whose window
-      // is in the control client's session, so this pane's size can come
-      // only with its seed.
+    it("draws a pane at the size it was captured at, not the size it was given", async () => {
       session = uniqueName("near");
       client = await createSession(socket, session);
       const far = uniqueName("far");
@@ -213,7 +160,7 @@ describe.skipIf(!RUN_INTEGRATION)(
       const sink = new CollectorSink();
       sink.resize = (cols, rows) => void order.push(`resize(${cols}x${rows})`);
       sink.seed = () => void order.push("seed");
-      stream = new PaneStream({ client, paneId });
+      stream = new PaneStream({ client, paneId, size: { cols: 80, rows: 24 } });
       stream.attach(sink);
       await readUntil(
         () => stream!.state,
@@ -293,7 +240,11 @@ describe.skipIf(!RUN_INTEGRATION)(
       await waitForPaneText(client, paneId, "N100");
 
       const sink = new SeedTranscripts();
-      const stream = new PaneStream({ client: connection, paneId });
+      const stream = new PaneStream({
+        client: connection,
+        paneId,
+        size: await paneSize(client, paneId),
+      });
       teardown.push(() => stream.dispose());
       stream.attach(sink);
       await readUntil(

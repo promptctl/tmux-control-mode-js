@@ -38,7 +38,10 @@ import type { XtermSink } from "../window-terminal-internals.ts";
 import { FittedXtermSink } from "../fitted-xterm-sink.ts";
 import type { DemoStore } from "../store.ts";
 import type { UiStore } from "../ui-store.ts";
-import type { EscapePlaygroundStore } from "../escape-playground-store.ts";
+import {
+  PLAYGROUND_SIZE,
+  type EscapePlaygroundStore,
+} from "../escape-playground-store.ts";
 import { ObservablePaneStream } from "../pane-stream-bridge.ts";
 import {
   analyze,
@@ -553,7 +556,13 @@ const PlaygroundTerminal = observer(function PlaygroundTerminal({
   // [LAW:single-enforcer] One ObservablePaneStream per pane id, stable across
   // re-renders; disposed when the pane unmounts.
   const obs = useMemo(
-    () => new ObservablePaneStream({ client, paneId, historyLines: HISTORY }),
+    () =>
+      new ObservablePaneStream({
+        client,
+        paneId,
+        size: PLAYGROUND_SIZE,
+        historyLines: HISTORY,
+      }),
     [client, paneId],
   );
   useEffect(() => () => obs.dispose(), [obs]);

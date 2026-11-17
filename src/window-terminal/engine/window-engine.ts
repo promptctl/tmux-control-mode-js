@@ -42,7 +42,7 @@ import {
 } from "./bootstrap.js";
 import { PaneStream, type TerminalConnection } from "./pane-stream.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
-import type { TerminalSink } from "./terminal-sink.js";
+import type { Grid, TerminalSink } from "./terminal-sink.js";
 import { deliver, type Listener } from "./deliver.js";
 import { uniqueToken } from "./token.js";
 import {
@@ -359,21 +359,30 @@ export class WindowEngine {
   // -------------------------------------------------------------------------
 
   /**
-   * One stream and one surface per pane in the layout. A zoom hides panes; it
-   * never removes them, so zooming detaches nothing.
+   * One stream and one surface per pane in the layout, each at its size in
+   * the layout. A zoom hides panes; it never removes them, so zooming detaches
+   * nothing, and a hidden pane keeps its tiled cell, as tmux keeps its size.
+   * [LAW:one-source-of-truth] The layout is every pane's size: tmux sends
+   *   `%layout-change` for every resize and zoom, ahead of the reply to any
+   *   command run after it, so a stream never needs a second report of it.
    */
   private reconcilePanes(): Report[] {
     const facts = this.facts;
     if (facts === null) return [];
-    const { added, removed } = paneDiff(
+    const { removed } = paneDiff(
       [...this.panes.keys()],
       facts.panes.map((p) => p.id),
     );
     for (const id of removed) this.disposePane(id);
-    return added.flatMap((id) => this.createPane(id));
+    return facts.panes.flatMap(({ id, rect }) => {
+      const slot = this.panes.get(id);
+      if (slot === undefined) return this.createPane(id, rect);
+      slot.stream.resize(rect);
+      return [];
+    });
   }
 
-  private createPane(id: PaneId): Report[] {
+  private createPane(id: PaneId, size: Grid): Report[] {
     // The surface before the stream: a renderer that throws leaves nothing on
     // the connection, and the keys go to the pane, not through its stream.
     const surface = this.surfaces.create(id, (bytes) => {
@@ -386,6 +395,7 @@ export class WindowEngine {
     const stream = new PaneStream({
       client: this.connection,
       paneId: paneNumber(id),
+      size,
       historyLines: this.history,
     });
     stream.on("error", (e) =>

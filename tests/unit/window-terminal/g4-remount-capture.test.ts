@@ -35,6 +35,7 @@ describe("Gate 4 — re-mount on the same stream", () => {
     const stream = new PaneStream({
       client,
       paneId: PANE_ID,
+      size: { cols: 80, rows: 24 },
     });
     expect(client.capturePaneCount()).toBe(0); // baseline
 

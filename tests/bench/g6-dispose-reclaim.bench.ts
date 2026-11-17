@@ -160,6 +160,7 @@ function runCycle(): void {
     const stream = new PaneStream({
       client,
       paneId: i + 1,
+      size: { cols: 80, rows: 24 },
     });
     stream.attach(sink);
     containers.push(container);

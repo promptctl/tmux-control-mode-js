@@ -114,6 +114,7 @@ describe.skipIf(!integrationOn)(
         const stream = new PaneStream({
           client,
           paneId,
+          size: { cols: 80, rows: 24 },
         });
         try {
           const t0 = performance.now();

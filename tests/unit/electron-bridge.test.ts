@@ -2823,7 +2823,12 @@ describe("Electron IPC bridge — each proxy on a page is its own peer", () => {
     await hub.settled();
     expect(windows).toEqual([2]);
 
-    const stream = new PaneStream({ client: b, paneId: 1, historyLines: 0 });
+    const stream = new PaneStream({
+      client: b,
+      paneId: 1,
+      size: { cols: 80, rows: 24 },
+      historyLines: 0,
+    });
     const seeds: Uint8Array[] = [];
     stream.attach({
       seed: (captured) => seeds.push(captured),
