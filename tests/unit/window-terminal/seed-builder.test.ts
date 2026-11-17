@@ -24,8 +24,9 @@ const ESC = "\x1b";
 // inspect them as text — mirrors how a TerminalSink treats the payload.
 const text = (bytes: Uint8Array): string =>
   new TextDecoder("latin1").decode(bytes);
-// The clear every seed starts with: DECSTBM reset, CUP home, SGR 0, ED 2, ED 3.
-const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+// The clear every seed starts with: DECSTBM reset, CUP home, SGR 0, ED 2, ED 3,
+// then G0 ASCII, G1 DEC Special Graphics, SI.
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0\x0f`;
 
 const parsed = (line: string): SeedState => {
   const state = parseSeedState(line);
@@ -35,10 +36,10 @@ const parsed = (line: string): SeedState => {
 // A one-row main-screen pane: no padding below one row of content.
 const ONE_ROW = parsed(seedStateLine({ cols: 20, rows: 1 }));
 // What ONE_ROW wraps the screen in: main screen, the clear, autowrap on; then
-// the whole-screen scroll region, cursor visible, insert/app-cursor/keypad
-// off, the cursor at the origin.
+// the whole-screen scroll region, origin mode off, cursor visible,
+// insert/app-cursor/keypad off, SI and SGR 0, the cursor at the origin.
 const PREAMBLE = `${ESC}[?1049l${CLEAR}${ESC}[?7h`;
-const EPILOGUE = `${ESC}[1;1r${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>${ESC}[1;1H`;
+const EPILOGUE = `${ESC}[1;1r${ESC}[?6l${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>\x0f${ESC}[0m${ESC}[1;1H`;
 // The seed with ONE_ROW's escapes taken off, so a test can assert the content.
 const body = (bytes: Uint8Array): string => {
   const t = text(bytes);
@@ -49,7 +50,7 @@ const body = (bytes: Uint8Array): string => {
 
 describe("parseSeedState", () => {
   it("reads every field of the state reply", () => {
-    expect(parseSeedState("3;5;1;0;1;1;0;1;24;100;2;20;80")).toEqual({
+    expect(parseSeedState("3;5;1;0;1;1;0;1;1;24;100;2;20;80")).toEqual({
       cursor: { col: 3, row: 5 },
       size: { cols: 80, rows: 24 },
       historySize: 100,
@@ -59,6 +60,7 @@ describe("parseSeedState", () => {
       applicationCursorKeys: true,
       applicationKeypad: false,
       autowrap: true,
+      originMode: true,
       scrollRegion: { top: 2, bottom: 20 },
     });
   });
@@ -68,22 +70,22 @@ describe("parseSeedState", () => {
   it.each([
     ["an empty reply", ""],
     ["cursor only", "0;0"],
-    ["a field short", "0;0;0;1;0;0;0;1;24;0;0;23"],
-    ["a field over", "0;0;0;1;0;0;0;1;24;0;0;23;80;1"],
-    ["an empty cursor_y", "5;;0;1;0;0;0;1;24;0;0;23;80"],
-    ["a negative cursor", "-1;0;0;1;0;0;0;1;24;0;0;23;80"],
-    ["an empty flag", "0;0;;1;0;0;0;1;24;0;0;23;80"],
-    ["a flag that is not 0/1", "0;0;2;1;0;0;0;1;24;0;0;23;80"],
-    ["an empty width", "0;0;0;1;0;0;0;1;24;0;0;23;"],
-    ["an empty height", "0;0;0;1;0;0;0;1;;0;0;23;80"],
-    ["a zero width", "0;0;0;1;0;0;0;1;24;0;0;23;0"],
-    ["a zero height", "0;0;0;1;0;0;0;1;0;0;0;23;80"],
-    ["an exponent", "0;0;0;1;0;0;0;1;24;0;0;23;8e1"],
-    ["a decimal point", "0;0;0;1;0;0;0;1;24.0;0;0;23;80"],
-    ["a leading space", "0;0;0;1;0;0;0;1; 24;0;0;23;80"],
-    ["an empty history_size", "0;0;0;1;0;0;0;1;24;;0;23;80"],
-    ["a region row that is not digits", "0;0;0;1;0;0;0;1;24;0;0;x;80"],
-    ["a trailing newline", "0;0;0;1;0;0;0;1;24;0;0;23;80\n"],
+    ["a field short", "0;0;0;1;0;0;0;1;0;24;0;0;23"],
+    ["a field over", "0;0;0;1;0;0;0;1;0;24;0;0;23;80;1"],
+    ["an empty cursor_y", "5;;0;1;0;0;0;1;0;24;0;0;23;80"],
+    ["a negative cursor", "-1;0;0;1;0;0;0;1;0;24;0;0;23;80"],
+    ["an empty flag", "0;0;;1;0;0;0;1;0;24;0;0;23;80"],
+    ["a flag that is not 0/1", "0;0;2;1;0;0;0;1;0;24;0;0;23;80"],
+    ["an empty width", "0;0;0;1;0;0;0;1;0;24;0;0;23;"],
+    ["an empty height", "0;0;0;1;0;0;0;1;0;;0;0;23;80"],
+    ["a zero width", "0;0;0;1;0;0;0;1;0;24;0;0;23;0"],
+    ["a zero height", "0;0;0;1;0;0;0;1;0;0;0;0;23;80"],
+    ["an exponent", "0;0;0;1;0;0;0;1;0;24;0;0;23;8e1"],
+    ["a decimal point", "0;0;0;1;0;0;0;1;0;24.0;0;0;23;80"],
+    ["a leading space", "0;0;0;1;0;0;0;1;0; 24;0;0;23;80"],
+    ["an empty history_size", "0;0;0;1;0;0;0;1;0;24;;0;23;80"],
+    ["a region row that is not digits", "0;0;0;1;0;0;0;1;0;24;0;0;x;80"],
+    ["a trailing newline", "0;0;0;1;0;0;0;1;0;24;0;0;23;80\n"],
   ])("rejects %s", (_, line) => {
     expect(parseSeedState(line)).toBeNull();
   });
@@ -162,20 +164,20 @@ describe("buildSeed: terminal-mode escapes", () => {
   });
 
   it("sets each mode the state names after the content (epilogue)", () => {
-    // cursor_flag=0, insert=1, app-cursor=1, keypad=1, wrap=0, region rows
-    // 0..0, cursor at the origin → ?7l before; 1;1r, ?25l, 4h, ?1h, ESC=,
-    // then the CUP after.
-    const state = parsed("0;0;0;0;1;1;1;0;1;0;0;0;20");
+    // cursor_flag=0, insert=1, app-cursor=1, keypad=1, wrap=0, origin=1,
+    // region rows 0..0, cursor at the origin → ?7l before; 1;1r, ?6h, ?25l,
+    // 4h, ?1h, ESC=, SI, SGR 0, then the CUP after.
+    const state = parsed("0;0;0;0;1;1;1;0;1;1;0;0;0;20");
     expect(text(buildSeed(["x"], state, 0).captured)).toBe(
       `${ESC}[?1049l${CLEAR}${ESC}[?7l` +
         "x" +
-        `${ESC}[1;1r${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=${ESC}[1;1H`,
+        `${ESC}[1;1r${ESC}[?6h${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=\x0f${ESC}[0m${ESC}[1;1H`,
     );
   });
 
   it("restores tmux's scroll region after the content, 1-indexed", () => {
     // scroll_region_upper=1, scroll_region_lower=2 (0-indexed).
-    const state = parsed("0;0;0;1;0;0;0;1;3;0;1;2;20");
+    const state = parsed("0;0;0;1;0;0;0;1;0;3;0;1;2;20");
     expect(text(buildSeed(["x"], state, 0).captured)).toContain(`${ESC}[2;3r`);
   });
 });
@@ -247,6 +249,50 @@ describe("buildSeed: drawn into xterm.js", () => {
     // A line feed on the region's bottom row scrolls the region alone.
     await draw(term, "\r\nnew");
     expect(rowsOf(term)).toEqual([...history, "s0", "s2", "new"]);
+  });
+
+  it("restores origin mode, so the program's later CUP lands where tmux puts it", async () => {
+    const term = newTerm();
+    const seed = buildSeed(
+      [...history, "s0", "s1", "s2", ""],
+      {
+        ...state,
+        cursor: { col: 0, row: 1 },
+        originMode: true,
+        scrollRegion: { top: 1, bottom: 2 },
+      },
+      2000,
+    );
+    await draw(term, seed.captured);
+    expect(term.modes.originMode).toBe(true);
+    expect(term.buffer.active.cursorY).toBe(1);
+    // Under DECOM, row 1 is the region's top: screen row 1, as in tmux.
+    await draw(term, `${ESC}[1;1Hz`);
+    expect(rowsOf(term)).toEqual([...history, "s0", "z1", "s2"]);
+  });
+
+  it("draws ASCII through a line-drawing charset a DECRC restores", async () => {
+    const term = newTerm();
+    // DECSC saves G0 = DEC Special Graphics; the seed's ?1049l restores it.
+    await draw(term, `${ESC}(0${ESC}7${ESC}(B`);
+    await draw(term, buildSeed(["qq", "", ""], state, 0).captured);
+    expect(rowsOf(term)[0]).toBe("qq");
+  });
+
+  it("draws the capture's SO … SI cells as line drawing", async () => {
+    const term = newTerm();
+    await draw(term, buildSeed(["a\x0eqq\x0fb", "", ""], state, 0).captured);
+    expect(rowsOf(term)[0]).toBe("a──b");
+  });
+
+  it("hands the live stream tmux's initial shift and pen, not the capture's last", async () => {
+    const term = newTerm();
+    // capture-pane leaves its last cell's SGR and SO in force.
+    const seed = buildSeed([`${ESC}[41mx\x0eq`, "", ""], state, 0);
+    await draw(term, seed.captured);
+    await draw(term, "q");
+    expect(rowsOf(term)[2]).toBe("q");
+    expect(term.buffer.active.getLine(2)?.getCell(0)?.isBgDefault()).toBe(true);
   });
 
   it("clears with the default background, not attributes DECRC restores", async () => {

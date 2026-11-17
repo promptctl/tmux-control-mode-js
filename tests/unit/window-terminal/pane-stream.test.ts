@@ -307,7 +307,7 @@ describe("PaneStream — state machine", () => {
     // The capture's own size is the only size a seed is drawn at, so a reply
     // without one is no picture: the bytes go out as writes and the reply is
     // reported, then the next well-formed capture draws and clears it.
-    const truncated = "0;0;0;1;0;0;0;1;24;0;0;23"; // pane_width missing
+    const truncated = "0;0;0;1;0;0;0;1;0;24;0;0;23"; // pane_width missing
     const { client, stream } = makeStream({ state: truncated });
     const sink = new RecordingSink();
     stream.attach(sink);

@@ -43,6 +43,8 @@ export interface SeedState {
   readonly applicationCursorKeys: boolean;
   readonly applicationKeypad: boolean;
   readonly autowrap: boolean;
+  /** DECOM: cursor addressing is relative to the scroll region. */
+  readonly originMode: boolean;
   readonly scrollRegion: { readonly top: number; readonly bottom: number };
 }
 
@@ -158,7 +160,10 @@ const ESC = "\x1b";
 //   - ED 2: capture-pane drops trailing blanks, so a row drawn over an old one
 //     would otherwise keep the old row's tail.
 //   - ED 3: erases the scrollback, which the history rows then rewrite.
-const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J`;
+//   - G0 ASCII, G1 DEC Special Graphics, SI: capture-pane writes a
+//     line-drawing cell as SO … SI, so G1 must hold the line-drawing set; and
+//     ?1049l's DECRC restores whatever charset and shift DECSC saved.
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0\x0f`;
 
 // Before content: establish the correct screen buffer, clear it, then set
 // autowrap — all of which affect how screen content lays out.
@@ -178,17 +183,26 @@ function preamble(s: SeedState): string {
   );
 }
 
-// After content: the scroll region and the input/cursor modes the captured
-// grid can't carry, then the cursor where tmux has it. DECSTBM and CUP are
-// 1-indexed; DECSTBM homes the cursor, so the CUP comes after it.
+// After content: the scroll region and the modes the captured grid can't
+// carry, then the cursor where tmux has it. DECSTBM and DECOM both home the
+// cursor, so the CUP comes after them; it is 1-indexed and, under DECOM,
+// relative to the region's top row.
+//   SI and SGR 0 end the shift and pen the capture's last cell left set:
+//   capture-pane writes no reset after it, and tmux reports neither the
+//   program's shift nor its pen, so the live stream gets tmux's initial ones.
+//   G1 stays the line-drawing set, which a curses program designates once
+//   at startup and then reaches with SO.
 function epilogue(s: SeedState): string {
+  const originRow = s.originMode ? s.scrollRegion.top : 0;
   return (
     `${ESC}[${s.scrollRegion.top + 1};${s.scrollRegion.bottom + 1}r` +
+    mode(s.originMode, `${ESC}[?6h`, `${ESC}[?6l`) + // DECOM
     mode(s.cursorVisible, `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
     mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
-    `${ESC}[${s.cursor.row + 1};${s.cursor.col + 1}H` // CUP
+    `\x0f${ESC}[0m` + // SI, SGR 0
+    `${ESC}[${s.cursor.row - originRow + 1};${s.cursor.col + 1}H` // CUP
   );
 }
 
@@ -207,6 +221,7 @@ const STATE_FIELDS = {
   keypad_cursor_flag: FLAG,
   keypad_flag: FLAG,
   wrap_flag: FLAG,
+  origin_flag: FLAG,
   pane_height: SIZE,
   history_size: COUNT,
   scroll_region_upper: COUNT,
@@ -260,6 +275,7 @@ export function parseSeedState(line: string): SeedState | null {
     applicationCursorKeys: f.keypad_cursor_flag === "1",
     applicationKeypad: f.keypad_flag === "1",
     autowrap: f.wrap_flag === "1",
+    originMode: f.origin_flag === "1",
     scrollRegion: {
       top: Number(f.scroll_region_upper),
       bottom: Number(f.scroll_region_lower),

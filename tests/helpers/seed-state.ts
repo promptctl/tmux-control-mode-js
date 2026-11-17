@@ -39,6 +39,7 @@ export function seedStateLine({
     keypad_cursor_flag: 0,
     keypad_flag: 0,
     wrap_flag: 1,
+    origin_flag: 0,
     pane_height: rows,
     history_size: historySize,
     scroll_region_upper: 0,
