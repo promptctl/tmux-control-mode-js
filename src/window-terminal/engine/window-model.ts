@@ -245,6 +245,26 @@ export function paneDiff(
   };
 }
 
+/**
+ * The panes in both `prev` and `next` whose cell changed size. A cell is not
+ * the pane's size (border status and scrollbars shrink a pane inside it), but
+ * a cell that changes size changes the pane's.
+ */
+export function resizedPanes(
+  prev: WindowFacts,
+  next: WindowFacts,
+): readonly PaneId[] {
+  const before = new Map(prev.panes.map((p) => [p.id, p.rect]));
+  return next.panes
+    .filter(({ id, rect }) => {
+      const was = before.get(id);
+      return (
+        was !== undefined && (was.cols !== rect.cols || was.rows !== rect.rows)
+      );
+    })
+    .map((p) => p.id);
+}
+
 // ---------------------------------------------------------------------------
 // Focus
 // ---------------------------------------------------------------------------

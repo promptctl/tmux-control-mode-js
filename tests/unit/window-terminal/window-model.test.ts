@@ -6,6 +6,7 @@ import {
   factsFromSnapshot,
   paneDiff,
   phaseFor,
+  resizedPanes,
   reduceWindow,
   type FocusPolicy,
   type Reduced,
@@ -142,6 +143,16 @@ describe("window model — layout", () => {
       added: ["%2"],
       removed: ["%0"],
     });
+  });
+
+  it("resizedPanes names the panes in both layouts whose cell changed size", () => {
+    // %0 zoomed is the whole window; %1, hidden, keeps its cell. %2 is new
+    // in THREE_PANES, and %1 shrinks to make room for it.
+    expect(
+      resizedPanes(snapshot(), snapshot(TWO_PANES, ZOOMED_0, "*Z")),
+    ).toEqual(["%0"]);
+    expect(resizedPanes(snapshot(), snapshot(THREE_PANES))).toEqual(["%1"]);
+    expect(resizedPanes(snapshot(), snapshot())).toEqual([]);
   });
 
   it("marks the panes being resynced", () => {

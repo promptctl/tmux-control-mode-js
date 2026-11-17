@@ -176,16 +176,14 @@ type Unsubscribe = () => void;
  *
  * - `idle` — no capture-pane RPC outstanding.
  * - `capturing` — a capture is in flight, with the pane's bytes since it was
- *   issued and where each reply's `%begin` fell among them. `stale` records
- *   whether the pane changed under it (reconnect, `%pause`, a recapture); when
- *   set, `seed()` drops the result on resolution (and re-issues if anyone is
- *   still attached).
+ *   issued and where each reply's `%begin` fell among them. `then` is what
+ *   its resolution does with it (see {@link CaptureThen}).
  *
  * [LAW:types-are-the-program] Everything a capture needs lives on its
  *   `capturing` value and dies with it: no staleness, buffer or `%begin` mark
  *   exists without a capture in flight, and a new capture starts with none.
- *   [LAW:single-enforcer] `markSeedStale` is the single owner of the `stale`
- *   write.
+ *   [LAW:single-enforcer] `markSeedStale` and `resized` are the only `then`
+ *   writes.
  *
  * Distinct, orthogonal axes deliberately kept separate: `lastSeed` (the cached
  * picture a re-attach replays) and `ReseedScheduler.currentRun` (the
@@ -193,9 +191,22 @@ type Unsubscribe = () => void;
  */
 type SeedCycle = { readonly phase: "idle" } | Capturing;
 
+/**
+ * What a capture's resolution does with it.
+ * - `draw` — it is the newest picture: hand it to the sink.
+ * - `draw-then-retake` — the pane changed size after it was issued. It is
+ *   still exact at the size it was taken at, so it is drawn, and the pane is
+ *   taken again: a pane resized continuously is drawn a picture per capture,
+ *   not frozen until the resizing stops.
+ * - `drop` — the pane changed under it in a way the picture cannot show (a
+ *   reconnect, `%pause`, `%continue`, a byte while detached): dropped, and
+ *   taken again while a sink is attached.
+ */
+type CaptureThen = "draw" | "draw-then-retake" | "drop";
+
 interface Capturing {
   readonly phase: "capturing";
-  stale: boolean;
+  then: CaptureThen;
   // Every chunk of the pane's bytes since the capture was issued, while a sink
   // waits for it (a byte while detached marks the capture stale instead). The
   // ones after the capture's `%begin` are the seed's `trailing`.
@@ -233,7 +244,7 @@ export class PaneStream implements ReseedTarget {
   // re-attach can hand the new sink that picture WITHOUT a fresh capture-pane
   // round-trip (re-mount churn on an idle pane → exactly one capture). Set
   // inside seed(); cleared by every byte and by anything else that moves the
-  // pane (reconnect, `%pause`, a recapture).
+  // pane (reconnect, `%pause`, `%continue`, a resize).
   private lastSeed: Seed | null = null;
   // [LAW:single-enforcer] One in-flight capture-pane RPC per stream at a time,
   // plus its staleness, as a single value (see {@link SeedCycle}). attach() and
@@ -241,15 +252,19 @@ export class PaneStream implements ReseedTarget {
   // pick up `this.sink` whatever it is then) — required under React StrictMode,
   // where mount→cleanup→mount happens synchronously *inside* one rendered frame,
   // landing both attaches before the first capture-pane resolves. All writes
-  // live in `startSeedCycle` (start), `seed()` (resolution) and
-  // `markSeedStale`.
+  // live in `startSeedCycle` (start), `seed()` (resolution), `markSeedStale`
+  // and `resized`.
   private seedCycle: SeedCycle = { phase: "idle" };
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // tmux's last size report on this connection; null before the first.
-  private reported: Grid | null = null;
-  // The size the newest capture was taken at; null before the first.
+  // The size the newest capture was taken at, which its state line states;
+  // null before the first and after a failed capture, which took no size.
+  // [LAW:one-source-of-truth] The only size the stream holds. tmux's size
+  //   report lags (one check a second, quiet while its value is the one it
+  //   last sent) and a layout cell is not the pane (border status and
+  //   scrollbars shrink it inside the cell), so neither is drawn at: each
+  //   only says the pane may have moved past this picture.
   private captured: Grid | null = null;
 
   // Activity accounting. Updated synchronously on every byte event.
@@ -321,10 +336,6 @@ export class PaneStream implements ReseedTarget {
     this.onReconnected = () => {
       // A pause belonged to the connection that carried it.
       this.paused = false;
-      // So did the size report: the new connection's subscription has
-      // reported nothing yet, and may never report this pane (a new control
-      // client whose session does not hold it).
-      this.reported = null;
       // The pane moved while we were disconnected: the cache and any
       // capture-pane in flight are pre-reconnect pictures, so the
       // ReseedScheduler's upcoming reseed() (or the next attach()) captures
@@ -465,14 +476,24 @@ export class PaneStream implements ReseedTarget {
     return latest;
   }
 
-  // The size the stream holds the pane at: tmux's report once there is one,
-  // else the newest capture's (a pane outside the control client's session
-  // is never reported, and any other waits up to a second for its first).
-  // [LAW:one-source-of-truth] A capture never outranks a report: tmux keeps
-  //   a subscription quiet while its value is the one it last sent, so only
-  //   that value says what tmux's silence means.
-  private get size(): Grid | null {
-    return this.reported ?? this.captured;
+  /**
+   * The pane may have changed size since the newest picture: drop the cache
+   * and take it again, attached or detached. A capture in flight is still
+   * drawn, at the size it was taken at, and the pane is taken again after
+   * it; one dropped stays dropped.
+   *
+   * A host calls it when the pane's cell in its window's layout changes
+   * (`%layout-change`: a resize, a zoom, a split). tmux sends the change
+   * ahead of the reply to any command run after it, so the capture this
+   * issues is at the new size, however quickly the change is undone; the
+   * size report is quiet for a change undone inside one of its checks.
+   */
+  resized(): void {
+    this.lastSeed = null;
+    if (this.seedCycle.phase === "idle") void this.reseed();
+    else if (this.seedCycle.then === "draw") {
+      this.seedCycle.then = "draw-then-retake";
+    }
   }
 
   /**
@@ -488,7 +509,7 @@ export class PaneStream implements ReseedTarget {
    *   State path: `detached → live`. This is the re-attach contract: mount churn
    *   (visibility flicker, React strict-mode, tab restore) must not multiply
    *   tmux load on an idle pane. Any byte invalidates the cache (the pane has
-   *   moved past it), as do reconnect, `%pause` and a recapture.
+   *   moved past it), as do reconnect, `%pause`, `%continue` and a resize.
    * - **Capture in flight** — waits for it; its resolution seeds this sink.
    */
   attach(sink: TerminalSink): void {
@@ -519,7 +540,7 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      fit(sink, this.size);
+      fit(sink, this.lastSeed.size);
       sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
@@ -621,10 +642,9 @@ export class PaneStream implements ReseedTarget {
   }
 
   /**
-   * The pane changed under the picture (`%continue`, a new size): drop the
-   * cache, and capture again; a capture already in flight began before the
-   * change, so its result is dropped and it re-issues while a sink is
-   * attached.
+   * The pane changed under the picture (`%continue`): drop the cache, and
+   * capture again; a capture already in flight began before the change, so
+   * its result is dropped and it re-issues while a sink is attached.
    */
   private recapture(): void {
     this.markSeedStale();
@@ -708,12 +728,16 @@ export class PaneStream implements ReseedTarget {
    *   staleness — there is no separate flag to clear.
    *
    * [LAW:single-enforcer] The capture's start, here, and its resolution, in
-   *   `seed()`, are the only `this.seedCycle` writes besides `markSeedStale`.
+   *   `seed()`, are the only `this.seedCycle` writes besides `markSeedStale`
+   *   and `resized`. And the one place a capture is issued, so the one place
+   *   none is while tmux has the pane paused: tmux drops the pane's output
+   *   then, so no capture taken is whole, and `%continue` takes the pane.
    */
   private startSeedCycle(): Promise<void> {
+    if (this.paused) return Promise.resolve();
     const cycle: Capturing = {
       phase: "capturing",
-      stale: false,
+      then: "draw",
       buffer: [],
       begins: new Map(),
     };
@@ -724,7 +748,7 @@ export class PaneStream implements ReseedTarget {
   /**
    * The pane moved past every picture of it this stream holds: drop the cache
    * and mark an in-flight capture stale. The triggers are a reconnect,
-   * `%pause`, a recapture (`%continue`, a new size) and a byte while
+   * `%pause`, `%continue` and a byte while
    * detached. [LAW:single-enforcer]
    * The only place a capture is marked stale, and it always drops the cache
    * with it, so a stale capture never has a cache to fall back on. (A byte
@@ -737,13 +761,13 @@ export class PaneStream implements ReseedTarget {
   private markSeedStale(): void {
     this.lastSeed = null;
     if (this.seedCycle.phase === "capturing") {
-      this.seedCycle.stale = true;
+      this.seedCycle.then = "drop";
     }
   }
 
   private async seed(cycle: Capturing): Promise<void> {
-    // `cycle` starts non-stale. If the pane moves before the resolution
-    // below, `markSeedStale` sets its `stale` and we drop the result.
+    // `cycle` starts as `draw`. If the pane moves before the resolution
+    // below, `markSeedStale` or `resized` changes what it does with it.
 
     // Capture flags: -p stdout, -e SGR escapes, -q quiet (no error if the pane
     // is in copy/view mode), -N preserve trailing spaces. We deliberately do
@@ -797,7 +821,7 @@ export class PaneStream implements ReseedTarget {
     // `markSeedStale`), so the snapshot is not the current pane state. Drop
     // it. If anyone is still attached, kick off a fresh seed — through
     // `startSeedCycle` so `this.seedCycle` follows the new cycle.
-    if (cycle.stale) {
+    if (cycle.then === "drop") {
       // No `lastSeed === null` guard: `markSeedStale` drops the cache as it
       // marks the capture stale, so a stale in-flight
       // capture provably has no cache to fall back on. Guarding on it here
@@ -831,16 +855,18 @@ export class PaneStream implements ReseedTarget {
     // capture-pane round-trip. A failed capture is no picture, so it is never
     // cached and the next attach is the natural recovery point. Bytes behind
     // the capture already moved the pane past the snapshot, so only a capture
-    // nothing followed is the current picture.
-    this.lastSeed = trailing.length === 0 ? picture : null;
-    // A failed capture is no picture, so it took no size; a picture is the
-    // newest capture. The seed seam just succeeded (past the stale-drop guard
-    // above), so any outstanding seed failure is moot — clear it so lastError
-    // stops reporting a recovered transient failure.
-    if (picture !== null) {
-      this.captured = picture.size;
-      this.clearError("seed");
-    }
+    // nothing followed, and the pane did not change size after, is the
+    // current picture.
+    this.lastSeed =
+      trailing.length === 0 && cycle.then === "draw" ? picture : null;
+    // The newest capture's size. A failed capture took none, and the sink
+    // then holds bytes of no known size: any report differs from null and
+    // takes the pane again.
+    this.captured = picture?.size ?? null;
+    // The seed seam just succeeded (past the stale-drop guard above), so any
+    // outstanding seed failure is moot — clear it so lastError stops
+    // reporting a recovered transient failure.
+    if (picture !== null) this.clearError("seed");
 
     // If no sink is attached at resolution (e.g. detach() after the RPC was
     // issued), the cache above will serve the next attach() — no extra
@@ -849,14 +875,18 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes behind it over as one ordered value, at
-    // the size the stream holds the pane at.
-    fit(liveSink, this.size);
+    // the size it was captured at. A failed capture is no picture and took no
+    // size: the sink keeps the one it has, and the failure reaches `error`.
     if (picture !== null) {
+      fit(liveSink, picture.size);
       liveSink.seed(picture.captured, picture.cursor, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
     }
-    this.setState("live");
+    // A retake owed keeps the pane seeding: the next capture's buffer takes
+    // the bytes, and the host is not told the pane is live for an instant.
+    if (cycle.then === "draw-then-retake") void this.startSeedCycle();
+    else this.setState("live");
   }
 
   /**
@@ -916,19 +946,17 @@ export class PaneStream implements ReseedTarget {
     // The subscription just delivered a pane size, so the subscribe seam is
     // demonstrably working — clear any outstanding subscribe failure.
     this.clearError("subscribe");
-    // The sink takes the new size with the recapture's seed, the one place a
-    // sink is sized: a report that changes nothing leaves it where it is.
-    // The pane's program redraws for the new size as soon as tmux resizes it,
-    // up to a second before this value arrives, and those bytes reached the
-    // sink at the old size. tmux's screen is right: take it again. Detached
-    // too: a resize that prints nothing still leaves the cached picture at
-    // the old size. A stream that held no size has no picture known to be at
-    // this one (its capture failed, or is still in flight and may have been
-    // taken before the resize), so it takes it again too.
-    const moved =
-      this.size?.cols !== dims.cols || this.size?.rows !== dims.rows;
-    this.reported = dims;
-    if (moved) this.recapture();
+    // A report is not a size to draw at: tmux sends it up to a second late.
+    // It says only whether the newest picture is at the pane's size. A
+    // report that differs means the pane moved past the picture with no
+    // layout change (border status, scrollbars) or the picture is older than
+    // the change: take it again, detached too, since a resize that prints
+    // nothing still leaves the cached picture at the old size. A stream with
+    // no picture of known size takes it again too. tmux sends a report only
+    // when its value changes, so a late one costs one capture at most.
+    if (dims.cols !== this.captured?.cols || dims.rows !== this.captured.rows) {
+      this.resized();
+    }
   }
 
   private setState(next: PaneStreamState): void {

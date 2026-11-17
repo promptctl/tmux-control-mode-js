@@ -7,6 +7,7 @@ import {
 } from "../../helpers/scripted-window.js";
 import {
   ONE_PANE,
+  layoutString,
   THREE_PANES,
   TWO_PANES,
   ZOOMED_0,
@@ -333,6 +334,49 @@ describe("WindowEngine — following the window", () => {
     engine.dispose();
   });
 
+  it("a pane whose cell the layout resizes is taken again; a pane it leaves alone is not", async () => {
+    const { client, engine } = mount();
+    await settle();
+    const captures = (pane: string): number =>
+      client
+        .commands()
+        .filter((c) => c.startsWith("capture-pane") && c.includes(`-t ${pane}`))
+        .length;
+    expect([captures("%0"), captures("%1")]).toEqual([1, 1]);
+
+    // Zoomed, %0 is the whole window; hidden, %1 keeps its cell.
+    client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([2, 1]);
+
+    client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([3, 1]);
+    engine.dispose();
+  });
+
+  it("a layout that resizes one pane and adds another reaches the host whole; a host that disposes on it leaves no pane behind", async () => {
+    // %0 narrows to 20 columns and %2 opens beside it.
+    const narrowed = layoutString(
+      "80x24,0,0{20x24,0,0,0,19x24,21,0,2,39x24,41,0,1}",
+    );
+    const { client, engine, s, states } = mount();
+    await settle();
+    const before = states.length;
+    engine.onState((st) => {
+      if (st.phase === "live" && st.window.panes.length === 3) engine.dispose();
+    });
+    client.injectLayoutChange(1, narrowed, narrowed, "*");
+    await settle();
+
+    expect(live(states[before]).panes.map((p) => p.resyncing)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect([...s.disposed].sort()).toEqual([...s.created].sort());
+  });
+
   it("ignores another window's events", async () => {
     const { client, engine } = mount();
     await settle();
@@ -529,6 +573,26 @@ describe("WindowEngine — the connection", () => {
     expect(bootstraps()).toBe(2);
     expect(s.created).toEqual(["%0", "%1"]);
     expect(s.disposed).toEqual([]);
+    engine.dispose();
+  });
+
+  it("a zoom undone while the engine re-bootstraps takes the zoomed pane again", async () => {
+    const { client, engine } = mount();
+    await settle();
+    const captures = (pane: string): number =>
+      client
+        .commands()
+        .filter((c) => c.startsWith("capture-pane") && c.includes(`-t ${pane}`))
+        .length;
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    // Queued behind the bootstrap: a reconnect's capture may predate them.
+    client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    const before = captures("%0") - captures("%1");
+    await settle();
+    expect(engine.state.phase).toBe("live");
+    expect(captures("%0") - captures("%1")).toBe(before + 1);
     engine.dispose();
   });
 

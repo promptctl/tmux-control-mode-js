@@ -239,6 +239,121 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
     );
   });
 
+  function sizeOf(pane: string): { cols: number; rows: number } {
+    const [cols, rows] = q(socket, [
+      "display-message",
+      "-p",
+      "-t",
+      pane,
+      "#{pane_width} #{pane_height}",
+    ]).split(" ");
+    return { cols: +cols, rows: +rows };
+  }
+
+  // tmux's size report is quiet for a zoom undone inside one of its checks;
+  // the capture taken while zoomed must not stay on screen.
+  it("a picture taken while zoomed, the zoom undone at once, leaves the pane drawn at the size it went back to", async () => {
+    const { c, window } = await start();
+    const added = q(socket, [
+      "split-window",
+      "-h",
+      "-t",
+      window,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "cat",
+    ]) as PaneId;
+    // tmux's first size report for the pane, which a stream takes again on
+    // when it differs from the picture.
+    let reported = false;
+    c.on("subscription-changed", (ev) => {
+      if (`%${ev.paneId}` === added && /^\d+;\d+$/.test(ev.value)) {
+        reported = true;
+      }
+    });
+    const s = recorder();
+    engine = engineOver(c, window, s);
+    await untilLive(engine, (v) => v.panes.length === 2);
+    const tiled = sizeOf(added);
+    const sink = (): BufferingSink => s.sinks.get(added) as BufferingSink;
+    await readUntil(
+      () => sink().resizeCalls.at(-1),
+      (last) => last?.cols === tiled.cols,
+      "the pane was never drawn at its tiled size",
+    );
+
+    await readUntil(() => reported, Boolean, "tmux never reported the pane");
+    await untilLive(engine, (v) => v.panes.every((p) => !p.resyncing));
+
+    // A picture taken while zoomed (a `%continue` takes the pane again),
+    // then the zoom undone at once: tmux's report, quiet unless one of its
+    // checks fell inside the zoom, is not what takes the pane again.
+    q(socket, ["resize-pane", "-Z", "-t", added]);
+    await c.execute(`refresh-client -A '${added}:pause'`);
+    const atZoom = sink().seedCalls.length;
+    await c.execute(`refresh-client -A '${added}:continue'`);
+    await readUntil(
+      () => sink().seedCalls.length,
+      (n) => n > atZoom,
+      "the pane was not taken while zoomed",
+    );
+    q(socket, ["resize-pane", "-Z", "-t", added]);
+    const atUnzoom = sink().seedCalls.length;
+    await readUntil(
+      () => sink().seedCalls.length,
+      (n) => n > atUnzoom,
+      "the pane was not taken again after the zoom was undone",
+    );
+    await readUntil(
+      () => sink().resizeCalls.at(-1),
+      (last) => last?.cols === tiled.cols && last.rows === tiled.rows,
+      "the unzoomed pane was never drawn at its tiled size again",
+    );
+
+    // Past tmux's next check the pane is still drawn at its tiled size, and
+    // was taken again at most once more: by a report of the zoomed size,
+    // when a check fell inside the zoom.
+    const seeds = sink().seedCalls.length;
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(sink().seedCalls.length).toBeLessThanOrEqual(seeds + 1);
+    expect(sink().resizeCalls.at(-1)).toEqual(tiled);
+  });
+
+  // Border status shrinks a pane inside its cell, with no layout change: only
+  // tmux's size report says so.
+  it("a pane shrunk by its border status is drawn at its new size", async () => {
+    const { c, window } = await start();
+    const added = q(socket, [
+      "split-window",
+      "-h",
+      "-t",
+      window,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "cat",
+    ]) as PaneId;
+    const s = recorder();
+    engine = engineOver(c, window, s);
+    await untilLive(engine, (v) => v.panes.length === 2);
+    const before = sizeOf(added);
+    await readUntil(
+      () => s.sinks.get(added)?.resizeCalls.at(-1),
+      (last) => last?.rows === before.rows,
+      "the pane was never drawn at its size",
+    );
+
+    q(socket, ["set-option", "-w", "-t", window, "pane-border-status", "top"]);
+    const after = sizeOf(added);
+    expect(after.rows).toBe(before.rows - 1);
+    await readUntil(
+      () => s.sinks.get(added)?.resizeCalls.at(-1),
+      (last) => last?.rows === after.rows && last.cols === after.cols,
+      "the pane was never drawn at the size its border status left it",
+    );
+  });
+
   it("the pane-meta format reads a control byte in a command as ?, on the running tmux", async () => {
     const { window } = await start();
     const pane = q(socket, [
