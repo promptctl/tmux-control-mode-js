@@ -48,3 +48,6 @@ export function seedStateLine({
   };
   return SEED_STATE_FIELDS.map((f) => values[f]).join(";");
 }
+
+/** What a seed writes between rows: DECSC, SGR 49, LF, DECRC, CR, CUD. */
+export const SEED_NEWLINE = "\x1b7\x1b[49m\n\x1b8\r\x1b[B";

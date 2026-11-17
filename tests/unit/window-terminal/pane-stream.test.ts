@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { FakeTmuxClient } from "../../helpers/fake-tmux-client.js";
-import { seedStateLine } from "../../helpers/seed-state.js";
+import { SEED_NEWLINE, seedStateLine } from "../../helpers/seed-state.js";
 import { PaneStream } from "../../../src/window-terminal/engine/pane-stream.js";
 import type {
   PaneActivity,
@@ -382,10 +382,10 @@ describe("PaneStream — state machine", () => {
     expect(client.capturePaneCount()).toBe(2); // fresh capture after reconnect
   });
 
-  it("capture-pane trailing newline does not produce a trailing \\r\\n in the seed text", async () => {
+  it("capture-pane trailing newline does not produce a trailing line feed in the seed text", async () => {
     // capture-pane -p always appends a trailing \n after the last row. The
     // parser splits on \n, producing a spurious "" tail. Joining with that
-    // element emits a trailing \r\n that scrolls xterm up one line, putting
+    // element emits a trailing line feed that scrolls xterm up one line, putting
     // the subsequent CUP one row too low. Stripping the trailer is the fix;
     // this test locks it in place.
     // A two-row pane: the trailer kept would make the seed three rows.
@@ -398,9 +398,9 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
     expect(stream.state).toBe("live");
     expect(sink.seedTexts).toHaveLength(1);
-    const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
+    const rows = sink.seedTexts[0]?.split(SEED_NEWLINE) ?? [];
     expect(rows).toHaveLength(2);
-    expect(rows[1]?.startsWith("row-1\x0f")).toBe(true);
+    expect(rows[1]?.startsWith("row-1\x1b")).toBe(true);
   });
 
   it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
@@ -425,11 +425,10 @@ describe("PaneStream — state machine", () => {
     // Row 0 carries the autowrap preamble prefix; the 6th padded blank (row 7)
     // carries the trailing mode epilogue, so only rows 2–6 are asserted as
     // pure empties and row 7 is asserted to be blank-but-for the epilogue.
-    const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
+    const rows = sink.seedTexts[0]?.split(SEED_NEWLINE) ?? [];
     expect(rows).toHaveLength(8);
     expect(rows[0]?.endsWith("AA")).toBe(true);
-    // BB is the capture's last row: SI and SGR 0 end its shift and pen.
-    expect(rows[1]).toBe("BB\x0f\x1b[0m");
+    expect(rows[1]).toBe("BB");
     expect(rows.slice(2, 7)).toEqual(["", "", "", "", ""]);
     // Row 7 is the final padded blank; its only content is the mode epilogue
     // (an ESC sequence), never seeded grid text.

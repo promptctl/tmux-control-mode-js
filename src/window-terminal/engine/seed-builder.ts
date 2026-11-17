@@ -107,21 +107,11 @@ export function buildSeed(
       ? captureOutput.slice(0, -1)
       : captureOutput.slice();
   const targetRows = Math.min(historyLines, historySize) + size.rows;
-  // SI and SGR 0 end the shift and pen the capture's last cell left set:
-  // capture-pane carries one pen across its lines and writes no reset after
-  // the last. They end it before a padding row scrolls in, which xterm fills
-  // with the current background; and tmux reports neither the program's
-  // shift nor its pen, so the live stream gets tmux's initial ones. G1 stays
-  // the line-drawing set, which a curses program designates once at startup
-  // and then reaches with SO.
-  const capture = stripped.map((row, i) =>
-    i === stripped.length - 1 ? `${row}\x0f${ESC}[0m` : row,
-  );
   const lines =
-    capture.length < targetRows
-      ? capture.concat(new Array(targetRows - capture.length).fill(""))
-      : capture;
-  const screen = lines.join("\r\n");
+    stripped.length < targetRows
+      ? stripped.concat(new Array(targetRows - stripped.length).fill(""))
+      : stripped;
+  const screen = lines.join(NEWLINE);
 
   // Restore terminal modes around the screen content: alt-screen + wrap
   // before drawing (they affect layout), input/cursor modes after. The CUP
@@ -173,7 +163,19 @@ const ESC = "\x1b";
 //   - G0 ASCII, G1 DEC Special Graphics, SI: capture-pane writes a
 //     line-drawing cell as SO … SI, so G1 must hold the line-drawing set; and
 //     ?1049l's DECRC restores whatever charset and shift DECSC saved.
-const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0\x0f`;
+const SI = "\x0f";
+const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0${SI}`;
+
+// Between rows: a line feed that scrolls in a line with the default
+// background, then the next row's start under the pen the last row left.
+// capture-pane carries one pen across its lines, writing only what changes,
+// and xterm fills a line a feed scrolls in with the current background, so a
+// bare CRLF after a row ending on a coloured cell paints the next row's tail.
+// DECSC/DECRC keep the pen across the feed with SGR 49 in force, and CUD
+// reaches the new line whether or not the feed scrolled.
+//   DECSC overwrites xterm's saved cursor, which tmux does not report, so the
+//   seed cannot restore it either way.
+const NEWLINE = `${ESC}7${ESC}[49m\n${ESC}8\r${ESC}[B`;
 
 // Before content: establish the correct screen buffer, clear it, then set
 // autowrap — all of which affect how screen content lays out.
@@ -197,6 +199,11 @@ function preamble(s: SeedState): string {
 // carry, then the cursor where tmux has it. DECSTBM and DECOM both home the
 // cursor, so the CUP comes after them; it is 1-indexed and, under DECOM,
 // relative to the region's top row.
+//   SI and SGR 0 end the shift and pen the capture's last cell left set:
+//   capture-pane writes no reset after it, and tmux reports neither the
+//   program's shift nor its pen, so the live stream gets tmux's initial ones.
+//   G1 stays the line-drawing set, which a curses program designates once
+//   at startup and then reaches with SO.
 //   tmux can hold the cursor outside the region with DECOM on (its DECSTBM
 //   homes to the screen's top-left), but xterm.js clamps the cursor into the
 //   region under DECOM, so the CUP addresses the nearest row it can hold.
@@ -212,6 +219,7 @@ function epilogue(s: SeedState): string {
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
     mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
+    `${SI}${ESC}[0m` + // SGR 0
     `${ESC}[${row - frame.top + 1};${s.cursor.col + 1}H` // CUP
   );
 }
@@ -274,7 +282,19 @@ export function parseSeedState(line: string): SeedState | null {
     SEED_STATE_FIELDS.map((name, i) => [name, values[i]]),
   ) as Record<SeedStateField, string>;
   const size = parseGrid(f.pane_width, f.pane_height);
-  if (size === null) return null;
+  const scrollRegion = {
+    top: Number(f.scroll_region_upper),
+    bottom: Number(f.scroll_region_lower),
+  };
+  // A region tmux can hold lies on the screen, top above bottom; the
+  // epilogue's DECSTBM and DECOM-relative CUP rely on it.
+  if (
+    size === null ||
+    scrollRegion.top > scrollRegion.bottom ||
+    scrollRegion.bottom >= size.rows
+  ) {
+    return null;
+  }
   return {
     cursor: { col: Number(f.cursor_x), row: Number(f.cursor_y) },
     size,
@@ -286,9 +306,6 @@ export function parseSeedState(line: string): SeedState | null {
     applicationKeypad: f.keypad_flag === "1",
     autowrap: f.wrap_flag === "1",
     originMode: f.origin_flag === "1",
-    scrollRegion: {
-      top: Number(f.scroll_region_upper),
-      bottom: Number(f.scroll_region_lower),
-    },
+    scrollRegion,
   };
 }
