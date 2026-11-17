@@ -1164,7 +1164,7 @@ describe("PaneStream — floods (pause/continue)", () => {
     stream.dispose();
   });
 
-  it("a report while the first capture is in flight takes the pane again", async () => {
+  it("a report while the first capture is in flight draws it, then takes the pane again", async () => {
     // The capture may have run before the resize the report says.
     const { client, stream, pane, name } = makePane();
     const sink = new RecordingSink();
@@ -1174,7 +1174,64 @@ describe("PaneStream — floods (pause/continue)", () => {
     client.injectSubscriptionChanged(name, PANE_ID, "100;30");
     await flushTicks();
     expect(client.capturePaneCount()).toBe(2);
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    expect(shape(sink)).toEqual([
+      "resize(100x30)",
+      "seed",
+      "resize(100x30)",
+      "seed",
+    ]);
+    stream.dispose();
+  });
+
+  it("a pane resized again and again while its capture flies is drawn that capture, then taken once more", async () => {
+    // A drag: layout changes faster than a capture's round trip. Dropping
+    // each capture would freeze the pane until the drag stopped.
+    const { client, stream, pane } = makePane();
+    const sink = new RecordingSink();
+    stream.attach(sink);
+    for (const cols of [90, 100, 110]) {
+      pane.cols = cols;
+      stream.resized();
+    }
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(2);
+    expect(shape(sink).filter((e) => e === "seed")).toHaveLength(2);
+    expect(shape(sink).at(-2)).toBe("resize(110x24)");
+    expect(stream.state).toBe("live");
+    stream.dispose();
+  });
+
+  it("after a failed capture, a report of the size the sink was last drawn at takes the pane again", async () => {
+    // The bytes behind the failed capture reached the sink at no known size.
+    const { client, stream, pane, name } = makePane();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    pane.failCapture = true;
+    pane.cols = 100;
+    stream.resized();
+    await flushTicks();
+    pane.failCapture = false;
+    pane.cols = 80;
+    const captures = client.capturePaneCount();
+    client.injectSubscriptionChanged(name, PANE_ID, "80;24");
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    stream.dispose();
+  });
+
+  it("a resize while tmux has the pane paused takes nothing until %continue", async () => {
+    const { client, stream } = makePane();
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    const captures = client.capturePaneCount();
+    stream.resized();
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures);
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(captures + 1);
+    expect(stream.state).toBe("live");
     stream.dispose();
   });
 

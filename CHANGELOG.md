@@ -91,7 +91,9 @@ All notable changes to this project are documented here. Format follows
   at. A pane is taken again when its window's `%layout-change` resizes its
   cell (sent at once for every resize and zoom), or when tmux reports a
   size the newest capture is not at (border status and scrollbars resize a
-  pane with no layout change).
+  pane with no layout change). A capture in flight when the pane resizes is
+  still drawn, then the pane is taken again, so a pane resized continuously
+  keeps showing its output.
 
 - `./electron`: proxies on one page no longer share what they hold.
   Closing one left the page's other proxies deaf to every event, so a
