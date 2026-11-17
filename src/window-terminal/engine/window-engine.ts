@@ -49,6 +49,7 @@ import {
   deriveView,
   factsFromSnapshot,
   paneDiff,
+  resizedPanes,
   phaseFor,
   reduceWindow,
   type FocusPolicy,
@@ -342,9 +343,17 @@ export class WindowEngine {
     if (this.sync.kind === "gone") return;
     this.queue?.push(ev);
     if (this.facts === null || this.sync.kind !== "synced") return;
-    const next = reduce(this.facts, ev);
+    const prev = this.facts;
+    const next = reduce(prev, ev);
     this.facts = next.facts;
     this.publish([...next.reports, ...this.reconcilePanes()]);
+    // [LAW:no-ambient-temporal-coupling] After the publish: a stream taken
+    //   again publishes its own `seeding`, over a layout the host already
+    //   has. A pane has no slot once a listener to that publish ended the
+    //   engine.
+    for (const id of resizedPanes(prev, next.facts)) {
+      this.panes.get(id)?.stream.resized();
+    }
   }
 
   private malformedValue(value: string): void {

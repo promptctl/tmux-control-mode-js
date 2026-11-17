@@ -7,6 +7,7 @@ import {
 } from "../../helpers/scripted-window.js";
 import {
   ONE_PANE,
+  layoutString,
   THREE_PANES,
   TWO_PANES,
   ZOOMED_0,
@@ -331,6 +332,49 @@ describe("WindowEngine — following the window", () => {
     client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
     expect(live(engine.state).zoomed).toBeNull();
     engine.dispose();
+  });
+
+  it("a pane whose cell the layout resizes is taken again; a pane it leaves alone is not", async () => {
+    const { client, engine } = mount();
+    await settle();
+    const captures = (pane: string): number =>
+      client
+        .commands()
+        .filter((c) => c.startsWith("capture-pane") && c.includes(`-t ${pane}`))
+        .length;
+    expect([captures("%0"), captures("%1")]).toEqual([1, 1]);
+
+    // Zoomed, %0 is the whole window; hidden, %1 keeps its cell.
+    client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([2, 1]);
+
+    client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    await settle();
+    expect([captures("%0"), captures("%1")]).toEqual([3, 1]);
+    engine.dispose();
+  });
+
+  it("a layout that resizes one pane and adds another reaches the host whole; a host that disposes on it leaves no pane behind", async () => {
+    // %0 narrows to 20 columns and %2 opens beside it.
+    const narrowed = layoutString(
+      "80x24,0,0{20x24,0,0,0,19x24,21,0,2,39x24,41,0,1}",
+    );
+    const { client, engine, s, states } = mount();
+    await settle();
+    const before = states.length;
+    engine.onState((st) => {
+      if (st.phase === "live" && st.window.panes.length === 3) engine.dispose();
+    });
+    client.injectLayoutChange(1, narrowed, narrowed, "*");
+    await settle();
+
+    expect(live(states[before]).panes.map((p) => p.resyncing)).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect([...s.disposed].sort()).toEqual([...s.created].sort());
   });
 
   it("ignores another window's events", async () => {
