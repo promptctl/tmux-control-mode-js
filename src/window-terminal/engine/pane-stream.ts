@@ -852,8 +852,9 @@ export class PaneStream implements ReseedTarget {
 
     // Hand the snapshot and the bytes behind it over as one ordered value, at
     // the size it was captured at. A failed capture is no picture and took no
-    // size: the sink keeps the one it has, and the size report that follows
-    // any change takes the pane again.
+    // size: the sink keeps the one it has. The pane may have moved past that
+    // size with nothing left to say so; the failure reaches `error`, and
+    // taking the pane again is the consumer's (see PaneStreamError).
     if (picture !== null) {
       fit(liveSink, picture.size);
       liveSink.seed(picture.captured, picture.cursor, trailing);

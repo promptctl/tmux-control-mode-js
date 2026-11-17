@@ -253,7 +253,9 @@ export class WebGLStressStore {
         existing.width !== info.width ||
         existing.height !== info.height
       ) {
-        existing.sink.resize(info.width, info.height);
+        // [LAW:one-source-of-truth] The stream sizes the sink, at the size
+        //   its next capture was taken at; the layout only says to take it.
+        existing.stream.resized();
         existing.width = info.width;
         existing.height = info.height;
       }

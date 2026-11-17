@@ -303,17 +303,10 @@ export class WindowEngine {
         snapshot.output,
       );
     }
-    let facts = first.facts;
-    const reports: Report[] = [];
-    for (const ev of this.queue ?? []) {
-      const next = reduce(facts, ev);
-      facts = next.facts;
-      reports.push(...next.reports);
-    }
+    const next = fold(first.facts, this.queue ?? []);
     this.queue = null;
-    this.facts = facts;
     this.sync = { kind: "synced" };
-    this.publish([...reports, ...this.reconcilePanes()]);
+    this.commit(next);
   }
 
   /**
@@ -343,15 +336,24 @@ export class WindowEngine {
     if (this.sync.kind === "gone") return;
     this.queue?.push(ev);
     if (this.facts === null || this.sync.kind !== "synced") return;
-    const prev = this.facts;
-    const next = reduce(prev, ev);
+    this.commit(fold(this.facts, [ev]));
+  }
+
+  /**
+   * Take folded facts as the window's, publish them, and take again every
+   * pane a layout change in the fold resized.
+   * [LAW:single-enforcer] The one place facts are taken, so a layout change
+   *   resizes a pane whether it arrived synced or during a bootstrap: a
+   *   reconnect's capture can be taken before a change the bootstrap replays.
+   */
+  private commit(next: Folded): void {
     this.facts = next.facts;
     this.publish([...next.reports, ...this.reconcilePanes()]);
     // [LAW:no-ambient-temporal-coupling] After the publish: a stream taken
     //   again publishes its own `seeding`, over a layout the host already
     //   has. A pane has no slot once a listener to that publish ended the
     //   engine.
-    for (const id of resizedPanes(prev, next.facts)) {
+    for (const id of next.resized) {
       this.panes.get(id)?.stream.resized();
     }
   }
@@ -487,16 +489,29 @@ export class WindowEngine {
   }
 }
 
+interface Folded {
+  readonly facts: WindowFacts;
+  readonly reports: readonly Report[];
+  /** The panes some event in the fold resized. */
+  readonly resized: ReadonlySet<PaneId>;
+}
+
 /**
- * One event over the facts. An event they cannot take leaves them as they
- * were, and is reported.
+ * Events over the facts, in order. An event they cannot take leaves them as
+ * they were, and is reported.
  */
-function reduce(
-  facts: WindowFacts,
-  ev: WindowEvent,
-): { readonly facts: WindowFacts; readonly reports: readonly Report[] } {
-  const next = reduceWindow(facts, ev);
-  return next.kind === "facts"
-    ? { facts: next.facts, reports: [] }
-    : { facts, reports: [{ seam: "layout", cause: new Error(next.reason) }] };
+function fold(facts: WindowFacts, events: readonly WindowEvent[]): Folded {
+  const reports: Report[] = [];
+  const resized = new Set<PaneId>();
+  let now = facts;
+  for (const ev of events) {
+    const next = reduceWindow(now, ev);
+    if (next.kind !== "facts") {
+      reports.push({ seam: "layout", cause: new Error(next.reason) });
+      continue;
+    }
+    for (const id of resizedPanes(now, next.facts)) resized.add(id);
+    now = next.facts;
+  }
+  return { facts: now, reports, resized };
 }

@@ -576,6 +576,26 @@ describe("WindowEngine — the connection", () => {
     engine.dispose();
   });
 
+  it("a zoom undone while the engine re-bootstraps takes the zoomed pane again", async () => {
+    const { client, engine } = mount();
+    await settle();
+    const captures = (pane: string): number =>
+      client
+        .commands()
+        .filter((c) => c.startsWith("capture-pane") && c.includes(`-t ${pane}`))
+        .length;
+    client.setConnectionState({ status: "reconnecting", attempt: 1 });
+    client.setConnectionState({ status: "ready" });
+    // Queued behind the bootstrap: a reconnect's capture may predate them.
+    client.injectLayoutChange(1, TWO_PANES, ZOOMED_0, "*Z");
+    client.injectLayoutChange(1, TWO_PANES, TWO_PANES, "*");
+    const before = captures("%0") - captures("%1");
+    await settle();
+    expect(engine.state.phase).toBe("live");
+    expect(captures("%0") - captures("%1")).toBe(before + 1);
+    engine.dispose();
+  });
+
   it("a panes's flood shows as resyncing until it is reseeded", async () => {
     const { client, engine } = mount();
     await settle();

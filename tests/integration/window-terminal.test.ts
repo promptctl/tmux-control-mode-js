@@ -252,7 +252,7 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
 
   // tmux's size report is quiet for a zoom undone inside one of its checks;
   // the capture taken while zoomed must not stay on screen.
-  it("a zoom undone at once leaves the pane drawn at the size it went back to, with no capture after", async () => {
+  it("a picture taken while zoomed, the zoom undone at once, leaves the pane drawn at the size it went back to", async () => {
     const { c, window } = await start();
     const added = q(socket, [
       "split-window",
@@ -275,14 +275,27 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "the pane was never drawn at its tiled size",
     );
 
-    // Zoomed and back before tmux's next check: its report never changes.
-    const arrived = sink().seedCalls.length;
+    // Past tmux's first size report, nothing is in flight.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // A picture taken while zoomed (a `%continue` takes the pane again),
+    // then the zoom undone at once: tmux's report, quiet unless one of its
+    // checks fell inside the zoom, is not what takes the pane again.
     q(socket, ["resize-pane", "-Z", "-t", added]);
-    q(socket, ["resize-pane", "-Z", "-t", added]);
+    await c.execute(`refresh-client -A '${added}:pause'`);
+    const atZoom = sink().seedCalls.length;
+    await c.execute(`refresh-client -A '${added}:continue'`);
     await readUntil(
       () => sink().seedCalls.length,
-      (n) => n > arrived,
-      "the pane was not taken again after the zoom",
+      (n) => n > atZoom,
+      "the pane was not taken while zoomed",
+    );
+    q(socket, ["resize-pane", "-Z", "-t", added]);
+    const atUnzoom = sink().seedCalls.length;
+    await readUntil(
+      () => sink().seedCalls.length,
+      (n) => n > atUnzoom,
+      "the pane was not taken again after the zoom was undone",
     );
     await readUntil(
       () => sink().resizeCalls.at(-1),
@@ -290,10 +303,12 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "the unzoomed pane was never drawn at its tiled size again",
     );
 
-    // Past tmux's next size check, nothing takes the pane again.
+    // Past tmux's next check the pane is still drawn at its tiled size, and
+    // was taken again at most once more: by a report of the zoomed size,
+    // when a check fell inside the zoom.
     const seeds = sink().seedCalls.length;
     await new Promise((r) => setTimeout(r, 1500));
-    expect(sink().seedCalls.length).toBe(seeds);
+    expect(sink().seedCalls.length).toBeLessThanOrEqual(seeds + 1);
     expect(sink().resizeCalls.at(-1)).toEqual(tiled);
   });
 
