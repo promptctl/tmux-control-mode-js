@@ -111,18 +111,30 @@ export function buildSeed(
     stripped.length < targetRows
       ? stripped.concat(new Array(targetRows - stripped.length).fill(""))
       : stripped;
-  const screen = lines.join(NEWLINE);
+  // The draw scrolls every line in by the start of the cursor's row, so the
+  // save there outlives the rest of the draw: the rows from the cursor's down
+  // are joined by bare CR LF, which scrolls nothing and saves nothing.
+  const row = cursorRow(state);
+  const at = lines.length - size.rows + row;
+  const screen =
+    lines
+      .slice(0, at)
+      .map((line) => line + NEWLINE)
+      .join("") +
+    scrollIn(size.rows - 1 - row, row) +
+    lines.slice(at).join("\r\n");
 
   // Restore terminal modes around the screen content: alt-screen + wrap
-  // before drawing (they affect layout), input/cursor modes after. The CUP
-  // lands last, so it reflects the final restored state.
+  // before drawing (they affect layout), input/cursor modes after.
   //
   // The capture text arrives as Latin-1 (one code unit per raw byte — see the
   // transport). Convert back to the exact byte sequence so the sink receives
   // RAW BYTES, identical in kind to the live `write()` path; the renderer is
   // the single decoding authority. We never UTF-8-decode terminal data. The
   // mode escapes are ASCII, so they encode 1:1.
-  const captured = latin1ToBytes(preamble(state) + screen + epilogue(state));
+  const captured = latin1ToBytes(
+    preamble(state) + screen + epilogue(state, row, lines[at]),
+  );
 
   return { captured, size };
 }
@@ -176,8 +188,31 @@ const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0${SI}`
 // ESC 7/8: every TerminalSink here implements them, the demo's
 // AttributionEngine included.
 //   The save overwrites the cursor a program saved before the reseed, which
-//   tmux does not report; a DECRC after a reseed lands on the seed's last row.
+//   tmux does not report; a DECRC after a reseed lands at the start of the
+//   cursor's row (see `scrollIn`).
 const NEWLINE = `${ESC}[s${ESC}[49m\n${ESC}[u\r${ESC}[B`;
+
+// At the start of the cursor's row: save the pen and shift the capture has in
+// force there, feed in every line the screen still lacks with the default
+// background, then take the pen back and return to the row's start. Every row
+// from here down lands on a line already in the screen, so the save survives
+// for the epilogue to reprint the cursor's row with. The viewport sits on the
+// bottom of the buffer, so the CUP addresses the cursor's row however many
+// lines a full scrollback trimmed.
+function scrollIn(feeds: number, row: number): string {
+  return `${ESC}[s${ESC}[49m${"\n".repeat(feeds)}${ESC}[u${ESC}[${row + 1};1H`;
+}
+
+// The screen row the seed leaves the cursor on: tmux's. tmux can hold the
+// cursor outside the region with DECOM on (its DECSTBM homes to the screen's
+// top-left), but xterm.js clamps the cursor into the region under DECOM, so
+// the seed takes the nearest row it can hold.
+function cursorRow(s: SeedState): number {
+  const frame = s.originMode
+    ? s.scrollRegion
+    : { top: 0, bottom: s.size.rows - 1 };
+  return Math.min(Math.max(s.cursor.row, frame.top), frame.bottom);
+}
 
 // Before content: establish the correct screen buffer, clear it, then set
 // autowrap — all of which affect how screen content lays out.
@@ -197,32 +232,36 @@ function preamble(s: SeedState): string {
   );
 }
 
-// After content: the scroll region and the modes the captured grid can't
-// carry, then the cursor where tmux has it. DECSTBM and DECOM both home the
-// cursor, so the CUP comes after them; it is 1-indexed and, under DECOM,
-// relative to the region's top row.
+// After content: the scroll region, the cursor where tmux has it, then the
+// modes the captured grid can't carry. DECSTBM and DECOM both home the
+// cursor, so the cursor comes after them; its CUP is 1-indexed and, under
+// DECOM, relative to the region's top row.
+//   tmux reports cursor_x == pane_width while a wrap is pending: the program
+//   printed into the last column, and its next character starts the next
+//   row. Only printing there pends a wrap — a CUP or SCORC clamps to the last
+//   column — so the seed reprints the cursor's row under the pen and shift
+//   `scrollIn` saved at its start. IRM comes after, so the reprint overwrites.
+//   [LAW:dataflow-not-control-flow] Every seed draws the same way; tmux's
+//   cursor column selects only the bytes that place the cursor.
 //   SI and SGR 0 end the shift and pen the capture's last cell left set:
 //   capture-pane writes no reset after it, and tmux reports neither the
 //   program's shift nor its pen, so the live stream gets tmux's initial ones.
 //   G1 stays the line-drawing set, which a curses program designates once
-//   at startup and then reaches with SO.
-//   tmux can hold the cursor outside the region with DECOM on (its DECSTBM
-//   homes to the screen's top-left), but xterm.js clamps the cursor into the
-//   region under DECOM, so the CUP addresses the nearest row it can hold.
-function epilogue(s: SeedState): string {
-  const frame = s.originMode
-    ? s.scrollRegion
-    : { top: 0, bottom: s.size.rows - 1 };
-  const row = Math.min(Math.max(s.cursor.row, frame.top), frame.bottom);
+//   at startup and then reaches with SO. Neither clears a pending wrap.
+function epilogue(s: SeedState, row: number, cursorLine: string): string {
+  const cup = (col: number): string =>
+    `${ESC}[${row - (s.originMode ? s.scrollRegion.top : 0) + 1};${col}H`;
   return (
     `${ESC}[${s.scrollRegion.top + 1};${s.scrollRegion.bottom + 1}r` +
     mode(s.originMode, `${ESC}[?6h`, `${ESC}[?6l`) + // DECOM
+    (s.cursor.col === s.size.cols
+      ? `${ESC}[u${cup(1)}${cursorLine}` // SCORC, CUP, the row again
+      : cup(s.cursor.col + 1)) +
     mode(s.cursorVisible, `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
     mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
-    `${SI}${ESC}[0m` + // SGR 0
-    `${ESC}[${row - frame.top + 1};${s.cursor.col + 1}H` // CUP
+    `${SI}${ESC}[0m` // SGR 0
   );
 }
 
