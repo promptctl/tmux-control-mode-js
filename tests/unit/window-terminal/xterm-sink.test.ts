@@ -4,8 +4,8 @@
 // performs against a (mocked) xterm `Terminal`, and the lifecycle invariants
 // it owes its callers. Covers:
 //
-//   - seed(captured, cursor): writes captured text + ANSI CUP escape exactly
-//     when cursor is non-null. (Gate 4 fast-path correctness.)
+//   - seed(captured, cursor): writes captured text, then the cursor as an
+//     ANSI CUP escape. (Gate 4 fast-path correctness.)
 //   - write(Uint8Array): forwards by reference; never decodes (Gate 5).
 //   - resize(cols, rows): reaches xterm when called, in order with seed()
 //     and write().
@@ -220,8 +220,8 @@ describe("XtermSink: seed", () => {
     sink.dispose();
   });
 
-  it("applies captured, CUP escape, THEN trailing bytes when cursor and trailing are both present", () => {
-    // The full combination: a non-null cursor makes seed() emit two
+  it("applies captured, CUP escape, THEN trailing bytes", () => {
+    // The full combination: seed() emits two
     // term.write calls (captured + CUP), and non-empty
     // trailing follows — so the ordering is captured → CUP → each trailing chunk.
     const { sink, term } = newSink();
@@ -241,18 +241,6 @@ describe("XtermSink: seed", () => {
     sink.dispose();
   });
 
-  it("writes captured text without the CUP escape when cursor is null", () => {
-    const { sink, term } = newSink();
-    sink.resize(80, 24);
-    sink.seed(enc("only text"), null, []);
-    expect(term.write).toHaveBeenCalledTimes(1);
-    expect(term.write).toHaveBeenCalledWith(
-      enc("only text"),
-      expect.any(Function),
-    );
-    sink.dispose();
-  });
-
   it("seed after dispose is a no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
@@ -263,11 +251,12 @@ describe("XtermSink: seed", () => {
   it("a seed never clears: its own bytes carry the clear, in order", () => {
     const { sink, term } = newSink();
     sink.write(enc("before"));
-    sink.seed(enc("RESEED"), null, [enc("after")]);
+    sink.seed(enc("RESEED"), { col: 0, row: 0 }, [enc("after")]);
     expect(term.clear).not.toHaveBeenCalled();
     expect(term.write.mock.calls.map((c) => c[0])).toEqual([
       enc("before"),
       enc("RESEED"),
+      "\x1b[1;1H",
       enc("after"),
     ]);
     sink.dispose();
@@ -304,13 +293,13 @@ describe("XtermSink: resize", () => {
     term.resize.mockImplementation(() => order.push("resize"));
     term.write.mockImplementation(() => order.push("write"));
     sink.resize(80, 24);
-    sink.seed(enc("snap"), null, []);
+    sink.seed(enc("snap"), { col: 0, row: 0 }, []);
     sink.resize(120, 30);
     expect(term.resize.mock.calls).toEqual([
       [80, 24],
       [120, 30],
     ]);
-    expect(order).toEqual(["resize", "write", "resize"]);
+    expect(order).toEqual(["resize", "write", "write", "resize"]);
     sink.dispose();
   });
 
@@ -582,7 +571,7 @@ describe("XtermSink: dispose lifecycle", () => {
   it("post-dispose: write, seed, resize, setFont, setOptions, remeasure all no-op", () => {
     const { sink, term } = newSink();
     sink.dispose();
-    sink.seed(enc("x"), null, []);
+    sink.seed(enc("x"), { col: 0, row: 0 }, []);
     sink.write(new Uint8Array([1]));
     sink.resize(80, 24);
     sink.setFont(99);

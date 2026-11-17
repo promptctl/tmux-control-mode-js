@@ -57,10 +57,10 @@ async function paneSize(
 }
 
 class CollectorSink implements TerminalSink {
-  seedCalls: { byteLength: number; cursor: SeedCursor | null }[] = [];
+  seedCalls: { byteLength: number; cursor: SeedCursor }[] = [];
   resizeCalls: { cols: number; rows: number }[] = [];
   writeCount = 0;
-  seed(captured: Uint8Array, cursor: SeedCursor | null): void {
+  seed(captured: Uint8Array, cursor: SeedCursor): void {
     // seed carries raw terminal bytes (may include 0x80-0xFF / invalid UTF-8),
     // so assert on byteLength rather than a lossy UTF-8 decode.
     this.seedCalls.push({ byteLength: captured.byteLength, cursor });
@@ -231,7 +231,7 @@ class SeedTranscripts implements TerminalSink {
   readonly seeds: string[] = [];
   seed(
     captured: Uint8Array,
-    _cursor: SeedCursor | null,
+    _cursor: SeedCursor,
     trailing: readonly Uint8Array[],
   ): void {
     const latin1 = (b: Uint8Array): string => Buffer.from(b).toString("latin1");

@@ -6,6 +6,7 @@
 
 import { FakeTmuxClient } from "./fake-tmux-client.js";
 import { TWO_PANES } from "./layout.js";
+import { seedStateLine } from "./seed-state.js";
 import type { TerminalSink } from "../../src/window-terminal/engine/terminal-sink.js";
 
 export interface World {
@@ -38,7 +39,7 @@ export function scriptedTmux(world: World): FakeTmuxClient {
         paneLine(2, "new"),
       ].join("\n");
     }
-    if (cmd.startsWith("display-message -p -t %")) return "0;0";
+    if (cmd.startsWith("display-message -p -t %")) return seedStateLine();
     return "";
   });
   return client;

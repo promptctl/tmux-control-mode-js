@@ -178,7 +178,7 @@ export class XtermSink implements TerminalSink {
 
   seed(
     captured: Uint8Array,
-    cursor: SeedCursor | null,
+    cursor: SeedCursor,
     trailing: readonly Uint8Array[],
   ): void {
     if (this.isDisposed) return;
@@ -198,20 +198,14 @@ export class XtermSink implements TerminalSink {
     // async (processes data in chunks across frames). The callback fires after
     // the data is fully parsed, ensuring the viewport scrolls to the current
     // screen AFTER the seed content is rendered — not before.
-    if (cursor !== null) {
-      this.terminal.write(captured);
-      // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
-      // `SeedCursor.col`/`row` are 0-indexed (see ../engine/terminal-sink.ts). Adding
-      // 1 here is the only translation; sinks that don't position a hardware
-      // cursor (BufferingSink) ignore the cursor entirely.
-      this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
-        if (!this.isDisposed) this.terminal.scrollToBottom();
-      });
-    } else {
-      this.terminal.write(captured, () => {
-        if (!this.isDisposed) this.terminal.scrollToBottom();
-      });
-    }
+    this.terminal.write(captured);
+    // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
+    // `SeedCursor.col`/`row` are 0-indexed (see ../engine/terminal-sink.ts). Adding
+    // 1 here is the only translation; sinks that don't position a hardware
+    // cursor (BufferingSink) ignore the cursor entirely.
+    this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
+      if (!this.isDisposed) this.terminal.scrollToBottom();
+    });
     for (const chunk of trailing) this.terminal.write(chunk);
   }
 

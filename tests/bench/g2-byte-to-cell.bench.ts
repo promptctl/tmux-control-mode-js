@@ -28,7 +28,7 @@ class TimingSink implements TerminalSink {
   lastWriteAt = 0;
   seed(
     _captured: Uint8Array,
-    _c: SeedCursor | null,
+    _c: SeedCursor,
     _trailing: readonly Uint8Array[],
   ): void {
     /* no-op */

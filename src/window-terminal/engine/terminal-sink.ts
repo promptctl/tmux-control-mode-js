@@ -98,14 +98,10 @@ export interface TerminalSink {
    * sequence of separate calls. It is empty on a re-attach (the cached seed has
    * no pending live bytes) and whenever tmux wrote nothing after the capture.
    * A sink MUST apply `captured` then each `trailing` chunk in order.
-   *
-   * `cursor` is `null` when tmux did not return a parsable cursor reply;
-   * sinks should leave the cursor at the natural end of the captured bytes
-   * in that case.
    */
   seed(
     captured: Uint8Array,
-    cursor: SeedCursor | null,
+    cursor: SeedCursor,
     trailing: readonly Uint8Array[],
   ): void;
 
@@ -164,7 +160,7 @@ export interface TerminalSink {
 /** A recorded `seed()` call. */
 export interface SeedCall {
   readonly captured: Uint8Array;
-  readonly cursor: SeedCursor | null;
+  readonly cursor: SeedCursor;
 }
 
 export interface BufferingSinkOptions {
@@ -201,7 +197,7 @@ export class BufferingSink implements TerminalSink {
 
   seed(
     captured: Uint8Array,
-    cursor: SeedCursor | null,
+    cursor: SeedCursor,
     trailing: readonly Uint8Array[],
   ): void {
     if (this.isDisposed) return;

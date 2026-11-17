@@ -51,6 +51,7 @@ import { createIpcHub, invokeRaw, RAW_PROXY } from "./_helpers/ipc-hub.js";
 import { STARTUP_GREETING } from "./_helpers/greeting.js";
 import { lineNumberOf, replyTo } from "./_helpers/wire.js";
 import { windowLayoutFields } from "../../src/protocol/layout.js";
+import { seedStateLine } from "../helpers/seed-state.js";
 import {
   commandLine,
   refreshClientClearFlags,
@@ -2797,7 +2798,11 @@ describe("Electron IPC bridge — each proxy on a page is its own peer", () => {
       ...t.transport,
       send(cmd) {
         const result = t.transport.send(cmd);
-        queueMicrotask(() => t.answer());
+        // A pane capture's line prints its state line last, as tmux does.
+        const output = cmd.includes("display-message -p -t %")
+          ? [seedStateLine()]
+          : [];
+        queueMicrotask(() => t.answer(output));
         return result;
       },
     };

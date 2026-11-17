@@ -55,7 +55,7 @@ export class WebGLGridSink implements TerminalSink {
 
   seed(
     captured: Uint8Array,
-    _cursor: SeedCursor | null,
+    _cursor: SeedCursor,
     trailing: readonly Uint8Array[],
   ): void {
     // The snapshot is the whole picture (TerminalSink.seed), so the replay log

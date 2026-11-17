@@ -26,7 +26,13 @@
 //   External views (`get state()`) read from `currentState` directly.
 
 import type { Grid, TerminalSink } from "./terminal-sink.js";
-import { buildSeed, parseGrid, type Seed } from "./seed-builder.js";
+import {
+  buildSeed,
+  parseGrid,
+  parseSeedState,
+  type Seed,
+  type SeedState,
+} from "./seed-builder.js";
 import { uniqueToken } from "./token.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
 // [LAW:one-way-deps] The window-terminal engine runs in the browser; it imports
@@ -40,7 +46,12 @@ import type {
   TmuxConnection,
   TmuxEventMap,
 } from "../../browser.js";
-import { paneScope, isConnectionGone, sendKeyBytes } from "../../browser.js";
+import {
+  paneScope,
+  isConnectionGone,
+  sendKeyBytes,
+  TmuxReplyFormatError,
+} from "../../browser.js";
 import type { CommandResponse } from "../../protocol/index.js";
 
 /**
@@ -219,10 +230,10 @@ interface Capturing {
   readonly begins: Map<number, number>;
 }
 
-/** A capture's reply, split, with where its `%begin` fell in the buffer. */
+/** A capture's reply, parsed, with where its `%begin` fell in the buffer. */
 interface CaptureReply {
   readonly output: readonly string[];
-  readonly stateLine: string;
+  readonly state: SeedState;
   readonly begunAt: number;
 }
 
@@ -811,7 +822,7 @@ export class PaneStream implements ReseedTarget {
     if (this.currentState === "disposed") return;
     // Every failed capture reports, even one dropped below: a failure is true
     // of the pane whether or not this capture is used.
-    const reply = this.readCapture(cycle, outcome);
+    const reply = this.readCapture(cycle, stateCmd, outcome);
 
     // A capture taken while tmux has the pane paused misses what tmux dropped:
     // drop it and stay seeding. `%continue` reseeds.
@@ -846,7 +857,7 @@ export class PaneStream implements ReseedTarget {
     const picture =
       reply === null
         ? null
-        : buildSeed(reply.output, reply.stateLine, this.historyLines);
+        : buildSeed(reply.output, reply.state, this.historyLines);
     // The buffered bytes tmux wrote before the capture's `%begin` are in the
     // snapshot; `trailing` is the rest. A failed capture holds none of them.
     const trailing = cycle.buffer.slice(reply === null ? 0 : reply.begunAt);
@@ -904,11 +915,13 @@ export class PaneStream implements ReseedTarget {
    *   indistinguishable from "the pane is genuinely blank" — so the failure is
    *   lifted to the 'error' seam. `reportError` classifies connection-gone as
    *   quiet (the reconnect handler re-drives the seed); a live tmux failure
-   *   (%error, corrupted terminator) or a connection that settled the reply
-   *   ahead of its `%begin` surfaces.
+   *   (%error, corrupted terminator), a connection that settled the reply
+   *   ahead of its `%begin`, or a state reply not in `stateCmd`'s format
+   *   surfaces.
    */
   private readCapture(
     cycle: Capturing,
+    stateCmd: string,
     outcome: Outcome<CommandResponse>,
   ): CaptureReply | null {
     if (!outcome.ok) {
@@ -928,11 +941,13 @@ export class PaneStream implements ReseedTarget {
       );
       return null;
     }
-    return {
-      output: output.slice(0, -1),
-      stateLine: output.at(-1) ?? "",
-      begunAt,
-    };
+    const stateLine = output.at(-1) ?? "";
+    const state = parseSeedState(stateLine);
+    if (state === null) {
+      this.reportError("seed", new TmuxReplyFormatError(stateCmd, [stateLine]));
+      return null;
+    }
+    return { output: output.slice(0, -1), state, begunAt };
   }
 
   private handleSubscriptionChanged(
@@ -1011,7 +1026,6 @@ function parseDimensions(value: string): Grid | null {
   return rest.length === 0 ? parseGrid(width, height) : null;
 }
 
-// Size `sink` to `grid`, when the stream knows one.
-function fit(sink: TerminalSink, grid: Grid | null): void {
-  if (grid !== null) sink.resize(grid.cols, grid.rows);
+function fit(sink: TerminalSink, grid: Grid): void {
+  sink.resize(grid.cols, grid.rows);
 }

@@ -52,7 +52,7 @@ class TimingSink implements TerminalSink {
   hasSeed = false;
   seed(
     _captured: Uint8Array,
-    _c: SeedCursor | null,
+    _c: SeedCursor,
     _trailing: readonly Uint8Array[],
   ): void {
     this.seedAt = performance.now();
