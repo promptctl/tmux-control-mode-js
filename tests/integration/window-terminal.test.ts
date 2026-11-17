@@ -25,7 +25,7 @@ import {
   WindowEngine,
   type PaneSurfaces,
 } from "../../src/window-terminal/engine/window-engine.js";
-import type { TerminalConnection } from "../../src/window-terminal/engine/pane-stream.js";
+import type { TerminalConnection } from "../../src/window-terminal/engine/window-engine.js";
 import { BufferingSink } from "../../src/window-terminal/engine/terminal-sink.js";
 import type {
   WindowTerminalState,

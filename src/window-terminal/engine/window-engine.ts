@@ -14,7 +14,12 @@
 // [LAW:no-silent-failure] A tmux command that fails while tmux is reachable
 //   reaches `onError`; a lost connection is the `stale` phase, never an error.
 
-import type { TmuxEventMap } from "../../browser.js";
+import type {
+  ClientSizeSurface,
+  SubscriptionSurface,
+  TmuxConnection,
+  TmuxEventMap,
+} from "../../browser.js";
 import {
   TmuxReplyFormatError,
   isConnectionGone,
@@ -40,7 +45,7 @@ import {
   parseSnapshot,
   snapshotCommand,
 } from "./bootstrap.js";
-import { PaneStream, type TerminalConnection } from "./pane-stream.js";
+import { PaneStream } from "./pane-stream.js";
 import { rethrowUnlessUnsubscribed } from "./teardown.js";
 import type { Grid, TerminalSink } from "./terminal-sink.js";
 import { deliver, type Listener } from "./deliver.js";
@@ -48,7 +53,6 @@ import { uniqueToken } from "./token.js";
 import {
   deriveView,
   factsFromSnapshot,
-  paneDiff,
   phaseFor,
   reduceWindow,
   type FocusPolicy,
@@ -81,6 +85,16 @@ type Report = Omit<WindowTerminalError, "windowId">;
 export interface PaneSurfaces {
   create(pane: PaneId, keys: (bytes: Uint8Array) => void): PaneSurface;
 }
+
+/**
+ * What a window terminal runs over: a connection whose format subscriptions
+ * are its own methods, so a bridge can end them when the page goes away.
+ * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client are all
+ * one.
+ */
+export type TerminalConnection = TmuxConnection &
+  SubscriptionSurface &
+  ClientSizeSurface;
 
 export interface WindowEngineOptions {
   readonly connection: TerminalConnection;
@@ -312,7 +326,8 @@ export class WindowEngine {
     this.queue = null;
     this.facts = facts;
     this.sync = { kind: "synced" };
-    this.publish([...reports, ...this.reconcilePanes()]);
+    this.publish([...reports, ...this.reconcilePanes(facts)]);
+    this.resizePanes(facts);
   }
 
   /**
@@ -344,7 +359,8 @@ export class WindowEngine {
     if (this.facts === null || this.sync.kind !== "synced") return;
     const next = reduce(this.facts, ev);
     this.facts = next.facts;
-    this.publish([...next.reports, ...this.reconcilePanes()]);
+    this.publish([...next.reports, ...this.reconcilePanes(next.facts)]);
+    this.resizePanes(next.facts);
   }
 
   private malformedValue(value: string): void {
@@ -359,27 +375,35 @@ export class WindowEngine {
   // -------------------------------------------------------------------------
 
   /**
-   * One stream and one surface per pane in the layout, each at its size in
-   * the layout. A zoom hides panes; it never removes them, so zooming detaches
-   * nothing, and a hidden pane keeps its tiled cell, as tmux keeps its size.
+   * One stream and one surface per pane in the layout, each created at its
+   * size in the layout. A zoom hides panes; it never removes them, so zooming
+   * detaches nothing.
+   */
+  private reconcilePanes(facts: WindowFacts): Report[] {
+    const ids = new Set(facts.panes.map((p) => p.id));
+    for (const id of [...this.panes.keys()]) {
+      if (!ids.has(id)) this.disposePane(id);
+    }
+    return facts.panes.flatMap(({ id, rect }) =>
+      this.panes.has(id) ? [] : this.createPane(id, rect),
+    );
+  }
+
+  /**
+   * Each pane's stream at its size in the layout; a hidden pane in a zoomed
+   * window keeps its tiled cell, as tmux keeps its size.
    * [LAW:one-source-of-truth] The layout is every pane's size: tmux sends
    *   `%layout-change` for every resize and zoom, ahead of the reply to any
    *   command run after it, so a stream never needs a second report of it.
+   * [LAW:no-ambient-temporal-coupling] Run after the layout is published: a
+   *   stream that captures again for its new size publishes its own `seeding`
+   *   state, over a layout the host already has. A pane has no slot once a
+   *   listener to that publish ended the engine.
    */
-  private reconcilePanes(): Report[] {
-    const facts = this.facts;
-    if (facts === null) return [];
-    const { removed } = paneDiff(
-      [...this.panes.keys()],
-      facts.panes.map((p) => p.id),
-    );
-    for (const id of removed) this.disposePane(id);
-    return facts.panes.flatMap(({ id, rect }) => {
-      const slot = this.panes.get(id);
-      if (slot === undefined) return this.createPane(id, rect);
-      slot.stream.resize(rect);
-      return [];
-    });
+  private resizePanes(facts: WindowFacts): void {
+    for (const { id, rect } of facts.panes) {
+      this.panes.get(id)?.stream.resize(rect);
+    }
   }
 
   private createPane(id: PaneId, size: Grid): Report[] {

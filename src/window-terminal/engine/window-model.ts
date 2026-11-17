@@ -232,19 +232,6 @@ export function factsFromSnapshot(s: WindowSnapshot): Reduced {
   );
 }
 
-/** The panes `next` has that `prev` does not, and the reverse. */
-export function paneDiff(
-  prev: readonly PaneId[],
-  next: readonly PaneId[],
-): { readonly added: readonly PaneId[]; readonly removed: readonly PaneId[] } {
-  const before = new Set(prev);
-  const after = new Set(next);
-  return {
-    added: next.filter((id) => !before.has(id)),
-    removed: prev.filter((id) => !after.has(id)),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Focus
 // ---------------------------------------------------------------------------

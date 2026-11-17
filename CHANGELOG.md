@@ -80,8 +80,16 @@ All notable changes to this project are documented here. Format follows
   tmux reports a pane's size to a control client only for a pane in that
   client's session, and only at its next check, up to a second later, so a
   pane in another session stayed blank and any other pane waited for the
-  report. Each capture now reads the pane's size with its contents; until
-  tmux reports, the pane is drawn at that size.
+  report. Each capture now reads the pane's size with its contents, and is
+  drawn at that size.
+
+- `./window-terminal`: a zoom undone at once is drawn at the size the pane
+  went back to. A pane's size came from a per-pane format subscription,
+  which tmux checks once a second and sends only when it changed, so a
+  capture taken while zoomed was drawn at the old size and nothing captured
+  again. The size now comes from the window's `%layout-change`, sent for
+  every resize and zoom, and a pane no longer holds a subscription of its
+  own.
 
 - `./electron`: proxies on one page no longer share what they hold.
   Closing one left the page's other proxies deaf to every event, so a

@@ -15,7 +15,7 @@ export type { PaneId, WindowId } from "./ids.js";
 export { parsePaneId, parseWindowId } from "./ids.js";
 export type { FontRange, Sizing } from "./options.js";
 export type { XtermAddons, XtermOptions } from "./render/xterm-options.js";
-export type { TerminalConnection } from "./engine/pane-stream.js";
+export type { TerminalConnection } from "./engine/window-engine.js";
 export type {
   PaneRect,
   PaneView,

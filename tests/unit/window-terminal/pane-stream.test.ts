@@ -305,7 +305,7 @@ describe("PaneStream — state machine", () => {
     await flushTicks();
 
     expect(stream.state).toBe("live");
-    expect(sink.events).toEqual(["write(1B)"]);
+    expect(sink.events).toEqual(["resize(80x24)", "write(1B)"]);
   });
 
   it("a failed seed is NOT cached; the next attach retries capture-pane", async () => {
@@ -939,20 +939,20 @@ describe("PaneStream — pane size", () => {
     stream.dispose();
   });
 
-  it("a failed capture leaves the sink's size alone; a new size captures again", async () => {
-    // The bytes behind the failed capture reached the sink at whatever size
-    // it had; nothing else would redraw them at tmux's.
+  it("a failed capture draws the pane's live bytes at its size; a new size captures again", async () => {
+    // No picture states a size, so the pane's size in the layout is the one
+    // its program draws for.
     const { stream, pane } = makeSizedStream({ cols: 80, rows: 24 });
     pane.failCapture = true;
     const sink = new RecordingSink();
     stream.attach(sink);
     await flushTicks();
-    expect(shape(sink)).toEqual([]);
+    expect(shape(sink)).toEqual(["resize(80x24)"]);
     pane.failCapture = false;
     pane.cursor = sized(100, 30);
     stream.resize({ cols: 100, rows: 30 });
     await flushTicks();
-    expect(shape(sink)).toEqual(["resize(100x30)", "seed"]);
+    expect(shape(sink)).toEqual(["resize(80x24)", "resize(100x30)", "seed"]);
     stream.dispose();
   });
 

@@ -32,29 +32,13 @@ import { buildSeed, type Seed } from "./seed-builder.js";
 // (which pulls the Node-only transport and breaks browser bundlers).
 import type {
   BytesSink,
-  ClientSizeSurface,
   Outcome,
-  SubscriptionSurface,
   TmuxConnection,
   TmuxEventMap,
 } from "../../browser.js";
 import { paneScope, isConnectionGone, sendKeyBytes } from "../../browser.js";
 import type { CommandResponse } from "../../protocol/index.js";
 
-/**
- * What a window terminal runs over: a connection whose format subscriptions
- * are its own methods, so a bridge can end them when the page goes away.
- * `TmuxClient`, `WebSocketTmuxClient` and the Electron renderer client are all
- * one.
- *
- * [LAW:no-ambient-temporal-coupling] A seed also relies on an order the types
- * cannot state, which every one of them keeps: events and pane bytes arrive in
- * the order tmux wrote them, and a command's reply resolves after its `begin`
- * event. A reply that outruns its `begin` fails the seed (`lastError`).
- */
-export type TerminalConnection = TmuxConnection &
-  SubscriptionSurface &
-  ClientSizeSurface;
 import {
   getScheduler,
   type ReseedPriority,
@@ -119,7 +103,14 @@ export interface PaneStreamError {
 // priority. There is no stream-side `Visibility` type or setter.
 
 export interface PaneStreamOptions {
-  readonly client: TerminalConnection;
+  /**
+   * [LAW:no-ambient-temporal-coupling] A seed relies on an order the types
+   * cannot state, which every connection keeps: events and pane bytes arrive
+   * in the order tmux wrote them, and a command's reply resolves after its
+   * `begin` event. A reply that outruns its `begin` fails the seed
+   * (`lastError`).
+   */
+  readonly client: TmuxConnection;
   readonly paneId: number;
   /** The pane's size in its window's layout now; later sizes come through {@link PaneStream.resize}. */
   readonly size: Grid;
@@ -217,7 +208,7 @@ interface CaptureReply {
 export class PaneStream implements ReseedTarget {
   readonly paneId: number;
 
-  private readonly client: TerminalConnection;
+  private readonly client: TmuxConnection;
   private readonly historyLines: number;
   private readonly activityThrottleMs: number;
 
@@ -241,9 +232,9 @@ export class PaneStream implements ReseedTarget {
   // tmux paused this pane's output (`%pause`) and drops what it writes until
   // `%continue`, so no capture taken in between is the whole picture.
   private paused = false;
-  // The pane's size in its window's layout, as last given to `resize`. Only
-  // a change to it matters here: the sink is fitted to each picture's own
-  // size, which tmux states with the capture.
+  // The pane's size in its window's layout, as last given to `resize`. A
+  // picture is drawn at its own captured size (`drawnSize`); this is the size
+  // for drawing without one.
   private size: Grid;
 
   // Activity accounting. Updated synchronously on every byte event.
@@ -458,7 +449,7 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      fit(sink, this.lastSeed.size);
+      fit(sink, this.drawnSize(this.lastSeed));
       sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
@@ -780,10 +771,10 @@ export class PaneStream implements ReseedTarget {
     if (liveSink === null) return;
 
     // Hand the snapshot and the bytes behind it over as one ordered value, at
-    // the size it was captured at. A failed capture is no picture and took no
-    // size: the sink keeps the one it has.
+    // the size it was captured at; the live bytes after a failed capture are
+    // drawn at the pane's size.
+    fit(liveSink, this.drawnSize(picture));
     if (picture !== null) {
-      fit(liveSink, picture.size);
       liveSink.seed(picture.captured, picture.cursor, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
@@ -836,6 +827,13 @@ export class PaneStream implements ReseedTarget {
     };
   }
 
+  // The size a sink draws `picture` at: the one tmux captured it at, which
+  // its state line states; without a picture, or a state line that lacks the
+  // size, the pane's size in the layout.
+  private drawnSize(picture: Seed | null): Grid {
+    return picture?.size ?? this.size;
+  }
+
   private setState(next: PaneStreamState): void {
     if (this.currentState === next) return;
     this.currentState = next;
@@ -872,7 +870,6 @@ export class PaneStream implements ReseedTarget {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-// Size `sink` to `grid`, when the stream knows one.
-function fit(sink: TerminalSink, grid: Grid | null): void {
-  if (grid !== null) sink.resize(grid.cols, grid.rows);
+function fit(sink: TerminalSink, grid: Grid): void {
+  sink.resize(grid.cols, grid.rows);
 }

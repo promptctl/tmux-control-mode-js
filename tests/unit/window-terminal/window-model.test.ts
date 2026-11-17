@@ -4,7 +4,6 @@ import type { ConnectionState } from "../../../src/browser.js";
 import {
   deriveView,
   factsFromSnapshot,
-  paneDiff,
   phaseFor,
   reduceWindow,
   type FocusPolicy,
@@ -135,13 +134,6 @@ describe("window model — layout", () => {
     expect(view.name).toBe("logs");
     expect(view.flags).toEqual({ bell: true, activity: false, silence: true });
     expect(view.panes[1]).toMatchObject({ title: "build", command: "make" });
-  });
-
-  it("paneDiff names the added and removed panes", () => {
-    expect(paneDiff(["%0", "%1"], ["%1", "%2"])).toEqual({
-      added: ["%2"],
-      removed: ["%0"],
-    });
   });
 
   it("marks the panes being resynced", () => {

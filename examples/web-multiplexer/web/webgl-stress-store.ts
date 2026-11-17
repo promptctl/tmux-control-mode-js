@@ -249,10 +249,7 @@ export class WebGLStressStore {
       const existing = this.live.get(id);
       if (existing === undefined) {
         this.addLivePane(info);
-      } else if (
-        existing.width !== info.width ||
-        existing.height !== info.height
-      ) {
+      } else {
         existing.stream.resize({ cols: info.width, rows: info.height });
         existing.width = info.width;
         existing.height = info.height;

@@ -22,11 +22,9 @@ import {
   waitForPaneText,
 } from "../helpers/integration.js";
 import type { TmuxClient } from "../../src/client.js";
+import type { TmuxConnection } from "../../src/browser.js";
 import { sendKeys } from "../../src/commands/index.js";
-import {
-  PaneStream,
-  type TerminalConnection,
-} from "../../src/window-terminal/engine/pane-stream.js";
+import { PaneStream } from "../../src/window-terminal/engine/pane-stream.js";
 import type {
   TerminalSink,
   SeedCursor,
@@ -228,7 +226,7 @@ describe.skipIf(!RUN_INTEGRATION)(
     // one stream over `connection`, each checked for a count drawn again.
     async function reseedWhilePrinting(
       client: TmuxClient,
-      connection: TerminalConnection,
+      connection: TmuxConnection,
     ): Promise<void> {
       const paneId = await getPrimaryPaneId(client);
       await sendKeys(

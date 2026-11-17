@@ -18,7 +18,7 @@
 //   nothing.
 
 import { WindowEngine } from "./engine/window-engine.js";
-import type { TerminalConnection } from "./engine/pane-stream.js";
+import type { TerminalConnection } from "./engine/window-engine.js";
 import type {
   WindowTerminalError,
   WindowTerminalState,

@@ -7,6 +7,7 @@ import {
 } from "../../helpers/scripted-window.js";
 import {
   ONE_PANE,
+  layoutString,
   THREE_PANES,
   TWO_PANES,
   ZOOMED_0,
@@ -352,6 +353,31 @@ describe("WindowEngine — following the window", () => {
     await settle();
     expect([captures("%0"), captures("%1")]).toEqual([3, 1]);
     engine.dispose();
+  });
+
+  it("a layout that resizes one pane and adds another reaches the host whole, once", async () => {
+    // %0 narrows to 20 columns and %2 opens beside it.
+    const narrowed = layoutString(
+      "80x24,0,0{20x24,0,0,0,19x24,21,0,2,39x24,41,0,1}",
+    );
+    const { client, engine, s, states } = mount();
+    await settle();
+    const before = states.length;
+    let disposedIn = 0;
+    engine.onState((st) => {
+      if (st.phase === "live" && st.window.panes.length === 3) {
+        disposedIn++;
+        engine.dispose();
+      }
+    });
+    client.injectLayoutChange(1, narrowed, narrowed, "*");
+    await settle();
+
+    // The first state the host sees after the change has all three panes, and
+    // a host that disposes on it leaves no pane behind.
+    expect(live(states[before]).panes).toHaveLength(3);
+    expect(disposedIn).toBe(1);
+    expect([...s.disposed].sort()).toEqual([...s.created].sort());
   });
 
   it("ignores another window's events", async () => {
