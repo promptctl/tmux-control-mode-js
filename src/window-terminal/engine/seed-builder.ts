@@ -107,10 +107,20 @@ export function buildSeed(
       ? captureOutput.slice(0, -1)
       : captureOutput.slice();
   const targetRows = Math.min(historyLines, historySize) + size.rows;
+  // SI and SGR 0 end the shift and pen the capture's last cell left set:
+  // capture-pane carries one pen across its lines and writes no reset after
+  // the last. They end it before a padding row scrolls in, which xterm fills
+  // with the current background; and tmux reports neither the program's
+  // shift nor its pen, so the live stream gets tmux's initial ones. G1 stays
+  // the line-drawing set, which a curses program designates once at startup
+  // and then reaches with SO.
+  const capture = stripped.map((row, i) =>
+    i === stripped.length - 1 ? `${row}\x0f${ESC}[0m` : row,
+  );
   const lines =
-    stripped.length < targetRows
-      ? stripped.concat(new Array(targetRows - stripped.length).fill(""))
-      : stripped;
+    capture.length < targetRows
+      ? capture.concat(new Array(targetRows - capture.length).fill(""))
+      : capture;
   const screen = lines.join("\r\n");
 
   // Restore terminal modes around the screen content: alt-screen + wrap
@@ -187,13 +197,14 @@ function preamble(s: SeedState): string {
 // carry, then the cursor where tmux has it. DECSTBM and DECOM both home the
 // cursor, so the CUP comes after them; it is 1-indexed and, under DECOM,
 // relative to the region's top row.
-//   SI and SGR 0 end the shift and pen the capture's last cell left set:
-//   capture-pane writes no reset after it, and tmux reports neither the
-//   program's shift nor its pen, so the live stream gets tmux's initial ones.
-//   G1 stays the line-drawing set, which a curses program designates once
-//   at startup and then reaches with SO.
+//   tmux can hold the cursor outside the region with DECOM on (its DECSTBM
+//   homes to the screen's top-left), but xterm.js clamps the cursor into the
+//   region under DECOM, so the CUP addresses the nearest row it can hold.
 function epilogue(s: SeedState): string {
-  const originRow = s.originMode ? s.scrollRegion.top : 0;
+  const frame = s.originMode
+    ? s.scrollRegion
+    : { top: 0, bottom: s.size.rows - 1 };
+  const row = Math.min(Math.max(s.cursor.row, frame.top), frame.bottom);
   return (
     `${ESC}[${s.scrollRegion.top + 1};${s.scrollRegion.bottom + 1}r` +
     mode(s.originMode, `${ESC}[?6h`, `${ESC}[?6l`) + // DECOM
@@ -201,8 +212,7 @@ function epilogue(s: SeedState): string {
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
     mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
-    `\x0f${ESC}[0m` + // SI, SGR 0
-    `${ESC}[${s.cursor.row - originRow + 1};${s.cursor.col + 1}H` // CUP
+    `${ESC}[${row - frame.top + 1};${s.cursor.col + 1}H` // CUP
   );
 }
 

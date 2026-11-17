@@ -37,9 +37,11 @@ const parsed = (line: string): SeedState => {
 const ONE_ROW = parsed(seedStateLine({ cols: 20, rows: 1 }));
 // What ONE_ROW wraps the screen in: main screen, the clear, autowrap on; then
 // the whole-screen scroll region, origin mode off, cursor visible,
-// insert/app-cursor/keypad off, SI and SGR 0, the cursor at the origin.
+// insert/app-cursor/keypad off, the cursor at the origin.
 const PREAMBLE = `${ESC}[?1049l${CLEAR}${ESC}[?7h`;
-const EPILOGUE = `${ESC}[1;1r${ESC}[?6l${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>\x0f${ESC}[0m${ESC}[1;1H`;
+const EPILOGUE = `${ESC}[1;1r${ESC}[?6l${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>${ESC}[1;1H`;
+// SI and SGR 0, after the capture's last row.
+const END = `\x0f${ESC}[0m`;
 // The seed with ONE_ROW's escapes taken off, so a test can assert the content.
 const body = (bytes: Uint8Array): string => {
   const t = text(bytes);
@@ -96,21 +98,24 @@ describe("buildSeed: byte fidelity", () => {
     const { captured } = buildSeed(["\x80\xff\x00"], ONE_ROW, 2000);
     expect(
       Array.from(
-        captured.subarray(PREAMBLE.length, captured.length - EPILOGUE.length),
+        captured.subarray(
+          PREAMBLE.length,
+          captured.length - END.length - EPILOGUE.length,
+        ),
       ),
     ).toEqual([0x80, 0xff, 0x00]);
   });
 
   it("joins multiple capture rows with CRLF", () => {
     const { captured } = buildSeed(["a", "b", "c"], ONE_ROW, 0);
-    expect(body(captured)).toBe("a\r\nb\r\nc");
+    expect(body(captured)).toBe(`a\r\nb\r\nc${END}`);
   });
 });
 
 describe("buildSeed: trailing-artifact strip", () => {
   it("drops the single trailing empty row (capture-pane's trailing \\n)", () => {
     const { captured } = buildSeed(["row-0", "row-1", ""], ONE_ROW, 0);
-    expect(body(captured)).toBe("row-0\r\nrow-1");
+    expect(body(captured)).toBe(`row-0\r\nrow-1${END}`);
   });
 });
 
@@ -134,9 +139,9 @@ describe("buildSeed: row-exact normalization", () => {
     const { captured } = buildSeed(["AA", "BB"], state, 2000);
     const rows = text(captured).split("\r\n");
     expect(rows).toHaveLength(8);
-    // Middle rows carry no escapes — only row 0 (preamble) and the last row
-    // (epilogue) do. So the interior is byte-clean.
-    expect(rows[1]).toBe("BB");
+    // Middle rows carry no escapes but the capture's last row's SI and SGR 0;
+    // row 0 carries the preamble and the last row the epilogue.
+    expect(rows[1]).toBe(`BB${END}`);
     expect(rows[2]).toBe("");
   });
 
@@ -165,13 +170,13 @@ describe("buildSeed: terminal-mode escapes", () => {
 
   it("sets each mode the state names after the content (epilogue)", () => {
     // cursor_flag=0, insert=1, app-cursor=1, keypad=1, wrap=0, origin=1,
-    // region rows 0..0, cursor at the origin → ?7l before; 1;1r, ?6h, ?25l,
-    // 4h, ?1h, ESC=, SI, SGR 0, then the CUP after.
+    // region rows 0..0, cursor at the origin → ?7l before; SI, SGR 0 after
+    // the capture; 1;1r, ?6h, ?25l, 4h, ?1h, ESC=, then the CUP after.
     const state = parsed("0;0;0;0;1;1;1;0;1;1;0;0;0;20");
     expect(text(buildSeed(["x"], state, 0).captured)).toBe(
       `${ESC}[?1049l${CLEAR}${ESC}[?7l` +
-        "x" +
-        `${ESC}[1;1r${ESC}[?6h${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=\x0f${ESC}[0m${ESC}[1;1H`,
+        `x${END}` +
+        `${ESC}[1;1r${ESC}[?6h${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=${ESC}[1;1H`,
     );
   });
 
@@ -269,6 +274,40 @@ describe("buildSeed: drawn into xterm.js", () => {
     // Under DECOM, row 1 is the region's top: screen row 1, as in tmux.
     await draw(term, `${ESC}[1;1Hz`);
     expect(rowsOf(term)).toEqual([...history, "s0", "z1", "s2"]);
+  });
+
+  it("puts a cursor tmux holds above the region under DECOM on the region's top", async () => {
+    const term = newTerm();
+    // tmux's DECSTBM homes to the screen's top-left even under DECOM; xterm.js
+    // can hold no row outside the region then, so the nearest is its top.
+    const seed = buildSeed(
+      [...history, "s0", "s1", "s2", ""],
+      {
+        ...state,
+        cursor: { col: 0, row: 0 },
+        originMode: true,
+        scrollRegion: { top: 1, bottom: 2 },
+      },
+      2000,
+    );
+    expect(text(seed.captured).endsWith(`${ESC}[1;1H`)).toBe(true);
+    await draw(term, seed.captured);
+    expect(term.buffer.active.cursorY).toBe(1);
+  });
+
+  it("scrolls padding rows in with the default background, not the capture's last pen", async () => {
+    const term = newTerm();
+    // The last captured row ends on a red cell and the blank rows below it
+    // are padding; with history, each padding row scrolls in.
+    const seed = buildSeed(
+      ["h0", "h1", "h2", "h3", `${ESC}[41mx`],
+      state,
+      2000,
+    );
+    await draw(term, seed.captured);
+    const buf = term.buffer.active;
+    for (const y of [buf.length - 2, buf.length - 1])
+      expect(buf.getLine(y)?.getCell(5)?.isBgDefault()).toBe(true);
   });
 
   it("draws ASCII through a line-drawing charset a DECRC restores", async () => {

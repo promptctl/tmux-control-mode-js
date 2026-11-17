@@ -400,7 +400,7 @@ describe("PaneStream — state machine", () => {
     expect(sink.seedTexts).toHaveLength(1);
     const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
     expect(rows).toHaveLength(2);
-    expect(rows[1]?.startsWith("row-1\x1b")).toBe(true);
+    expect(rows[1]?.startsWith("row-1\x0f")).toBe(true);
   });
 
   it("normalizes the seed to exactly pane_height rows so the cursor aligns", async () => {
@@ -428,7 +428,8 @@ describe("PaneStream — state machine", () => {
     const rows = sink.seedTexts[0]?.split("\r\n") ?? [];
     expect(rows).toHaveLength(8);
     expect(rows[0]?.endsWith("AA")).toBe(true);
-    expect(rows[1]).toBe("BB");
+    // BB is the capture's last row: SI and SGR 0 end its shift and pen.
+    expect(rows[1]).toBe("BB\x0f\x1b[0m");
     expect(rows.slice(2, 7)).toEqual(["", "", "", "", ""]);
     // Row 7 is the final padded blank; its only content is the mode epilogue
     // (an ESC sequence), never seeded grid text.

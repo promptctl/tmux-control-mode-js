@@ -793,13 +793,13 @@ export class PaneStream implements ReseedTarget {
         ? `capture-pane -peqN -S -${this.historyLines} -t %${this.paneId}`
         : `capture-pane -peqN -t %${this.paneId}`;
     // Cursor position, the terminal modes the captured grid content cannot
-    // carry (alt screen, autowrap, cursor visibility, application cursor/keypad,
-    // insert) and the scroll region, plus pane_height + history_size which
-    // size the row-exact normalization below, and pane_width, which with
-    // pane_height is the size the capture was taken at. capture-pane -e emits
-    // only SGR colour/attrs, never
-    // DEC private modes — so a TUI pane (vim/less) would seed with the wrong
-    // input modes unless we restore them explicitly.
+    // carry (alt screen, autowrap, origin, cursor visibility, application
+    // cursor/keypad, insert) and the scroll region, plus pane_height +
+    // history_size which size the row-exact normalization below, and
+    // pane_width, which with pane_height is the size the capture was taken
+    // at. capture-pane -e emits SGR colour/attrs and SO/SI, never DEC private
+    // modes — so a TUI pane (vim/less) would seed with the wrong input modes
+    // unless we restore them explicitly.
     const stateCmd = `display-message -p -t %${this.paneId} '${SEED_STATE_FORMAT}'`;
 
     // One command line: tmux runs both commands without parsing pane bytes
