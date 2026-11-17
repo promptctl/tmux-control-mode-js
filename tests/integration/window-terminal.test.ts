@@ -264,6 +264,14 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "#{pane_id}",
       "cat",
     ]) as PaneId;
+    // tmux's first size report for the pane, which a stream takes again on
+    // when it differs from the picture.
+    let reported = false;
+    c.on("subscription-changed", (ev) => {
+      if (`%${ev.paneId}` === added && /^\d+;\d+$/.test(ev.value)) {
+        reported = true;
+      }
+    });
     const s = recorder();
     engine = engineOver(c, window, s);
     await untilLive(engine, (v) => v.panes.length === 2);
@@ -275,8 +283,8 @@ describe.skipIf(!RUN_INTEGRATION)("window terminal — real tmux", () => {
       "the pane was never drawn at its tiled size",
     );
 
-    // Past tmux's first size report, nothing is in flight.
-    await new Promise((r) => setTimeout(r, 1500));
+    await readUntil(() => reported, Boolean, "tmux never reported the pane");
+    await untilLive(engine, (v) => v.panes.every((p) => !p.resyncing));
 
     // A picture taken while zoomed (a `%continue` takes the pane again),
     // then the zoom undone at once: tmux's report, quiet unless one of its

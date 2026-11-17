@@ -1188,6 +1188,8 @@ describe("PaneStream — floods (pause/continue)", () => {
     // each capture would freeze the pane until the drag stopped.
     const { client, stream, pane } = makePane();
     const sink = new RecordingSink();
+    const states: PaneStreamState[] = [];
+    stream.on("state-changed", (s) => states.push(s));
     stream.attach(sink);
     for (const cols of [90, 100, 110]) {
       pane.cols = cols;
@@ -1197,6 +1199,21 @@ describe("PaneStream — floods (pause/continue)", () => {
     expect(client.capturePaneCount()).toBe(2);
     expect(shape(sink).filter((e) => e === "seed")).toHaveLength(2);
     expect(shape(sink).at(-2)).toBe("resize(110x24)");
+    // Seeding throughout: never live for an instant between the two.
+    expect(states).toEqual(["seeding", "live"]);
+    stream.dispose();
+  });
+
+  it("an attach while tmux has the pane paused takes nothing until %continue", async () => {
+    const { client, stream } = makePane();
+    client.injectNotification({ type: "pause", paneId: PANE_ID });
+    stream.attach(new RecordingSink());
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(0);
+    expect(stream.state).toBe("seeding");
+    client.injectNotification({ type: "continue", paneId: PANE_ID });
+    await flushTicks();
+    expect(client.capturePaneCount()).toBe(1);
     expect(stream.state).toBe("live");
     stream.dispose();
   });
