@@ -38,6 +38,22 @@ describe("WebGLGridSink", () => {
     ]);
   });
 
+  it("keeps the wrap a seed's tmux had pending", () => {
+    // cursor_x == pane_width: the program filled row 1, and its next
+    // character starts row 2.
+    const sink = new WebGLGridSink({ cols: 10, rows: 3 });
+    const state = parseSeedState("10;1;0;1;0;0;0;1;0;3;0;0;2;10");
+    if (state === null) throw new Error("state line rejected");
+    sink.seed(buildSeed(["a", "0123456789", "c"], state, 0).captured, [
+      bytes("X"),
+    ]);
+    expect([0, 1, 2].map((r) => row(sink, r))).toEqual([
+      "a",
+      "0123456789",
+      "X",
+    ]);
+  });
+
   it("a seed supersedes what the sink showed, before and after a resize", () => {
     const sink = new WebGLGridSink({ cols: 10, rows: 2 });
     sink.write(bytes("old"));

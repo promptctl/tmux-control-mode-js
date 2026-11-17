@@ -3,12 +3,14 @@
 // The `display-message` reply PaneStream takes with each capture, as a
 // tmux >= 3.2 writes it: every format of SEED_STATE_FORMAT, in its order.
 // Fakes answer the state command with this so a capture parses as a real
-// one does.
+// one does. `drawnSeed` reads a seed back the way a terminal shows it.
 
+import { Terminal } from "@xterm/headless";
 import {
   SEED_STATE_FIELDS,
   type SeedStateField,
 } from "../../src/window-terminal/engine/seed-builder.js";
+import type { Grid } from "../../src/window-terminal/engine/terminal-sink.js";
 
 export interface SeedStateFields {
   readonly cols?: number;
@@ -49,5 +51,22 @@ export function seedStateLine({
   return SEED_STATE_FIELDS.map((f) => values[f]).join(";");
 }
 
-/** What a seed writes between rows: SCOSC, SGR 49, LF, SCORC, CR, CUD. */
-export const SEED_NEWLINE = "\x1b[s\x1b[49m\n\x1b[u\r\x1b[B";
+/**
+ * What a terminal of `size` shows after drawing `seed`: every buffer line,
+ * scrollback first, and the cursor on the screen.
+ */
+export async function drawnSeed(
+  seed: string | Uint8Array,
+  size: Grid,
+): Promise<{ rows: string[]; cursor: { col: number; row: number } }> {
+  const term = new Terminal({ ...size, allowProposedApi: true });
+  await new Promise<void>((resolve) => term.write(seed, resolve));
+  const buf = term.buffer.active;
+  return {
+    rows: Array.from(
+      { length: buf.length },
+      (_, y) => buf.getLine(y)?.translateToString(true) ?? "",
+    ),
+    cursor: { col: buf.cursorX, row: buf.cursorY },
+  };
+}

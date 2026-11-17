@@ -14,6 +14,7 @@
 
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { killTmuxServer } from "../helpers/reap-test-sockets.js";
+import { drawnSeed } from "../helpers/seed-state.js";
 import {
   uniqueSocket,
   uniqueName,
@@ -134,18 +135,14 @@ describe.skipIf(!RUN_INTEGRATION)(
       );
       expect(sink.seedCalls).toHaveLength(1);
       expect(sink.seedCalls[0]).toContain("HELLO_SEED_MARKER");
-      // The seed ends with a CUP to tmux's cursor (1-indexed).
+      // Drawn at the pane's size, the seed leaves the cursor where tmux has it.
       const r = await client.execute(
-        `display-message -p -t %${paneId} '#{cursor_y};#{cursor_x}'`,
+        `display-message -p -t %${paneId} '#{cursor_x};#{cursor_y};#{pane_width};#{pane_height}'`,
       );
+      const [col, row, cols, rows] = r.output[0].split(";").map(Number);
       expect(
-        sink.seedCalls[0].endsWith(
-          `\x1b[${r.output[0]
-            .split(";")
-            .map((n) => Number(n) + 1)
-            .join(";")}H`,
-        ),
-      ).toBe(true);
+        (await drawnSeed(sink.seedCalls[0], { cols, rows })).cursor,
+      ).toEqual({ col, row });
     }, 15000);
 
     it("per-pane subscribeRaw of pane_width;pane_height fires sink.resize on geometry change", async () => {
