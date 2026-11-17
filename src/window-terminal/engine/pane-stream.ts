@@ -551,7 +551,7 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      fit(sink, this.lastSeed.size);
+      sink.resize(this.lastSeed.size.cols, this.lastSeed.size.rows);
       sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
       this.setState("live");
       return;
@@ -889,7 +889,7 @@ export class PaneStream implements ReseedTarget {
     // the size it was captured at. A failed capture is no picture and took no
     // size: the sink keeps the one it has, and the failure reaches `error`.
     if (picture !== null) {
-      fit(liveSink, picture.size);
+      liveSink.resize(picture.size.cols, picture.size.rows);
       liveSink.seed(picture.captured, picture.cursor, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
@@ -1024,8 +1024,4 @@ export class PaneStream implements ReseedTarget {
 function parseDimensions(value: string): Grid | null {
   const [width, height, ...rest] = value.split(";");
   return rest.length === 0 ? parseGrid(width, height) : null;
-}
-
-function fit(sink: TerminalSink, grid: Grid): void {
-  sink.resize(grid.cols, grid.rows);
 }

@@ -59,7 +59,6 @@ function p99(samples: number[]): number {
 describe("Gate 2 — live byte → cell on screen", () => {
   it(`p99 byte-to-sink latency < ${P99_BUDGET_MS}ms across ${ITERATIONS} chunks`, async () => {
     const client = new FakeTmuxClient();
-    client.setExecuteResponse(() => "");
     const sink = new TimingSink();
     const stream = new PaneStream({
       client,

@@ -1,8 +1,8 @@
 // src/window-terminal/engine/seed-builder.ts
 //
 // `buildSeed` — the pure tmux capture-grid reconstruction. Given the raw
-// `capture-pane` output, the `display-message` state reply, and the requested
-// scrollback depth, it produces the exact byte sequence (`captured`) plus
+// `capture-pane` output, the pane state `parseSeedState` reads from the
+// `display-message` reply, and the requested scrollback depth, it produces the exact byte sequence (`captured`) plus
 // cursor position (`cursor`) a `TerminalSink.seed()` replays to paint a freshly
 // attached pane so its cursor and viewport line up with tmux's grid, and the
 // size (`size`) that grid was captured at.
@@ -12,7 +12,7 @@
 //   Its change-reason is "tmux's capture/display wire shape," entirely separate
 //   from PaneStream's idle→seeding→live lifecycle state machine. Cutting it out
 //   leaves a part testable with plain strings — no client, no async, no state.
-// [LAW:effects-at-boundaries] Pure: strings in, one value out. Every effect
+// [LAW:effects-at-boundaries] Pure: replies in, one value out. Every effect
 //   (the RPCs that produce the inputs, the sink.seed() that consumes the
 //   output, the lastSeed cache) stays in PaneStream at the boundary.
 
@@ -196,10 +196,11 @@ function epilogue(s: SeedState): string {
 // The state reply's whole grammar, in stateCmd's field order: cursor_x;
 // cursor_y;alternate_on;cursor_flag;insert_flag;keypad_cursor_flag;
 // keypad_flag;wrap_flag;pane_height;history_size;scroll_region_upper;
-// scroll_region_lower;pane_width. Counts and rows are decimal digits, flags
-// are 0/1. tmux >= 3.2 expands every one of these formats.
+// scroll_region_lower;pane_width. Counts and rows are decimal digits, the
+// grid's dimensions positive, flags 0/1. tmux >= 3.2 expands every one of
+// these formats.
 const STATE_LINE =
-  /^(\d+);(\d+);([01]);([01]);([01]);([01]);([01]);([01]);(\d+);(\d+);(\d+);(\d+);(\d+)$/;
+  /^(\d+);(\d+);([01]);([01]);([01]);([01]);([01]);([01]);([1-9]\d*);(\d+);(\d+);(\d+);([1-9]\d*)$/;
 
 /**
  * The pane state from the `display-message` reply PaneStream takes with each
@@ -215,11 +216,9 @@ export function parseSeedState(line: string): SeedState | null {
   if (m === null) return null;
   const [, cx, cy, alt, cur, ins, kcur, kpad, wrap, h, hist, top, bottom, w] =
     m;
-  const size = parseGrid(w, h);
-  if (size === null) return null;
   return {
     cursor: { col: Number(cx), row: Number(cy) },
-    size,
+    size: { cols: Number(w), rows: Number(h) },
     historySize: Number(hist),
     alternateScreen: alt === "1",
     cursorVisible: cur === "1",

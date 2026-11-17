@@ -229,7 +229,7 @@
 
   // pane-terminal/sink ─────────────────────────────────────────────────
   export interface TerminalSink {
-    seed(captured: Uint8Array, cursor: { col: number; row: number } | null, trailing: readonly Uint8Array[]): void
+    seed(captured: Uint8Array, cursor: { col: number; row: number }, trailing: readonly Uint8Array[]): void
     write(data: Uint8Array): void
     resize(cols: number, rows: number): void
     isVisible(): boolean
