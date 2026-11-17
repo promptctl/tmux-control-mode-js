@@ -21,10 +21,7 @@ export type {
   PaneStreamOptions,
   PaneStreamState,
 } from "../../../dist/window-terminal/engine/pane-stream.js";
-export type {
-  SeedCursor,
-  TerminalSink,
-} from "../../../dist/window-terminal/engine/terminal-sink.js";
+export type { TerminalSink } from "../../../dist/window-terminal/engine/terminal-sink.js";
 export { XtermSink } from "../../../dist/window-terminal/render/xterm-sink.js";
 export type { XtermSinkOptions } from "../../../dist/window-terminal/render/xterm-sink.js";
 export { cellFontOf } from "../../../dist/window-terminal/render/xterm-options.js";

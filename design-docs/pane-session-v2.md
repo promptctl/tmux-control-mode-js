@@ -122,7 +122,7 @@
   2. Seed-then-live state machine in the stream
 
   States: idle → seeding → live, plus detached and disposed. During seeding, live output events buffer into
-  Uint8Array[]. When the one capture-pane ; display-message line resolves, the sink receives seed(captured, cursor, trailing)
+  Uint8Array[]. When the one capture-pane ; display-message line resolves, the sink receives seed(captured, trailing)
   in one synchronous step — the buffered live bytes from the reply's %begin on ARE the `trailing` argument (those
   before it tmux had already drawn into the snapshot), so the snapshot and the bytes
   captured behind it cross the seam as one ordered value — and state flips to live. No await between the handoff and
@@ -229,7 +229,7 @@
 
   // pane-terminal/sink ─────────────────────────────────────────────────
   export interface TerminalSink {
-    seed(captured: Uint8Array, cursor: { col: number; row: number }, trailing: readonly Uint8Array[]): void
+    seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void
     write(data: Uint8Array): void
     resize(cols: number, rows: number): void
     isVisible(): boolean

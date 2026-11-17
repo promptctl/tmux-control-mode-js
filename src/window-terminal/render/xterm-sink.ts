@@ -35,7 +35,7 @@
 
 import { Terminal } from "@xterm/xterm";
 import type { IDisposable, ITerminalAddon } from "@xterm/xterm";
-import type { TerminalSink, SeedCursor } from "../engine/terminal-sink.js";
+import type { TerminalSink } from "../engine/terminal-sink.js";
 import {
   optionWrites,
   TERMINAL_DEFAULTS,
@@ -176,11 +176,7 @@ export class XtermSink implements TerminalSink {
   // TerminalSink contract
   // ---------------------------------------------------------------------------
 
-  seed(
-    captured: Uint8Array,
-    cursor: SeedCursor,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     if (this.isDisposed) return;
     // The snapshot is authoritative by construction, WITHOUT terminal.clear():
     // `captured` carries its own clear in-band (see TerminalSink.seed), so it
@@ -191,19 +187,13 @@ export class XtermSink implements TerminalSink {
     // it in order.
     //
     // xterm.write accepts Uint8Array; the seed is raw bytes (same as the live
-    // path) and xterm is the single decoding authority. The CUP below is an
-    // ASCII string — xterm.write accepts either form.
+    // path) and xterm is the single decoding authority.
     //
     // scrollToBottom via the write callback: terminal.write() is internally
     // async (processes data in chunks across frames). The callback fires after
     // the data is fully parsed, ensuring the viewport scrolls to the current
     // screen AFTER the seed content is rendered — not before.
-    this.terminal.write(captured);
-    // ANSI Cursor Position (CUP): `\x1b[<row>;<col>H`, 1-indexed.
-    // `SeedCursor.col`/`row` are 0-indexed (see ../engine/terminal-sink.ts). Adding
-    // 1 here is the only translation; sinks that don't position a hardware
-    // cursor (BufferingSink) ignore the cursor entirely.
-    this.terminal.write(`\x1b[${cursor.row + 1};${cursor.col + 1}H`, () => {
+    this.terminal.write(captured, () => {
       if (!this.isDisposed) this.terminal.scrollToBottom();
     });
     for (const chunk of trailing) this.terminal.write(chunk);

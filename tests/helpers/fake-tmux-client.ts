@@ -30,6 +30,7 @@ import type {
 } from "../../src/browser.js";
 import { SinkRegistry, serverScope } from "../../src/browser.js";
 import { seedStateLine } from "./seed-state.js";
+import { SEED_STATE_FORMAT } from "../../src/window-terminal/engine/seed-builder.js";
 import type {
   BeginMessage,
   OutputMessage,
@@ -141,7 +142,7 @@ export class FakeTmuxClient {
   private readonly commandLog: string[] = [];
   // Default: a blank pane, whose state reply is a whole one, as tmux's is.
   private captureHandler: (target: string) => string = (cmd) =>
-    cmd.startsWith("display-message -p -t %") ? seedStateLine() : "";
+    cmd.includes(SEED_STATE_FORMAT) ? seedStateLine() : "";
   // Scriptable per-command failure. Returns an Error to REJECT `execute()` with
   // (modelling tmux's `%error`/transport failures), or `null` to resolve
   // normally. Both of PaneStream's tmux seams — the pane-size subscription

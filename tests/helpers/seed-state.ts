@@ -1,8 +1,14 @@
 // tests/helpers/seed-state.ts
 //
 // The `display-message` reply PaneStream takes with each capture, as a
-// tmux >= 3.2 writes it: every field of stateCmd, in order. Fakes answer the
-// state command with this so a capture parses as a real one does.
+// tmux >= 3.2 writes it: every format of SEED_STATE_FORMAT, in its order.
+// Fakes answer the state command with this so a capture parses as a real
+// one does.
+
+import {
+  SEED_STATE_FIELDS,
+  type SeedStateField,
+} from "../../src/window-terminal/engine/seed-builder.js";
 
 export interface SeedStateFields {
   readonly cols?: number;
@@ -24,19 +30,20 @@ export function seedStateLine({
   alternate = false,
   historySize = 0,
 }: SeedStateFields = {}): string {
-  return [
-    cursor.col,
-    cursor.row,
-    alternate ? 1 : 0,
-    1, // cursor_flag
-    0, // insert_flag
-    0, // keypad_cursor_flag
-    0, // keypad_flag
-    1, // wrap_flag
-    rows,
-    historySize,
-    0, // scroll_region_upper
-    rows - 1, // scroll_region_lower
-    cols,
-  ].join(";");
+  const values: Record<SeedStateField, number> = {
+    cursor_x: cursor.col,
+    cursor_y: cursor.row,
+    alternate_on: alternate ? 1 : 0,
+    cursor_flag: 1,
+    insert_flag: 0,
+    keypad_cursor_flag: 0,
+    keypad_flag: 0,
+    wrap_flag: 1,
+    pane_height: rows,
+    history_size: historySize,
+    scroll_region_upper: 0,
+    scroll_region_lower: rows - 1,
+    pane_width: cols,
+  };
+  return SEED_STATE_FIELDS.map((f) => values[f]).join(";");
 }

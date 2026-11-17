@@ -3,10 +3,9 @@
 // `buildSeed` — the pure tmux capture-grid reconstruction. Given the raw
 // `capture-pane` output, the pane state `parseSeedState` reads from the
 // `display-message` reply, and the requested scrollback depth, it produces
-// the exact byte sequence (`captured`) plus cursor position (`cursor`) a
-// `TerminalSink.seed()` replays to paint a freshly attached pane so its
-// cursor and viewport line up with tmux's grid, and the size (`size`) that
-// grid was captured at.
+// the exact byte sequence (`captured`) a `TerminalSink.seed()` replays to
+// paint a freshly attached pane so its cursor and viewport line up with
+// tmux's grid, and the size (`size`) that grid was captured at.
 //
 // [LAW:decomposition] This is a tmux-specific grid algorithm — flag→escape
 //   selection, blank-row padding, DEC private-mode synthesis, Latin-1→bytes.
@@ -17,16 +16,15 @@
 //   (the RPCs that produce the inputs, the sink.seed() that consumes the
 //   output, the lastSeed cache) stays in PaneStream at the boundary.
 
-import type { Grid, SeedCursor } from "./terminal-sink.js";
+import type { Grid } from "./terminal-sink.js";
 
 /**
- * The replayable snapshot of a pane: the raw seed bytes, the cursor to home to
- * after writing them, and the size they were captured at. Also the shape
- * PaneStream caches for re-attach.
+ * The replayable snapshot of a pane: the raw seed bytes, which leave the
+ * cursor where tmux had it, and the size they were captured at. Also the
+ * shape PaneStream caches for re-attach.
  */
 export interface Seed {
   readonly captured: Uint8Array;
-  readonly cursor: SeedCursor;
   readonly size: Grid;
 }
 
@@ -35,7 +33,7 @@ export interface Seed {
  * (see `parseSeedState`). Coordinates and scroll-region rows are 0-indexed.
  */
 export interface SeedState {
-  readonly cursor: SeedCursor;
+  readonly cursor: { readonly col: number; readonly row: number };
   readonly size: Grid;
   /** Scrollback line count (`history_size`). */
   readonly historySize: number;
@@ -83,11 +81,11 @@ export function buildSeed(
   state: SeedState,
   historyLines: number,
 ): Seed {
-  const { cursor, size, historySize } = state;
+  const { size, historySize } = state;
 
   // [LAW:dataflow-not-control-flow] The cursor lands correctly by making the
-  // seed the exact shape tmux's grid has — not by adjusting the CUP. The sink
-  // writes the seed, then a viewport-relative CUP. xterm anchors its viewport
+  // seed the exact shape tmux's grid has — not by adjusting the CUP. The seed
+  // ends with a viewport-relative CUP. xterm anchors its viewport
   // to the bottom of the buffer, so the viewport's top aligns with tmux's
   // visible-screen top ONLY when the seed ends with exactly `pane_height`
   // rows. capture-pane (no -J) emits one line per screen row plus a trailing
@@ -115,8 +113,7 @@ export function buildSeed(
 
   // Restore terminal modes around the screen content: alt-screen + wrap
   // before drawing (they affect layout), input/cursor modes after. The CUP
-  // the sink appends from `cursor` lands last, so it reflects the final
-  // restored state.
+  // lands last, so it reflects the final restored state.
   //
   // The capture text arrives as Latin-1 (one code unit per raw byte — see the
   // transport). Convert back to the exact byte sequence so the sink receives
@@ -125,7 +122,7 @@ export function buildSeed(
   // mode escapes are ASCII, so they encode 1:1.
   const captured = latin1ToBytes(preamble(state) + screen + epilogue(state));
 
-  return { captured, cursor, size };
+  return { captured, size };
 }
 
 // ---------------------------------------------------------------------------
@@ -181,31 +178,59 @@ function preamble(s: SeedState): string {
   );
 }
 
-// After content: the scroll region (DECSTBM, 1-indexed; it homes the cursor,
-// and the sink's CUP follows) and the input/cursor modes the captured grid
-// can't carry.
+// After content: the scroll region and the input/cursor modes the captured
+// grid can't carry, then the cursor where tmux has it. DECSTBM and CUP are
+// 1-indexed; DECSTBM homes the cursor, so the CUP comes after it.
 function epilogue(s: SeedState): string {
   return (
     `${ESC}[${s.scrollRegion.top + 1};${s.scrollRegion.bottom + 1}r` +
     mode(s.cursorVisible, `${ESC}[?25h`, `${ESC}[?25l`) + // DECTCEM
     mode(s.insertMode, `${ESC}[4h`, `${ESC}[4l`) + // IRM
     mode(s.applicationCursorKeys, `${ESC}[?1h`, `${ESC}[?1l`) + // DECCKM
-    mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) // DECKPAM/DECKPNM
+    mode(s.applicationKeypad, `${ESC}=`, `${ESC}>`) + // DECKPAM/DECKPNM
+    `${ESC}[${s.cursor.row + 1};${s.cursor.col + 1}H` // CUP
   );
 }
 
-// The state reply's whole grammar, in stateCmd's field order: cursor_x;
-// cursor_y;alternate_on;cursor_flag;insert_flag;keypad_cursor_flag;
-// keypad_flag;wrap_flag;pane_height;history_size;scroll_region_upper;
-// scroll_region_lower;pane_width. Counts and rows are decimal digits, flags
-// are 0/1; the grid's dimensions are `parseGrid`'s. tmux >= 3.2 expands every
-// one of these formats.
-const STATE_LINE =
-  /^(\d+);(\d+);([01]);([01]);([01]);([01]);([01]);([01]);(\d+);(\d+);(\d+);(\d+);(\d+)$/;
+// The state reply's grammar: tmux's formats, in the order the reply carries
+// them. Counts and rows are decimal digits and flags 0/1; a pane's size is
+// `parseGrid`'s alone. tmux >= 3.2 expands every one of these formats.
+const COUNT = /^\d+$/;
+const FLAG = /^[01]$/;
+const SIZE = /^/;
+const STATE_FIELDS = {
+  cursor_x: COUNT,
+  cursor_y: COUNT,
+  alternate_on: FLAG,
+  cursor_flag: FLAG,
+  insert_flag: FLAG,
+  keypad_cursor_flag: FLAG,
+  keypad_flag: FLAG,
+  wrap_flag: FLAG,
+  pane_height: SIZE,
+  history_size: COUNT,
+  scroll_region_upper: COUNT,
+  scroll_region_lower: COUNT,
+  pane_width: SIZE,
+};
+
+export type SeedStateField = keyof typeof STATE_FIELDS;
+
+/** The state reply's formats, in the order `SEED_STATE_FORMAT` asks for them. */
+export const SEED_STATE_FIELDS = Object.keys(
+  STATE_FIELDS,
+) as readonly SeedStateField[];
+
+// [LAW:one-source-of-truth] The format PaneStream asks tmux for and the
+//   grammar `parseSeedState` reads are both STATE_FIELDS.
+/** The `display-message` format whose reply `parseSeedState` reads. */
+export const SEED_STATE_FORMAT = SEED_STATE_FIELDS.map((f) => `#{${f}}`).join(
+  ";",
+);
 
 /**
  * The pane state from the `display-message` reply PaneStream takes with each
- * capture; `null` when the reply is not that format's shape (any field
+ * capture; `null` when the reply is not `SEED_STATE_FORMAT`'s shape (any field
  * missing, empty or malformed, or a zero dimension), which only a malformed
  * reply can be.
  *
@@ -213,24 +238,31 @@ const STATE_LINE =
  *   nothing downstream asks whether one is there.
  */
 export function parseSeedState(line: string): SeedState | null {
-  const m = STATE_LINE.exec(line);
-  if (m === null) return null;
-  const [, cx, cy, alt, cur, ins, kcur, kpad, wrap, h, hist, top, bottom, w] =
-    m;
-  // [LAW:single-enforcer] A pane's size has one grammar, the pane-size
-  //   subscription's too.
-  const size = parseGrid(w, h);
+  const values = line.split(";");
+  if (
+    values.length !== SEED_STATE_FIELDS.length ||
+    !SEED_STATE_FIELDS.every((f, i) => STATE_FIELDS[f].test(values[i]))
+  ) {
+    return null;
+  }
+  const f = Object.fromEntries(
+    SEED_STATE_FIELDS.map((name, i) => [name, values[i]]),
+  ) as Record<SeedStateField, string>;
+  const size = parseGrid(f.pane_width, f.pane_height);
   if (size === null) return null;
   return {
-    cursor: { col: Number(cx), row: Number(cy) },
+    cursor: { col: Number(f.cursor_x), row: Number(f.cursor_y) },
     size,
-    historySize: Number(hist),
-    alternateScreen: alt === "1",
-    cursorVisible: cur === "1",
-    insertMode: ins === "1",
-    applicationCursorKeys: kcur === "1",
-    applicationKeypad: kpad === "1",
-    autowrap: wrap === "1",
-    scrollRegion: { top: Number(top), bottom: Number(bottom) },
+    historySize: Number(f.history_size),
+    alternateScreen: f.alternate_on === "1",
+    cursorVisible: f.cursor_flag === "1",
+    insertMode: f.insert_flag === "1",
+    applicationCursorKeys: f.keypad_cursor_flag === "1",
+    applicationKeypad: f.keypad_flag === "1",
+    autowrap: f.wrap_flag === "1",
+    scrollRegion: {
+      top: Number(f.scroll_region_upper),
+      bottom: Number(f.scroll_region_lower),
+    },
   };
 }

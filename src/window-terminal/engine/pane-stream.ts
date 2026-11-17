@@ -30,6 +30,7 @@ import {
   buildSeed,
   parseGrid,
   parseSeedState,
+  SEED_STATE_FORMAT,
   type Seed,
   type SeedState,
 } from "./seed-builder.js";
@@ -551,8 +552,7 @@ export class PaneStream implements ReseedTarget {
       // payload and flip straight to live. No capture-pane is issued, and no
       // byte has arrived since the capture (any byte clears the cache), so
       // `trailing` is empty — the cached snapshot is the whole picture.
-      sink.resize(this.lastSeed.size.cols, this.lastSeed.size.rows);
-      sink.seed(this.lastSeed.captured, this.lastSeed.cursor, []);
+      draw(sink, this.lastSeed, []);
       this.setState("live");
       return;
     }
@@ -796,18 +796,20 @@ export class PaneStream implements ReseedTarget {
     // carry (alt screen, autowrap, cursor visibility, application cursor/keypad,
     // insert) and the scroll region, plus pane_height + history_size which
     // size the row-exact normalization below, and pane_width, which with
-    // pane_height is the size the capture was taken at. capture-pane -e emits only SGR colour/attrs, never
+    // pane_height is the size the capture was taken at. capture-pane -e emits
+    // only SGR colour/attrs, never
     // DEC private modes — so a TUI pane (vim/less) would seed with the wrong
     // input modes unless we restore them explicitly.
-    const stateCmd = `display-message -p -t %${this.paneId} '#{cursor_x};#{cursor_y};#{alternate_on};#{cursor_flag};#{insert_flag};#{keypad_cursor_flag};#{keypad_flag};#{wrap_flag};#{pane_height};#{history_size};#{scroll_region_upper};#{scroll_region_lower};#{pane_width}'`;
+    const stateCmd = `display-message -p -t %${this.paneId} '${SEED_STATE_FORMAT}'`;
 
     // One command line: tmux runs both commands without parsing pane bytes
     // in between, so the cursor and modes describe the captured grid. Its
     // output is the capture's lines, then the state line; its number is the
     // capture's, whose `%begin` says which buffered bytes the snapshot holds.
+    const command = `${captureCmd} ; ${stateCmd}`;
     let outcome: Outcome<CommandResponse>;
     try {
-      const value = await this.client.execute(`${captureCmd} ; ${stateCmd}`);
+      const value = await this.client.execute(command);
       outcome = { ok: true, value };
     } catch (error) {
       outcome = { ok: false, error };
@@ -822,7 +824,7 @@ export class PaneStream implements ReseedTarget {
     if (this.currentState === "disposed") return;
     // Every failed capture reports, even one dropped below: a failure is true
     // of the pane whether or not this capture is used.
-    const reply = this.readCapture(cycle, stateCmd, outcome);
+    const reply = this.readCapture(cycle, command, outcome);
 
     // A capture taken while tmux has the pane paused misses what tmux dropped:
     // drop it and stay seeding. `%continue` reseeds.
@@ -889,8 +891,7 @@ export class PaneStream implements ReseedTarget {
     // the size it was captured at. A failed capture is no picture and took no
     // size: the sink keeps the one it has, and the failure reaches `error`.
     if (picture !== null) {
-      liveSink.resize(picture.size.cols, picture.size.rows);
-      liveSink.seed(picture.captured, picture.cursor, trailing);
+      draw(liveSink, picture, trailing);
     } else {
       for (const chunk of trailing) liveSink.write(chunk);
     }
@@ -916,12 +917,12 @@ export class PaneStream implements ReseedTarget {
    *   lifted to the 'error' seam. `reportError` classifies connection-gone as
    *   quiet (the reconnect handler re-drives the seed); a live tmux failure
    *   (%error, corrupted terminator), a connection that settled the reply
-   *   ahead of its `%begin`, or a state reply not in `stateCmd`'s format
-   *   surfaces.
+   *   ahead of its `%begin`, or a state reply not in `SEED_STATE_FORMAT`'s
+   *   shape surfaces.
    */
   private readCapture(
     cycle: Capturing,
-    stateCmd: string,
+    command: string,
     outcome: Outcome<CommandResponse>,
   ): CaptureReply | null {
     if (!outcome.ok) {
@@ -941,10 +942,11 @@ export class PaneStream implements ReseedTarget {
       );
       return null;
     }
-    const stateLine = output.at(-1) ?? "";
-    const state = parseSeedState(stateLine);
+    // The state reply is the reply's last line: display-message prints one.
+    const stateLine = output.slice(-1);
+    const state = parseSeedState(stateLine.join(""));
     if (state === null) {
-      this.reportError("seed", new TmuxReplyFormatError(stateCmd, [stateLine]));
+      this.reportError("seed", new TmuxReplyFormatError(command, stateLine));
       return null;
     }
     return { output: output.slice(0, -1), state, begunAt };
@@ -1024,4 +1026,10 @@ export class PaneStream implements ReseedTarget {
 function parseDimensions(value: string): Grid | null {
   const [width, height, ...rest] = value.split(";");
   return rest.length === 0 ? parseGrid(width, height) : null;
+}
+
+// [LAW:single-enforcer] A seed is drawn at the size it was captured at.
+function draw(sink: TerminalSink, seed: Seed, trailing: readonly Uint8Array[]) {
+  sink.resize(seed.size.cols, seed.size.rows);
+  sink.seed(seed.captured, trailing);
 }

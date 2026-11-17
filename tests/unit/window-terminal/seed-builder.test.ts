@@ -35,9 +35,10 @@ const parsed = (line: string): SeedState => {
 // A one-row main-screen pane: no padding below one row of content.
 const ONE_ROW = parsed(seedStateLine({ cols: 20, rows: 1 }));
 // What ONE_ROW wraps the screen in: main screen, the clear, autowrap on; then
-// the whole-screen scroll region, cursor visible, insert/app-cursor/keypad off.
+// the whole-screen scroll region, cursor visible, insert/app-cursor/keypad
+// off, the cursor at the origin.
 const PREAMBLE = `${ESC}[?1049l${CLEAR}${ESC}[?7h`;
-const EPILOGUE = `${ESC}[1;1r${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>`;
+const EPILOGUE = `${ESC}[1;1r${ESC}[?25h${ESC}[4l${ESC}[?1l${ESC}>${ESC}[1;1H`;
 // The seed with ONE_ROW's escapes taken off, so a test can assert the content.
 const body = (bytes: Uint8Array): string => {
   const t = text(bytes);
@@ -112,12 +113,13 @@ describe("buildSeed: trailing-artifact strip", () => {
 });
 
 describe("buildSeed: cursor and size", () => {
-  it("are the cursor and pane size the capture was taken at", () => {
+  it("ends at the cursor, and is the pane size, the capture was taken at", () => {
     const state = parsed(
       seedStateLine({ cols: 80, rows: 24, cursor: { col: 3, row: 5 } }),
     );
-    const { cursor, size } = buildSeed([], state, 0);
-    expect(cursor).toEqual({ col: 3, row: 5 });
+    const { captured, size } = buildSeed([], state, 0);
+    // CUP is 1-indexed.
+    expect(text(captured).endsWith("\x1b[6;4H")).toBe(true);
     expect(size).toEqual({ cols: 80, rows: 24 });
   });
 });
@@ -161,12 +163,13 @@ describe("buildSeed: terminal-mode escapes", () => {
 
   it("sets each mode the state names after the content (epilogue)", () => {
     // cursor_flag=0, insert=1, app-cursor=1, keypad=1, wrap=0, region rows
-    // 0..0 → ?7l before; 1;1r, ?25l, 4h, ?1h, ESC= after.
+    // 0..0, cursor at the origin → ?7l before; 1;1r, ?25l, 4h, ?1h, ESC=,
+    // then the CUP after.
     const state = parsed("0;0;0;0;1;1;1;0;1;0;0;0;20");
     expect(text(buildSeed(["x"], state, 0).captured)).toBe(
       `${ESC}[?1049l${CLEAR}${ESC}[?7l` +
         "x" +
-        `${ESC}[1;1r${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=`,
+        `${ESC}[1;1r${ESC}[?25l${ESC}[4h${ESC}[?1h${ESC}=${ESC}[1;1H`,
     );
   });
 
@@ -239,9 +242,7 @@ describe("buildSeed: drawn into xterm.js", () => {
       { ...state, scrollRegion: { top: 1, bottom: 2 } },
       2000,
     );
-    // The seed, then the CUP a sink writes from its cursor (row 2, col 0).
     await draw(term, seed.captured);
-    await draw(term, `${ESC}[3;1H`);
     expect(term.buffer.active.cursorY).toBe(2);
     // A line feed on the region's bottom row scrolls the region alone.
     await draw(term, "\r\nnew");

@@ -15,7 +15,6 @@ import type {
   PaneStreamState,
 } from "../../../src/window-terminal/engine/pane-stream.js";
 import type { TerminalSink } from "../../../src/window-terminal/engine/terminal-sink.js";
-import type { SeedCursor } from "../../../src/window-terminal/engine/terminal-sink.js";
 import {
   TmuxCommandError,
   TmuxProtocolError,
@@ -45,18 +44,12 @@ class RecordingSink implements TerminalSink {
   readonly writes: Uint8Array[] = [];
   readonly seedTexts: string[] = [];
   private visible = true;
-  seed(
-    captured: Uint8Array,
-    cursor: SeedCursor,
-    trailing: readonly Uint8Array[],
-  ): void {
+  seed(captured: Uint8Array, trailing: readonly Uint8Array[]): void {
     // seed carries raw bytes (same kind as write); decode Latin-1 (lossless
     // for the ASCII fixtures these tests use) for human-readable assertions.
     const text = new TextDecoder("latin1").decode(captured);
     this.seedTexts.push(text);
-    this.events.push(
-      `seed(${captured.byteLength} bytes, cursor=${JSON.stringify(cursor)})`,
-    );
+    this.events.push(`seed(${captured.byteLength} bytes)`);
     // Trailing live bytes are applied after the snapshot, in order — record
     // them as the same behavioral write events a renderer would emit.
     for (const chunk of trailing) this.write(chunk);
@@ -328,7 +321,7 @@ describe("PaneStream — state machine", () => {
     expect(cause).toBeInstanceOf(TmuxReplyFormatError);
     expect(cause).toMatchObject({ output: [truncated] });
     expect((cause as TmuxReplyFormatError).command).toMatch(
-      /^display-message -p -t %7 /,
+      /^capture-pane .* ; display-message -p -t %7 /,
     );
 
     client.setExecuteResponse((cmd) =>
