@@ -90,6 +90,12 @@ describe("parseSeedState", () => {
     ["a region row that is not digits", "0;0;0;1;0;0;0;1;0;24;0;0;x;80"],
     ["a region whose top is below its bottom", "0;0;0;1;0;0;0;1;0;24;0;5;3;80"],
     ["a region past the pane's last row", "0;0;0;1;0;0;0;1;0;24;0;0;24;80"],
+    ["a one-row region on a taller pane", "0;0;0;1;0;0;0;1;0;24;0;5;5;80"],
+    ["a cursor below the pane's last row", "0;24;0;1;0;0;0;1;0;24;0;0;23;80"],
+    [
+      "a cursor past the pending-wrap column",
+      "81;0;0;1;0;0;0;1;0;24;0;0;23;80",
+    ],
     ["a trailing newline", "0;0;0;1;0;0;0;1;0;24;0;0;23;80\n"],
   ])("rejects %s", (_, line) => {
     expect(parseSeedState(line)).toBeNull();

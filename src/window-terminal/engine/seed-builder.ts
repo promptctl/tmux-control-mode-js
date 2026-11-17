@@ -171,11 +171,13 @@ const CLEAR = `${ESC}[r${ESC}[H${ESC}[0m${ESC}[2J${ESC}[3J${ESC}(B${ESC})0${SI}`
 // capture-pane carries one pen across its lines, writing only what changes,
 // and xterm fills a line a feed scrolls in with the current background, so a
 // bare CRLF after a row ending on a coloured cell paints the next row's tail.
-// DECSC/DECRC keep the pen across the feed with SGR 49 in force, and CUD
-// reaches the new line whether or not the feed scrolled.
-//   DECSC overwrites xterm's saved cursor, which tmux does not report, so the
-//   seed cannot restore it either way.
-const NEWLINE = `${ESC}7${ESC}[49m\n${ESC}8\r${ESC}[B`;
+// Save and restore cursor keep the pen across the feed with SGR 49 in force,
+// and CUD reaches the new line whether or not the feed scrolled. CSI s/u, not
+// ESC 7/8: every TerminalSink here implements them, the demo's
+// AttributionEngine included.
+//   The save overwrites the cursor a program saved before the reseed, which
+//   tmux does not report; a DECRC after a reseed lands on the seed's last row.
+const NEWLINE = `${ESC}[s${ESC}[49m\n${ESC}[u\r${ESC}[B`;
 
 // Before content: establish the correct screen buffer, clear it, then set
 // autowrap — all of which affect how screen content lays out.
@@ -264,8 +266,8 @@ export const SEED_STATE_FORMAT = SEED_STATE_FIELDS.map((f) => `#{${f}}`).join(
 /**
  * The pane state from the `display-message` reply PaneStream takes with each
  * capture; `null` when the reply is not `SEED_STATE_FORMAT`'s shape (any field
- * missing, empty or malformed, or a zero dimension), which only a malformed
- * reply can be.
+ * missing, empty or malformed, a zero dimension, or a cursor or scroll region
+ * off the screen), which only a malformed reply can be.
  *
  * [LAW:parse-dont-validate] A `SeedState` holds every field the seed needs, so
  *   nothing downstream asks whether one is there.
@@ -282,21 +284,27 @@ export function parseSeedState(line: string): SeedState | null {
     SEED_STATE_FIELDS.map((name, i) => [name, values[i]]),
   ) as Record<SeedStateField, string>;
   const size = parseGrid(f.pane_width, f.pane_height);
+  const cursor = { col: Number(f.cursor_x), row: Number(f.cursor_y) };
   const scrollRegion = {
     top: Number(f.scroll_region_upper),
     bottom: Number(f.scroll_region_lower),
   };
-  // A region tmux can hold lies on the screen, top above bottom; the
-  // epilogue's DECSTBM and DECOM-relative CUP rely on it.
+  // The cursor is on the screen; its column is the width while a wrap is
+  // pending. A region spans two rows or more (tmux refuses a one-row
+  // DECSTBM) or is the whole screen. The epilogue's DECSTBM and DECOM-relative
+  // CUP rely on both.
   if (
     size === null ||
-    scrollRegion.top > scrollRegion.bottom ||
-    scrollRegion.bottom >= size.rows
+    cursor.row >= size.rows ||
+    cursor.col > size.cols ||
+    scrollRegion.bottom >= size.rows ||
+    (scrollRegion.top >= scrollRegion.bottom &&
+      !(scrollRegion.top === 0 && scrollRegion.bottom === size.rows - 1))
   ) {
     return null;
   }
   return {
-    cursor: { col: Number(f.cursor_x), row: Number(f.cursor_y) },
+    cursor,
     size,
     historySize: Number(f.history_size),
     alternateScreen: f.alternate_on === "1",
