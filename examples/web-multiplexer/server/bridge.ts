@@ -15,6 +15,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
 import {
@@ -45,7 +46,12 @@ import {
 } from "../shared/mirror-frame.js";
 import { COLLAB_WS_PATH } from "../shared/collab-frame.js";
 import { COPILOT_PATH } from "../shared/copilot-frame.js";
-import { COPILOT_MAX_BODY_BYTES, readCappedBody, suggest } from "./copilot.js";
+import {
+  COPILOT_MAX_BODY_BYTES,
+  readCappedBody,
+  suggest,
+  type CompleteChat,
+} from "./copilot.js";
 import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
 
 // ---------------------------------------------------------------------------
@@ -188,6 +194,8 @@ export function handleCollabConnection(
 
 /** A running bridge server. `close()` tears down every connection + listener. */
 export interface BridgeHandle {
+  /** Where the server listens, once it does. */
+  readonly listening: Promise<AddressInfo>;
   close(): void;
 }
 
@@ -198,6 +206,8 @@ export interface BridgeOptions {
   /** Spawns the `tmux -C` client each `/ws` page and the firehose run on. */
   readonly spawnClient?: SpawnControlClient;
   readonly startFirehose?: StartFirehose;
+  /** The co-pilot's LLM call; by default the env-configured endpoint. */
+  readonly complete?: CompleteChat;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +235,7 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 async function handleCopilotRequest(
   req: IncomingMessage,
   res: ServerResponse,
+  complete: CompleteChat,
 ): Promise<void> {
   const body = await readCappedBody(req, COPILOT_MAX_BODY_BYTES);
   if (body.kind === "too-large") {
@@ -242,9 +253,7 @@ async function handleCopilotRequest(
     writeJson(res, 400, { ok: false, error: "invalid JSON body" });
     return;
   }
-  const reply = await suggest(parsed, (messages) =>
-    chatCompletion(messages, copilotConfig),
-  );
+  const reply = await suggest(parsed, complete);
   writeJson(res, reply.status, reply.response);
 }
 
@@ -263,6 +272,8 @@ export function startBridge(options: BridgeOptions = {}): BridgeHandle {
   const startFirehose: StartFirehose =
     options.startFirehose ??
     ((execute, sink) => new PaneFirehose(execute, sink));
+  const complete: CompleteChat =
+    options.complete ?? ((messages) => chatCompletion(messages, copilotConfig));
 
   const httpServer = createServer((req, res) => {
     // [LAW:single-enforcer] The same origin rule as every upgrade: a cross-site
@@ -280,7 +291,7 @@ export function startBridge(options: BridgeOptions = {}): BridgeHandle {
       req.method === "POST" &&
       (req.url ?? "").split("?")[0] === COPILOT_PATH
     ) {
-      void handleCopilotRequest(req, res);
+      void handleCopilotRequest(req, res, complete);
       return;
     }
     res.writeHead(200, { "content-type": "text/plain" });
@@ -289,13 +300,13 @@ export function startBridge(options: BridgeOptions = {}): BridgeHandle {
     );
   });
 
-  const mirrorRegistry = new MirrorRegistry();
+  const mirrorRegistry = new MirrorRegistry(spawnClient);
   // The collaborative endpoint reuses the SAME mirror registry for output
   // (one tap per pane, shared with read-only viewers — a read-only mirror and
   // a writable collaborator of one pane share its byte stream and viewer count)
   // and adds the write side via a dedicated `CollabInput`. [LAW:one-source-of-
   // truth] one pane, one tap, regardless of how each browser connects.
-  const collabInput = new CollabInput();
+  const collabInput = new CollabInput(spawnClient);
 
   // [LAW:one-source-of-truth] One handler per route; `admitUpgrade` owns the
   // path-to-route table, so this record cannot name a route the gate lacks.
@@ -389,6 +400,12 @@ export function startBridge(options: BridgeOptions = {}): BridgeHandle {
     });
   });
 
+  const listening = new Promise<AddressInfo>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.once("listening", () =>
+      resolve(httpServer.address() as AddressInfo),
+    );
+  });
   httpServer.listen(port, BRIDGE_HOST, () => {
     console.log(
       `[bridge] listening on http://${BRIDGE_HOST}:${port} (WS at ${TMUX_WS_PATH})`,
@@ -404,6 +421,7 @@ export function startBridge(options: BridgeOptions = {}): BridgeHandle {
   });
 
   return {
+    listening,
     close(): void {
       void tmuxBridge.shutdown();
       firehoseEndpoint.closeAll("bridge shutting down");

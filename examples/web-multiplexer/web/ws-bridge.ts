@@ -34,14 +34,28 @@ export function webSocketBridge(): LibraryBridge {
   );
 }
 
+/** The part of a browser WebSocket the firehose uses. */
+export interface FirehoseWebSocket {
+  binaryType: BinaryType;
+  addEventListener(
+    type: "message",
+    listener: (ev: { readonly data: unknown }) => void,
+  ): void;
+  addEventListener(
+    type: "close",
+    listener: (ev: { readonly code: number; readonly reason: string }) => void,
+  ): void;
+  close(): void;
+}
+
 export class FirehoseSocket implements Firehose {
-  private socket: WebSocket | null = null;
+  private socket: FirehoseWebSocket | null = null;
 
   constructor(
     private readonly url: string,
     private readonly sink: FirehoseHandler,
     private readonly reportError: (message: string) => void,
-    private readonly createSocket: (url: string) => WebSocket = (url) =>
+    private readonly createSocket: (url: string) => FirehoseWebSocket = (url) =>
       new WebSocket(url),
   ) {}
 
@@ -49,7 +63,7 @@ export class FirehoseSocket implements Firehose {
     if (this.socket !== null) return;
     const socket = this.createSocket(this.url);
     socket.binaryType = "arraybuffer";
-    socket.addEventListener("message", (ev: MessageEvent<unknown>) => {
+    socket.addEventListener("message", (ev) => {
       if (this.socket !== socket) return;
       const frame =
         ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : null;
@@ -61,7 +75,7 @@ export class FirehoseSocket implements Firehose {
       const { paneId, data } = decodePaneOutput(frame);
       this.sink(paneId, data);
     });
-    socket.addEventListener("close", (ev: CloseEvent) => {
+    socket.addEventListener("close", (ev) => {
       if (this.socket !== socket) return;
       this.socket = null;
       this.reportError(

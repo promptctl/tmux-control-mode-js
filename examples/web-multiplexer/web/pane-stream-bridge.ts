@@ -140,10 +140,9 @@ export class BridgePaneStreamClient
       this.router.onTransportReady(run);
       this.retire = () => this.router.onTransportLost(run);
     }
-    const next = state;
-    const changed = next.status !== this._connectionState.status;
-    this._connectionState = next;
-    if (changed) this.announce({ type: "connection-state", state: next });
+    const changed = state.status !== this._connectionState.status;
+    this._connectionState = state;
+    if (changed) this.announce({ type: "connection-state", state });
     if (state.status !== "ready") return;
     if (this.everReady) {
       // [LAW:single-enforcer] The only place that decides "this is a
