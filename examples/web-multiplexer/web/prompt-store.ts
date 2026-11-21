@@ -74,7 +74,7 @@ export class PromptStore {
     // A reconnect drops the previous server's taps; re-open the firehose if
     // command-palette mode is still active so history keeps growing past a swap.
     this.disposeOnState = bridge.onState((state) => {
-      if (state === "ready" && this.active) this.bridge.startFirehose();
+      if (state.status === "ready" && this.active) this.bridge.startFirehose();
     });
 
     this.timerHandle = setInterval(

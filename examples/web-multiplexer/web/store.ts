@@ -36,16 +36,14 @@
 //   - KeymapController     — keymap engine + destructive-action confirmation
 
 import { makeAutoObservable, runInAction } from "mobx";
+import type { ConnectionState } from "@promptctl/tmux-control-mode-js/browser";
 import type { TmuxBridge } from "./bridge.ts";
 import type { KeyEvent } from "@promptctl/tmux-control-mode-js/keymap";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 import type { PaneInfo, SessionInfo, WindowInfo } from "./snapshot-codec.ts";
 import { TmuxModel } from "./tmux-model.ts";
 import { LogStore } from "./log-store.ts";
-import {
-  ConnectionController,
-  type ConnState,
-} from "./connection-controller.ts";
+import { ConnectionController } from "./connection-controller.ts";
 import { RefreshPolicy } from "./refresh-policy.ts";
 import { SelectionController } from "./selection-controller.ts";
 import {
@@ -123,16 +121,16 @@ export class DemoStore {
   // Connection lifecycle (→ ConnectionController)
   // -------------------------------------------------------------------------
 
-  connect(url: string): void {
-    this.connection.connect(url);
+  connect(): void {
+    this.connection.connect();
   }
 
   disconnect(): void {
     this.connection.disconnect();
   }
 
-  get connState(): ConnState {
-    return this.connection.connState;
+  get connectionState(): ConnectionState {
+    return this.connection.connectionState;
   }
 
   get statusColor(): string {

@@ -105,8 +105,8 @@ export class InspectorStore {
 
     // Record outbound requests so the matching response can patch in
     // the round-trip latency.
-    if (wire.dir === "out" && wire.msg.kind !== "detach") {
-      this.pendingByWireId.set(wire.msg.id, entry.id);
+    if (wire.dir === "out") {
+      this.pendingByWireId.set(wire.call.id, entry.id);
     }
 
     // Correlate responses to their originating request entry.
@@ -141,8 +141,7 @@ export class InspectorStore {
     if (this.entries.length > MAX_ENTRIES) {
       const dropped = this.entries.shift();
       if (dropped !== undefined && dropped.wire.dir === "out") {
-        const msg = dropped.wire.msg;
-        if (msg.kind !== "detach") this.pendingByWireId.delete(msg.id);
+        this.pendingByWireId.delete(dropped.wire.call.id);
       }
     }
   }
@@ -274,11 +273,10 @@ const NO_LABELS = new Map<number, string>();
  */
 function summarizeForSearch(w: WireEntry): string {
   if (w.dir === "out") {
-    if (w.msg.kind === "execute")
-      return `out execute ${w.msg.id} ${w.msg.command}`;
-    if (w.msg.kind === "sendKeys")
-      return `out sendKeys ${w.msg.id} ${w.msg.target} ${w.msg.keys}`;
-    return `out detach ${w.msg.id}`;
+    const call = w.call;
+    return call.kind === "execute"
+      ? `out execute ${call.id} ${call.command}`
+      : `out sendKeys ${call.id} ${call.target} ${call.keys}`;
   }
   if (isNotification(w)) {
     return `in ${WIRE_DIRECTIONS[w.dir].label} %${notificationType(w)} ${summarizeNotification(w, NO_LABELS)}`;

@@ -72,7 +72,7 @@ interface Props {
 
 export const ScrollbackTimeMachineView = observer(
   function ScrollbackTimeMachineView({ demoStore, store, uiStore }: Props) {
-    const ready = demoStore.connState === "ready";
+    const ready = demoStore.connectionState.status === "ready";
     const timeline = store.timeline;
 
     return (

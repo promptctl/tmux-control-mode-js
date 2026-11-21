@@ -19,12 +19,25 @@ import {
   dispatchAction,
   handleKey,
   type Action,
+  type TmuxCommander,
   type KeyEvent,
   type Keymap,
   type KeymapState,
 } from "@promptctl/tmux-control-mode-js/keymap";
 import type { TmuxModel } from "./tmux-model.ts";
 import type { RefreshPolicy } from "./refresh-policy.ts";
+
+/**
+ * The keymap's view of the bridge. `detach` ends this page's connection: over
+ * WebSocket the server then disposes the page's own tmux client, which is the
+ * detach; the library bridges no `detach` call, since a client may be shared.
+ */
+function commanderFor(bridge: TmuxBridge): TmuxCommander {
+  return {
+    execute: (command) => bridge.execute(command),
+    detach: () => bridge.disconnect(),
+  };
+}
 
 export interface PendingConfirm {
   readonly action: Action;
@@ -126,7 +139,7 @@ export class KeymapController {
    * here is what pulls the post-action truth from tmux.
    */
   private dispatchAndRefresh(action: Action): void {
-    dispatchAction(this.client, action);
+    dispatchAction(commanderFor(this.client), action);
     const sid = this.model.activeSessionId;
     if (sid !== null) void this.refresh.refreshSession(sid);
   }

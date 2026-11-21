@@ -21,17 +21,20 @@
 // route handler is only reachable from an `admitted` value.
 
 import type { IncomingHttpHeaders } from "node:http";
-import { WEB_ORIGINS } from "../shared/config.js";
+import {
+  FIREHOSE_WS_PATH,
+  TMUX_WS_PATH,
+  WEB_ORIGINS,
+} from "../shared/config.js";
 import { MIRROR_WS_PATH } from "../shared/mirror-frame.js";
 import { COLLAB_WS_PATH } from "../shared/collab-frame.js";
 
-export const TMUX_WS_PATH = "/ws";
-
-export type Route = "tmux" | "mirror" | "collab";
+export type Route = "tmux" | "firehose" | "mirror" | "collab";
 
 // [LAW:one-source-of-truth] The one table from URL path to route.
 const ROUTES: ReadonlyMap<string, Route> = new Map([
   [TMUX_WS_PATH, "tmux"],
+  [FIREHOSE_WS_PATH, "firehose"],
   [MIRROR_WS_PATH, "mirror"],
   [COLLAB_WS_PATH, "collab"],
 ]);

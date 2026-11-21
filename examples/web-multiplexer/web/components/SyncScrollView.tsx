@@ -102,7 +102,7 @@ export const SyncScrollView = observer(function SyncScrollView({
   store,
   uiStore,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const fontSize = Math.min(uiStore.terminalFontSize, GRID_FONT_CEILING);
 
   return (

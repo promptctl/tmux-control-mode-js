@@ -98,26 +98,37 @@ export class DedicatedControlClient {
 
   private connect(): Live {
     const client = this.spawn();
-    const ready = new Promise<TmuxClient>((resolve, reject) => {
-      if (client.connectionState.status === "ready") resolve(client);
-      client.on("connection-state", ({ state }) => {
-        if (state.status === "ready") resolve(client);
-      });
-      client.on("exit", ({ reason }) => {
-        const error = new TransportClosedError(reason);
-        reject(error);
-        // Our own `close()` has already let go of this client.
-        if (!this.isLive(client)) return;
-        this.slot = { kind: "ended", error, at: Date.now() };
-        // `exit` can come on tmux's `%exit` line, before the transport closes:
-        // release the child rather than leave it to tmux.
-        client.close();
-        console.warn(
-          `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
-        );
-        this.onLost();
-      });
+    client.on("exit", ({ reason }) => {
+      // Our own `close()` has already let go of this client.
+      if (!this.isLive(client)) return;
+      this.slot = {
+        kind: "ended",
+        error: new TransportClosedError(reason),
+        at: Date.now(),
+      };
+      // `exit` can come on tmux's `%exit` line, before the transport closes:
+      // release the child rather than leave it to tmux.
+      client.close();
+      console.warn(
+        `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
+      );
+      this.onLost();
     });
-    return { kind: "live", client, ready };
+    return { kind: "live", client, ready: whenReady(client) };
   }
+}
+
+/**
+ * `client` once it is ready for commands; rejects with `TransportClosedError`
+ * if its connection ends first. [LAW:single-enforcer] The one definition of
+ * "settled" for every client the demo server spawns (see THE COLD-START RACE).
+ */
+export function whenReady(client: TmuxClient): Promise<TmuxClient> {
+  return new Promise<TmuxClient>((resolve, reject) => {
+    if (client.connectionState.status === "ready") resolve(client);
+    client.on("connection-state", ({ state }) => {
+      if (state.status === "ready") resolve(client);
+    });
+    client.on("exit", ({ reason }) => reject(new TransportClosedError(reason)));
+  });
 }

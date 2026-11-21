@@ -64,7 +64,7 @@ export const MomentDiffView = observer(function MomentDiffView({
   demoStore,
   store,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const diff = store.diff;
 
   return (

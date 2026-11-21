@@ -7,8 +7,7 @@
 // not a frame this protocol can express. [LAW:types-are-the-program] The
 // read-only-ness is the absence of an inbound vocabulary, not a runtime guard.
 //
-// Server→browser carries two channels, distinguished the same way the main
-// bridge distinguishes them (see ws-client.ts):
+// Server→browser carries two channels, distinguished by frame type:
 //   - binary frames  → raw pane bytes to write into the terminal sink. The
 //     first binary frame is the capture-pane seed (it leads with a clear);
 //     every later frame is live tapped output. The viewer writes them all

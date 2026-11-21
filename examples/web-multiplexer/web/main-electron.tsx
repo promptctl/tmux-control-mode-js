@@ -1,6 +1,6 @@
 // examples/web-multiplexer/web/main-electron.tsx
-// Renderer entry point for the Electron variant. Constructs an
-// ElectronBridge against window.tmuxIpc (exposed by the preload script
+// Renderer entry point for the Electron variant. Builds the bridge over
+// window.tmuxIpc (exposed by the preload script
 // under contextIsolation+sandbox) and renders the same App.tsx tree the
 // web entry uses.
 //
@@ -14,7 +14,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./fonts.css";
 import "./window-terminal.css";
 import { App } from "./App.tsx";
-import { ElectronBridge } from "./electron-bridge.ts";
+import { electronBridge } from "./electron-bridge.ts";
 import { getDemoIpc } from "./demo-ipc.ts";
 import type { IpcRendererLike } from "@promptctl/tmux-control-mode-js/electron/renderer";
 
@@ -44,12 +44,10 @@ if (demoIpc === null) {
     "Electron entry: window.demoIpc is missing — preload did not expose it",
   );
 }
-const bridge = new ElectronBridge(window.tmuxIpc, demoIpc);
+const bridge = electronBridge(window.tmuxIpc, demoIpc);
 
-// connectUrl is unused by ElectronBridge — pass an empty string to keep
-// the App prop contract uniform across transports.
 mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
-    <App bridge={bridge} connectUrl="" />
+    <App bridge={bridge} />
   </MantineProvider>,
 );

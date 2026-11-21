@@ -20,3 +20,8 @@ export const WEB_ORIGINS: readonly string[] = [
   "127.0.0.1",
   "[::1]",
 ].map((host) => `http://${host}:${WEB_PORT}`);
+
+// The two WebSocket paths the page opens on the bridge: the library's tmux
+// connector, and the firehose of every pane's bytes.
+export const TMUX_WS_PATH = "/ws";
+export const FIREHOSE_WS_PATH = "/firehose-ws";

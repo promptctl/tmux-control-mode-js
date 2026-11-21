@@ -44,8 +44,7 @@ import type {
   PaneStreamState,
 } from "./window-terminal-internals.ts";
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
-import type { ConnState, TmuxBridge } from "./bridge.ts";
-import { toConnectionState } from "./bridge.ts";
+import type { TmuxBridge } from "./bridge.ts";
 
 // ---------------------------------------------------------------------------
 // BridgePaneStreamClient
@@ -115,7 +114,7 @@ export class BridgePaneStreamClient
     this.announce(ev);
   };
 
-  private readonly onBridgeState = (state: ConnState): void => {
+  private readonly onBridgeState = (state: ConnectionState): void => {
     // [LAW:no-ambient-temporal-coupling] The router moves to the new
     //   connection before any consumer hears of it, so a `connection-state`
     //   handler never queries a dropped connection. The bridge reconnects
@@ -124,7 +123,7 @@ export class BridgePaneStreamClient
     //   (which ends every sink for good).
     this.retire();
     this.retire = () => undefined;
-    if (state === "ready") {
+    if (state.status === "ready") {
       // The runner names the connection: each ready gets its own, so late
       // evidence about an earlier connection retires nothing.
       // [LAW:no-ambient-temporal-coupling] A reply saying the connection is
@@ -141,11 +140,11 @@ export class BridgePaneStreamClient
       this.router.onTransportReady(run);
       this.retire = () => this.router.onTransportLost(run);
     }
-    const next = toConnectionState(state);
+    const next = state;
     const changed = next.status !== this._connectionState.status;
     this._connectionState = next;
     if (changed) this.announce({ type: "connection-state", state: next });
-    if (state !== "ready") return;
+    if (state.status !== "ready") return;
     if (this.everReady) {
       // [LAW:single-enforcer] The only place that decides "this is a
       // reconnect" for all PaneStream instances on this bridge.

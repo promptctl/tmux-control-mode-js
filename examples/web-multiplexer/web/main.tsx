@@ -5,22 +5,20 @@ import "@xterm/xterm/css/xterm.css";
 import "./fonts.css";
 import "./window-terminal.css";
 import { App } from "./App.tsx";
-import { WebSocketBridge } from "./ws-client.ts";
+import { webSocketBridge } from "./ws-bridge.ts";
 
 const theme = createTheme({
   primaryColor: "teal",
   defaultRadius: "sm",
 });
 
-const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-
 // [LAW:single-enforcer] One bridge per page load. App calls connect/
 // disconnect through React lifecycles; both are idempotent so React
 // StrictMode's intentional double-mount in dev is benign.
-const bridge = new WebSocketBridge();
+const bridge = webSocketBridge();
 
 mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
-    <App bridge={bridge} connectUrl={WS_URL} />
+    <App bridge={bridge} />
   </MantineProvider>,
 );

@@ -21,30 +21,26 @@ import { getDemoIpc, type DemoIpc } from "../demo-ipc.ts";
 
 interface Props {
   readonly demoStore: DemoStore;
-  readonly connectUrl: string;
 }
 
-export const SocketBadge = observer(function SocketBadge({
-  demoStore,
-  connectUrl,
-}: Props) {
+export const SocketBadge = observer(function SocketBadge({ demoStore }: Props) {
   const ipc = getDemoIpc();
   // Web target — fall back to the legacy reconnect badge.
   if (ipc === null) {
-    return <ReconnectBadge demoStore={demoStore} connectUrl={connectUrl} />;
+    return <ReconnectBadge demoStore={demoStore} />;
   }
-  return (
-    <PickerBadge demoStore={demoStore} connectUrl={connectUrl} ipc={ipc} />
-  );
+  return <PickerBadge demoStore={demoStore} ipc={ipc} />;
 });
 
-const ReconnectBadge = observer(function ReconnectBadge({
-  demoStore,
-  connectUrl,
-}: Props) {
-  const connState = demoStore.connState;
+const ReconnectBadge = observer(function ReconnectBadge({ demoStore }: Props) {
+  const state = demoStore.connectionState;
+  const status = state.status;
   const label =
-    connState === "closed" ? "Click to reconnect" : `Bridge is ${connState}`;
+    state.status !== "closed"
+      ? `Bridge is ${status}`
+      : state.reason === "refused"
+        ? `Refused: ${state.error.message}. Click to reconnect`
+        : `Closed (${state.reason}). Click to reconnect`;
   return (
     <Tooltip label={label}>
       <Badge
@@ -52,22 +48,22 @@ const ReconnectBadge = observer(function ReconnectBadge({
         type="button"
         color={demoStore.statusColor}
         variant="light"
-        disabled={connState !== "closed"}
+        disabled={status !== "closed"}
         aria-label={
-          connState === "closed"
+          status === "closed"
             ? "Reconnect to the tmux bridge"
-            : `Bridge status: ${connState}`
+            : `Bridge status: ${status}`
         }
         style={{
-          cursor: connState === "closed" ? "pointer" : "default",
+          cursor: status === "closed" ? "pointer" : "default",
           userSelect: "none",
           border: "none",
         }}
         onClick={() => {
-          if (connState === "closed") demoStore.connect(connectUrl);
+          if (status === "closed") demoStore.connect();
         }}
       >
-        bridge: {connState}
+        bridge: {status}
       </Badge>
     </Tooltip>
   );
@@ -75,10 +71,9 @@ const ReconnectBadge = observer(function ReconnectBadge({
 
 const PickerBadge = observer(function PickerBadge({
   demoStore,
-  connectUrl,
   ipc,
 }: Props & { readonly ipc: DemoIpc }) {
-  const connState = demoStore.connState;
+  const status = demoStore.connectionState.status;
   const [opened, setOpened] = useState(false);
   const [sockets, setSockets] = useState<readonly string[] | null>(null);
   const [current, setCurrent] = useState<string | null>(null);
@@ -90,7 +85,7 @@ const PickerBadge = observer(function PickerBadge({
   // whenever the bridge transitions to "ready" (catches main-side
   // changes the renderer didn't initiate).
   useEffect(() => {
-    if (connState !== "ready") return;
+    if (status !== "ready") return;
     let cancelled = false;
     ipc
       .currentSocket()
@@ -104,7 +99,7 @@ const PickerBadge = observer(function PickerBadge({
     return () => {
       cancelled = true;
     };
-  }, [connState, ipc]);
+  }, [status, ipc]);
 
   // Refresh the LIST whenever the menu opens. Cheap (one IPC + one
   // readdir on the main side); doing it lazily keeps the badge cost
@@ -141,7 +136,7 @@ const PickerBadge = observer(function PickerBadge({
       // which fires for transient reconnects too.
       demoStore.clearTopology();
       await ipc.switchSocket(name);
-      demoStore.connect(connectUrl);
+      demoStore.connect();
       // Mirror the main-side change locally so the badge re-renders
       // with the new label before the bridge's "ready" state lands.
       setCurrent(name);
@@ -151,7 +146,7 @@ const PickerBadge = observer(function PickerBadge({
       // Best-effort recovery: try to reconnect to whatever the main
       // process is currently bound to (it may already have completed
       // the swap before throwing).
-      demoStore.connect(connectUrl);
+      demoStore.connect();
     } finally {
       setBusy(false);
     }
@@ -159,7 +154,7 @@ const PickerBadge = observer(function PickerBadge({
 
   // The badge itself shows the current socket name — much more
   // informative than "bridge: ready" once switching is possible.
-  const badgeLabel = current === null ? `bridge: ${connState}` : current;
+  const badgeLabel = current === null ? `bridge: ${status}` : current;
 
   return (
     <Menu

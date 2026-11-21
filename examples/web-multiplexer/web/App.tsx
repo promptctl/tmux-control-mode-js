@@ -86,19 +86,13 @@ export interface AppProps {
    * The transport-agnostic bridge the renderer talks to. Constructed at
    * module scope by the entry point — App does not own its lifecycle
    * across React StrictMode remounts; it just calls connect/disconnect.
-   * Both WebSocketBridge and ElectronBridge tolerate multiple
-   * connect/disconnect cycles, so the StrictMode dev double-mount is
-   * benign.
+   * The bridge tolerates any number of connect/disconnect cycles, so
+   * the StrictMode dev double-mount is benign.
    */
   readonly bridge: TmuxBridge;
-  /**
-   * URL for transports that dial somewhere (WebSocket). Ignored by
-   * transports that are already attached at construction (Electron IPC).
-   */
-  readonly connectUrl: string;
 }
 
-export const App = observer(function App({ bridge, connectUrl }: AppProps) {
+export const App = observer(function App({ bridge }: AppProps) {
   const uiStore = useMemo(() => new UiStore(), []);
   // Demo-side policy hooks: the library's keymap emits `choose-session`
   // for C-b s, but the demo handles it by popping the sidebar open rather
@@ -292,7 +286,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
   const conformanceStore = useMemo(() => new ConformanceStore(), []);
 
   useEffect(() => {
-    demoStore.connect(connectUrl);
+    demoStore.connect();
     return () => {
       tutorialStore.dispose();
       conformanceStore.dispose();
@@ -340,7 +334,6 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     consoleStore,
     tutorialStore,
     conformanceStore,
-    connectUrl,
   ]);
 
   // Lazily seed the full-scrollback index the first time search mode opens —
@@ -574,7 +567,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
     };
   }, [demoStore]);
 
-  const { currentSession, currentWindow, connState, sessions, errors } =
+  const { currentSession, currentWindow, connectionState, sessions, errors } =
     demoStore;
 
   return (
@@ -653,7 +646,7 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
                 also the entry point to the socket picker (click → menu of
                 live tmux sockets). On the web target it falls back to a
                 plain reconnect button. See components/SocketBadge.tsx. */}
-            <SocketBadge demoStore={demoStore} connectUrl={connectUrl} />
+            <SocketBadge demoStore={demoStore} />
             <Tooltip
               label={
                 uiStore.asideCollapsed ? "Show debug panel" : "Hide debug panel"
@@ -809,11 +802,11 @@ export const App = observer(function App({ bridge, connectUrl }: AppProps) {
           <ConformanceView store={conformanceStore} uiStore={uiStore} />
         ) : currentSession === null ? (
           <Text c="dimmed">
-            {connState === "ready"
+            {connectionState.status === "ready"
               ? sessions.length === 0
                 ? "No sessions visible — tmux returned an empty list."
                 : "Pick a session from the sidebar."
-              : `Connecting to bridge (${connState})…`}
+              : `Connecting to bridge (${connectionState.status})…`}
           </Text>
         ) : (
           <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>

@@ -71,7 +71,7 @@ export const SessionRecorderView = observer(function SessionRecorderView({
   store,
   uiStore,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const recording = store.recording;
   const selectedPane =
     store.selectedPaneId === null

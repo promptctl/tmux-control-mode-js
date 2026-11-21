@@ -62,20 +62,15 @@ function describe(
   paneLabels: Map<number, string>,
 ): Pick<Presentation, "type" | "summary"> {
   if (w.dir === "out") {
-    const msg = w.msg;
+    const call = w.call;
     // [LAW:dataflow-not-control-flow] Every outbound kind labels the same
     // way — `<kind> #<id>` — so the type is derived from the value, not a
-    // per-branch literal. Only the summary carries payload-specific detail;
-    // the payload-less kinds (detach, startFirehose, stopFirehose) have none.
-    // Deriving the label keeps it truthful for any kind added to
-    // ClientToServer later, with no branch to forget.
+    // per-branch literal. Only the summary carries payload-specific detail.
     const summary =
-      msg.kind === "execute"
-        ? msg.command
-        : msg.kind === "sendKeys"
-          ? `${msg.target}  ${escapeForDisplay(msg.keys)}`
-          : "";
-    return { type: `${msg.kind} #${msg.id}`, summary };
+      call.kind === "execute"
+        ? call.command
+        : `${call.target}  ${escapeForDisplay(call.keys)}`;
+    return { type: `${call.kind} #${call.id}`, summary };
   }
   if (w.dir === "in-event" || w.dir === "in-output") {
     return {
@@ -103,7 +98,7 @@ export function badgeColor(dir: WireEntry["dir"]): string {
 }
 
 export function renderPayload(w: WireEntry): string {
-  if (w.dir === "out") return JSON.stringify(w.msg, null, 2);
+  if (w.dir === "out") return JSON.stringify(w.call, null, 2);
   if (w.dir === "in-event") return JSON.stringify(w.event, null, 2);
   if (w.dir === "in-output") {
     // Render the bytes as escaped ASCII so the inspector can serve as a
@@ -112,10 +107,7 @@ export function renderPayload(w: WireEntry): string {
     return `paneId=%${paneId}\nbytes=${prettyBytes(data, 96)}\n\n(${data.byteLength} bytes)`;
   }
   if (w.dir === "in-response") {
-    const req =
-      w.request !== null
-        ? JSON.stringify(w.request, null, 2)
-        : "(request evicted from ring)";
+    const req = JSON.stringify(w.call, null, 2);
     return `latency: ${formatMs(w.latencyMs)}\nsuccess: ${w.response.success}\n\n--- request ---\n${req}\n\n--- response ---\n${JSON.stringify(w.response, null, 2)}`;
   }
   return JSON.stringify({ id: w.id, message: w.message }, null, 2);

@@ -60,7 +60,7 @@ export const CollabView = observer(function CollabView({
   store,
   uiStore,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const panes = allPanes(demoStore);
 
   return (

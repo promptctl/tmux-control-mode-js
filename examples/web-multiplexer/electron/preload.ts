@@ -6,7 +6,7 @@
 //   window.tmuxIpc — the ipcRenderer surface required by the library's
 //     `createRendererBridge`. Typed as IpcRendererLike, so the compiler
 //     checks it against the contract main-electron.tsx hands to
-//     ElectronBridge with no casts.
+//     electronBridge with no casts.
 //
 //   window.demoIpc — demo-specific RPC for the socket picker. Strict
 //     allowlist of methods (no generic invoke escape hatch). Lives on a

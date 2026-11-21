@@ -25,7 +25,6 @@ export function fakeBridge(overrides: Partial<TmuxBridge> = {}): TmuxBridge {
   return {
     execute: () => Promise.resolve(OK),
     sendKeys: () => Promise.resolve(OK),
-    detach: noop,
     connect: noop,
     disconnect: noop,
     onEvent: noopUnsub,
