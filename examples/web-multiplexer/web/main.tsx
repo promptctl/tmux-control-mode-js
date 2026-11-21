@@ -6,6 +6,7 @@ import "./fonts.css";
 import "./window-terminal.css";
 import { App } from "./App.tsx";
 import { webSocketBridge } from "./ws-bridge.ts";
+import { HttpLlmClient } from "./llm-client.ts";
 
 const theme = createTheme({
   primaryColor: "teal",
@@ -19,6 +20,6 @@ const bridge = webSocketBridge();
 
 mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
-    <App bridge={bridge} />
+    <App bridge={bridge} llm={new HttpLlmClient()} />
   </MantineProvider>,
 );

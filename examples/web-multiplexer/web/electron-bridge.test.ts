@@ -63,6 +63,7 @@ const demoIpc: DemoIpc = {
   startFirehose: unused,
   stopFirehose: unused,
   onFirehose: () => () => undefined,
+  copilotSuggest: unused,
 };
 
 /** A bridge connected over a fake IPC: main answers every invoke with

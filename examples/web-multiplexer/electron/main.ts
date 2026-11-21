@@ -37,6 +37,8 @@ import {
   type MainBridgeOptions,
 } from "@promptctl/tmux-control-mode-js/electron/main";
 import { PaneFirehose } from "../server/pane-firehose.js";
+import { suggest } from "../server/copilot.js";
+import { chatCompletion, llmConfigFromEnv } from "../server/llm-client.js";
 
 // [LAW:single-enforcer] One pair of (socket, session) names drives the
 // demo's INITIAL connection. Both default to `web-multiplexer-demo` but
@@ -314,6 +316,16 @@ app.whenReady().then(async () => {
   ipcMain.handle("demo:firehose-stop", (): void => {
     stopFirehose();
   });
+
+  // The co-pilot's LLM relay: the same `suggest` the bridge's HTTP route
+  // runs, so the renderer never holds the endpoint or key on either target.
+  // [LAW:single-enforcer]
+  const copilotConfig = llmConfigFromEnv();
+  ipcMain.handle(
+    "demo:copilot-suggest",
+    async (_event, body: unknown) =>
+      (await suggest(body, (m) => chatCompletion(m, copilotConfig))).response,
+  );
 
   // By the time `window-all-closed` fires, every BrowserWindow has
   // already emitted its 'closed' event and its WebContents is destroyed,

@@ -6,6 +6,11 @@
 // call demoIpc must first guard on availability via `getDemoIpc()` —
 // nullish on the web target.
 
+import type {
+  ChatMessage,
+  CopilotSuggestResponse,
+} from "../shared/copilot-frame.ts";
+
 export interface DemoIpc {
   /**
    * Names in /tmp/tmux-$UID/, minus the currently-attached socket. `default`
@@ -39,6 +44,15 @@ export interface DemoIpc {
    * disposer that removes the listener.
    */
   onFirehose(handler: (paneId: number, data: Uint8Array) => void): () => void;
+
+  /**
+   * Complete the co-pilot's chat messages in the main process, which holds
+   * the LLM endpoint and key: the Electron analogue of the bridge's
+   * `POST /copilot/suggest`, which a `file://` page has no server to reach.
+   */
+  copilotSuggest(
+    messages: readonly ChatMessage[],
+  ): Promise<CopilotSuggestResponse>;
 }
 
 declare global {

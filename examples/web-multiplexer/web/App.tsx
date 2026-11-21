@@ -42,7 +42,7 @@ import { DataSnifferStore } from "./data-sniff-store.ts";
 import { HyperlinkStore } from "./hyperlink-store.ts";
 import { PromptStore } from "./prompt-store.ts";
 import { CopilotStore } from "./copilot-store.ts";
-import { HttpLlmClient } from "./llm-client.ts";
+import type { LlmClient } from "./llm-client.ts";
 import { ReaderStore } from "./reader-store.ts";
 import { WebGLStressStore } from "./webgl-stress-store.ts";
 import { ConsoleStore } from "./console-store.ts";
@@ -90,9 +90,11 @@ export interface AppProps {
    * the StrictMode dev double-mount is benign.
    */
   readonly bridge: TmuxBridge;
+  /** Where the co-pilot's chat completions go: the bridge, or Electron main. */
+  readonly llm: LlmClient;
 }
 
-export const App = observer(function App({ bridge }: AppProps) {
+export const App = observer(function App({ bridge, llm }: AppProps) {
   const uiStore = useMemo(() => new UiStore(), []);
   // Demo-side policy hooks: the library's keymap emits `choose-session`
   // for C-b s, but the demo handles it by popping the sidebar open rather
@@ -244,12 +246,13 @@ export const App = observer(function App({ bridge }: AppProps) {
     [demoStore],
   );
   // [LAW:composability] The co-pilot COMPOSES its own command-history pipeline
-  // (a PromptStore over the same bridge) and adds the LLM round-trip via an
-  // HttpLlmClient — the network effect lives in the bridge, which holds the
-  // endpoint + key. [LAW:effects-at-boundaries] the browser sends pure data.
+  // (a PromptStore over the same bridge) and adds the LLM round-trip via the
+  // entry point's LlmClient — the network effect lives in the bridge or the
+  // Electron main process, which holds the endpoint + key.
+  // [LAW:effects-at-boundaries] the browser sends pure data.
   const copilotStore = useMemo(
-    () => new CopilotStore(demoStore.client, new HttpLlmClient()),
-    [demoStore],
+    () => new CopilotStore(demoStore.client, llm),
+    [demoStore, llm],
   );
   // [LAW:one-source-of-truth] ReaderStore drives the SAME bridge as the rest of
   // the app, sourcing the dedicated firehose channel (raw pty bytes of every

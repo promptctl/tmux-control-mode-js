@@ -19,6 +19,10 @@ import type {
   IpcRendererOnListener,
 } from "@promptctl/tmux-control-mode-js/electron/renderer";
 import { createWrapperTracker } from "./wrapper-tracker.ts";
+import type {
+  ChatMessage,
+  CopilotSuggestResponse,
+} from "../shared/copilot-frame.ts";
 
 const TMUX_CHANNELS = new Set([
   "tmux:event",
@@ -90,6 +94,13 @@ contextBridge.exposeInMainWorld("demoIpc", {
   },
   stopFirehose(): Promise<void> {
     return ipcRenderer.invoke("demo:firehose-stop") as Promise<void>;
+  },
+  copilotSuggest(
+    messages: readonly ChatMessage[],
+  ): Promise<CopilotSuggestResponse> {
+    return ipcRenderer.invoke("demo:copilot-suggest", {
+      messages,
+    }) as Promise<CopilotSuggestResponse>;
   },
   onFirehose(handler: (paneId: number, data: Uint8Array) => void): () => void {
     // Fixed wrapper over one channel — no generic listener surface escapes.

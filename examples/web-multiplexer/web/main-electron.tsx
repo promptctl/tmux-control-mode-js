@@ -16,6 +16,7 @@ import "./window-terminal.css";
 import { App } from "./App.tsx";
 import { electronBridge } from "./electron-bridge.ts";
 import { getDemoIpc } from "./demo-ipc.ts";
+import { IpcLlmClient } from "./llm-client.ts";
 import type { IpcRendererLike } from "@promptctl/tmux-control-mode-js/electron/renderer";
 
 declare global {
@@ -48,6 +49,6 @@ const bridge = electronBridge(window.tmuxIpc, demoIpc);
 
 mountRoot(
   <MantineProvider theme={theme} defaultColorScheme="dark">
-    <App bridge={bridge} />
+    <App bridge={bridge} llm={new IpcLlmClient(demoIpc)} />
   </MantineProvider>,
 );
