@@ -151,7 +151,7 @@ export class ConsoleStore {
     // subscription before the bridge can carry one. refresh() is idempotent,
     // so the two paths never double-subscribe. [LAW:no-ambient-temporal-coupling]
     this.disposeState = bridge.onState((state) => {
-      if (state === "ready") this.refresh();
+      if (state.status === "ready") this.refresh();
     });
   }
 

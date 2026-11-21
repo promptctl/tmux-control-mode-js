@@ -1,9 +1,10 @@
 // examples/web-multiplexer/web/bridge.ts
 // Renderer-side bridge interface — the transport-agnostic surface every
-// consumer in this app talks to. The concrete entry point picks an
-// implementation:
-//   - WebSocketBridge   (./ws-client.ts)            — over a Node bridge process
-//   - ElectronBridge    (./electron-bridge.ts)      — over @promptctl/.../electron/renderer
+// consumer in this app talks to. One implementation, `LibraryBridge`
+// (./library-bridge.ts), runs over either library connection; the entry point
+// picks the transport:
+//   - webSocketBridge   (./ws-bridge.ts)        — the library WebSocket connector
+//   - electronBridge    (./electron-bridge.ts)  — the library Electron connector
 //
 // [LAW:one-source-of-truth] DemoStore, PaneTerminal, InspectorStore, and
 // HeatmapStore all consume `TmuxBridge`, never a concrete class. The only
@@ -11,7 +12,6 @@
 // it. Adding a method or event type here ripples through every consumer at
 // compile time — there is no second consumption shape to drift from.
 
-import type { ClientToServer } from "../shared/protocol.ts";
 import type {
   ChunkPayload,
   ClientSizeSurface,
@@ -21,45 +21,17 @@ import type {
 import type { CommandResponse } from "@promptctl/tmux-control-mode-js/protocol";
 
 /**
- * Connection state observed by every consumer that cares about the
- * transport's liveness. The four-state machine is:
- *
- *   connecting → open → ready → closed
- *
- *   - `connecting` — initial; transport is opening
- *   - `open`       — transport is up but tmux handshake hasn't settled
- *   - `ready`      — tmux handshake done; subscriptions can be installed
- *   - `closed`     — transport torn down (graceful or otherwise)
- *
- * Transports that have no separate "open vs handshake-done" distinction
- * (e.g. Electron IPC, which follows main's TmuxClient) MAY skip directly
- * from `connecting` to `ready`. The state values themselves are the contract — consumers must
- * not assume every transition fires.
+ * One command the page sent, as the wire log shows it. A size call logs as the
+ * `execute` of the `refresh-client` command it amounts to.
  */
-export type ConnState = "connecting" | "open" | "ready" | "closed";
-
-// [LAW:one-source-of-truth] The two translations between ConnState and the
-//   library's ConnectionState live together, so they cannot drift apart.
-
-/** A library connection's state as the bridge reports it. */
-export function toConnState(state: ConnectionState): ConnState {
-  switch (state.status) {
-    case "ready":
-      return "ready";
-    case "closed":
-      return "closed";
-    case "connecting":
-    case "reconnecting":
-      return "connecting";
-  }
-}
-
-/** The bridge's state as a library connection reports it. */
-export function toConnectionState(s: ConnState): ConnectionState {
-  if (s === "ready") return { status: "ready" };
-  if (s === "closed") return { status: "closed", reason: "transport-error" };
-  return { status: "connecting" };
-}
+export type BridgeCall =
+  | { readonly kind: "execute"; readonly id: string; readonly command: string }
+  | {
+      readonly kind: "sendKeys";
+      readonly id: string;
+      readonly target: string;
+      readonly keys: string;
+    };
 
 /**
  * One entry per thing that crossed the bridge in either direction. Powers
@@ -71,7 +43,7 @@ export function toConnectionState(s: ConnState): ConnectionState {
  * pane bytes, `in-event` one notification.
  */
 export type WireEntry =
-  | { readonly dir: "out"; readonly ts: number; readonly msg: ClientToServer }
+  | { readonly dir: "out"; readonly ts: number; readonly call: BridgeCall }
   | {
       readonly dir: "in-event";
       readonly ts: number;
@@ -88,7 +60,7 @@ export type WireEntry =
       readonly id: string;
       readonly response: CommandResponse;
       readonly latencyMs: number;
-      readonly request: ClientToServer | null;
+      readonly call: BridgeCall;
     }
   | {
       readonly dir: "in-error";
@@ -100,7 +72,7 @@ export type WireEntry =
 export type EventHandler = (event: EmitterTmuxMessage) => void;
 export type PaneOutputHandler = (chunk: ChunkPayload) => void;
 export type ErrorHandler = (message: string, id?: string) => void;
-export type StateHandler = (state: ConnState) => void;
+export type StateHandler = (state: ConnectionState) => void;
 export type WireHandler = (entry: WireEntry) => void;
 
 /**
@@ -119,10 +91,10 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
  * handler; calling it twice is safe.
  *
  * Lifecycle (`connect` / `disconnect`) is included on the interface because
- * DemoStore drives it from a React effect. WebSocket implementations dial
- * the URL on `connect()`; transports that are already attached at
- * construction time (Electron IPC) treat `connect()` as a no-op and ignore
- * the URL argument.
+ * DemoStore drives it from a React effect. `connect()` opens a connection
+ * when there is none or the last one has closed, and does nothing while one
+ * is live; the transport's address is fixed when the bridge is built.
+ * `onState` reports the library's `ConnectionState`, as both connectors do.
  *
  * Every command method keeps the library's `TmuxConnection` contract: a tmux
  * `%error` rejects with `TmuxCommandError`, whose `.response` carries tmux's
@@ -132,9 +104,8 @@ export type FirehoseHandler = (paneId: number, data: Uint8Array) => void;
 export interface TmuxBridge extends ClientSizeSurface {
   execute(command: string): Promise<CommandResponse>;
   sendKeys(target: string, keys: string): Promise<CommandResponse>;
-  detach(): void;
 
-  connect(url: string): void;
+  connect(): void;
   disconnect(): void;
 
   onEvent(handler: EventHandler): () => void;
@@ -157,6 +128,7 @@ export interface TmuxBridge extends ClientSizeSurface {
    * [LAW:one-source-of-truth]
    *
    * `startFirehose` opens the taps (idempotent); `stopFirehose` closes them.
+   * Over WebSocket the taps live exactly as long as their own socket.
    * Bytes are delivered to every handler registered via `onFirehose` until the
    * returned disposer is called.
    */

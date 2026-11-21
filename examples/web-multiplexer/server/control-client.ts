@@ -80,6 +80,11 @@ export class DedicatedControlClient {
     }
     const live = this.connect();
     this.slot = live;
+    // A transport that fails at once ends the client before its `exit` can be
+    // heard (see `whenReady`), so an ending already reached is read here.
+    if (live.client.connectionState.status === "closed") {
+      this.end(live.client, undefined);
+    }
     return live.ready;
   }
 
@@ -98,26 +103,51 @@ export class DedicatedControlClient {
 
   private connect(): Live {
     const client = this.spawn();
-    const ready = new Promise<TmuxClient>((resolve, reject) => {
-      if (client.connectionState.status === "ready") resolve(client);
-      client.on("connection-state", ({ state }) => {
-        if (state.status === "ready") resolve(client);
-      });
-      client.on("exit", ({ reason }) => {
-        const error = new TransportClosedError(reason);
-        reject(error);
-        // Our own `close()` has already let go of this client.
-        if (!this.isLive(client)) return;
-        this.slot = { kind: "ended", error, at: Date.now() };
-        // `exit` can come on tmux's `%exit` line, before the transport closes:
-        // release the child rather than leave it to tmux.
-        client.close();
-        console.warn(
-          `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
-        );
-        this.onLost();
-      });
-    });
-    return { kind: "live", client, ready };
+    client.on("exit", ({ reason }) => this.end(client, reason));
+    return { kind: "live", client, ready: whenReady(client) };
   }
+
+  /** The live `client`'s connection has ended, with tmux's `reason` if any. */
+  private end(client: TmuxClient, reason: string | undefined): void {
+    // Our own `close()` has already let go of this client.
+    if (!this.isLive(client)) return;
+    this.slot = {
+      kind: "ended",
+      error: new TransportClosedError(reason),
+      at: Date.now(),
+    };
+    // `exit` can come on tmux's `%exit` line, before the transport closes:
+    // release the child rather than leave it to tmux.
+    client.close();
+    console.warn(
+      `${this.label} tmux connection ended: ${reason ?? "no reason given"}`,
+    );
+    this.onLost();
+  }
+}
+
+/**
+ * `client` once it is ready for commands; rejects with `TransportClosedError`
+ * if its connection ends first. [LAW:single-enforcer] The one definition of
+ * "settled" for every client the demo server spawns (see THE COLD-START RACE).
+ */
+export function whenReady(client: TmuxClient): Promise<TmuxClient> {
+  return new Promise<TmuxClient>((resolve, reject) => {
+    // A client can settle before it is handed over: a transport that fails
+    // at once ends it inside its constructor, and its `exit` has been and
+    // gone by the time a listener could hear it.
+    const state = client.connectionState;
+    if (state.status === "ready") resolve(client);
+    if (state.status === "closed") {
+      reject(
+        new TransportClosedError(
+          state.reason === "refused" ? state.error.message : undefined,
+        ),
+      );
+    }
+    client.on("connection-state", ({ state }) => {
+      if (state.status === "ready") resolve(client);
+    });
+    client.on("exit", ({ reason }) => reject(new TransportClosedError(reason)));
+  });
 }

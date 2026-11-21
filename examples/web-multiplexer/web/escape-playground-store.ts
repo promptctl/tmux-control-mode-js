@@ -123,7 +123,7 @@ export class EscapePlaygroundStore {
     // pane no longer exists. Re-spawn if the playground is still active so the
     // round-trip survives a socket swap / reconnect.
     this.disposeOnState = bridge.onState((state) => {
-      if (state !== "ready") return;
+      if (state.status !== "ready") return;
       const wasReady = this.everReady;
       this.everReady = true;
       if (wasReady && this.isActive) void this.respawn();

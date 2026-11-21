@@ -11,8 +11,7 @@
 //   smaller surface, not the same surface with a flag flipped.
 // [LAW:dataflow-not-control-flow] The frame's runtime type is the channel
 //   discriminator: ArrayBuffer → pane bytes (seed then live, written to the
-//   sink unchanged); string → a JSON `MirrorControlFrame` (lifecycle). The same
-//   split ws-client.ts uses for the main bridge.
+//   sink unchanged); string → a JSON `MirrorControlFrame` (lifecycle).
 
 import { makeAutoObservable, runInAction } from "mobx";
 import {

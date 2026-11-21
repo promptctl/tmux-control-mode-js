@@ -22,12 +22,8 @@ import {
   DEFAULT_MODE,
   REPL_RING_CAP,
 } from "./console-types.ts";
-import type {
-  ConnState,
-  EventHandler,
-  StateHandler,
-  TmuxBridge,
-} from "./bridge.ts";
+import type { ConnectionState } from "@promptctl/tmux-control-mode-js/browser";
+import type { EventHandler, StateHandler, TmuxBridge } from "./bridge.ts";
 import { deferred, tick, type Deferred } from "./test-utils.ts";
 import { fakeBridge } from "./fake-bridge.ts";
 
@@ -96,7 +92,7 @@ function playgroundBridge(): {
   execCalls: Call[];
   eventListeners: Set<EventHandler>;
   emit: (ev: EmitterTmuxMessage) => void;
-  fireState: (s: ConnState) => void;
+  fireState: (s: ConnectionState) => void;
 } {
   const execCalls: Call[] = [];
   const eventListeners = new Set<EventHandler>();
@@ -722,7 +718,7 @@ describe("ConsoleStore — Playground subscription lifecycle", () => {
     const store = new ConsoleStore(rig.bridge, ui);
     expect(rig.eventListeners.size).toBe(0); // nothing yet — bridge not ready
 
-    rig.fireState("ready");
+    rig.fireState({ status: "ready" });
     expect(rig.eventListeners.size).toBe(1);
     expect(store.playgroundMode).toBe("subscribed");
   });

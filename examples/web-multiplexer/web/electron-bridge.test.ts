@@ -1,6 +1,6 @@
 // examples/web-multiplexer/web/electron-bridge.test.ts
 //
-// The ElectronBridge keeps the TmuxBridge contract the WebSocket bridge keeps:
+// The Electron bridge keeps the TmuxBridge contract the WebSocket bridge keeps:
 // a tmux %error rejects with TmuxCommandError and is logged as the response it
 // is; only a bridge failure reaches onError; the bridge is ready while main's
 // tmux client is. The library's renderer proxy runs for real over a fake IPC.
@@ -46,9 +46,11 @@ import {
   textOf,
   type ArrivedChunk,
 } from "../../../tests/helpers/topology-moves.ts";
-import type { ConnState, WireEntry } from "./bridge.ts";
+import type { ConnectionState } from "@promptctl/tmux-control-mode-js/browser";
+import type { WireEntry } from "./bridge.ts";
 import type { DemoIpc } from "./demo-ipc.ts";
-import { ElectronBridge } from "./electron-bridge.ts";
+import { electronBridge } from "./electron-bridge.ts";
+import type { LibraryBridge } from "./library-bridge.ts";
 import { BridgePaneStreamClient } from "./pane-stream-bridge.ts";
 
 const unused = (): Promise<never> =>
@@ -61,6 +63,7 @@ const demoIpc: DemoIpc = {
   startFirehose: unused,
   stopFirehose: unused,
   onFirehose: () => () => undefined,
+  copilotSuggest: unused,
 };
 
 /** A bridge connected over a fake IPC: main answers every invoke with
@@ -73,10 +76,10 @@ function connectedBridge(
   },
   onRegister: readonly IpcEventMessage[] = [],
 ): {
-  bridge: ElectronBridge;
+  bridge: LibraryBridge;
   errors: string[];
   wire: WireEntry["dir"][];
-  states: ConnState[];
+  states: ConnectionState["status"][];
   fromMain(msg: IpcEventMessage): void;
 } {
   const listeners: IpcRendererOnListener[] = [];
@@ -101,14 +104,14 @@ function connectedBridge(
     on: (_channel, listener) => listeners.push(listener),
     removeListener: () => undefined,
   };
-  const bridge = new ElectronBridge(ipc, demoIpc);
+  const bridge = electronBridge(ipc, demoIpc);
   const errors: string[] = [];
   const wire: WireEntry["dir"][] = [];
-  const states: ConnState[] = [];
+  const states: ConnectionState["status"][] = [];
   bridge.onError((message) => errors.push(message));
   bridge.onWire((entry) => wire.push(entry.dir));
-  bridge.onState((s) => states.push(s));
-  bridge.connect("");
+  bridge.onState((s) => states.push(s.status));
+  bridge.connect();
   return {
     bridge,
     errors,
@@ -126,7 +129,7 @@ const READY: IpcEventMessage = {
 const settle = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, 0));
 
-describe("ElectronBridge command contract", () => {
+describe("the Electron bridge's command contract", () => {
   it("rejects a tmux %error with TmuxCommandError, logged as a response and not as a bridge error", async () => {
     const failed: CommandResponse = {
       commandNumber: 0,
@@ -162,7 +165,7 @@ describe("ElectronBridge command contract", () => {
   });
 });
 
-describe("ElectronBridge state", () => {
+describe("the Electron bridge's state", () => {
   it("follows main's tmux client: connecting until main says ready, closed when it closes", async () => {
     const { bridge, states, fromMain } = connectedBridge();
     await settle();
@@ -190,7 +193,7 @@ describe("ElectronBridge state", () => {
   });
 });
 
-describe("ElectronBridge pane output", () => {
+describe("the Electron bridge's pane output", () => {
   it("delivers a pane's bytes on onPaneOutput and logs them as in-output, never as an event", async () => {
     const { bridge, wire, fromMain } = connectedBridge();
     fromMain(READY);
@@ -216,7 +219,7 @@ describe("ElectronBridge pane output", () => {
   });
 });
 
-describe("BridgePaneStreamClient over ElectronBridge", () => {
+describe("BridgePaneStreamClient over the Electron bridge", () => {
   it("a BRIDGE_CLOSED reply that beats main's closed retires the router's connection, so it reports no topology error", async () => {
     const { bridge, fromMain } = connectedBridge({
       status: "bridge-error",
@@ -299,9 +302,9 @@ async function electronPage(
   const hub = createIpcHub();
   let main = await attachMain(hub, socketName, session);
   const sentByMain = [main.sent];
-  const bridge = new ElectronBridge(hub.createRenderer().ipcRenderer, demoIpc);
+  const bridge = electronBridge(hub.createRenderer().ipcRenderer, demoIpc);
   const conn = new BridgePaneStreamClient(bridge);
-  bridge.connect("");
+  bridge.connect();
   const close = (): void => {
     bridge.disconnect();
     main.close();
@@ -326,14 +329,15 @@ async function electronPage(
       main.close();
       main = await attachMain(hub, nextSocket, nextSession);
       sentByMain.push(main.sent);
-      bridge.connect("");
+      bridge.connect();
     },
     close,
   };
 }
 
-describeTopologyMoves("BridgePaneStreamClient over ElectronBridge", (s, n) =>
-  electronPage(s, n),
+describeTopologyMoves(
+  "BridgePaneStreamClient over the Electron bridge",
+  (s, n) => electronPage(s, n),
 );
 
 describe.skipIf(process.env.TMUX_INTEGRATION !== "1")(

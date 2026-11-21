@@ -105,7 +105,7 @@ export const EscapePlaygroundView = observer(function EscapePlaygroundView({
   // the bytes sent — `analyze(input)` is the single derivation.
   const analysis = useMemo(() => analyze(input), [input]);
 
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const canSend =
     ready && store.status === "ready" && analysis.bytes.length > 0;
 
@@ -471,7 +471,7 @@ const RenderedColumn = observer(function RenderedColumn({
   store,
   uiStore,
 }: Props) {
-  if (demoStore.connState !== "ready")
+  if (demoStore.connectionState.status !== "ready")
     return (
       <Centered>
         <Text c="dimmed" size="sm">

@@ -46,7 +46,7 @@ export const BisectView = observer(function BisectView({
   demoStore,
   store,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
 
   return (
     <Stack gap="sm" style={{ flex: 1, minHeight: 0 }}>

@@ -1,11 +1,17 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
-import { BRIDGE_PORT, WEB_PORT } from "./shared/config";
+import {
+  BRIDGE_HOST,
+  BRIDGE_PORT,
+  FIREHOSE_WS_PATH,
+  TMUX_WS_PATH,
+  WEB_PORT,
+} from "./shared/config";
 
 // Four HTML entries, one toolchain. Vite emits:
-//   dist/index.html             (web entry, web/main.tsx → WebSocketBridge)
-//   dist/electron/index.html    (electron entry, web/main-electron.tsx → ElectronBridge)
+//   dist/index.html             (web entry, web/main.tsx → webSocketBridge)
+//   dist/electron/index.html    (electron entry, web/main-electron.tsx → electronBridge)
 //   dist/mirror.html            (read-only viewer, web/main-mirror.tsx → MirrorViewerBridge)
 //   dist/collab.html            (read-write collaborator, web/main-collab.tsx → CollabBridge)
 //
@@ -27,8 +33,13 @@ export default defineConfig({
     port: WEB_PORT,
     strictPort: true,
     proxy: {
-      "/ws": {
-        target: `ws://localhost:${BRIDGE_PORT}`,
+      [TMUX_WS_PATH]: {
+        target: `ws://${BRIDGE_HOST}:${BRIDGE_PORT}`,
+        ws: true,
+        changeOrigin: true,
+      },
+      [FIREHOSE_WS_PATH]: {
+        target: `ws://${BRIDGE_HOST}:${BRIDGE_PORT}`,
         ws: true,
         changeOrigin: true,
       },
@@ -36,7 +47,7 @@ export default defineConfig({
       // distinct from the `/mirror.html` PAGE (which Vite serves statically) so
       // this prefix-matched proxy never shadows the page.
       "/mirror-ws": {
-        target: `ws://localhost:${BRIDGE_PORT}`,
+        target: `ws://${BRIDGE_HOST}:${BRIDGE_PORT}`,
         ws: true,
         changeOrigin: true,
       },
@@ -44,7 +55,7 @@ export default defineConfig({
       // A path distinct from the `/collab.html` PAGE (served statically) so this
       // prefix-matched proxy never shadows the page.
       "/collab-ws": {
-        target: `ws://localhost:${BRIDGE_PORT}`,
+        target: `ws://${BRIDGE_HOST}:${BRIDGE_PORT}`,
         ws: true,
         changeOrigin: true,
       },
@@ -52,7 +63,7 @@ export default defineConfig({
       // request/response RPC). `ws` is omitted; this is a plain http proxy to
       // the bridge, which holds the LLM endpoint + key.
       "/copilot": {
-        target: `http://localhost:${BRIDGE_PORT}`,
+        target: `http://${BRIDGE_HOST}:${BRIDGE_PORT}`,
         changeOrigin: true,
       },
     },

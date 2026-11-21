@@ -8,7 +8,8 @@
 // lifecycle + bootstrap. [LAW:decomposition]
 
 import { makeAutoObservable, runInAction } from "mobx";
-import type { ConnState, TmuxBridge } from "./bridge.ts";
+import type { ConnectionState } from "@promptctl/tmux-control-mode-js/browser";
+import type { TmuxBridge } from "./bridge.ts";
 import {
   SESSIONS_FORMAT,
   WINDOWS_FORMAT,
@@ -21,17 +22,17 @@ import {
 import type { LogStore } from "./log-store.ts";
 import type { TmuxModel } from "./tmux-model.ts";
 
-// [LAW:one-source-of-truth] `ConnState` is owned by bridge.ts, where the
-// connection state machine lives; re-exported (not redefined) so store.ts and
-// any other consumer keep one definition that can't drift from the bridge's.
-export type { ConnState } from "./bridge.ts";
-
 export class ConnectionController {
-  // [LAW:single-enforcer] `onStateChange` is the ONE writer of connState — it
+  // [LAW:single-enforcer] `onStateChange` is the ONE writer of the state — it
   // updates the state AND triggers installSubscriptions on "ready". Exposing a
   // public settable field would let a stray write flip to "ready" without the
   // install side-effect, so the field is private and read through a getter.
-  private _connState: ConnState = "connecting";
+  // [LAW:one-source-of-truth] The library's ConnectionState, as the bridge
+  // reports it: the closed reason and a refusal's error reach the UI whole.
+  private _connectionState: ConnectionState = {
+    status: "closed",
+    reason: "disposed",
+  };
 
   constructor(
     private readonly client: TmuxBridge,
@@ -45,25 +46,22 @@ export class ConnectionController {
     });
   }
 
-  get connState(): ConnState {
-    return this._connState;
+  get connectionState(): ConnectionState {
+    return this._connectionState;
   }
 
-  connect(url: string): void {
-    // The transport's connect() is responsible for idempotency — e.g.
-    // WebSocketBridge no-ops a second connect while a socket is already
-    // OPEN/CONNECTING; transports that are already attached at construction
-    // (Electron IPC) treat this as a no-op and ignore the URL.
-    this.client.connect(url);
+  // The bridge's connect() is idempotent while a connection is live.
+  connect(): void {
+    this.client.connect();
   }
 
   disconnect(): void {
     this.client.disconnect();
   }
 
-  onStateChange(s: ConnState): void {
-    this._connState = s;
-    if (s === "ready") {
+  onStateChange(s: ConnectionState): void {
+    this._connectionState = s;
+    if (s.status === "ready") {
       // Re-install on every "ready". A reconnect gives a NEW connection whose
       // server-side subscriptions must be re-established, so this must run
       // again — tmux keys subscriptions by name (a re-add replaces, not
@@ -141,11 +139,12 @@ export class ConnectionController {
   }
 
   get statusColor(): string {
-    return this._connState === "ready"
+    const status = this._connectionState.status;
+    return status === "ready"
       ? "teal"
-      : this._connState === "open"
+      : status === "reconnecting"
         ? "yellow"
-        : this._connState === "closed"
+        : status === "closed"
           ? "red"
           : "gray";
   }

@@ -75,7 +75,7 @@ export class HyperlinkStore {
     // A reconnect drops the previous server's taps; re-open the firehose if
     // hyperlink mode is still active so the registry keeps growing past a swap.
     this.disposeOnState = bridge.onState((state) => {
-      if (state === "ready" && this.active) this.bridge.startFirehose();
+      if (state.status === "ready" && this.active) this.bridge.startFirehose();
     });
 
     this.timerHandle = setInterval(

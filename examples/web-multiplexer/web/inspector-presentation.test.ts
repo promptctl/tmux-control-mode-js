@@ -24,7 +24,7 @@ describe("presentFor — direction → display shape", () => {
     const w: WireEntry = {
       dir: "out",
       ts: 0,
-      msg: { kind: "execute", id: "7", command: "list-panes" },
+      call: { kind: "execute", id: "7", command: "list-panes" },
     };
     const p = presentFor(w, labels);
     expect(p).toMatchObject({
@@ -38,7 +38,7 @@ describe("presentFor — direction → display shape", () => {
     const w: WireEntry = {
       dir: "out",
       ts: 0,
-      msg: { kind: "sendKeys", id: "8", target: "%5", keys: "a\r" },
+      call: { kind: "sendKeys", id: "8", target: "%5", keys: "a\r" },
     };
     const p = presentFor(w, labels);
     expect(p.type).toBe("sendKeys #8");
@@ -49,27 +49,10 @@ describe("presentFor — direction → display shape", () => {
     const w: WireEntry = {
       dir: "out",
       ts: 0,
-      msg: { kind: "sendKeys", id: "8", target: "%5", keys: "😀" },
+      call: { kind: "sendKeys", id: "8", target: "%5", keys: "😀" },
     };
     // U+1F600 = surrogate pair 0xD83D 0xDE00 — both units must appear.
     expect(presentFor(w, labels).summary).toBe("%5  \\xd83d\\xde00");
-  });
-
-  it("labels payload-less outbound kinds by their own kind, not detach", () => {
-    // The type column derives its label from msg.kind, so firehose
-    // toggles and detaches each read truthfully with an empty summary —
-    // never the old fallthrough that mislabeled everything "detach".
-    const cases: WireEntry[] = [
-      { dir: "out", ts: 0, msg: { kind: "detach", id: "1" } },
-      { dir: "out", ts: 0, msg: { kind: "startFirehose", id: "2" } },
-      { dir: "out", ts: 0, msg: { kind: "stopFirehose", id: "3" } },
-    ];
-    expect(cases.map((w) => presentFor(w, labels).type)).toEqual([
-      "detach #1",
-      "startFirehose #2",
-      "stopFirehose #3",
-    ]);
-    for (const w of cases) expect(presentFor(w, labels).summary).toBe("");
   });
 
   it("presents a chunk of pane output as %output with a byte preview", () => {
@@ -92,7 +75,7 @@ describe("presentFor — direction → display shape", () => {
       ts: 0,
       id: "3",
       latencyMs: 12,
-      request: null,
+      call: { kind: "execute", id: "3", command: "list-panes" },
       response: {
         commandNumber: 3,
         timestamp: 0,
@@ -131,26 +114,10 @@ describe("badgeColor", () => {
 });
 
 describe("renderPayload", () => {
-  it("pretty-prints an outbound message as JSON", () => {
-    const w: WireEntry = {
-      dir: "out",
-      ts: 0,
-      msg: { kind: "detach", id: "1" },
-    };
-    expect(renderPayload(w)).toBe(
-      JSON.stringify({ kind: "detach", id: "1" }, null, 2),
-    );
-  });
-
-  it("pretty-prints a firehose-toggle message verbatim as JSON", () => {
-    const w: WireEntry = {
-      dir: "out",
-      ts: 0,
-      msg: { kind: "startFirehose", id: "2" },
-    };
-    expect(renderPayload(w)).toBe(
-      JSON.stringify({ kind: "startFirehose", id: "2" }, null, 2),
-    );
+  it("pretty-prints an outbound call as JSON", () => {
+    const call = { kind: "execute", id: "1", command: "list-panes" } as const;
+    const w: WireEntry = { dir: "out", ts: 0, call };
+    expect(renderPayload(w)).toBe(JSON.stringify(call, null, 2));
   });
 
   it("renders pane-output bytes as an escaped byte view, not raw JSON", () => {
@@ -165,16 +132,19 @@ describe("renderPayload", () => {
     expect(text).toContain("(3 bytes)");
   });
 
-  it("notes when a response's request was evicted from the ring", () => {
+  it("shows the call a response answers beside the response", () => {
+    const call = { kind: "execute", id: "3", command: "list-panes" } as const;
     const w: WireEntry = {
       dir: "in-response",
       ts: 0,
       id: "3",
       latencyMs: 5,
-      request: null,
+      call,
       response: { commandNumber: 3, timestamp: 0, output: [], success: true },
     };
-    expect(renderPayload(w)).toContain("(request evicted from ring)");
+    expect(renderPayload(w)).toContain(
+      `--- request ---\n${JSON.stringify(call, null, 2)}`,
+    );
   });
 });
 

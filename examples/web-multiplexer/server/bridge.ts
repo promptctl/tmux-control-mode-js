@@ -1,31 +1,42 @@
 // examples/web-multiplexer/server/bridge.ts
-// Bridge server: wraps a TmuxClient and exposes it to browsers over WebSocket.
+// Bridge server: exposes tmux to the demo page over WebSocket.
 //
 // Architecture:
-//   browser <-- WebSocket (JSON) --> bridge <-- spawn + control protocol --> tmux
+//   page <-- library WebSocket connector (/ws) --> bridge <-- tmux -C --> tmux
+//   page <-- pane-output frames (/firehose-ws) -- bridge <-- pipe-pane taps
 //
 // The browser never imports the tmux-control-mode-js runtime — only types.
-// All wire-protocol parsing and encoding happens here on the Node side.
+// [LAW:one-source-of-truth] /ws is the library's own bridge and wire
+// (`createWebSocketBridge`); the demo adds no protocol of its own on it.
 
 import {
   createServer,
+  STATUS_CODES,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
+import type { AddressInfo } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
-import { TmuxClient } from "@promptctl/tmux-control-mode-js";
-import { spawnTmux } from "@promptctl/tmux-control-mode-js";
-import { isTmuxMessage } from "@promptctl/tmux-control-mode-js";
-import { serverScope } from "@promptctl/tmux-control-mode-js";
-import { sendKeys } from "@promptctl/tmux-control-mode-js";
-import { isConnectionGone } from "@promptctl/tmux-control-mode-js";
-import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
-import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
-import { asCommandResponse } from "../shared/command-response.js";
-import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
-import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
+import type { TmuxClient } from "@promptctl/tmux-control-mode-js";
+import {
+  BridgeError,
+  createWebSocketBridge,
+} from "@promptctl/tmux-control-mode-js/websocket";
 import { PaneFirehose } from "./pane-firehose.js";
-import { encodeFirehoseFrame } from "../shared/firehose-frame.js";
+import { FirehoseEndpoint, type StartFirehose } from "./firehose-endpoint.js";
+import {
+  DedicatedControlClient,
+  spawnDemoClient,
+  whenReady,
+  type SpawnControlClient,
+} from "./control-client.js";
+import {
+  BRIDGE_HOST,
+  BRIDGE_PORT,
+  TMUX_WS_PATH,
+  WEB_PORT,
+} from "../shared/config.js";
+import { admitHttp, admitUpgrade, type Route } from "./trust-gate.js";
 import { MirrorRegistry, type MirrorViewer } from "./mirror-registry.js";
 import { CollabInput } from "./collab-input.js";
 import {
@@ -34,258 +45,14 @@ import {
   type MirrorControlFrame,
 } from "../shared/mirror-frame.js";
 import { COLLAB_WS_PATH } from "../shared/collab-frame.js";
+import { COPILOT_PATH } from "../shared/copilot-frame.js";
 import {
-  COPILOT_PATH,
-  parseCopilotRequest,
-  type CopilotSuggestResponse,
-} from "../shared/copilot-frame.js";
+  COPILOT_MAX_BODY_BYTES,
+  readCappedBody,
+  suggest,
+  type CompleteChat,
+} from "./copilot.js";
 import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
-import { demoAttachArgs } from "./tmux-target.js";
-
-// The bridge's request handler unwraps a failed command's rejection into the
-// wire `response` frame through the shared `asCommandResponse` enforcer, so the
-// frame always honors its declared `CommandResponse` type and a non-command
-// rejection still reaches the `error`-frame path. [LAW:single-enforcer]
-
-// ---------------------------------------------------------------------------
-// Outbound forwarding: TmuxClient → WebSocket
-// ---------------------------------------------------------------------------
-
-/**
- * Minimum WebSocket surface this bridge sends on: binary pane-output frames
- * (via the library's WebSocketSink) and JSON text frames (state events,
- * responses). The `ws` package's WebSocket and a test double both satisfy it.
- */
-export interface BridgeSocket {
-  readonly readyState: number;
-  readonly OPEN: number;
-  send(data: string | ArrayBufferLike | ArrayBufferView): void;
-}
-
-/**
- * Wire a `TmuxClient`'s outbound traffic onto a WebSocket and return a
- * disposer. Two channels, one boundary:
- *
- *   - pane bytes → binary pane-output frames, encoded by the library's
- *     `WebSocketSink` (`attachWebSocketSink`). The bridge never touches the
- *     bytes; the browser decodes with the matching `decodePaneOutput`.
- *   - every non-byte event → a JSON `event` frame.
- *
- * [LAW:single-enforcer] The one place that forwards client traffic to a
- *   socket — the live server and its tests share this wiring, so neither can
- *   drift from the other.
- * [LAW:effects-at-boundaries] Pure wiring: no `listen`, no process state. The
- *   caller owns the socket and the server lifecycle.
- */
-export function forwardClientToSocket(
-  client: TmuxClient,
-  ws: BridgeSocket,
-): () => void {
-  const detachBytes = attachWebSocketSink(client, ws, { scope: serverScope });
-
-  // [LAW:dataflow-not-control-flow] `client.on("*")` carries
-  // `EmitterTmuxMessage` only — pane bytes are structurally excluded from the
-  // emitter (they ride the binary sink above), so this channel is JSON state
-  // events end to end. ConnectionStateMessage / ReconnectedMessage are local
-  // lifecycle signals; they are not forwarded over the wire.
-  const onEvent = (msg: EmitterMessage): void => {
-    if (!isTmuxMessage(msg)) return;
-    if (ws.readyState === ws.OPEN) {
-      const frame: ServerToClient = { kind: "event", event: msg };
-      ws.send(JSON.stringify(frame));
-    }
-  };
-  client.on("*", onEvent);
-
-  return () => {
-    detachBytes();
-    client.off("*", onEvent);
-  };
-}
-
-/**
- * Send `ready` once tmux has attached the client's session — the handshake the
- * browser waits for before it trusts the connection.
- */
-export function announceReadyOnAttach(
-  client: TmuxClient,
-  send: (frame: ServerToClient) => void,
-): void {
-  const onSessionChanged = (): void => {
-    client.off("session-changed", onSessionChanged);
-    send({ kind: "ready" });
-  };
-  client.on("session-changed", onSessionChanged);
-}
-
-/**
- * The frame that answers one browser command. A tmux %error travels as a
- * `success: false` response, because an Error does not survive JSON; the
- * browser's bridge turns it back into a rejection. Any other failure is an
- * error frame carrying the command's id.
- *
- * [LAW:single-enforcer] The live server and its tests share this reply, as
- *   they share `forwardClientToSocket`.
- */
-export function replyToCommand(
-  client: TmuxClient,
-  msg: Extract<ClientToServer, { kind: "execute" | "sendKeys" }>,
-): Promise<ServerToClient> {
-  // [LAW:decomposition] sendKeys is a free command function over the
-  //   TmuxConnection surface, not a TmuxClient method — one shared
-  //   implementation for every connector.
-  const reply =
-    msg.kind === "execute"
-      ? client.execute(msg.command)
-      : sendKeys(client, msg.target, msg.keys);
-  return reply.catch(asCommandResponse).then(
-    (response): ServerToClient => ({ kind: "response", id: msg.id, response }),
-    // [LAW:single-enforcer] The library's isConnectionGone decides what a
-    //   lost connection is, so the page retires it as the library would.
-    (err: unknown): ServerToClient => ({
-      kind: "error",
-      id: msg.id,
-      code: isConnectionGone(err) ? "BRIDGE_CLOSED" : "BRIDGE_INTERNAL",
-      message: err instanceof Error ? err.message : String(err),
-    }),
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Per-connection state
-// ---------------------------------------------------------------------------
-
-/**
- * Each WebSocket connection gets its own TmuxClient. This keeps one browser
- * session independent from another (no shared state, no cross-talk).
- *
- * `detachBytes` tears down the per-connection pane-byte sink (the binary
- * pane-output channel) when the connection closes.
- */
-interface ConnectionState {
-  readonly ws: WebSocket;
-  readonly client: TmuxClient;
-  readonly detachBytes: () => void;
-  /**
-   * The cross-terminal firehose for this connection, lazily created on the
-   * first `startFirehose` and torn down on `stopFirehose` or close. Null while
-   * the browser isn't in regex-matcher mode, so idle connections pay no
-   * pipe-pane cost.
-   */
-  firehose: PaneFirehose | null;
-}
-
-const connections = new Set<ConnectionState>();
-
-function removeConnection(connection: ConnectionState): void {
-  connections.delete(connection);
-}
-
-function closeConnection(connection: ConnectionState): void {
-  removeConnection(connection);
-  connection.firehose?.stop();
-  connection.firehose = null;
-  connection.detachBytes();
-  connection.client.close();
-  if (
-    connection.ws.readyState === connection.ws.OPEN ||
-    connection.ws.readyState === connection.ws.CONNECTING
-  ) {
-    connection.ws.terminate();
-  }
-}
-
-function handleConnection(ws: WebSocket): void {
-  const send = (frame: ServerToClient): void => {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(frame));
-    }
-  };
-
-  // Spawn tmux in -C mode against the demo's target server (default server, or
-  // a `TMUX_DEMO_SOCKET`-pinned `-L` socket). [LAW:single-enforcer] the target
-  // is computed in one place, shared with the mirror registry's client.
-  const transport = spawnTmux(demoAttachArgs());
-  const client = new TmuxClient(transport);
-
-  // Pane bytes (binary frames) + non-byte events (JSON) are forwarded by the
-  // shared wiring; `detachBytes` tears both down on close.
-  const detachBytes = forwardClientToSocket(client, ws);
-
-  const connection: ConnectionState = {
-    ws,
-    client,
-    detachBytes,
-    firehose: null,
-  };
-  connections.add(connection);
-
-  announceReadyOnAttach(client, send);
-
-  // [LAW:single-enforcer] When the underlying tmux client exits (user ran
-  // detach-client, tmux server died, etc.), tear down the WebSocket so the
-  // browser's connState transitions to "closed". Without this the browser
-  // would keep thinking the bridge is alive and the clickable reconnect
-  // Badge would never appear.
-  client.on("exit", () => {
-    closeConnection(connection);
-  });
-
-  // Forward browser commands to the TmuxClient and correlate responses.
-  ws.on("message", async (raw: Buffer) => {
-    let msg: ClientToServer;
-    try {
-      msg = JSON.parse(raw.toString("utf8")) as ClientToServer;
-    } catch {
-      send({ kind: "error", message: "invalid JSON frame from browser" });
-      return;
-    }
-
-    try {
-      if (msg.kind === "execute" || msg.kind === "sendKeys") {
-        send(await replyToCommand(client, msg));
-        return;
-      }
-      if (msg.kind === "detach") {
-        client.detach();
-        return;
-      }
-      if (msg.kind === "startFirehose") {
-        // [LAW:single-enforcer] One firehose per connection. A repeat start
-        // (e.g. re-entering regex mode) reuses the live one; PaneFirehose.start
-        // is itself idempotent.
-        if (connection.firehose === null) {
-          connection.firehose = new PaneFirehose(
-            (command) => client.execute(command),
-            (paneId, data) => {
-              if (ws.readyState === ws.OPEN) {
-                ws.send(encodeFirehoseFrame(paneId, data));
-              }
-            },
-          );
-        }
-        await connection.firehose.start();
-        return;
-      }
-      if (msg.kind === "stopFirehose") {
-        connection.firehose?.stop();
-        connection.firehose = null;
-        return;
-      }
-    } catch (err) {
-      send({
-        kind: "error",
-        id: msg.id,
-        code: "BRIDGE_INTERNAL",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-  });
-
-  ws.on("close", () => {
-    closeConnection(connection);
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Read-only pane mirror: /mirror endpoint
@@ -427,7 +194,20 @@ export function handleCollabConnection(
 
 /** A running bridge server. `close()` tears down every connection + listener. */
 export interface BridgeHandle {
+  /** Where the server listens, once it does. */
+  readonly listening: Promise<AddressInfo>;
   close(): void;
+}
+
+/** What `startBridge` runs on. Every field defaults to the live demo's. */
+export interface BridgeOptions {
+  /** 0 lets the OS pick a free port (tests). */
+  readonly port?: number;
+  /** Spawns the `tmux -C` client each `/ws` page and the firehose run on. */
+  readonly spawnClient?: SpawnControlClient;
+  readonly startFirehose?: StartFirehose;
+  /** The co-pilot's LLM call; by default the env-configured endpoint. */
+  readonly complete?: CompleteChat;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,47 +227,34 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * Handle a `/copilot/suggest` POST: read the body, validate it at the trust
- * boundary, call the LLM, and return the raw completion (or a represented
- * error). [LAW:no-silent-failure] an LLM failure is a `{ ok: false }` value the
- * browser renders; a malformed request is a 400. Nothing is swallowed.
+ * Handle a `/copilot/suggest` POST: read at most COPILOT_MAX_BODY_BYTES, parse
+ * the JSON, and answer through `suggest`. [LAW:no-silent-failure] an oversized
+ * body is a 413, a malformed one a 400, and an LLM failure a `{ ok: false }`
+ * value the browser renders. Nothing is swallowed.
  */
-function handleCopilotRequest(req: IncomingMessage, res: ServerResponse): void {
-  const chunks: Buffer[] = [];
-  req.on("data", (c: Buffer) => chunks.push(c));
-  req.on("error", () =>
-    writeJson(res, 400, { ok: false, error: "request stream error" }),
-  );
-  req.on("end", () => {
-    void respondToCopilot(Buffer.concat(chunks).toString("utf8"), res);
-  });
-}
-
-async function respondToCopilot(
-  rawBody: string,
+async function handleCopilotRequest(
+  req: IncomingMessage,
   res: ServerResponse,
+  complete: CompleteChat,
 ): Promise<void> {
+  const body = await readCappedBody(req, COPILOT_MAX_BODY_BYTES);
+  if (body.kind === "too-large") {
+    writeJson(res, 413, { ok: false, error: "copilot request too large" });
+    return;
+  }
+  if (body.kind === "stream-error") {
+    writeJson(res, 400, { ok: false, error: body.message });
+    return;
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawBody);
+    parsed = JSON.parse(body.text);
   } catch {
     writeJson(res, 400, { ok: false, error: "invalid JSON body" });
     return;
   }
-  const request = parseCopilotRequest(parsed);
-  if (request === null) {
-    writeJson(res, 400, { ok: false, error: "malformed copilot request" });
-    return;
-  }
-  try {
-    const content = await chatCompletion(request.messages, copilotConfig);
-    writeJson(res, 200, { ok: true, content } satisfies CopilotSuggestResponse);
-  } catch (err) {
-    writeJson(res, 200, {
-      ok: false,
-      error: err instanceof Error ? err.message : "LLM call failed",
-    } satisfies CopilotSuggestResponse);
-  }
+  const reply = await suggest(parsed, complete);
+  writeJson(res, reply.status, reply.response);
 }
 
 /**
@@ -496,18 +263,35 @@ async function respondToCopilot(
  * through one path. [LAW:single-enforcer]
  *
  * The process entry (`server/main.ts`) owns the signal handlers; importing
- * this module performs no I/O, so tests can exercise `forwardClientToSocket`
- * without binding a port. [LAW:effects-at-boundaries]
+ * this module performs no I/O; `options` lets a test run the whole server
+ * on a free port over its own tmux. [LAW:effects-at-boundaries]
  */
-export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
+export function startBridge(options: BridgeOptions = {}): BridgeHandle {
+  const port = options.port ?? BRIDGE_PORT;
+  const spawnClient = options.spawnClient ?? spawnDemoClient;
+  const startFirehose: StartFirehose =
+    options.startFirehose ??
+    ((execute, sink) => new PaneFirehose(execute, sink));
+  const complete: CompleteChat =
+    options.complete ?? ((messages) => chatCompletion(messages, copilotConfig));
+
   const httpServer = createServer((req, res) => {
+    // [LAW:single-enforcer] The same origin rule as every upgrade: a cross-site
+    // POST would otherwise spend the user's LLM credentials.
+    const admission = admitHttp(req);
+    if (admission.kind === "refused") {
+      console.warn(`[bridge] refused HTTP: ${admission.reason}`);
+      res.writeHead(admission.status, { "content-type": "text/plain" });
+      res.end(`${admission.reason}\n`);
+      return;
+    }
     // The AI co-pilot's LLM call is the one non-WebSocket route: a request /
     // response RPC, so it is plain HTTP, not a stream. [LAW:decomposition]
     if (
       req.method === "POST" &&
       (req.url ?? "").split("?")[0] === COPILOT_PATH
     ) {
-      handleCopilotRequest(req, res);
+      void handleCopilotRequest(req, res, complete);
       return;
     }
     res.writeHead(200, { "content-type": "text/plain" });
@@ -516,82 +300,116 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
     );
   });
 
-  // Two endpoints on one HTTP server: the full `/ws` bridge and the read-only
-  // `/mirror-ws` viewer. [LAW:decomposition] the mirror's viewers never touch
-  // the per-`/ws`-connection clients, so the mirror can't become an input
-  // back-door into a session.
-  //
-  // [LAW:single-enforcer] One `upgrade` router decides which endpoint a socket
-  //   belongs to, by path. Attaching two `WebSocketServer({server})` to the
-  //   same HTTP server does NOT work — each handles every `upgrade` and the
-  //   non-matching one aborts the handshake with 400 — so both are `noServer`
-  //   and this router calls the right `handleUpgrade`.
-  const wss = new WebSocketServer({ noServer: true });
-  wss.on("connection", (ws) => {
-    console.log("[bridge] client connected");
-    try {
-      handleConnection(ws);
-    } catch (err) {
-      console.error("[bridge] connection failed:", err);
-      ws.close();
-    }
-  });
-
-  const mirrorRegistry = new MirrorRegistry();
-  const mirrorWss = new WebSocketServer({ noServer: true });
-  mirrorWss.on("connection", (ws, request) => {
-    console.log("[bridge] mirror viewer connected");
-    try {
-      handleMirrorConnection(ws, mirrorRegistry, request.url ?? "");
-    } catch (err) {
-      console.error("[bridge] mirror connection failed:", err);
-      ws.close();
-    }
-  });
-
+  const mirrorRegistry = new MirrorRegistry(spawnClient);
   // The collaborative endpoint reuses the SAME mirror registry for output
   // (one tap per pane, shared with read-only viewers — a read-only mirror and
   // a writable collaborator of one pane share its byte stream and viewer count)
   // and adds the write side via a dedicated `CollabInput`. [LAW:one-source-of-
   // truth] one pane, one tap, regardless of how each browser connects.
-  const collabInput = new CollabInput();
-  const collabWss = new WebSocketServer({ noServer: true });
-  collabWss.on("connection", (ws, request) => {
-    console.log("[bridge] collaborator connected");
-    try {
+  const collabInput = new CollabInput(spawnClient);
+
+  // [LAW:one-source-of-truth] One handler per route; `admitUpgrade` owns the
+  // path-to-route table, so this record cannot name a route the gate lacks.
+  // Each page gets its own tmux client, so one page's session never reaches
+  // another's. [LAW:no-ambient-temporal-coupling] The library sends its
+  // welcome once `createClient` returns, so the client is handed over only
+  // once tmux has attached it (`whenReady`); a tmux that exits first refuses
+  // the page instead.
+  const tmuxBridge = createWebSocketBridge({
+    createClient: async () => {
+      const client = spawnClient();
+      try {
+        return await whenReady(client);
+      } catch (err) {
+        client.close();
+        throw new BridgeError(
+          "BRIDGE_REFUSED",
+          `tmux did not attach: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    disposeClient: (client: TmuxClient) => client.close(),
+  });
+
+  // The firehose's taps run on one long-lived client; when tmux takes it
+  // away, every firehose socket closes and its page reopens one.
+  const firehoseControl = new DedicatedControlClient(
+    "[firehose]",
+    () => firehoseEndpoint.closeAll("tmux connection lost"),
+    spawnClient,
+  );
+  const firehoseEndpoint = new FirehoseEndpoint(
+    (command) => firehoseControl.ready().then((c) => c.execute(command)),
+    startFirehose,
+  );
+
+  const routes: Record<
+    Route,
+    (ws: WebSocket, request: IncomingMessage) => void
+  > = {
+    tmux: (ws, request) => {
+      tmuxBridge
+        .handleConnection(ws, {
+          url: request.url,
+          headers: request.headers,
+          remoteAddress: request.socket.remoteAddress,
+        })
+        .catch((err: unknown) =>
+          console.error("[bridge] tmux connection failed:", err),
+        );
+    },
+    firehose: (ws) => firehoseEndpoint.accept(ws),
+    mirror: (ws, request) =>
+      handleMirrorConnection(ws, mirrorRegistry, request.url ?? ""),
+    collab: (ws, request) =>
       handleCollabConnection(
         ws,
         mirrorRegistry,
         collabInput,
         request.url ?? "",
-      );
-    } catch (err) {
-      console.error("[bridge] collab connection failed:", err);
-      ws.close();
-    }
-  });
+      ),
+  };
 
+  // [LAW:single-enforcer] One `upgrade` router: every socket passes the trust
+  //   gate before any upgrade, then one `noServer` WebSocketServer upgrades it.
+  //   (Two `WebSocketServer({server})` on one HTTP server each handle every
+  //   upgrade and abort the other's handshake, hence `noServer`.)
+  const wss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (request, socket, head) => {
-    const path = (request.url ?? "").split("?")[0];
-    if (path === "/ws") {
-      wss.handleUpgrade(request, socket, head, (ws) =>
-        wss.emit("connection", ws, request),
+    const admission = admitUpgrade(request);
+    if (admission.kind === "refused") {
+      console.warn(`[bridge] refused upgrade: ${admission.reason}`);
+      socket.end(
+        `HTTP/1.1 ${admission.status} ${STATUS_CODES[admission.status]}\r\nConnection: close\r\n\r\n`,
       );
-    } else if (path === MIRROR_WS_PATH) {
-      mirrorWss.handleUpgrade(request, socket, head, (ws) =>
-        mirrorWss.emit("connection", ws, request),
-      );
-    } else if (path === COLLAB_WS_PATH) {
-      collabWss.handleUpgrade(request, socket, head, (ws) =>
-        collabWss.emit("connection", ws, request),
-      );
-    } else {
-      socket.destroy();
+      return;
     }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      // `ws` throws an unheard 'error' as an uncaught exception, so every
+      // socket gets its listener here, once, before any route sees it.
+      ws.on("error", (err) =>
+        console.error(`[bridge] ${admission.route} socket error:`, err),
+      );
+      console.log(`[bridge] ${admission.route} connected`);
+      try {
+        routes[admission.route](ws, request);
+      } catch (err) {
+        console.error(`[bridge] ${admission.route} connection failed:`, err);
+        ws.close();
+      }
+    });
   });
 
-  httpServer.listen(port, () => {
-    console.log(`[bridge] listening on http://localhost:${port} (WS at /ws)`);
+  const listening = new Promise<AddressInfo>((resolve, reject) => {
+    httpServer.once("error", reject);
+    httpServer.once("listening", () =>
+      resolve(httpServer.address() as AddressInfo),
+    );
+  });
+  httpServer.listen(port, BRIDGE_HOST, () => {
+    console.log(
+      `[bridge] listening on http://${BRIDGE_HOST}:${port} (WS at ${TMUX_WS_PATH})`,
+    );
     console.log(`[bridge] read-only pane mirror at ${MIRROR_WS_PATH}?pane=%N`);
     console.log(`[bridge] collaborative pane at ${COLLAB_WS_PATH}?pane=%N`);
     console.log(
@@ -603,15 +421,14 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
   });
 
   return {
+    listening,
     close(): void {
-      for (const connection of [...connections]) {
-        closeConnection(connection);
-      }
+      void tmuxBridge.shutdown();
+      firehoseEndpoint.closeAll("bridge shutting down");
+      firehoseControl.close();
       mirrorRegistry.close();
       collabInput.close();
       wss.close();
-      mirrorWss.close();
-      collabWss.close();
       httpServer.close();
     },
   };

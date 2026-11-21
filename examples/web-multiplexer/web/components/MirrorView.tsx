@@ -59,7 +59,7 @@ export const MirrorView = observer(function MirrorView({
   store,
   uiStore,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const panes = allPanes(demoStore);
 
   return (

@@ -125,7 +125,7 @@ export class MomentDiffStore {
     // A reconnect drops the previous server's taps; re-open if the mode is still
     // active so a new recording can capture the new server.
     this.disposeOnState = bridge.onState((state) => {
-      if (state === "ready" && this.active) this.bridge.startFirehose();
+      if (state.status === "ready" && this.active) this.bridge.startFirehose();
     });
 
     this.ticker = setInterval(() => this.tick(), TICK_INTERVAL_MS);

@@ -64,7 +64,7 @@ export class ImageExtractorStore {
     // A reconnect drops the previous server's taps; re-open the firehose if
     // image mode is still active so the feed survives a socket swap / reconnect.
     this.disposeOnState = bridge.onState((state) => {
-      if (state === "ready" && this.active) this.bridge.startFirehose();
+      if (state.status === "ready" && this.active) this.bridge.startFirehose();
     });
 
     this.timerHandle = setInterval(

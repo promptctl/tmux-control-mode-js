@@ -56,7 +56,7 @@ export const ByteAttributionView = observer(function ByteAttributionView({
   demoStore,
   store,
 }: Props) {
-  const ready = demoStore.connState === "ready";
+  const ready = demoStore.connectionState.status === "ready";
   const [hovered, setHovered] = useState<CellRef | null>(null);
   const [pinned, setPinned] = useState<CellRef | null>(null);
   const [colorByChunk, setColorByChunk] = useState(false);
@@ -118,7 +118,7 @@ export const ByteAttributionView = observer(function ByteAttributionView({
         >
           {!ready ? (
             <Text c="dimmed" size="sm">
-              Connecting to bridge ({demoStore.connState})…
+              Connecting to bridge ({demoStore.connectionState.status})…
             </Text>
           ) : grid === null ? (
             <Text c="dimmed" size="sm">

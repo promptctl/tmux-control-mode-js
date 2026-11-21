@@ -14,6 +14,7 @@ import {
   type ChatMessage,
   type CopilotSuggestResponse,
 } from "../shared/copilot-frame.ts";
+import type { DemoIpc } from "./demo-ipc.ts";
 
 export interface LlmClient {
   /** Complete the chat messages, or report a represented error. Never throws. */
@@ -48,6 +49,21 @@ export class HttpLlmClient implements LlmClient {
         error: err instanceof Error ? err.message : "request failed",
       };
     }
+  }
+}
+
+/**
+ * The Electron transport: the main process holds the endpoint + key and runs
+ * the same relay as the bridge. An IPC failure is mapped to `{ ok: false }`.
+ */
+export class IpcLlmClient implements LlmClient {
+  constructor(private readonly ipc: DemoIpc) {}
+
+  complete(messages: readonly ChatMessage[]): Promise<CopilotSuggestResponse> {
+    return this.ipc.copilotSuggest(messages).catch((err: unknown) => ({
+      ok: false,
+      error: err instanceof Error ? err.message : "request failed",
+    }));
   }
 }
 
