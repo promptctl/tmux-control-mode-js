@@ -50,15 +50,23 @@ export function llmConfigFromEnv(): LlmConfig {
 /** Low randomness — the co-pilot wants the likely next command, not novelty. */
 const TEMPERATURE = 0.2;
 
+/** How long one completion may take before the relay gives up on it. A local
+ *  model's first token can take seconds; a hung endpoint must not hold the
+ *  request open forever. */
+export const LLM_TIMEOUT_MS = 30_000;
+
 /**
  * Call the chat-completions endpoint and return the raw completion text.
- * Throws on any failure (the caller represents it as an error to the browser).
+ * Throws on any failure, the deadline included (the caller represents it as
+ * an error to the browser).
  */
 export async function chatCompletion(
   messages: readonly ChatMessage[],
   config: LlmConfig,
+  signal: AbortSignal = AbortSignal.timeout(LLM_TIMEOUT_MS),
 ): Promise<string> {
   const res = await fetch(`${config.baseUrl}/chat/completions`, {
+    signal,
     method: "POST",
     headers: {
       "content-type": "application/json",

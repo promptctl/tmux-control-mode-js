@@ -41,11 +41,8 @@ import {
   type MirrorControlFrame,
 } from "../shared/mirror-frame.js";
 import { COLLAB_WS_PATH } from "../shared/collab-frame.js";
-import {
-  COPILOT_PATH,
-  parseCopilotRequest,
-  type CopilotSuggestResponse,
-} from "../shared/copilot-frame.js";
+import { COPILOT_PATH } from "../shared/copilot-frame.js";
+import { COPILOT_MAX_BODY_BYTES, readCappedBody, suggest } from "./copilot.js";
 import { chatCompletion, llmConfigFromEnv } from "./llm-client.js";
 import { demoAttachArgs } from "./tmux-target.js";
 
@@ -454,47 +451,35 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /**
- * Handle a `/copilot/suggest` POST: read the body, validate it at the trust
- * boundary, call the LLM, and return the raw completion (or a represented
- * error). [LAW:no-silent-failure] an LLM failure is a `{ ok: false }` value the
- * browser renders; a malformed request is a 400. Nothing is swallowed.
+ * Handle a `/copilot/suggest` POST: read at most COPILOT_MAX_BODY_BYTES, parse
+ * the JSON, and answer through `suggest`. [LAW:no-silent-failure] an oversized
+ * body is a 413, a malformed one a 400, and an LLM failure a `{ ok: false }`
+ * value the browser renders. Nothing is swallowed.
  */
-function handleCopilotRequest(req: IncomingMessage, res: ServerResponse): void {
-  const chunks: Buffer[] = [];
-  req.on("data", (c: Buffer) => chunks.push(c));
-  req.on("error", () =>
-    writeJson(res, 400, { ok: false, error: "request stream error" }),
-  );
-  req.on("end", () => {
-    void respondToCopilot(Buffer.concat(chunks).toString("utf8"), res);
-  });
-}
-
-async function respondToCopilot(
-  rawBody: string,
+async function handleCopilotRequest(
+  req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
+  const body = await readCappedBody(req, COPILOT_MAX_BODY_BYTES);
+  if (body.kind === "too-large") {
+    writeJson(res, 413, { ok: false, error: "copilot request too large" });
+    return;
+  }
+  if (body.kind === "stream-error") {
+    writeJson(res, 400, { ok: false, error: body.message });
+    return;
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(rawBody);
+    parsed = JSON.parse(body.text);
   } catch {
     writeJson(res, 400, { ok: false, error: "invalid JSON body" });
     return;
   }
-  const request = parseCopilotRequest(parsed);
-  if (request === null) {
-    writeJson(res, 400, { ok: false, error: "malformed copilot request" });
-    return;
-  }
-  try {
-    const content = await chatCompletion(request.messages, copilotConfig);
-    writeJson(res, 200, { ok: true, content } satisfies CopilotSuggestResponse);
-  } catch (err) {
-    writeJson(res, 200, {
-      ok: false,
-      error: err instanceof Error ? err.message : "LLM call failed",
-    } satisfies CopilotSuggestResponse);
-  }
+  const reply = await suggest(parsed, (messages) =>
+    chatCompletion(messages, copilotConfig),
+  );
+  writeJson(res, reply.status, reply.response);
 }
 
 /**
@@ -523,7 +508,7 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
       req.method === "POST" &&
       (req.url ?? "").split("?")[0] === COPILOT_PATH
     ) {
-      handleCopilotRequest(req, res);
+      void handleCopilotRequest(req, res);
       return;
     }
     res.writeHead(200, { "content-type": "text/plain" });
