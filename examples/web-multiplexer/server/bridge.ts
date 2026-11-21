@@ -9,6 +9,7 @@
 
 import {
   createServer,
+  STATUS_CODES,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
@@ -23,7 +24,13 @@ import type { EmitterMessage } from "@promptctl/tmux-control-mode-js";
 import { attachWebSocketSink } from "@promptctl/tmux-control-mode-js/websocket";
 import { asCommandResponse } from "../shared/command-response.js";
 import type { ClientToServer, ServerToClient } from "../shared/protocol.js";
-import { BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
+import { BRIDGE_HOST, BRIDGE_PORT, WEB_PORT } from "../shared/config.js";
+import {
+  admitHttp,
+  admitUpgrade,
+  TMUX_WS_PATH,
+  type Route,
+} from "./trust-gate.js";
 import { PaneFirehose } from "./pane-firehose.js";
 import { encodeFirehoseFrame } from "../shared/firehose-frame.js";
 import { MirrorRegistry, type MirrorViewer } from "./mirror-registry.js";
@@ -501,6 +508,15 @@ async function respondToCopilot(
  */
 export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
   const httpServer = createServer((req, res) => {
+    // [LAW:single-enforcer] The same origin rule as every upgrade: a cross-site
+    // POST would otherwise spend the user's LLM credentials.
+    const admission = admitHttp(req);
+    if (admission.kind === "refused") {
+      console.warn(`[bridge] refused HTTP: ${admission.reason}`);
+      res.writeHead(admission.status, { "content-type": "text/plain" });
+      res.end(`${admission.reason}\n`);
+      return;
+    }
     // The AI co-pilot's LLM call is the one non-WebSocket route: a request /
     // response RPC, so it is plain HTTP, not a stream. [LAW:decomposition]
     if (
@@ -516,82 +532,57 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
     );
   });
 
-  // Two endpoints on one HTTP server: the full `/ws` bridge and the read-only
-  // `/mirror-ws` viewer. [LAW:decomposition] the mirror's viewers never touch
-  // the per-`/ws`-connection clients, so the mirror can't become an input
-  // back-door into a session.
-  //
-  // [LAW:single-enforcer] One `upgrade` router decides which endpoint a socket
-  //   belongs to, by path. Attaching two `WebSocketServer({server})` to the
-  //   same HTTP server does NOT work — each handles every `upgrade` and the
-  //   non-matching one aborts the handshake with 400 — so both are `noServer`
-  //   and this router calls the right `handleUpgrade`.
-  const wss = new WebSocketServer({ noServer: true });
-  wss.on("connection", (ws) => {
-    console.log("[bridge] client connected");
-    try {
-      handleConnection(ws);
-    } catch (err) {
-      console.error("[bridge] connection failed:", err);
-      ws.close();
-    }
-  });
-
   const mirrorRegistry = new MirrorRegistry();
-  const mirrorWss = new WebSocketServer({ noServer: true });
-  mirrorWss.on("connection", (ws, request) => {
-    console.log("[bridge] mirror viewer connected");
-    try {
-      handleMirrorConnection(ws, mirrorRegistry, request.url ?? "");
-    } catch (err) {
-      console.error("[bridge] mirror connection failed:", err);
-      ws.close();
-    }
-  });
-
   // The collaborative endpoint reuses the SAME mirror registry for output
   // (one tap per pane, shared with read-only viewers — a read-only mirror and
   // a writable collaborator of one pane share its byte stream and viewer count)
   // and adds the write side via a dedicated `CollabInput`. [LAW:one-source-of-
   // truth] one pane, one tap, regardless of how each browser connects.
   const collabInput = new CollabInput();
-  const collabWss = new WebSocketServer({ noServer: true });
-  collabWss.on("connection", (ws, request) => {
-    console.log("[bridge] collaborator connected");
-    try {
-      handleCollabConnection(
-        ws,
-        mirrorRegistry,
-        collabInput,
-        request.url ?? "",
-      );
-    } catch (err) {
-      console.error("[bridge] collab connection failed:", err);
-      ws.close();
-    }
-  });
 
+  // [LAW:one-source-of-truth] One handler per route; `admitUpgrade` owns the
+  // path-to-route table, so this record cannot name a route the gate lacks.
+  const routes: Record<Route, (ws: WebSocket, url: string) => void> = {
+    tmux: (ws) => handleConnection(ws),
+    mirror: (ws, url) => handleMirrorConnection(ws, mirrorRegistry, url),
+    collab: (ws, url) =>
+      handleCollabConnection(ws, mirrorRegistry, collabInput, url),
+  };
+
+  // [LAW:single-enforcer] One `upgrade` router: every socket passes the trust
+  //   gate before any upgrade, then one `noServer` WebSocketServer upgrades it.
+  //   (Two `WebSocketServer({server})` on one HTTP server each handle every
+  //   upgrade and abort the other's handshake, hence `noServer`.)
+  const wss = new WebSocketServer({ noServer: true });
   httpServer.on("upgrade", (request, socket, head) => {
-    const path = (request.url ?? "").split("?")[0];
-    if (path === "/ws") {
-      wss.handleUpgrade(request, socket, head, (ws) =>
-        wss.emit("connection", ws, request),
+    const admission = admitUpgrade(request);
+    if (admission.kind === "refused") {
+      console.warn(`[bridge] refused upgrade: ${admission.reason}`);
+      socket.end(
+        `HTTP/1.1 ${admission.status} ${STATUS_CODES[admission.status]}\r\nConnection: close\r\n\r\n`,
       );
-    } else if (path === MIRROR_WS_PATH) {
-      mirrorWss.handleUpgrade(request, socket, head, (ws) =>
-        mirrorWss.emit("connection", ws, request),
-      );
-    } else if (path === COLLAB_WS_PATH) {
-      collabWss.handleUpgrade(request, socket, head, (ws) =>
-        collabWss.emit("connection", ws, request),
-      );
-    } else {
-      socket.destroy();
+      return;
     }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      // `ws` throws an unheard 'error' as an uncaught exception, so every
+      // socket gets its listener here, once, before any route sees it.
+      ws.on("error", (err) =>
+        console.error(`[bridge] ${admission.route} socket error:`, err),
+      );
+      console.log(`[bridge] ${admission.route} connected`);
+      try {
+        routes[admission.route](ws, request.url ?? "");
+      } catch (err) {
+        console.error(`[bridge] ${admission.route} connection failed:`, err);
+        ws.close();
+      }
+    });
   });
 
-  httpServer.listen(port, () => {
-    console.log(`[bridge] listening on http://localhost:${port} (WS at /ws)`);
+  httpServer.listen(port, BRIDGE_HOST, () => {
+    console.log(
+      `[bridge] listening on http://${BRIDGE_HOST}:${port} (WS at ${TMUX_WS_PATH})`,
+    );
     console.log(`[bridge] read-only pane mirror at ${MIRROR_WS_PATH}?pane=%N`);
     console.log(`[bridge] collaborative pane at ${COLLAB_WS_PATH}?pane=%N`);
     console.log(
@@ -610,8 +601,6 @@ export function startBridge(port: number = BRIDGE_PORT): BridgeHandle {
       mirrorRegistry.close();
       collabInput.close();
       wss.close();
-      mirrorWss.close();
-      collabWss.close();
       httpServer.close();
     },
   };
